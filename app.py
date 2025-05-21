@@ -36,6 +36,7 @@ load_dotenv()
 
 # Initialize Flask app
 app = Flask(__name__)
+
 CORS(app, resources={
     r"/.*": {
         "origins": [
@@ -73,13 +74,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)  # Initialize logger
 
 @app.before_request
-def ensure_session():
-    session.modified = True  # ✅ Force session to persist
+#def ensure_session():
+#   session.modified = True  # ✅ Force session to persist
 
 def handle_options():
     if request.method == 'OPTIONS':
         response = jsonify({})
-        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin'))
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
         response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
         response.headers.add('Access-Control-Allow-Credentials', 'true')
@@ -482,7 +483,7 @@ def reset_password():
 def login():
     if request.method == 'OPTIONS':
         response = jsonify({})
-        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin'))
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
         response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
         response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
         response.headers.add('Access-Control-Allow-Credentials', 'true')
@@ -561,6 +562,7 @@ def login():
             "redirect_url": f"http://localhost:3000/{user_role}/dashboard-overview"
         })
 
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
         response.headers.add('Access-Control-Allow-Credentials', 'true')
         return response, 200
 
