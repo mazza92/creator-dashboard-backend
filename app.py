@@ -50,9 +50,10 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_FILE_DIR'] = './sessions'
 Session(app)
 
-@app.route('/api')
-def hello():
-    return jsonify({'message': 'Hello from Flask!'})
+@app.route('/')
+def home():
+    return jsonify({'message': 'Flask backend is running!'})
+
 
 # Configure logging
 logging.basicConfig(
