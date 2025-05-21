@@ -29,6 +29,8 @@ from email.mime.multipart import MIMEMultipart
 from jinja2 import Environment, FileSystemLoader
 from markupsafe import escape
 import decimal
+import redis
+from redis.exceptions import ConnectionError
 
 
 # Load environment variables
@@ -52,7 +54,7 @@ app.secret_key = os.urandom(24)
 
 # ✅ Flask Session Configuration
 app.config['SECRET_KEY'] = 'your-secret-key-here'  # Ensure this is set
-app.config['SESSION_TYPE'] = 'filesystem'
+app.config['SESSION_TYPE'] = 'redis'
 app.config['SESSION_PERMANENT'] = True
 app.config['PERMANENT_SESSION_LIFETIME'] = 86400
 app.config['SESSION_COOKIE_SECURE'] = False  # False for local dev
@@ -60,6 +62,20 @@ app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_FILE_DIR'] = './sessions'
 Session(app)
+
+try:
+    redis_url = os.getenv('REDIS_URL')
+    app.logger.info(f"🟢 REDIS_URL: {redis_url}")
+    if not redis_url:
+        raise ValueError("REDIS_URL not set in environment")
+    app.config['SESSION_REDIS'] = redis.Redis.from_url(redis_url, ssl_cert_reqs=None)
+    app.config['SESSION_REDIS'].ping()  # Test connection
+    Session(app)
+    app.logger.info("🟢 Session initialized with Redis")
+except (ConnectionError, ValueError) as e:
+    app.logger.error(f"🔥 Redis initialization error: {str(e)}")
+    raise
+
 
 @app.route('/')
 def home():
@@ -508,14 +524,23 @@ def login():
             (email,)
         )
         user = cursor.fetchone()
+        app.logger.info(f"🟢 User Query Result: {user}")
 
         if not user:
             app.logger.warning(f"Email not found: {email}")
             return jsonify({"error": "Invalid email or password"}), 401
 
         user_id, hashed_password, user_role = user['id'], user['password'], user['role']
+        app.logger.info(f"🟢 User Found: ID={user_id}, Role={user_role}")
 
-        if not bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8')):
+        try:
+            password_match = bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8'))
+            app.logger.info(f"🟢 Password Match: {password_match}")
+        except Exception as e:
+            app.logger.error(f"🔥 Password Check Error: {str(e)}")
+            return jsonify({"error": "Password verification failed"}), 500
+
+        if not password_match:
             app.logger.warning(f"Incorrect password for user_id: {user_id}")
             return jsonify({'error': 'Invalid email or password'}), 401
 
