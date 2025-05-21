@@ -76,6 +76,17 @@ logger = logging.getLogger(__name__)  # Initialize logger
 def ensure_session():
     session.modified = True  # ✅ Force session to persist
 
+def handle_options():
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin'))
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+
+def get_db_connection():
+    return psycopg2.connect(os.getenv('DATABASE_URL'))
 
 # ✅ Allow CORS with credentials
 CORS(app, supports_credentials=True, origins=["http://localhost:3000"])
@@ -467,8 +478,16 @@ def reset_password():
         return jsonify({'error': 'An unexpected error occurred. Please try again.'}), 500
     
     
-@app.route('/login', methods=['POST'])
+@app.route('/login', methods=['POST', 'OPTIONS'])
 def login():
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin'))
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+
     try:
         data = request.json
         app.logger.info(f"🟢 Login Attempt: {data}")
@@ -539,9 +558,10 @@ def login():
             "user_role": user_role,
             "creator_id": creator_id,
             "brand_id": brand_id,
-            "redirect_url": f"http://localhost:3000/{user_role}/dashboard/overview"
+            "redirect_url": f"http://localhost:3000/{user_role}/dashboard-overview"
         })
 
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
         return response, 200
 
     except Exception as e:
