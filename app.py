@@ -30,7 +30,7 @@ from jinja2 import Environment, FileSystemLoader
 from markupsafe import escape
 import decimal
 
-
+# Test Vercel-GitHub integration
 
 # Load environment variables
 load_dotenv()
