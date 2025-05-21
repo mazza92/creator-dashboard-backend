@@ -1,0 +1,19 @@
+{{ message }}
+
+Details:
+{% if data %}
+{% for key, value in data.items() %}
+{{ key.replace('_', ' ') | capitalize }}: {{ value }}
+{% endfor %}
+{% else %}
+No additional details.
+{% endif %}
+
+{% if action_url and action_text %}
+Action: {{ action_text }} - {{ action_url }}
+{% endif %}
+
+---
+Your Platform Name
+Contact Support: https://your-platform.com/support
+Unsubscribe: https://your-platform.com/unsubscribe?user_id={{ user_id }}

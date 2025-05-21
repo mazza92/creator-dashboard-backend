@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Your Platform Notification</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: 'Inter', Arial, sans-serif; background-color: #f9fafb; color: #1f2937;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 12px; overflow: hidden;">
+    <!-- Header -->
+    <tr>
+      <td style="padding: 20px; text-align: center; background: linear-gradient(135deg, #26A69A, #4DB6AC);">
+        <img src="https://your-platform.com/logo.png" alt="Platform Logo" width="120" style="max-width: 120px;">
+        <h1 style="color: #ffffff; font-size: 24px; margin: 10px 0;">New Notification</h1>
+      </td>
+    </tr>
+    <!-- Body -->
+    <tr>
+      <td style="padding: 20px;">
+        <p style="font-size: 16px; line-height: 1.5; margin: 0 0 16px;">{{ message }}</p>
+        {% if data %}
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="8" style="background-color: #f9fafb; border-radius: 8px; font-size: 14px;">
+          {% for key, value in data.items() %}
+          <tr>
+            <td style="font-weight: 600; text-transform: capitalize;">{{ key.replace('_', ' ') }}</td>
+            <td>{{ value }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+        {% endif %}
+        {% if action_url and action_text %}
+        <p style="text-align: center; margin: 24px 0;">
+          <a href="{{ action_url }}" style="display: inline-block; padding: 12px 24px; background: linear-gradient(135deg, #26A69A, #4DB6AC); color: #ffffff; text-decoration: none; border-radius: 24px; font-weight: 600;">{{ action_text }}</a>
+        </p>
+        {% endif %}
+      </td>
+    </tr>
+    <!-- Footer -->
+    <tr>
+      <td style="padding: 20px; text-align: center; background-color: #f9fafb; font-size: 12px; color: #4b5563;">
+        <p style="margin: 0 0 8px;">© 2025 Your Platform Name. All rights reserved.</p>
+        <p style="margin: 0;">
+          <a href="https://your-platform.com/support" style="color: #26A69A; text-decoration: none;">Contact Support</a> | 
+          <a href="https://your-platform.com/unsubscribe?user_id={{ user_id }}" style="color: #26A69A; text-decoration: none;">Unsubscribe</a>
+        </p>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

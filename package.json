@@ -1,0 +1,46 @@
+{
+  "name": "creator-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@ant-design/icons": "^5.0.0",
+    "antd": "^5.0.0",
+    "framer-motion": "^10.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-icons": "^4.0.0",
+    "react-router-dom": "^6.22.3",
+    "react-scripts": "5.0.1",
+    "styled-components": "^6.0.0",
+    "@stripe/connect-js": "^3.3.23",
+    "@stripe/react-connect-js": "^3.3.22",
+    "@stripe/stripe-js": "^7.3.0",
+    "react-joyride": "^2.9.3",
+    "react-loader-spinner": "^6.1.6"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject",
+    "vercel-build": "react-scripts build"
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-app",
+      "react-app/jest"
+    ]
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  }
+}
