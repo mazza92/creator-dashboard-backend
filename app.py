@@ -23,6 +23,7 @@ import json
 import uuid
 import logging
 import jwt
+from flask_jwt_extended import JWTManager
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -34,34 +35,24 @@ from redis.exceptions import ConnectionError
 
 
 # Load environment variables
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
 # Initialize Flask app
+logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
+app.logger.setLevel(logging.INFO)
 
-CORS(app, resources={
-    r"/.*": {
-        "origins": [
-            "http://localhost:3000",
-            "https://creator-dashboard-frontend.vercel.app"
-        ],
-        "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"]
-    }
-})
 
 app.secret_key = os.urandom(24)
 
 # ✅ Flask Session Configuration
-app.config['SECRET_KEY'] = 'your-secret-key-here'  # Ensure this is set
+app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', 'default-secret')
 app.config['SESSION_TYPE'] = 'redis'
 app.config['SESSION_PERMANENT'] = True
 app.config['PERMANENT_SESSION_LIFETIME'] = 86400
 app.config['SESSION_COOKIE_SECURE'] = False  # False for local dev
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-app.config['SESSION_FILE_DIR'] = './sessions'
-Session(app)
 
 try:
     redis_url = os.getenv('REDIS_URL')
@@ -76,18 +67,23 @@ except (ConnectionError, ValueError) as e:
     app.logger.error(f"🔥 Redis initialization error: {str(e)}")
     raise
 
+# Initialize CORS
+CORS(app, resources={
+    r"/.*": {
+        "origins": [
+            "http://localhost:3000",
+            "https://creator-dashboard-frontend.vercel.app"
+        ],
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "supports_credentials": True,
+        "expose_headers": ["Content-Type", "Authorization"],
+        "max_age": 600
+    }
+})
 
-@app.route('/')
-def home():
-    return jsonify({'message': 'Flask backend is running!'})
 
-
-# Configure logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
-)
-logger = logging.getLogger(__name__)  # Initialize logger
+jwt = JWTManager(app)
 
 @app.before_request
 #def ensure_session():
@@ -96,28 +92,37 @@ logger = logging.getLogger(__name__)  # Initialize logger
 def handle_options():
     if request.method == 'OPTIONS':
         response = jsonify({})
-        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
         return response, 200
 
-def get_db_connection():
-    return psycopg2.connect(os.getenv('DATABASE_URL'))
+@app.after_request
+def add_cors_headers(response):
+    origin = request.headers.get('Origin')
+    if origin in ['http://localhost:3000', 'https://creator-dashboard-frontend.vercel.app']:
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+    return response
 
-# ✅ Allow CORS with credentials
-CORS(app, supports_credentials=True, origins=["http://localhost:3000"])
+def get_db_connection():
+    try:
+        conn = psycopg2.connect(os.getenv('DATABASE_URL'))
+        app.logger.info("🟢 Database connection established")
+        return conn
+    except Exception as e:
+        app.logger.error(f"🔥 Database connection error: {str(e)}")
+        raise
+
 
 #socketio = SocketIO(app, cors_allowed_origins="http://localhost:3000")
 
-@app.after_request
-def after_request(response):
-    response.headers["Access-Control-Allow-Origin"] = "http://localhost:3000"
-    response.headers["Access-Control-Allow-Credentials"] = "true"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    print(f"📌 [RESPONSE HEADERS DEBUG] Final Headers: {response.headers}")
-    return response
+
+@app.route('/')
+def home():
+    return jsonify({'message': 'Flask backend is running!'})
+
 
 
 # Stripe Configuration
@@ -269,36 +274,36 @@ def google_signup():
     try:
         data = request.get_json()
         if not data or 'idToken' not in data:
-            logger.error("Missing idToken in request")
+            app.logger.error("Missing idToken in request")
             return jsonify({'error': 'Missing ID token'}), 400
 
         id_token_str = data.get('idToken')
         email = data.get('email')
         name = data.get('name')
 
-        logger.debug(f"Received Google Sign-In request: email={email}, name={name}, idToken={id_token_str[:50]}...")
+        app.logger.debug(f"Received Google Sign-In request: email={email}, name={name}, idToken={id_token_str[:50]}...")
 
         # Verify Firebase ID token
         client_id = "auth-app-feed3"  # Firebase project ID
-        logger.debug(f"Using client_id (project ID): {client_id}")
+        app.logger.debug(f"Using client_id (project ID): {client_id}")
         try:
             idinfo = id_token.verify_firebase_token(id_token_str, Request(), client_id)
-            logger.debug(f"Verified token: issuer={idinfo['iss']}, audience={idinfo['aud']}, email={idinfo['email']}, kid={idinfo.get('kid')}")
+            app.logger.debug(f"Verified token: issuer={idinfo['iss']}, audience={idinfo['aud']}, email={idinfo['email']}, kid={idinfo.get('kid')}")
         except ValueError as e:
-            logger.error(f"Token verification failed: {str(e)}")
+            app.logger.error(f"Token verification failed: {str(e)}")
             try:
                 decoded = jwt.decode(id_token_str, options={"verify_signature": False})
-                logger.debug(f"Token payload (unverified): audience={decoded.get('aud')}, issuer={decoded.get('iss')}, email={decoded.get('email')}, kid={decoded.get('kid')}, iat={decoded.get('iat')}, exp={decoded.get('exp')}")
+                app.logger.debug(f"Token payload (unverified): audience={decoded.get('aud')}, issuer={decoded.get('iss')}, email={decoded.get('email')}, kid={decoded.get('kid')}, iat={decoded.get('iat')}, exp={decoded.get('exp')}")
             except Exception as decode_error:
-                logger.error(f"Failed to decode token payload: {str(decode_error)}")
+                app.logger.error(f"Failed to decode token payload: {str(decode_error)}")
             return jsonify({'error': f'Invalid token: {str(e)}'}), 401
 
         if idinfo['iss'] != f"https://securetoken.google.com/{client_id}":
-            logger.error(f"Invalid token issuer: {idinfo['iss']}, expected: https://securetoken.google.com/{client_id}")
+            app.logger.error(f"Invalid token issuer: {idinfo['iss']}, expected: https://securetoken.google.com/{client_id}")
             return jsonify({'error': 'Invalid token issuer'}), 401
 
         if idinfo['email'] != email:
-            logger.error(f"Email mismatch: token_email={idinfo['email']}, provided_email={email}")
+            app.logger.error(f"Email mismatch: token_email={idinfo['email']}, provided_email={email}")
             return jsonify({'error': 'Email mismatch'}), 401
 
         # Connect to database
@@ -320,7 +325,7 @@ def google_signup():
                 if creator:
                     creator_id = creator['id']
                 else:
-                    logger.error(f"No creator record found for user_id: {user_id}")
+                    app.logger.error(f"No creator record found for user_id: {user_id}")
                     conn.close()
                     return jsonify({'error': 'Creator profile not found. Please complete registration.'}), 404
 
@@ -329,24 +334,24 @@ def google_signup():
             session['user_role'] = role
             if creator_id:
                 session['creator_id'] = creator_id
-            logger.info(f"Logged in existing user: {user_id}, role: {role}, creator_id: {creator_id}")
-            logger.debug(f"Session before response: {session}")
+            app.logger.info(f"Logged in existing user: {user_id}, role: {role}, creator_id: {creator_id}")
+            app.logger.debug(f"Session before response: {session}")
             conn.close()
             return jsonify({'user_id': user_id, 'user_role': role}), 200
         else:
             # New user: Reject and prompt registration
-            logger.info(f"No account found for email: {email}. User must register.")
+            app.logger.info(f"No account found for email: {email}. User must register.")
             conn.close()
             return jsonify({'error': 'No account found. Please register first.'}), 404
 
     except ValueError as e:
-        logger.error(f"Token verification failed: {str(e)}")
+        app.logger.error(f"Token verification failed: {str(e)}")
         return jsonify({'error': 'Invalid token: ' + str(e)}), 401
     except psycopg2.Error as e:
-        logger.error(f"Database error: {str(e)}")
+        app.logger.error(f"Database error: {str(e)}")
         return jsonify({'error': 'Database error. Please try again.'}), 500
     except Exception as e:
-        logger.error(f"Unexpected error in google_signup: {str(e)}")
+        app.logger.error(f"Unexpected error in google_signup: {str(e)}")
         return jsonify({'error': 'An unexpected error occurred. Please try again.'}), 500
     
 @app.route('/forgot-password', methods=['POST'])
@@ -354,7 +359,7 @@ def forgot_password():
     try:
         data = request.get_json()
         if not data or 'email' not in data:
-            logger.error("Missing email in forgot password request")
+            app.logger.error("Missing email in forgot password request")
             return jsonify({'error': 'Email is required'}), 400
 
         email = data['email']
@@ -369,50 +374,46 @@ def forgot_password():
         conn.close()
 
         if not user:
-            logger.info(f"No account found for email: {email}")
+            app.logger.info(f"No account found for email: {email}")
             return jsonify({'error': 'Email not found'}), 404
 
         if user['password'] is None:
-            logger.info(f"User {email} uses Google Sign-In; cannot reset password")
+            app.logger.info(f"User {email} uses Google Sign-In; cannot reset password")
             return jsonify({'error': 'This account uses Google Sign-In. Please sign in with Google.'}), 400
 
         # Generate JWT token
-        secret_key = os.getenv('JWT_SECRET_KEY', app.secret_key)  # Use a dedicated secret key
+        secret_key = os.getenv('JWT_SECRET_KEY', app.config['SECRET_KEY'])
         token = jwt.encode(
             {
                 'user_id': user['id'],
                 'email': email,
-                'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=1)  # 1-hour expiration
+                'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=1)
             },
             secret_key,
             algorithm='HS256'
         )
 
         # Send reset email
-        reset_url = f"http://localhost:3000/reset-password?token={token}"
-        subject = "Password Reset Request"
+        smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+        smtp_port = int(os.getenv('SMTP_PORT', 587))
+        smtp_username = os.getenv('SMTP_USERNAME')
+        smtp_password = os.getenv('SMTP_PASSWORD')
+
+        msg = MIMEMultipart()
+        msg['From'] = smtp_username
+        msg['To'] = email
+        msg['Subject'] = "Password Reset Request"
         body = f"""
         Hello,
 
         You requested to reset your password. Click the link below to set a new password:
-        {reset_url}
+        http://localhost:3000/reset-password?token={token}
 
         This link will expire in 1 hour. If you did not request a password reset, please ignore this email.
 
         Best regards,
         Your App Team
         """
-
-        # Configure SMTP (example: Gmail)
-        smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
-        smtp_port = int(os.getenv('SMTP_PORT', 587))
-        smtp_username = os.getenv('SMTP_USERNAME')  # e.g., your Gmail address
-        smtp_password = os.getenv('SMTP_PASSWORD')  # e.g., Gmail App Password
-
-        msg = MIMEMultipart()
-        msg['From'] = smtp_username
-        msg['To'] = email
-        msg['Subject'] = subject
         msg.attach(MIMEText(body, 'plain'))
 
         try:
@@ -421,18 +422,18 @@ def forgot_password():
             server.login(smtp_username, smtp_password)
             server.sendmail(smtp_username, email, msg.as_string())
             server.quit()
-            logger.info(f"Password reset email sent to: {email}")
+            app.logger.info(f"Password reset email sent to: {email}")
         except Exception as e:
-            logger.error(f"Failed to send reset email to {email}: {str(e)}")
+            app.logger.error(f"Failed to send reset email to {email}: {str(e)}")
             return jsonify({'error': 'Failed to send reset email. Please try again.'}), 500
 
         return jsonify({'message': 'Password reset email sent. Please check your inbox.'}), 200
 
     except psycopg2.Error as e:
-        logger.error(f"Database error: {str(e)}")
+        app.logger.error(f"Database error: {str(e)}")
         return jsonify({'error': 'Database error. Please try again.'}), 500
     except Exception as e:
-        logger.error(f"Unexpected error in forgot_password: {str(e)}")
+        app.logger.error(f"Unexpected error in forgot_password: {str(e)}")
         return jsonify({'error': 'An unexpected error occurred. Please try again.'}), 500
 
 # Reset Password endpoint
@@ -441,23 +442,23 @@ def reset_password():
     try:
         data = request.get_json()
         if not data or not all(key in data for key in ['token', 'new_password']):
-            logger.error("Missing token or new_password in reset password request")
+            app.logger.error("Missing token or new_password in reset password request")
             return jsonify({'error': 'Token and new password are required'}), 400
 
         token = data['token']
         new_password = data['new_password']
 
         # Validate JWT token
-        secret_key = os.getenv('JWT_SECRET_KEY', app.secret_key)
+        secret_key = os.getenv('JWT_SECRET_KEY', app.config['SECRET_KEY'])
         try:
             payload = jwt.decode(token, secret_key, algorithms=['HS256'])
             user_id = payload['user_id']
             email = payload['email']
         except jwt.ExpiredSignatureError:
-            logger.error("Password reset token expired")
+            app.logger.error("Password reset token expired")
             return jsonify({'error': 'Password reset link has expired. Please request a new one.'}), 400
         except jwt.InvalidTokenError:
-            logger.error("Invalid password reset token")
+            app.logger.error("Invalid password reset token")
             return jsonify({'error': 'Invalid password reset link.'}), 400
 
         # Connect to database
@@ -469,7 +470,7 @@ def reset_password():
         user = cursor.fetchone()
 
         if not user:
-            logger.error(f"No user found for user_id: {user_id}, email: {email}")
+            app.logger.error(f"No user found for user_id: {user_id}, email: {email}")
             conn.close()
             return jsonify({'error': 'Invalid user.'}), 404
 
@@ -484,14 +485,14 @@ def reset_password():
         conn.commit()
         conn.close()
 
-        logger.info(f"Password reset successful for user_id: {user_id}, email: {email}")
+        app.logger.info(f"Password reset successful for user_id: {user_id}, email: {email}")
         return jsonify({'message': 'Password reset successful. Please sign in.'}), 200
 
     except psycopg2.Error as e:
-        logger.error(f"Database error: {str(e)}")
+        app.logger.error(f"Database error: {str(e)}")
         return jsonify({'error': 'Database error. Please try again.'}), 500
     except Exception as e:
-        logger.error(f"Unexpected error in reset_password: {str(e)}")
+        app.logger.error(f"Unexpected error in reset_password: {str(e)}")
         return jsonify({'error': 'An unexpected error occurred. Please try again.'}), 500
     
     
@@ -499,10 +500,10 @@ def reset_password():
 def login():
     if request.method == 'OPTIONS':
         response = jsonify({})
-        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
         return response, 200
 
     try:
@@ -567,15 +568,19 @@ def login():
                 app.logger.error(f"No brand record found for user_id={user_id}")
                 return jsonify({"error": "Brand profile not found. Please complete registration."}), 400
 
-        session.clear()
-        session["user_id"] = user_id
-        session["user_role"] = user_role
-        session["creator_id"] = creator_id
-        session["brand_id"] = brand_id
-        session.permanent = True
-        session.modified = True
+        try:
+            session.clear()
+            session["user_id"] = user_id
+            session["user_role"] = user_role
+            session["creator_id"] = creator_id
+            session["brand_id"] = brand_id
+            session.permanent = True
+            session.modified = True
+            app.logger.info(f"🟢 Session Set: {dict(session)}")
+        except ConnectionError as e:
+            app.logger.error(f"🔥 Session Set Error: Redis connection failed: {str(e)}")
+            return jsonify({"error": "Failed to set session due to Redis error"}), 500
 
-        app.logger.info(f"🟢 Session Set: {dict(session)}")
         app.logger.info(f"📌 [SESSION DEBUG] Cookies After Set: {request.cookies}")
 
         response = jsonify({
@@ -587,8 +592,6 @@ def login():
             "redirect_url": f"http://localhost:3000/{user_role}/dashboard-overview"
         })
 
-        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
         return response, 200
 
     except Exception as e:
@@ -606,25 +609,18 @@ def login():
 @app.route('/logout', methods=['POST'])
 def logout():
     try:
-        session.clear()  # ✅ Clears user session
+        session.clear()
         response = jsonify({"message": "Logged out successfully"})
-        
-        # ✅ Properly set CORS headers (Fixes 'true, true' issue)
         response.headers['Access-Control-Allow-Origin'] = 'http://localhost:3000'
-        response.headers['Access-Control-Allow-Credentials'] = 'true'  # ❌ FIXED: Only a single "true"
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
         response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
-        
-        # ✅ Clear session cookie
         response.set_cookie('session', '', expires=0, httponly=True, samesite='None', secure=False)
-
         return response, 200
-
     except Exception as e:
-        print(f"🔥 Logout Error: {e}")
+        app.logger.error(f"🔥 Logout Error: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-# ✅ Add Preflight Request Handling (OPTIONS)
 @app.route('/logout', methods=['OPTIONS'])
 def logout_options():
     response = jsonify({"message": "CORS preflight successful"})
@@ -633,6 +629,7 @@ def logout_options():
     response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
     return response, 200
+
 
 
     
