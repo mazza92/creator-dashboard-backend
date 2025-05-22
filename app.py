@@ -190,22 +190,6 @@ ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'pdf', 'txt', 'mp4', 'mov', 'webm', 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# Database connection utility
-def get_db_connection():
-    try:
-        conn = psycopg2.connect(
-            host=os.getenv("DB_HOST"),
-            database=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASSWORD"),
-            port=os.getenv("DB_PORT", "5432")
-        )
-        logger.debug("Database connection established")
-        return conn
-    except Exception as e:
-        logger.error(f"Database connection error: {str(e)}")
-        return None
-
 
 def upload_file_to_supabase(file, bucket_name):
     """
