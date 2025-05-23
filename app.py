@@ -81,7 +81,7 @@ CORS(app, resources={
             "http://localhost:3000",
             "https://creator-dashboard-frontend.vercel.app"
         ],
-        "methods": ["GET", "POST", "OPTIONS"],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization"],
         "supports_credentials": True,
         "expose_headers": ["Content-Type", "Authorization"],
