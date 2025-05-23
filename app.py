@@ -96,14 +96,16 @@ CORS(app, resources={
 #def ensure_session():
 #   session.modified = True  # ✅ Force session to persist
 
+# Handle OPTIONS preflight requests
 def handle_options():
     if request.method == 'OPTIONS':
-        response = jsonify({})
+        response = jsonify({"message": "Preflight request successful"})
         response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
-        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
         response.headers['Access-Control-Allow-Credentials'] = 'true'
-        return response, 200
+        app.logger.info(f"Handled OPTIONS preflight for {request.path} with methods: GET, POST, PUT, DELETE, OPTIONS")
+        return response
 
 @app.after_request
 def add_cors_headers(response):
