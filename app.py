@@ -1426,12 +1426,12 @@ def get_creator_bookings(creator_id):
     try:
         session_creator_id = session.get('creator_id')
         if not session_creator_id or session_creator_id != creator_id:
-            logger.error(f"Unauthorized: Creator {creator_id} not logged in")
+            app.logger.error(f"Unauthorized: Creator {creator_id} not logged in")
             return jsonify({"error": "Unauthorized: Must be logged in as the creator"}), 403
 
         conn = get_db_connection()
         if not conn:
-            logger.error("Database connection failed")
+            app.logger.error("Database connection failed")
             return jsonify({'error': 'Database connection failed'}), 500
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -1452,11 +1452,11 @@ def get_creator_bookings(creator_id):
         bookings = cursor.fetchall()
 
         conn.close()
-        logger.info(f"Fetched {len(bookings)} bookings for creator {creator_id}")
+        app.logger.info(f"Fetched {len(bookings)} bookings for creator {creator_id}")
         return jsonify(bookings), 200
 
     except Exception as e:
-        logger.error(f"Error fetching bookings for creator {creator_id}: {str(e)}")
+        app.logger.error(f"Error fetching bookings for creator {creator_id}: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/creators/<int:creator_id>/campaign-invites', methods=['GET'])
@@ -1464,25 +1464,25 @@ def get_campaign_invites(creator_id):
     try:
         user_role = session.get('user_role')
         session_creator_id = session.get('creator_id')
-        logger.debug(f"Session data: {dict(session)}")
+        app.logger.debug(f"Session data: {dict(session)}")
 
         if not user_role or user_role != 'creator':
-            logger.error(f"Unauthorized access to campaign invites: user_role={user_role}")
+            app.logger.error(f"Unauthorized access to campaign invites: user_role={user_role}")
             return jsonify({"error": "Unauthorized: Must be logged in as a creator"}), 403
 
         if not session_creator_id or session_creator_id != creator_id:
-            logger.error(f"Unauthorized: creator_id={creator_id} does not match session_creator_id={session_creator_id}")
+            app.logger.error(f"Unauthorized: creator_id={creator_id} does not match session_creator_id={session_creator_id}")
             return jsonify({"error": "Unauthorized: Creator ID mismatch"}), 403
 
         status = request.args.get('status', 'Invited')
         valid_statuses = ['Invited', 'Accepted', 'Rejected']
         if status not in valid_statuses:
-            logger.error(f"Invalid status: {status}. Valid options: {valid_statuses}")
+            app.logger.error(f"Invalid status: {status}. Valid options: {valid_statuses}")
             return jsonify({"error": f"Invalid status. Valid options: {', '.join(valid_statuses)}"}), 400
 
         conn = get_db_connection()
         if not conn:
-            logger.error("Database connection failed")
+            app.logger.error("Database connection failed")
             return jsonify({'error': 'Database connection failed'}), 500
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -1512,17 +1512,17 @@ def get_campaign_invites(creator_id):
         '''
         params = [creator_id, status]
 
-        logger.debug(f"Executing campaign invites query: {query} with params: {params}")
+        app.logger.debug(f"Executing campaign invites query: {query} with params: {params}")
         cursor.execute(query, params)
         invites = cursor.fetchall()
-        logger.debug(f"Fetched invites: {len(invites)} items: {invites}")
+        app.logger.debug(f"Fetched invites: {len(invites)} items: {invites}")
 
         conn.close()
-        logger.info(f"Campaign invites response: {len(invites)} items fetched for creator_id={creator_id}, status={status}")
+        app.logger.info(f"Campaign invites response: {len(invites)} items fetched for creator_id={creator_id}, status={status}")
         return jsonify(invites), 200
 
     except Exception as e:
-        logger.error(f"Error fetching campaign invites for creator_id={creator_id}: {str(e)}")
+        app.logger.error(f"Error fetching campaign invites for creator_id={creator_id}: {str(e)}")
         if 'conn' in locals() and not conn.closed:
             conn.close()
         return jsonify({"error": str(e)}), 500
@@ -1535,25 +1535,25 @@ def create_campaign_invite():
         user_role = session.get('user_role')
         brand_id = session.get('brand_id')
         data = request.get_json()
-        logger.debug(f"Received campaign invite data: {data}")
+        app.logger.debug(f"Received campaign invite data: {data}")
 
         if user_role != 'brand':
-            logger.error(f"Unauthorized access: user_role={user_role}")
+            app.logger.error(f"Unauthorized access: user_role={user_role}")
             return jsonify({"error": "Unauthorized: Must be a brand"}), 403
 
         if not brand_id:
-            logger.error("No brand_id in session")
+            app.logger.error("No brand_id in session")
             return jsonify({"error": "Brand ID not found in session"}), 403
 
         required_fields = ['creator_id', 'product_name', 'product_link', 'brief', 'promotion_date', 'bid_amount', 'platforms']
         for field in required_fields:
             if field not in data or data[field] is None or (field == 'platforms' and not data[field]):
-                logger.error(f"Missing or invalid required field: {field}")
+                app.logger.error(f"Missing or invalid required field: {field}")
                 return jsonify({"error": f"Missing or invalid required field: {field}"}), 400
 
         conn = get_db_connection()
         if not conn:
-            logger.error("Database connection failed")
+            app.logger.error("Database connection failed")
             return jsonify({'error': 'Database connection failed'}), 500
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -1561,7 +1561,7 @@ def create_campaign_invite():
         cursor.execute('SELECT id FROM creators WHERE id = %s', (data['creator_id'],))
         creator = cursor.fetchone()
         if not creator:
-            logger.error(f"Creator not found: creator_id={data['creator_id']}")
+            app.logger.error(f"Creator not found: creator_id={data['creator_id']}")
             return jsonify({"error": "Creator not found"}), 404
 
         # Validate platforms
@@ -1571,7 +1571,7 @@ def create_campaign_invite():
         ]
         invalid_platforms = [p for p in data['platforms'] if p not in valid_platforms]
         if invalid_platforms:
-            logger.error(f"Invalid platforms: {invalid_platforms}")
+            app.logger.error(f"Invalid platforms: {invalid_platforms}")
             return jsonify({"error": f"Invalid platforms: {invalid_platforms}"}), 400
 
         # Insert booking
@@ -1603,7 +1603,7 @@ def create_campaign_invite():
         )
         booking = cursor.fetchone()
         if not booking:
-            logger.error("Failed to create booking")
+            app.logger.error("Failed to create booking")
             return jsonify({"error": "Failed to create booking"}), 500
 
         # Fetch creator and brand details for notifications
@@ -1636,19 +1636,19 @@ def create_campaign_invite():
         )
 
         conn.commit()
-        logger.info(f"Campaign invite created: booking_id={booking['id']}, creator_id={data['creator_id']}, brand_id={brand_id}")
+        app.logger.info(f"Campaign invite created: booking_id={booking['id']}, creator_id={data['creator_id']}, brand_id={brand_id}")
         return jsonify({
             "message": "Campaign invite created successfully",
             "booking_id": booking['id']
         }), 201
 
     except Exception as e:
-        logger.error(f"Error creating campaign invite: {str(e)}")
+        app.logger.error(f"Error creating campaign invite: {str(e)}")
         if 'conn' in locals():
             try:
                 conn.rollback()
             except Exception as rollback_e:
-                logger.error(f"Rollback failed: {str(rollback_e)}")
+                app.logger.error(f"Rollback failed: {str(rollback_e)}")
         if 'conn' in locals() and not conn.closed:
             conn.close()
         return jsonify({"error": str(e)}), 500
@@ -1658,15 +1658,15 @@ def accept_booking(booking_id):
     try:
         user_role = session.get('user_role')
         creator_id = session.get('creator_id')
-        logger.debug(f"Session data: {dict(session)}")
+        app.logger.debug(f"Session data: {dict(session)}")
 
         if user_role != 'creator':
-            logger.error(f"Unauthorized: user_role={user_role} cannot accept booking")
+            app.logger.error(f"Unauthorized: user_role={user_role} cannot accept booking")
             return jsonify({"error": "Unauthorized: Must be a creator"}), 403
 
         conn = get_db_connection()
         if not conn:
-            logger.error("Database connection failed")
+            app.logger.error("Database connection failed")
             return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -1681,16 +1681,16 @@ def accept_booking(booking_id):
         )
         booking = cursor.fetchone()
         if not booking:
-            logger.error(f"Booking {booking_id} not found")
+            app.logger.error(f"Booking {booking_id} not found")
             return jsonify({"error": "Booking not found"}), 404
         if booking['creator_id'] != creator_id:
-            logger.error(f"Creator {creator_id} not authorized for booking {booking_id}")
+            app.logger.error(f"Creator {creator_id} not authorized for booking {booking_id}")
             return jsonify({"error": "Unauthorized: Not your booking"}), 403
         if booking['status'] != 'Invited':
-            logger.error(f"Booking {booking_id} status is {booking['status']}, cannot accept")
+            app.logger.error(f"Booking {booking_id} status is {booking['status']}, cannot accept")
             return jsonify({"error": f"Booking is already {booking['status']}"}), 400
         if booking['type'] != 'Campaign Invite':
-            logger.error(f"Booking {booking_id} type is {booking['type']}, not a campaign invite")
+            app.logger.error(f"Booking {booking_id} type is {booking['type']}, not a campaign invite")
             return jsonify({"error": "Booking is not a campaign invite"}), 400
 
         # Update status, content_status to Confirmed, and type to Sponsor
@@ -1705,7 +1705,7 @@ def accept_booking(booking_id):
         )
         updated_booking = cursor.fetchone()
         if not updated_booking:
-            logger.error(f"Failed to update booking {booking_id}")
+            app.logger.error(f"Failed to update booking {booking_id}")
             return jsonify({"error": "Failed to accept booking"}), 500
 
         # Fetch creator and brand details for notifications
@@ -1740,7 +1740,7 @@ def accept_booking(booking_id):
             )
 
         conn.commit()
-        logger.info(f"Booking {booking_id} accepted by creator {creator_id}, status='Confirmed', content_status='Confirmed', type='Sponsor'")
+        app.logger.info(f"Booking {booking_id} accepted by creator {creator_id}, status='Confirmed', content_status='Confirmed', type='Sponsor'")
         return jsonify({
             "message": "Booking accepted successfully",
             "booking_id": updated_booking['id'],
@@ -1751,12 +1751,12 @@ def accept_booking(booking_id):
         }), 200
 
     except Exception as e:
-        logger.error(f"Error accepting booking {booking_id}: {str(e)}")
+        app.logger.error(f"Error accepting booking {booking_id}: {str(e)}")
         if 'conn' in locals():
             try:
                 conn.rollback()
             except Exception as rollback_e:
-                logger.error(f"Rollback failed: {str(rollback_e)}")
+                app.logger.error(f"Rollback failed: {str(rollback_e)}")
         if 'conn' in locals() and not conn.closed:
             conn.close()
         return jsonify({"error": str(e)}), 500
