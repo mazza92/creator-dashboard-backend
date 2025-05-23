@@ -41,7 +41,10 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 # Initialize Flask app
 logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
-app.logger.setLevel(logging.INFO)
+app.logger.setLevel(logging.DEBUG)
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+app.logger.addHandler(handler)
 
 
 app.secret_key = os.urandom(24)
@@ -526,7 +529,6 @@ def login():
         user_id = user['id']
         user_role = user['role']
         app.logger.info(f"🟢 User Found: ID={user_id}, Role={user_role}")
-        app.logger.info(f"🟢 Password Match: {bcrypt.checkpw(password.encode('utf-8'), user['password'].encode('utf-8'))}")
         cursor.execute("SELECT id FROM creators WHERE user_id = %s", (user_id,))
         creator = cursor.fetchone()
         creator_id = creator['id'] if creator else None
@@ -534,7 +536,7 @@ def login():
         cursor.execute("SELECT id FROM brands WHERE user_id = %s", (user_id,))
         brand = cursor.fetchone()
         brand_id = brand['id'] if brand else None
-        session.clear()  # Clear existing session data
+        session.clear()
         session['user_id'] = user_id
         session['user_role'] = user_role
         session['creator_id'] = creator_id
@@ -549,11 +551,12 @@ def login():
             'brand_id': brand_id,
             'redirect_url': 'http://localhost:3000/creator/dashboard-overview' if user_role == 'creator' else 'http://localhost:3000/brand/dashboard-overview'
         }
-        app.logger.info(f"🟢 Login successful for user_id: {user_id}, role: {user_role}")
-        response = jsonify(login_response)
+        response = make_response(jsonify(login_response))
+        response.set_cookie('session', session.sid, samesite='None', secure=True, httponly=True, max_age=86400)
         response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'http://localhost:3000')
         response.headers['Access-Control-Allow-Credentials'] = 'true'
-        app.logger.info(f"📌 [SESSION DEBUG] Cookies After Set: {request.cookies}")
+        app.logger.info(f"🟢 Login Response Headers: {response.headers}")
+        app.logger.info(f"🟢 Login successful for user_id: {user_id}, role: {user_role}")
         return response, 200
     except Exception as e:
         app.logger.error(f"🔥 Login Error: {str(e)}")
@@ -598,24 +601,12 @@ def get_user_profile():
     app.logger.info(f"🔍 Request headers: {request.headers}")
     app.logger.info(f"🔍 Cookies received: {request.cookies}")
     app.logger.info(f"🔍 Session contents: {session}")
-    user_id = None
-    try:
-        user_id = get_jwt_identity()
-        app.logger.info(f"🔍 Profile request with JWT user_id: {user_id}")
-    except Exception as e:
-        app.logger.info(f"🔍 No valid JWT: {str(e)}")
-
-    if not user_id and 'user_id' in session:
-        user_id = session['user_id']
-        app.logger.info(f"🔍 Profile request with session user_id: {user_id}")
-
-    if not user_id:
+    if 'user_id' not in session:
         app.logger.error(f"🔥 Authentication failed: Headers={request.headers}, Session={session}")
         response = jsonify({'error': 'User not authenticated'})
         response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'http://localhost:3000')
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         return response, 401
-
     conn = get_db_connection()
     if not conn:
         response = jsonify({'error': 'Database connection failed'})
@@ -624,7 +615,7 @@ def get_user_profile():
         return response, 500
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
-        cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+        cursor.execute("SELECT * FROM users WHERE id = %s", (session['user_id'],))
         user = cursor.fetchone()
         if not user:
             response = jsonify({'error': 'User not found'})
@@ -633,6 +624,13 @@ def get_user_profile():
             return response, 404
         user_data = dict(user)
         user_data.pop('password', None)
+        cursor.execute("SELECT id, bio, followers_count FROM creators WHERE user_id = %s", (session['user_id'],))
+        creator = cursor.fetchone()
+        if creator:
+            user_data['creator_id'] = creator['id']
+            user_data['bio'] = creator['bio']
+            user_data['followers_count'] = creator['followers_count']
+        user_data['user_role'] = session.get('user_role', 'user')
         response = jsonify(user_data)
         response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'http://localhost:3000')
         response.headers['Access-Control-Allow-Credentials'] = 'true'
@@ -7056,46 +7054,46 @@ def get_bookings():
         session_creator_id = session.get('creator_id')
         session_brand_id = session.get('brand_id')
 
-        logger.debug(f"Session data: {dict(session)}")
+        app.logger.debug(f"Session data: {dict(session)}")
 
         if not user_role:
-            logger.error("Unauthorized: No user role in session")
+            app.logger.error("Unauthorized: No user role in session")
             return jsonify({'error': 'Unauthorized: No user role in session'}), 403
 
         # Validate brand_id only for brand role
         if user_role == 'brand':
             if brand_id:
                 if brand_id == 'undefined' or not brand_id.isdigit():
-                    logger.warning(f"Invalid brand_id: {brand_id}")
+                    app.logger.warning(f"Invalid brand_id: {brand_id}")
                     return jsonify({'error': 'Invalid brand_id'}), 400
                 brand_id = int(brand_id)
             elif session_brand_id:
                 brand_id = session_brand_id
             else:
-                logger.warning("No valid brand_id provided and no session brand_id")
+                app.logger.warning("No valid brand_id provided and no session brand_id")
                 return jsonify({'error': 'Brand ID required'}), 400
 
         # Validate creator_id for creator role
         if user_role == 'creator':
             if creator_id:
                 if creator_id == 'undefined' or not creator_id.isdigit():
-                    logger.warning(f"Invalid creator_id: {creator_id}")
+                    app.logger.warning(f"Invalid creator_id: {creator_id}")
                     return jsonify({'error': 'Invalid creator_id'}), 400
                 creator_id = int(creator_id)
             elif session_creator_id:
                 creator_id = session_creator_id
             else:
-                logger.warning("No valid creator_id provided and no session creator_id")
+                app.logger.warning("No valid creator_id provided and no session creator_id")
                 return jsonify({'error': 'Creator ID required'}), 400
 
         valid_statuses = ["Pending", "Confirmed", "In Progress", "Draft Submitted", "Under Review", "Revision Requested", "Approved", "Published", "Completed", "Canceled"]
         if status and status not in valid_statuses:
-            logger.error(f"Invalid status: {status}. Valid options: {valid_statuses}")
+            app.logger.error(f"Invalid status: {status}. Valid options: {valid_statuses}")
             return jsonify({'error': f"Invalid status. Valid options: {', '.join(valid_statuses)}"}), 400
 
         conn = get_db_connection()
         if not conn:
-            logger.error("Database connection failed")
+            app.logger.error("Database connection failed")
             return jsonify({'error': 'Database connection failed'}), 500
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -7107,8 +7105,8 @@ def get_bookings():
 
         query = ''' 
             SELECT b.*, 
-                   b.bid_amount, 
-                   b.type, 
+                   COALESCE(b.bid_amount, 0.0) AS bid_amount, 
+                   COALESCE(b.type, 'Sponsor') AS type, 
                    b.price, 
                    c.username AS creator_name, 
                    c.image_profile AS creator_profile, 
@@ -7125,9 +7123,12 @@ def get_bookings():
                    sd.audience_target AS audience_targets, 
                    sd.topics,
                    sd.bidding_deadline,
-                   (SELECT COUNT(*) FROM messages m 
-                    WHERE m.booking_id = b.id 
-                    AND m.is_read = FALSE %s) AS unread_count
+                   COALESCE((
+                       SELECT COUNT(*) 
+                       FROM messages m 
+                       WHERE m.booking_id = b.id 
+                       AND m.is_read = FALSE %s
+                   ), 0) AS unread_count
             FROM bookings b
             LEFT JOIN creators c ON b.creator_id = c.id
             LEFT JOIN packages p ON b.offer_id = p.id
@@ -7167,18 +7168,19 @@ def get_bookings():
             params.append(start_date)
             params.append(end_date)
 
-        logger.debug(f"Executing bookings query: {query} with params: {params}")
+        app.logger.debug(f"Executing bookings query: {query} with params: {params}")
         cursor.execute(query, params)
         bookings = cursor.fetchall()
 
         for booking in bookings:
             if 'updated_at' not in booking or booking['updated_at'] is None:
                 booking['updated_at'] = booking.get('created_at') or datetime.now().isoformat()
-                logger.warning(f"Booking {booking['id']} missing updated_at, using fallback: {booking['updated_at']}")
-            # Convert bid_amount to float
-            if booking['bid_amount'] is not None:
-                booking['bid_amount'] = float(booking['bid_amount'])
-            else:
+                app.logger.warning(f"Booking {booking['id']} missing updated_at, using fallback: {booking['updated_at']}")
+            # Safely convert bid_amount to float
+            try:
+                booking['bid_amount'] = float(booking['bid_amount'] or 0.0)
+            except (ValueError, TypeError) as e:
+                app.logger.warning(f"Invalid bid_amount for booking {booking['id']}: {booking['bid_amount']}, error: {str(e)}")
                 booking['bid_amount'] = 0.0
 
         # Subscription handling for creators
@@ -7188,10 +7190,16 @@ def get_bookings():
                        bs.brand_id AS brand_id, bs.transaction_id, bs.payment_method,
                        csp.package_name, csp.deliverables AS base_deliverables, csp.frequency,
                        br.name AS brand_name, br.logo AS brand_logo,
-                       (SELECT COUNT(*) FROM messages m 
-                        WHERE m.subscription_id = bs.id 
-                        AND m.is_read = FALSE AND m.sender_type = 'brand') AS unread_count,
-                       (SELECT MAX(updated_at) FROM subscription_deliverables sd WHERE sd.subscription_id = bs.id) AS latest_deliverable_update
+                       COALESCE((
+                           SELECT COUNT(*) 
+                           FROM messages m 
+                           WHERE m.subscription_id = bs.id 
+                           AND m.is_read = FALSE 
+                           AND m.sender_type = 'brand'
+                       ), 0) AS unread_count,
+                       (SELECT MAX(updated_at) 
+                        FROM subscription_deliverables sd 
+                        WHERE sd.subscription_id = bs.id) AS latest_deliverable_update
                 FROM brand_subscriptions bs
                 JOIN creator_subscription_packages csp ON bs.package_id = csp.id
                 JOIN brands br ON bs.brand_id = br.id
@@ -7201,32 +7209,47 @@ def get_bookings():
 
             for sub in subscriptions:
                 cursor.execute(''' 
-                    SELECT type, platform, quantity, status, submission_index
+                    SELECT type, platform, quantity, status, submission_index,
+                           content_link, file_url, submission_notes
                     FROM subscription_deliverables
                     WHERE subscription_id = %s AND creator_id = %s
                     ORDER BY submission_index
                 ''', (sub['id'], creator_id))
                 submitted = cursor.fetchall()
 
+                base_deliverables = sub.get('base_deliverables', []) or []
+                if not isinstance(base_deliverables, list):
+                    app.logger.warning(f"Invalid base_deliverables for subscription {sub['id']}: {base_deliverables}")
+                    base_deliverables = []
+
                 deliverable_status = {}
                 for d in submitted:
-                    key = (d['type'], d['platform'])
+                    key = (d.get('type', 'Unknown'), d.get('platform', 'Unknown'))
                     if key not in deliverable_status:
                         deliverable_status[key] = []
-                    deliverable_status[key].append(d)
+                    deliverable_status[key].append({
+                        "type": d.get('type', 'Unknown'),
+                        "platform": d.get('platform', 'Unknown'),
+                        "status": d.get('status', 'Pending'),
+                        "submission_index": d.get('submission_index', 0),
+                        "content_link": d.get('content_link'),
+                        "file_url": d.get('file_url'),
+                        "submission_notes": d.get('submission_notes')
+                    })
 
                 deliverables = []
-                for i, base in enumerate(sub['base_deliverables']):
-                    key = (base['type'], base['platform'])
+                for i, base in enumerate(base_deliverables):
+                    key = (base.get('type', 'Unknown'), base.get('platform', 'Unknown'))
                     submitted_list = deliverable_status.get(key, [])
                     total_submitted = len(submitted_list)
-                    remaining = base['quantity'] - total_submitted
+                    quantity = base.get('quantity', 0)
+                    remaining = quantity - total_submitted
                     status = "Delivered" if remaining <= 0 else ("Submitted" if total_submitted > 0 else "Pending")
                     deliverables.append({
                         "index": i,
-                        "type": base['type'],
-                        "platform": base['platform'],
-                        "quantity": base['quantity'],
+                        "type": base.get('type', 'Unknown'),
+                        "platform": base.get('platform', 'Unknown'),
+                        "quantity": quantity,
                         "submitted": total_submitted,
                         "remaining": max(0, remaining),
                         "status": status,
@@ -7234,26 +7257,32 @@ def get_bookings():
                     })
 
                 sub['type'] = 'Subscription'
-                sub['cost'] = float(sub['total_cost'] / sub['duration_months']) if sub['duration_months'] else 0.0
+                sub['cost'] = float(sub['total_cost'] / (sub['duration_months'] or 1)) if sub.get('total_cost') else 0.0
                 sub['deliverables'] = deliverables
                 sub['updated_at'] = (
-                    sub['latest_deliverable_update'] or
-                    sub['start_date'] or
+                    sub.get('latest_deliverable_update') or
+                    sub.get('start_date') or
                     datetime.now().isoformat()
                 )
                 bookings.append(sub)
 
-        # Subscription handling for brands
+        # Subscription handling for brands (unchanged)
         elif user_role == 'brand' and brand_id:
             cursor.execute(''' 
                 SELECT bs.id, bs.start_date, bs.end_date, bs.status, bs.total_cost, bs.duration_months,
                        bs.brand_id AS brand_id, bs.transaction_id, bs.payment_method,
                        csp.package_name, csp.deliverables AS base_deliverables, csp.frequency,
                        c.username AS creator_name, c.id AS creator_id, c.image_profile AS creator_profile,
-                       (SELECT COUNT(*) FROM messages m 
-                        WHERE m.subscription_id = bs.id 
-                        AND m.is_read = FALSE AND m.sender_type = 'creator') AS unread_count,
-                       (SELECT MAX(updated_at) FROM subscription_deliverables sd WHERE sd.subscription_id = bs.id) AS latest_deliverable_update
+                       COALESCE((
+                           SELECT COUNT(*) 
+                           FROM messages m 
+                           WHERE m.subscription_id = bs.id 
+                           AND m.is_read = FALSE 
+                           AND m.sender_type = 'creator'
+                       ), 0) AS unread_count,
+                       (SELECT MAX(updated_at) 
+                        FROM subscription_deliverables sd 
+                        WHERE sd.subscription_id = bs.id) AS latest_deliverable_update
                 FROM brand_subscriptions bs
                 JOIN creator_subscription_packages csp ON bs.package_id = csp.id
                 JOIN creators c ON csp.creator_id = c.id
@@ -7270,33 +7299,39 @@ def get_bookings():
                 ''', (sub['id'],))
                 submitted = cursor.fetchall()
 
+                base_deliverables = sub.get('base_deliverables', []) or []
+                if not isinstance(base_deliverables, list):
+                    app.logger.warning(f"Invalid base_deliverables for subscription {sub['id']}: {base_deliverables}")
+                    base_deliverables = []
+
                 deliverable_status = {}
                 for d in submitted:
-                    key = (d['type'], d['platform'])
+                    key = (d.get('type', 'Unknown'), d.get('platform', 'Unknown'))
                     if key not in deliverable_status:
                         deliverable_status[key] = []
                     deliverable_status[key].append({
-                        "type": d['type'],
-                        "platform": d['platform'],
-                        "status": d['status'],
-                        "submission_index": d['submission_index'],
-                        "content_link": d['content_link'],
-                        "file_url": d['file_url'],
-                        "submission_notes": d['submission_notes']
+                        "type": d.get('type', 'Unknown'),
+                        "platform": d.get('platform', 'Unknown'),
+                        "status": d.get('status', 'Pending'),
+                        "submission_index": d.get('submission_index', 0),
+                        "content_link": d.get('content_link'),
+                        "file_url": d.get('file_url'),
+                        "submission_notes": d.get('submission_notes')
                     })
 
                 deliverables = []
-                for i, base in enumerate(sub['base_deliverables']):
-                    key = (base['type'], base['platform'])
+                for i, base in enumerate(base_deliverables):
+                    key = (base.get('type', 'Unknown'), base.get('platform', 'Unknown'))
                     submitted_list = deliverable_status.get(key, [])
                     total_submitted = len(submitted_list)
-                    remaining = base['quantity'] - total_submitted
+                    quantity = base.get('quantity', 0)
+                    remaining = quantity - total_submitted
                     status = "Delivered" if remaining <= 0 else ("Submitted" if total_submitted > 0 else "Pending")
                     deliverables.append({
                         "index": i,
-                        "type": base['type'],
-                        "platform": base['platform'],
-                        "quantity": base['quantity'],
+                        "type": base.get('type', 'Unknown'),
+                        "platform": base.get('platform', 'Unknown'),
+                        "quantity": quantity,
                         "submitted": total_submitted,
                         "remaining": max(0, remaining),
                         "status": status,
@@ -7304,23 +7339,22 @@ def get_bookings():
                     })
 
                 sub['type'] = 'Subscription'
-                sub['cost'] = float(sub['total_cost'] / sub['duration_months']) if sub['duration_months'] else 0.0
+                sub['cost'] = float(sub['total_cost'] / (sub['duration_months'] or 1)) if sub.get('total_cost') else 0.0
                 sub['deliverables'] = deliverables
                 sub['updated_at'] = (
-                    sub['latest_deliverable_update'] or
-                    sub['start_date'] or
+                    sub.get('latest_deliverable_update') or
+                    sub.get('start_date') or
                     datetime.now().isoformat()
                 )
                 bookings.append(sub)
 
-        conn.close()
-        logger.debug(f"Bookings fetched: {len(bookings)} items: {[b['id'] for b in bookings]}")
+        app.logger.info(f"Bookings fetched: {len(bookings)} items: {[b['id'] for b in bookings]}")
         return jsonify(bookings), 200
     except Exception as e:
-        logger.error(f"Error in get_bookings: {str(e)}")
+        app.logger.error(f"Error in get_bookings: {str(e)}")
         if 'conn' in locals() and not conn.closed:
             conn.close()
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
 
 
 @app.route('/bookings/<int:booking_id>', methods=['GET'])
