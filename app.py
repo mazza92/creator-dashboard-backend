@@ -40,10 +40,9 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 app = Flask(__name__)
 
 # Initialize Flask app
-app.logger.setLevel(logging.DEBUG)
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-app.logger.addHandler(handler)
+logging.basicConfig(level=logging.INFO)
+app = Flask(__name__)
+app.logger.setLevel(logging.INFO)
 
 
 app.secret_key = os.urandom(24)
