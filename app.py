@@ -79,6 +79,7 @@ CORS(app, resources={
     r"/.*": {
         "origins": [
             "http://localhost:3000",
+            "https://newcollab.co",
             "https://creator-dashboard-frontend.vercel.app"
         ],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -110,7 +111,12 @@ def handle_options():
 @app.after_request
 def add_cors_headers(response):
     origin = request.headers.get('Origin')
-    if origin in ['http://localhost:3000', 'https://creator-dashboard-frontend.vercel.app']:
+    allowed_origins = [
+        'http://localhost:3000',
+        'https://newcollab.co',
+        'https://creator-dashboard-frontend.vercel.app'
+    ]
+    if origin in allowed_origins:
         response.headers['Access-Control-Allow-Origin'] = origin
         response.headers['Access-Control-Allow-Credentials'] = 'true'
     return response
@@ -3941,7 +3947,7 @@ def send_subscription_message(subscription_id):
         conn.close()
         return jsonify(new_message), 201
     except Exception as e:
-        logger.error(f"Error sending subscription message: {str(e)}")
+        app.logger.error(f"Error sending subscription message: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/submit-content/subscription/<int:subscription_id>', methods=['POST'])
@@ -4740,7 +4746,7 @@ def submit_booking_content(booking_id):
         user_id = session.get('user_id')
         user_role = session.get('user_role')
         if not user_id or not user_role:
-            logger.error("No user_id or user_role in session")
+            app.logger.error("No user_id or user_role in session")
             return jsonify({"error": "Unauthorized"}), 403
 
         data = request.json
@@ -4748,7 +4754,7 @@ def submit_booking_content(booking_id):
         submission_notes = data.get('submission_notes')
 
         if not content_file_url:
-            logger.error("No content_file_url provided")
+            app.logger.error("No content_file_url provided")
             return jsonify({"error": "Content file URL is required"}), 400
 
         conn = get_db_connection()
@@ -4768,13 +4774,13 @@ def submit_booking_content(booking_id):
         booking = cursor.fetchone()
         if not booking:
             conn.close()
-            logger.error(f"Booking {booking_id} not found")
+            app.logger.error(f"Booking {booking_id} not found")
             return jsonify({"error": "Booking not found"}), 404
 
         # Authorize user (only creator can submit content)
         if user_role != 'creator' or str(booking['creator_user_id']) != str(user_id):
             conn.close()
-            logger.error(f"Unauthorized: creator_user_id={booking['creator_user_id']} does not match user_id={user_id}")
+            app.logger.error(f"Unauthorized: creator_user_id={booking['creator_user_id']} does not match user_id={user_id}")
             return jsonify({"error": "Unauthorized"}), 403
 
         # Update booking with content
@@ -4792,7 +4798,7 @@ def submit_booking_content(booking_id):
         if not updated_booking:
             conn.rollback()
             conn.close()
-            logger.error(f"Failed to update booking {booking_id}")
+            app.logger.error(f"Failed to update booking {booking_id}")
             return jsonify({"error": "Failed to update booking"}), 500
 
         # Notify creator
@@ -4817,7 +4823,7 @@ def submit_booking_content(booking_id):
         conn.commit()
         conn.close()
 
-        logger.info(f"Content submitted for booking {booking_id}")
+        app.logger.info(f"Content submitted for booking {booking_id}")
         return jsonify({
             "message": "Content submitted successfully",
             "booking_id": updated_booking['id'],
@@ -4826,7 +4832,7 @@ def submit_booking_content(booking_id):
             "updated_at": updated_booking['updated_at'].isoformat()
         }), 200
     except Exception as e:
-        logger.error(f"Error submitting content for booking {booking_id}: {str(e)}")
+        app.logger.error(f"Error submitting content for booking {booking_id}: {str(e)}")
         if 'conn' in locals():
             conn.rollback()
             conn.close()
@@ -5695,12 +5701,12 @@ def get_creator_offers():
         # Debug: Verify schema and search path
         cursor.execute("SHOW search_path")
         search_path = cursor.fetchone()['search_path']
-        logger.debug(f"Current search_path: {search_path}")
+        app.logger.debug(f"Current search_path: {search_path}")
         cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'sponsor_drafts'")
         columns = [row['column_name'] for row in cursor.fetchall()]
-        logger.debug(f"sponsor_drafts columns: {columns}")
+        app.logger.debug(f"sponsor_drafts columns: {columns}")
         if platforms:
-            logger.debug(f"Platforms filter: {platforms}")
+            app.logger.debug(f"Platforms filter: {platforms}")
 
         query = '''
             SELECT 
@@ -5890,7 +5896,7 @@ def get_creator_offers():
 
         full_query += " ORDER BY followers_count DESC"
 
-        logger.debug(f"Executing query: {full_query} with params: {params}")
+        app.logger.debug(f"Executing query: {full_query} with params: {params}")
         cursor.execute(full_query, params)
         results = cursor.fetchall()
 
@@ -5908,9 +5914,9 @@ def get_creator_offers():
                 for link in result['social_links']:
                     if 'followersCount' not in link or link['followersCount'] is None:
                         link['followersCount'] = 0
-                        logger.warning(f"Missing followersCount for platform {link.get('platform')} in creator_id {result['creator_id']}")
+                        app.logger.warning(f"Missing followersCount for platform {link.get('platform')} in creator_id {result['creator_id']}")
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse social_links for creator_id {result['creator_id']}: {str(e)}")
+                app.logger.error(f"Failed to parse social_links for creator_id {result['creator_id']}: {str(e)}")
                 result['social_links'] = []
 
             try:
@@ -5919,7 +5925,7 @@ def get_creator_offers():
                 elif result['niche'] is None:
                     result['niche'] = []
             except (json.JSONDecodeError, ValueError) as e:
-                logger.error(f"Failed to parse niche for creator_id {result['creator_id']}: {str(e)}")
+                app.logger.error(f"Failed to parse niche for creator_id {result['creator_id']}: {str(e)}")
                 result['niche'] = []
 
             try:
@@ -5928,7 +5934,7 @@ def get_creator_offers():
                 elif result['regions'] is None:
                     result['regions'] = []
             except (json.JSONDecodeError, ValueError) as e:
-                logger.error(f"Failed to parse regions for creator_id {result['creator_id']}: {str(e)}")
+                app.logger.error(f"Failed to parse regions for creator_id {result['creator_id']}: {str(e)}")
                 result['regions'] = []
 
             try:
@@ -5937,7 +5943,7 @@ def get_creator_offers():
                 elif result['platforms'] is None:
                     result['platforms'] = []
             except (json.JSONDecodeError, ValueError) as e:
-                logger.error(f"Failed to parse platforms for creator_id {result['creator_id']}: {str(e)}")
+                app.logger.error(f"Failed to parse platforms for creator_id {result['creator_id']}: {str(e)}")
                 result['platforms'] = []
 
             try:
@@ -5946,7 +5952,7 @@ def get_creator_offers():
                 elif result['topics'] is None:
                     result['topics'] = []
             except (json.JSONDecodeError, ValueError) as e:
-                logger.error(f"Failed to parse topics for creator_id {result['creator_id']}: {str(e)}")
+                app.logger.error(f"Failed to parse topics for creator_id {result['creator_id']}: {str(e)}")
                 result['topics'] = []
 
             try:
@@ -5955,7 +5961,7 @@ def get_creator_offers():
                 elif result['audience_target'] is None:
                     result['audience_target'] = []
             except (json.JSONDecodeError, ValueError) as e:
-                logger.error(f"Failed to parse audience_target for creator_id {result['creator_id']}: {str(e)}")
+                app.logger.error(f"Failed to parse audience_target for creator_id {result['creator_id']}: {str(e)}")
                 result['audience_target'] = []
 
             # Normalize snippet_url (simple check without re)
@@ -5963,13 +5969,13 @@ def get_creator_offers():
                                           isinstance(result['snippet_url'], str) and 
                                           result['snippet_url'].strip() == ''):
                 result['snippet_url'] = None
-                logger.debug(f"Normalized empty snippet_url to null for offer_id {result['offer_id']}")
+                app.logger.debug(f"Normalized empty snippet_url to null for offer_id {result['offer_id']}")
 
         conn.close()
-        logger.info(f"Fetched {len(results)} active offers")
+        app.logger.info(f"Fetched {len(results)} active offers")
         return jsonify(results), 200
     except Exception as e:
-        logger.error(f"Error fetching creator offers: {str(e)}")
+        app.logger.error(f"Error fetching creator offers: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 # Route to create a new offer
@@ -6910,7 +6916,7 @@ def update_booking_status(booking_id):
         user_id = session.get('user_id')
         user_role = session.get('user_role')
         if not user_id or not user_role:
-            logger.error("No user_id or user_role in session")
+            app.logger.error("No user_id or user_role in session")
             return jsonify({"error": "Unauthorized"}), 403
 
         data = request.json
@@ -6923,11 +6929,11 @@ def update_booking_status(booking_id):
             "Completed", "Canceled"
         ]
         if new_status and new_status not in valid_statuses:
-            logger.error(f"Invalid status: {new_status}, expected one of {valid_statuses}")
+            app.logger.error(f"Invalid status: {new_status}, expected one of {valid_statuses}")
             return jsonify({"error": "Invalid status"}), 400
 
         if not (new_status or content_file_url):
-            logger.error("No valid fields provided for booking status update")
+            app.logger.error("No valid fields provided for booking status update")
             return jsonify({"error": "Status or content_file_url is required"}), 400
 
         conn = get_db_connection()
@@ -6947,17 +6953,17 @@ def update_booking_status(booking_id):
         booking = cursor.fetchone()
         if not booking:
             conn.close()
-            logger.error(f"Booking {booking_id} not found")
+            app.logger.error(f"Booking {booking_id} not found")
             return jsonify({"error": "Booking not found"}), 404
 
         # Authorize user
         if user_role == 'creator' and str(booking['creator_user_id']) != str(user_id):
             conn.close()
-            logger.error(f"Unauthorized: creator_user_id={booking['creator_user_id']} does not match user_id={user_id}")
+            app.logger.error(f"Unauthorized: creator_user_id={booking['creator_user_id']} does not match user_id={user_id}")
             return jsonify({"error": "Unauthorized"}), 403
         if user_role == 'brand' and str(booking['brand_user_id']) != str(user_id):
             conn.close()
-            logger.error(f"Unauthorized: brand_user_id={booking['brand_user_id']} does not match user_id={user_id}")
+            app.logger.error(f"Unauthorized: brand_user_id={booking['brand_user_id']} does not match user_id={user_id}")
             return jsonify({"error": "Unauthorized"}), 403
 
         # Prepare update query
@@ -6998,7 +7004,7 @@ def update_booking_status(booking_id):
         if not updated_booking:
             conn.rollback()
             conn.close()
-            logger.error(f"Failed to update booking {booking_id}")
+            app.logger.error(f"Failed to update booking {booking_id}")
             return jsonify({"error": "Failed to update booking"}), 500
 
         # Notify creator
