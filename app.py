@@ -887,18 +887,18 @@ def create_notification(user_id, user_role, event_type, data=None, should_send_e
     try:
         template = NOTIFICATION_TEMPLATES.get(event_type, {}).get(user_role, {})
         if not template:
-            logger.error(f"No template found for event_type={event_type}, user_role={user_role}")
+            app.logger.error(f"No template found for event_type={event_type}, user_role={user_role}")
             return
 
         message = template['message'](data) if 'message' in template else "Notification triggered."
         action_url = template.get('action_url', lambda d: None)(data) if 'action_url' in template else None
         action_text = template.get('action_text', lambda d: None)(data) if 'action_text' in template else None
 
-        logger.debug(f"Creating notification: user_id={user_id}, user_role={user_role}, event_type={event_type}, message={message}, data={data}")
+        app.logger.debug(f"Creating notification: user_id={user_id}, user_role={user_role}, event_type={event_type}, message={message}, data={data}")
         if not conn:
             conn = get_db_connection()
             if not conn:
-                logger.error("Failed to establish database connection for notification")
+                app.logger.error("Failed to establish database connection for notification")
                 return
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -915,19 +915,19 @@ def create_notification(user_id, user_role, event_type, data=None, should_send_e
         )
         recent_notification = cursor.fetchone()
         if recent_notification:
-            logger.info(f"Skipping duplicate notification for user_id={user_id}, event_type={event_type}, recent_notification_id={recent_notification['id']}")
+            app.logger.info(f"Skipping duplicate notification for user_id={user_id}, event_type={event_type}, recent_notification_id={recent_notification['id']}")
             return
 
         cursor.execute('SELECT email, role FROM users WHERE id = %s', (user_id,))
         user = cursor.fetchone()
         if not user:
-            logger.error(f"No user found for user_id: {user_id}")
+            app.logger.error(f"No user found for user_id: {user_id}")
             return
         if user['role'] != user_role:
-            logger.error(f"Role mismatch for user_id {user_id}: expected {user_role}, found {user['role']}")
+            app.logger.error(f"Role mismatch for user_id {user_id}: expected {user_role}, found {user['role']}")
             return
 
-        logger.debug(f"User found: email={user['email']}, role={user['role']}")
+        app.logger.debug(f"User found: email={user['email']}, role={user['role']}")
         # Convert Decimal values to float for JSON serialization
         if data:
             serialized_data = {
@@ -947,7 +947,7 @@ def create_notification(user_id, user_role, event_type, data=None, should_send_e
         )
         notification = cursor.fetchone()
         notification_id = notification['id']
-        logger.info(f"Notification inserted: ID {notification_id}, user_id={user_id}, event_type={event_type}")
+        app.logger.info(f"Notification inserted: ID {notification_id}, user_id={user_id}, event_type={event_type}")
 
         # Commit only if using a new connection
         if not parent_conn:
@@ -966,7 +966,7 @@ def create_notification(user_id, user_role, event_type, data=None, should_send_e
         }
 
         # Emit WebSocket event
-    #    logger.debug(f"Emitting WebSocket event: notification_{user_id}_{user_role}, data={serialized_notification}")
+    #    app.logger.debug(f"Emitting WebSocket event: notification_{user_id}_{user_role}, data={serialized_notification}")
     #    socketio.emit(f'notification_{user_id}_{user_role}', serialized_notification)
 
     #    if should_send_email:
@@ -980,31 +980,31 @@ def create_notification(user_id, user_role, event_type, data=None, should_send_e
     #                    action_text=action_text,
     #                    user_id=user_id
     #                )
-    #                logger.info(f"Email sent to {user['email']} for notification {notification_id}")
+    #                app.logger.info(f"Email sent to {user['email']} for notification {notification_id}")
     #                break
     #            except Exception as e:
-    #                logger.error(f"Email attempt {attempt + 1} failed for notification {notification_id}: {str(e)}")
+    #                app.logger.error(f"Email attempt {attempt + 1} failed for notification {notification_id}: {str(e)}")
     #                if attempt == 2:
-    #                    logger.error(f"Failed to send email for notification {notification_id} after 3 attempts")
+    #                    app.logger.error(f"Failed to send email for notification {notification_id} after 3 attempts")
 
     except Exception as e:
-        logger.error(f"Error creating notification for user_id {user_id}, event_type {event_type}: {str(e)}")
+        app.logger.error(f"Error creating notification for user_id {user_id}, event_type {event_type}: {str(e)}")
         if conn and not parent_conn:
             try:
                 conn.rollback()
             except Exception as rollback_e:
-                logger.error(f"Rollback failed: {str(rollback_e)}")
+                app.logger.error(f"Rollback failed: {str(rollback_e)}")
     finally:
         if cursor:
             try:
                 cursor.close()
             except Exception as e:
-                logger.error(f"Error closing cursor: {str(e)}")
+                app.logger.error(f"Error closing cursor: {str(e)}")
         if conn and not parent_conn and not conn.closed:
             try:
                 conn.close()
             except Exception as e:
-                logger.error(f"Error closing connection: {str(e)}")
+                app.logger.error(f"Error closing connection: {str(e)}")
 
 # In app.py (or wherever create_notification is defined)
 NOTIFICATION_TEMPLATES = {
@@ -1661,6 +1661,7 @@ def create_campaign_invite():
 
 @app.route('/bookings/<int:booking_id>/accept', methods=['POST'])
 def accept_booking(booking_id):
+    app.logger.info(f"Starting accept_booking for booking_id: {booking_id}")
     try:
         user_role = session.get('user_role')
         creator_id = session.get('creator_id')
@@ -1676,7 +1677,7 @@ def accept_booking(booking_id):
             return jsonify({"error": "Database connection failed"}), 500
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Verify booking exists and belongs to creator
+        app.logger.debug(f"Querying booking {booking_id}")
         cursor.execute(
             '''
             SELECT id, creator_id, brand_id, status, type, product_name, content_status
@@ -1688,18 +1689,26 @@ def accept_booking(booking_id):
         booking = cursor.fetchone()
         if not booking:
             app.logger.error(f"Booking {booking_id} not found")
+            cursor.close()
+            conn.close()
             return jsonify({"error": "Booking not found"}), 404
         if booking['creator_id'] != creator_id:
             app.logger.error(f"Creator {creator_id} not authorized for booking {booking_id}")
+            cursor.close()
+            conn.close()
             return jsonify({"error": "Unauthorized: Not your booking"}), 403
         if booking['status'] != 'Invited':
             app.logger.error(f"Booking {booking_id} status is {booking['status']}, cannot accept")
+            cursor.close()
+            conn.close()
             return jsonify({"error": f"Booking is already {booking['status']}"}), 400
         if booking['type'] != 'Campaign Invite':
             app.logger.error(f"Booking {booking_id} type is {booking['type']}, not a campaign invite")
+            cursor.close()
+            conn.close()
             return jsonify({"error": "Booking is not a campaign invite"}), 400
 
-        # Update status, content_status to Confirmed, and type to Sponsor
+        app.logger.debug(f"Updating booking {booking_id} to Confirmed")
         cursor.execute(
             '''
             UPDATE bookings 
@@ -1712,15 +1721,18 @@ def accept_booking(booking_id):
         updated_booking = cursor.fetchone()
         if not updated_booking:
             app.logger.error(f"Failed to update booking {booking_id}")
+            cursor.close()
+            conn.close()
             return jsonify({"error": "Failed to accept booking"}), 500
 
-        # Fetch creator and brand details for notifications
+        app.logger.debug(f"Fetching creator and brand details for notifications")
         cursor.execute('SELECT user_id FROM creators WHERE id = %s', (creator_id,))
         creator = cursor.fetchone()
         cursor.execute('SELECT user_id, name FROM brands WHERE id = %s', (booking['brand_id'],))
         brand = cursor.fetchone()
 
         if creator and brand:
+            app.logger.debug(f"Creating notifications for booking {booking_id}")
             notification_data = {
                 'booking_id': booking_id,
                 'product_name': booking['product_name'],
@@ -1747,6 +1759,8 @@ def accept_booking(booking_id):
 
         conn.commit()
         app.logger.info(f"Booking {booking_id} accepted by creator {creator_id}, status='Confirmed', content_status='Confirmed', type='Sponsor'")
+        cursor.close()
+        conn.close()
         return jsonify({
             "message": "Booking accepted successfully",
             "booking_id": updated_booking['id'],
