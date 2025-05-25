@@ -600,7 +600,53 @@ def logout_options():
     return response, 200
 
 
+@app.route('/profile', methods=['GET'])
+def get_profile():
+    try:
+        user_id = session.get('user_id')  
+        user_role = session.get('user_role', 'creator')
+        creator_id = session.get('creator_id')
 
+        if not user_id:
+            app.logger.warning("❌ Unauthorized access attempt: No user_id in session")
+            return jsonify({"error": "Unauthorized"}), 403  
+        
+        app.logger.info(f"✅ Fetching profile for user_id={user_id}, role={user_role}")
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute('SELECT email, phone, country FROM users WHERE id = %s', (user_id,))
+        user_data = cursor.fetchone()
+
+        if not user_data:
+            return jsonify({"error": "User not found"}), 404
+
+        profile_data = {**user_data, "user_role": user_role, "creator_id": creator_id}
+
+        if user_role == 'creator':
+            cursor.execute('SELECT * FROM creators WHERE user_id = %s', (user_id,))
+            creator_data = cursor.fetchone() or {}
+            profile_data.update(creator_data)
+        else:  # brand
+            cursor.execute('SELECT * FROM brands WHERE user_id = %s', (user_id,))
+            brand_data = cursor.fetchone() or {}
+            if 'logo' in brand_data:
+                brand_data['image_profile'] = brand_data.pop('logo')  # Ensure logo is renamed
+            profile_data.update(brand_data)
+
+        conn.close()
+        app.logger.info(f"🟢 Profile Data Sent: {profile_data}")
+        return jsonify(profile_data), 200
+
+    except Exception as e:
+        app.logger.error(f"🔥 Error fetching profile: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
     
 @app.route('/profile', methods=['GET'])
 def get_user_profile():
