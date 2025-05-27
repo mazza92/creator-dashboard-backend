@@ -80,6 +80,7 @@ CORS(app, resources={
         "origins": [
             "http://localhost:3000",
             "https://newcollab.co",
+            "https://www.newcollab.co",
             "https://creator-dashboard-frontend.vercel.app"
         ],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -114,6 +115,7 @@ def add_cors_headers(response):
     allowed_origins = [
         'http://localhost:3000',
         'https://newcollab.co',
+        'https://www.newcollab.co',
         'https://creator-dashboard-frontend.vercel.app'
     ]
     if origin in allowed_origins:
@@ -2829,7 +2831,7 @@ def register_brand():
         session.modified = True
         app.logger.info(f"🟢 Session Set: user_id={session.get('user_id')}, role={session.get('user_role')}, brand_id={session.get('brand_id')}")
 
-        return jsonify({'redirect_url': '/success'}), 201
+        return jsonify({'redirect_url': '/brand/dashboard'}), 201
     except Exception as e:
         app.logger.error(f"Error registering brand: {str(e)}")
         return jsonify({'error': str(e)}), 500
@@ -2979,7 +2981,7 @@ def register_creator():
 
         return jsonify({
             'message': 'Registration successful',
-            'redirect_url': 'http://localhost:3000/creator/dashboard/overview'
+            'redirect_url': '/creator/dashboard/overview'
         }), 201
 
     except Exception as e:
@@ -7823,11 +7825,22 @@ def get_stripe_account_status():
             app.logger.error(f"Creator {creator_id} not found")
             return jsonify({"error": "Creator not found"}), 404
 
-        app.logger.info(f"Retrieved Stripe account status for creator {creator_id}")
-        return jsonify({
+        response = {
             "stripe_account_id": creator['stripe_account_id'],
-            "email": creator['email']
-        }), 200
+            "email": creator['email'],
+            "onboarding_complete": False
+        }
+
+        if creator['stripe_account_id']:
+            # Check onboarding status
+            account = stripe.Account.retrieve(creator['stripe_account_id'])
+            response['onboarding_complete'] = account.details_submitted and not account.requirements.currently_due
+
+        app.logger.info(f"Retrieved Stripe account status for creator {creator_id}")
+        return jsonify(response), 200
+    except stripe.error.StripeError as e:
+        app.logger.error(f"Stripe error checking status for creator {creator_id}: {str(e)}")
+        return jsonify({"error": f"Stripe error: {str(e)}"}), 400
     except Exception as e:
         app.logger.error(f"Error checking Stripe account status: {str(e)}")
         return jsonify({"error": str(e)}), 500
@@ -7861,10 +7874,22 @@ def get_stripe_dashboard():
             app.logger.error(f"No Stripe account connected for creator {creator_id}")
             return jsonify({"error": "No Stripe account connected"}), 400
 
-        # Generate a login link for the Stripe Express Dashboard
+        # Check onboarding status
+        account = stripe.Account.retrieve(creator['stripe_account_id'])
+        if not account.details_submitted or account.requirements.currently_due:
+            # Generate onboarding link
+            account_link = stripe.AccountLink.create(
+                account=creator['stripe_account_id'],
+                refresh_url='https://www.newcollab.co/stripe/reauth',  # Adjust for production
+                return_url='https://www.newcollab.co/creator/dashboard/payments',  # Adjust for production
+                type='account_onboarding'
+            )
+            return jsonify({"onboarding_required": True, "onboarding_url": account_link.url}), 200
+
+        # Generate login link if onboarding is complete
         login_link = stripe.Account.create_login_link(
             creator['stripe_account_id'],
-            redirect_url='http://localhost:3000/creator/payments'  # Redirect back to payments page
+            redirect_url='https://www.newcollab.co/creator/dashboard/payments'  # Adjust for production
         )
 
         app.logger.info(f"Generated Stripe dashboard link for creator {creator_id}")
