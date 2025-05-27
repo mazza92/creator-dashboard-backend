@@ -1,9 +1,9 @@
 import psycopg2
 from psycopg2 import OperationalError, InterfaceError
 from psycopg2.extras import RealDictCursor
-from psycopg2.pool import SimpleConnectionPool  # Added for connection pooling
 import stripe
 import paypalrestsdk
+#from flask_socketio import SocketIO, emit
 from flask import Flask, jsonify, request, session, make_response
 from google.oauth2 import id_token
 from google.auth.transport.requests import Request
@@ -23,7 +23,7 @@ import json
 import uuid
 import logging
 import jwt
-from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, decode_token
+from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -31,74 +31,48 @@ from jinja2 import Environment, FileSystemLoader
 from markupsafe import escape
 import decimal
 import redis
-from redis.exceptions import ConnectionError, AuthenticationError
-from retry import retry  # Added for retry logic (pip install retry)
+from redis.exceptions import ConnectionError
+
 
 # Load environment variables
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
+app = Flask(__name__)
+
 # Initialize Flask app
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 app.logger.setLevel(logging.INFO)
 
-# Set static secret key from environment (prevents session invalidation on restart)
-app.secret_key = os.getenv('FLASK_SECRET_KEY')
-if not app.secret_key:
-    raise ValueError("FLASK_SECRET_KEY not set in environment")
 
-# Flask Session Configuration
-app.config['SECRET_KEY'] = app.secret_key  # Use same key for sessions
+app.secret_key = os.urandom(24)
+
+# ✅ Flask Session Configuration
+app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY')
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
-if not app.config['JWT_SECRET_KEY']:
-    raise ValueError("JWT_SECRET_KEY not set in environment")
 app.config['SESSION_TYPE'] = 'redis'
 app.config['SESSION_PERMANENT'] = True
-app.config['SESSION_USE_SIGNER'] = True  # Enable session signing
-app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=1)  # Set session timeout
+app.config['SESSION_USE_SIGNER'] = False
+app.config['SESSION_REDIS'] = redis.Redis.from_url(os.getenv('REDIS_URL'), ssl_cert_reqs=None, decode_responses=True)
 app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'None'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
-app.config['SESSION_COOKIE_SAMESITE'] = 'Strict'  # Changed to Strict for CSRF protection
 
-# JWT Configuration
-app.config['JWT_TOKEN_LOCATION'] = ['cookies']  # Store JWTs in cookies
-app.config['JWT_COOKIE_SECURE'] = True  # HTTPS only
-app.config['JWT_COOKIE_HTTPONLY'] = True  # Prevent JS access
-app.config['JWT_COOKIE_SAMESITE'] = 'Strict'  # CSRF protection
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(minutes=30)  # Short-lived access token
-app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=7)  # Long-lived refresh token
-app.config['JWT_COOKIE_CSRF_PROTECT'] = True  # Enable CSRF protection
-
-# Redis connection with retry logic
-@retry((ConnectionError, AuthenticationError), tries=3, delay=5, backoff=2)
-def init_redis():
+try:
     redis_url = os.getenv('REDIS_URL')
     app.logger.info(f"🟢 REDIS_URL: {redis_url}")
     if not redis_url:
         raise ValueError("REDIS_URL not set in environment")
-    try:
-        redis_client = redis.Redis.from_url(
-            redis_url,
-            decode_responses=True
-        )
-        redis_client.ping()
-        app.logger.info("🟢 Redis connection established")
-        return redis_client
-    except (ConnectionError, AuthenticationError) as e:
-        app.logger.error(f"🔥 Redis connection error: {str(e)}")
-        raise
+    app.config['SESSION_REDIS'] = redis.Redis.from_url(redis_url, ssl_cert_reqs=None)
+    app.config['SESSION_REDIS'].ping()  # Test connection
+    Session(app)
+    jwt = JWTManager(app)
 
-try:
-    app.config['SESSION_REDIS'] = init_redis()
-    Session(app)
-    jwt = JWTManager(app)
-    app.logger.info("🟢 Session initialized with Redis and JWT")
-except Exception as e:
-    app.logger.warning(f"🔥 Failed to connect to Redis: {str(e)}. Falling back to filesystem session.")
-    app.config['SESSION_TYPE'] = 'filesystem'
-    Session(app)
-    jwt = JWTManager(app)
-    app.logger.info("🟢 Session initialized with filesystem fallback")
+    app.logger.info("🟢 Session initialized with Redis")
+except (ConnectionError, ValueError) as e:
+    app.logger.error(f"🔥 Redis initialization error: {str(e)}")
+    raise
+
 
 # Initialize CORS
 CORS(app, resources={
@@ -110,64 +84,30 @@ CORS(app, resources={
             "https://creator-dashboard-frontend.vercel.app"
         ],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization", "X-CSRF-Token"],  # Added X-CSRF-Token
+        "allow_headers": ["Content-Type", "Authorization"],
         "supports_credentials": True,
-        "expose_headers": ["Content-Type", "X-CSRF-Token"],  # Expose CSRF token
+        "expose_headers": ["Content-Type", "Authorization"],
         "max_age": 600
     }
 })
 
-# Database connection pool
-db_pool = None
-try:
-    database_url = os.getenv('DATABASE_URL')
-    if not database_url:
-        raise ValueError("DATABASE_URL not set in environment")
-    db_pool = SimpleConnectionPool(
-        minconn=1,
-        maxconn=10,
-        dsn=database_url,
-        cursor_factory=RealDictCursor
-    )
-    app.logger.info("🟢 Database connection pool initialized")
-except Exception as e:
-    app.logger.error(f"🔥 Database pool initialization error: {str(e)}")
-    raise
 
-@retry((OperationalError, InterfaceError), tries=3, delay=1, backoff=2)
-def get_db_connection():
-    try:
-        conn = db_pool.getconn()
-        conn.autocommit = True  # Ensure proper transaction handling
-        app.logger.info("🟢 Database connection retrieved from pool")
-        return conn
-    except Exception as e:
-        app.logger.error(f"🔥 Database connection error: {str(e)}")
-        raise
 
-def release_db_connection(conn):
-    try:
-        db_pool.putconn(conn)
-        app.logger.info("🟢 Database connection released to pool")
-    except Exception as e:
-        app.logger.error(f"🔥 Error releasing database connection: {str(e)}")
 
-# Global error handler to prevent sensitive data leaks
-@app.errorhandler(Exception)
-def handle_error(error):
-    app.logger.error(f"🔥 Unhandled error: {str(error)}", exc_info=True)
-    return jsonify({"error": "An unexpected error occurred. Please try again later."}), 500
+@app.before_request
+#def ensure_session():
+#   session.modified = True  # ✅ Force session to persist
 
 # Handle OPTIONS preflight requests
-@app.route('/<path:path>', methods=['OPTIONS'])
-def handle_options(path):
-    response = jsonify({"message": "Preflight request successful"})
-    response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-CSRF-Token'
-    response.headers['Access-Control-Allow-Credentials'] = 'true'
-    app.logger.info(f"🟢 Handled OPTIONS preflight for {request.path}")
-    return response
+def handle_options():
+    if request.method == 'OPTIONS':
+        response = jsonify({"message": "Preflight request successful"})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        app.logger.info(f"Handled OPTIONS preflight for {request.path} with methods: GET, POST, PUT, DELETE, OPTIONS")
+        return response
 
 @app.after_request
 def add_cors_headers(response):
@@ -181,14 +121,17 @@ def add_cors_headers(response):
     if origin in allowed_origins:
         response.headers['Access-Control-Allow-Origin'] = origin
         response.headers['Access-Control-Allow-Credentials'] = 'true'
-        response.headers['Access-Control-Expose-Headers'] = 'X-CSRF-Token'  # Expose CSRF token
     return response
 
-# Disable debug endpoints in production
-if os.getenv('FLASK_ENV') == 'production':
-    @app.route('/debug/session', methods=['GET'])
-    def debug_session():
-        return jsonify({"error": "Debug endpoint disabled in production"}), 403
+def get_db_connection():
+    try:
+        conn = psycopg2.connect(os.getenv('DATABASE_URL'))
+        app.logger.info("🟢 Database connection established")
+        return conn
+    except Exception as e:
+        app.logger.error(f"🔥 Database connection error: {str(e)}")
+        raise
+
 
 #socketio = SocketIO(app, cors_allowed_origins="http://localhost:3000")
 
@@ -439,22 +382,23 @@ def forgot_password():
             app.logger.info(f"User {email} uses Google Sign-In; cannot reset password")
             return jsonify({'error': 'This account uses Google Sign-In. Please sign in with Google.'}), 400
 
-        # Generate JWT token using Flask-JWT-Extended
-        try:
-            token = create_access_token(
-                identity={'user_id': user['id'], 'email': email},
-                expires_delta=datetime.timedelta(hours=1)
-            )
-        except Exception as e:
-            app.logger.error(f"JWT token creation error: {str(e)}")
-            return jsonify({'error': 'Failed to generate reset token.'}), 500
+        # Generate JWT token
+        secret_key = os.getenv('JWT_SECRET_KEY', app.config['SECRET_KEY'])
+        token = jwt.encode(
+            {
+                'user_id': user['id'],
+                'email': email,
+                'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=1)
+            },
+            secret_key,
+            algorithm='HS256'
+        )
 
         # Send reset email
         smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
         smtp_port = int(os.getenv('SMTP_PORT', 587))
         smtp_username = os.getenv('SMTP_USERNAME')
         smtp_password = os.getenv('SMTP_PASSWORD')
-        frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
 
         msg = MIMEMultipart()
         msg['From'] = smtp_username
@@ -464,7 +408,7 @@ def forgot_password():
         Hello,
 
         You requested to reset your password. Click the link below to set a new password:
-        {frontend_url}/reset-password?token={token}
+        http://localhost:3000/reset-password?token={token}
 
         This link will expire in 1 hour. If you did not request a password reset, please ignore this email.
 
@@ -505,12 +449,12 @@ def reset_password():
         token = data['token']
         new_password = data['new_password']
 
-        # Decode JWT token
+        # Validate JWT token
+        secret_key = os.getenv('JWT_SECRET_KEY', app.config['SECRET_KEY'])
         try:
-            payload = decode_token(token)
-            identity = payload['sub']  # 'sub' contains the identity
-            user_id = identity['user_id']
-            email = identity['email']
+            payload = jwt.decode(token, secret_key, algorithms=['HS256'])
+            user_id = payload['user_id']
+            email = payload['email']
         except jwt.ExpiredSignatureError:
             app.logger.error("Password reset token expired")
             return jsonify({'error': 'Password reset link has expired. Please request a new one.'}), 400
@@ -2887,7 +2831,7 @@ def register_brand():
         session.modified = True
         app.logger.info(f"🟢 Session Set: user_id={session.get('user_id')}, role={session.get('user_role')}, brand_id={session.get('brand_id')}")
 
-        return jsonify({'redirect_url': '/brand/dashboard/overview'}), 201
+        return jsonify({'redirect_url': '/brand/dashboard'}), 201
     except Exception as e:
         app.logger.error(f"Error registering brand: {str(e)}")
         return jsonify({'error': str(e)}), 500
