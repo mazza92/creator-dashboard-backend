@@ -157,27 +157,11 @@ def add_cors_headers(response):
     return response
 
 # Database connection
-db_pool = None
-try:
-    database_url = os.getenv('DATABASE_URL')
-    if not database_url:
-        raise ValueError("DATABASE_URL not set in environment")
-    db_pool = SimpleConnectionPool(
-        minconn=2,  # Increase min connections for better readiness
-        maxconn=20,  # Increase max connections to handle concurrency
-        dsn=database_url,
-        cursor_factory=RealDictCursor
-    )
-    app.logger.info("🟢 Database connection pool initialized")
-except Exception as e:
-    app.logger.error(f"🔥 Database pool initialization error: {str(e)}")
-    raise
-
 def get_db_connection():
     try:
-        conn = db_pool.getconn()
+        conn = psycopg2.connect(os.getenv('DATABASE_URL'), cursor_factory=RealDictCursor)
         conn.autocommit = True
-        app.logger.info("🟢 Database connection retrieved from pool")
+        app.logger.info("🟢 Database connection established")
         return conn
     except Exception as e:
         app.logger.error(f"🔥 Database connection error: {str(e)}")
@@ -186,12 +170,12 @@ def get_db_connection():
 def release_db_connection(conn):
     try:
         if conn and not conn.closed:
-            db_pool.putconn(conn)
-            app.logger.info("🟢 Database connection released to pool")
+            conn.close()
+            app.logger.info("🟢 Database connection closed")
         else:
-            app.logger.warning("🔥 Attempted to release closed or invalid connection")
+            app.logger.warning("🔥 Attempted to close invalid or already closed connection")
     except Exception as e:
-        app.logger.error(f"🔥 Error releasing database connection: {str(e)}")
+        app.logger.error(f"🔥 Error closing database connection: {str(e)}")
 
 
 # Global error handler
