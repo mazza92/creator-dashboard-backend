@@ -109,7 +109,6 @@ CORS(app, resources={
             "http://localhost:3000",
             "https://newcollab.co",
             "https://www.newcollab.co",
-            "https://creator-dashboard-frontend.vercel.app",
             "https://api.newcollab.co"
         ],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -130,7 +129,6 @@ def handle_options():
             "http://localhost:3000",
             "https://newcollab.co",
             "https://www.newcollab.co",
-            "https://creator-dashboard-frontend.vercel.app",
             "https://api.newcollab.co"
         ]
         if origin in allowed_origins:
@@ -150,7 +148,6 @@ def add_cors_headers(response):
         'http://localhost:3000',
         'https://newcollab.co',
         'https://www.newcollab.co',
-        'https://creator-dashboard-frontend.vercel.app',
         'https://api.newcollab.co'
     ]
     if origin in allowed_origins:
@@ -207,7 +204,6 @@ def handle_error(error):
         'http://localhost:3000',
         'https://newcollab.co',
         'https://www.newcollab.co',
-        'https://creator-dashboard-frontend.vercel.app',
         'https://api.newcollab.co'
     ]
     if origin in allowed_origins:
@@ -233,35 +229,35 @@ stripe.api_key = os.getenv('STRIPE_API_KEY')
 
 
 # Initialize the scheduler
-def auto_update_subscriptions():
-    conn = get_db_connection()
-    cursor = conn.cursor()
+#def auto_update_subscriptions():
+#    conn = get_db_connection()
+#    cursor = conn.cursor()
 
     # Renew active subscriptions monthly
-    cursor.execute('''
-        UPDATE brand_subscriptions
-        SET start_date = start_date + INTERVAL '1 month',
-            end_date = end_date + INTERVAL '1 month',
-            status = CASE 
-                WHEN end_date + INTERVAL '1 month' > NOW() THEN 'active'
-                ELSE 'inactive'
-            END
-        WHERE status = 'active' AND end_date <= CURRENT_DATE
-    ''')
+#    cursor.execute('''
+#        UPDATE brand_subscriptions
+#        SET start_date = start_date + INTERVAL '1 month',
+#            end_date = end_date + INTERVAL '1 month',
+#            status = CASE 
+#                WHEN end_date + INTERVAL '1 month' > NOW() THEN 'active'
+#                ELSE 'inactive'
+#            END
+#        WHERE status = 'active' AND end_date <= CURRENT_DATE
+#    ''')
 
     # Reset deliverable statuses for renewed subscriptions
-    cursor.execute('''
-        INSERT INTO subscription_deliverables (subscription_id, creator_id, type, platform, quantity, status, created_at, updated_at)
-        SELECT bs.id, csp.creator_id, (d->>'type')::VARCHAR, (d->>'platform')::VARCHAR, (d->>'quantity')::INTEGER, 'Pending', NOW(), NOW()
-        FROM brand_subscriptions bs
-        JOIN creator_subscription_packages csp ON bs.package_id = csp.id
-        CROSS JOIN jsonb_array_elements(csp.deliverables) d
-        WHERE bs.status = 'active' AND bs.end_date <= CURRENT_DATE
-        ON CONFLICT DO NOTHING
-    ''')
+#    cursor.execute('''
+#        INSERT INTO subscription_deliverables (subscription_id, creator_id, type, platform, quantity, status, created_at, updated_at)
+#       SELECT bs.id, csp.creator_id, (d->>'type')::VARCHAR, (d->>'platform')::VARCHAR, (d->>'quantity')::INTEGER, 'Pending', NOW(), NOW()
+#        FROM brand_subscriptions bs
+#        JOIN creator_subscription_packages csp ON bs.package_id = csp.id
+#        CROSS JOIN jsonb_array_elements(csp.deliverables) d
+#        WHERE bs.status = 'active' AND bs.end_date <= CURRENT_DATE
+#        ON CONFLICT DO NOTHING
+#    ''')
 
-    conn.commit()
-    conn.close()
+#    conn.commit()
+#    conn.close()
 
 
 # Supabase credentials
