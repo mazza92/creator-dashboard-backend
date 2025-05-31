@@ -1,9 +1,8 @@
 import psycopg2
-from psycopg2 import OperationalError, InterfaceError
+from psycopg2 import OperationalError
 from psycopg2.extras import RealDictCursor
+from psycopg2.pool import SimpleConnectionPool
 import stripe
-import paypalrestsdk
-#from flask_socketio import SocketIO, emit
 from flask import Flask, jsonify, request, session, make_response
 from google.oauth2 import id_token
 from google.auth.transport.requests import Request
@@ -12,7 +11,7 @@ import requests
 from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 import time
 from datetime import timedelta, timezone
 import datetime
@@ -23,55 +22,84 @@ import json
 import uuid
 import logging
 import jwt
-from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity
+from flask_jwt_extended import JWTManager, create_access_token, set_access_cookies, jwt_required, get_jwt_identity, decode_token
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from jinja2 import Environment, FileSystemLoader
-from markupsafe import escape
+from markupsafe import Markup
 import decimal
 import redis
-from redis.exceptions import ConnectionError
-
+from redis.exceptions import ConnectionError, AuthenticationError
+from retry import retry
 
 # Load environment variables
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
-app = Flask(__name__)
-
 # Initialize Flask app
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 app = Flask(__name__)
 app.logger.setLevel(logging.INFO)
 
-
-app.secret_key = os.urandom(24)
-
-# ✅ Flask Session Configuration
+# Flask Session and JWT Configuration
 app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY')
+if not app.config['SECRET_KEY']:
+    raise ValueError("FLASK_SECRET_KEY not set in environment")
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
+if not app.config['JWT_SECRET_KEY']:
+    raise ValueError("JWT_SECRET_KEY not set in environment")
 app.config['SESSION_TYPE'] = 'redis'
 app.config['SESSION_PERMANENT'] = True
 app.config['SESSION_USE_SIGNER'] = False
-app.config['SESSION_REDIS'] = redis.Redis.from_url(os.getenv('REDIS_URL'), ssl_cert_reqs=None, decode_responses=True)
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=1)
 app.config['SESSION_COOKIE_SECURE'] = True
-app.config['SESSION_COOKIE_SAMESITE'] = 'None'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'None'
+app.config['SESSION_COOKIE_NAME'] = 'session'
+app.config['SESSION_KEY_PREFIX'] = 'session:'
+app.config['SESSION_SERIALIZATION_FORMAT'] = 'json'  
+app.config['JWT_TOKEN_LOCATION'] = ['cookies']
+app.config['JWT_COOKIE_SECURE'] = True
+app.config['JWT_COOKIE_HTTPONLY'] = True
+app.config['JWT_COOKIE_SAMESITE'] = 'None'
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(minutes=30)
+app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=7)
+app.config['JWT_COOKIE_CSRF_PROTECT'] = True
 
-try:
+
+# Redis connection with retry logic
+@retry((ConnectionError, AuthenticationError), tries=3, delay=5, backoff=2)
+def init_redis():
     redis_url = os.getenv('REDIS_URL')
     app.logger.info(f"🟢 REDIS_URL: {redis_url}")
     if not redis_url:
         raise ValueError("REDIS_URL not set in environment")
-    app.config['SESSION_REDIS'] = redis.Redis.from_url(redis_url, ssl_cert_reqs=None)
-    app.config['SESSION_REDIS'].ping()  # Test connection
+    try:
+        redis_client = redis.Redis.from_url(
+            redis_url,
+            decode_responses=False,
+            ssl_cert_reqs=None
+        )
+        redis_client.ping()
+        app.logger.info("🟢 Redis connection established")
+        return redis_client
+    except (ConnectionError, AuthenticationError) as e:
+        app.logger.error(f"🔥 Redis connection error: {str(e)}")
+        raise
+
+try:
+    app.config['SESSION_REDIS'] = init_redis()
     Session(app)
     jwt = JWTManager(app)
-
-    app.logger.info("🟢 Session initialized with Redis")
-except (ConnectionError, ValueError) as e:
+    app.logger.info("🟢 Session initialized with Redis and JWT")
+except Exception as e:
     app.logger.error(f"🔥 Redis initialization error: {str(e)}")
-    raise
+    if os.getenv('FLASK_ENV') == 'production':
+        raise
+    app.logger.warning("Falling back to filesystem session")
+    app.config['SESSION_TYPE'] = 'filesystem'
+    Session(app)
+
 
 
 # Initialize CORS
@@ -81,34 +109,40 @@ CORS(app, resources={
             "http://localhost:3000",
             "https://newcollab.co",
             "https://www.newcollab.co",
-            "https://creator-dashboard-frontend.vercel.app"
+            "https://creator-dashboard-frontend.vercel.app",
+            "https://api.newcollab.co"
         ],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"],
+        "allow_headers": ["Content-Type", "Authorization", "X-CSRF-Token"],
         "supports_credentials": True,
-        "expose_headers": ["Content-Type", "Authorization"],
+        "expose_headers": ["Content-Type", "Authorization", "X-CSRF-Token"],
         "max_age": 600
     }
 })
 
-
-
-
-@app.before_request
-#def ensure_session():
-#   session.modified = True  # ✅ Force session to persist
-
 # Handle OPTIONS preflight requests
+@app.before_request
 def handle_options():
     if request.method == 'OPTIONS':
-        response = jsonify({"message": "Preflight request successful"})
-        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
-        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
-        response.headers['Access-Control-Allow-Credentials'] = 'true'
-        app.logger.info(f"Handled OPTIONS preflight for {request.path} with methods: GET, POST, PUT, DELETE, OPTIONS")
-        return response
+        response = make_response()
+        origin = request.headers.get('Origin')
+        allowed_origins = [
+            "http://localhost:3000",
+            "https://newcollab.co",
+            "https://www.newcollab.co",
+            "https://creator-dashboard-frontend.vercel.app",
+            "https://api.newcollab.co"
+        ]
+        if origin in allowed_origins:
+            response.headers['Access-Control-Allow-Origin'] = origin
+            response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+            response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-CSRF-Token'
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
+            response.headers['Access-Control-Max-Age'] = '600'
+        app.logger.info(f"🟢 Handled OPTIONS preflight for {request.path}")
+        return response, 200
 
+# Add CORS headers to all responses
 @app.after_request
 def add_cors_headers(response):
     origin = request.headers.get('Origin')
@@ -116,24 +150,70 @@ def add_cors_headers(response):
         'http://localhost:3000',
         'https://newcollab.co',
         'https://www.newcollab.co',
-        'https://creator-dashboard-frontend.vercel.app'
+        'https://creator-dashboard-frontend.vercel.app',
+        'https://api.newcollab.co'
     ]
     if origin in allowed_origins:
         response.headers['Access-Control-Allow-Origin'] = origin
         response.headers['Access-Control-Allow-Credentials'] = 'true'
+        response.headers['Access-Control-Expose-Headers'] = 'Content-Type, X-CSRF-Token, Set-Cookie'
     return response
+
+# Database connection
+db_pool = None
+try:
+    database_url = os.getenv('DATABASE_URL')
+    if not database_url:
+        raise ValueError("DATABASE_URL not set in environment")
+    db_pool = SimpleConnectionPool(
+        minconn=2,  # Increase min connections for better readiness
+        maxconn=20,  # Increase max connections to handle concurrency
+        dsn=database_url,
+        cursor_factory=RealDictCursor
+    )
+    app.logger.info("🟢 Database connection pool initialized")
+except Exception as e:
+    app.logger.error(f"🔥 Database pool initialization error: {str(e)}")
+    raise
 
 def get_db_connection():
     try:
-        conn = psycopg2.connect(os.getenv('DATABASE_URL'))
-        app.logger.info("🟢 Database connection established")
+        conn = db_pool.getconn()
+        conn.autocommit = True
+        app.logger.info("🟢 Database connection retrieved from pool")
         return conn
     except Exception as e:
         app.logger.error(f"🔥 Database connection error: {str(e)}")
         raise
 
+def release_db_connection(conn):
+    try:
+        if conn and not conn.closed:
+            db_pool.putconn(conn)
+            app.logger.info("🟢 Database connection released to pool")
+        else:
+            app.logger.warning("🔥 Attempted to release closed or invalid connection")
+    except Exception as e:
+        app.logger.error(f"🔥 Error releasing database connection: {str(e)}")
 
-#socketio = SocketIO(app, cors_allowed_origins="http://localhost:3000")
+
+# Global error handler
+@app.errorhandler(Exception)
+def handle_error(error):
+    app.logger.error(f"🔥 Unhandled error: {str(error)}", exc_info=True)
+    response = jsonify({"error": "An unexpected error occurred. Please try again later."})
+    origin = request.headers.get('Origin')
+    allowed_origins = [
+        'http://localhost:3000',
+        'https://newcollab.co',
+        'https://www.newcollab.co',
+        'https://creator-dashboard-frontend.vercel.app',
+        'https://api.newcollab.co'
+    ]
+    if origin in allowed_origins:
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+    return response, 500
 
 
 @app.route('/')
@@ -141,16 +221,15 @@ def home():
     return jsonify({'message': 'Flask backend is running!'})
 
 
-
 # Stripe Configuration
 stripe.api_key = os.getenv('STRIPE_API_KEY')
 
 # PayPal Configuration
-paypalrestsdk.configure({
-    "mode": "sandbox",  # Change to "live" for production
-    "client_id": "AdcSPBFMx1tyFYYM0w7OPguxT3BrrL8J2PoZiiSy58--ou77qv37Av2SCT3s2kiyUBN9WsRpjm4PaFvN",
-    "client_secret": "EPrUnQjf8LBTKvYFw-kQn8WoOjDk_FAutJ1WLtsBxATFaXRn7kW69fGQf-IM6ACOrUT_XQoI7U1Gz24E",
-})
+#paypalrestsdk.configure({
+#   "mode": "sandbox",  # Change to "live" for production
+#    "client_id": "AdcSPBFMx1tyFYYM0w7OPguxT3BrrL8J2PoZiiSy58--ou77qv37Av2SCT3s2kiyUBN9WsRpjm4PaFvN",
+#    "client_secret": "EPrUnQjf8LBTKvYFw-kQn8WoOjDk_FAutJ1WLtsBxATFaXRn7kW69fGQf-IM6ACOrUT_XQoI7U1Gz24E",
+#})
 
 
 # Initialize the scheduler
@@ -382,23 +461,22 @@ def forgot_password():
             app.logger.info(f"User {email} uses Google Sign-In; cannot reset password")
             return jsonify({'error': 'This account uses Google Sign-In. Please sign in with Google.'}), 400
 
-        # Generate JWT token
-        secret_key = os.getenv('JWT_SECRET_KEY', app.config['SECRET_KEY'])
-        token = jwt.encode(
-            {
-                'user_id': user['id'],
-                'email': email,
-                'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=1)
-            },
-            secret_key,
-            algorithm='HS256'
-        )
+        # Generate JWT token using Flask-JWT-Extended
+        try:
+            token = create_access_token(
+                identity={'user_id': user['id'], 'email': email},
+                expires_delta=datetime.timedelta(hours=1)
+            )
+        except Exception as e:
+            app.logger.error(f"JWT token creation error: {str(e)}")
+            return jsonify({'error': 'Failed to generate reset token.'}), 500
 
         # Send reset email
         smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
         smtp_port = int(os.getenv('SMTP_PORT', 587))
         smtp_username = os.getenv('SMTP_USERNAME')
         smtp_password = os.getenv('SMTP_PASSWORD')
+        frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
 
         msg = MIMEMultipart()
         msg['From'] = smtp_username
@@ -408,7 +486,7 @@ def forgot_password():
         Hello,
 
         You requested to reset your password. Click the link below to set a new password:
-        http://localhost:3000/reset-password?token={token}
+        {frontend_url}/reset-password?token={token}
 
         This link will expire in 1 hour. If you did not request a password reset, please ignore this email.
 
@@ -449,12 +527,12 @@ def reset_password():
         token = data['token']
         new_password = data['new_password']
 
-        # Validate JWT token
-        secret_key = os.getenv('JWT_SECRET_KEY', app.config['SECRET_KEY'])
+        # Decode JWT token
         try:
-            payload = jwt.decode(token, secret_key, algorithms=['HS256'])
-            user_id = payload['user_id']
-            email = payload['email']
+            payload = decode_token(token)
+            identity = payload['sub']  # 'sub' contains the identity
+            user_id = identity['user_id']
+            email = identity['email']
         except jwt.ExpiredSignatureError:
             app.logger.error("Password reset token expired")
             return jsonify({'error': 'Password reset link has expired. Please request a new one.'}), 400
@@ -500,40 +578,45 @@ def reset_password():
 @app.route('/login', methods=['POST', 'OPTIONS'])
 def login():
     if request.method == 'OPTIONS':
-        response = jsonify({})
-        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'http://localhost:3000')
+        response = jsonify({'success': True})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
         response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         return response, 200
+
     data = request.get_json()
     email = data.get('email')
     password = data.get('password')
-    app.logger.info(f"🟢 Login Attempt: {data}")
+    app.logger.info("🟢 Login Attempt: email=REDACTED")  # Redact email
+
     if not email or not password:
         app.logger.error("🔥 Missing email or password")
         response = jsonify({'error': 'Missing email or password'})
-        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'http://localhost:3000')
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         return response, 400
+
     conn = get_db_connection()
     if not conn:
         app.logger.error("🔥 Database connection failed")
         response = jsonify({'error': 'Database connection failed'})
-        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'http://localhost:3000')
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         return response, 500
+
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
         cursor.execute("SELECT id, password, role FROM users WHERE email = %s", (email,))
         user = cursor.fetchone()
-        app.logger.info(f"🟢 User Query Result: {user}")
+        app.logger.info(f"🟢 User Query Result: {user.get('id') if user else None}")
         if not user or not bcrypt.checkpw(password.encode('utf-8'), user['password'].encode('utf-8')):
             app.logger.error("🔥 Invalid email or password")
             response = jsonify({'error': 'Invalid email or password'})
-            response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'http://localhost:3000')
+            response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
             response.headers['Access-Control-Allow-Credentials'] = 'true'
             return response, 401
+
         user_id = user['id']
         user_role = user['role']
         app.logger.info(f"🟢 User Found: ID={user_id}, Role={user_role}")
@@ -544,37 +627,64 @@ def login():
         cursor.execute("SELECT id FROM brands WHERE user_id = %s", (user_id,))
         brand = cursor.fetchone()
         brand_id = brand['id'] if brand else None
+
+        # Clear existing session
         session.clear()
         session['user_id'] = user_id
         session['user_role'] = user_role
         session['creator_id'] = creator_id
         session['brand_id'] = brand_id
         session.permanent = True
-        app.logger.info(f"🟢 Session Set: {session}")
+        app.logger.info(f"🟢 Session Set: user_id={user_id}, role={user_role}")
+
         login_response = {
             'message': 'Login successful',
             'user_id': user_id,
             'user_role': user_role,
             'creator_id': creator_id,
             'brand_id': brand_id,
-            'redirect_url': 'http://localhost:3000/creator/dashboard-overview' if user_role == 'creator' else 'http://localhost:3000/brand/dashboard-overview'
+            'redirect_url': '/creator/dashboard/overview' if user_role == 'creator' else '/brand/dashboard/overview'
         }
         response = make_response(jsonify(login_response))
-        response.set_cookie('session', session.sid, samesite='None', secure=True, httponly=True, max_age=86400)
-        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'http://localhost:3000')
+        # Clear old session cookies
+        response.set_cookie(
+            'session',
+            '',
+            samesite='None',
+            secure=True,
+            httponly=True,
+            max_age=0,
+            path='/'
+        )
+        # Set new session cookie
+        response.set_cookie(
+            'session',
+            session.sid,
+            samesite='None',
+            secure=True,
+            httponly=True,
+            max_age=86400,
+            path='/',
+            expires=datetime.datetime.now() + timedelta(days=1)
+        )
+        # Clear other conflicting cookies
+        response.set_cookie('session_app', '', samesite='None', secure=True, httponly=True, max_age=0, path='/')
+        response.set_cookie('connect.sid', '', samesite='None', secure=True, httponly=True, max_age=0, path='/')
+        response.set_cookie('access_token_cookie', '', samesite='None', secure=True, httponly=True, max_age=0, path='/')
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
         response.headers['Access-Control-Allow-Credentials'] = 'true'
-        app.logger.info(f"🟢 Login Response Headers: {response.headers}")
         app.logger.info(f"🟢 Login successful for user_id: {user_id}, role: {user_role}")
         return response, 200
+
     except Exception as e:
-        app.logger.error(f"🔥 Login Error: {str(e)}")
-        response = jsonify({'error': str(e)})
-        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'http://localhost:3000')
+        app.logger.error(f"🔥 Login Error: {str(e)}", exc_info=True)
+        response = jsonify({'error': 'An unexpected error occurred. Please try again later.'})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         return response, 500
     finally:
         cursor.close()
-        conn.close()
+        release_db_connection(conn)
 
 
 @app.route('/logout', methods=['POST'])
@@ -602,98 +712,99 @@ def logout_options():
     return response, 200
 
 
-@app.route('/profile', methods=['GET'])
+@app.route('/profile', methods=['GET', 'OPTIONS'])
 def get_profile():
-    try:
-        user_id = session.get('user_id')  
-        user_role = session.get('user_role', 'creator')
-        creator_id = session.get('creator_id')
+    if request.method == 'OPTIONS':
+        response = jsonify({'success': True})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+        response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 200
 
-        if not user_id:
-            app.logger.warning("❌ Unauthorized access attempt: No user_id in session")
-            return jsonify({"error": "Unauthorized"}), 403  
-        
-        app.logger.info(f"✅ Fetching profile for user_id={user_id}, role={user_role}")
-
-        conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        cursor.execute('SELECT email, phone, country FROM users WHERE id = %s', (user_id,))
-        user_data = cursor.fetchone()
-
-        if not user_data:
-            return jsonify({"error": "User not found"}), 404
-
-        profile_data = {**user_data, "user_role": user_role, "creator_id": creator_id}
-
-        if user_role == 'creator':
-            cursor.execute('SELECT * FROM creators WHERE user_id = %s', (user_id,))
-            creator_data = cursor.fetchone() or {}
-            profile_data.update(creator_data)
-        else:  # brand
-            cursor.execute('SELECT * FROM brands WHERE user_id = %s', (user_id,))
-            brand_data = cursor.fetchone() or {}
-            if 'logo' in brand_data:
-                brand_data['image_profile'] = brand_data.pop('logo')  # Ensure logo is renamed
-            profile_data.update(brand_data)
-
-        conn.close()
-        app.logger.info(f"🟢 Profile Data Sent: {profile_data}")
-        return jsonify(profile_data), 200
-
-    except Exception as e:
-        app.logger.error(f"🔥 Error fetching profile: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        if 'cursor' in locals():
-            cursor.close()
-        if 'conn' in locals():
-            conn.close()
-    
-@app.route('/profile', methods=['GET'])
-def get_user_profile():
     app.logger.info(f"🔍 Request headers: {request.headers}")
     app.logger.info(f"🔍 Cookies received: {request.cookies}")
     app.logger.info(f"🔍 Session contents: {session}")
-    if 'user_id' not in session:
-        app.logger.error(f"🔥 Authentication failed: Headers={request.headers}, Session={session}")
-        response = jsonify({'error': 'User not authenticated'})
-        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'http://localhost:3000')
+
+    # Debug Redis session
+    try:
+        redis_client = app.config['SESSION_REDIS']
+        session_id = session.sid if 'sid' in session else request.cookies.get('session', 'unknown')
+        session_key = f"session:{session_id}"
+        redis_data = redis_client.get(session_key)
+        app.logger.debug(f"🟢 Redis session data for {session_key}: {redis_data}")
+        if redis_data and not session.get('user_id'):
+            try:
+                session_data = json.loads(redis_data.decode('utf-8'))
+                app.logger.debug(f"🟢 Parsed session data: {session_data}")
+                if 'user_id' in session_data:
+                    for key, value in session_data.items():
+                        session[key] = value
+                    session.modified = True
+                    app.logger.info(f"🟢 Session restored from Redis: {session_data}")
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                app.logger.error(f"🔥 Invalid session data in Redis: {redis_data}, Error: {str(e)}")
+                redis_client.delete(session_key)
+    except Exception as e:
+        app.logger.error(f"🔥 Failed to check Redis session: {str(e)}")
+
+    user_id = session.get('user_id')
+    user_role = session.get('user_role', 'creator')
+    creator_id = session.get('creator_id')
+
+    if not user_id:
+        app.logger.warning(f"❌ Unauthorized access attempt: No user_id in session, Headers={request.headers}, Session={session}")
+        response = jsonify({'error': 'Unauthorized access.'})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
         response.headers['Access-Control-Allow-Credentials'] = 'true'
-        return response, 401
+        return response, 403
+
+    app.logger.info(f"✅ Fetching profile for user_id={user_id}, role={user_role}")
+
     conn = get_db_connection()
     if not conn:
+        app.logger.error("🔥 Database connection failed")
         response = jsonify({'error': 'Database connection failed'})
-        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'http://localhost:3000')
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         return response, 500
+
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
-        cursor.execute("SELECT * FROM users WHERE id = %s", (session['user_id'],))
-        user = cursor.fetchone()
-        if not user:
+        cursor.execute('SELECT id, email, phone, country FROM users WHERE id = %s', (user_id,))
+        user_data = cursor.fetchone()
+        if not user_data:
+            app.logger.error(f"🔥 User not found: user_id={user_id}")
             response = jsonify({'error': 'User not found'})
-            response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'http://localhost:3000')
+            response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
             response.headers['Access-Control-Allow-Credentials'] = 'true'
             return response, 404
-        user_data = dict(user)
-        user_data.pop('password', None)
-        cursor.execute("SELECT id, bio, followers_count FROM creators WHERE user_id = %s", (session['user_id'],))
-        creator = cursor.fetchone()
-        if creator:
-            user_data['creator_id'] = creator['id']
-            user_data['bio'] = creator['bio']
-            user_data['followers_count'] = creator['followers_count']
-        user_data['user_role'] = session.get('user_role', 'user')
-        response = jsonify(user_data)
-        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'http://localhost:3000')
+
+        profile_data = {
+            **user_data,
+            'user_role': user_role,
+            'creator_id': creator_id
+        }
+
+        if user_role == 'creator':
+            cursor.execute('SELECT id, bio, followers_count, * FROM creators WHERE user_id = %s', (user_id,))
+            creator_data = cursor.fetchone() or {}
+            profile_data.update(creator_data)
+        else:  # brand
+            cursor.execute('SELECT *, logo AS image_profile FROM brands WHERE user_id = %s', (user_id,))
+            brand_data = cursor.fetchone() or {}
+            profile_data.update(brand_data)
+
+        response = jsonify(profile_data)
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
         response.headers['Access-Control-Allow-Credentials'] = 'true'
-        app.logger.info(f"🔍 Profile response headers: {response.headers}")
+        app.logger.info(f"🟢 Profile response headers: {response.headers}")
         return response, 200
+
     except Exception as e:
-        app.logger.error(f"🔥 Profile fetch error: {str(e)}")
+        app.logger.error(f"🔥 Error fetching profile: {str(e)}")
         response = jsonify({'error': str(e)})
-        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'http://localhost:3000')
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         return response, 500
     finally:
@@ -2831,7 +2942,7 @@ def register_brand():
         session.modified = True
         app.logger.info(f"🟢 Session Set: user_id={session.get('user_id')}, role={session.get('user_role')}, brand_id={session.get('brand_id')}")
 
-        return jsonify({'redirect_url': '/brand/dashboard'}), 201
+        return jsonify({'redirect_url': '/success'}), 201
     except Exception as e:
         app.logger.error(f"Error registering brand: {str(e)}")
         return jsonify({'error': str(e)}), 500
@@ -2995,38 +3106,63 @@ def register_creator():
             cursor.close()
         if 'conn' in locals() and not conn.closed:
             conn.close()
+        
 
 @app.route('/api/check-email', methods=['POST'])
 def check_email():
-    data = request.get_json()
-    email = data.get('email')
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        if not email:
+            app.logger.error("🔥 Missing email in request")
+            return jsonify({"error": "Email is required"}), 400
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT COUNT(*) FROM users WHERE email = %s", (email,))
-    exists = cursor.fetchone()[0] > 0
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) AS count FROM users WHERE email = %s", (email,))
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
 
-    cursor.close()
-    conn.close()
-
-    return jsonify({"available": not exists})
+        # Safely check if email exists
+        exists = result['count'] > 0 if result else False
+        app.logger.info(f"🟢 Email check for {email}: {'exists' if exists else 'does not exist'}")
+        return jsonify({"exists": exists}), 200
+    except Exception as e:
+        app.logger.error(f"🔥 Error checking email: {str(e)}")
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/check-username', methods=['POST'])
 def check_username():
-    data = request.get_json()
-    username = data.get('username')
+    try:
+        data = request.get_json()
+        username = data.get('username')
+        if not username:
+            app.logger.error("🔥 Missing username in request")
+            return jsonify({"error": "Username is required"}), 400
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT COUNT(*) FROM creators WHERE username = %s", (username,))
-    exists = cursor.fetchone()[0] > 0
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)  # Use RealDictCursor
+        cursor.execute("SELECT COUNT(*) AS count FROM creators WHERE username = %s", (username,))
+        result = cursor.fetchone()
+        cursor.close()
+        conn.close()
 
-    cursor.close()
-    conn.close()
-
-    return jsonify({"available": not exists})
+        # Safely check if username exists
+        exists = result['count'] > 0 if result else False
+        app.logger.info(f"🟢 Username check for {username}: {'exists' if exists else 'does not exist'}")
+        return jsonify({"available": not exists}), 200
+    except Exception as e:
+        app.logger.error(f"🔥 Error checking username: {str(e)}")
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/success', methods=['GET'])
