@@ -32,6 +32,8 @@ import decimal
 import redis
 from redis.exceptions import ConnectionError, AuthenticationError
 from retry import retry
+import pusher
+from flask import Flask, request, jsonify, session
 
 # Load environment variables
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
@@ -553,6 +555,144 @@ def reset_password():
     except Exception as e:
         app.logger.error(f"Unexpected error in reset_password: {str(e)}")
         return jsonify({'error': 'An unexpected error occurred. Please try again.'}), 500
+
+# Initialize Pusher
+pusher_client = pusher.Pusher(
+    app_id=os.getenv('PUSHER_APP_ID'),
+    key=os.getenv('PUSHER_KEY'),
+    secret=os.getenv('PUSHER_SECRET'),
+    cluster=os.getenv('PUSHER_CLUSTER', 'us2'),
+    ssl=True
+)
+
+def create_notification(user_id, user_role, event_type, data=None, should_send_email=True, parent_conn=None):
+    conn = parent_conn
+    cursor = None
+    try:
+        template = NOTIFICATION_TEMPLATES.get(event_type, {}).get(user_role, {})
+        if not template:
+            app.logger.error(f"No template found for event_type={event_type}, user_role={user_role}")
+            return
+
+        message = template['message'](data) if 'message' in template else "Notification triggered."
+        action_url = template.get('action_url', lambda d: None)(data) if 'action_url' in template else None
+        action_text = template.get('action_text', lambda d: None)(data) if 'action_text' in template else None
+
+        app.logger.debug(f"Creating notification: user_id={user_id}, user_role={user_role}, event_type={event_type}, message={message}, data={data}")
+        if not conn:
+            conn = get_db_connection()
+            if not conn:
+                app.logger.error("Failed to establish database connection for notification")
+                return
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Check for recent similar notification to avoid duplicates
+        cursor.execute(
+            '''
+            SELECT id
+            FROM notifications
+            WHERE user_id = %s AND user_role = %s AND event_type = %s
+            AND created_at > NOW() - INTERVAL '5 minutes'
+            LIMIT 1
+            ''',
+            (user_id, user_role, event_type)
+        )
+        recent_notification = cursor.fetchone()
+        if recent_notification:
+            app.logger.info(f"Skipping duplicate notification for user_id={user_id}, event_type={event_type}, recent_notification_id={recent_notification['id']}")
+            return
+
+        cursor.execute('SELECT email, role FROM users WHERE id = %s', (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            app.logger.error(f"No user found for user_id: {user_id}")
+            return
+        if user['role'] != user_role:
+            app.logger.error(f"Role mismatch for user_id {user_id}: expected {user_role}, found {user['role']}")
+            return
+
+        app.logger.debug(f"User found: email={user['email']}, role={user['role']}")
+        # Convert Decimal values to float for JSON serialization
+        if data:
+            serialized_data = {
+                key: float(value) if isinstance(value, decimal.Decimal) else value
+                for key, value in data.items()
+            }
+        else:
+            serialized_data = None
+
+        cursor.execute(
+            '''
+            INSERT INTO notifications (user_id, user_role, event_type, message, data, created_at)
+            VALUES (%s, %s, %s, %s, %s, NOW())
+            RETURNING id, user_id, user_role, event_type, message, is_read, created_at, data
+            ''',
+            (user_id, user_role, event_type, message, json.dumps(serialized_data) if serialized_data else None)
+        )
+        notification = cursor.fetchone()
+        notification_id = notification['id']
+        app.logger.info(f"Notification inserted: ID {notification_id}, user_id={user_id}, event_type={event_type}")
+
+        # Commit only if using a new connection
+        if not parent_conn:
+            conn.commit()
+
+        # Serialize notification for Pusher
+        serialized_notification = {
+            'id': notification['id'],
+            'user_id': notification['user_id'],
+            'user_role': notification['user_role'],
+            'event_type': notification['event_type'],
+            'message': notification['message'],
+            'is_read': notification['is_read'],
+            'created_at': notification['created_at'].isoformat(),
+            'data': serialized_data
+        }
+
+        # Emit Pusher event
+        try:
+            channel_name = f'private-user-{user_id}-{user_role}'
+            pusher_client.trigger(channel_name, 'new_notification', serialized_notification)
+            app.logger.debug(f"Pusher event emitted: channel={channel_name}, event=new_notification")
+        except Exception as e:
+            app.logger.error(f"Failed to emit Pusher event: {str(e)}")
+
+        if should_send_email:
+            for attempt in range(3):
+                try:
+                    send_email(
+                        to_email=user['email'],
+                        message=message,
+                        data=serialized_data,
+                        action_url=action_url,
+                        action_text=action_text,
+                        user_id=user_id
+                    )
+                    app.logger.info(f"Email sent to {user['email']} for notification {notification_id}")
+                    break
+                except Exception as e:
+                    app.logger.error(f"Email attempt {attempt + 1} failed for notification {notification_id}: {str(e)}")
+                    if attempt == 2:
+                        app.logger.error(f"Failed to send email for notification {notification_id} after 3 attempts")
+
+    except Exception as e:
+        app.logger.error(f"Error creating notification for user_id {user_id}, event_type {event_type}: {str(e)}")
+        if conn and not parent_conn:
+            try:
+                conn.rollback()
+            except Exception as rollback_e:
+                app.logger.error(f"Rollback failed: {str(rollback_e)}")
+    finally:
+        if cursor:
+            try:
+                cursor.close()
+            except Exception as e:
+                app.logger.error(f"Error closing cursor: {str(e)}")
+        if conn and not parent_conn and not conn.closed:
+            try:
+                conn.close()
+            except Exception as e:
+                app.logger.error(f"Error closing connection: {str(e)}")
     
     
 @app.route('/login', methods=['POST', 'OPTIONS'])
@@ -1020,131 +1160,6 @@ def send_email(to_email, message, data=None, action_url=None, action_text=None, 
         app.logger.error(f"🔥 Failed to send email to {to_email}: {str(e)}")
         raise
 
-def create_notification(user_id, user_role, event_type, data=None, should_send_email=True, parent_conn=None):
-    conn = parent_conn
-    cursor = None
-    try:
-        template = NOTIFICATION_TEMPLATES.get(event_type, {}).get(user_role, {})
-        if not template:
-            app.logger.error(f"No template found for event_type={event_type}, user_role={user_role}")
-            return
-
-        message = template['message'](data) if 'message' in template else "Notification triggered."
-        action_url = template.get('action_url', lambda d: None)(data) if 'action_url' in template else None
-        action_text = template.get('action_text', lambda d: None)(data) if 'action_text' in template else None
-
-        app.logger.debug(f"Creating notification: user_id={user_id}, user_role={user_role}, event_type={event_type}, message={message}, data={data}")
-        if not conn:
-            conn = get_db_connection()
-            if not conn:
-                app.logger.error("Failed to establish database connection for notification")
-                return
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        # Check for recent similar notification to avoid duplicates
-        cursor.execute(
-            '''
-            SELECT id
-            FROM notifications
-            WHERE user_id = %s AND user_role = %s AND event_type = %s
-            AND created_at > NOW() - INTERVAL '5 minutes'
-            LIMIT 1
-            ''',
-            (user_id, user_role, event_type)
-        )
-        recent_notification = cursor.fetchone()
-        if recent_notification:
-            app.logger.info(f"Skipping duplicate notification for user_id={user_id}, event_type={event_type}, recent_notification_id={recent_notification['id']}")
-            return
-
-        cursor.execute('SELECT email, role FROM users WHERE id = %s', (user_id,))
-        user = cursor.fetchone()
-        if not user:
-            app.logger.error(f"No user found for user_id: {user_id}")
-            return
-        if user['role'] != user_role:
-            app.logger.error(f"Role mismatch for user_id {user_id}: expected {user_role}, found {user['role']}")
-            return
-
-        app.logger.debug(f"User found: email={user['email']}, role={user['role']}")
-        # Convert Decimal values to float for JSON serialization
-        if data:
-            serialized_data = {
-                key: float(value) if isinstance(value, decimal.Decimal) else value
-                for key, value in data.items()
-            }
-        else:
-            serialized_data = None
-
-        cursor.execute(
-            '''
-            INSERT INTO notifications (user_id, user_role, event_type, message, data, created_at)
-            VALUES (%s, %s, %s, %s, %s, NOW())
-            RETURNING id, user_id, user_role, event_type, message, is_read, created_at, data
-            ''',
-            (user_id, user_role, event_type, message, json.dumps(serialized_data) if serialized_data else None)
-        )
-        notification = cursor.fetchone()
-        notification_id = notification['id']
-        app.logger.info(f"Notification inserted: ID {notification_id}, user_id={user_id}, event_type={event_type}")
-
-        # Commit only if using a new connection
-        if not parent_conn:
-            conn.commit()
-
-        # Serialize notification for WebSocket emission
-        serialized_notification = {
-            'id': notification['id'],
-            'user_id': notification['user_id'],
-            'user_role': notification['user_role'],
-            'event_type': notification['event_type'],
-            'message': notification['message'],
-            'is_read': notification['is_read'],
-            'created_at': notification['created_at'].isoformat(),
-            'data': serialized_data
-        }
-
-        # Emit WebSocket event
-    #    app.logger.debug(f"Emitting WebSocket event: notification_{user_id}_{user_role}, data={serialized_notification}")
-    #    socketio.emit(f'notification_{user_id}_{user_role}', serialized_notification)
-
-    #    if should_send_email:
-    #        for attempt in range(3):
-    #            try:
-    #               send_email(
-    #                    to_email=user['email'],
-    #                    message=message,
-    #                    data=serialized_data,
-    #                    action_url=action_url,
-    #                    action_text=action_text,
-    #                    user_id=user_id
-    #                )
-    #                app.logger.info(f"Email sent to {user['email']} for notification {notification_id}")
-    #                break
-    #            except Exception as e:
-    #                app.logger.error(f"Email attempt {attempt + 1} failed for notification {notification_id}: {str(e)}")
-    #                if attempt == 2:
-    #                    app.logger.error(f"Failed to send email for notification {notification_id} after 3 attempts")
-
-    except Exception as e:
-        app.logger.error(f"Error creating notification for user_id {user_id}, event_type {event_type}: {str(e)}")
-        if conn and not parent_conn:
-            try:
-                conn.rollback()
-            except Exception as rollback_e:
-                app.logger.error(f"Rollback failed: {str(rollback_e)}")
-    finally:
-        if cursor:
-            try:
-                cursor.close()
-            except Exception as e:
-                app.logger.error(f"Error closing cursor: {str(e)}")
-        if conn and not parent_conn and not conn.closed:
-            try:
-                conn.close()
-            except Exception as e:
-                app.logger.error(f"Error closing connection: {str(e)}")
-
 # In app.py (or wherever create_notification is defined)
 NOTIFICATION_TEMPLATES = {
     'Content Submitted': {
@@ -1336,24 +1351,6 @@ NOTIFICATION_TEMPLATES = {
         }
     }
 }
-
-    
-
-
-# WebSocket connection event
-# @socketio.on('connect')
-# def handle_connect():
-#     user_id = session.get('user_id')
-#     user_role = session.get('user_role')
-#     if user_id and user_role:
-#         logger.info(f"WebSocket connected for user_id={user_id}, user_role={user_role}")
-#     else:
-#         logger.error("WebSocket connection rejected: No user_id or user_role in session")
-
-# if __name__ == '__main__':
-#     socketio.run(app, debug=True, port=5000)
-
-
 
 @app.route('/notifications', methods=['GET'])
 def get_notifications():
