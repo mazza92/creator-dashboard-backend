@@ -18,16 +18,18 @@ import datetime
 import bcrypt
 from supabase import create_client, Client
 import os
+import traceback
 import json
 import uuid
 import logging
-import jwt
+import jwt as pyjwt
+import jwt.exceptions
 from flask_jwt_extended import JWTManager, create_access_token, set_access_cookies, jwt_required, get_jwt_identity, decode_token
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from jinja2 import Environment, FileSystemLoader
-from markupsafe import Markup
+from markupsafe import Markup, escape
 import decimal
 import redis
 from redis.exceptions import ConnectionError, AuthenticationError
@@ -56,6 +58,7 @@ app.config['SESSION_USE_SIGNER'] = False
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=1)
 app.config['SESSION_COOKIE_SECURE'] = True
 app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_DOMAIN'] = '.newcollab.co'
 app.config['SESSION_COOKIE_SAMESITE'] = 'None'
 app.config['SESSION_COOKIE_NAME'] = 'session'
 app.config['SESSION_KEY_PREFIX'] = 'session:'
@@ -140,7 +143,12 @@ def handle_options():
             response.headers['Access-Control-Allow-Credentials'] = 'true'
             response.headers['Access-Control-Max-Age'] = '600'
         app.logger.info(f"🟢 Handled OPTIONS preflight for {request.path}")
+        
         return response, 200
+
+def log_request():
+    app.logger.info(f"🟢 Raw request: Method={request.method}, Path={request.path}, FullPath={request.full_path}, URL={request.url}, BaseURL={request.base_url}, Headers={dict(request.headers)}, Args={request.args}")
+
 
 # Add CORS headers to all responses
 @app.after_request
@@ -201,6 +209,12 @@ def handle_error(error):
 @app.route('/')
 def home():
     return jsonify({'message': 'Flask backend is running!'})
+
+
+# Favicon handler
+@app.route('/favicon.<ext>')
+def favicon(ext):
+    return jsonify({"error": "Favicon not found"}), 404
 
 
 # Stripe Configuration
@@ -693,6 +707,23 @@ def create_notification(user_id, user_role, event_type, data=None, should_send_e
                 conn.close()
             except Exception as e:
                 app.logger.error(f"Error closing connection: {str(e)}")
+
+@app.route('/pusher/auth', methods=['POST'])
+def pusher_auth():
+    channel_name = request.form.get('channel_name')
+    socket_id = request.form.get('socket_id')
+    user_id = request.form.get('user_id')
+    if not channel_name or not socket_id or not user_id:
+        app.logger.error(f"Missing auth parameters: channel_name={channel_name}, socket_id={socket_id}, user_id={user_id}")
+        return jsonify({'error': 'Missing authentication parameters'}), 400
+    try:
+        auth = pusher_client.authenticate(channel=channel_name, socket_id=socket_id, custom_data={'user_id': user_id})
+        app.logger.info(f"Authenticated Pusher channel for user_id={user_id}, channel={channel_name}")
+        return jsonify(auth)
+    except Exception as e:
+        app.logger.error(f"Pusher auth error: {str(e)}")
+        return jsonify({'error': 'Authentication failed'}), 500
+
     
     
 @app.route('/login', methods=['POST', 'OPTIONS'])
@@ -931,7 +962,6 @@ def get_profile():
         cursor.close()
         conn.close()
 
-
 # Profile Image Upload Endpoint
 @app.route('/profile/update-image', methods=['POST'])
 def update_profile_image():
@@ -1104,17 +1134,14 @@ def get_creator_profile(creator_id):
         return jsonify({"error": str(e)}), 500
 
 
-from jinja2 import Environment, FileSystemLoader
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from markupsafe import escape
-
-def send_email(to_email, message, data=None, action_url=None, action_text=None, user_id=None):
+def send_email(to_email, message, data=None, action_url=None, action_text=None, user_id=None, subject=None):
     try:
         smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
         smtp_port = int(os.getenv('SMTP_PORT', 587))
         smtp_username = os.getenv('SMTP_USERNAME')
         smtp_password = os.getenv('SMTP_PASSWORD')
+        sender_name = os.getenv('EMAIL_SENDER_NAME', 'Newcollab team')
+        
 
         env = Environment(loader=FileSystemLoader('templates'))
         html_template = env.get_template('email_template.html')
@@ -1125,8 +1152,8 @@ def send_email(to_email, message, data=None, action_url=None, action_text=None, 
         safe_action_url = action_url
         safe_action_text = escape(action_text) if action_text else None
         safe_user_id = escape(str(user_id)) if user_id else None
+        safe_subject = escape(subject) if subject else f"Newcollab Notification"
 
-        subject = (safe_message[:75] + '...') if len(safe_message) > 78 else safe_message
 
         html_content = html_template.render(
             message=safe_message,
@@ -1144,9 +1171,9 @@ def send_email(to_email, message, data=None, action_url=None, action_text=None, 
         )
 
         msg = MIMEMultipart('alternative')
-        msg['From'] = smtp_username
+        msg['From'] = f"{sender_name} <{smtp_username}>" 
         msg['To'] = to_email
-        msg['Subject'] = subject
+        msg['Subject'] = safe_subject
         msg.attach(MIMEText(text_content, 'plain'))
         msg.attach(MIMEText(html_content, 'html'))
 
@@ -1155,198 +1182,197 @@ def send_email(to_email, message, data=None, action_url=None, action_text=None, 
         server.login(smtp_username, smtp_password)
         server.sendmail(smtp_username, to_email, msg.as_string())
         server.quit()
-        app.logger.info(f"Email sent to {to_email} with subject: {subject}")
+        app.logger.info(f"Email sent to {to_email} with subject: {safe_subject}")
     except Exception as e:
         app.logger.error(f"🔥 Failed to send email to {to_email}: {str(e)}")
         raise
 
-# In app.py (or wherever create_notification is defined)
 NOTIFICATION_TEMPLATES = {
-    'Content Submitted': {
-        'creator': {
-            'message': lambda data: f"📝 Content Submitted! Your content for '{data['product_name']}' has been submitted for review.",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
-            'action_text': lambda data: "View Submission"
-        },
-        'brand': {
-            'message': lambda data: f"📥 New Content Received! @{data['creator_username']} has submitted content for '{data['product_name']}'. Please review it.",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
-            'action_text': lambda data: "Review Content"
-        }
-    },
-    'Content Approved': {
-        'creator': {
-            'message': lambda data: f"✨ Content Approved! Your content for '{data['product_name']}' has been approved. Please publish the final link.",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
-            'action_text': lambda data: "Publish Now"
-        }
-    },
-    'Content Approval Confirmed': {
-        'brand': {
-            'message': lambda data: f"✅ Content Approved! You've approved @{data['creator_username']}'s content for '{data['product_name']}'. Awaiting final publication.",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
-            'action_text': lambda data: "View Booking"
-        }
-    },
-    'Revision Requested': {
-        'creator': {
-            'message': lambda data: f"🔄 Revision Requested! The brand has requested changes for '{data['product_name']}'. Feedback: {data['revision_notes']}",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
-            'action_text': lambda data: "View Feedback"
-        }
-    },
-    'Bid Submitted': {
-        'creator': {
-            'message': lambda data: f"💡 New Bid Received! {data['brand_name']} has submitted a bid of €{data['bid_amount']} for Draft #{data['draft_id']}. Pitch: {data['pitch']}",
-            'action_url': lambda data: f"/drafts/{data['draft_id']}",
-            'action_text': lambda data: "Review Bid"
-        }
-    },
-    'NEW_BOOKING': {
-        'creator': {
-            'message': lambda data: f"🎉 New Booking Received! Create content for '{data['product_name']}' (Booking #{data['booking_id']}).",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
-            'action_text': lambda data: "View Booking"
-        },
-        'brand': {
-            'message': lambda data: f"✅ Your booking for '{data['product_name']}' (Booking #{data['booking_id']}) has been created. Awaiting creator's content.",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
-            'action_text': lambda data: "View Booking"
-        }
-    },
-    'BOOKING_STEP_UPDATE': {
-        'creator': {
-            'message': lambda data: f"📢 Booking Update! Your booking #{data['booking_id']} for '{data['product_name']}' is now '{data['status']}'.",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
-            'action_text': lambda data: "Check Status"
-        },
-        'brand': {
-            'message': lambda data: f"📢 Booking Update! Booking #{data['booking_id']} for '{data['product_name']}' is now '{data['status']}'.",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
-            'action_text': lambda data: "Check Status"
-        }
-    },
     'CONTENT_SUBMITTED': {
         'creator': {
-            'message': lambda data: f"👍 Content Submitted! Your content for '{data['product_name']}' (Booking #{data['booking_id']}) has been submitted. Awaiting brand review.",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
+            'subject': lambda data: f"Content Submitted: {data['product_name']}",
+            'message': lambda data: f"👍 Content Submitted! Your content for '{data['product_name']}' (Booking #{data['bNew Bid Received! ooking_id']}) has been submitted. Awaiting brand review.",
+            'action_url': lambda data: f"https://newcollab.co/creator/dashboard/bookings#{data['booking_id']}",
             'action_text': lambda data: "View Submission"
         },
         'brand': {
+            'subject': lambda data: f"Content from @{data['creator_username']}",
             'message': lambda data: f"🔔 New Content Submitted! @{data['creator_username']} has submitted content for '{data['product_name']}' (Booking #{data['booking_id']}). Please review.",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
+            'action_url': lambda data: f"https://newcollab.co/brand/dashboard/bookings#{data['booking_id']}",
             'action_text': lambda data: "Review Content"
         }
     },
     'CONTENT_APPROVED': {
         'creator': {
+            'subject': lambda data: f"Content Approved: {data['product_name']}",
             'message': lambda data: f"🎉 Content Approved! Your content for '{data['product_name']}' (Booking #{data['booking_id']}) has been approved. Please publish it.",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
+            'action_url': lambda data: f"https://newcollab.co/creator/dashboard/bookings#{data['booking_id']}",
             'action_text': lambda data: "Publish Content"
         }
     },
     'CONTENT_APPROVED_CONFIRMATION': {
         'brand': {
+            'subject': lambda data: f"Approved: @{data['creator_username']}'s Content",
             'message': lambda data: f"✅ Content Approved! You've approved content for '{data['product_name']}' by @{data['creator_username']} (Booking #{data['booking_id']}). Awaiting publication.",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
+            'action_url': lambda data: f"https://newcollab.co/brand/dashboard/bookings#{data['booking_id']}",
             'action_text': lambda data: "View Booking"
         }
     },
     'CONTENT_REVISION_REQUESTED': {
         'creator': {
+            'subject': lambda data: f"Revise: {data['product_name']}",
             'message': lambda data: f"📝 Revision Requested! The brand has requested changes for '{data['product_name']}' (Booking #{data['booking_id']}). Feedback: {data['revision_notes']}",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
+            'action_url': lambda data: f"https://newcollab.co/creator/dashboard/bookings#{data['booking_id']}",
             'action_text': lambda data: "Revise Content"
+        }
+    },
+    'Revision Requested': {  # Kept as alias for backward compatibility
+        'creator': {
+            'subject': lambda data: f"Revise Content for {data['product_name']}",
+            'message': lambda data: f"🔄 Revision Requested: The brand has requested changes for '{data['product_name']}'. Feedback: {data['revision_notes']}",
+            'action_url': lambda data: f"https://newcollab.co/creator/dashboard/bookings#{data['booking_id']}",
+            'action_text': lambda data: "View Feedback"
+        }
+    },
+    'Bid Submitted': {
+        'creator': {
+            'subject': lambda data: f"New Bid from {data['brand_name']}",
+            'message': lambda data: f"💸 New Bid Received! {data['brand_name']} has submitted a bid of €{data['bid_amount']} for Draft #{data['draft_id']}. Message: {data['pitch']}",
+            'action_url': lambda data: f"https://newcollab.co/creator/dashboard/campaign-invites#{data['draft_id']}",
+            'action_text': lambda data: "Review Bid"
+        }
+    },
+    'NEW_BOOKING': {
+        'creator': {
+            'subject': lambda data: f"New Booking: {data['product_name']}",
+            'message': lambda data: f"🎉 New Booking Received! Create content for '{data['product_name']}' (Booking #{data['booking_id']}).",
+            'action_url': lambda data: f"https://newcollab.co/creator/dashboard/bookings#{data['booking_id']}",
+            'action_text': lambda data: "View Booking"
+        },
+        'brand': {
+            'subject': lambda data: f"Booking Created: {data['product_name']}",
+            'message': lambda data: f"✅ Your booking for '{data['product_name']}' (Booking #{data['booking_id']}) has been created. Awaiting creator's content.",
+            'action_url': lambda data: f"https://newcollab.co/brand/dashboard/bookings#{data['booking_id']}",
+            'action_text': lambda data: "View Booking"
+        }
+    },
+    'BOOKING_STEP_UPDATE': {
+        'creator': {
+            'subject': lambda data: f"Booking #{data['booking_id']} Update",
+            'message': lambda data: f"📢 Booking Update! Your booking #{data['booking_id']} for '{data['product_name']}' is now '{data['status']}'.",
+            'action_url': lambda data: f"https://newcollab.co/creator/dashboard/bookings#{data['booking_id']}",
+            'action_text': lambda data: "Check Status"
+        },
+        'brand': {
+            'subject': lambda data: f"Booking #{data['booking_id']} Update",
+            'message': lambda data: f"📢 Booking Update! Booking #{data['booking_id']} for '{data['product_name']}' is now '{data['status']}'.",
+            'action_url': lambda data: f"https://newcollab.co/brand/dashboard/bookings#{data['booking_id']}",
+            'action_text': lambda data: "Check Status"
         }
     },
     'BID_ACCEPTED': {
         'brand': {
+            'subject': lambda data: f"Bid Accepted by @{data['creator_username']}",
             'message': lambda data: f"🎉 Bid Accepted! Your €{data['bid_amount']} bid for draft #{data['draft_id']} was accepted by @{data['creator_username']}.",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
+            'action_url': lambda data: f"https://newcollab.co/brand/dashboard/bookings#{data['booking_id']}",
             'action_text': lambda data: "View Booking"
         }
     },
     'PAYMENT_COMPLETED': {
         'creator': {
+            'subject': lambda data: f"Payment of €{data['amount']} Received",
             'message': lambda data: f"💸 Payment Received! Payment of €{data['amount']} for booking #{data['booking_id']} has been received!",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
-            'action_text': lambda data: "View Booking"
+            'action_url': lambda data: f"https://newcollab.co/creator/dashboard/payments#{data['booking_id']}",
+            'action_text': lambda data: "View Payment"
         },
         'brand': {
+            'subject': lambda data: f"Payment of €{data['amount']} Completed",
             'message': lambda data: f"✅ Payment Completed! Payment of €{data['amount']} for booking #{data['booking_id']} has been completed.",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
+            'action_url': lambda data: f"https://newcollab.co/brand/dashboard/bookings#{data['booking_id']}",
             'action_text': lambda data: "View Booking"
         }
     },
     'NEW_MESSAGE': {
         'creator': {
+            'subject': lambda data: f"Message from {data['sender_name']}",
             'message': lambda data: f"📩 New Message! You have a new message from {data['sender_name']} about booking #{data['booking_id']}: {data['message_text']}",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}/messages",
+            'action_url': lambda data: f"https://newcollab.co/creator/dashboard/bookings#{data['booking_id']}/messages",
             'action_text': lambda data: "Reply Now"
         },
         'brand': {
+            'subject': lambda data: f"Message from {data['sender_name']}",
             'message': lambda data: f"📩 New Message! You have a new message from {data['sender_name']} about booking #{data['booking_id']}: {data['message_text']}",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}/messages",
+            'action_url': lambda data: f"https://newcollab.co/brand/dashboard/bookings#{data['booking_id']}/messages",
             'action_text': lambda data: "Reply Now"
         }
     },
     'SUBSCRIPTION_INITIATED': {
         'brand': {
+            'subject': lambda data: f"Subscribed to {data['package_name']}",
             'message': lambda data: f"✅ Subscription Initiated! You have initiated a subscription to '{data['package_name']}' by @{data['creator_username']} (Subscription #{data['subscription_id']}).",
-            'action_url': lambda data: f"/subscriptions/{data['subscription_id']}",
+            'action_url': lambda data: f"https://newcollab.co/brand/dashboard/bookings#{data['subscription_id']}",
             'action_text': lambda data: "View Subscription"
         },
         'creator': {
+            'subject': lambda data: f"New Subscription: {data['package_name']}",
             'message': lambda data: f"🎉 Subscription Received! {data['brand_name']} has subscribed to your package '{data['package_name']}' (Subscription #{data['subscription_id']}).",
-            'action_url': lambda data: f"/subscriptions/{data['subscription_id']}",
+            'action_url': lambda data: f"https://newcollab.co/creator/dashboard/my-offers#{data['subscription_id']}",
             'action_text': lambda data: "View Subscription"
         }
     },
     'DELIVERABLES_APPROVED': {
         'brand': {
+            'subject': lambda data: f"Approved: {data['package_name']}",
             'message': lambda data: f"✅ Deliverables Approved! You have approved deliverables for '{data['package_name']}' by @{data['creator_username']} (Subscription #{data['subscription_id']}). Payment of €{data['amount']} released.",
-            'action_url': lambda data: f"/subscriptions/{data['subscription_id']}",
+            'action_url': lambda data: f"https://newcollab.co/brand/dashboard/bookings#{data['subscription_id']}",
             'action_text': lambda data: "View Subscription"
         },
         'creator': {
+            'subject': lambda data: f"€{data['amount']} Paid for {data['package_name']}",
             'message': lambda data: f"💸 Payment Received! Payment of €{data['amount']} for '{data['package_name']}' (Subscription #{data['subscription_id']}) has been released by {data['brand_name']}.",
-            'action_url': lambda data: f"/subscriptions/{data['subscription_id']}",
-            'action_text': lambda data: "View Subscription"
+            'action_url': lambda data: f"https://newcollab.co/creator/dashboard/payments#{data['subscription_id']}",
+            'action_text': lambda data: "View Payment"
         }
     },
     'NEW_CAMPAIGN_INVITE': {
         'creator': {
+            'subject': lambda data: f"Campaign Invite: {data['product_name']}",
             'message': lambda data: f"📩 New Campaign Invite! You have received a new campaign invite for '{data['product_name']}' from {data['brand_name']}. Bid: €{data['bid_amount']}. Please review and accept or reject the invite.",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
+            'action_url': lambda data: f"https://newcollab.co/creator/dashboard/campaign-invites#{data['booking_id']}",
             'action_text': lambda data: "Review Invite"
         },
         'brand': {
+            'subject': lambda data: f"Invite Sent: {data['product_name']}",
             'message': lambda data: f"📩 Campaign Invite Sent! Your campaign invite for '{data['product_name']}' has been sent to the creator. Awaiting response.",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
+            'action_url': lambda data: f"https://newcollab.co/brand/dashboard/bookings#{data['booking_id']}",
             'action_text': lambda data: "View Invite"
         }
     },
     'CAMPAIGN_INVITE_ACCEPTED': {
         'creator': {
+            'subject': lambda data: f"Accepted: {data['brand_name']}'s Invite",
             'message': lambda data: f"🎉 Campaign Invite Accepted! You have accepted the campaign invite from {data['brand_name']} for Booking #{data['booking_id']}.",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
+            'action_url': lambda data: f"https://newcollab.co/creator/dashboard/bookings#{data['booking_id']}",
             'action_text': lambda data: "View Booking"
         },
         'brand': {
+            'subject': lambda data: f"Invite Accepted: {data['product_name']}",
             'message': lambda data: f"✅ Campaign Invite Accepted! Your campaign invite for '{data['product_name']}' has been accepted by the creator for Booking #{data['booking_id']}.",
-            'action_url': lambda data: f"/bookings/{data['booking_id']}",
+            'action_url': lambda data: f"https://newcollab.co/brand/dashboard/bookings#{data['booking_id']}",
             'action_text': lambda data: "View Booking"
         }
     },
     'CAMPAIGN_INVITE_REJECTED': {
         'creator': {
+            'subject': lambda data: f"Rejected: {data['brand_name']}'s Invite",
             'message': lambda data: f"You have rejected the campaign invite from {data['brand_name']} for Booking #{data['booking_id']}.",
-            'action_url': lambda data: f"https://your-platform.com/bookings/{data['booking_id']}",
+            'action_url': lambda data: f"https://newcollab.co/creator/dashboard/campaign-invites#{data['booking_id']}",
             'action_text': lambda data: "View Booking"
         },
         'brand': {
+            'subject': lambda data: f"Invite Rejected: {data['product_name']}",
             'message': lambda data: f"Your campaign invite for '{data['product_name']}' has been rejected by the creator for Booking #{data['booking_id']}.",
-            'action_url': lambda data: f"https://your-platform.com/bookings/{data['booking_id']}",
+            'action_url': lambda data: f"https://newcollab.co/brand/dashboard/bookings#{data['booking_id']}",
             'action_text': lambda data: "View Booking"
         }
     }
@@ -1359,11 +1385,11 @@ def get_notifications():
         user_role = request.args.get('user_role')
         
         if not user_id or not user_role:
-            logger.error("Missing user_id or user_role in query parameters")
+            app.logger.error("Missing user_id or user_role in query parameters")
             return jsonify({'error': 'user_id and user_role are required'}), 400
 
         if user_role != session.get('user_role') or str(user_id) != str(session.get('user_id')):
-            logger.error(f"Unauthorized access: user_id={user_id}, user_role={user_role}, session={dict(session)}")
+            app.logger.error(f"Unauthorized access: user_id={user_id}, user_role={user_role}, session={dict(session)}")
             return jsonify({'error': 'Unauthorized'}), 403
 
         conn = get_db_connection()
@@ -1381,7 +1407,7 @@ def get_notifications():
         conn.close()
         return jsonify(notifications), 200
     except Exception as e:
-        logger.error(f"Error fetching notifications: {str(e)}")
+        app.logger.error(f"Error fetching notifications: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/notifications/<int:notification_id>/read', methods=['PUT'])
@@ -1391,7 +1417,7 @@ def mark_notification_read(notification_id):
         user_role = session.get('user_role')
         
         if not user_id or not user_role:
-            logger.error("No user_id or user_role in session")
+            app.logger.error("No user_id or user_role in session")
             return jsonify({'error': 'Unauthorized'}), 403
 
         conn = get_db_connection()
@@ -1407,12 +1433,12 @@ def mark_notification_read(notification_id):
         notification = cursor.fetchone()
         if not notification:
             conn.close()
-            logger.error(f"Notification {notification_id} not found for user_role={user_role}")
+            app.logger.error(f"Notification {notification_id} not found for user_role={user_role}")
             return jsonify({'error': 'Notification not found'}), 404
 
         if str(notification['user_id']) != str(user_id):
             conn.close()
-            logger.error(f"Unauthorized: notification user_id={notification['user_id']} does not match session user_id={user_id}")
+            app.logger.error(f"Unauthorized: notification user_id={notification['user_id']} does not match session user_id={user_id}")
             return jsonify({'error': 'Unauthorized'}), 403
 
         cursor.execute(
@@ -1429,12 +1455,12 @@ def mark_notification_read(notification_id):
         conn.close()
 
         if not result:
-            logger.error(f"Failed to mark notification {notification_id} as read")
+            app.logger.error(f"Failed to mark notification {notification_id} as read")
             return jsonify({'error': 'Failed to update notification'}), 500
 
         return jsonify({'message': 'Notification marked as read'}), 200
     except Exception as e:
-        logger.error(f"Error marking notification read: {str(e)}")
+        app.logger.error(f"Error marking notification read: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -2818,24 +2844,107 @@ def update_application_status(id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-
-
     finally:
         cursor.close()
         conn.close()
+
+
+def generate_verification_token(email):
+    token = create_access_token(identity=email, expires_delta=timedelta(hours=24))
+    app.logger.info(f"🟢 Generated token for {email}: {token}")
+    return token
+
+def send_verification_email(email, token):
+    base_url = os.getenv('BASE_URL', 'https://www.newcollab.co')
+    verification_url = f"{base_url}/verify-email?token={token}"
+    app.logger.info(f"🟢 Building verification URL: {verification_url}")
+    msg = MIMEMultipart()
+    msg['From'] = os.getenv('SMTP_USERNAME')
+    msg['To'] = email
+    msg['Subject'] = 'Verify your Newcollab account'
+    body = f"""
+    <html>
+        <body>
+            <h2>Welcome to Newcollab!</h2>
+            <p>Please verify your email to complete your account setup:</p>
+            <a href="{verification_url}">Verify Email</a>
+            <p>Or copy this link: {verification_url}</p>
+            <p>This link expires in 24 hours.</p>
+        </body>
+    </html>
+    """
+    msg.attach(MIMEText(body, 'html'))
+    try:
+        with smtplib.SMTP(os.getenv('SMTP_SERVER', 'smtp.gmail.com'), int(os.getenv('SMTP_PORT', 587))) as server:
+            server.starttls()
+            server.login(os.getenv('SMTP_USERNAME'), os.getenv('SMTP_PASSWORD'))
+            server.sendmail(msg['From'], email, msg.as_string())
+        app.logger.info(f"🟢 Verification email sent to {email}")
+    except Exception as e:
+        app.logger.error(f"🔥 Email sending error: {str(e)}\n{traceback.format_exc()}")
+        raise
+
+
+def generate_verification_token(email):
+    secret_key = os.getenv('JWT_SECRET_KEY')
+    return pyjwt.encode({
+        'sub': email,
+        'iat': int(time.time()),
+        'exp': int(time.time()) + 86400  # 1 day expiry
+    }, secret_key, algorithm='HS256')
+
+@app.route('/api/resend-verification', methods=['POST'])
+def resend_verification():
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        if not email:
+            return jsonify({'error': 'Email is required'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT id, is_verified, verification_token FROM users WHERE email = %s", (email,))
+        user = cursor.fetchone()
+        if not user:
+            conn.close()
+            return jsonify({'error': 'Email not found'}), 404
+        if user['is_verified']:
+            conn.close()
+            return jsonify({'error': 'Email already verified'}), 400
+
+        verification_token = generate_verification_token(email)
+        cursor.execute(
+            "UPDATE users SET verification_token = %s WHERE email = %s",
+            (verification_token, email)
+        )
+        conn.commit()
+        conn.close()
+
+        send_verification_email(email, verification_token)
+        return jsonify({'message': 'Verification email resent successfully'}), 200
+    except Exception as e:
+        app.logger.error(f"🔥 Resend verification error: {str(e)}\n{traceback.format_exc()}")
+        if 'conn' in locals():
+            conn.rollback()
+            conn.close()
+        return jsonify({'error': f'Failed to resend verification email: {str(e)}'}), 500
+
+
 
 @app.route('/register/brand', methods=['POST'])
 def register_brand():
     try:
         app.logger.info("🟢 Processing Brand Registration...")
-        app.logger.info("Form Data:", request.form.to_dict())
-        app.logger.info("Files Received:", request.files)
+        app.logger.info("Form Data: %s", request.form.to_dict())
+        app.logger.info("Files Received: %s", request.files)
 
         # Validate required fields
         required_fields = ['firstName', 'lastName', 'email', 'password', 'brandName', 'brandWebsite', 'brandDescription']
         missing_fields = [field for field in required_fields if not request.form.get(field)]
         if missing_fields:
-            return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+            error_msg = f'Missing required fields: {", ".join(missing_fields)}'
+            app.logger.error(f"🔥 Validation error: {error_msg}")
+            return jsonify({'error': error_msg}), 400
 
         # Extract fields
         first_name = request.form.get('firstName')
@@ -2852,54 +2961,82 @@ def register_brand():
         role = request.form.get('role', 'brand')
         post_urls = json.loads(request.form.get('postUrls', '[]'))
 
+        # Length validations
+        if len(first_name) > 255:
+            return jsonify({'error': 'First name exceeds 255 characters'}), 400
+        if len(last_name) > 100:
+            return jsonify({'error': 'Last name exceeds 100 characters'}), 400
+        if len(email) > 100:
+            return jsonify({'error': 'Email exceeds 100 characters'}), 400
+        if phone and len(phone) > 20:
+            return jsonify({'error': 'Phone number exceeds 20 characters'}), 400
+        if country and len(country) > 100:
+            return jsonify({'error': 'Country name exceeds 100 characters'}), 400
+        if len(brand_name) > 255:
+            return jsonify({'error': 'Brand name exceeds 255 characters'}), 400
+        if len(brand_website) > 255:
+            return jsonify({'error': 'Website URL exceeds 255 characters'}), 400
+        if len(brand_description) > 150:
+            return jsonify({'error': 'Brand description exceeds 150 characters'}), 400
+        if categories and len(categories) > 2000:
+            return jsonify({'error': 'Categories exceed 2000 characters'}), 400
+        for url in post_urls:
+            if url and len(url) > 255:
+                return jsonify({'error': 'Social post URL exceeds 255 characters'}), 400
+
         # Validate terms
         if not terms_accepted:
             return jsonify({'error': 'You must accept the terms and conditions'}), 400
 
         # Validate and upload logo
         if 'brandLogo' not in request.files:
-            app.logger.error("No brand logo file provided")
+            app.logger.error("🔥 No brand logo file provided")
             return jsonify({'error': 'No brand logo file provided'}), 400
-
         file = request.files['brandLogo']
-        app.logger.info(f"brandLogo type: {type(file)}, value: {file}")
+        app.logger.info(f"🟢 brandLogo type: {type(file)}, value: {file}")
         if not file or not allowed_file(file.filename):
-            app.logger.error("Invalid or missing brand logo file")
+            app.logger.error("🔥 Invalid or missing brand logo file")
             return jsonify({'error': 'Invalid file format. Only PNG or JPEG allowed'}), 400
 
         logo_url = upload_file_to_supabase(file, SUPABASE_BUCKET)
         if not logo_url:
-            app.logger.error("Failed to upload brand logo to Supabase")
+            app.logger.error("🔥 Failed to upload brand logo to Supabase")
             return jsonify({'error': 'Failed to upload brand logo'}), 500
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Check if email already exists
+        # Check if email exists
         cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
-        existing_user = cursor.fetchone()
-        if existing_user:
+        if cursor.fetchone():
             conn.close()
             return jsonify({"error": "This email is already registered. Please use another email or log in."}), 400
 
-        # Hash password securely
+        # Generate verification token
+        verification_token = generate_verification_token(email)
         hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode()
 
         # Insert user
         cursor.execute(
-            'INSERT INTO users (first_name, last_name, email, phone, country, password, role) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id',
-            (first_name, last_name, email, phone, country, hashed_password, role)
+            '''
+            INSERT INTO users (first_name, last_name, email, phone, country, password, role, is_verified, verification_token)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+            ''',
+            (first_name, last_name, email, phone, country, hashed_password, role, False, verification_token)
         )
         user_id = cursor.fetchone()['id']
-        app.logger.info(f"Inserted user with ID: {user_id}")
+        app.logger.info(f"🟢 Inserted user with ID: {user_id}")
 
         # Insert brand
         cursor.execute(
-            'INSERT INTO brands (name, description, category, website, user_id, logo) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id',
+            '''
+            INSERT INTO brands (name, description, category, website, user_id, logo)
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+            ''',
             (brand_name, brand_description, categories, brand_website, user_id, logo_url)
         )
         brand_id = cursor.fetchone()['id']
-        app.logger.info(f"Inserted brand with ID: {brand_id}")
+        app.logger.info(f"🟢 Inserted brand with ID: {brand_id}")
 
         # Insert social posts
         for post_url in post_urls:
@@ -2910,7 +3047,9 @@ def register_brand():
                 )
 
         conn.commit()
-        conn.close()
+
+        # Send verification email with token (fixed)
+        send_verification_email(email, verification_token)
 
         # Store user session
         session['user_id'] = user_id
@@ -2919,10 +3058,23 @@ def register_brand():
         session.modified = True
         app.logger.info(f"🟢 Session Set: user_id={session.get('user_id')}, role={session.get('user_role')}, brand_id={session.get('brand_id')}")
 
-        return jsonify({'redirect_url': '/success'}), 201
+        base_url = os.getenv('BASE_URL', 'https://www.newcollab.co')
+        return jsonify({
+            'message': 'Registration successful, please verify your email',
+            'redirect_url': f'{base_url}/verify-email-pending',
+            'user_role': role
+        }), 201
+
     except Exception as e:
-        app.logger.error(f"Error registering brand: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        app.logger.error(f"🔥 Registration error: {str(e)}\n{traceback.format_exc()}")
+        if 'conn' in locals():
+            conn.rollback()
+        return jsonify({'error': f'Failed to register brand: {str(e)}'}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
         
 
 @app.route('/register/creator', methods=['POST'])
@@ -2932,14 +3084,11 @@ def register_creator():
         app.logger.info("Form Data: %s", request.form.to_dict())
         app.logger.info("Files Received: %s", request.files)
 
-        # Validate required fields
         required_fields = ['firstName', 'lastName', 'email', 'password', 'bio', 'username']
         missing_fields = [field for field in required_fields if not request.form.get(field)]
         if missing_fields:
-            app.logger.error(f"Missing required fields: {missing_fields}")
             return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
 
-        # Extract and validate fields
         first_name = request.form.get('firstName')
         last_name = request.form.get('lastName')
         email = request.form.get('email')
@@ -2950,30 +3099,23 @@ def register_creator():
         username = request.form.get('username')
         primary_age_range = request.form.get('primaryAgeRange')
 
-        # Connect to DB
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Check if email already exists
         cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
-        existing_user = cursor.fetchone()
-        if existing_user:
+        if cursor.fetchone():
             conn.close()
-            app.logger.warning(f"Email already registered: {email}")
-            return jsonify({"error": "This email is already registered. Please use another email or log in."}), 400
+            return jsonify({"error": "Email already registered"}), 400
 
-        # Parse JSON fields safely
         try:
             regions = json.loads(request.form.get('regions', '[]'))
             interests = json.loads(request.form.get('interests', '[]'))
             social_links = json.loads(request.form.get('socialLinks', '[]'))
             portfolio_links = json.loads(request.form.get('portfolioLinks', '[]'))
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError:
             conn.close()
-            app.logger.error(f"JSON parsing error: {e}")
-            return jsonify({'error': f'Invalid JSON format: {str(e)}'}), 400
+            return jsonify({'error': 'Invalid JSON format'}), 400
 
-        # Calculate engagement rate
         metrics = {
             "total_posts": int(request.form.get('totalPosts', 0)),
             "total_views": int(request.form.get('totalViews', 0)),
@@ -2986,57 +3128,44 @@ def register_creator():
             round((metrics["total_likes"] + metrics["total_comments"] + metrics["total_shares"]) / total_views * 100, 2)
             if total_views > 0 else 0.0
         )
-
-        # Cap engagement rate to prevent overflow
         if engagement_rate >= 1000:
             engagement_rate = 999.99
-        app.logger.info(f"📊 Calculated Engagement Rate: {engagement_rate}")
 
-        # Count total followers
         followers_count = sum(
             int(link.get('followersCount', 0)) for link in social_links if str(link.get('followersCount', '')).isdigit()
         )
 
-        # Validate Terms
         if request.form.get('termsAccepted') != 'true':
             conn.close()
-            app.logger.error("Terms and conditions not accepted")
             return jsonify({'error': 'You must accept the terms and conditions'}), 400
 
-        # Upload Profile Picture
         if 'imageProfile' not in request.files:
             conn.close()
-            app.logger.error("No profile picture file provided")
             return jsonify({'error': 'No profile picture file provided'}), 400
 
         file = request.files['imageProfile']
         if not allowed_file(file.filename):
             conn.close()
-            app.logger.error(f"Invalid file format: {file.filename}")
             return jsonify({'error': 'Invalid file format. Only PNG, JPEG, or JPG allowed'}), 400
 
         profile_pic_url = upload_file_to_supabase(file, SUPABASE_BUCKET)
         if not profile_pic_url:
             conn.close()
-            app.logger.error("Failed to upload profile picture to Supabase")
             return jsonify({'error': 'Failed to upload profile picture'}), 500
 
-        # Hash password securely
+        verification_token = generate_verification_token(email)
         hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode()
 
-        # Insert user into `users` table
         cursor.execute(
             '''
-            INSERT INTO users (first_name, last_name, email, phone, country, password, role)
-            VALUES (%s, %s, %s, %s, %s, %s, 'creator')
+            INSERT INTO users (first_name, last_name, email, phone, country, password, role, is_verified, verification_token)
+            VALUES (%s, %s, %s, %s, %s, %s, 'creator', %s, %s)
             RETURNING id
             ''',
-            (first_name, last_name, email, phone, country, hashed_password)
+            (first_name, last_name, email, phone, country, hashed_password, False, verification_token)
         )
         user_id = cursor.fetchone()['id']
-        app.logger.info(f"Inserted user with ID: {user_id}")
 
-        # Insert creator into `creators` table
         cursor.execute(
             '''
             INSERT INTO creators 
@@ -3054,36 +3183,108 @@ def register_creator():
             )
         )
         creator_id = cursor.fetchone()['id']
-        app.logger.info(f"Inserted creator with ID: {creator_id}")
 
         conn.commit()
 
-        # Store user session
+        send_verification_email(email, verification_token)
+
         session.clear()
         session['user_id'] = user_id
         session['user_role'] = 'creator'
         session['creator_id'] = creator_id
         session.permanent = True
         session.modified = True
-        app.logger.info(f"🟢 Session Set: user_id={user_id}, role=creator, creator_id={creator_id}")
 
         return jsonify({
-            'message': 'Registration successful',
-            'redirect_url': '/creator/dashboard/overview'
+            'message': 'Registration successful, please verify your email',
+            'redirect_url': '/verify-email-pending'
         }), 201
 
     except Exception as e:
         app.logger.error(f"🔥 Error registering creator: {str(e)}")
-        if 'conn' in locals() and not conn.closed:
+        if 'conn' in locals():
             conn.rollback()
         return jsonify({'error': str(e)}), 500
-
     finally:
         if 'cursor' in locals():
             cursor.close()
-        if 'conn' in locals() and not conn.closed:
+        if 'conn' in locals():
             conn.close()
-        
+
+@app.route('/verify-email', methods=['GET'])
+def debug_verify_email():
+    app.logger.warning(f"🔥 Misrouted to /verify-email: Token={request.args.get('token')}, URL={request.url}")
+    return jsonify({'error': 'Misrouted request. Expected /api/verify-email.'}), 400
+
+# Fallback for unmatched routes
+@app.route('/<path:path>', methods=['GET', 'POST', 'OPTIONS'])
+def catch_all(path):
+    app.logger.error(f"🔥 Unmatched route: Path=/{path}, Method={request.method}, URL={request.url}")
+    return jsonify({'error': 'Route not found. Check API endpoint.'}), 404
+
+@app.route('/api/verify-email', methods=['GET'])
+def verify_email():
+    try:
+        app.logger.info(f"🟢 Processing /api/verify-email with token: {request.args.get('token')}")
+        token = request.args.get('token')
+        if not token:
+            app.logger.error("🔥 Missing token")
+            return jsonify({'error': 'Missing verification token'}), 400
+
+        secret_key = os.getenv('JWT_SECRET_KEY')
+        try:
+            payload = pyjwt.decode(token, secret_key, algorithms=['HS256'])
+            email = payload['sub']
+            app.logger.info(f"🟢 Decoded token for email: {email}")
+        except pyjwt.exceptions.ExpiredSignatureError:
+            app.logger.error("🔥 Token expired")
+            return jsonify({'error': 'Verification link has expired'}), 400
+        except pyjwt.exceptions.InvalidTokenError:
+            app.logger.error("🔥 Invalid token")
+            return jsonify({'error': 'Invalid verification token'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT id, is_verified, role FROM users WHERE email = %s AND verification_token = %s", (email, token))
+        user = cursor.fetchone()
+        if not user:
+            conn.close()
+            app.logger.error("🔥 Invalid or used token")
+            return jsonify({'error': 'Invalid or already used token'}), 400
+        if user['is_verified']:
+            conn.close()
+            app.logger.warning("🟡 Email already verified")
+            return jsonify({'error': 'Email already verified.'}), 400
+
+        cursor.execute(
+            "UPDATE users SET is_verified = %s, verification_token = %s WHERE email = %s",
+            (True, None, email)
+        )
+        conn.commit()
+
+        session['user_id'] = user['id']
+        session['user_role'] = user['role']
+        session.modified = True
+
+        conn.close()
+
+        base_url = os.getenv('BASE_URL', 'https://www.newcollab.co')
+        redirect_url = '/creator/dashboard/overview' if user['role'] == 'creator' else '/brand/dashboard/overview'
+        app.logger.info(f"🟢 Email verified for {email}, redirecting to: {redirect_url}")
+
+        return jsonify({
+            'message': 'Email verified successfully, please log in to your account.',
+            'user_role': user['role'],
+            'redirect_url': f'{base_url}{redirect_url}'
+        }), 200
+
+    except Exception as e:
+        app.logger.error(f"🔥 Verification error: {str(e)}\n{traceback.format_exc()}")
+        if 'conn' in locals():
+            conn.rollback()
+            conn.close()
+        return jsonify({'error': 'An unexpected error occurred. Please try again later.'}), 500
+
 
 @app.route('/api/check-email', methods=['POST'])
 def check_email():
@@ -7878,7 +8079,7 @@ def connect_stripe_account():
         # Create Stripe Express account
         account = stripe.Account.create(
             type='express',
-            country='DE',  # Adjust based on your region
+            country='FR',  # Adjust based on your region
             email=email,
             capabilities={'card_payments': {'requested': True}, 'transfers': {'requested': True}},
             metadata={'creator_id': creator_id}
@@ -7896,8 +8097,8 @@ def connect_stripe_account():
         # Create account link for onboarding
         account_link = stripe.AccountLink.create(
             account=account.id,
-            refresh_url='https://yourplatform.com/stripe/reauth',
-            return_url='https://yourplatform.com/stripe/success',
+            refresh_url='https://www.newcollab.co/stripe/reauth',
+            return_url='https://www.newcollab.co/stripe/success',
             type='account_onboarding'
         )
 
@@ -7993,8 +8194,8 @@ def get_stripe_dashboard():
             # Generate onboarding link
             account_link = stripe.AccountLink.create(
                 account=creator['stripe_account_id'],
-                refresh_url='https://www.newcollab.co/stripe/reauth',  # Adjust for production
-                return_url='https://www.newcollab.co/creator/dashboard/payments',  # Adjust for production
+                refresh_url='https://newcollab.co/stripe/reauth',  # Adjust for production
+                return_url='https://newcollab.co/creator/dashboard/payments',  # Adjust for production
                 type='account_onboarding'
             )
             return jsonify({"onboarding_required": True, "onboarding_url": account_link.url}), 200
@@ -8002,7 +8203,7 @@ def get_stripe_dashboard():
         # Generate login link if onboarding is complete
         login_link = stripe.Account.create_login_link(
             creator['stripe_account_id'],
-            redirect_url='https://www.newcollab.co/creator/dashboard/payments'  # Adjust for production
+            redirect_url='https://newcollab.co/creator/dashboard/payments'  # Adjust for production
         )
 
         app.logger.info(f"Generated Stripe dashboard link for creator {creator_id}")
@@ -8014,6 +8215,99 @@ def get_stripe_dashboard():
     except Exception as e:
         app.logger.error(f"Error generating Stripe dashboard link for creator {creator_id}: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+@app.route('/stripe/confirm', methods=['POST', 'OPTIONS'])
+def confirm_stripe_account():
+    if request.method == 'OPTIONS':
+        response = jsonify({'success': True})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 200
+
+    app.logger.info(f"🔍 Request headers: {request.headers}")
+    app.logger.info(f"🔍 Cookies received: {request.cookies}")
+    app.logger.info(f"🔍 Session contents: {session}")
+
+    try:
+        redis_client = app.config.get('SESSION_REDIS')
+        if redis_client:
+            session_id = session.sid if 'sid' in session else request.cookies.get('session', 'unknown')
+            session_key = f"session:{session_id}"
+            redis_data = redis_client.get(session_key)
+            app.logger.debug(f"🟢 Redis session data for {session_key}: {redis_data}")
+            if redis_data and not session.get('user_id'):
+                try:
+                    session_data = json.loads(redis_data.decode('utf-8'))
+                    app.logger.debug(f"🟢 Parsed session data: {session_data}")
+                    if 'user_id' in session_data:
+                        for key, value in session_data.items():
+                            session[key] = value
+                        session.modified = True
+                        app.logger.info(f"🟢 Session restored from Redis: {session_data}")
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    app.logger.error(f"🔥 Invalid session data in Redis: {redis_data}, Error: {str(e)}")
+                    redis_client.delete(session_key)
+    except Exception as e:
+        app.logger.error(f"🔥 Failed to check Redis session: {str(e)}")
+
+    creator_id = session.get('creator_id')
+    if not creator_id:
+        app.logger.error("No creator_id in session for /stripe/confirm")
+        response = jsonify({"error": "Unauthorized: No creator ID in session"})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 401
+
+    conn = get_db_connection()
+    if not conn:
+        app.logger.error("🔥 Database connection failed")
+        response = jsonify({'error': 'Database connection failed'})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 500
+
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cursor.execute('SELECT stripe_account_id FROM creators WHERE id = %s', (creator_id,))
+        creator = cursor.fetchone()
+        if not creator or not creator['stripe_account_id']:
+            app.logger.error(f"No Stripe account for creator {creator_id}")
+            response = jsonify({"error": "No Stripe account found"})
+            response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
+            return response, 404
+
+        account = stripe.Account.retrieve(creator['stripe_account_id'])
+        if account.charges_enabled and account.payouts_enabled and account.details_submitted:
+            app.logger.info(f"Stripe account confirmed for creator {creator_id}: {creator['stripe_account_id']}")
+            response = jsonify({"message": "Stripe account confirmed", "stripe_connected": True})
+            response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
+            return response, 200
+        else:
+            app.logger.warning(f"Stripe account not fully onboarded for creator {creator_id}: {creator['stripe_account_id']}")
+            response = jsonify({"error": "Stripe account not fully onboarded", "stripe_connected": False})
+            response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
+            return response, 400
+
+    except stripe.error.StripeError as e:
+        app.logger.error(f"Stripe error: {str(e)}")
+        response = jsonify({"error": f"Stripe error: {str(e)}"})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 400
+    except Exception as e:
+        app.logger.error(f"Error in /stripe/confirm for creator {creator_id}: {str(e)}")
+        response = jsonify({"error": "An unexpected error occurred. Please try again later."})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 500
+    finally:
+        cursor.close()
+        conn.close()
 
 
 @app.route('/debug/session', methods=['GET'])
@@ -8027,7 +8321,17 @@ def debug_session():
         "cookies": request.cookies
     })
 
-
+@app.route('/callback')
+def callback():
+    code = request.args.get('code')
+    if code:
+        return f"""
+        <h1>Authorization Complete</h1>
+        <p>Copy this code for your X Expert Agent:</p>
+        <p><strong>{code}</strong></p>
+        <p>Return to your terminal and paste this code when prompted.</p>
+        """
+    return "<h1>Error</h1><p>No authorization code provided.</p>", 400
 
 
 
