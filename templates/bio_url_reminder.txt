@@ -1,0 +1,44 @@
+Boost Your Brand Bids! 🚀
+
+Hi {{ data.first_name }},
+
+Great news! You just published a new ad slot opportunity. To maximize brand interest and increase your chances of getting higher bids, we recommend adding your public profile link to your social media bio.
+
+📋 Your Public Profile URL:
+{{ data.public_profile_url }}
+
+Copy this link and add it to your Instagram, TikTok, YouTube, or other social media bio links.
+
+💡 Why This Increases Brand Bids:
+
+• Brands can easily preview your content and style
+• Shows professionalism and credibility  
+• Makes it easier for brands to contact you
+• Increases trust and conversion rates
+
+📱 How to Add Your Bio Link:
+
+Instagram:
+1. Go to your profile → Edit Profile
+2. Add the link in "Website" field
+
+TikTok:
+1. Go to Profile → Edit Profile
+2. Add the link in "Website" field
+
+YouTube:
+1. Go to Channel → Customize Channel
+2. Add the link in "Links" section
+
+📈 Creators with Bio Links Get:
+• 3x More Brand Interest
+• 40% Higher Bids
+• 2x Faster Responses
+
+{{ action_text }}: {{ action_url }}
+
+⭐⭐⭐⭐⭐ "Added my bio link and got 5x more brand inquiries!" - @creator_sarah
+
+© 2025 Newcollab. All rights reserved.
+Contact Support: team@newcollab.co
+Unsubscribe: https://newcollab.co/unsubscribe?user_id={{ user_id }}

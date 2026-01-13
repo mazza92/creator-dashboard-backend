@@ -1,0 +1,21 @@
+Welcome to Newcollab!
+
+Hi {{ data.first_name }},
+
+{{ message }}
+
+{% if action_url and action_text %}
+{{ action_text }}: {{ action_url }}
+{% endif %}
+{% if secondary_action_url and secondary_action_text %}
+{{ secondary_action_text }}: {{ secondary_action_url }}
+{% endif %}
+
+---
+© 2025 Newcollab. All rights reserved.
+Contact Support: team@newcollab.co
+Privacy Policy: https://newcollab.co/privacy-policy
+Terms of Service: https://newcollab.co/terms-of-service
+
+You're receiving this email because you signed up for Newcollab.
+Unsubscribe: https://newcollab.co/unsubscribe?user_id={{ user_id }} 

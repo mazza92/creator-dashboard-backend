@@ -1,0 +1,30 @@
+Complete Your Profile - Newcollab
+================================
+
+Hi {{ data.first_name }},
+
+{{ message }}
+
+⏰ DON'T MISS OUT!
+Brands are actively looking for creators like you. Complete your profile now to start receiving campaign invites and earning from your content.
+
+WHAT YOU'LL GET:
+• Direct brand campaign invites
+• Create ad opportunities and packages  
+• Get paid for your influence
+• Build your creator portfolio
+
+JOIN OUR SUCCESS STORY:
+10,000+ Active Creators
+$2M+ Paid to Creators
+500+ Brands
+
+{{ action_text }}: {{ action_url }}
+
+Trusted by creators worldwide
+⭐⭐⭐⭐⭐ "Completed my profile in 2 minutes and got my first campaign within a week!" - @creator_mike
+
+---
+© 2025 Newcollab. All rights reserved.
+Contact Support: team@newcollab.co
+Unsubscribe: https://newcollab.co/unsubscribe?user_id={{ user_id }} 

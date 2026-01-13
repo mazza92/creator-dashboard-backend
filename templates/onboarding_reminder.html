@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Complete Your Profile - Newcollab</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: 'Inter', Arial, sans-serif; background-color: #f9fafb; color: #1f2937;">
+  <!-- Preheader text (hidden, shown in email preview) -->
+  {% if preheader %}
+  <div style="display: none; font-size: 1px; color: #f9fafb; line-height: 1px; max-height: 0px; max-width: 0px; opacity: 0; overflow: hidden;">
+    {{ preheader }}
+  </div>
+  {% endif %}
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
+    <!-- Header with gradient -->
+    <tr>
+      <td style="padding: 40px 20px; text-align: center; background: linear-gradient(135deg, #FF6B6B, #FF8E53);">
+        <img src="https://kyawgtojxoglvlhzsotm.supabase.co/storage/v1/object/sign/newcollab/NEWCOLLAB-BRAND.png?token=eyJraWQiOiJzdG9yYWdlLXVybC1zaWduaW5nLWtleV83MmM4MjFmNC03NzYxLTRlYWUtYTYzOS0zN2NlNmRkNzIzNGMiLCJhbGciOiJIUzI1NiJ9.eyJ1cmwiOiJuZXdjb2xsYWIvTkVXQ09MTEFCLUJSQU5ELnBuZyIsImlhdCI6MTc0ODk3NzM2NCwiZXhwIjoxNzgwNTEzMzY0fQ.UPr_r05j7CHUe3_HxmJ5SbqwS51eHMaBzL8R6YveTgk" alt="Newcollab" width="140" style="max-width: 140px; margin-bottom: 20px;">
+        {% if email_header_title %}
+        <h1 style="color: #ffffff; font-size: 32px; margin: 0; font-weight: 700; letter-spacing: -0.5px;">{{ email_header_title }}</h1>
+        {% else %}
+        <h1 style="color: #ffffff; font-size: 32px; margin: 0; font-weight: 700; letter-spacing: -0.5px;">Complete Your Profile</h1>
+        {% endif %}
+        {% if email_header_subtitle %}
+        <p style="color: #ffffff; font-size: 18px; margin: 10px 0 0; opacity: 0.9; font-weight: 400;">{{ email_header_subtitle }}</p>
+        {% endif %}
+      </td>
+    </tr>
+    
+    <!-- Main Content -->
+    <tr>
+      <td style="padding: 40px 30px;">
+        <!-- Message Content - Already formatted with HTML (includes greeting if needed) -->
+        <div style="font-size: 16px; line-height: 1.7; color: #1f2937; margin: 0 0 24px;">
+          {{ message | safe }}
+        </div>
+        
+        <!-- Urgency Section -->
+        <div style="background: linear-gradient(135deg, #fef3c7, #fde68a); border-radius: 12px; padding: 24px; margin: 24px 0; border-left: 4px solid #f59e0b;">
+          <h3 style="color: #92400e; font-size: 18px; margin: 0 0 16px; font-weight: 600;">⏰ Don't Miss Out!</h3>
+          <p style="color: #92400e; margin: 0; font-size: 14px; line-height: 1.5;">
+            Brands are actively looking for creators like you. Complete your profile now to start receiving campaign invites and earning from your content.
+          </p>
+        </div>
+        
+        <!-- Benefits Section -->
+        <div style="background: linear-gradient(135deg, #f0f9ff, #e0f2fe); border-radius: 12px; padding: 24px; margin: 24px 0; border-left: 4px solid #0ea5e9;">
+          <h3 style="color: #0c4a6e; font-size: 18px; margin: 0 0 16px; font-weight: 600;">What You'll Get:</h3>
+          
+          <div style="margin-bottom: 16px;">
+            <div style="display: flex; align-items: center; margin-bottom: 12px;">
+              <div style="width: 8px; height: 8px; background-color: #0ea5e9; border-radius: 50%; margin-right: 12px;"></div>
+              <span style="color: #0c4a6e; font-size: 14px; font-weight: 500;">Direct brand campaign invites</span>
+            </div>
+            <div style="display: flex; align-items: center; margin-bottom: 12px;">
+              <div style="width: 8px; height: 8px; background-color: #0ea5e9; border-radius: 50%; margin-right: 12px;"></div>
+              <span style="color: #0c4a6e; font-size: 14px; font-weight: 500;">Create ad opportunities and packages</span>
+            </div>
+            <div style="display: flex; align-items: center; margin-bottom: 12px;">
+              <div style="width: 8px; height: 8px; background-color: #0ea5e9; border-radius: 50%; margin-right: 12px;"></div>
+              <span style="color: #0c4a6e; font-size: 14px; font-weight: 500;">Get paid for your influence</span>
+            </div>
+            <div style="display: flex; align-items: center;">
+              <div style="width: 8px; height: 8px; background-color: #0ea5e9; border-radius: 50%; margin-right: 12px;"></div>
+              <span style="color: #0c4a6e; font-size: 14px; font-weight: 500;">Build your creator portfolio</span>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Stats Section -->
+        <div style="background-color: #f8fafc; border-radius: 12px; padding: 24px; margin: 24px 0; text-align: center;">
+          <h3 style="color: #1f2937; font-size: 18px; margin: 0 0 16px; font-weight: 600;">Join Our Success Story</h3>
+          <div style="display: inline-block; margin: 0 16px;">
+            <div style="font-size: 24px; font-weight: 700; color: #FF6B6B;">10,000+</div>
+            <div style="font-size: 14px; color: #6b7280;">Active Creators</div>
+          </div>
+          <div style="display: inline-block; margin: 0 16px;">
+            <div style="font-size: 24px; font-weight: 700; color: #FF6B6B;">$2M+</div>
+            <div style="font-size: 14px; color: #6b7280;">Paid to Creators</div>
+          </div>
+          <div style="display: inline-block; margin: 0 16px;">
+            <div style="font-size: 24px; font-weight: 700; color: #FF6B6B;">500+</div>
+            <div style="font-size: 14px; color: #6b7280;">Brands</div>
+          </div>
+        </div>
+        
+        <!-- CTA Button -->
+        {% if action_url and action_text %}
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="{{ action_url }}" style="display: inline-block; padding: 16px 32px; background: linear-gradient(135deg, #FF6B6B, #FF8E53); color: #ffffff; text-decoration: none; border-radius: 50px; font-weight: 600; font-size: 16px; box-shadow: 0 4px 15px rgba(255, 107, 107, 0.3); transition: all 0.3s ease;">
+            {{ action_text }}
+          </a>
+        </div>
+        {% endif %}
+        
+        <!-- Social Proof -->
+        <div style="text-align: center; margin: 32px 0; padding: 20px; background-color: #f9fafb; border-radius: 12px;">
+          <p style="font-size: 14px; color: #6b7280; margin: 0 0 12px;">Trusted by creators worldwide</p>
+          <div style="font-size: 12px; color: #9ca3af;">
+            ⭐⭐⭐⭐⭐ "Completed my profile in 2 minutes and got my first campaign within a week!" - @creator_mike
+          </div>
+        </div>
+        
+        <!-- Footer -->
+        <div style="text-align: center; margin-top: 32px; padding-top: 24px; border-top: 1px solid #e5e7eb;">
+          <p style="font-size: 12px; color: #6b7280; margin: 0 0 8px;">© 2025 Newcollab. All rights reserved.</p>
+          <p style="font-size: 12px; color: #6b7280; margin: 0;">
+            <a href="mailto:team@newcollab.co" style="color: #FF6B6B; text-decoration: none;">Contact Support</a> | 
+            <a href="https://newcollab.co/unsubscribe?user_id={{ user_id }}" style="color: #FF6B6B; text-decoration: none;">Unsubscribe</a>
+          </p>
+        </div>
+      </td>
+    </tr>
+  </table>
+</body>
+</html> 

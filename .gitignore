@@ -127,3 +127,4 @@ local.properties
 ehthumbs.db
 Thumbs.db 
 .vercel
+env test.conf

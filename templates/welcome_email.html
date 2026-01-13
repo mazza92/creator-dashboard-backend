@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Welcome to Newcollab!</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: 'Inter', Arial, sans-serif; background-color: #f9fafb; color: #1f2937;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
+    <!-- Header with gradient -->
+    <tr>
+      <td style="padding: 40px 20px; text-align: center; background: linear-gradient(135deg, #FF6B6B, #FF8E53);">
+        <img src="https://kyawgtojxoglvlhzsotm.supabase.co/storage/v1/object/sign/newcollab/NEWCOLLAB-BRAND.png?token=eyJraWQiOiJzdG9yYWdlLXVybC1zaWduaW5nLWtleV83MmM4MjFmNC03NzYxLTRlYWUtYTYzOS0zN2NlNmRkNzIzNGMiLCJhbGciOiJIUzI1NiJ9.eyJ1cmwiOiJuZXdjb2xsYWIvTkVXQ09MTEFCLUJSQU5ELnBuZyIsImlhdCI6MTc0ODk3NzM2NCwiZXhwIjoxNzgwNTEzMzY0fQ.UPr_r05j7CHUe3_HxmJ5SbqwS51eHMaBzL8R6YveTgk" alt="Newcollab" width="140" style="max-width: 140px; margin-bottom: 20px;">
+        <h1 style="color: #ffffff; font-size: 32px; margin: 0; font-weight: 700; letter-spacing: -0.5px;">Your Profile is Ready</h1>
+        <p style="color: #ffffff; font-size: 18px; margin: 10px 0 0; opacity: 0.9; font-weight: 400;">Let's get you started with your first collaboration</p>
+      </td>
+    </tr>
+    
+    <!-- Main Content -->
+    <tr>
+      <td style="padding: 40px 30px;">
+        <h2 style="color: #1f2937; font-size: 24px; margin: 0 0 20px; font-weight: 600;">Hi {{ data.first_name }},</h2>
+        
+        <!-- Dynamic Message Content -->
+        <div style="font-size: 16px; line-height: 1.6; margin: 0 0 24px; color: #1f2937;">
+          {% if 'Great news!' in message %}
+            <!-- First Ad Slot Created Content -->
+            <p style="margin: 0 0 16px;">Great news! Your first ad slot is now live and visible to brands.</p>
+            
+            <div style="background: linear-gradient(135deg, #f0f9ff, #e0f2fe); border-radius: 12px; padding: 24px; margin: 24px 0; border-left: 4px solid #0ea5e9;">
+              <h3 style="color: #0c4a6e; font-size: 18px; margin: 0 0 16px; font-weight: 600;">What's happening now:</h3>
+              <div style="margin-bottom: 12px;">
+                <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                  <span style="color: #10b981; font-size: 16px; margin-right: 8px;">✅</span>
+                  <span style="color: #0c4a6e; font-size: 14px; font-weight: 500;">Your profile is live at {{ data.public_profile_url or 'your profile' }}</span>
+                </div>
+                <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                  <span style="color: #10b981; font-size: 16px; margin-right: 8px;">✅</span>
+                  <span style="color: #0c4a6e; font-size: 14px; font-weight: 500;">Brands can view your content and submit bids</span>
+                </div>
+                <div style="display: flex; align-items: center;">
+                  <span style="color: #10b981; font-size: 16px; margin-right: 8px;">✅</span>
+                  <span style="color: #0c4a6e; font-size: 14px; font-weight: 500;">You'll receive notifications when brands are interested</span>
+                </div>
+              </div>
+            </div>
+            
+            <div style="background: linear-gradient(135deg, #fef3c7, #fde68a); border-radius: 12px; padding: 24px; margin: 24px 0; border-left: 4px solid #f59e0b;">
+              <h3 style="color: #92400e; font-size: 18px; margin: 0 0 16px; font-weight: 600;">Next steps:</h3>
+              <div style="margin-bottom: 12px;">
+                <div style="display: flex; align-items: flex-start; margin-bottom: 8px;">
+                  <span style="color: #92400e; font-size: 16px; margin-right: 8px; margin-top: 2px;">•</span>
+                  <span style="color: #92400e; font-size: 14px; font-weight: 500;">Share your profile on social media to attract more brands</span>
+                </div>
+                <div style="display: flex; align-items: flex-start; margin-bottom: 8px;">
+                  <span style="color: #92400e; font-size: 16px; margin-right: 8px; margin-top: 2px;">•</span>
+                  <span style="color: #92400e; font-size: 14px; font-weight: 500;">Keep your content updated to maintain brand interest</span>
+                </div>
+                <div style="display: flex; align-items: flex-start;">
+                  <span style="color: #92400e; font-size: 16px; margin-right: 8px; margin-top: 2px;">•</span>
+                  <span style="color: #92400e; font-size: 14px; font-weight: 500;">Check your dashboard regularly for new opportunities</span>
+                </div>
+              </div>
+            </div>
+            
+            <div style="background: linear-gradient(135deg, #f3e8ff, #e9d5ff); border-radius: 12px; padding: 24px; margin: 24px 0; border-left: 4px solid #8b5cf6;">
+              <h3 style="color: #6b21a8; font-size: 18px; margin: 0 0 16px; font-weight: 600;">Optimization tips:</h3>
+              <div style="margin-bottom: 12px;">
+                <div style="display: flex; align-items: flex-start; margin-bottom: 8px;">
+                  <span style="color: #6b21a8; font-size: 16px; margin-right: 8px; margin-top: 2px;">•</span>
+                  <span style="color: #6b21a8; font-size: 14px; font-weight: 500;">Create multiple ad slot types (posts, stories, reels, live streams) to offer brands more collaboration options</span>
+                </div>
+                <div style="display: flex; align-items: flex-start; margin-bottom: 8px;">
+                  <span style="color: #6b21a8; font-size: 16px; margin-right: 8px; margin-top: 2px;">•</span>
+                  <span style="color: #6b21a8; font-size: 14px; font-weight: 500;">Different content formats attract different brand budgets and campaign types</span>
+                </div>
+                <div style="display: flex; align-items: flex-start; margin-bottom: 8px;">
+                  <span style="color: #6b21a8; font-size: 16px; margin-right: 8px; margin-top: 2px;">•</span>
+                  <span style="color: #6b21a8; font-size: 14px; font-weight: 500;">More ad slots = more opportunities for brands to find the perfect collaboration</span>
+                </div>
+                <div style="display: flex; align-items: flex-start;">
+                  <span style="color: #6b21a8; font-size: 16px; margin-right: 8px; margin-top: 2px;">•</span>
+                  <span style="color: #6b21a8; font-size: 14px; font-weight: 500;">Diversify your offerings to maximize your earning potential</span>
+                </div>
+              </div>
+            </div>
+            
+            <div style="background: linear-gradient(135deg, #ecfdf5, #d1fae5); border-radius: 12px; padding: 24px; margin: 24px 0; border-left: 4px solid #10b981;">
+              <h3 style="color: #065f46; font-size: 18px; margin: 0 0 12px; font-weight: 600;">Pro tip:</h3>
+              <p style="color: #065f46; margin: 0; font-size: 14px; line-height: 1.5;">
+                The more diverse your ad slots, the more brands will discover you and the higher your earning potential.
+              </p>
+            </div>
+          {% else %}
+            <!-- Welcome Content (fallback) -->
+            <p style="margin: 0 0 16px;">Your creator profile is now live and ready to connect with brands.</p>
+            <p style="margin: 0 0 24px;">You're 2 minutes away from your first brand collaboration. Let's create your first ad slot opportunity right now.</p>
+            
+            <div style="background: linear-gradient(135deg, #f0f9ff, #e0f2fe); border-radius: 12px; padding: 24px; margin: 24px 0; border-left: 4px solid #0ea5e9;">
+              <h3 style="color: #0c4a6e; font-size: 18px; margin: 0 0 16px; font-weight: 600;">Your Progress:</h3>
+              <div style="margin-bottom: 12px;">
+                <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                  <span style="color: #10b981; font-size: 16px; margin-right: 8px;">✅</span>
+                  <span style="color: #0c4a6e; font-size: 14px; font-weight: 500;">Profile complete and verified</span>
+                </div>
+                <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                  <span style="color: #10b981; font-size: 16px; margin-right: 8px;">✅</span>
+                  <span style="color: #0c4a6e; font-size: 14px; font-weight: 500;">Ready to receive brand opportunities</span>
+                </div>
+                <div style="display: flex; align-items: center;">
+                  <span style="color: #f59e0b; font-size: 16px; margin-right: 8px;">⏳</span>
+                  <span style="color: #0c4a6e; font-size: 14px; font-weight: 500;">Next: Create your first ad slot (takes 2 minutes)</span>
+                </div>
+              </div>
+            </div>
+            
+            <div style="background: linear-gradient(135deg, #fef3c7, #fde68a); border-radius: 12px; padding: 24px; margin: 24px 0; border-left: 4px solid #f59e0b;">
+              <h3 style="color: #92400e; font-size: 18px; margin: 0 0 12px; font-weight: 600;">What happens next?</h3>
+              <p style="color: #92400e; margin: 0; font-size: 14px; line-height: 1.5;">
+                This will make your profile visible to brands and start generating bids immediately.
+              </p>
+            </div>
+          {% endif %}
+        </div>
+        
+        <!-- CTA Buttons -->
+        {% if action_url and action_text %}
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="{{ action_url }}" style="display: inline-block; padding: 16px 32px; background: linear-gradient(135deg, #FF6B6B, #FF8E53); color: #ffffff; text-decoration: none; border-radius: 50px; font-weight: 600; font-size: 16px; box-shadow: 0 4px 15px rgba(255, 107, 107, 0.3); transition: all 0.3s ease; margin: 0 8px;">
+            {{ action_text }}
+          </a>
+          {% if secondary_action_url and secondary_action_text %}
+          <a href="{{ secondary_action_url }}" style="display: inline-block; padding: 16px 32px; background: linear-gradient(135deg, #10b981, #34d399); color: #ffffff; text-decoration: none; border-radius: 50px; font-weight: 600; font-size: 16px; box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3); transition: all 0.3s ease; margin: 0 8px;">
+            {{ secondary_action_text }}
+          </a>
+          {% endif %}
+        </div>
+        {% endif %}
+      </td>
+    </tr>
+    
+    <!-- Footer -->
+    <tr>
+      <td style="padding: 30px; text-align: center; background-color: #f9fafb; font-size: 14px; color: #6b7280;">
+        <p style="margin: 0 0 16px;">© 2025 Newcollab. All rights reserved.</p>
+        <p style="margin: 0 0 12px;">
+          <a href="mailto:team@newcollab.co" style="color: #FF6B6B; text-decoration: none; margin: 0 8px;">Contact Support</a> | 
+          <a href="https://newcollab.co/privacy-policy" style="color: #FF6B6B; text-decoration: none; margin: 0 8px;">Privacy Policy</a> | 
+          <a href="https://newcollab.co/terms-of-service" style="color: #FF6B6B; text-decoration: none; margin: 0 8px;">Terms of Service</a>
+        </p>
+        <p style="margin: 0; font-size: 12px; color: #9ca3af;">
+          You're receiving this email because you signed up for Newcollab. 
+          <a href="https://newcollab.co/unsubscribe?user_id={{ user_id }}" style="color: #FF6B6B; text-decoration: none;">Unsubscribe</a>
+        </p>
+      </td>
+    </tr>
+  </table>
+</body>
+</html> 
