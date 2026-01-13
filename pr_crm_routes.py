@@ -519,7 +519,7 @@ def update_pipeline_stage(pipeline_id):
 
 @pr_crm.route('/pipeline/<int:pipeline_id>', methods=['DELETE'])
 def remove_from_pipeline(pipeline_id):
-    """Remove brand from pipeline"""
+    """Remove brand from pipeline by pipeline_id"""
     creator_id = get_creator_id_from_session()
     if not creator_id:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
@@ -537,6 +537,41 @@ def remove_from_pipeline(pipeline_id):
             cursor.close()
             conn.close()
             return jsonify({'success': False, 'error': 'Pipeline item not found'}), 404
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'message': 'Brand removed from pipeline'
+        })
+
+    except Exception as e:
+        print(f"Error removing from pipeline: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@pr_crm.route('/pipeline/brand/<int:brand_id>', methods=['DELETE'])
+def remove_brand_from_pipeline(brand_id):
+    """Remove brand from pipeline by brand_id (for UI convenience)"""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            DELETE FROM creator_pipeline
+            WHERE creator_id = %s AND brand_id = %s
+        ''', (creator_id, brand_id))
+
+        if cursor.rowcount == 0:
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Brand not found in pipeline'}), 404
 
         conn.commit()
         cursor.close()
