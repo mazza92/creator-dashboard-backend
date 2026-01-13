@@ -12,13 +12,13 @@ load_dotenv()
 marketplace_bp = Blueprint('marketplace', __name__, url_prefix='/api/marketplace')
 
 def get_db_connection():
-    """Connect to Supabase PostgreSQL"""
+    """Get database connection"""
     return psycopg2.connect(
-        host=os.getenv('SUPABASE_HOST'),
-        database=os.getenv('SUPABASE_DB'),
-        user=os.getenv('SUPABASE_USER'),
-        password=os.getenv('SUPABASE_PASSWORD'),
-        port=os.getenv('SUPABASE_PORT', 5432)
+        host=os.getenv('DB_HOST'),
+        port=os.getenv('DB_PORT', 5432),
+        database=os.getenv('DB_NAME'),
+        user=os.getenv('DB_USER'),
+        password=os.getenv('DB_PASSWORD')
     )
 
 @marketplace_bp.route('/creators', methods=['GET'])
