@@ -3,12 +3,17 @@ Public Routes for SEO-Optimized Brand Directory
 No authentication required - open to Google crawlers
 """
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, Response
 from psycopg2.extras import RealDictCursor
 import os
 import psycopg2
+import requests
 
 public_bp = Blueprint('public', __name__, url_prefix='/api/public')
+
+# IndexNow configuration
+INDEXNOW_KEY = '5b821f1380424d116b8da378e4ca2f143a13f7236d7dd3db58d09cb3e0aeb736'
+INDEXNOW_API_URL = 'https://api.indexnow.org/indexnow'
 
 def get_db_connection():
     """Get database connection"""
@@ -19,6 +24,46 @@ def get_db_connection():
         user=os.getenv('DB_USER'),
         password=os.getenv('DB_PASSWORD')
     )
+
+
+def submit_to_indexnow(urls):
+    """
+    Submit URLs to IndexNow API for instant indexing
+
+    Args:
+        urls: Single URL string or list of URLs
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        if isinstance(urls, str):
+            urls = [urls]
+
+        payload = {
+            "host": "newcollab.co",
+            "key": INDEXNOW_KEY,
+            "keyLocation": f"https://newcollab.co/{INDEXNOW_KEY}.txt",
+            "urlList": urls
+        }
+
+        response = requests.post(
+            INDEXNOW_API_URL,
+            headers={'Content-Type': 'application/json; charset=utf-8'},
+            json=payload,
+            timeout=10
+        )
+
+        if response.status_code == 200:
+            print(f"✅ IndexNow: Successfully submitted {len(urls)} URLs")
+            return True
+        else:
+            print(f"⚠️ IndexNow: Status {response.status_code} - {response.text}")
+            return False
+
+    except Exception as e:
+        print(f"❌ IndexNow: Error submitting URLs: {str(e)}")
+        return False
 
 @public_bp.route('/brands', methods=['GET'])
 def get_public_brands():
@@ -395,3 +440,138 @@ def get_categories():
     except Exception as e:
         print(f"Error fetching categories: {str(e)}")
         return jsonify({'error': 'Failed to fetch categories'}), 500
+
+
+@public_bp.route('/sitemap.xml', methods=['GET'])
+def get_sitemap():
+    """
+    Generate and serve sitemap.xml for all brand pages
+    Public endpoint - no auth required
+    """
+    try:
+        from datetime import datetime
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Fetch all public brands with slugs
+        cursor.execute('''
+            SELECT slug, updated_at
+            FROM brands
+            WHERE slug IS NOT NULL
+            AND is_public = true
+            ORDER BY updated_at DESC
+        ''')
+        brands = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        # Build sitemap XML
+        sitemap_xml = '''<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+'''
+
+        # Add homepage
+        sitemap_xml += f'''  <url>
+    <loc>https://newcollab.co/</loc>
+    <lastmod>{datetime.now().strftime('%Y-%m-%d')}</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>1.0</priority>
+  </url>
+'''
+
+        # Add directory page
+        sitemap_xml += f'''  <url>
+    <loc>https://newcollab.co/directory</loc>
+    <lastmod>{datetime.now().strftime('%Y-%m-%d')}</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>0.9</priority>
+  </url>
+'''
+
+        # Add all brand pages
+        for brand in brands:
+            last_mod = brand['updated_at'].strftime('%Y-%m-%d') if brand.get('updated_at') else datetime.now().strftime('%Y-%m-%d')
+            sitemap_xml += f'''  <url>
+    <loc>https://newcollab.co/brand/{brand['slug']}</loc>
+    <lastmod>{last_mod}</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+'''
+
+        sitemap_xml += '</urlset>'
+
+        # Return XML with proper content type
+        return Response(sitemap_xml, mimetype='application/xml')
+
+    except Exception as e:
+        print(f"Error generating sitemap: {str(e)}")
+        return jsonify({'error': 'Failed to generate sitemap'}), 500
+
+
+@public_bp.route('/submit-brands-to-indexnow', methods=['POST'])
+def submit_all_brands_to_indexnow():
+    """
+    Submit all brand pages to IndexNow for indexing
+    Can be called manually to update search engines
+
+    Optional: Add CRON_SECRET header for authentication
+    """
+    # Optional authentication
+    cron_secret = os.getenv('CRON_SECRET')
+    if cron_secret:
+        provided_secret = request.headers.get('X-Cron-Secret')
+        if provided_secret != cron_secret:
+            return jsonify({'error': 'Unauthorized'}), 401
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get all public brand slugs
+        cursor.execute('''
+            SELECT slug
+            FROM brands
+            WHERE slug IS NOT NULL
+            AND is_public = true
+        ''')
+        brands = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        # Build URLs
+        brand_urls = [f"https://newcollab.co/brand/{b['slug']}" for b in brands]
+
+        # Add key pages
+        key_pages = [
+            'https://newcollab.co/',
+            'https://newcollab.co/directory'
+        ]
+
+        all_urls = key_pages + brand_urls
+
+        # Submit to IndexNow in batches (max 10,000 URLs per request)
+        batch_size = 1000
+        success_count = 0
+        total_batches = (len(all_urls) + batch_size - 1) // batch_size
+
+        for i in range(0, len(all_urls), batch_size):
+            batch = all_urls[i:i + batch_size]
+            if submit_to_indexnow(batch):
+                success_count += len(batch)
+
+        return jsonify({
+            'success': True,
+            'message': f'Submitted {success_count}/{len(all_urls)} URLs to IndexNow',
+            'total_urls': len(all_urls),
+            'brand_pages': len(brand_urls),
+            'key_pages': len(key_pages),
+            'batches': total_batches
+        }), 200
+
+    except Exception as e:
+        print(f"Error submitting brands to IndexNow: {str(e)}")
+        return jsonify({'error': 'Failed to submit to IndexNow'}), 500
