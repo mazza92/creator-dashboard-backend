@@ -802,7 +802,7 @@ def login():
             'user_role': user_role,
             'creator_id': creator_id,
             'brand_id': brand_id,
-            'redirect_url': '/creator/dashboard/overview' if user_role == 'creator' else '/brand/dashboard/overview'
+            'redirect_url': '/creator/dashboard/pr-brands' if user_role == 'creator' else '/brand/dashboard/bookings'
         }
         response = make_response(jsonify(login_response))
         # Clear old session cookies
@@ -3277,7 +3277,7 @@ def verify_email():
         conn.close()
 
         base_url = os.getenv('BASE_URL', 'https://www.newcollab.co')
-        redirect_url = '/creator/dashboard/overview' if user['role'] == 'creator' else '/brand/dashboard/overview'
+        redirect_url = '/creator/dashboard/pr-brands' if user['role'] == 'creator' else '/brand/dashboard/bookings'
         app.logger.info(f"🟢 Email verified for {email}, redirecting to: {redirect_url}")
 
         return jsonify({
