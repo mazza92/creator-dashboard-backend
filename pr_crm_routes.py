@@ -363,29 +363,57 @@ def save_brand_to_pipeline():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     try:
-        # Check subscription limits
-        from subscription_routes import check_subscription_limits
-        allowed, message, current, limit = check_subscription_limits(creator_id, 'save_brand')
+        # Check daily unlock limit (FREE tier only - 5 per day)
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        if not allowed:
-            return jsonify({
-                'success': False,
-                'error': message,
-                'upgrade_required': True,
-                'current_count': current,
-                'limit': limit
-            }), 403
+        cursor.execute('''
+            SELECT subscription_tier, daily_unlocks_used, last_unlock_date
+            FROM creators
+            WHERE id = %s
+        ''', (creator_id,))
+        creator = cursor.fetchone()
+
+        if not creator:
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Creator not found'}), 404
+
+        tier = creator['subscription_tier'] or 'free'
+
+        # Check daily unlock limit for FREE users
+        if tier == 'free':
+            from datetime import date
+            today = date.today()
+            last_unlock = creator.get('last_unlock_date')
+            daily_unlocks = creator.get('daily_unlocks_used', 0)
+
+            # Reset if it's a new day
+            if last_unlock is None or last_unlock != today:
+                daily_unlocks = 0
+
+            # Check if limit reached
+            DAILY_LIMIT = 5
+            if daily_unlocks >= DAILY_LIMIT:
+                cursor.close()
+                conn.close()
+                return jsonify({
+                    'success': False,
+                    'error': f"You've used all {DAILY_LIMIT} free applications today. Come back tomorrow or upgrade to Pro for unlimited!",
+                    'upgrade_required': True,
+                    'current_count': daily_unlocks,
+                    'limit': DAILY_LIMIT
+                }), 403
 
         data = request.json
         brand_id = data.get('brand_id')
 
         if not brand_id:
+            cursor.close()
+            conn.close()
             return jsonify({'success': False, 'error': 'brand_id required'}), 400
 
-        conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        # Insert or update
+        # Insert or update (conn and cursor already initialized above)
         cursor.execute('''
             INSERT INTO creator_pipeline (creator_id, brand_id, stage, created_at, updated_at)
             VALUES (%s, %s, 'saved', NOW(), NOW())
@@ -396,12 +424,17 @@ def save_brand_to_pipeline():
 
         pipeline_id = cursor.fetchone()['id']
 
-        # Update creator's brands_saved_count
+        # Update creator's brands_saved_count AND daily_unlocks_used (for quota tracking)
+        from datetime import date
+        today = date.today()
+
         cursor.execute('''
             UPDATE creators
-            SET brands_saved_count = brands_saved_count + 1
+            SET brands_saved_count = brands_saved_count + 1,
+                daily_unlocks_used = daily_unlocks_used + 1,
+                last_unlock_date = %s
             WHERE id = %s
-        ''', (creator_id,))
+        ''', (today, creator_id,))
 
         conn.commit()
         cursor.close()

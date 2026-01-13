@@ -279,11 +279,32 @@ def get_subscription_status():
                 subscription_started_at,
                 subscription_ends_at,
                 brands_saved_count,
-                pitches_sent_this_month
+                pitches_sent_this_month,
+                daily_unlocks_used,
+                last_unlock_date
             FROM creators
             WHERE id = %s
         ''', (creator_id,))
         creator = cursor.fetchone()
+
+        # Check if daily unlock counter needs reset (new day)
+        from datetime import date
+        today = date.today()
+        last_unlock = creator.get('last_unlock_date') if creator else None
+
+        # If last unlock was on a different day (or never), reset the counter
+        daily_unlocks = creator.get('daily_unlocks_used', 0) if creator else 0
+        if creator and (last_unlock is None or last_unlock != today):
+            daily_unlocks = 0
+            # Update DB to reset counter
+            cursor.execute('''
+                UPDATE creators
+                SET daily_unlocks_used = 0,
+                    last_unlock_date = %s
+                WHERE id = %s
+            ''', (today, creator_id))
+            conn.commit()
+
         cursor.close()
         conn.close()
 
@@ -296,7 +317,8 @@ def get_subscription_status():
             'started_at': creator.get('subscription_started_at').isoformat() if creator.get('subscription_started_at') else None,
             'ends_at': creator.get('subscription_ends_at').isoformat() if creator.get('subscription_ends_at') else None,
             'brands_saved_count': creator.get('brands_saved_count', 0),
-            'pitches_sent_this_month': creator.get('pitches_sent_this_month', 0)
+            'pitches_sent_this_month': creator.get('pitches_sent_this_month', 0),
+            'daily_unlocks_used': daily_unlocks  # Resets daily
         })
 
     except Exception as e:
