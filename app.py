@@ -36,6 +36,7 @@ from redis.exceptions import ConnectionError, AuthenticationError
 from retry import retry
 import pusher
 from flask import Flask, request, jsonify, session
+from subscription_routes import subscription_bp
 
 # Load environment variables
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
@@ -123,6 +124,9 @@ CORS(app, resources={
         "max_age": 600
     }
 })
+
+# Register blueprints
+app.register_blueprint(subscription_bp)
 
 # Handle OPTIONS preflight requests
 @app.before_request
