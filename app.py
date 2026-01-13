@@ -37,6 +37,7 @@ from retry import retry
 import pusher
 from flask import Flask, request, jsonify, session
 from subscription_routes import subscription_bp
+from pr_crm_routes import pr_crm
 
 # Load environment variables
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
@@ -127,6 +128,7 @@ CORS(app, resources={
 
 # Register blueprints
 app.register_blueprint(subscription_bp)
+app.register_blueprint(pr_crm)
 
 # Handle OPTIONS preflight requests
 @app.before_request
