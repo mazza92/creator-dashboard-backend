@@ -39,6 +39,8 @@ from flask import Flask, request, jsonify, session
 from subscription_routes import subscription_bp
 from pr_crm_routes import pr_crm
 from public_routes import public_bp
+from marketplace_routes import marketplace_bp
+from indexnow_routes import indexnow_bp
 
 # Load environment variables
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
@@ -131,6 +133,8 @@ CORS(app, resources={
 app.register_blueprint(subscription_bp)
 app.register_blueprint(pr_crm)
 app.register_blueprint(public_bp)
+app.register_blueprint(marketplace_bp)
+app.register_blueprint(indexnow_bp)
 
 # Handle OPTIONS preflight requests
 @app.before_request
