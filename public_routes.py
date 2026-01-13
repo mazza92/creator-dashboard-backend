@@ -52,6 +52,7 @@ def get_public_brands():
         # Build query with filters
         query = """
             SELECT
+                id,
                 slug,
                 brand_name,
                 logo_url,
@@ -135,6 +136,7 @@ def get_public_brands():
         # Format response (NO sensitive data like email or application URLs)
         return jsonify({
             'brands': [{
+                'id': b['id'],  # Include ID for save/unsave functionality
                 'slug': b['slug'],
                 'name': b['brand_name'],
                 'logo': b['logo_url'],
