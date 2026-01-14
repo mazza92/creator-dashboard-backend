@@ -4647,9 +4647,9 @@ def verify_email():
 
         # Redirect to onboarding if not completed, otherwise to dashboard
         if not onboarding_completed:
-            redirect_url = '/creator-onboarding' if user['role'] == 'creator' else '/brand-onboarding'
+            redirect_url = '/onboarding' if user['role'] == 'creator' else '/brand/onboarding'
         else:
-            redirect_url = '/creator/dashboard/pr-brands' if user['role'] == 'creator' else '/brand/dashboard/bookings'
+            redirect_url = '/creator/dashboard/pr-brands' if user['role'] == 'creator' else '/brand/dashboard/overview'
 
         app.logger.info(f"🟢 Email verified for {email}, onboarding_completed={onboarding_completed}, redirecting to: {redirect_url}")
 
