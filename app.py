@@ -3364,11 +3364,23 @@ def verify_email():
         session['user_role'] = user['role']
         session.modified = True
 
+        # Check if creator profile exists (Step 2 completed)
+        creator_profile_exists = False
+        if user['role'] == 'creator':
+            cursor.execute("SELECT id FROM creators WHERE user_id = %s", (user['id'],))
+            creator_profile_exists = cursor.fetchone() is not None
+
         conn.close()
 
         base_url = os.getenv('BASE_URL', 'https://www.newcollab.co')
-        redirect_url = '/creator/dashboard/pr-brands' if user['role'] == 'creator' else '/brand/dashboard/bookings'
-        app.logger.info(f"🟢 Email verified for {email}, redirecting to: {redirect_url}")
+
+        # Redirect to profile completion if creator profile doesn't exist
+        if user['role'] == 'creator' and not creator_profile_exists:
+            redirect_url = '/creator/complete-profile'
+            app.logger.info(f"🟢 Email verified for {email}, redirecting to profile completion: {redirect_url}")
+        else:
+            redirect_url = '/creator/dashboard/pr-brands' if user['role'] == 'creator' else '/brand/dashboard/bookings'
+            app.logger.info(f"🟢 Email verified for {email}, redirecting to dashboard: {redirect_url}")
 
         return jsonify({
             'message': 'Email verified successfully, please log in to your account.',
