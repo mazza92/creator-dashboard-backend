@@ -1961,12 +1961,12 @@ def get_public_brand_by_slug(slug):
         categories_str = ', '.join(brand['categories']) if brand['categories'] else 'various niches'
 
         seo_data = {
-            'title': f"{brand['name']} PR List Application: Requirements & How to Apply (2026) | NewCollab",
-            'description': f"Direct link to the {brand['name']} PR application form. See follower requirements (min {follower_req}), acceptance rates, and PR manager contacts. Apply for free.",
-            'keywords': f"{brand['name']}, {brand['name']} PR, {brand['name']} PR list, {brand['name']} influencer, {brand['name']} collaboration, {categories_str}",
+            'title': f"{brand['name']} PR Application Form & Requirements (2026) | NewCollab",
+            'description': f"Direct {brand['name']} PR application form. See requirements (min {follower_req}), PR list application process, and contact info. Micro-influencer friendly. Apply free.",
+            'keywords': f"{brand['name']} PR application form, {brand['name']} PR list, {brand['name']} pr requirements, how to get {brand['name']} PR, {brand['name']} influencer, {categories_str} pr forms",
             'canonical': f"https://newcollab.co/brand/{slug}",
-            'ogTitle': f"How to Get on {brand['name']} PR List - Requirements & Application",
-            'ogDescription': f"Apply for {brand['name']} PR packages. Minimum {follower_req}. Direct application link + PR contact info.",
+            'ogTitle': f"{brand['name']} PR Application Form - Requirements & How to Apply",
+            'ogDescription': f"Access {brand['name']} PR application form. Minimum {follower_req}. Direct application link + PR manager contact info.",
             'ogImage': brand['logo'] or 'https://newcollab.co/og-default.png'
         }
 
