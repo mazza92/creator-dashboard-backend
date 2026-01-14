@@ -12,15 +12,37 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from services.pr_hunter import PRHunterService
-from database import get_db_connection
 from psycopg2.extras import RealDictCursor
+import psycopg2
+
+# Don't import from app - causes circular import
+# Define get_db_connection here to avoid circular dependency
+def get_db_connection():
+    """Get database connection"""
+    return psycopg2.connect(os.getenv('DATABASE_URL'), cursor_factory=RealDictCursor)
 
 
 # Initialize Celery
+import ssl
+
+redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+
+# Configure SSL for rediss:// URLs (Upstash)
+broker_use_ssl = None
+redis_backend_use_ssl = None
+
+if redis_url.startswith('rediss://'):
+    broker_use_ssl = {
+        'ssl_cert_reqs': ssl.CERT_NONE
+    }
+    redis_backend_use_ssl = {
+        'ssl_cert_reqs': ssl.CERT_NONE
+    }
+
 celery_app = Celery(
     'pr_hunter',
-    broker=os.getenv('REDIS_URL', 'redis://localhost:6379/0'),
-    backend=os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+    broker=redis_url,
+    backend=redis_url
 )
 
 celery_app.conf.update(
@@ -29,6 +51,8 @@ celery_app.conf.update(
     result_serializer='json',
     timezone='UTC',
     enable_utc=True,
+    broker_use_ssl=broker_use_ssl,
+    redis_backend_use_ssl=redis_backend_use_ssl,
 )
 
 
@@ -168,17 +192,22 @@ def save_candidate_to_db(cursor, brand: dict, keyword: str):
             brand_name, website_url, domain, instagram_handle, tiktok_handle,
             pr_manager_name, pr_manager_linkedin, pr_manager_title,
             contact_email, email_source, verification_score, verification_status, is_catch_all,
+            application_url, application_method, form_platform,
             logo_url, description, status, discovery_source
         ) VALUES (
             %(brand_name)s, %(website_url)s, %(domain)s, %(instagram_handle)s, %(tiktok_handle)s,
             %(pr_manager_name)s, %(pr_manager_linkedin)s, %(pr_manager_title)s,
             %(contact_email)s, %(email_source)s, %(verification_score)s, %(verification_status)s, %(is_catch_all)s,
+            %(application_url)s, %(application_method)s, %(form_platform)s,
             %(logo_url)s, %(description)s, 'PENDING', %(discovery_source)s
         )
         ON CONFLICT (domain) DO UPDATE SET
             updated_at = CURRENT_TIMESTAMP,
             verification_score = EXCLUDED.verification_score,
-            verification_status = EXCLUDED.verification_status
+            verification_status = EXCLUDED.verification_status,
+            application_url = EXCLUDED.application_url,
+            application_method = EXCLUDED.application_method,
+            form_platform = EXCLUDED.form_platform
         RETURNING id
     '''
 
@@ -196,6 +225,9 @@ def save_candidate_to_db(cursor, brand: dict, keyword: str):
         'verification_score': brand.get('verification_score', 0),
         'verification_status': brand.get('verification_status', 'unknown'),
         'is_catch_all': brand.get('is_catch_all', False),
+        'application_url': brand.get('application_url'),
+        'application_method': brand.get('application_method', 'EMAIL_ONLY'),
+        'form_platform': brand.get('form_platform'),
         'logo_url': brand.get('logo_url'),
         'description': brand.get('description'),
         'discovery_source': f"{keyword} - {brand.get('discovery_source', 'Unknown')}"

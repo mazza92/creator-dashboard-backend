@@ -42,6 +42,7 @@ from public_routes import public_bp
 # from marketplace_routes import marketplace_bp  # Disabled - using inline endpoint instead (newer schema)
 from indexnow_routes import indexnow_bp
 from email_cron_routes import email_cron_bp
+from routes.admin_pr_hunter import admin_pr_hunter_bp
 
 # Load environment variables
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
@@ -113,20 +114,22 @@ except Exception as e:
 
 
 
-# Initialize CORS
+# Initialize CORS with comprehensive configuration
 CORS(app, resources={
-    r"/.*": {
+    r"/*": {
         "origins": [
             "http://localhost:3000",
             "https://newcollab.co",
             "https://www.newcollab.co",
             "https://api.newcollab.co"
         ],
-        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization", "X-CSRF-Token"],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+        "allow_headers": ["Content-Type", "Authorization", "X-CSRF-Token", "Accept"],
         "supports_credentials": True,
-        "expose_headers": ["Content-Type", "Authorization", "X-CSRF-Token"],
-        "max_age": 600
+        "expose_headers": ["Content-Type", "Authorization", "X-CSRF-Token", "Set-Cookie"],
+        "max_age": 3600,
+        "send_wildcard": False,
+        "always_send": True
     }
 })
 
@@ -137,6 +140,7 @@ app.register_blueprint(public_bp)
 # app.register_blueprint(marketplace_bp)  # Disabled - using inline endpoint instead (newer schema)
 app.register_blueprint(indexnow_bp)
 app.register_blueprint(email_cron_bp)
+app.register_blueprint(admin_pr_hunter_bp)
 
 # Handle OPTIONS preflight requests
 @app.before_request
@@ -4088,7 +4092,7 @@ def generate_verification_token(email):
     return token
 
 def send_verification_email(email, token):
-    base_url = os.getenv('BASE_URL', 'https://www.newcollab.co')
+    base_url = os.getenv('BASE_URL', 'https://newcollab.co')
     verification_url = f"{base_url}/verify-email?token={token}"
     app.logger.info(f"🟢 Building verification URL: {verification_url}")
     msg = MIMEMultipart()
@@ -4291,7 +4295,7 @@ def register_brand():
         session.modified = True
         app.logger.info(f"🟢 Session Set: user_id={session.get('user_id')}, role={session.get('user_role')}, brand_id={session.get('brand_id')}")
 
-        base_url = os.getenv('BASE_URL', 'https://www.newcollab.co')
+        base_url = os.getenv('BASE_URL', 'https://newcollab.co')
         return jsonify({
             'message': 'Registration successful, please verify your email',
             'redirect_url': f'{base_url}/verify-email-pending',
@@ -4621,15 +4625,34 @@ def verify_email():
         session['user_role'] = user['role']
         session.modified = True
 
+        # Check if user has completed onboarding
+        if user['role'] == 'creator':
+            cursor.execute("SELECT id, onboarding_completed FROM creators WHERE user_id = %s", (user['id'],))
+            creator = cursor.fetchone()
+            onboarding_completed = creator['onboarding_completed'] if creator else False
+        elif user['role'] == 'brand':
+            cursor.execute("SELECT id FROM brands WHERE user_id = %s", (user['id'],))
+            brand = cursor.fetchone()
+            onboarding_completed = brand is not None
+        else:
+            onboarding_completed = False
+
         conn.close()
 
-        base_url = os.getenv('BASE_URL', 'https://www.newcollab.co')
-        redirect_url = '/creator/dashboard/pr-brands' if user['role'] == 'creator' else '/brand/dashboard/bookings'
-        app.logger.info(f"🟢 Email verified for {email}, redirecting to: {redirect_url}")
+        base_url = os.getenv('BASE_URL', 'https://newcollab.co')
+
+        # Redirect to onboarding if not completed, otherwise to dashboard
+        if not onboarding_completed:
+            redirect_url = '/creator-onboarding' if user['role'] == 'creator' else '/brand-onboarding'
+        else:
+            redirect_url = '/creator/dashboard/pr-brands' if user['role'] == 'creator' else '/brand/dashboard/bookings'
+
+        app.logger.info(f"🟢 Email verified for {email}, onboarding_completed={onboarding_completed}, redirecting to: {redirect_url}")
 
         return jsonify({
-            'message': 'Email verified successfully, please log in to your account.',
+            'message': 'Email verified successfully!',
             'user_role': user['role'],
+            'onboarding_completed': onboarding_completed,
             'redirect_url': f'{base_url}{redirect_url}'
         }), 200
 
@@ -9452,8 +9475,8 @@ def connect_stripe_account():
         # Create account link for onboarding
         account_link = stripe.AccountLink.create(
             account=account.id,
-            refresh_url='https://www.newcollab.co/stripe/reauth',
-            return_url='https://www.newcollab.co/stripe/success',
+            refresh_url='https://newcollab.co/stripe/reauth',
+            return_url='https://newcollab.co/stripe/success',
             type='account_onboarding'
         )
 

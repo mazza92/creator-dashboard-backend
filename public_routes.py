@@ -15,6 +15,26 @@ public_bp = Blueprint('public', __name__, url_prefix='/api/public')
 INDEXNOW_KEY = '5b821f1380424d116b8da378e4ca2f143a13f7236d7dd3db58d09cb3e0aeb736'
 INDEXNOW_API_URL = 'https://api.indexnow.org/indexnow'
 
+# CORS Configuration for Public Routes
+ALLOWED_ORIGINS = [
+    'http://localhost:3000',
+    'https://newcollab.co',
+    'https://www.newcollab.co',
+    'https://api.newcollab.co'
+]
+
+@public_bp.after_request
+def add_cors_headers(response):
+    """Add CORS headers to all public route responses"""
+    origin = request.headers.get('Origin')
+    if origin in ALLOWED_ORIGINS:
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        response.headers['Access-Control-Max-Age'] = '3600'
+    return response
+
 def get_db_connection():
     """Get database connection"""
     return psycopg2.connect(

@@ -13,7 +13,12 @@ import os
 # Add parent directory for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database import get_db_connection
+# Import from app instead of non-existent database module
+import psycopg2
+def get_db_connection():
+    """Get database connection - imported from app.py pattern"""
+    return psycopg2.connect(os.getenv('DATABASE_URL'), cursor_factory=RealDictCursor)
+
 from tasks.pr_hunter_tasks import run_pr_hunt, reverify_email
 
 
@@ -26,10 +31,15 @@ admin_pr_hunter_bp = Blueprint('admin_pr_hunter', __name__, url_prefix='/api/adm
 # ============================================================================
 
 def admin_required(f):
-    """Decorator to require admin authentication"""
+    """
+    Decorator to require admin authentication for PR Hunter
+
+    IMPORTANT: PR Hunter is INTERNAL USE ONLY
+    Only whitelisted admin emails can access these endpoints
+    """
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Check if user is authenticated and is admin
+        # Check if user is authenticated
         user_id = session.get('user_id')
         if not user_id:
             return jsonify({'error': 'Authentication required'}), 401
@@ -37,12 +47,23 @@ def admin_required(f):
         try:
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            cursor.execute('SELECT role FROM users WHERE id = %s', (user_id,))
+            cursor.execute('SELECT email, user_role FROM users WHERE id = %s', (user_id,))
             user = cursor.fetchone()
             conn.close()
 
-            if not user or user['role'] != 'brand':  # Assuming brands are admins
-                return jsonify({'error': 'Admin access required'}), 403
+            if not user:
+                return jsonify({'error': 'User not found'}), 403
+
+            # WHITELIST: Only these emails can access PR Hunter
+            ADMIN_EMAILS = [
+                'maher@newcollab.co',
+                # Add other admin emails here
+            ]
+
+            user_email = user.get('email', '').lower()
+
+            if user_email not in ADMIN_EMAILS:
+                return jsonify({'error': 'PR Hunter is for internal use only. Admin access required.'}), 403
 
         except Exception as e:
             return jsonify({'error': str(e)}), 500
@@ -453,7 +474,7 @@ def reject_candidates():
         return jsonify({'error': str(e)}), 500
 
 
-@admin_pr_hunter_bp.route('/candidates/<int:candidate_id>/reverify', methods={'POST'])
+@admin_pr_hunter_bp.route('/candidates/<int:candidate_id>/reverify', methods=['POST'])
 @admin_required
 def reverify_candidate_email(candidate_id):
     """
