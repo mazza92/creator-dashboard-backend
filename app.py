@@ -1300,8 +1300,16 @@ def get_creators():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/profile/onboarding', methods=['POST'])
+@app.route('/profile/onboarding', methods=['POST', 'OPTIONS'])
 def complete_profile():
+    if request.method == 'OPTIONS':
+        response = jsonify({'success': True})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-CSRF-Token'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 200
+
     try:
         app.logger.info(f"🎯 Profile onboarding request received")
 
@@ -1475,18 +1483,27 @@ def complete_profile():
             send_welcome_email(user_id, 'creator', welcome_data)
 
         base_url = get_base_url()
-        return jsonify({
+        response = jsonify({
             'message': 'Profile completed!',
             'redirect_url': f'{base_url}/creator/first-ad-slot'
-        }), 200
+        })
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 200
 
     except Exception as e:
         app.logger.error(f"🔥 Error completing profile: {str(e)}")
         if 'conn' in locals():
             conn.rollback()
         if isinstance(e, psycopg2.errors.UniqueViolation) or 'duplicate key value violates unique constraint "username"' in str(e):
-            return jsonify({'error': 'This username is already taken. Please choose another.'}), 409
-        return jsonify({'error': str(e)}), 500
+            error_response = jsonify({'error': 'This username is already taken. Please choose another.'})
+            error_response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+            error_response.headers['Access-Control-Allow-Credentials'] = 'true'
+            return error_response, 409
+        error_response = jsonify({'error': str(e)})
+        error_response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        error_response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return error_response, 500
     finally:
         if 'cursor' in locals():
             cursor.close()
@@ -3476,8 +3493,16 @@ def register_brand():
             conn.close()
 
 
-@app.route('/register/creator/account', methods=['POST'])
+@app.route('/register/creator/account', methods=['POST', 'OPTIONS'])
 def register_creator_account():
+    if request.method == 'OPTIONS':
+        response = jsonify({'success': True})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-CSRF-Token'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 200
+
     try:
         required_fields = ['firstName', 'lastName', 'email', 'password']
         missing_fields = [field for field in required_fields if not request.form.get(field)]
