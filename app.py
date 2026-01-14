@@ -4626,10 +4626,11 @@ def verify_email():
         session.modified = True
 
         # Check if user has completed onboarding
+        # Onboarding is considered complete when a row exists in creators/brands table
         if user['role'] == 'creator':
-            cursor.execute("SELECT id, onboarding_completed FROM creators WHERE user_id = %s", (user['id'],))
+            cursor.execute("SELECT id FROM creators WHERE user_id = %s", (user['id'],))
             creator = cursor.fetchone()
-            onboarding_completed = creator['onboarding_completed'] if creator else False
+            onboarding_completed = creator is not None
         elif user['role'] == 'brand':
             cursor.execute("SELECT id FROM brands WHERE user_id = %s", (user['id'],))
             brand = cursor.fetchone()
