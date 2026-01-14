@@ -439,30 +439,56 @@ def unlock_brand_access(slug):
             response['isPro'] = True
 
         # Auto-save to creator's pipeline
-        try:
-            cursor.execute("""
-                INSERT INTO creator_pipeline (creator_id, brand_id, stage, created_at)
-                SELECT %s, id, 'saved', NOW()
-                FROM pr_brands
-                WHERE slug = %s
-                ON CONFLICT DO NOTHING
-            """, (creator_id, slug))
-            conn.commit()
-        except:
-            pass  # Silent fail if already exists
+        # Check if brand was already saved before
+        cursor.execute("""
+            SELECT id FROM creator_pipeline
+            WHERE creator_id = %s AND brand_id = (SELECT id FROM pr_brands WHERE slug = %s)
+        """, (creator_id, slug))
+        already_saved = cursor.fetchone() is not None
 
-        # Update daily unlock counter (FREE users only)
+        cursor.execute("""
+            INSERT INTO creator_pipeline (creator_id, brand_id, stage, created_at)
+            SELECT %s, id, 'saved', NOW()
+            FROM pr_brands
+            WHERE slug = %s
+            ON CONFLICT (creator_id, brand_id) DO UPDATE SET updated_at = NOW()
+        """, (creator_id, slug))
+
+        # Update counters
         if tier == 'free':
+            # FREE users: increment both brands_saved_count (if new) and daily_unlocks_used
             today = date.today()
-            cursor.execute('''
-                UPDATE creators
-                SET daily_unlocks_used = daily_unlocks_used + 1,
-                    last_unlock_date = %s
-                WHERE id = %s
-            ''', (today, creator_id))
-            conn.commit()
-            app.logger.info(f"✅ Incremented quota for creator {creator_id} - new count: {daily_unlocks + 1}")
-            print(f"✅ Incremented quota for creator {creator_id} - new count: {daily_unlocks + 1}")
+            if not already_saved:
+                cursor.execute('''
+                    UPDATE creators
+                    SET brands_saved_count = brands_saved_count + 1,
+                        daily_unlocks_used = daily_unlocks_used + 1,
+                        last_unlock_date = %s
+                    WHERE id = %s
+                ''', (today, creator_id))
+                app.logger.info(f"✅ New brand saved - incremented both counters for creator {creator_id}")
+                print(f"✅ New brand saved - incremented both counters for creator {creator_id}")
+            else:
+                cursor.execute('''
+                    UPDATE creators
+                    SET daily_unlocks_used = daily_unlocks_used + 1,
+                        last_unlock_date = %s
+                    WHERE id = %s
+                ''', (today, creator_id))
+                app.logger.info(f"✅ Re-unlocked existing brand - incremented daily quota only for creator {creator_id}")
+                print(f"✅ Re-unlocked existing brand - incremented daily quota only for creator {creator_id}")
+        else:
+            # PRO/ELITE users: only increment brands_saved_count if it's a new brand
+            if not already_saved:
+                cursor.execute('''
+                    UPDATE creators
+                    SET brands_saved_count = brands_saved_count + 1
+                    WHERE id = %s
+                ''', (creator_id,))
+                app.logger.info(f"✅ New brand saved - incremented brands_saved_count for creator {creator_id}")
+                print(f"✅ New brand saved - incremented brands_saved_count for creator {creator_id}")
+
+        conn.commit()
 
         cursor.close()
         conn.close()
