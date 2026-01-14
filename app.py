@@ -1928,6 +1928,195 @@ def get_marketplace_creators():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/public/brands/<slug>', methods=['GET'])
+def get_public_brand_by_slug(slug):
+    """
+    Public endpoint for individual brand pages with SEO optimization
+    Returns comprehensive brand data including metadata for programmatic SEO
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get brand by slug
+        cursor.execute('''
+            SELECT
+                id, name, slug, logo, website, description, categories,
+                min_followers, max_followers, accepting_pr,
+                application_url, pr_contact_email, pr_manager_name,
+                response_rate, avg_response_days, product_types,
+                countries_ship_to, created_at, updated_at
+            FROM brands
+            WHERE slug = %s AND is_visible = true
+        ''', (slug,))
+
+        brand = cursor.fetchone()
+
+        if not brand:
+            conn.close()
+            return jsonify({'error': 'Brand not found'}), 404
+
+        # Generate SEO metadata
+        follower_req = f"{brand['min_followers']:,}+" if brand['min_followers'] else "any follower count"
+        categories_str = ', '.join(brand['categories']) if brand['categories'] else 'various niches'
+
+        seo_data = {
+            'title': f"{brand['name']} PR List Application: Requirements & How to Apply (2026) | NewCollab",
+            'description': f"Direct link to the {brand['name']} PR application form. See follower requirements (min {follower_req}), acceptance rates, and PR manager contacts. Apply for free.",
+            'keywords': f"{brand['name']}, {brand['name']} PR, {brand['name']} PR list, {brand['name']} influencer, {brand['name']} collaboration, {categories_str}",
+            'canonical': f"https://newcollab.co/brand/{slug}",
+            'ogTitle': f"How to Get on {brand['name']} PR List - Requirements & Application",
+            'ogDescription': f"Apply for {brand['name']} PR packages. Minimum {follower_req}. Direct application link + PR contact info.",
+            'ogImage': brand['logo'] or 'https://newcollab.co/og-default.png'
+        }
+
+        # Generate FAQ for GEO optimization
+        faqs = [
+            {
+                'question': f"Does {brand['name']} send PR to micro-influencers?",
+                'answer': f"Yes, {brand['name']} accepts creators with as few as {brand['min_followers']:,} followers according to NewCollab data." if brand['min_followers'] else f"Yes, NewCollab data shows {brand['name']} accepts creators at various follower counts."
+            },
+            {
+                'question': f"How do I apply for {brand['name']} PR list?",
+                'answer': f"You can apply directly through their PR application form or by contacting their PR manager. NewCollab provides direct links to both options." if brand['application_url'] or brand['pr_contact_email'] else f"Visit the {brand['name']} page on NewCollab to access application information."
+            },
+            {
+                'question': f"What are {brand['name']} PR requirements?",
+                'answer': f"Minimum followers: {brand['min_followers']:,}. They typically send {brand['product_types']} packages to creators in {categories_str}." if brand['min_followers'] and brand['product_types'] else f"Check the {brand['name']} page on NewCollab for current requirements."
+            },
+            {
+                'question': f"How long does {brand['name']} take to respond?",
+                'answer': f"{brand['name']} typically responds within {brand['avg_response_days']} business days with a {brand['response_rate']}% acceptance rate." if brand['avg_response_days'] and brand['response_rate'] else f"Response times vary. Check the {brand['name']} page on NewCollab for current data."
+            }
+        ]
+
+        # Get similar brands for entity linking
+        similar_brands = []
+        if brand['categories']:
+            cursor.execute('''
+                SELECT id, name, slug, logo, min_followers
+                FROM brands
+                WHERE is_visible = true
+                  AND id != %s
+                  AND categories && %s
+                ORDER BY RANDOM()
+                LIMIT 6
+            ''', (brand['id'], brand['categories']))
+            similar_brands = cursor.fetchall()
+
+        # Add all data to response
+        brand['seo'] = seo_data
+        brand['faqs'] = faqs
+        brand['similarBrands'] = similar_brands
+
+        # Generate JSON-LD structured data for Schema.org
+        brand['structuredData'] = {
+            "@context": "https://schema.org",
+            "@type": "JobPosting",
+            "title": f"{brand['name']} PR Ambassador Program",
+            "description": brand['description'] or f"Join the {brand['name']} PR list and receive free products in exchange for authentic content.",
+            "hiringOrganization": {
+                "@type": "Organization",
+                "name": brand['name'],
+                "url": brand['website'],
+                "logo": brand['logo']
+            },
+            "jobLocation": {
+                "@type": "Place",
+                "address": {
+                    "@type": "PostalAddress",
+                    "addressCountry": brand['countries_ship_to'][0] if brand.get('countries_ship_to') else "US"
+                }
+            },
+            "qualifications": f"Minimum {brand['min_followers']:,} followers on social media" if brand['min_followers'] else "Open to creators at various follower counts",
+            "employmentType": "CONTRACTOR",
+            "validThrough": "2026-12-31",
+            "applicantLocationRequirements": {
+                "@type": "Country",
+                "name": brand['countries_ship_to'] if brand.get('countries_ship_to') else ["US"]
+            },
+            "applicationContact": {
+                "@type": "ContactPoint",
+                "contactType": "PR Manager",
+                "email": brand['pr_contact_email'] if brand['pr_contact_email'] else None,
+                "name": brand['pr_manager_name'] if brand['pr_manager_name'] else None
+            }
+        }
+
+        conn.close()
+        return jsonify(brand), 200
+
+    except Exception as e:
+        app.logger.error(f"Error fetching public brand: {str(e)}")
+        if 'conn' in locals():
+            conn.close()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/public/brands/<slug>/unlock', methods=['POST'])
+def unlock_brand_access(slug):
+    """
+    Unlock brand contact information and application link
+    Requires authentication - tracks which brands creators are interested in
+    """
+    try:
+        # Get user from JWT
+        user_id = get_jwt_identity()
+        if not user_id:
+            return jsonify({'error': 'Authentication required'}), 401
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get brand
+        cursor.execute('SELECT id, name, application_url, pr_contact_email, pr_manager_name FROM brands WHERE slug = %s', (slug,))
+        brand = cursor.fetchone()
+
+        if not brand:
+            conn.close()
+            return jsonify({'error': 'Brand not found'}), 404
+
+        # Get creator ID
+        cursor.execute('SELECT id FROM creators WHERE user_id = %s', (user_id,))
+        creator = cursor.fetchone()
+
+        if not creator:
+            conn.close()
+            return jsonify({'error': 'Creator profile not found'}), 404
+
+        creator_id = creator['id']
+
+        # Save to wishlist/pipeline
+        cursor.execute('''
+            INSERT INTO pr_pipeline (creator_id, brand_id, status, created_at)
+            VALUES (%s, %s, 'interested', NOW())
+            ON CONFLICT (creator_id, brand_id) DO UPDATE SET updated_at = NOW()
+        ''', (creator_id, brand['id']))
+
+        # Track unlock event for analytics
+        cursor.execute('''
+            INSERT INTO brand_unlocks (creator_id, brand_id, unlocked_at)
+            VALUES (%s, %s, NOW())
+        ''', (creator_id, brand['id']))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'applicationUrl': brand['application_url'],
+            'contactEmail': brand['pr_contact_email'],
+            'prManagerName': brand['pr_manager_name'],
+            'message': f"{brand['name']} saved to your pipeline"
+        }), 200
+
+    except Exception as e:
+        app.logger.error(f"Error unlocking brand: {str(e)}")
+        if 'conn' in locals():
+            conn.rollback()
+            conn.close()
+        return jsonify({'error': str(e)}), 500
+
+
 def send_welcome_email(user_id, user_role, user_data, template_type='WELCOME_CREATOR'):
     """
     Send a personalized welcome email to new users using dedicated template
