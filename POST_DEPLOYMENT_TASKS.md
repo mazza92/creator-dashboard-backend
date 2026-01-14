@@ -44,12 +44,12 @@ CREATE INDEX IF NOT EXISTS idx_creators_last_new_brands_email ON creators(last_n
 -- Migration 3: PR reminders tracking table
 CREATE TABLE IF NOT EXISTS pr_email_reminders (
     id SERIAL PRIMARY KEY,
-    package_id INTEGER NOT NULL REFERENCES pr_packages(id) ON DELETE CASCADE,
+    offer_id UUID NOT NULL REFERENCES pr_offers(id) ON DELETE CASCADE,
     reminder_type VARCHAR(50) NOT NULL,
     sent_at TIMESTAMP NOT NULL DEFAULT NOW(),
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
-CREATE INDEX IF NOT EXISTS idx_pr_email_reminders_package ON pr_email_reminders(package_id);
+CREATE INDEX IF NOT EXISTS idx_pr_email_reminders_offer ON pr_email_reminders(offer_id);
 CREATE INDEX IF NOT EXISTS idx_pr_email_reminders_type ON pr_email_reminders(reminder_type);
 ```
 

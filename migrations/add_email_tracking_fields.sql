@@ -14,17 +14,18 @@ COMMENT ON COLUMN creators.last_new_brands_email_sent IS 'Timestamp of last "new
 -- Create pr_email_reminders table for tracking PR package reminders
 CREATE TABLE IF NOT EXISTS pr_email_reminders (
     id SERIAL PRIMARY KEY,
-    package_id INTEGER NOT NULL REFERENCES pr_packages(id) ON DELETE CASCADE,
+    offer_id UUID NOT NULL REFERENCES pr_offers(id) ON DELETE CASCADE,
     reminder_type VARCHAR(50) NOT NULL, -- 'product_received_check' or 'start_content'
     sent_at TIMESTAMP NOT NULL DEFAULT NOW(),
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
 -- Create indexes for efficient querying
-CREATE INDEX IF NOT EXISTS idx_pr_email_reminders_package ON pr_email_reminders(package_id);
+CREATE INDEX IF NOT EXISTS idx_pr_email_reminders_offer ON pr_email_reminders(offer_id);
 CREATE INDEX IF NOT EXISTS idx_pr_email_reminders_type ON pr_email_reminders(reminder_type);
 CREATE INDEX IF NOT EXISTS idx_pr_email_reminders_sent ON pr_email_reminders(sent_at);
 
 -- Comment for documentation
 COMMENT ON TABLE pr_email_reminders IS 'Tracks PR package reminder emails sent to creators';
+COMMENT ON COLUMN pr_email_reminders.offer_id IS 'Reference to pr_offers table (UUID)';
 COMMENT ON COLUMN pr_email_reminders.reminder_type IS 'Type of reminder: product_received_check (7 days after shipping) or start_content (48 hours after receipt)';

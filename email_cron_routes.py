@@ -300,130 +300,130 @@ def process_pr_reminders():
         sent_count = 0
         errors = []
 
-        # 1. Find packages shipped 7 days ago that haven't been received
+        # 1. Find offers shipped 7 days ago that haven't been received
         cursor.execute("""
             SELECT
-                pr.id as package_id,
+                pr.id as offer_id,
                 pr.status,
-                pr.shipped_date,
+                pr.shipped_at,
                 pr.brand_id,
                 pr.creator_id,
                 b.brand_name,
                 c.username as creator_name,
                 u.email as creator_email
-            FROM pr_packages pr
+            FROM pr_offers pr
             JOIN brands b ON pr.brand_id = b.id
             JOIN creators c ON pr.creator_id = c.id
             JOIN users u ON c.user_id = u.id
             WHERE pr.status = 'shipped'
-              AND pr.shipped_date < NOW() - INTERVAL '7 days'
-              AND pr.shipped_date > NOW() - INTERVAL '8 days'
+              AND pr.shipped_at < NOW() - INTERVAL '7 days'
+              AND pr.shipped_at > NOW() - INTERVAL '8 days'
               AND NOT EXISTS (
                 SELECT 1 FROM pr_email_reminders
-                WHERE package_id = pr.id
+                WHERE offer_id = pr.id
                 AND reminder_type = 'product_received_check'
               )
             LIMIT 50
         """)
 
-        shipped_packages = cursor.fetchall()
+        shipped_offers = cursor.fetchall()
 
-        for package in shipped_packages:
+        for offer in shipped_offers:
             try:
                 context = {
-                    'message': f"<p>Hey {package['creator_name']}! 👋</p><p>It's been a week since {package['brand_name']} shipped your PR package. Have you received it yet?</p><p>Please confirm receipt so the brand knows their package arrived safely.</p>",
+                    'message': f"<p>Hey {offer['creator_name']}! 👋</p><p>It's been a week since {offer['brand_name']} shipped your PR package. Have you received it yet?</p><p>Please confirm receipt so the brand knows their package arrived safely.</p>",
                     'action_url': f"{os.getenv('FRONTEND_URL', 'https://newcollab.co')}/creator/dashboard/pr-pipeline",
                     'action_text': "Confirm Receipt",
-                    'user_id': package['creator_id'],
+                    'user_id': offer['creator_id'],
                     'email_header_title': "Did your PR package arrive?",
-                    'email_header_subtitle': f"Update from {package['brand_name']}"
+                    'email_header_subtitle': f"Update from {offer['brand_name']}"
                 }
 
                 success, error = send_template_email(
-                    to_email=package['creator_email'],
+                    to_email=offer['creator_email'],
                     template_name='onboarding_reminder.html',
-                    subject=f"Did you receive your PR package from {package['brand_name']}?",
+                    subject=f"Did you receive your PR package from {offer['brand_name']}?",
                     context=context
                 )
 
                 if success:
                     # Record reminder sent
                     cursor.execute("""
-                        INSERT INTO pr_email_reminders (package_id, reminder_type, sent_at)
+                        INSERT INTO pr_email_reminders (offer_id, reminder_type, sent_at)
                         VALUES (%s, 'product_received_check', NOW())
-                    """, (package['package_id'],))
+                    """, (offer['offer_id'],))
                     conn.commit()
 
                     sent_count += 1
-                    print(f"✅ Sent receipt reminder to {package['creator_email']}")
+                    print(f"✅ Sent receipt reminder to {offer['creator_email']}")
                 else:
-                    errors.append(f"Error sending to {package['creator_email']}: {error}")
+                    errors.append(f"Error sending to {offer['creator_email']}: {error}")
 
             except Exception as e:
-                errors.append(f"Error processing package {package['package_id']}: {str(e)}")
+                errors.append(f"Error processing offer {offer['offer_id']}: {str(e)}")
                 continue
 
-        # 2. Find packages received 48 hours ago that haven't started content
+        # 2. Find offers received 48 hours ago that haven't started content
         cursor.execute("""
             SELECT
-                pr.id as package_id,
+                pr.id as offer_id,
                 pr.status,
-                pr.received_date,
+                pr.product_received_at,
                 pr.brand_id,
                 pr.creator_id,
                 b.brand_name,
                 c.username as creator_name,
                 u.email as creator_email
-            FROM pr_packages pr
+            FROM pr_offers pr
             JOIN brands b ON pr.brand_id = b.id
             JOIN creators c ON pr.creator_id = c.id
             JOIN users u ON c.user_id = u.id
             WHERE pr.status IN ('product_received', 'content_in_progress')
-              AND pr.received_date < NOW() - INTERVAL '48 hours'
-              AND pr.received_date > NOW() - INTERVAL '72 hours'
+              AND pr.product_received_at < NOW() - INTERVAL '48 hours'
+              AND pr.product_received_at > NOW() - INTERVAL '72 hours'
               AND NOT EXISTS (
                 SELECT 1 FROM pr_email_reminders
-                WHERE package_id = pr.id
+                WHERE offer_id = pr.id
                 AND reminder_type = 'start_content'
               )
             LIMIT 50
         """)
 
-        received_packages = cursor.fetchall()
+        received_offers = cursor.fetchall()
 
-        for package in received_packages:
+        for offer in received_offers:
             try:
                 context = {
-                    'message': f"<p>Hey {package['creator_name']}! 👋</p><p>Now that you've received your PR package from {package['brand_name']}, it's time to create some amazing content!</p><p>Brands love seeing content within 2-3 days of receipt. Let's keep that momentum going! 🚀</p>",
+                    'message': f"<p>Hey {offer['creator_name']}! 👋</p><p>Now that you've received your PR package from {offer['brand_name']}, it's time to create some amazing content!</p><p>Brands love seeing content within 2-3 days of receipt. Let's keep that momentum going! 🚀</p>",
                     'action_url': f"{os.getenv('FRONTEND_URL', 'https://newcollab.co')}/creator/dashboard/pr-pipeline",
                     'action_text': "Update Status",
-                    'user_id': package['creator_id'],
+                    'user_id': offer['creator_id'],
                     'email_header_title': "Ready to create content?",
-                    'email_header_subtitle': f"Your PR package from {package['brand_name']} is waiting!"
+                    'email_header_subtitle': f"Your PR package from {offer['brand_name']} is waiting!"
                 }
 
                 success, error = send_template_email(
-                    to_email=package['creator_email'],
+                    to_email=offer['creator_email'],
                     template_name='onboarding_reminder.html',
-                    subject=f"Time to create content for {package['brand_name']}! 🎥",
+                    subject=f"Time to create content for {offer['brand_name']}! 🎥",
                     context=context
                 )
 
                 if success:
                     # Record reminder sent
                     cursor.execute("""
-                        INSERT INTO pr_email_reminders (package_id, reminder_type, sent_at)
+                        INSERT INTO pr_email_reminders (offer_id, reminder_type, sent_at)
                         VALUES (%s, 'start_content', NOW())
-                    """, (package['package_id'],))
+                    """, (offer['offer_id'],))
                     conn.commit()
 
                     sent_count += 1
-                    print(f"✅ Sent content reminder to {package['creator_email']}")
+                    print(f"✅ Sent content reminder to {offer['creator_email']}")
                 else:
-                    errors.append(f"Error sending to {package['creator_email']}: {error}")
+                    errors.append(f"Error sending to {offer['creator_email']}: {error}")
 
             except Exception as e:
-                errors.append(f"Error processing package {package['package_id']}: {str(e)}")
+                errors.append(f"Error processing offer {offer['offer_id']}: {str(e)}")
                 continue
 
         cursor.close()
@@ -431,7 +431,7 @@ def process_pr_reminders():
 
         return jsonify({
             'success': True,
-            'message': f'Processed {len(shipped_packages) + len(received_packages)} PR reminders',
+            'message': f'Processed {len(shipped_offers) + len(received_offers)} PR reminders',
             'sent': sent_count,
             'errors': len(errors),
             'error_details': errors[:5]
