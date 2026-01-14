@@ -342,7 +342,12 @@ def unlock_brand_access(slug):
     Requires: User must be logged in
     Returns: Application link for Free users, Email for Pro users
     """
-    from flask import session
+    from flask import session, current_app as app
+    from datetime import date
+
+    print(f"\n{'='*60}")
+    print(f"🔓 UNLOCK ENDPOINT CALLED - Brand: {slug}")
+    print(f"{'='*60}\n")
 
     try:
         # Check authentication
@@ -352,12 +357,12 @@ def unlock_brand_access(slug):
         if not user_id or not creator_id:
             return jsonify({'error': 'Authentication required'}), 401
 
-        # Get user's subscription tier
+        # Get user's subscription tier AND quota tracking
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         cursor.execute("""
-            SELECT subscription_tier
+            SELECT subscription_tier, daily_unlocks_used, last_unlock_date
             FROM creators
             WHERE id = %s
         """, (creator_id,))
@@ -367,6 +372,37 @@ def unlock_brand_access(slug):
             return jsonify({'error': 'Creator not found'}), 404
 
         tier = creator['subscription_tier'] or 'free'
+
+        app.logger.info(f"🔍 Unlock request - Creator ID: {creator_id}, Tier: {tier}")
+        print(f"🔍 Unlock request - Creator ID: {creator_id}, Tier: {tier}")
+
+        # Check daily unlock limit for FREE users only
+        if tier == 'free':
+            today = date.today()
+            last_unlock = creator.get('last_unlock_date')
+            daily_unlocks = creator.get('daily_unlocks_used', 0)
+
+            app.logger.info(f"🔍 Free user quota check - Current: {daily_unlocks}/5, Last unlock: {last_unlock}, Today: {today}")
+            print(f"🔍 Free user quota check - Current: {daily_unlocks}/5, Last unlock: {last_unlock}, Today: {today}")
+
+            # Reset if it's a new day
+            if last_unlock is None or last_unlock != today:
+                daily_unlocks = 0
+                app.logger.info(f"🔄 Resetting daily counter (new day or first unlock)")
+                print(f"🔄 Resetting daily counter (new day or first unlock)")
+
+            # Check if limit reached
+            DAILY_LIMIT = 5
+            if daily_unlocks >= DAILY_LIMIT:
+                app.logger.warning(f"🚫 Quota limit reached for creator {creator_id}")
+                print(f"🚫 Quota limit reached for creator {creator_id}")
+                conn.close()
+                return jsonify({
+                    'error': f"You've used all {DAILY_LIMIT} free application forms today. Come back tomorrow or upgrade to Pro for unlimited!",
+                    'upgrade_required': True,
+                    'current_count': daily_unlocks,
+                    'limit': DAILY_LIMIT
+                }), 403
 
         # Get brand data
         cursor.execute("""
@@ -414,6 +450,19 @@ def unlock_brand_access(slug):
             conn.commit()
         except:
             pass  # Silent fail if already exists
+
+        # Update daily unlock counter (FREE users only)
+        if tier == 'free':
+            today = date.today()
+            cursor.execute('''
+                UPDATE creators
+                SET daily_unlocks_used = daily_unlocks_used + 1,
+                    last_unlock_date = %s
+                WHERE id = %s
+            ''', (today, creator_id))
+            conn.commit()
+            app.logger.info(f"✅ Incremented quota for creator {creator_id} - new count: {daily_unlocks + 1}")
+            print(f"✅ Incremented quota for creator {creator_id} - new count: {daily_unlocks + 1}")
 
         cursor.close()
         conn.close()
