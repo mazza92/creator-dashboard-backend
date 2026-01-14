@@ -1575,6 +1575,359 @@ def get_creator_profile(creator_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/marketplace/creators', methods=['GET'])
+def get_marketplace_creators():
+    """
+    Public marketplace endpoint for browsing creators
+    Supports filtering by niche and sorting by engagement rate, followers, or newest
+    """
+    try:
+        niche = request.args.get('niche', '').strip()
+        country = request.args.get('country', '').strip()
+        sort_by = request.args.get('sort', 'newest')  # newest, engagement, followers
+        public_only = request.args.get('public', 'true') == 'true'
+
+        app.logger.debug(f"Marketplace filter - niche: '{niche}', country: '{country}', sort: '{sort_by}'")
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Debug: Check what niche values actually exist and test the filter
+        if niche and niche.lower() != 'all niches':
+            # First, let's see what niche values exist
+            cursor.execute('''
+                SELECT DISTINCT niche, COUNT(*) as count
+                FROM creators
+                WHERE public_profile_enabled = true
+                  AND niche IS NOT NULL
+                  AND niche != ''
+                GROUP BY niche
+                ORDER BY count DESC
+                LIMIT 20
+            ''')
+            sample_niches = cursor.fetchall()
+            app.logger.debug(f"Sample niche values in DB: {[(n['niche'], n['count']) for n in sample_niches]}")
+
+            # Test if any niche contains our search term
+            cursor.execute('''
+                SELECT id, username, niche
+                FROM creators
+                WHERE public_profile_enabled = true
+                  AND niche IS NOT NULL
+                  AND niche != ''
+                  AND niche ILIKE %s
+                LIMIT 5
+            ''', (f'%{niche}%',))
+            test_results = cursor.fetchall()
+            app.logger.debug(f"Test query results for '{niche}': {[(r['id'], r['username'], r['niche']) for r in test_results]}")
+
+        # Build query
+        where_clauses = []
+        params = []
+
+        if public_only:
+            where_clauses.append('c.public_profile_enabled = true')
+
+        if niche and niche.lower() != 'all niches':
+            # Filter by niche. Since niche can be stored in various formats, we'll also check pr_wishlist
+            # which is already mapped to valid PR categories. This gives us better matching.
+            # Escape special characters for LIKE patterns (% and _)
+            niche_escaped = niche.replace('%', '\\%').replace('_', '\\_')
+
+            # Try matching in both niche and pr_wishlist columns
+            where_clauses.append('''
+                (
+                    (
+                        -- Match in niche column (various formats)
+                        c.niche IS NOT NULL
+                        AND c.niche != ''
+                        AND (
+                            LOWER(TRIM(c.niche)) = LOWER(%s)
+                            OR c.niche ILIKE %s
+                            OR c.niche ILIKE %s
+                            OR c.niche ILIKE %s
+                        )
+                    )
+                    OR
+                    (
+                        -- Match in pr_wishlist column (JSONB array of valid categories)
+                        c.pr_wishlist IS NOT NULL
+                        AND c.pr_wishlist::text != '[]'
+                        AND c.pr_wishlist::text != 'null'
+                        AND EXISTS (
+                            SELECT 1
+                            FROM jsonb_array_elements_text(c.pr_wishlist) AS elem
+                            WHERE LOWER(TRIM(elem::text)) = LOWER(%s)
+                        )
+                    )
+                )
+            ''')
+            # Match exact value in niche
+            params.append(niche)
+            # Match as substring in niche (handles JSON arrays and single strings)
+            params.append(f'%{niche_escaped}%')
+            # Match with quotes in JSON array
+            params.append(f'%"{niche_escaped}"%')
+            # Match with single quotes
+            params.append(f"%'{niche_escaped}'%")
+            # Match in pr_wishlist (exact category name)
+            params.append(niche)
+
+        if country and country.lower() != 'all locations':
+            where_clauses.append('u.country = %s')
+            params.append(country)
+
+        where_sql = ' AND '.join(where_clauses) if where_clauses else '1=1'
+
+        # Build ORDER BY clause
+        order_by = 'c.created_at DESC'  # default: newest
+        if sort_by == 'engagement':
+            order_by = 'c.engagement_rate DESC NULLS LAST'
+        elif sort_by == 'followers':
+            order_by = 'c.followers_count DESC'
+        elif sort_by == 'newest':
+            order_by = 'c.created_at DESC'
+
+        # Check if user is authenticated AND is a brand (only brands get full results)
+        # Everyone else (creators, unauthenticated) gets limited to 26 as a teaser
+        is_brand_user = False
+        user_role = None
+
+        # Check Authorization header
+        auth_header = request.headers.get('Authorization', '')
+        has_auth_header = auth_header and auth_header.startswith('Bearer ')
+
+        # Check for JWT in cookies
+        has_jwt_cookie = bool(request.cookies.get('access_token_cookie'))
+
+        app.logger.debug(f"Marketplace auth check - Header: {has_auth_header}, Cookie: {has_jwt_cookie}")
+
+        # Only try to verify if we have a token AND it's a valid JWT
+        if has_auth_header or has_jwt_cookie:
+            try:
+                # Use verify_jwt_in_request with optional=True
+                from flask_jwt_extended import verify_jwt_in_request
+                verify_jwt_in_request(optional=True)
+                # get_jwt_identity() will return None if optional=True and no valid token
+                identity = get_jwt_identity()
+                if identity:
+                    # Get user role from database
+                    cursor.execute('''
+                        SELECT role FROM users WHERE id = %s
+                    ''', (identity,))
+                    user_result = cursor.fetchone()
+                    if user_result:
+                        user_role = user_result['role']
+                        # Only brands get full results - creators and others are limited
+                        is_brand_user = (user_role == 'brand')
+                        app.logger.info(f"Marketplace: User authenticated as {identity} (role: {user_role}) - {'full results' if is_brand_user else 'limited to 26'}")
+                    else:
+                        app.logger.info("Marketplace: User ID found but no role - treating as public (limit 26)")
+                else:
+                    app.logger.info("Marketplace: Token found but invalid/expired - treating as public (limit 26)")
+            except Exception as e:
+                # Token exists but is invalid/expired - treat as not authenticated
+                app.logger.info(f"Marketplace: Authentication check failed: {str(e)} - treating as public (limit 26)")
+                is_brand_user = False
+        else:
+            # No token at all - definitely not authenticated
+            app.logger.info("Marketplace: No auth token found - treating as public user (limit 26)")
+            is_brand_user = False
+
+        # Save original where_sql for counting total available (to show "X more available")
+        count_where_sql = where_sql
+
+        # If it's a public user (not brand), only show specific curated creators
+        if not is_brand_user:
+            curated_ids = [171, 170, 168, 166, 163, 154, 147, 144, 134, 115, 110, 67]
+            id_list = ','.join(str(id) for id in curated_ids)
+
+            # OVERRIDE: Ignore user filters for public view to showcase best profiles
+            # Reset params to remove niche/country filters so query doesn't fail with mismatched params
+            params = []
+
+            # Force WHERE clause to only show curated IDs (and ensure public enabled)
+            where_sql = f"c.public_profile_enabled = true AND c.id IN ({id_list})"
+
+            # Force count WHERE clause to show ALL public profiles (to make total_available high)
+            # This ensures the "Sign up to see X more" trigger always fires
+            count_where_sql = "c.public_profile_enabled = true"
+
+        # ALWAYS limit to 26 for non-brand users (teaser/baiter)
+        # Only brand users get full results (100)
+        limit = 26 if not is_brand_user else 100
+
+        app.logger.info(f"Marketplace: Applying limit of {limit} creators (is_brand_user: {is_brand_user}, user_role: {user_role})")
+
+        # Get creators with their active projects
+        # Use parameterized query for limit to ensure it's properly applied
+        query = f'''
+            SELECT
+                c.id,
+                c.username,
+                c.image_profile,
+                c.niche,
+                c.followers_count,
+                c.engagement_rate as avg_engagement_rate,
+                c.bio,
+                u.country,
+                c.created_at,
+                u.first_name,
+                u.last_name,
+                c.pr_wishlist as categories_raw,
+                -- Get platforms from social_links
+                c.social_links as platforms_raw
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE {where_sql}
+            ORDER BY {order_by}
+            LIMIT %s
+        '''
+
+        # Add limit to params to ensure it's properly applied
+        params.append(limit)
+
+        app.logger.debug(f"Marketplace query WHERE clause: {where_sql}")
+        app.logger.debug(f"Marketplace query params: {params}")
+        app.logger.info(f"Marketplace: Executing query with LIMIT {limit} (is_brand_user: {is_brand_user})")
+
+        cursor.execute(query, params)
+        creators = cursor.fetchall()
+
+        app.logger.info(f"Marketplace: Query returned {len(creators)} creators (limit was {limit}, is_brand_user: {is_brand_user})")
+
+        # CRITICAL: Always enforce 26 limit for non-brand users
+        # This is a hard limit regardless of what the query returns
+        if not is_brand_user:
+            if len(creators) > 26:
+                app.logger.warning(f"Marketplace: Got {len(creators)} creators but limit is 26 - truncating to 26")
+            creators = creators[:26]  # Always truncate to 26 for non-brand users
+            app.logger.info(f"Marketplace: Enforced 26 creator limit - returning {len(creators)} creators")
+
+        # Get total count for non-brand users to show "more available" message
+        total_count = None
+        if not is_brand_user:
+            count_query = f'''
+                SELECT COUNT(*) as total
+                FROM creators c
+                JOIN users u ON c.user_id = u.id
+                WHERE {count_where_sql}
+            '''
+            # Use params excluding the limit (which was appended last)
+            cursor.execute(count_query, params[:-1])
+            total_result = cursor.fetchone()
+            total_count = total_result['total'] if total_result else 0
+
+        # Get active projects for each creator (optional - table may not exist)
+        for creator in creators:
+            try:
+                # Try to get from sponsor_drafts table (if it exists)
+                cursor.execute('''
+                    SELECT id, title, content_format, platforms, starting_bid
+                    FROM sponsor_drafts
+                    WHERE creator_id = %s AND status = 'published'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                ''', (creator['id'],))
+                project = cursor.fetchone()
+                creator['projects'] = [project] if project else []
+            except Exception as e:
+                # If table doesn't exist or query fails, just set empty projects
+                app.logger.debug(f"Could not fetch projects for creator {creator['id']}: {str(e)}")
+                creator['projects'] = []
+
+            # Parse platforms from social_links
+            if creator.get('platforms_raw'):
+                try:
+                    if isinstance(creator['platforms_raw'], str):
+                        platforms_data = json.loads(creator['platforms_raw'])
+                    else:
+                        platforms_data = creator['platforms_raw']
+
+                    if isinstance(platforms_data, list):
+                        # Filter out empty platform strings and extract all valid platforms
+                        creator['platforms'] = [p.get('platform', '').strip() for p in platforms_data if p.get('platform') and p.get('platform').strip()]
+                    elif isinstance(platforms_data, dict):
+                        creator['platforms'] = [platforms_data.get('platform', '')] if platforms_data.get('platform') else []
+                    else:
+                        creator['platforms'] = []
+                except:
+                    creator['platforms'] = []
+            else:
+                creator['platforms'] = []
+
+            # Parse categories from pr_wishlist
+            if creator.get('categories_raw'):
+                try:
+                    categories_data = creator['categories_raw']
+
+                    # Handle different formats: JSONB array, JSON string, or Python list
+                    if isinstance(categories_data, str):
+                        # Try to parse as JSON string first
+                        try:
+                            categories_data = json.loads(categories_data)
+                        except json.JSONDecodeError:
+                            # If it's not valid JSON, try to parse as a string representation
+                            # e.g., '["Beauty", "Fashion"]' or '["Beauty","Fashion"]'
+                            if categories_data.startswith('[') and categories_data.endswith(']'):
+                                # Remove brackets and quotes, split by comma
+                                # Handle both " and ' quotes, and escaped quotes
+                                cleaned = categories_data[1:-1]  # Remove outer brackets
+                                # Split by comma, but be careful with commas inside quotes
+                                # Match quoted strings (handles both single and double quotes)
+                                matches = re.findall(r'["\']([^"\']*)["\']', cleaned)
+                                if matches:
+                                    categories_data = [cat.strip() for cat in matches if cat.strip()]
+                                else:
+                                    # Fallback: simple split if regex doesn't work
+                                    categories_data = [cat.strip().strip('"\'') for cat in cleaned.split(',') if cat.strip()]
+                            else:
+                                categories_data = []
+
+                    # Ensure it's a list
+                    if isinstance(categories_data, list):
+                        # Filter out empty strings and None values
+                        creator['categories'] = [cat for cat in categories_data if cat and isinstance(cat, str)]
+                    elif isinstance(categories_data, dict):
+                        # If it's a dict, try to extract values
+                        creator['categories'] = [v for v in categories_data.values() if v and isinstance(v, str)]
+                    else:
+                        creator['categories'] = []
+                except Exception as e:
+                    app.logger.debug(f"Error parsing categories for creator {creator.get('id')}: {str(e)}")
+                    creator['categories'] = []
+            else:
+                creator['categories'] = []
+
+            # Convert avg_engagement_rate from Decimal to float for JSON serialization
+            if creator.get('avg_engagement_rate') is not None:
+                try:
+                    # Convert Decimal to float
+                    creator['avg_engagement_rate'] = float(creator['avg_engagement_rate'])
+                except (ValueError, TypeError):
+                    creator['avg_engagement_rate'] = None
+            else:
+                creator['avg_engagement_rate'] = None
+
+        conn.close()
+
+        return jsonify({
+            'creators': creators,
+            'filters': {
+                'niche': niche if niche else None,
+                'country': country if country else None,
+                'sort': sort_by
+            },
+            'total': len(creators),
+            'total_available': total_count if total_count is not None else len(creators),
+            'is_limited': not is_brand_user
+        }), 200
+
+    except Exception as e:
+        app.logger.error(f"Error fetching marketplace creators: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
 def send_welcome_email(user_id, user_role, user_data, template_type='WELCOME_CREATOR'):
     """
     Send a personalized welcome email to new users using dedicated template
