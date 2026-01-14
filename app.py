@@ -180,6 +180,197 @@ def add_cors_headers(response):
         response.headers['Access-Control-Expose-Headers'] = 'Content-Type, X-CSRF-Token, Set-Cookie'
     return response
 
+# PR Categories for wishlist management
+VALID_PR_CATEGORIES = [
+    'Skincare & Beauty',
+    'Fashion & Style',
+    'Tech & Gadgets',
+    'Wellness & Fitness',
+    'Food & Nutrition',
+    'Travel & Adventure',
+    'Gaming',
+    'Sustainable/Eco',
+    'Parenting & Family',
+    'Home & Lifestyle',
+    'Music & Entertainment',
+    'Sports & Outdoors',
+    'Health & Medical',
+    'Finance & Business',
+    'Arts & Crafts',
+    'Education',
+    'Automotive',
+    'Pet Products',
+    'Books & Literature',
+    'Photography'
+]
+
+def map_niche_to_pr_categories(niche_value):
+    """Map niche value(s) to valid PR categories."""
+    if not niche_value:
+        return []
+
+    # Parse niche into a list
+    niche_list = []
+    if isinstance(niche_value, str):
+        if niche_value.strip().startswith('[') and niche_value.strip().endswith(']'):
+            try:
+                parsed = json.loads(niche_value)
+                if isinstance(parsed, list):
+                    niche_list = [str(item).strip() for item in parsed if item]
+                else:
+                    niche_list = [str(parsed).strip()] if parsed else []
+            except (json.JSONDecodeError, ValueError):
+                cleaned = niche_value.strip()[1:-1]
+                matches = re.findall(r'["\']([^"\']*)["\']', cleaned)
+                if matches:
+                    niche_list = [m.strip() for m in matches if m.strip()]
+                else:
+                    niche_list = [item.strip().strip('"\'') for item in cleaned.split(',') if item.strip()]
+        else:
+            niche_list = [niche_value.strip()] if niche_value.strip() else []
+    elif isinstance(niche_value, list):
+        niche_list = [str(item).strip() for item in niche_value if item]
+    else:
+        niche_list = [str(niche_value).strip()] if niche_value else []
+
+    # Map niche values to valid PR categories
+    mapped_categories = []
+    for niche_item in niche_list:
+        niche_lower = niche_item.lower().strip()
+
+        # Direct match (case-insensitive)
+        for valid_category in VALID_PR_CATEGORIES:
+            if valid_category.lower() == niche_lower:
+                if valid_category not in mapped_categories:
+                    mapped_categories.append(valid_category)
+                break
+        else:
+            # Fuzzy matching for common variations
+            niche_mappings = {
+                'beauty': 'Skincare & Beauty',
+                'skincare': 'Skincare & Beauty',
+                'fashion': 'Fashion & Style',
+                'style': 'Fashion & Style',
+                'tech': 'Tech & Gadgets',
+                'technology': 'Tech & Gadgets',
+                'gadgets': 'Tech & Gadgets',
+                'wellness': 'Wellness & Fitness',
+                'fitness': 'Wellness & Fitness',
+                'health': 'Health & Medical',
+                'food': 'Food & Nutrition',
+                'nutrition': 'Food & Nutrition',
+                'travel': 'Travel & Adventure',
+                'adventure': 'Travel & Adventure',
+                'gaming': 'Gaming',
+                'games': 'Gaming',
+                'sustainable': 'Sustainable/Eco',
+                'eco': 'Sustainable/Eco',
+                'parenting': 'Parenting & Family',
+                'family': 'Parenting & Family',
+                'home': 'Home & Lifestyle',
+                'lifestyle': 'Home & Lifestyle',
+                'music': 'Music & Entertainment',
+                'entertainment': 'Music & Entertainment',
+                'sports': 'Sports & Outdoors',
+                'outdoors': 'Sports & Outdoors',
+                'medical': 'Health & Medical',
+                'finance': 'Finance & Business',
+                'business': 'Finance & Business',
+                'arts': 'Arts & Crafts',
+                'crafts': 'Arts & Crafts',
+                'education': 'Education',
+                'automotive': 'Automotive',
+                'cars': 'Automotive',
+                'pet': 'Pet Products',
+                'pets': 'Pet Products',
+                'books': 'Books & Literature',
+                'literature': 'Books & Literature',
+                'photography': 'Photography',
+                'photo': 'Photography'
+            }
+
+            # Check if any part of the niche matches
+            for key, mapped_category in niche_mappings.items():
+                if key in niche_lower:
+                    if mapped_category not in mapped_categories:
+                        mapped_categories.append(mapped_category)
+                    break
+
+    return mapped_categories
+
+def sync_niche_to_pr_wishlist(creator_id, niche, conn=None):
+    """Automatically populate pr_wishlist from niche if pr_wishlist is empty."""
+    try:
+        if not niche or not creator_id:
+            return
+
+        should_close = False
+        if conn is None:
+            conn = get_db_connection()
+            should_close = True
+
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Check if pr_wishlist is empty or null
+        cursor.execute("SELECT pr_wishlist FROM creators WHERE id = %s", (creator_id,))
+        result = cursor.fetchone()
+
+        if result:
+            pr_wishlist = result.get('pr_wishlist')
+            is_empty = False
+
+            # Check if pr_wishlist is empty
+            if pr_wishlist is None:
+                is_empty = True
+            elif isinstance(pr_wishlist, str):
+                try:
+                    parsed = json.loads(pr_wishlist) if pr_wishlist else []
+                    is_empty = len(parsed) == 0
+                except:
+                    is_empty = pr_wishlist.strip() in ['', '[]', 'null']
+            elif isinstance(pr_wishlist, list):
+                is_empty = len(pr_wishlist) == 0
+            else:
+                is_empty = True
+
+            # If empty, populate with niche
+            if is_empty and niche:
+                mapped_categories = map_niche_to_pr_categories(niche)
+
+                if not mapped_categories:
+                    return
+
+                pr_wishlist_json = json.dumps(mapped_categories, ensure_ascii=False)
+
+                try:
+                    cursor.execute("""
+                        UPDATE creators
+                        SET pr_wishlist = %s::jsonb
+                        WHERE id = %s
+                    """, (pr_wishlist_json, creator_id))
+                    conn.commit()
+                except Exception as e:
+                    # Try separate table approach
+                    try:
+                        cursor.execute("DELETE FROM pr_wishlist WHERE creator_id = %s", (creator_id,))
+                        for category in mapped_categories:
+                            cursor.execute(
+                                "INSERT INTO pr_wishlist (creator_id, category) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                                (creator_id, category)
+                            )
+                        conn.commit()
+                    except Exception as table_error:
+                        pass
+
+        cursor.close()
+        if should_close:
+            conn.close()
+
+    except Exception as e:
+        app.logger.error(f"Error syncing niche to pr_wishlist for creator {creator_id}: {str(e)}")
+        if should_close and conn:
+            conn.close()
+
 # Database connection
 def get_db_connection():
     try:
