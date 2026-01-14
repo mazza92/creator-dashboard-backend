@@ -488,6 +488,31 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+def is_production_environment():
+    """Helper function to determine if we're in production environment"""
+    flask_env = os.getenv('FLASK_ENV')
+    node_env = os.getenv('NODE_ENV')
+    vercel_env = os.getenv('VERCEL_ENV')
+    vercel_url = os.getenv('VERCEL_URL', '')
+
+    is_prod = (
+        flask_env == 'production' or
+        node_env == 'production' or
+        vercel_env == 'production' or
+        'vercel' in vercel_url.lower()
+    )
+
+    # Log environment variables for debugging
+    app.logger.info(f"🔍 Environment check - FLASK_ENV: {flask_env}, NODE_ENV: {node_env}, VERCEL_ENV: {vercel_env}, VERCEL_URL: {vercel_url}, is_production: {is_prod}")
+
+    return is_prod
+
+
+def get_base_url():
+    """Helper function to get the appropriate base URL for the environment"""
+    return 'https://newcollab.co' if is_production_environment() else 'http://localhost:3000'
+
+
 def upload_file_to_supabase(file, bucket_name):
     """
     Uploads a file to Supabase and returns its public URL.
