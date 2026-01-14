@@ -156,7 +156,7 @@ def handle_options():
         ]
         if origin in allowed_origins:
             response.headers['Access-Control-Allow-Origin'] = origin
-            response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+            response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, PATCH, OPTIONS'
             response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-CSRF-Token'
             response.headers['Access-Control-Allow-Credentials'] = 'true'
             response.headers['Access-Control-Max-Age'] = '600'
@@ -2063,6 +2063,9 @@ def unlock_brand_access(slug):
     Unlock brand contact information and application link
     Requires authentication - tracks which brands creators are interested in
     """
+    print(f"\n{'='*60}")
+    print(f"UNLOCK ENDPOINT CALLED - Brand: {slug}")
+    print(f"{'='*60}\n")
     try:
         # Get user from JWT
         user_id = get_jwt_identity()
@@ -2095,6 +2098,8 @@ def unlock_brand_access(slug):
         creator_id = creator['id']
         tier = creator.get('subscription_tier') or 'free'
 
+        app.logger.info(f"🔍 Unlock request - Creator ID: {creator_id}, Tier: {tier}")
+
         # Check daily unlock limit for FREE users only
         if tier == 'free':
             from datetime import date
@@ -2102,13 +2107,17 @@ def unlock_brand_access(slug):
             last_unlock = creator.get('last_unlock_date')
             daily_unlocks = creator.get('daily_unlocks_used', 0)
 
+            app.logger.info(f"🔍 Free user quota check - Current: {daily_unlocks}/5, Last unlock: {last_unlock}, Today: {today}")
+
             # Reset if it's a new day
             if last_unlock is None or last_unlock != today:
                 daily_unlocks = 0
+                app.logger.info(f"🔄 Resetting daily counter (new day or first unlock)")
 
             # Check if limit reached
             DAILY_LIMIT = 5
             if daily_unlocks >= DAILY_LIMIT:
+                app.logger.warning(f"🚫 Quota limit reached for creator {creator_id}")
                 conn.close()
                 return jsonify({
                     'error': f"You've used all {DAILY_LIMIT} free application forms today. Come back tomorrow or upgrade to Pro for unlimited!",
@@ -2140,6 +2149,7 @@ def unlock_brand_access(slug):
                     last_unlock_date = %s
                 WHERE id = %s
             ''', (today, creator_id))
+            app.logger.info(f"✅ Incremented quota for creator {creator_id} - new count will be {daily_unlocks + 1}")
 
         conn.commit()
         conn.close()
