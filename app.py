@@ -1109,6 +1109,200 @@ def get_creators():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/profile/onboarding', methods=['POST'])
+def complete_profile():
+    try:
+        app.logger.info(f"🎯 Profile onboarding request received")
+
+        # Try to get user_id from session first
+        user_id = session.get('user_id')
+
+        # If not in session, try form data
+        if not user_id:
+            user_id_from_form = request.form.get('user_id')
+            if user_id_from_form:
+                user_id = int(user_id_from_form)
+            else:
+                # Try to get from email
+                email_from_form = request.form.get('email')
+                if email_from_form:
+                    conn = get_db_connection()
+                    try:
+                        cursor = conn.cursor(cursor_factory=RealDictCursor)
+                        cursor.execute("SELECT id FROM users WHERE email = %s AND is_verified = true", (email_from_form,))
+                        user = cursor.fetchone()
+                        cursor.close()
+
+                        if user:
+                            user_id = user['id']
+                        else:
+                            conn.close()
+                            return jsonify({'error': 'Invalid email or user not verified'}), 401
+                    except Exception as db_error:
+                        try:
+                            conn.close()
+                        except:
+                            pass
+                        return jsonify({'error': 'Database error during validation'}), 500
+                else:
+                    return jsonify({'error': 'Not authenticated'}), 401
+
+        app.logger.info(f"👤 Profile onboarding for user_id: {user_id}")
+
+        # Required profile fields
+        required_fields = ['bio', 'username']
+        missing_fields = [field for field in required_fields if not request.form.get(field)]
+        if missing_fields:
+            return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+
+        # Get all profile fields from request.form
+        bio = request.form.get('bio')
+        username = request.form.get('username')
+        primary_age_range = request.form.get('primaryAgeRange')
+        regions = request.form.get('regions', '[]')
+        interests = request.form.get('interests', '[]')
+        social_links = request.form.get('socialLinks', '[]')
+        portfolio_links = request.form.get('portfolioLinks', '[]')
+        total_posts = int(request.form.get('totalPosts', 0))
+        total_views = int(request.form.get('totalViews', 0))
+        total_likes = int(request.form.get('totalLikes', 0))
+        total_comments = int(request.form.get('totalComments', 0))
+        total_shares = int(request.form.get('totalShares', 0))
+
+        # Parse JSON fields
+        import json
+        try:
+            social_links_list = json.loads(social_links)
+        except Exception:
+            social_links_list = []
+        try:
+            platforms = [link.get('platform') for link in social_links_list if link.get('platform')]
+            followers_count = sum(int(link.get('followersCount', 0)) for link in social_links_list if str(link.get('followersCount', '')).isdigit())
+        except Exception:
+            platforms = []
+            followers_count = 0
+
+        # Engagement rate calculation
+        engagement_rate = (
+            round((total_likes + total_comments + total_shares) / total_views * 100, 2)
+            if total_views > 0 else 0.0
+        )
+        if engagement_rate >= 1000:
+            engagement_rate = 999.99
+
+        # Handle image upload
+        profile_pic_url = None
+        if 'imageProfile' in request.files:
+            file = request.files['imageProfile']
+            if not allowed_file(file.filename):
+                return jsonify({'error': 'Invalid file format. Only PNG, JPEG, or JPG allowed'}), 400
+            profile_pic_url = upload_file_to_supabase(file, SUPABASE_BUCKET)
+
+        # Get database connection
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Check if creator profile exists
+        cursor.execute("SELECT id FROM creators WHERE user_id = %s", (user_id,))
+        creator = cursor.fetchone()
+
+        if creator:
+            # Update existing creator profile
+            cursor.execute(
+                '''
+                UPDATE creators
+                SET username=%s, bio=%s, image_profile=%s, social_links=%s, portfolio_links=%s,
+                    primary_age_range=%s, regions=%s, niche=%s, total_posts=%s, total_views=%s,
+                    total_likes=%s, total_comments=%s, total_shares=%s, followers_count=%s,
+                    platforms=%s, engagement_rate=%s
+                WHERE user_id=%s
+                RETURNING id
+                ''',
+                (
+                    username, bio, profile_pic_url, social_links, portfolio_links,
+                    primary_age_range, regions, interests, total_posts, total_views,
+                    total_likes, total_comments, total_shares, followers_count,
+                    json.dumps(platforms), engagement_rate, user_id
+                )
+            )
+            result = cursor.fetchone()
+            if result and interests:
+                creator_id = result['id']
+                sync_niche_to_pr_wishlist(creator_id, interests, conn)
+        else:
+            # Insert new creator profile
+            cursor.execute(
+                '''
+                INSERT INTO creators (
+                    user_id, username, bio, image_profile, social_links, portfolio_links,
+                    primary_age_range, regions, niche, total_posts, total_views,
+                    total_likes, total_comments, total_shares, followers_count,
+                    platforms, engagement_rate
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                ''',
+                (
+                    user_id, username, bio, profile_pic_url, social_links, portfolio_links,
+                    primary_age_range, regions, interests, total_posts, total_views,
+                    total_likes, total_comments, total_shares, followers_count,
+                    json.dumps(platforms), engagement_rate
+                )
+            )
+            result = cursor.fetchone()
+            if result and interests:
+                creator_id = result['id']
+                sync_niche_to_pr_wishlist(creator_id, interests, conn)
+
+        conn.commit()
+
+        # Set session
+        if not session.get('user_id'):
+            session['user_id'] = user_id
+
+        cursor.execute("SELECT id FROM creators WHERE user_id = %s", (user_id,))
+        creator_row = cursor.fetchone()
+        if creator_row:
+            session['creator_id'] = creator_row['id']
+
+        if not session.get('role'):
+            cursor.execute("SELECT role FROM users WHERE id = %s", (user_id,))
+            user_role_row = cursor.fetchone()
+            if user_role_row:
+                session['role'] = user_role_row['role']
+
+        session.modified = True
+
+        # Send welcome email
+        cursor.execute("SELECT email, first_name FROM users WHERE id = %s", (user_id,))
+        user_data = cursor.fetchone()
+        if user_data:
+            welcome_data = {
+                'email': user_data['email'],
+                'first_name': user_data['first_name'],
+                'username': username
+            }
+            send_welcome_email(user_id, 'creator', welcome_data)
+
+        base_url = get_base_url()
+        return jsonify({
+            'message': 'Profile completed!',
+            'redirect_url': f'{base_url}/creator/first-ad-slot'
+        }), 200
+
+    except Exception as e:
+        app.logger.error(f"🔥 Error completing profile: {str(e)}")
+        if 'conn' in locals():
+            conn.rollback()
+        if isinstance(e, psycopg2.errors.UniqueViolation) or 'duplicate key value violates unique constraint "username"' in str(e):
+            return jsonify({'error': 'This username is already taken. Please choose another.'}), 409
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+
+
 @app.route('/creator-profile/<int:creator_id>', methods=['GET'])
 def get_creator_profile(creator_id):
     if not creator_id:
@@ -3089,7 +3283,121 @@ def register_brand():
             cursor.close()
         if 'conn' in locals():
             conn.close()
-        
+
+
+@app.route('/register/creator/account', methods=['POST'])
+def register_creator_account():
+    try:
+        required_fields = ['firstName', 'lastName', 'email', 'password']
+        missing_fields = [field for field in required_fields if not request.form.get(field)]
+        if missing_fields:
+            return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+
+        first_name = request.form.get('firstName')
+        last_name = request.form.get('lastName')
+        email = request.form.get('email')
+        password = request.form.get('password')
+        pr_list_signup = request.form.get('pr_list_signup') == 'true'
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
+        if cursor.fetchone():
+            conn.close()
+            return jsonify({"error": "Email already registered"}), 400
+
+        verification_token = generate_verification_token(email)
+        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode()
+
+        column_exists = False
+        try:
+            cursor.execute("SELECT pr_list_signup FROM users LIMIT 1")
+            column_exists = True
+        except Exception:
+            try:
+                cursor.execute("ALTER TABLE users ADD COLUMN pr_list_signup BOOLEAN DEFAULT FALSE")
+                conn.commit()
+                column_exists = True
+                app.logger.info("✅ Added pr_list_signup column to users table")
+            except Exception as alter_error:
+                app.logger.warning(f"⚠️ Could not add pr_list_signup column: {str(alter_error)}")
+
+        if column_exists:
+            cursor.execute(
+                '''
+                INSERT INTO users (first_name, last_name, email, password, role, is_verified, verification_token, pr_list_signup)
+                VALUES (%s, %s, %s, %s, 'creator', %s, %s, %s)
+                RETURNING id
+                ''',
+                (first_name, last_name, email, hashed_password, False, verification_token, pr_list_signup)
+            )
+        else:
+            cursor.execute(
+                '''
+                INSERT INTO users (first_name, last_name, email, password, role, is_verified, verification_token)
+                VALUES (%s, %s, %s, %s, 'creator', %s, %s)
+                RETURNING id
+                ''',
+                (first_name, last_name, email, hashed_password, False, verification_token)
+            )
+        user_id = cursor.fetchone()['id']
+        conn.commit()
+
+        send_verification_email(email, verification_token)
+
+        if pr_list_signup:
+            app.logger.info(f"📋 PR list signup flag stored for {email}")
+
+        session.clear()
+        session['user_id'] = user_id
+        session['user_role'] = 'creator'
+        session.permanent = True
+        session.modified = True
+
+        access_token = create_access_token(identity=user_id)
+        base_url = get_base_url()
+        response = make_response(jsonify({
+            'message': 'Registration successful, please verify your email',
+            'redirect_url': f'{base_url}/verify-email-pending',
+            'user_id': user_id,
+            'access_token': access_token
+        }), 201)
+        set_access_cookies(response, access_token, max_age=86400)
+
+        if os.getenv('FLASK_ENV') != 'production':
+            response.set_cookie(
+                'access_token_cookie',
+                access_token,
+                max_age=86400,
+                secure=False,
+                httponly=True,
+                samesite='Lax',
+                domain=None
+            )
+
+        response.set_cookie(
+            'session',
+            session.sid,
+            max_age=3600,
+            secure=os.getenv('FLASK_ENV') == 'production',
+            httponly=True,
+            samesite='None' if os.getenv('FLASK_ENV') == 'production' else 'Lax',
+            domain='.newcollab.co' if os.getenv('FLASK_ENV') == 'production' else None
+        )
+
+        return response
+
+    except Exception as e:
+        app.logger.error(f"🔥 Error registering creator account: {str(e)}")
+        if 'conn' in locals():
+            conn.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
 
 @app.route('/register/creator', methods=['POST'])
 def register_creator():
