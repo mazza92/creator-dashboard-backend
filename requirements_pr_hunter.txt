@@ -1,0 +1,13 @@
+# PR Hunter Dependencies
+# Add these to your main requirements.txt or install separately
+
+# Celery for background task processing
+celery==5.3.4
+redis==5.0.1
+
+# HTTP requests for API calls
+requests==2.31.0
+
+# Existing dependencies (should already be installed)
+# flask>=2.3.0
+# psycopg2-binary>=2.9.0
