@@ -2080,8 +2080,12 @@ def unlock_brand_access(slug):
             conn.close()
             return jsonify({'error': 'Brand not found'}), 404
 
-        # Get creator ID
-        cursor.execute('SELECT id FROM creators WHERE user_id = %s', (user_id,))
+        # Get creator with subscription info
+        cursor.execute('''
+            SELECT id, subscription_tier, daily_unlocks_used, last_unlock_date
+            FROM creators
+            WHERE user_id = %s
+        ''', (user_id,))
         creator = cursor.fetchone()
 
         if not creator:
@@ -2089,6 +2093,29 @@ def unlock_brand_access(slug):
             return jsonify({'error': 'Creator profile not found'}), 404
 
         creator_id = creator['id']
+        tier = creator.get('subscription_tier') or 'free'
+
+        # Check daily unlock limit for FREE users only
+        if tier == 'free':
+            from datetime import date
+            today = date.today()
+            last_unlock = creator.get('last_unlock_date')
+            daily_unlocks = creator.get('daily_unlocks_used', 0)
+
+            # Reset if it's a new day
+            if last_unlock is None or last_unlock != today:
+                daily_unlocks = 0
+
+            # Check if limit reached
+            DAILY_LIMIT = 5
+            if daily_unlocks >= DAILY_LIMIT:
+                conn.close()
+                return jsonify({
+                    'error': f"You've used all {DAILY_LIMIT} free application forms today. Come back tomorrow or upgrade to Pro for unlimited!",
+                    'upgrade_required': True,
+                    'current_count': daily_unlocks,
+                    'limit': DAILY_LIMIT
+                }), 403
 
         # Save to wishlist/pipeline
         cursor.execute('''
@@ -2102,6 +2129,17 @@ def unlock_brand_access(slug):
             INSERT INTO brand_unlocks (creator_id, brand_id, unlocked_at)
             VALUES (%s, %s, NOW())
         ''', (creator_id, brand['id']))
+
+        # Update daily unlock counter (FREE users only)
+        if tier == 'free':
+            from datetime import date
+            today = date.today()
+            cursor.execute('''
+                UPDATE creators
+                SET daily_unlocks_used = daily_unlocks_used + 1,
+                    last_unlock_date = %s
+                WHERE id = %s
+            ''', (today, creator_id))
 
         conn.commit()
         conn.close()
