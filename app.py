@@ -1514,7 +1514,7 @@ def complete_profile():
         base_url = get_base_url()
         response = jsonify({
             'message': 'Profile completed!',
-            'redirect_url': f'{base_url}/pr-brands'
+            'redirect_url': f'{base_url}/creator/dashboard/pr-brands'
         })
         response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
         response.headers['Access-Control-Allow-Credentials'] = 'true'
