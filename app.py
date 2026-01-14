@@ -2117,6 +2117,124 @@ def unlock_brand_access(slug):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/c/<username>', methods=['GET'])
+def public_creator_profile(username):
+    """
+    Public creator profile endpoint for /c/{username} URLs
+    Returns creator profile with projects if profile is public
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Fetch creator info
+        cursor.execute('''
+            SELECT creators.id AS creator_id, creators.username, creators.bio, creators.followers_count,
+                   creators.image_profile, creators.public_profile_enabled, creators.social_links,
+                   users.first_name, users.last_name
+            FROM creators
+            JOIN users ON creators.user_id = users.id
+            WHERE creators.username = %s
+        ''', (username,))
+        creator = cursor.fetchone()
+
+        if not creator or not creator.get('public_profile_enabled'):
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Profile not found or not public'}), 404
+
+        creator_id = creator['creator_id']
+
+        # Parse social_links as JSON if present
+        social_links = []
+        if 'social_links' in creator and creator['social_links']:
+            try:
+                if isinstance(creator['social_links'], str):
+                    social_links = json.loads(creator['social_links'])
+                elif isinstance(creator['social_links'], list):
+                    social_links = creator['social_links']
+            except Exception:
+                social_links = []
+
+        # Fetch open sponsorship projects
+        try:
+            cursor.execute('''
+                SELECT id, description, platforms, min_bid, status, snippet_url, audience_target,
+                       topics, projected_views, content_format, currency
+                FROM sponsor_drafts
+                WHERE creator_id = %s AND status = 'Approved'
+                ORDER BY created_at DESC
+            ''', (creator_id,))
+        except Exception as e:
+            # If currency column doesn't exist, select without it
+            if 'column "currency" does not exist' in str(e).lower():
+                cursor.execute('''
+                    SELECT id, description, platforms, min_bid, status, snippet_url, audience_target,
+                           topics, projected_views, content_format
+                    FROM sponsor_drafts
+                    WHERE creator_id = %s AND status = 'Approved'
+                    ORDER BY created_at DESC
+                ''', (creator_id,))
+            else:
+                raise
+
+        drafts = cursor.fetchall()
+
+        # Format platform, audience_target, topics as lists for frontend
+        for draft in drafts:
+            try:
+                if isinstance(draft['platforms'], str):
+                    draft['platforms'] = json.loads(draft['platforms'])
+                if 'audience_target' in draft:
+                    if isinstance(draft['audience_target'], str):
+                        try:
+                            draft['audience_target'] = json.loads(draft['audience_target'])
+                        except:
+                            draft['audience_target'] = [draft['audience_target']]
+                    elif not isinstance(draft['audience_target'], list):
+                        draft['audience_target'] = [draft['audience_target']] if draft['audience_target'] else []
+                if 'topics' in draft and isinstance(draft['topics'], str):
+                    draft['topics'] = json.loads(draft['topics'])
+                # Ensure currency is set (default to EUR if missing or NULL)
+                if 'currency' not in draft or not draft['currency']:
+                    draft['currency'] = 'EUR'
+            except Exception:
+                pass
+
+        profile = {
+            'id': creator_id,
+            'username': creator['username'],
+            'display_name': f"{creator.get('first_name','')} {creator.get('last_name','')}",
+            'bio': creator['bio'],
+            'image_profile': creator['image_profile'],
+            'followers_count': creator['followers_count'],
+            'social_links': social_links,
+            'projects': [
+                {
+                    'id': d['id'],
+                    'title': d['description'],
+                    'platforms': d['platforms'],
+                    'starting_bid': d['min_bid'],
+                    'status': d['status'],
+                    'snippet_url': d.get('snippet_url'),
+                    'audience_targets': d.get('audience_target'),
+                    'topics': d.get('topics'),
+                    'projected_views': d.get('projected_views'),
+                    'content_format': d.get('content_format', 'Post'),
+                    'currency': d.get('currency') or 'EUR'
+                } for d in drafts
+            ]
+        }
+
+        cursor.close()
+        conn.close()
+        return jsonify(profile), 200
+
+    except Exception as e:
+        app.logger.error(f"Error fetching public creator profile: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
 def send_welcome_email(user_id, user_role, user_data, template_type='WELCOME_CREATOR'):
     """
     Send a personalized welcome email to new users using dedicated template
