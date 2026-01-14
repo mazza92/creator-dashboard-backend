@@ -1109,6 +1109,138 @@ def get_creators():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/profile/onboarding', methods=['POST'])
+def complete_profile_onboarding():
+    """Step 2: Complete creator profile after email verification"""
+    try:
+        app.logger.info("🟢 Processing Profile Completion (Step 2/2)...")
+
+        # Get user_id from session (set after email verification)
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({'error': 'No active session. Please log in.'}), 401
+
+        app.logger.info(f"User ID from session: {user_id}")
+
+        # Extract form data
+        username = request.form.get('username')
+        bio = request.form.get('bio')
+
+        # Validate required fields
+        if not username or not bio:
+            return jsonify({'error': 'Username and bio are required'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Check if creator profile already exists
+        cursor.execute("SELECT id FROM creators WHERE user_id = %s", (user_id,))
+        if cursor.fetchone():
+            conn.close()
+            return jsonify({'error': 'Profile already completed'}), 400
+
+        # Check if username is taken
+        cursor.execute("SELECT id FROM creators WHERE username = %s", (username,))
+        if cursor.fetchone():
+            conn.close()
+            return jsonify({'error': 'Username already taken'}), 400
+
+        # Parse JSON fields
+        try:
+            social_links = json.loads(request.form.get('socialLinks', '[]'))
+            regions = json.loads(request.form.get('regions', '[]'))
+            interests = json.loads(request.form.get('interests', '[]'))
+            portfolio_links = json.loads(request.form.get('portfolioLinks', '[]'))
+        except json.JSONDecodeError:
+            conn.close()
+            return jsonify({'error': 'Invalid JSON format'}), 400
+
+        primary_age_range = request.form.get('primaryAgeRange', '')
+
+        # Calculate metrics
+        metrics = {
+            "total_posts": int(request.form.get('totalPosts', 0)),
+            "total_views": int(request.form.get('totalViews', 0)),
+            "total_likes": int(request.form.get('totalLikes', 0)),
+            "total_comments": int(request.form.get('totalComments', 0)),
+            "total_shares": int(request.form.get('totalShares', 0)),
+        }
+
+        total_views = metrics["total_views"]
+        engagement_rate = (
+            round((metrics["total_likes"] + metrics["total_comments"] + metrics["total_shares"]) / total_views * 100, 2)
+            if total_views > 0 else 0.0
+        )
+        if engagement_rate >= 1000:
+            engagement_rate = 999.99
+
+        followers_count = sum(
+            int(link.get('followersCount', 0)) for link in social_links if str(link.get('followersCount', '')).isdigit()
+        )
+
+        # Handle profile image upload
+        profile_pic_url = None
+        if 'imageProfile' in request.files:
+            file = request.files['imageProfile']
+            if file and allowed_file(file.filename):
+                profile_pic_url = upload_file_to_supabase(file, SUPABASE_BUCKET)
+                if not profile_pic_url:
+                    conn.close()
+                    return jsonify({'error': 'Failed to upload profile picture'}), 500
+
+        # Insert creator profile
+        cursor.execute(
+            '''
+            INSERT INTO creators
+            (username, bio, followers_count, platforms, image_profile, social_links, user_id, niche, regions,
+             primary_age_range, total_posts, total_views, total_likes, total_comments, total_shares, portfolio_links,
+             engagement_rate)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            ''',
+            (
+                username, bio, followers_count, json.dumps([link['platform'] for link in social_links]),
+                profile_pic_url, json.dumps(social_links), user_id, json.dumps(interests), json.dumps(regions),
+                primary_age_range, metrics["total_posts"], metrics["total_views"], metrics["total_likes"],
+                metrics["total_comments"], metrics["total_shares"], json.dumps(portfolio_links), engagement_rate
+            )
+        )
+        creator_id = cursor.fetchone()['id']
+        conn.commit()
+
+        # Update session
+        session['creator_id'] = creator_id
+        session.modified = True
+
+        # Send welcome email
+        cursor.execute("SELECT email, first_name FROM users WHERE id = %s", (user_id,))
+        user = cursor.fetchone()
+        if user:
+            send_welcome_email(user['email'], user['first_name'])
+
+        cursor.close()
+        conn.close()
+
+        app.logger.info(f"✅ Profile completed successfully for creator_id: {creator_id}")
+
+        return jsonify({
+            'message': 'Profile completed successfully!',
+            'creator_id': creator_id,
+            'redirect_url': '/creator/dashboard/pr-brands'
+        }), 201
+
+    except Exception as e:
+        app.logger.error(f"🔥 Error completing profile: {str(e)}\n{traceback.format_exc()}")
+        if 'conn' in locals():
+            conn.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+
+
 @app.route('/creator-profile/<int:creator_id>', methods=['GET'])
 def get_creator_profile(creator_id):
     if not creator_id:
