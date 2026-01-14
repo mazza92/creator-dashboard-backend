@@ -1550,18 +1550,150 @@ def get_creator_profile(creator_id):
         return jsonify({"error": str(e)}), 500
 
 
-def send_email(to_email, message, data=None, action_url=None, action_text=None, user_id=None, subject=None):
+def send_welcome_email(user_id, user_role, user_data, template_type='WELCOME_CREATOR'):
+    """
+    Send a personalized welcome email to new users using dedicated template
+    """
+    try:
+        app.logger.info(f"🎉 Starting welcome email for user_id={user_id}, role={user_role}, email={user_data.get('email')}")
+
+        # Add creator's public profile URL for creators
+        if user_role == 'creator' and user_data.get('username'):
+            base_url = get_base_url()
+            user_data['public_profile_url'] = f"{base_url}/c/{user_data['username']}"
+            app.logger.info(f"🔗 Creator public profile URL: {user_data['public_profile_url']}")
+
+        template_key = template_type
+        template = NOTIFICATION_TEMPLATES.get(template_key, {}).get(user_role, {})
+
+        if not template:
+            app.logger.warning(f"No welcome template found for {user_role}")
+            return False
+
+        subject = template['subject'](user_data)
+        message = template['message'](user_data)
+        action_url = template['action_url'](user_data)
+        action_text = template['action_text'](user_data)
+
+        # Get secondary action data if available
+        secondary_action_url = template.get('secondary_action_url', lambda data: None)(user_data)
+        secondary_action_text = template.get('secondary_action_text', lambda data: None)(user_data)
+
+        app.logger.info(f"📧 Welcome email template loaded: subject='{subject}', action_url='{action_url}', secondary_action_url='{secondary_action_url}'")
+
+        # Use dedicated welcome email template
+        try:
+            smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+            smtp_port = int(os.getenv('SMTP_PORT', 587))
+            smtp_username = os.getenv('SMTP_USERNAME')
+            smtp_password = os.getenv('SMTP_PASSWORD')
+            sender_name = os.getenv('EMAIL_SENDER_NAME', 'Newcollab team')
+
+            # Load welcome email templates
+            try:
+                template_dir = os.path.join(os.path.dirname(__file__), 'templates')
+                app.logger.info(f"📧 Template directory: {template_dir}")
+                env = Environment(loader=FileSystemLoader(template_dir))
+                welcome_html_template = env.get_template('welcome_email.html')
+                welcome_text_template = env.get_template('welcome_email.txt')
+                app.logger.info("📧 Welcome email templates loaded successfully")
+            except Exception as template_error:
+                app.logger.error(f"🔥 Failed to load welcome email templates: {str(template_error)}")
+                raise
+
+            # Render welcome email content
+            try:
+                html_content = welcome_html_template.render(
+                    message=message,
+                    data=user_data,
+                    action_url=action_url,
+                    action_text=action_text,
+                    secondary_action_url=secondary_action_url,
+                    secondary_action_text=secondary_action_text,
+                    user_id=user_id
+                )
+                text_content = welcome_text_template.render(
+                    message=message,
+                    data=user_data,
+                    action_url=action_url,
+                    action_text=action_text,
+                    secondary_action_url=secondary_action_url,
+                    secondary_action_text=secondary_action_text,
+                    user_id=user_id
+                )
+                app.logger.info(f"📧 Welcome email content rendered successfully (HTML: {len(html_content)} chars, Text: {len(text_content)} chars)")
+            except Exception as render_error:
+                app.logger.error(f"🔥 Failed to render welcome email content: {str(render_error)}")
+                raise
+
+            msg = MIMEMultipart('alternative')
+            msg['From'] = f"{sender_name} <{smtp_username}>"
+            msg['To'] = user_data['email']
+            msg['Subject'] = subject
+            msg.attach(MIMEText(text_content, 'plain'))
+            msg.attach(MIMEText(html_content, 'html'))
+
+            # Use connection pooling for better performance
+            if not hasattr(send_welcome_email, '_server'):
+                send_welcome_email._server = smtplib.SMTP(smtp_server, smtp_port)
+                send_welcome_email._server.starttls()
+                send_welcome_email._server.login(smtp_username, smtp_password)
+
+            send_welcome_email._server.sendmail(smtp_username, user_data['email'], msg.as_string())
+            app.logger.info(f"✅ Welcome email sent successfully to {user_data['email']} for {user_role}")
+            return True
+
+        except Exception as e:
+            app.logger.error(f"🔥 Failed to send welcome email to user {user_id}: {str(e)}")
+            # Reset server connection on error
+            if hasattr(send_welcome_email, '_server'):
+                try:
+                    send_welcome_email._server.quit()
+                except:
+                    pass
+                delattr(send_welcome_email, '_server')
+
+            # Fallback to regular email function with correct template
+            try:
+                app.logger.info(f"🔄 Attempting fallback to regular email function with welcome template")
+                send_email(
+                    to_email=user_data['email'],
+                    message=message,
+                    data=user_data,
+                    action_url=action_url,
+                    action_text=action_text,
+                    user_id=user_id,
+                    subject=subject,
+                    template_name='welcome_email'  # Use the correct welcome template
+                )
+                app.logger.info(f"✅ Fallback welcome email sent successfully")
+                return True
+            except Exception as fallback_error:
+                app.logger.error(f"🔥 Fallback email also failed: {str(fallback_error)}")
+                return False
+
+    except Exception as e:
+        app.logger.error(f"🔥 Failed to send welcome email to user {user_id}: {str(e)}")
+        return False
+
+
+def send_email(to_email, message, data=None, action_url=None, action_text=None, user_id=None, subject=None, template_name=None, preheader=None, email_header_title=None, email_header_subtitle=None):
     try:
         smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
         smtp_port = int(os.getenv('SMTP_PORT', 587))
         smtp_username = os.getenv('SMTP_USERNAME')
         smtp_password = os.getenv('SMTP_PASSWORD')
         sender_name = os.getenv('EMAIL_SENDER_NAME', 'Newcollab team')
-        
+
 
         env = Environment(loader=FileSystemLoader('templates'))
-        html_template = env.get_template('email_template.html')
-        text_template = env.get_template('email_template.txt')
+        # Use custom template if specified, otherwise use default
+        if template_name:
+            html_template = env.get_template(f'{template_name}.html')
+            text_template = env.get_template(f'{template_name}.txt')
+        else:
+            html_template = env.get_template('email_template.html')
+            text_template = env.get_template('email_template.txt')
 
         safe_message = escape(message)
         safe_data = {k: escape(str(v)) for k, v in (data or {}).items()}
