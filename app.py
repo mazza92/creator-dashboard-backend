@@ -8333,6 +8333,118 @@ def debug_session():
         "cookies": request.cookies
     })
 
+@app.route('/api/send-onboarding-reminders', methods=['POST'])
+def send_onboarding_reminders():
+    """
+    Cron endpoint: Send onboarding reminder emails to incomplete profiles
+    Checks for creators who registered but haven't completed their profile
+    """
+    try:
+        from datetime import datetime, timedelta
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Find creators who:
+        # 1. Registered more than 24 hours ago
+        # 2. Haven't completed their profile (missing instagram_handle or other key fields)
+        # 3. Haven't received a reminder in the last 7 days (or never received one)
+
+        cursor.execute("""
+            SELECT c.id, u.email, c.username, c.created_at, c.last_reminder_sent
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE u.email_verified = true
+              AND c.created_at < NOW() - INTERVAL '24 hours'
+              AND (
+                c.instagram_handle IS NULL
+                OR c.instagram_handle = ''
+                OR c.niche IS NULL
+                OR c.niche = ''
+              )
+              AND (
+                c.last_reminder_sent IS NULL
+                OR c.last_reminder_sent < NOW() - INTERVAL '7 days'
+              )
+            LIMIT 50
+        """)
+
+        incomplete_profiles = cursor.fetchall()
+
+        sent_count = 0
+        errors = []
+
+        for profile in incomplete_profiles:
+            try:
+                # Send reminder email using onboarding_reminder template
+                from jinja2 import Environment, FileSystemLoader
+                env = Environment(loader=FileSystemLoader('templates'))
+                template = env.get_template('onboarding_reminder.html')
+
+                html_content = template.render(
+                    data={'first_name': profile['username'] or 'Creator'},
+                    message="We noticed you started creating your profile but haven't finished yet!",
+                    action_url=f"{os.getenv('FRONTEND_URL', 'https://newcollab.co')}/creator/dashboard/profile",
+                    action_text="Complete Your Profile",
+                    user_id=profile['id']
+                )
+
+                # Send email
+                smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+                smtp_port = int(os.getenv('SMTP_PORT', 587))
+                smtp_username = os.getenv('SMTP_USERNAME')
+                smtp_password = os.getenv('SMTP_PASSWORD')
+                sender_name = os.getenv('EMAIL_SENDER_NAME', 'Newcollab')
+
+                msg = MIMEMultipart('alternative')
+                msg['From'] = f"{sender_name} <{smtp_username}>"
+                msg['To'] = profile['email']
+                msg['Subject'] = "Complete your NewCollab profile to unlock 229+ PR brands"
+
+                msg.attach(MIMEText(html_content, 'html'))
+
+                with smtplib.SMTP(smtp_server, smtp_port) as server:
+                    server.starttls()
+                    server.login(smtp_username, smtp_password)
+                    server.send_message(msg)
+
+                # Update last_reminder_sent timestamp
+                cursor.execute("""
+                    UPDATE creators
+                    SET last_reminder_sent = NOW()
+                    WHERE id = %s
+                """, (profile['id'],))
+                conn.commit()
+
+                sent_count += 1
+                print(f"✅ Sent onboarding reminder to {profile['email']}")
+
+            except Exception as e:
+                errors.append(f"Error sending to {profile['email']}: {str(e)}")
+                print(f"❌ Error sending to {profile['email']}: {str(e)}")
+                continue
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'message': f'Processed {len(incomplete_profiles)} incomplete profiles',
+            'sent': sent_count,
+            'errors': len(errors),
+            'error_details': errors[:5]  # Return first 5 errors for debugging
+        }), 200
+
+    except Exception as e:
+        print(f"❌ Error in send_onboarding_reminders: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
 @app.route('/callback')
 def callback():
     code = request.args.get('code')

@@ -128,3 +128,4 @@ ehthumbs.db
 Thumbs.db 
 .vercel
 env test.conf
+flask_session/
