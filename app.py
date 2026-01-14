@@ -3089,7 +3089,91 @@ def register_brand():
             cursor.close()
         if 'conn' in locals():
             conn.close()
-        
+
+
+@app.route('/register/creator/account', methods=['POST'])
+def register_creator_account():
+    """Step 1: Create basic user account only (email verification triggered)"""
+    try:
+        app.logger.info("🟢 Processing Creator Account Creation (Step 1/2)...")
+
+        # Accept both form-data and JSON
+        if request.content_type and 'application/json' in request.content_type:
+            data = request.get_json()
+        else:
+            data = request.form.to_dict()
+
+        app.logger.info("Account Data: %s", {k: v for k, v in data.items() if k != 'password'})
+
+        # Validate required fields for step 1
+        required_fields = ['firstName', 'lastName', 'email', 'password']
+        missing_fields = [field for field in required_fields if not data.get(field)]
+        if missing_fields:
+            return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+
+        first_name = data.get('firstName')
+        last_name = data.get('lastName')
+        email = data.get('email')
+        password = data.get('password')
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Check if email already exists
+        cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Email already registered"}), 400
+
+        # Hash password and generate verification token
+        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode()
+        verification_token = generate_verification_token(email)
+
+        # Create user account (step 1 only - no creator profile yet)
+        cursor.execute(
+            '''
+            INSERT INTO users (first_name, last_name, email, password, role, is_verified, verification_token)
+            VALUES (%s, %s, %s, %s, 'creator', %s, %s)
+            RETURNING id
+            ''',
+            (first_name, last_name, email, hashed_password, False, verification_token)
+        )
+        user_id = cursor.fetchone()['id']
+        conn.commit()
+
+        # Send verification email
+        send_verification_email(email, verification_token)
+
+        # Set session
+        session.clear()
+        session['user_id'] = user_id
+        session['user_role'] = 'creator'
+        session.permanent = True
+        session.modified = True
+
+        cursor.close()
+        conn.close()
+
+        app.logger.info(f"✅ Account created successfully for user_id: {user_id}")
+
+        return jsonify({
+            'message': 'Account created successfully! Please verify your email.',
+            'user_id': user_id,
+            'redirect_url': '/verify-email-pending'
+        }), 201
+
+    except Exception as e:
+        app.logger.error(f"🔥 Error creating account: {str(e)}")
+        if 'conn' in locals():
+            conn.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+
 
 @app.route('/register/creator', methods=['POST'])
 def register_creator():
