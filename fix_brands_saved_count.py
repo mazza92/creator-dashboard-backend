@@ -54,18 +54,18 @@ def fix_brands_saved_count():
                     WHERE id = %s
                 """, (actual_count, creator_id))
 
-                print(f"Creator {creator_id}: {current_count} → {actual_count}")
+                print(f"Creator {creator_id}: {current_count} -> {actual_count}")
                 updated_count += 1
 
         conn.commit()
         cursor.close()
         conn.close()
 
-        print(f"\n✅ Updated {updated_count} creators")
+        print(f"\n[SUCCESS] Updated {updated_count} creators")
         print("="*60 + "\n")
 
     except Exception as e:
-        print(f"\n❌ Error: {str(e)}\n")
+        print(f"\n[ERROR] Error: {str(e)}\n")
 
 if __name__ == '__main__':
     fix_brands_saved_count()
