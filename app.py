@@ -4621,22 +4621,25 @@ def verify_email():
         )
         conn.commit()
 
-        session['user_id'] = user['id']
-        session['user_role'] = user['role']
-        session.modified = True
-
-        # Check if user has completed onboarding
-        # Onboarding is considered complete when a row exists in creators/brands table
-        if user['role'] == 'creator':
-            cursor.execute("SELECT id FROM creators WHERE user_id = %s", (user['id'],))
-            creator = cursor.fetchone()
-            onboarding_completed = creator is not None
-        elif user['role'] == 'brand':
+        # Get profile completion data
+        if user['role'] == 'brand':
             cursor.execute("SELECT id FROM brands WHERE user_id = %s", (user['id'],))
             brand = cursor.fetchone()
+            brand_id = brand['id'] if brand else None
+            creator_id = None
             onboarding_completed = brand is not None
-        else:
-            onboarding_completed = False
+        else:  # creator
+            cursor.execute("SELECT id FROM creators WHERE user_id = %s", (user['id'],))
+            creator = cursor.fetchone()
+            creator_id = creator['id'] if creator else None
+            brand_id = None
+            onboarding_completed = creator is not None
+
+        session['user_id'] = user['id']
+        session['user_role'] = user['role']
+        session['brand_id'] = brand_id
+        session['creator_id'] = creator_id
+        session.modified = True
 
         conn.close()
 
@@ -4653,7 +4656,9 @@ def verify_email():
         return jsonify({
             'message': 'Email verified successfully!',
             'user_role': user['role'],
-            'onboarding_completed': onboarding_completed,
+            'user_id': user['id'],
+            'brand_id': brand_id,
+            'creator_id': creator_id,
             'redirect_url': f'{base_url}{redirect_url}'
         }), 200
 
