@@ -4140,33 +4140,114 @@ def generate_verification_token(email):
     return token
 
 def send_verification_email(email, token):
+    """
+    Send email verification link to user
+    Raises exception if sending fails
+    """
     base_url = os.getenv('BASE_URL', 'https://newcollab.co')
     verification_url = f"{base_url}/verify-email?token={token}"
-    app.logger.info(f"🟢 Building verification URL: {verification_url}")
-    msg = MIMEMultipart()
-    msg['From'] = os.getenv('SMTP_USERNAME')
+
+    smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+    smtp_port = int(os.getenv('SMTP_PORT', 587))
+    smtp_username = os.getenv('SMTP_USERNAME')
+    smtp_password = os.getenv('SMTP_PASSWORD')
+
+    app.logger.info(f"📧 Preparing verification email for {email}")
+    app.logger.info(f"🔗 Verification URL: {verification_url}")
+
+    if not smtp_username or not smtp_password:
+        app.logger.error("🔥 SMTP credentials not configured!")
+        raise ValueError("SMTP credentials missing")
+
+    msg = MIMEMultipart('alternative')
+    msg['From'] = f"Newcollab Team <{smtp_username}>"
     msg['To'] = email
     msg['Subject'] = 'Verify your Newcollab account'
-    body = f"""
+
+    # Plain text version for email clients that don't support HTML
+    text_body = f"""
+Welcome to Newcollab!
+
+Please verify your email to complete your account setup by clicking this link:
+{verification_url}
+
+This link expires in 24 hours.
+
+If you didn't create this account, you can safely ignore this email.
+
+---
+Newcollab Team
+https://newcollab.co
+    """
+
+    # HTML version with better styling
+    html_body = f"""
+    <!DOCTYPE html>
     <html>
-        <body>
-            <h2>Welcome to Newcollab!</h2>
-            <p>Please verify your email to complete your account setup:</p>
-            <a href="{verification_url}">Verify Email</a>
-            <p>Or copy this link: {verification_url}</p>
-            <p>This link expires in 24 hours.</p>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff;">
+                <div style="text-align: center; padding: 20px 0;">
+                    <h1 style="color: #3B82F6; margin: 0; font-size: 28px;">Welcome to Newcollab!</h1>
+                </div>
+
+                <div style="background-color: #F3F4F6; border-radius: 8px; padding: 30px; margin: 20px 0;">
+                    <p style="color: #374151; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                        Thank you for joining Newcollab! To complete your account setup and start connecting with brands, please verify your email address.
+                    </p>
+
+                    <div style="text-align: center; margin: 30px 0;">
+                        <a href="{verification_url}"
+                           style="background-color: #3B82F6; color: white; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 16px; display: inline-block;">
+                            Verify Email Address
+                        </a>
+                    </div>
+
+                    <p style="color: #6B7280; font-size: 14px; line-height: 1.6; margin: 20px 0 0 0;">
+                        Or copy and paste this link into your browser:<br>
+                        <a href="{verification_url}" style="color: #3B82F6; word-break: break-all;">{verification_url}</a>
+                    </p>
+                </div>
+
+                <div style="padding: 20px; text-align: center;">
+                    <p style="color: #9CA3AF; font-size: 13px; margin: 0;">
+                        This link expires in 24 hours. If you didn't create this account, you can safely ignore this email.
+                    </p>
+                    <p style="color: #9CA3AF; font-size: 13px; margin: 10px 0 0 0;">
+                        &copy; 2026 Newcollab. All rights reserved.
+                    </p>
+                </div>
+            </div>
         </body>
     </html>
     """
-    msg.attach(MIMEText(body, 'html'))
+
+    msg.attach(MIMEText(text_body, 'plain'))
+    msg.attach(MIMEText(html_body, 'html'))
+
     try:
-        with smtplib.SMTP(os.getenv('SMTP_SERVER', 'smtp.gmail.com'), int(os.getenv('SMTP_PORT', 587))) as server:
+        app.logger.info(f"📤 Connecting to SMTP server {smtp_server}:{smtp_port}")
+        with smtplib.SMTP(smtp_server, smtp_port, timeout=10) as server:
             server.starttls()
-            server.login(os.getenv('SMTP_USERNAME'), os.getenv('SMTP_PASSWORD'))
-            server.sendmail(msg['From'], email, msg.as_string())
-        app.logger.info(f"🟢 Verification email sent to {email}")
+            app.logger.info(f"🔐 Authenticating as {smtp_username}")
+            server.login(smtp_username, smtp_password)
+            app.logger.info(f"📨 Sending email to {email}")
+            server.sendmail(smtp_username, email, msg.as_string())
+
+        app.logger.info(f"✅ Verification email successfully sent to {email}")
+
+    except smtplib.SMTPAuthenticationError as e:
+        app.logger.error(f"🔥 SMTP Authentication failed: {str(e)}")
+        raise
+    except smtplib.SMTPException as e:
+        app.logger.error(f"🔥 SMTP error: {str(e)}")
+        raise
     except Exception as e:
-        app.logger.error(f"🔥 Email sending error: {str(e)}\n{traceback.format_exc()}")
+        app.logger.error(f"🔥 Email sending error: {str(e)}")
+        app.logger.error(traceback.format_exc())
         raise
 
 
@@ -4593,7 +4674,15 @@ def register_creator():
 
         conn.commit()
 
-        send_verification_email(email, verification_token)
+        # Try to send verification email (don't fail registration if email fails)
+        email_sent = False
+        try:
+            send_verification_email(email, verification_token)
+            email_sent = True
+            app.logger.info(f"✅ Verification email sent successfully to {email}")
+        except Exception as email_error:
+            app.logger.error(f"⚠️ Failed to send verification email to {email}: {str(email_error)}")
+            # Continue with registration - user can request resend later
 
         session.clear()
         session['user_id'] = user_id
@@ -4602,9 +4691,14 @@ def register_creator():
         session.permanent = True
         session.modified = True
 
+        message = 'Registration successful, please verify your email'
+        if not email_sent:
+            message = 'Registration successful! We had trouble sending the verification email. You can request a new one from the verification page.'
+
         return jsonify({
-            'message': 'Registration successful, please verify your email',
-            'redirect_url': '/verify-email-pending'
+            'message': message,
+            'redirect_url': '/verify-email-pending',
+            'email_sent': email_sent
         }), 201
 
     except Exception as e:
