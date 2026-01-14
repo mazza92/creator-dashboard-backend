@@ -3225,11 +3225,6 @@ def register_creator():
         if 'conn' in locals():
             conn.close()
 
-@app.route('/register/creator/account', methods=['POST'])
-def register_creator_account():
-    """Alias route for creator registration (same as /register/creator)"""
-    return register_creator()
-
 @app.route('/verify-email', methods=['GET'])
 def debug_verify_email():
     app.logger.warning(f"🔥 Misrouted to /verify-email: Token={request.args.get('token')}, URL={request.url}")
