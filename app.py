@@ -4684,6 +4684,24 @@ def register_creator():
             app.logger.error(f"⚠️ Failed to send verification email to {email}: {str(email_error)}")
             # Continue with registration - user can request resend later
 
+        # Send welcome email immediately after registration (like backup version)
+        welcome_sent = False
+        try:
+            welcome_data = {
+                'email': email,
+                'first_name': first_name,
+                'username': username
+            }
+            app.logger.info(f"🎉 Sending welcome email for new creator: {email}")
+            welcome_sent = send_welcome_email(user_id, 'creator', welcome_data)
+            if welcome_sent:
+                app.logger.info(f"✅ Welcome email sent successfully to {email}")
+            else:
+                app.logger.warning(f"⚠️ Welcome email returned False for {email}")
+        except Exception as welcome_error:
+            app.logger.error(f"⚠️ Failed to send welcome email to {email}: {str(welcome_error)}")
+            # Continue with registration - welcome email is not critical
+
         session.clear()
         session['user_id'] = user_id
         session['user_role'] = 'creator'
@@ -4698,7 +4716,8 @@ def register_creator():
         return jsonify({
             'message': message,
             'redirect_url': '/verify-email-pending',
-            'email_sent': email_sent
+            'email_sent': email_sent,
+            'welcome_sent': welcome_sent
         }), 201
 
     except Exception as e:
@@ -9858,6 +9877,48 @@ def callback():
         <p>Return to your terminal and paste this code when prompted.</p>
         """
     return "<h1>Error</h1><p>No authorization code provided.</p>", 400
+
+
+@app.route('/test-welcome-email', methods=['POST'])
+def test_welcome_email_endpoint():
+    """
+    Test endpoint to verify welcome email functionality
+    Only sends to mahery92@hotmail.fr for testing
+    """
+    try:
+        data = request.get_json() if request.is_json else {}
+        test_email = data.get('email', 'mahery92@hotmail.fr')
+        test_role = data.get('role', 'creator')
+        test_name = data.get('name', 'Maher')
+
+        user_data = {
+            'email': test_email,
+            'first_name': test_name,
+            'username': 'maher_test' if test_role == 'creator' else None,
+            'brand_name': 'Test Brand' if test_role == 'brand' else None
+        }
+
+        app.logger.info(f"🧪 Testing welcome email for {test_email} as {test_role}")
+        result = send_welcome_email(999, test_role, user_data)
+
+        if result:
+            return jsonify({
+                'success': True,
+                'message': f'Welcome email sent to {test_email}',
+                'email': test_email,
+                'role': test_role
+            }), 200
+        else:
+            return jsonify({
+                'success': False,
+                'message': 'Failed to send welcome email (check logs for details)'
+            }), 500
+
+    except Exception as e:
+        app.logger.error(f"🔥 Test welcome email failed: {str(e)}")
+        import traceback
+        app.logger.error(traceback.format_exc())
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 
