@@ -211,26 +211,32 @@ def save_candidate_to_db(cursor, brand: dict, keyword: str):
         RETURNING id
     '''
 
+    # Helper to safely truncate strings
+    def truncate(value, max_len):
+        if value and isinstance(value, str) and len(value) > max_len:
+            return value[:max_len]
+        return value
+
     params = {
-        'brand_name': brand.get('brand_name'),
-        'website_url': brand.get('website_url'),
-        'domain': brand.get('domain'),
-        'instagram_handle': brand.get('instagram_handle'),
-        'tiktok_handle': brand.get('tiktok_handle'),
-        'pr_manager_name': brand.get('pr_manager_name'),
-        'pr_manager_linkedin': brand.get('pr_manager_linkedin'),
-        'pr_manager_title': brand.get('pr_manager_title'),
-        'contact_email': brand.get('contact_email'),
-        'email_source': brand.get('email_source', 'Hunter'),
+        'brand_name': truncate(brand.get('brand_name'), 255),
+        'website_url': truncate(brand.get('website_url'), 255),
+        'domain': truncate(brand.get('domain'), 255),
+        'instagram_handle': truncate(brand.get('instagram_handle'), 255),
+        'tiktok_handle': truncate(brand.get('tiktok_handle'), 255),
+        'pr_manager_name': truncate(brand.get('pr_manager_name'), 255),
+        'pr_manager_linkedin': truncate(brand.get('pr_manager_linkedin'), 255),
+        'pr_manager_title': truncate(brand.get('pr_manager_title'), 255),
+        'contact_email': truncate(brand.get('contact_email'), 255),
+        'email_source': truncate(brand.get('email_source', 'Hunter'), 50),
         'verification_score': brand.get('verification_score', 0),
-        'verification_status': brand.get('verification_status', 'unknown'),
+        'verification_status': truncate(brand.get('verification_status', 'unknown'), 20),
         'is_catch_all': brand.get('is_catch_all', False),
-        'application_url': brand.get('application_url'),
-        'application_method': brand.get('application_method', 'EMAIL_ONLY'),
-        'form_platform': brand.get('form_platform'),
-        'logo_url': brand.get('logo_url'),
-        'description': brand.get('description'),
-        'discovery_source': f"{keyword} - {brand.get('discovery_source', 'Unknown')}"
+        'application_url': truncate(brand.get('application_url'), 500),
+        'application_method': truncate(brand.get('application_method', 'EMAIL_ONLY'), 50),
+        'form_platform': truncate(brand.get('form_platform'), 100),
+        'logo_url': truncate(brand.get('logo_url'), 500),
+        'description': brand.get('description'),  # TEXT field, no limit
+        'discovery_source': truncate(f"{keyword} - {brand.get('discovery_source', 'Unknown')}", 100)
     }
 
     cursor.execute(query, params)

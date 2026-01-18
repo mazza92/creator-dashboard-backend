@@ -54,6 +54,9 @@ class PRHunterService:
         """
         Discover brands using Google Custom Search API via SerpApi
 
+        IMPROVED: Focus on finding actual brand websites with PR/influencer programs
+        instead of article pages.
+
         Args:
             keyword: Search keyword (e.g., "Clean Beauty", "K-Beauty")
             max_results: Maximum number of brands to find
@@ -62,25 +65,102 @@ class PRHunterService:
             List of discovered brands with basic info
         """
         discovered_brands = []
+        results_per_strategy = max(5, max_results // 5)
 
-        # Strategy 1: TikTok Bio Search (finds brands with contact info in bio)
-        tiktok_query = f'site:tiktok.com "@" "{keyword}" ("gmail.com" OR "contact" OR "email")'
-        tiktok_brands = self._execute_search(tiktok_query, max_results=max_results // 2)
-        discovered_brands.extend(tiktok_brands)
+        # Exclude common article/listicle sites
+        exclusions = '-site:amazon.com -site:pinterest.com -site:buzzfeed.com -site:allure.com -site:byrdie.com -site:cosmopolitan.com -site:elle.com -site:vogue.com -site:harpersbazaar.com -site:glamour.com -site:refinery29.com -site:popsugar.com -site:insider.com -site:businessinsider.com -site:forbes.com -site:youtube.com -site:reddit.com -site:quora.com'
 
-        # Strategy 2: Listicles (top brand lists)
-        listicle_query = f'"top {keyword} brands 2025" -site:amazon.com -site:pinterest.com'
-        listicle_brands = self._execute_search(listicle_query, max_results=max_results // 2)
-        discovered_brands.extend(listicle_brands)
+        # Strategy 1: Direct brand ambassador/influencer program pages
+        ambassador_query = f'{keyword} brand "ambassador program" OR "influencer program" OR "pr application" {exclusions}'
+        ambassador_brands = self._execute_search(ambassador_query, max_results=results_per_strategy)
+        discovered_brands.extend(ambassador_brands)
+
+        # Strategy 2: Shopify Collabs / GRIN partner brands (indicates active PR)
+        platform_query = f'{keyword} brand (site:collabs.shopify.com OR site:app.grin.co OR site:dovetale.com)'
+        platform_brands = self._execute_search(platform_query, max_results=results_per_strategy)
+        discovered_brands.extend(platform_brands)
+
+        # Strategy 3: Brand websites with press/PR pages
+        press_query = f'{keyword} brand site:*.com/pages/press OR site:*.com/pages/pr OR site:*.com/press {exclusions}'
+        press_brands = self._execute_search(press_query, max_results=results_per_strategy)
+        discovered_brands.extend(press_brands)
+
+        # Strategy 4: Typeform/Google Forms for brand applications
+        form_query = f'{keyword} brand (site:typeform.com OR site:docs.google.com/forms) "ambassador" OR "influencer" OR "pr"'
+        form_brands = self._execute_search(form_query, max_results=results_per_strategy)
+        discovered_brands.extend(form_brands)
+
+        # Strategy 5: Brand websites directly (company domains)
+        brand_query = f'{keyword} brand official website "contact" OR "about us" {exclusions}'
+        brand_results = self._execute_search(brand_query, max_results=results_per_strategy)
+        discovered_brands.extend(brand_results)
+
+        # Filter out article/listicle pages
+        filtered_brands = []
+        for brand in discovered_brands:
+            if not self._is_article_page(brand):
+                filtered_brands.append(brand)
+            else:
+                print(f"⚠️ Filtered out article page: {brand.get('brand_name', 'Unknown')[:50]}")
 
         # Deduplicate by domain
         unique_brands = {}
-        for brand in discovered_brands:
+        for brand in filtered_brands:
             domain = brand.get('domain')
             if domain and domain not in unique_brands:
                 unique_brands[domain] = brand
 
         return list(unique_brands.values())
+
+    def _is_article_page(self, brand: Dict) -> bool:
+        """
+        Check if the result is an article/listicle page rather than a brand website
+
+        Args:
+            brand: Brand data from search result
+
+        Returns:
+            True if this looks like an article page
+        """
+        title = brand.get('brand_name', '').lower()
+        url = brand.get('website_url', '').lower()
+        source = brand.get('discovery_source', '').lower()
+
+        # Article title patterns to filter out
+        article_patterns = [
+            r'\d+\s+best',           # "10 Best", "The 11 Best"
+            r'top\s+\d+',            # "Top 10"
+            r'best\s+.*\s+of\s+20',  # "Best X of 2025"
+            r'ranking',              # "Ranking"
+            r'review:',              # "Review:"
+            r'vs\.?\s',              # "X vs Y"
+            r'comparison',           # "Comparison"
+            r'guide\s+to',           # "Guide to"
+            r'how\s+to',             # "How to"
+            r'what\s+is',            # "What is"
+        ]
+
+        for pattern in article_patterns:
+            if re.search(pattern, title):
+                return True
+
+        # Media/news domain patterns
+        media_domains = [
+            'allure.com', 'byrdie.com', 'cosmopolitan.com', 'elle.com',
+            'vogue.com', 'harpersbazaar.com', 'glamour.com', 'refinery29.com',
+            'popsugar.com', 'insider.com', 'businessinsider.com', 'forbes.com',
+            'buzzfeed.com', 'huffpost.com', 'nytimes.com', 'washingtonpost.com',
+            'theguardian.com', 'bbc.com', 'cnn.com', 'yahoo.com', 'msn.com',
+            'medium.com', 'substack.com', 'wordpress.com', 'blogspot.com',
+            'tumblr.com', 'wix.com', 'weebly.com'
+        ]
+
+        domain = brand.get('domain', '').lower()
+        for media in media_domains:
+            if media in domain:
+                return True
+
+        return False
 
     def _execute_search(self, query: str, max_results: int = 25) -> List[Dict]:
         """
@@ -138,14 +218,64 @@ class PRHunterService:
         if not domain:
             return None
 
+        # Extract and clean brand name
+        raw_title = result.get('title', '')
+        brand_name = self._clean_brand_name(raw_title, domain)
+
         return {
-            'brand_name': result.get('title', '').split('|')[0].strip(),
-            'website_url': link,
-            'domain': domain,
+            'brand_name': brand_name[:100],  # Truncate to fit varchar(100) if needed
+            'website_url': link[:255],  # Truncate URL
+            'domain': domain[:255],
             'discovery_source': f"Google Search: {result.get('snippet', '')[:100]}",
             'tiktok_handle': self._extract_tiktok_handle(link) if 'tiktok.com' in link else None,
             'instagram_handle': self._extract_instagram_handle(link) if 'instagram.com' in link else None
         }
+
+    def _clean_brand_name(self, raw_title: str, domain: str) -> str:
+        """
+        Clean and extract actual brand name from search result title
+
+        Args:
+            raw_title: Raw title from search result
+            domain: Domain to use as fallback
+
+        Returns:
+            Cleaned brand name
+        """
+        # Remove common suffixes
+        title = raw_title.split('|')[0].strip()
+        title = title.split(' - ')[0].strip()
+        title = title.split(' – ')[0].strip()
+        title = title.split(':')[0].strip()
+
+        # Remove common prefixes
+        prefixes_to_remove = [
+            'Welcome to ', 'Shop ', 'Buy ', 'Official ', 'The ',
+            'About ', 'Home ', 'Contact '
+        ]
+        for prefix in prefixes_to_remove:
+            if title.lower().startswith(prefix.lower()):
+                title = title[len(prefix):].strip()
+
+        # Remove common suffixes
+        suffixes_to_remove = [
+            ' Official Site', ' Official Website', ' Home', ' Shop',
+            ' Store', ' Beauty', ' Skincare', ' Cosmetics', '.com',
+            ' Ambassador Program', ' Influencer Program', ' PR Application'
+        ]
+        for suffix in suffixes_to_remove:
+            if title.lower().endswith(suffix.lower()):
+                title = title[:-len(suffix)].strip()
+
+        # If title is too long or looks like an article, use domain as brand name
+        if len(title) > 50 or not title:
+            # Extract brand name from domain (e.g., "glowrecipe.com" -> "Glow Recipe")
+            brand_from_domain = domain.split('.')[0]
+            # Add spaces before capital letters for camelCase domains
+            brand_from_domain = re.sub(r'([a-z])([A-Z])', r'\1 \2', brand_from_domain)
+            title = brand_from_domain.replace('-', ' ').replace('_', ' ').title()
+
+        return title.strip() or domain.split('.')[0].title()
 
     def _clean_domain(self, url: str) -> Optional[str]:
         """

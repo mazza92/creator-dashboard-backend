@@ -35,11 +35,18 @@ def admin_required(f):
     Decorator to require admin authentication for PR Hunter
 
     IMPORTANT: PR Hunter is INTERNAL USE ONLY
-    Only whitelisted admin emails can access these endpoints
+    Accepts either:
+    1. X-Admin-Token header with valid token
+    2. Session-based auth with team@newcollab.co email
     """
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Check if user is authenticated
+        # Option 1: Check for admin token header (used by standalone /supply page)
+        admin_token = request.headers.get('X-Admin-Token')
+        if admin_token == 'pr-hunter-admin-2026':
+            return f(*args, **kwargs)
+
+        # Option 2: Check session-based auth
         user_id = session.get('user_id')
         if not user_id:
             return jsonify({'error': 'Authentication required'}), 401
@@ -47,22 +54,17 @@ def admin_required(f):
         try:
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            cursor.execute('SELECT email, user_role FROM users WHERE id = %s', (user_id,))
+            cursor.execute('SELECT email FROM users WHERE id = %s', (user_id,))
             user = cursor.fetchone()
             conn.close()
 
             if not user:
                 return jsonify({'error': 'User not found'}), 403
 
-            # WHITELIST: Only these emails can access PR Hunter
-            ADMIN_EMAILS = [
-                'maher@newcollab.co',
-                # Add other admin emails here
-            ]
-
+            # WHITELIST: Only team@newcollab.co can access PR Hunter
             user_email = user.get('email', '').lower()
 
-            if user_email not in ADMIN_EMAILS:
+            if user_email != 'team@newcollab.co':
                 return jsonify({'error': 'PR Hunter is for internal use only. Admin access required.'}), 403
 
         except Exception as e:
@@ -85,7 +87,8 @@ def start_pr_hunt():
     Request Body:
         {
             "keyword": "K-Beauty",
-            "max_results": 50
+            "max_results": 50,
+            "sync": false  (optional - run synchronously without Redis)
         }
 
     Returns:
@@ -99,6 +102,7 @@ def start_pr_hunt():
         data = request.get_json()
         keyword = data.get('keyword')
         max_results = data.get('max_results', 50)
+        run_sync = data.get('sync', False)
 
         if not keyword:
             return jsonify({'error': 'Keyword is required'}), 400
@@ -107,18 +111,116 @@ def start_pr_hunt():
         if not isinstance(max_results, int) or max_results < 1 or max_results > 200:
             return jsonify({'error': 'max_results must be between 1 and 200'}), 400
 
-        # Trigger Celery task
-        task = run_pr_hunt.delay(keyword, max_results)
+        # Try Celery first, fall back to sync if Redis unavailable
+        try:
+            if run_sync:
+                raise Exception("Sync mode requested")
 
-        return jsonify({
-            'task_id': task.id,
-            'status': 'started',
-            'keyword': keyword,
-            'max_results': max_results,
-            'message': f'PR hunt started for "{keyword}". You will be notified when complete.'
-        }), 202
+            # Trigger Celery task
+            task = run_pr_hunt.delay(keyword, max_results)
+
+            return jsonify({
+                'task_id': task.id,
+                'status': 'started',
+                'keyword': keyword,
+                'max_results': max_results,
+                'message': f'PR hunt started for "{keyword}". You will be notified when complete.'
+            }), 202
+
+        except Exception as celery_error:
+            # Redis not available - run synchronously
+            print(f"Celery unavailable ({str(celery_error)}), running synchronously...")
+
+            from services.pr_hunter import PRHunterService
+            from tasks.pr_hunter_tasks import save_candidate_to_db
+
+            service = PRHunterService()
+            conn = None
+
+            try:
+                # Step 1: Discovery
+                print(f"Starting PR hunt for keyword: {keyword}")
+                discovered_brands = service.search_google_for_brands(keyword, max_results)
+                print(f"Discovered {len(discovered_brands)} brands")
+
+                # Step 2: Filter duplicates
+                conn = get_db_connection()
+                cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+                unique_brands = []
+                for brand in discovered_brands:
+                    domain = brand.get('domain')
+                    if not domain:
+                        continue
+
+                    # Check if already exists in pr_brands
+                    cursor.execute('SELECT id FROM pr_brands WHERE website LIKE %s', (f'%{domain}%',))
+                    if cursor.fetchone():
+                        print(f"Skipping {domain} - already in pr_brands")
+                        continue
+
+                    # Check if already in candidates
+                    cursor.execute('SELECT id FROM brand_candidates WHERE domain = %s', (domain,))
+                    if cursor.fetchone():
+                        print(f"Skipping {domain} - already in candidates")
+                        continue
+
+                    unique_brands.append(brand)
+
+                print(f"After deduplication: {len(unique_brands)} unique brands")
+
+                # Step 3: Enrich each brand
+                enriched_count = 0
+                saved_count = 0
+                rejected_count = 0
+
+                for brand in unique_brands:
+                    try:
+                        enriched_brand = service.enrich_brand_data(brand)
+                        enriched_count += 1
+
+                        passes_quality, rejection_reason = service.quality_gate(enriched_brand)
+
+                        if passes_quality:
+                            save_candidate_to_db(cursor, enriched_brand, keyword)
+                            saved_count += 1
+                            print(f"Saved: {enriched_brand['brand_name']}")
+                        else:
+                            rejected_count += 1
+                            print(f"Rejected: {enriched_brand['brand_name']} - {rejection_reason}")
+
+                        conn.commit()
+
+                    except Exception as e:
+                        print(f"Error enriching {brand.get('brand_name', 'Unknown')}: {str(e)}")
+                        conn.rollback()
+                        continue
+
+                result = {
+                    'keyword': keyword,
+                    'discovered': len(discovered_brands),
+                    'unique': len(unique_brands),
+                    'enriched': enriched_count,
+                    'saved': saved_count,
+                    'rejected': rejected_count
+                }
+
+                return jsonify({
+                    'task_id': 'sync-' + keyword.lower().replace(' ', '-'),
+                    'status': 'completed',
+                    'keyword': keyword,
+                    'max_results': max_results,
+                    'result': result,
+                    'message': f'PR hunt completed for "{keyword}". Found {saved_count} candidates.'
+                }), 200
+
+            finally:
+                if conn:
+                    conn.close()
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 

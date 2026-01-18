@@ -595,20 +595,20 @@ def remove_brand_from_pipeline(brand_id):
 @pr_crm.route('/templates', methods=['GET'])
 def get_email_templates():
     """Get all email templates"""
+    conn = None
     try:
         creator_id = get_creator_id_from_session()
         is_premium = False
 
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Check if creator is premium
         if creator_id:
-            conn = get_db_connection()
-            cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute('SELECT subscription_tier FROM creators WHERE id = %s', (creator_id,))
             creator = cursor.fetchone()
             if creator and creator['subscription_tier'] in ['pro', 'elite']:
                 is_premium = True
-
-        conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         # Get platform templates
         if is_premium:
@@ -621,12 +621,17 @@ def get_email_templates():
         # Get creator's custom templates if logged in
         custom_templates = []
         if creator_id:
-            cursor.execute('''
-                SELECT * FROM creator_custom_templates
-                WHERE creator_id = %s
-                ORDER BY created_at DESC
-            ''', (creator_id,))
-            custom_templates = cursor.fetchall()
+            try:
+                cursor.execute('''
+                    SELECT * FROM creator_custom_templates
+                    WHERE creator_id = %s
+                    ORDER BY created_at DESC
+                ''', (creator_id,))
+                custom_templates = cursor.fetchall()
+            except Exception as custom_error:
+                # Table might not exist, skip custom templates
+                print(f"Could not fetch custom templates: {str(custom_error)}")
+                custom_templates = []
 
         cursor.close()
         conn.close()
@@ -638,6 +643,14 @@ def get_email_templates():
         })
 
     except Exception as e:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+        print(f"Error in get_email_templates: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
 

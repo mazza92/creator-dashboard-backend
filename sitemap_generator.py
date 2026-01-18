@@ -11,33 +11,26 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def get_db_connection():
-    """Connect to Supabase PostgreSQL"""
-    return psycopg2.connect(
-        host=os.getenv('SUPABASE_HOST'),
-        database=os.getenv('SUPABASE_DB'),
-        user=os.getenv('SUPABASE_USER'),
-        password=os.getenv('SUPABASE_PASSWORD'),
-        port=os.getenv('SUPABASE_PORT', 5432)
-    )
+    """Connect to PostgreSQL database"""
+    return psycopg2.connect(os.getenv('DATABASE_URL'))
 
 def generate_sitemap():
     """
-    Generate sitemap XML for all brand pages
+    Generate sitemap XML for all PR brand pages
     Returns: XML string
     """
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Fetch all brands with slugs
+        # Fetch all PR brands with slugs
         cursor.execute('''
             SELECT slug, updated_at
-            FROM brands
+            FROM pr_brands
             WHERE slug IS NOT NULL
-            AND is_public = true
             ORDER BY updated_at DESC
         ''')
-        brands = cursor.fetchall()
+        pr_brands = cursor.fetchall()
 
         cursor.close()
         conn.close()
@@ -56,7 +49,7 @@ def generate_sitemap():
   </url>
 '''
 
-        # Add directory page
+        # Add main directory page
         sitemap_xml += f'''  <url>
     <loc>https://newcollab.co/directory</loc>
     <lastmod>{datetime.now().strftime('%Y-%m-%d')}</lastmod>
@@ -65,8 +58,24 @@ def generate_sitemap():
   </url>
 '''
 
-        # Add all brand pages
-        for brand in brands:
+        # Add category directory pages
+        categories = [
+            'skincare',
+            'k-beauty',
+            'australia'
+        ]
+
+        for category in categories:
+            sitemap_xml += f'''  <url>
+    <loc>https://newcollab.co/directory/{category}</loc>
+    <lastmod>{datetime.now().strftime('%Y-%m-%d')}</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>0.85</priority>
+  </url>
+'''
+
+        # Add all PR brand pages
+        for brand in pr_brands:
             last_mod = brand['updated_at'].strftime('%Y-%m-%d') if brand.get('updated_at') else datetime.now().strftime('%Y-%m-%d')
             sitemap_xml += f'''  <url>
     <loc>https://newcollab.co/brand/{brand['slug']}</loc>
@@ -85,13 +94,19 @@ def generate_sitemap():
         return None
 
 
-def save_sitemap(output_path='public/sitemap.xml'):
+def save_sitemap(output_path=None):
     """
     Generate and save sitemap to file
 
     Args:
         output_path: Path where sitemap.xml should be saved
     """
+    # Default to frontend public folder
+    if output_path is None:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        frontend_dir = os.path.join(os.path.dirname(script_dir), 'creator-dashboard')
+        output_path = os.path.join(frontend_dir, 'public', 'sitemap.xml')
+
     sitemap_xml = generate_sitemap()
 
     if sitemap_xml:
@@ -101,11 +116,11 @@ def save_sitemap(output_path='public/sitemap.xml'):
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(sitemap_xml)
 
-        print(f"✅ Sitemap generated: {output_path}")
-        print(f"   Total URLs: {sitemap_xml.count('<url>')}")
+        print(f"[SUCCESS] Sitemap generated: {output_path}")
+        print(f"          Total URLs: {sitemap_xml.count('<url>')}")
         return True
     else:
-        print("❌ Failed to generate sitemap")
+        print("[ERROR] Failed to generate sitemap")
         return False
 
 

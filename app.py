@@ -119,12 +119,13 @@ CORS(app, resources={
     r"/*": {
         "origins": [
             "http://localhost:3000",
+            "https://app.newcollab.co",
             "https://newcollab.co",
             "https://www.newcollab.co",
             "https://api.newcollab.co"
         ],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-        "allow_headers": ["Content-Type", "Authorization", "X-CSRF-Token", "Accept"],
+        "allow_headers": ["Content-Type", "Authorization", "X-CSRF-Token", "Accept", "X-Admin-Token"],
         "supports_credentials": True,
         "expose_headers": ["Content-Type", "Authorization", "X-CSRF-Token", "Set-Cookie"],
         "max_age": 3600,
@@ -150,6 +151,7 @@ def handle_options():
         origin = request.headers.get('Origin')
         allowed_origins = [
             "http://localhost:3000",
+            "https://app.newcollab.co",
             "https://newcollab.co",
             "https://www.newcollab.co",
             "https://api.newcollab.co"
@@ -157,7 +159,7 @@ def handle_options():
         if origin in allowed_origins:
             response.headers['Access-Control-Allow-Origin'] = origin
             response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, PATCH, OPTIONS'
-            response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-CSRF-Token'
+            response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-CSRF-Token, X-Admin-Token'
             response.headers['Access-Control-Allow-Credentials'] = 'true'
             response.headers['Access-Control-Max-Age'] = '600'
         app.logger.info(f"🟢 Handled OPTIONS preflight for {request.path}")
@@ -174,6 +176,7 @@ def add_cors_headers(response):
     origin = request.headers.get('Origin')
     allowed_origins = [
         'http://localhost:3000',
+        'https://app.newcollab.co',
         'https://newcollab.co',
         'https://www.newcollab.co',
         'https://api.newcollab.co'
@@ -1341,23 +1344,36 @@ def complete_profile():
 
     try:
         app.logger.info(f"🎯 Profile onboarding request received")
+        app.logger.info(f"Request content type: {request.content_type}")
+        app.logger.info(f"Is JSON: {request.is_json}")
+
+        # Handle both JSON and form data
+        if request.is_json:
+            data = request.get_json()
+        else:
+            data = request.form
+
+        app.logger.info(f"Data keys received: {list(data.keys())}")
 
         # Try to get user_id from session first
         user_id = session.get('user_id')
+        app.logger.info(f"User ID from session: {user_id}")
 
-        # If not in session, try form data
+        # If not in session, try request data
         if not user_id:
-            user_id_from_form = request.form.get('user_id')
-            if user_id_from_form:
-                user_id = int(user_id_from_form)
+            user_id_from_data = data.get('user_id')
+            if user_id_from_data:
+                user_id = int(user_id_from_data)
+                app.logger.info(f"User ID from data: {user_id}")
             else:
                 # Try to get from email
-                email_from_form = request.form.get('email')
-                if email_from_form:
+                email_from_data = data.get('email')
+                if email_from_data:
+                    app.logger.info(f"Looking up user by email: {email_from_data}")
                     conn = get_db_connection()
                     try:
                         cursor = conn.cursor(cursor_factory=RealDictCursor)
-                        cursor.execute("SELECT id FROM users WHERE email = %s AND is_verified = true", (email_from_form,))
+                        cursor.execute("SELECT id FROM users WHERE email = %s AND is_verified = true", (email_from_data,))
                         user = cursor.fetchone()
                         cursor.close()
 
@@ -1365,37 +1381,49 @@ def complete_profile():
                             user_id = user['id']
                         else:
                             conn.close()
-                            return jsonify({'error': 'Invalid email or user not verified'}), 401
+                            response = jsonify({'error': 'Invalid email or user not verified'})
+                            response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+                            response.headers['Access-Control-Allow-Credentials'] = 'true'
+                            return response, 401
                     except Exception as db_error:
                         try:
                             conn.close()
                         except:
                             pass
-                        return jsonify({'error': 'Database error during validation'}), 500
+                        response = jsonify({'error': 'Database error during validation'})
+                        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+                        response.headers['Access-Control-Allow-Credentials'] = 'true'
+                        return response, 500
                 else:
-                    return jsonify({'error': 'Not authenticated'}), 401
+                    response = jsonify({'error': 'Not authenticated'})
+                    response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+                    response.headers['Access-Control-Allow-Credentials'] = 'true'
+                    return response, 401
 
         app.logger.info(f"👤 Profile onboarding for user_id: {user_id}")
 
         # Required profile fields
         required_fields = ['bio', 'username']
-        missing_fields = [field for field in required_fields if not request.form.get(field)]
+        missing_fields = [field for field in required_fields if not data.get(field)]
         if missing_fields:
-            return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+            response = jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'})
+            response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
+            return response, 400
 
-        # Get all profile fields from request.form
-        bio = request.form.get('bio')
-        username = request.form.get('username')
-        primary_age_range = request.form.get('primaryAgeRange')
-        regions = request.form.get('regions', '[]')
-        interests = request.form.get('interests', '[]')
-        social_links = request.form.get('socialLinks', '[]')
-        portfolio_links = request.form.get('portfolioLinks', '[]')
-        total_posts = int(request.form.get('totalPosts', 0))
-        total_views = int(request.form.get('totalViews', 0))
-        total_likes = int(request.form.get('totalLikes', 0))
-        total_comments = int(request.form.get('totalComments', 0))
-        total_shares = int(request.form.get('totalShares', 0))
+        # Get all profile fields from JSON data
+        bio = data.get('bio')
+        username = data.get('username')
+        primary_age_range = data.get('primaryAgeRange')
+        regions = data.get('regions', '[]')
+        interests = data.get('interests', '[]')
+        social_links = data.get('socialLinks', '[]')
+        portfolio_links = data.get('portfolioLinks', '[]')
+        total_posts = int(data.get('totalPosts', 0))
+        total_views = int(data.get('totalViews', 0))
+        total_likes = int(data.get('totalLikes', 0))
+        total_comments = int(data.get('totalComments', 0))
+        total_shares = int(data.get('totalShares', 0))
 
         # Parse JSON fields
         import json
@@ -2659,6 +2687,24 @@ NOTIFICATION_TEMPLATES = {
             'message': lambda data: f"Your campaign invite for '{data['product_name']}' has been rejected by the creator for Booking #{data['booking_id']}.",
             'action_url': lambda data: f"https://newcollab.co/brand/dashboard/bookings#{data['booking_id']}",
             'action_text': lambda data: "View Booking"
+        }
+    },
+    'WELCOME_CREATOR': {
+        'creator': {
+            'subject': lambda data: f"Welcome to Newcollab, {data.get('first_name', '')}!",
+            'message': lambda data: f"<h2>Welcome to Newcollab, {data.get('first_name', '')}! 🎉</h2><p>You're all set to start discovering and pitching to PR brands.</p><p>We've added 229+ brands to our directory, and we're adding more every week!</p>",
+            'action_url': lambda data: f"{get_base_url()}/directory",
+            'action_text': lambda data: "Browse PR Brands",
+            'secondary_action_url': lambda data: data.get('public_profile_url'),
+            'secondary_action_text': lambda data: "View Your Profile" if data.get('public_profile_url') else None
+        },
+        'brand': {
+            'subject': lambda data: f"Welcome to Newcollab, {data.get('first_name', '')}!",
+            'message': lambda data: f"<h2>Welcome to Newcollab, {data.get('first_name', '')}! 🎉</h2><p>You're all set to start discovering talented creators for your brand collaborations.</p><p>Browse our creator marketplace to find the perfect match for your campaigns!</p>",
+            'action_url': lambda data: f"{get_base_url()}/brand/dashboard",
+            'action_text': lambda data: "Go to Dashboard",
+            'secondary_action_url': lambda data: f"{get_base_url()}/marketplace",
+            'secondary_action_text': lambda data: "Browse Creators"
         }
     }
 }
@@ -4144,8 +4190,9 @@ def send_verification_email(email, token):
     Send email verification link to user
     Raises exception if sending fails
     """
-    base_url = os.getenv('BASE_URL', 'https://newcollab.co')
+    base_url = get_base_url()
     verification_url = f"{base_url}/verify-email?token={token}"
+    app.logger.info(f"🔍 Environment detection - using base URL: {base_url}")
 
     smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
     smtp_port = int(os.getenv('SMTP_PORT', 587))
@@ -9921,6 +9968,82 @@ def test_welcome_email_endpoint():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/sitemap.xml', methods=['GET'])
+def sitemap():
+    """
+    Generate dynamic sitemap for all PR brand pages
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Fetch all PR brands with slugs
+        cursor.execute('''
+            SELECT slug, updated_at
+            FROM pr_brands
+            WHERE slug IS NOT NULL
+            ORDER BY updated_at DESC
+        ''')
+        pr_brands = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        # Build sitemap XML
+        sitemap_xml = '''<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+'''
+
+        # Add homepage
+        sitemap_xml += f'''  <url>
+    <loc>https://newcollab.co/</loc>
+    <lastmod>{datetime.now().strftime('%Y-%m-%d')}</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>1.0</priority>
+  </url>
+'''
+
+        # Add main directory page
+        sitemap_xml += f'''  <url>
+    <loc>https://newcollab.co/directory</loc>
+    <lastmod>{datetime.now().strftime('%Y-%m-%d')}</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>0.9</priority>
+  </url>
+'''
+
+        # Add category directory pages
+        categories = ['skincare', 'k-beauty', 'australia']
+        for category in categories:
+            sitemap_xml += f'''  <url>
+    <loc>https://newcollab.co/directory/{category}</loc>
+    <lastmod>{datetime.now().strftime('%Y-%m-%d')}</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>0.85</priority>
+  </url>
+'''
+
+        # Add all PR brand pages
+        for brand in pr_brands:
+            last_mod = brand['updated_at'].strftime('%Y-%m-%d') if brand.get('updated_at') else datetime.now().strftime('%Y-%m-%d')
+            sitemap_xml += f'''  <url>
+    <loc>https://newcollab.co/brand/{brand['slug']}</loc>
+    <lastmod>{last_mod}</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+'''
+
+        sitemap_xml += '</urlset>'
+
+        # Return XML response with correct content type
+        response = app.make_response(sitemap_xml)
+        response.headers['Content-Type'] = 'application/xml'
+        return response
+
+    except Exception as e:
+        app.logger.error(f"Error generating sitemap: {str(e)}")
+        return "Error generating sitemap", 500
 
 
 # Enable CORS for all routes
