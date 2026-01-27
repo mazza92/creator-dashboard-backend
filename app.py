@@ -43,6 +43,7 @@ from public_routes import public_bp
 from indexnow_routes import indexnow_bp
 from email_cron_routes import email_cron_bp
 from routes.admin_pr_hunter import admin_pr_hunter_bp
+from routes.admin_brands import admin_brands_bp
 
 # Load environment variables
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
@@ -119,6 +120,7 @@ CORS(app, resources={
     r"/*": {
         "origins": [
             "http://localhost:3000",
+            "http://localhost:3001",
             "https://app.newcollab.co",
             "https://newcollab.co",
             "https://www.newcollab.co",
@@ -142,6 +144,7 @@ app.register_blueprint(public_bp)
 app.register_blueprint(indexnow_bp)
 app.register_blueprint(email_cron_bp)
 app.register_blueprint(admin_pr_hunter_bp)
+app.register_blueprint(admin_brands_bp)
 
 # Handle OPTIONS preflight requests
 @app.before_request
@@ -151,6 +154,7 @@ def handle_options():
         origin = request.headers.get('Origin')
         allowed_origins = [
             "http://localhost:3000",
+            "http://localhost:3001",
             "https://app.newcollab.co",
             "https://newcollab.co",
             "https://www.newcollab.co",
@@ -176,6 +180,7 @@ def add_cors_headers(response):
     origin = request.headers.get('Origin')
     allowed_origins = [
         'http://localhost:3000',
+        'http://localhost:3001',
         'https://app.newcollab.co',
         'https://newcollab.co',
         'https://www.newcollab.co',
@@ -408,6 +413,7 @@ def handle_error(error):
     origin = request.headers.get('Origin')
     allowed_origins = [
         'http://localhost:3000',
+        'http://localhost:3001',
         'https://newcollab.co',
         'https://www.newcollab.co',
         'https://api.newcollab.co'

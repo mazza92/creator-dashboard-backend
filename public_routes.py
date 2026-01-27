@@ -133,7 +133,7 @@ def get_public_brands():
                 is_featured,
                 has_application_form
             FROM pr_brands
-            WHERE 1=1
+            WHERE (COALESCE(status, 'published') = 'published')
         """
         params = []
 
@@ -173,7 +173,7 @@ def get_public_brands():
         count_query = """
             SELECT COUNT(*) as total
             FROM pr_brands
-            WHERE 1=1
+            WHERE (COALESCE(status, 'published') = 'published')
         """
         count_params = []
 
@@ -280,7 +280,7 @@ def get_public_brand(slug):
                     ELSE FALSE
                 END as has_email_contact
             FROM pr_brands
-            WHERE slug = %s
+            WHERE slug = %s AND (COALESCE(status, 'published') = 'published')
         """, (slug,))
 
         brand = cursor.fetchone()
