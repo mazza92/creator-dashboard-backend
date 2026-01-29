@@ -1534,16 +1534,8 @@ def complete_profile():
 
         session.modified = True
 
-        # Send welcome email
-        cursor.execute("SELECT email, first_name FROM users WHERE id = %s", (user_id,))
-        user_data = cursor.fetchone()
-        if user_data:
-            welcome_data = {
-                'email': user_data['email'],
-                'first_name': user_data['first_name'],
-                'username': username
-            }
-            send_welcome_email(user_id, 'creator', welcome_data)
+        # Note: Welcome email is now sent after email verification in /api/verify-email
+        # No longer sent here to prevent duplicate emails
 
         base_url = get_base_url()
         response = jsonify({
