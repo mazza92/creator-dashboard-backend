@@ -2176,16 +2176,21 @@ def unlock_brand_access(slug):
             ON CONFLICT (creator_id, brand_id) DO UPDATE SET updated_at = NOW()
         ''', (creator_id, brand['id']))
 
-        # Track unlock event for analytics
+        # Track unlock event for analytics (only count first unlock per brand)
         cursor.execute('''
             INSERT INTO brand_unlocks (creator_id, brand_id, unlocked_at)
             VALUES (%s, %s, NOW())
+            ON CONFLICT (creator_id, brand_id) DO NOTHING
+            RETURNING id
         ''', (creator_id, brand['id']))
+        is_new_unlock = cursor.fetchone() is not None
 
-        # Increment total_unlocks counter on users table for usage tracking
-        cursor.execute('''
-            UPDATE users SET total_unlocks = COALESCE(total_unlocks, 0) + 1 WHERE id = %s
-        ''', (user_id,))
+        # Increment total_unlocks counter on users table (only for NEW unlocks)
+        if is_new_unlock:
+            cursor.execute('''
+                UPDATE users SET total_unlocks = COALESCE(total_unlocks, 0) + 1 WHERE id = %s
+            ''', (user_id,))
+            app.logger.info(f"✅ New unlock - incremented total_unlocks for user {user_id}")
 
         # Update daily unlock counter (FREE users only)
         if tier == 'free':
