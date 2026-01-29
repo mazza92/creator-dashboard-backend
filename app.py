@@ -4883,8 +4883,7 @@ def verify_email():
             'user_id': user['id'],
             'brand_id': brand_id,
             'creator_id': creator_id,
-            'redirect_url': f'{base_url}{redirect_url}',
-            'welcome_sent': welcome_sent
+            'redirect_url': f'{base_url}{redirect_url}'
         }), 200
 
     except Exception as e:
