@@ -2182,6 +2182,11 @@ def unlock_brand_access(slug):
             VALUES (%s, %s, NOW())
         ''', (creator_id, brand['id']))
 
+        # Increment total_unlocks counter on users table for usage tracking
+        cursor.execute('''
+            UPDATE users SET total_unlocks = COALESCE(total_unlocks, 0) + 1 WHERE id = %s
+        ''', (user_id,))
+
         # Update daily unlock counter (FREE users only)
         if tier == 'free':
             from datetime import date
