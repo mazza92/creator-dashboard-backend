@@ -4186,11 +4186,6 @@ def update_application_status(id):
         conn.close()
 
 
-def generate_verification_token(email):
-    token = create_access_token(identity=email, expires_delta=timedelta(hours=24))
-    app.logger.info(f"🟢 Generated token for {email}: {token}")
-    return token
-
 def send_verification_email(email, token):
     """
     Send email verification link to user
@@ -4305,12 +4300,15 @@ https://newcollab.co
 
 
 def generate_verification_token(email):
+    """Generate a JWT verification token valid for 24 hours"""
     secret_key = os.getenv('JWT_SECRET_KEY')
-    return pyjwt.encode({
+    token = pyjwt.encode({
         'sub': email,
         'iat': int(time.time()),
-        'exp': int(time.time()) + 86400  # 1 day expiry
+        'exp': int(time.time()) + 86400  # 24 hour expiry
     }, secret_key, algorithm='HS256')
+    app.logger.info(f"🔐 Generated verification token for {email}")
+    return token
 
 @app.route('/api/resend-verification', methods=['POST'])
 def resend_verification():
@@ -4563,7 +4561,15 @@ def register_creator_account():
         user_id = cursor.fetchone()['id']
         conn.commit()
 
-        send_verification_email(email, verification_token)
+        # Try to send verification email (don't fail registration if email fails)
+        email_sent = False
+        try:
+            send_verification_email(email, verification_token)
+            email_sent = True
+            app.logger.info(f"✅ Verification email sent successfully to {email}")
+        except Exception as email_error:
+            app.logger.error(f"⚠️ Failed to send verification email to {email}: {str(email_error)}")
+            # Continue with registration - user can request resend later
 
         if pr_list_signup:
             app.logger.info(f"📋 PR list signup flag stored for {email}")
@@ -4576,11 +4582,17 @@ def register_creator_account():
 
         access_token = create_access_token(identity=user_id)
         base_url = get_base_url()
+
+        message = 'Registration successful, please verify your email'
+        if not email_sent:
+            message = 'Registration successful! We had trouble sending the verification email. You can request a new one from the verification page.'
+
         response = make_response(jsonify({
-            'message': 'Registration successful, please verify your email',
+            'message': message,
             'redirect_url': f'{base_url}/verify-email-pending',
             'user_id': user_id,
-            'access_token': access_token
+            'access_token': access_token,
+            'email_sent': email_sent
         }), 201)
         set_access_cookies(response, access_token, max_age=86400)
 
@@ -4737,23 +4749,8 @@ def register_creator():
             app.logger.error(f"⚠️ Failed to send verification email to {email}: {str(email_error)}")
             # Continue with registration - user can request resend later
 
-        # Send welcome email immediately after registration (like backup version)
-        welcome_sent = False
-        try:
-            welcome_data = {
-                'email': email,
-                'first_name': first_name,
-                'username': username
-            }
-            app.logger.info(f"🎉 Sending welcome email for new creator: {email}")
-            welcome_sent = send_welcome_email(user_id, 'creator', welcome_data)
-            if welcome_sent:
-                app.logger.info(f"✅ Welcome email sent successfully to {email}")
-            else:
-                app.logger.warning(f"⚠️ Welcome email returned False for {email}")
-        except Exception as welcome_error:
-            app.logger.error(f"⚠️ Failed to send welcome email to {email}: {str(welcome_error)}")
-            # Continue with registration - welcome email is not critical
+        # Note: Welcome email is sent AFTER email verification, not here
+        # This ensures users only get welcome email once they've verified their address
 
         session.clear()
         session['user_id'] = user_id
@@ -4769,8 +4766,7 @@ def register_creator():
         return jsonify({
             'message': message,
             'redirect_url': '/verify-email-pending',
-            'email_sent': email_sent,
-            'welcome_sent': welcome_sent
+            'email_sent': email_sent
         }), 201
 
     except Exception as e:
@@ -4818,7 +4814,7 @@ def verify_email():
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("SELECT id, is_verified, role FROM users WHERE email = %s AND verification_token = %s", (email, token))
+        cursor.execute("SELECT id, first_name, is_verified, role FROM users WHERE email = %s AND verification_token = %s", (email, token))
         user = cursor.fetchone()
         if not user:
             conn.close()
@@ -4836,6 +4832,7 @@ def verify_email():
         conn.commit()
 
         # Get profile completion data
+        username = None
         if user['role'] == 'brand':
             cursor.execute("SELECT id FROM brands WHERE user_id = %s", (user['id'],))
             brand = cursor.fetchone()
@@ -4843,9 +4840,10 @@ def verify_email():
             creator_id = None
             onboarding_completed = brand is not None
         else:  # creator
-            cursor.execute("SELECT id FROM creators WHERE user_id = %s", (user['id'],))
+            cursor.execute("SELECT id, username FROM creators WHERE user_id = %s", (user['id'],))
             creator = cursor.fetchone()
             creator_id = creator['id'] if creator else None
+            username = creator['username'] if creator else None
             brand_id = None
             onboarding_completed = creator is not None
 
@@ -4856,6 +4854,24 @@ def verify_email():
         session.modified = True
 
         conn.close()
+
+        # Send welcome email NOW that user is verified (not during registration)
+        welcome_sent = False
+        try:
+            welcome_data = {
+                'email': email,
+                'first_name': user.get('first_name', ''),
+                'username': username or ''
+            }
+            app.logger.info(f"🎉 Sending welcome email after verification for: {email}")
+            welcome_sent = send_welcome_email(user['id'], user['role'], welcome_data)
+            if welcome_sent:
+                app.logger.info(f"✅ Welcome email sent successfully to {email}")
+            else:
+                app.logger.warning(f"⚠️ Welcome email returned False for {email}")
+        except Exception as welcome_error:
+            app.logger.error(f"⚠️ Failed to send welcome email to {email}: {str(welcome_error)}")
+            # Continue - welcome email failure shouldn't break verification
 
         base_url = os.getenv('BASE_URL', 'https://newcollab.co')
 
@@ -4873,7 +4889,8 @@ def verify_email():
             'user_id': user['id'],
             'brand_id': brand_id,
             'creator_id': creator_id,
-            'redirect_url': f'{base_url}{redirect_url}'
+            'redirect_url': f'{base_url}{redirect_url}',
+            'welcome_sent': welcome_sent
         }), 200
 
     except Exception as e:
