@@ -1534,8 +1534,25 @@ def complete_profile():
 
         session.modified = True
 
-        # Note: Welcome email is now sent after email verification in /api/verify-email
-        # No longer sent here to prevent duplicate emails
+        # Send welcome email after profile completion (best practice - user has full profile now)
+        try:
+            cursor.execute("SELECT email, first_name, role FROM users WHERE id = %s", (user_id,))
+            user_for_welcome = cursor.fetchone()
+            if user_for_welcome:
+                welcome_data = {
+                    'email': user_for_welcome.get('email', ''),
+                    'first_name': user_for_welcome.get('first_name', ''),
+                    'username': username
+                }
+                app.logger.info(f"🎉 Sending welcome email after profile completion for user_id: {user_id}")
+                welcome_sent = send_welcome_email(user_id, user_for_welcome.get('role', 'creator'), welcome_data)
+                if welcome_sent:
+                    app.logger.info(f"✅ Welcome email sent successfully to {welcome_data['email']}")
+                else:
+                    app.logger.warning(f"⚠️ Welcome email returned False for {welcome_data['email']}")
+        except Exception as welcome_error:
+            app.logger.error(f"⚠️ Failed to send welcome email for user_id {user_id}: {str(welcome_error)}")
+            # Continue - welcome email failure shouldn't break onboarding
 
         base_url = get_base_url()
         response = jsonify({
@@ -4847,23 +4864,8 @@ def verify_email():
 
         conn.close()
 
-        # Send welcome email NOW that user is verified (not during registration)
-        welcome_sent = False
-        try:
-            welcome_data = {
-                'email': email,
-                'first_name': user.get('first_name', ''),
-                'username': username or ''
-            }
-            app.logger.info(f"🎉 Sending welcome email after verification for: {email}")
-            welcome_sent = send_welcome_email(user['id'], user['role'], welcome_data)
-            if welcome_sent:
-                app.logger.info(f"✅ Welcome email sent successfully to {email}")
-            else:
-                app.logger.warning(f"⚠️ Welcome email returned False for {email}")
-        except Exception as welcome_error:
-            app.logger.error(f"⚠️ Failed to send welcome email to {email}: {str(welcome_error)}")
-            # Continue - welcome email failure shouldn't break verification
+        # Note: Welcome email is sent after profile completion in /profile/onboarding
+        # This ensures the email has complete user data (username, profile URL)
 
         base_url = os.getenv('BASE_URL', 'https://newcollab.co')
 
