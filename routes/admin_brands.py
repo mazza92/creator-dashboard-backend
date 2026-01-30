@@ -120,7 +120,7 @@ def get_brands():
                 total_applications, total_responses, last_verified_at,
                 is_featured, is_premium, has_application_form,
                 application_method, application_requirements,
-                accepting_pr, notes, success_stories, source_url,
+                accepting_pr, open_pr_featured, notes, success_stories, source_url,
                 cover_image_url, avg_product_value, collaboration_type, payment_offered,
                 seo_title, seo_description,
                 COALESCE(status, 'published') as status,
@@ -199,7 +199,7 @@ def get_brand(brand_id):
                 total_applications, total_responses, last_verified_at,
                 is_featured, is_premium, has_application_form,
                 application_method, application_requirements,
-                accepting_pr, notes, success_stories, source_url,
+                accepting_pr, open_pr_featured, notes, success_stories, source_url,
                 cover_image_url, avg_product_value, collaboration_type, payment_offered,
                 seo_title, seo_description,
                 COALESCE(status, 'published') as status,
@@ -263,7 +263,7 @@ def create_brand():
                 response_rate, avg_response_time_days,
                 is_featured, is_premium, has_application_form,
                 application_method, application_requirements,
-                accepting_pr, notes, success_stories, source_url,
+                accepting_pr, open_pr_featured, notes, success_stories, source_url,
                 cover_image_url, avg_product_value, collaboration_type, payment_offered,
                 seo_title, seo_description,
                 status, created_at
@@ -276,7 +276,7 @@ def create_brand():
                 %s, %s,
                 %s, %s, %s,
                 %s, %s,
-                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s,
                 %s, CURRENT_TIMESTAMP
@@ -308,6 +308,7 @@ def create_brand():
             data.get('application_method'),
             data.get('application_requirements'),
             data.get('accepting_pr', True),
+            data.get('open_pr_featured', False),
             data.get('notes'),
             data.get('success_stories'),
             data.get('source_url'),
@@ -335,7 +336,7 @@ def create_brand():
                 total_applications, total_responses, last_verified_at,
                 is_featured, is_premium, has_application_form,
                 application_method, application_requirements,
-                accepting_pr, notes, success_stories, source_url,
+                accepting_pr, open_pr_featured, notes, success_stories, source_url,
                 cover_image_url, avg_product_value, collaboration_type, payment_offered,
                 seo_title, seo_description,
                 COALESCE(status, 'published') as status,
@@ -397,7 +398,7 @@ def update_brand(brand_id):
             'response_rate', 'avg_response_time_days',
             'total_applications', 'total_responses', 'last_verified_at',
             'has_application_form', 'application_method', 'application_requirements',
-            'is_premium', 'notes', 'success_stories', 'source_url',
+            'is_premium', 'open_pr_featured', 'notes', 'success_stories', 'source_url',
             'cover_image_url', 'avg_product_value', 'collaboration_type', 'payment_offered',
             'status', 'seo_title', 'seo_description'
         ]
@@ -456,7 +457,7 @@ def update_brand(brand_id):
                 total_applications, total_responses, last_verified_at,
                 is_featured, is_premium, has_application_form,
                 application_method, application_requirements,
-                accepting_pr, notes, success_stories, source_url,
+                accepting_pr, open_pr_featured, notes, success_stories, source_url,
                 cover_image_url, avg_product_value, collaboration_type, payment_offered,
                 seo_title, seo_description,
                 COALESCE(status, 'published') as status,
@@ -613,7 +614,7 @@ def bulk_update_brands():
             return jsonify({'error': 'ids and updates are required'}), 400
 
         # Build update query
-        allowed_fields = ['status', 'category', 'is_featured', 'accepting_pr']
+        allowed_fields = ['status', 'category', 'is_featured', 'accepting_pr', 'open_pr_featured']
         update_fields = []
         params = []
 
@@ -701,4 +702,43 @@ def get_brand_stats():
         }), 200
 
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# PUBLIC ENDPOINT - Open PR Featured Brands
+# ============================================================================
+
+@admin_brands_bp.route('/brands/open-pr-featured', methods=['GET'])
+def get_open_pr_featured_brands():
+    """
+    Public endpoint to get brands flagged for Open PR Applications section.
+    No authentication required - used by public directory page.
+
+    Returns:
+        { "brands": [...] }
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            SELECT
+                id, slug, brand_name as name, logo_url as logo, website,
+                category, application_form_url as application_url,
+                has_application_form, application_method
+            FROM pr_brands
+            WHERE open_pr_featured = TRUE
+              AND COALESCE(status, 'published') = 'published'
+            ORDER BY brand_name ASC
+        """)
+
+        brands = cursor.fetchall()
+        conn.close()
+
+        return jsonify({'brands': brands}), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
