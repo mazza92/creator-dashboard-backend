@@ -1046,7 +1046,7 @@ def login():
             'user_role': user_role,
             'creator_id': creator_id,
             'brand_id': brand_id,
-            'redirect_url': '/creator/dashboard/pr-brands' if user_role == 'creator' else '/brand/dashboard/bookings'
+            'redirect_url': '/creator/dashboard/pr-brands' if user_role == 'creator' else '/brand/dashboard/overview'
         }
         response = make_response(jsonify(login_response))
         # Clear old session cookies
