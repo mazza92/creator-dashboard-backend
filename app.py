@@ -60,21 +60,30 @@ if not app.config['SECRET_KEY']:
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
 if not app.config['JWT_SECRET_KEY']:
     raise ValueError("JWT_SECRET_KEY not set in environment")
+# Detect if we're running in production or development
+is_production = os.getenv('FLASK_ENV') == 'production' or os.getenv('VERCEL_ENV') == 'production'
+
 app.config['SESSION_TYPE'] = 'redis'
 app.config['SESSION_PERMANENT'] = True
 app.config['SESSION_USE_SIGNER'] = False
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=1)
-app.config['SESSION_COOKIE_SECURE'] = True
+# Production uses HTTPS with Secure cookies, development uses HTTP without
+app.config['SESSION_COOKIE_SECURE'] = is_production
 app.config['SESSION_COOKIE_HTTPONLY'] = True
-app.config['SESSION_COOKIE_DOMAIN'] = '.newcollab.co'
-app.config['SESSION_COOKIE_SAMESITE'] = 'None'
+# Production sets domain for cross-subdomain, development leaves it unset for localhost
+app.config['SESSION_COOKIE_DOMAIN'] = '.newcollab.co' if is_production else None
+# Production uses SameSite=None for cross-subdomain, development uses Lax (works with CRA proxy)
+# Chrome rejects SameSite=None without Secure=True, so we use Lax in dev
+app.config['SESSION_COOKIE_SAMESITE'] = 'None' if is_production else 'Lax'
 app.config['SESSION_COOKIE_NAME'] = 'session'
 app.config['SESSION_KEY_PREFIX'] = 'session:'
-app.config['SESSION_SERIALIZATION_FORMAT'] = 'json'  
+app.config['SESSION_SERIALIZATION_FORMAT'] = 'json'
 app.config['JWT_TOKEN_LOCATION'] = ['cookies']
-app.config['JWT_COOKIE_SECURE'] = True
+app.config['JWT_COOKIE_SECURE'] = is_production
 app.config['JWT_COOKIE_HTTPONLY'] = True
-app.config['JWT_COOKIE_SAMESITE'] = 'None'
+app.config['JWT_COOKIE_SAMESITE'] = 'None' if is_production else 'Lax'
+
+app.logger.info(f"🔧 Cookie config: is_production={is_production}, SECURE={app.config['SESSION_COOKIE_SECURE']}, DOMAIN={app.config['SESSION_COOKIE_DOMAIN']}, SAMESITE={app.config['SESSION_COOKIE_SAMESITE']}")
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(minutes=30)
 app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=7)
 app.config['JWT_COOKIE_CSRF_PROTECT'] = True
@@ -1145,6 +1154,7 @@ def get_profile():
     user_id = session.get('user_id')
     user_role = session.get('user_role', 'creator')
     creator_id = session.get('creator_id')
+    brand_id = session.get('brand_id')
 
     if not user_id:
         app.logger.warning(f"❌ Unauthorized access attempt: No user_id in session, Headers={request.headers}, Session={session}")
@@ -1153,7 +1163,7 @@ def get_profile():
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         return response, 403
 
-    app.logger.info(f"✅ Fetching profile for user_id={user_id}, role={user_role}")
+    app.logger.info(f"✅ Fetching profile for user_id={user_id}, role={user_role}, creator_id={creator_id}, brand_id={brand_id}")
 
     conn = get_db_connection()
     if not conn:
@@ -1177,7 +1187,8 @@ def get_profile():
         profile_data = {
             **user_data,
             'user_role': user_role,
-            'creator_id': creator_id
+            'creator_id': creator_id,
+            'brand_id': brand_id
         }
 
         if user_role == 'creator':
@@ -1204,6 +1215,31 @@ def get_profile():
     finally:
         cursor.close()
         conn.close()
+
+# Session Data Endpoint - Returns current session contents for debugging and frontend sync
+@app.route('/api/session', methods=['GET', 'OPTIONS'])
+def get_session():
+    if request.method == 'OPTIONS':
+        response = jsonify({'success': True})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+        response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 200
+
+    session_contents = {
+        'user_id': session.get('user_id'),
+        'user_role': session.get('user_role'),
+        'creator_id': session.get('creator_id'),
+        'brand_id': session.get('brand_id')
+    }
+
+    app.logger.info(f"🔍 Session contents requested: {session_contents}")
+
+    response = jsonify({'session_contents': session_contents})
+    response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+    response.headers['Access-Control-Allow-Credentials'] = 'true'
+    return response, 200
 
 # Profile Image Upload Endpoint
 @app.route('/profile/update-image', methods=['POST'])
@@ -1740,46 +1776,56 @@ def get_marketplace_creators():
         is_brand_user = False
         user_role = None
 
-        # Check Authorization header
-        auth_header = request.headers.get('Authorization', '')
-        has_auth_header = auth_header and auth_header.startswith('Bearer ')
+        # First, check session-based authentication (preferred for web app)
+        session_user_id = session.get('user_id')
+        session_user_role = session.get('user_role')
 
-        # Check for JWT in cookies
-        has_jwt_cookie = bool(request.cookies.get('access_token_cookie'))
-
-        app.logger.debug(f"Marketplace auth check - Header: {has_auth_header}, Cookie: {has_jwt_cookie}")
-
-        # Only try to verify if we have a token AND it's a valid JWT
-        if has_auth_header or has_jwt_cookie:
-            try:
-                # Use verify_jwt_in_request with optional=True
-                from flask_jwt_extended import verify_jwt_in_request
-                verify_jwt_in_request(optional=True)
-                # get_jwt_identity() will return None if optional=True and no valid token
-                identity = get_jwt_identity()
-                if identity:
-                    # Get user role from database
-                    cursor.execute('''
-                        SELECT role FROM users WHERE id = %s
-                    ''', (identity,))
-                    user_result = cursor.fetchone()
-                    if user_result:
-                        user_role = user_result['role']
-                        # Only brands get full results - creators and others are limited
-                        is_brand_user = (user_role == 'brand')
-                        app.logger.info(f"Marketplace: User authenticated as {identity} (role: {user_role}) - {'full results' if is_brand_user else 'limited to 26'}")
-                    else:
-                        app.logger.info("Marketplace: User ID found but no role - treating as public (limit 26)")
-                else:
-                    app.logger.info("Marketplace: Token found but invalid/expired - treating as public (limit 26)")
-            except Exception as e:
-                # Token exists but is invalid/expired - treat as not authenticated
-                app.logger.info(f"Marketplace: Authentication check failed: {str(e)} - treating as public (limit 26)")
-                is_brand_user = False
+        if session_user_id and session_user_role:
+            user_role = session_user_role
+            is_brand_user = (user_role == 'brand')
+            app.logger.info(f"Marketplace: User authenticated via session as {session_user_id} (role: {user_role}) - {'full results' if is_brand_user else 'limited to 26'}")
         else:
-            # No token at all - definitely not authenticated
-            app.logger.info("Marketplace: No auth token found - treating as public user (limit 26)")
-            is_brand_user = False
+            # Fallback to JWT-based authentication
+            # Check Authorization header
+            auth_header = request.headers.get('Authorization', '')
+            has_auth_header = auth_header and auth_header.startswith('Bearer ')
+
+            # Check for JWT in cookies
+            has_jwt_cookie = bool(request.cookies.get('access_token_cookie'))
+
+            app.logger.debug(f"Marketplace auth check - Header: {has_auth_header}, Cookie: {has_jwt_cookie}")
+
+            # Only try to verify if we have a token AND it's a valid JWT
+            if has_auth_header or has_jwt_cookie:
+                try:
+                    # Use verify_jwt_in_request with optional=True
+                    from flask_jwt_extended import verify_jwt_in_request
+                    verify_jwt_in_request(optional=True)
+                    # get_jwt_identity() will return None if optional=True and no valid token
+                    identity = get_jwt_identity()
+                    if identity:
+                        # Get user role from database
+                        cursor.execute('''
+                            SELECT role FROM users WHERE id = %s
+                        ''', (identity,))
+                        user_result = cursor.fetchone()
+                        if user_result:
+                            user_role = user_result['role']
+                            # Only brands get full results - creators and others are limited
+                            is_brand_user = (user_role == 'brand')
+                            app.logger.info(f"Marketplace: User authenticated via JWT as {identity} (role: {user_role}) - {'full results' if is_brand_user else 'limited to 26'}")
+                        else:
+                            app.logger.info("Marketplace: User ID found but no role - treating as public (limit 26)")
+                    else:
+                        app.logger.info("Marketplace: Token found but invalid/expired - treating as public (limit 26)")
+                except Exception as e:
+                    # Token exists but is invalid/expired - treat as not authenticated
+                    app.logger.info(f"Marketplace: Authentication check failed: {str(e)} - treating as public (limit 26)")
+                    is_brand_user = False
+            else:
+                # No token at all - definitely not authenticated
+                app.logger.info("Marketplace: No auth token found - treating as public user (limit 26)")
+                is_brand_user = False
 
         # Save original where_sql for counting total available (to show "X more available")
         count_where_sql = where_sql
@@ -1801,8 +1847,8 @@ def get_marketplace_creators():
             count_where_sql = "c.public_profile_enabled = true"
 
         # ALWAYS limit to 26 for non-brand users (teaser/baiter)
-        # Only brand users get full results (100)
-        limit = 26 if not is_brand_user else 100
+        # Brand users get access to all creators (limit 1000 for safety)
+        limit = 26 if not is_brand_user else 1000
 
         app.logger.info(f"Marketplace: Applying limit of {limit} creators (is_brand_user: {is_brand_user}, user_role: {user_role})")
 
@@ -4498,7 +4544,9 @@ def register_brand():
         return jsonify({
             'message': 'Registration successful, please verify your email',
             'redirect_url': f'{base_url}/verify-email-pending',
-            'user_role': role
+            'user_role': role,
+            'user_id': user_id,
+            'brand_id': brand_id
         }), 201
 
     except Exception as e:
@@ -4803,6 +4851,846 @@ def register_creator():
 def debug_verify_email():
     app.logger.warning(f"🔥 Misrouted to /verify-email: Token={request.args.get('token')}, URL={request.url}")
     return jsonify({'error': 'Misrouted request. Expected /api/verify-email.'}), 400
+
+@app.route('/api/pr-offers', methods=['GET', 'POST', 'OPTIONS'])
+def pr_offers_handler():
+    """
+    Handle PR offers (GET to fetch, POST to create).
+    PR offers are stored in the pr_offers table.
+    """
+    if request.method == 'OPTIONS':
+        response = make_response('', 200)
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response
+    
+    if request.method == 'GET':
+        return get_pr_offers()
+    elif request.method == 'POST':
+        return create_pr_offer()
+
+def get_pr_offers():
+    """Get all PR offers for a brand"""
+    try:
+        # Check session for brand user
+        user_role = session.get('user_role')
+        brand_id = session.get('brand_id')
+        
+        app.logger.info(f"PR Offers GET: Session check - user_role={user_role}, brand_id={brand_id}")
+        
+        if not user_role or user_role != 'brand':
+            app.logger.warning(f"PR Offers GET: Unauthorized access attempt - user_role={user_role}")
+            return jsonify({'error': 'Unauthorized: Brand access required'}), 403
+            
+        if not brand_id:
+            app.logger.warning("PR Offers GET: No brand_id in session")
+            return jsonify({'error': 'Brand ID required'}), 400
+        
+        conn = get_db_connection()
+        if not conn:
+            app.logger.error("PR Offers GET: Database connection failed")
+            return jsonify({'error': 'Database connection failed'}), 500
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Query pr_offers table
+        query = '''
+            SELECT 
+                po.id,
+                po.brand_id,
+                po.creator_id,
+                po.offer_title,
+                po.products_offered,
+                po.products_value,
+                po.deliverables_required,
+                po.mandatory_requirements,
+                po.content_deadline_days,
+                po.status,
+                po.shipping_address,
+                po.tracking_number,
+                po.shipped_at,
+                po.product_received_at,
+                po.content_submitted_at,
+                po.content_urls,
+                po.created_at,
+                po.updated_at,
+                po.accepted_at,
+                po.declined_at,
+                po.declined_reason,
+                po.completed_at,
+                po.notes,
+                c.username AS creator_name,
+                c.image_profile AS creator_profile,
+                c.followers_count AS creator_followers
+            FROM pr_offers po
+            LEFT JOIN creators c ON po.creator_id = c.id
+            WHERE po.brand_id = %s
+            ORDER BY po.created_at DESC
+        '''
+        
+        cursor.execute(query, (brand_id,))
+        offers = cursor.fetchall()
+        
+        # Format the response
+        formatted_offers = []
+        for offer in offers:
+            formatted_offers.append({
+                'id': str(offer['id']),  # UUID to string
+                'brand_id': offer['brand_id'],
+                'creator_id': offer['creator_id'],
+                'creator_name': offer.get('creator_name'),
+                'creator_profile': offer.get('creator_profile'),
+                'creator_followers': offer.get('creator_followers'),
+                'offer_title': offer['offer_title'],
+                'products_offered': offer['products_offered'],
+                'products_value': float(offer['products_value']) if offer['products_value'] else None,
+                'deliverables_required': offer['deliverables_required'],
+                'mandatory_requirements': offer.get('mandatory_requirements'),
+                'content_deadline_days': offer.get('content_deadline_days'),
+                'status': offer['status'],
+                'shipping_address': offer.get('shipping_address'),
+                'tracking_number': offer.get('tracking_number'),
+                'shipped_at': offer['shipped_at'].isoformat() if offer.get('shipped_at') else None,
+                'product_received_at': offer['product_received_at'].isoformat() if offer.get('product_received_at') else None,
+                'content_submitted_at': offer['content_submitted_at'].isoformat() if offer.get('content_submitted_at') else None,
+                'content_urls': offer.get('content_urls', []),
+                'created_at': offer['created_at'].isoformat() if offer.get('created_at') else None,
+                'updated_at': offer['updated_at'].isoformat() if offer.get('updated_at') else None,
+                'accepted_at': offer['accepted_at'].isoformat() if offer.get('accepted_at') else None,
+                'declined_at': offer['declined_at'].isoformat() if offer.get('declined_at') else None,
+                'declined_reason': offer.get('declined_reason'),
+                'completed_at': offer['completed_at'].isoformat() if offer.get('completed_at') else None,
+                'notes': offer.get('notes')
+            })
+        
+        cursor.close()
+        conn.close()
+        
+        app.logger.info(f"PR Offers GET: Returned {len(formatted_offers)} offers for brand_id={brand_id}")
+        return jsonify(formatted_offers), 200
+        
+    except Exception as e:
+        app.logger.error(f"PR Offers GET: Error fetching offers - {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+def create_pr_offer():
+    """Create a new PR offer"""
+    try:
+        # Check session for brand user
+        user_role = session.get('user_role')
+        brand_id = session.get('brand_id')
+        
+        app.logger.info(f"PR Offers POST: Session check - user_role={user_role}, brand_id={brand_id}")
+        
+        if not user_role or user_role != 'brand':
+            app.logger.warning(f"PR Offers POST: Unauthorized access attempt - user_role={user_role}")
+            return jsonify({'error': 'Unauthorized: Brand access required'}), 403
+            
+        if not brand_id:
+            app.logger.warning("PR Offers POST: No brand_id in session")
+            return jsonify({'error': 'Brand ID required'}), 400
+        
+        data = request.get_json()
+        
+        # Validate required fields
+        required_fields = ['creator_id', 'offer_title', 'products_offered', 'deliverables_required']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({'error': f'Missing required field: {field}'}), 400
+        
+        conn = get_db_connection()
+        if not conn:
+            app.logger.error("PR Offers POST: Database connection failed")
+            return jsonify({'error': 'Database connection failed'}), 500
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Insert new PR offer
+        query = '''
+            INSERT INTO pr_offers (
+                brand_id, creator_id, offer_title, products_offered, products_value,
+                deliverables_required, mandatory_requirements, content_deadline_days,
+                target_categories, status
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id, created_at
+        '''
+        
+        cursor.execute(query, (
+            brand_id,
+            data['creator_id'],
+            data['offer_title'],
+            data['products_offered'],
+            data.get('products_value'),
+            json.dumps(data['deliverables_required']),
+            data.get('mandatory_requirements'),
+            data.get('content_deadline_days', 14),
+            json.dumps(data.get('target_categories', [])),
+            'pending'
+        ))
+        
+        result = cursor.fetchone()
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        app.logger.info(f"PR Offers POST: Created offer {result['id']} for brand_id={brand_id}, creator_id={data['creator_id']}")
+        
+        return jsonify({
+            'message': 'PR offer created successfully',
+            'offer_id': str(result['id']),
+            'created_at': result['created_at'].isoformat()
+        }), 201
+        
+    except Exception as e:
+        app.logger.error(f"PR Offers POST: Error creating offer - {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/pr-offers/matched-creators', methods=['POST', 'OPTIONS'])
+def get_matched_creators():
+    """Find creators that match target categories for PR offers"""
+    if request.method == 'OPTIONS':
+        response = make_response('', 200)
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response
+        
+    try:
+        data = request.get_json()
+        target_categories = data.get('target_categories', [])
+        
+        if not target_categories:
+            return jsonify({'creators': [], 'total_matched': 0}), 200
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Query creators whose pr_wishlist contains any of the target categories
+        query = '''
+            SELECT 
+                c.id,
+                c.username,
+                c.image_profile,
+                c.followers_count,
+                c.engagement_rate,
+                c.niche,
+                c.pr_wishlist,
+                u.country
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE c.pr_wishlist IS NOT NULL
+            AND c.pr_wishlist::jsonb ?| %s
+            ORDER BY c.followers_count DESC
+            LIMIT 50
+        '''
+        
+        cursor.execute(query, (target_categories,))
+        creators = cursor.fetchall()
+        
+        formatted_creators = []
+        for creator in creators:
+            formatted_creators.append({
+                'id': creator['id'],
+                'username': creator['username'],
+                'name': creator['username'],
+                'image_profile': creator.get('image_profile'),
+                'followers_count': creator.get('followers_count', 0),
+                'engagement_rate': float(creator['engagement_rate']) if creator.get('engagement_rate') else None,
+                'niche': creator.get('niche'),
+                'pr_wishlist': creator.get('pr_wishlist'),
+                'country': creator.get('country')
+            })
+        
+        cursor.close()
+        conn.close()
+        
+        app.logger.info(f"Matched Creators: Found {len(formatted_creators)} creators for categories: {target_categories}")
+        
+        return jsonify({
+            'creators': formatted_creators,
+            'count': len(formatted_creators),
+            'total_matched': len(formatted_creators),
+            'message': f"We found {len(formatted_creators)} creator{'s' if len(formatted_creators) != 1 else ''} who want {', '.join(target_categories[:2])}{'...' if len(target_categories) > 2 else ''}!"
+        }), 200
+        
+    except Exception as e:
+        app.logger.error(f"Matched Creators: Error - {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/pr-offers/<offer_id>/ready-to-ship', methods=['POST', 'OPTIONS'])
+def ready_to_ship_pr_offer(offer_id):
+    """Mark PR offer as ready to ship (accepted -> awaiting_shipment)"""
+    if request.method == 'OPTIONS':
+        response = make_response('', 200)
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response
+        
+    try:
+        brand_id = session.get('brand_id')
+        if not brand_id:
+            return jsonify({'error': 'Unauthorized'}), 403
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Update offer status to awaiting_shipment
+        query = '''
+            UPDATE pr_offers 
+            SET status = 'awaiting_shipment'
+            WHERE id = %s AND brand_id = %s AND status = 'accepted'
+            RETURNING id, status
+        '''
+        
+        cursor.execute(query, (offer_id, brand_id))
+        result = cursor.fetchone()
+        
+        if not result:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Offer not found or unauthorized'}), 404
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        app.logger.info(f"PR Offer {offer_id}: Marked as awaiting shipment by brand {brand_id}")
+        
+        return jsonify({
+            'message': 'Offer marked as ready to ship',
+            'offer_id': str(result['id']),
+            'status': result['status']
+        }), 200
+        
+    except Exception as e:
+        app.logger.error(f"Ready to Ship PR Offer: Error - {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/pr-offers/<offer_id>/ship', methods=['POST', 'OPTIONS'])
+def ship_pr_offer(offer_id):
+    """Mark PR offer as shipped with tracking number"""
+    if request.method == 'OPTIONS':
+        response = make_response('', 200)
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response
+        
+    try:
+        brand_id = session.get('brand_id')
+        if not brand_id:
+            return jsonify({'error': 'Unauthorized'}), 403
+            
+        data = request.get_json()
+        tracking_number = data.get('tracking_number')
+        
+        if not tracking_number:
+            return jsonify({'error': 'Tracking number required'}), 400
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Update offer status to shipped
+        query = '''
+            UPDATE pr_offers 
+            SET status = 'shipped',
+                tracking_number = %s,
+                shipped_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND brand_id = %s
+            RETURNING id, status, shipped_at
+        '''
+        
+        cursor.execute(query, (tracking_number, offer_id, brand_id))
+        result = cursor.fetchone()
+        
+        if not result:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Offer not found or unauthorized'}), 404
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        app.logger.info(f"PR Offer {offer_id}: Marked as shipped with tracking {tracking_number}")
+        
+        return jsonify({
+            'message': 'Offer marked as shipped',
+            'offer_id': str(result['id']),
+            'status': result['status'],
+            'shipped_at': result['shipped_at'].isoformat()
+        }), 200
+        
+    except Exception as e:
+        app.logger.error(f"Ship PR Offer: Error - {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/pr-offers/<offer_id>/complete', methods=['POST', 'OPTIONS'])
+def complete_pr_offer(offer_id):
+    """Mark PR offer as completed"""
+    if request.method == 'OPTIONS':
+        response = make_response('', 200)
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response
+        
+    try:
+        brand_id = session.get('brand_id')
+        if not brand_id:
+            return jsonify({'error': 'Unauthorized'}), 403
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Update offer status to completed
+        query = '''
+            UPDATE pr_offers 
+            SET status = 'completed',
+                completed_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND brand_id = %s
+            RETURNING id, status, completed_at
+        '''
+        
+        cursor.execute(query, (offer_id, brand_id))
+        result = cursor.fetchone()
+        
+        if not result:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Offer not found or unauthorized'}), 404
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        app.logger.info(f"PR Offer {offer_id}: Marked as completed")
+        
+        return jsonify({
+            'message': 'Offer marked as completed',
+            'offer_id': str(result['id']),
+            'status': result['status'],
+            'completed_at': result['completed_at'].isoformat()
+        }), 200
+        
+    except Exception as e:
+        app.logger.error(f"Complete PR Offer: Error - {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/creator/pr-offers', methods=['GET', 'OPTIONS'])
+def get_creator_pr_offers():
+    """Get PR offers for the logged-in creator"""
+    if request.method == 'OPTIONS':
+        response = make_response('', 200)
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response
+        
+    try:
+        # Check session for creator user
+        user_role = session.get('user_role')
+        creator_id = session.get('creator_id')
+        
+        app.logger.info(f"Creator PR Offers GET: Session check - user_role={user_role}, creator_id={creator_id}")
+        
+        if not user_role or user_role != 'creator':
+            app.logger.warning(f"Creator PR Offers GET: Unauthorized access attempt - user_role={user_role}")
+            return jsonify({'error': 'Unauthorized: Creator access required'}), 403
+            
+        if not creator_id:
+            app.logger.warning("Creator PR Offers GET: No creator_id in session")
+            return jsonify({'error': 'Creator ID required'}), 400
+        
+        conn = get_db_connection()
+        if not conn:
+            app.logger.error("Creator PR Offers GET: Database connection failed")
+            return jsonify({'error': 'Database connection failed'}), 500
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Query pr_offers table for this creator
+        query = '''
+            SELECT 
+                po.id,
+                po.brand_id,
+                po.creator_id,
+                po.offer_title,
+                po.products_offered,
+                po.products_value,
+                po.deliverables_required,
+                po.mandatory_requirements,
+                po.content_deadline_days,
+                po.status,
+                po.shipping_address,
+                po.tracking_number,
+                po.shipped_at,
+                po.product_received_at,
+                po.content_submitted_at,
+                po.content_urls,
+                po.created_at,
+                po.updated_at,
+                po.accepted_at,
+                po.declined_at,
+                po.declined_reason,
+                po.completed_at,
+                po.notes,
+                b.name AS brand_name,
+                b.logo AS brand_logo,
+                b.website AS brand_website
+            FROM pr_offers po
+            LEFT JOIN brands b ON po.brand_id = b.id
+            WHERE po.creator_id = %s
+            ORDER BY po.created_at DESC
+        '''
+        
+        cursor.execute(query, (creator_id,))
+        offers = cursor.fetchall()
+        
+        # Format the response
+        formatted_offers = []
+        for offer in offers:
+            formatted_offers.append({
+                'id': str(offer['id']),
+                'brand_id': offer['brand_id'],
+                'brand_name': offer.get('brand_name'),
+                'brand_logo': offer.get('brand_logo'),
+                'brand_website': offer.get('brand_website'),
+                'offer_title': offer['offer_title'],
+                'products_offered': offer['products_offered'],
+                'products_value': float(offer['products_value']) if offer['products_value'] else None,
+                'deliverables_required': offer['deliverables_required'],
+                'mandatory_requirements': offer.get('mandatory_requirements'),
+                'content_deadline_days': offer.get('content_deadline_days'),
+                'status': offer['status'],
+                'shipping_address': offer.get('shipping_address'),
+                'tracking_number': offer.get('tracking_number'),
+                'shipped_at': offer['shipped_at'].isoformat() if offer.get('shipped_at') else None,
+                'product_received_at': offer['product_received_at'].isoformat() if offer.get('product_received_at') else None,
+                'content_submitted_at': offer['content_submitted_at'].isoformat() if offer.get('content_submitted_at') else None,
+                'content_urls': offer.get('content_urls', []),
+                'created_at': offer['created_at'].isoformat() if offer.get('created_at') else None,
+                'updated_at': offer['updated_at'].isoformat() if offer.get('updated_at') else None,
+                'accepted_at': offer['accepted_at'].isoformat() if offer.get('accepted_at') else None,
+                'declined_at': offer['declined_at'].isoformat() if offer.get('declined_at') else None,
+                'declined_reason': offer.get('declined_reason'),
+                'completed_at': offer['completed_at'].isoformat() if offer.get('completed_at') else None,
+                'notes': offer.get('notes')
+            })
+        
+        cursor.close()
+        conn.close()
+        
+        app.logger.info(f"Creator PR Offers GET: Returned {len(formatted_offers)} offers for creator_id={creator_id}")
+        return jsonify(formatted_offers), 200
+        
+    except Exception as e:
+        app.logger.error(f"Creator PR Offers GET: Error fetching offers - {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/creator/pr-offers/<offer_id>/accept', methods=['POST', 'OPTIONS'])
+def accept_creator_pr_offer(offer_id):
+    """Accept a PR offer"""
+    if request.method == 'OPTIONS':
+        response = make_response('', 200)
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response
+        
+    try:
+        creator_id = session.get('creator_id')
+        if not creator_id:
+            return jsonify({'error': 'Unauthorized'}), 403
+            
+        data = request.get_json()
+        shipping_address = data.get('shipping_address')
+        
+        if not shipping_address:
+            return jsonify({'error': 'Shipping address required'}), 400
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Update offer status to accepted
+        query = '''
+            UPDATE pr_offers 
+            SET status = 'accepted',
+                shipping_address = %s,
+                accepted_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND creator_id = %s
+            RETURNING id, status, accepted_at
+        '''
+        
+        cursor.execute(query, (json.dumps(shipping_address), offer_id, creator_id))
+        result = cursor.fetchone()
+        
+        if not result:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Offer not found or unauthorized'}), 404
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        app.logger.info(f"PR Offer {offer_id}: Accepted by creator {creator_id}")
+        
+        return jsonify({
+            'message': 'Offer accepted',
+            'offer_id': str(result['id']),
+            'status': result['status'],
+            'accepted_at': result['accepted_at'].isoformat()
+        }), 200
+        
+    except Exception as e:
+        app.logger.error(f"Accept PR Offer: Error - {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/creator/pr-offers/<offer_id>/decline', methods=['POST', 'OPTIONS'])
+def decline_creator_pr_offer(offer_id):
+    """Decline a PR offer"""
+    if request.method == 'OPTIONS':
+        response = make_response('', 200)
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response
+        
+    try:
+        creator_id = session.get('creator_id')
+        if not creator_id:
+            return jsonify({'error': 'Unauthorized'}), 403
+            
+        data = request.get_json()
+        decline_reason = data.get('decline_reason', '')
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Update offer status to declined
+        query = '''
+            UPDATE pr_offers 
+            SET status = 'declined',
+                declined_at = CURRENT_TIMESTAMP,
+                declined_reason = %s
+            WHERE id = %s AND creator_id = %s
+            RETURNING id, status, declined_at
+        '''
+        
+        cursor.execute(query, (decline_reason, offer_id, creator_id))
+        result = cursor.fetchone()
+        
+        if not result:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Offer not found or unauthorized'}), 404
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        app.logger.info(f"PR Offer {offer_id}: Declined by creator {creator_id}")
+        
+        return jsonify({
+            'message': 'Offer declined',
+            'offer_id': str(result['id']),
+            'status': result['status'],
+            'declined_at': result['declined_at'].isoformat()
+        }), 200
+        
+    except Exception as e:
+        app.logger.error(f"Decline PR Offer: Error - {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/creator/pr-offers/<offer_id>/confirm-received', methods=['POST', 'OPTIONS'])
+def confirm_received_pr_offer(offer_id):
+    """Confirm product has been received"""
+    if request.method == 'OPTIONS':
+        response = make_response('', 200)
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response
+        
+    try:
+        creator_id = session.get('creator_id')
+        if not creator_id:
+            return jsonify({'error': 'Unauthorized'}), 403
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Update offer status to product_received
+        query = '''
+            UPDATE pr_offers 
+            SET status = 'product_received',
+                product_received_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND creator_id = %s
+            RETURNING id, status, product_received_at
+        '''
+        
+        cursor.execute(query, (offer_id, creator_id))
+        result = cursor.fetchone()
+        
+        if not result:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Offer not found or unauthorized'}), 404
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        app.logger.info(f"PR Offer {offer_id}: Product received confirmed by creator {creator_id}")
+        
+        return jsonify({
+            'message': 'Product receipt confirmed',
+            'offer_id': str(result['id']),
+            'status': result['status'],
+            'product_received_at': result['product_received_at'].isoformat()
+        }), 200
+        
+    except Exception as e:
+        app.logger.error(f"Confirm Received PR Offer: Error - {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/creator/pr-offers/<offer_id>/start-content', methods=['POST', 'OPTIONS'])
+def start_content_pr_offer(offer_id):
+    """Start content creation"""
+    if request.method == 'OPTIONS':
+        response = make_response('', 200)
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response
+        
+    try:
+        creator_id = session.get('creator_id')
+        if not creator_id:
+            return jsonify({'error': 'Unauthorized'}), 403
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Update offer status to content_in_progress
+        query = '''
+            UPDATE pr_offers 
+            SET status = 'content_in_progress'
+            WHERE id = %s AND creator_id = %s AND status = 'product_received'
+            RETURNING id, status
+        '''
+        
+        cursor.execute(query, (offer_id, creator_id))
+        result = cursor.fetchone()
+        
+        if not result:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Offer not found or unauthorized'}), 404
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        app.logger.info(f"PR Offer {offer_id}: Content creation started by creator {creator_id}")
+        
+        return jsonify({
+            'message': 'Content creation started',
+            'offer_id': str(result['id']),
+            'status': result['status']
+        }), 200
+        
+    except Exception as e:
+        app.logger.error(f"Start Content PR Offer: Error - {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/creator/pr-offers/<offer_id>/submit-content', methods=['POST', 'OPTIONS'])
+def submit_content_pr_offer(offer_id):
+    """Submit content for a PR offer"""
+    if request.method == 'OPTIONS':
+        response = make_response('', 200)
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response
+        
+    try:
+        creator_id = session.get('creator_id')
+        if not creator_id:
+            return jsonify({'error': 'Unauthorized'}), 403
+            
+        data = request.get_json()
+        content_urls = data.get('content_urls', [])
+        
+        if not content_urls:
+            return jsonify({'error': 'At least one content URL required'}), 400
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Update offer status to content_submitted
+        query = '''
+            UPDATE pr_offers 
+            SET status = 'content_submitted',
+                content_urls = %s,
+                content_submitted_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND creator_id = %s
+            RETURNING id, status, content_submitted_at
+        '''
+        
+        cursor.execute(query, (json.dumps(content_urls), offer_id, creator_id))
+        result = cursor.fetchone()
+        
+        if not result:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Offer not found or unauthorized'}), 404
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        app.logger.info(f"PR Offer {offer_id}: Content submitted by creator {creator_id}")
+        
+        return jsonify({
+            'message': 'Content submitted successfully',
+            'offer_id': str(result['id']),
+            'status': result['status'],
+            'content_submitted_at': result['content_submitted_at'].isoformat()
+        }), 200
+        
+    except Exception as e:
+        app.logger.error(f"Submit Content PR Offer: Error - {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 # Fallback for unmatched routes
 @app.route('/<path:path>', methods=['GET', 'POST', 'OPTIONS'])
