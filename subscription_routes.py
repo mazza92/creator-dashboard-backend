@@ -213,6 +213,37 @@ def create_portal_session():
 
         return jsonify({'portal_url': portal_session.url})
 
+    except stripe.error.InvalidRequestError as e:
+        error_message = str(e)
+        print(f"❌ Stripe InvalidRequestError in portal: {e}")
+
+        # Handle test mode customer ID used with live mode keys
+        if 'No such customer' in error_message:
+            # Clear invalid customer data and reset to free tier
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE creators
+                    SET stripe_customer_id = NULL,
+                        stripe_subscription_id = NULL,
+                        subscription_tier = 'free',
+                        subscription_status = 'inactive'
+                    WHERE id = %s
+                ''', (creator_id,))
+                conn.commit()
+                cursor.close()
+                conn.close()
+                print(f"✅ Cleared invalid test-mode Stripe data for creator {creator_id}")
+            except Exception as db_error:
+                print(f"❌ Error clearing Stripe data: {db_error}")
+
+            return jsonify({
+                'error': 'Your subscription data was from a test environment and has been reset. Please subscribe again to access premium features.',
+                'code': 'customer_not_found'
+            }), 400
+
+        return jsonify({'error': error_message}), 400
     except Exception as e:
         print(f"❌ Error creating portal session: {e}")
         return jsonify({'error': str(e)}), 500
