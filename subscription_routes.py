@@ -142,7 +142,7 @@ def create_checkout_session():
             return jsonify({'error': 'Price ID not configured. Please set STRIPE_PRICE_ID_PRO and STRIPE_PRICE_ID_ELITE in environment variables.'}), 500
 
         # Create Stripe Checkout Session
-        frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+        frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000').rstrip('/')
 
         checkout_session = stripe.checkout.Session.create(
             customer_email=creator['email'],
@@ -169,6 +169,16 @@ def create_checkout_session():
             'session_id': checkout_session.id
         })
 
+    except stripe.error.InvalidRequestError as e:
+        print(f"❌ Stripe InvalidRequestError: {e}")
+        # Check for specific Stripe account issues
+        error_message = str(e)
+        if 'cannot currently make live charges' in error_message.lower():
+            return jsonify({
+                'error': 'Payment processing is temporarily unavailable. Our payment system is being set up. Please try again later or contact support.',
+                'code': 'stripe_account_pending'
+            }), 503
+        return jsonify({'error': error_message}), 400
     except Exception as e:
         print(f"❌ Error creating checkout session: {e}")
         import traceback
@@ -194,7 +204,7 @@ def create_portal_session():
         if not creator or not creator.get('stripe_customer_id'):
             return jsonify({'error': 'No active subscription found'}), 404
 
-        frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+        frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000').rstrip('/')
 
         portal_session = stripe.billing_portal.Session.create(
             customer=creator['stripe_customer_id'],
