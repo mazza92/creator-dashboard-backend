@@ -5,6 +5,7 @@ No authentication required - open to Google crawlers
 
 from flask import Blueprint, request, jsonify, Response
 from psycopg2.extras import RealDictCursor
+from datetime import date, timedelta
 import os
 import psycopg2
 import requests
@@ -96,9 +97,9 @@ def get_public_brands():
     - limit: int (default 24, max 100)
     - category: filter by category
     - niche: filter by niche
-    - min_followers: minimum follower requirement
     - search: search brand names
-    - featured_only: bool - show only featured brands
+    - activity: filter by brand activity ('new', 'active', 'responsive')
+    - contact_type: filter by contact availability ('application', 'email')
     """
     try:
         page = int(request.args.get('page', 1))
@@ -107,9 +108,9 @@ def get_public_brands():
 
         category = request.args.get('category')
         niche = request.args.get('niche')
-        min_followers = request.args.get('min_followers', type=int)
         search = request.args.get('search', '').strip()
-        featured_only = request.args.get('featured_only', 'false').lower() == 'true'
+        activity = request.args.get('activity')  # 'new', 'active', 'responsive'
+        contact_type = request.args.get('contact_type')  # 'application', 'email'
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -131,14 +132,14 @@ def get_public_brands():
                 response_rate,
                 avg_response_time_days,
                 is_featured,
-                has_application_form
+                has_application_form,
+                created_at,
+                CASE WHEN application_form_url IS NOT NULL THEN TRUE ELSE FALSE END as has_direct_link,
+                CASE WHEN contact_email IS NOT NULL THEN TRUE ELSE FALSE END as has_email_contact
             FROM pr_brands
             WHERE (COALESCE(status, 'published') = 'published')
         """
         params = []
-
-        if featured_only:
-            query += " AND is_featured = TRUE"
 
         if category:
             query += " AND category = %s"
@@ -148,13 +149,28 @@ def get_public_brands():
             query += " AND %s = ANY(niches)"
             params.append(niche)
 
-        if min_followers is not None:
-            query += " AND (min_followers <= %s OR min_followers IS NULL)"
-            params.append(min_followers)
-
         if search:
             query += " AND brand_name ILIKE %s"
             params.append(f'%{search}%')
+
+        # Activity filters
+        if activity == 'new':
+            # Brands added in the last 7 days
+            query += " AND created_at >= NOW() - INTERVAL '7 days'"
+        elif activity == 'active':
+            # Brands actively accepting PR
+            query += " AND accepting_pr = TRUE"
+        elif activity == 'responsive':
+            # High response rate (50% or higher)
+            query += " AND response_rate >= 50"
+
+        # Contact type filters
+        if contact_type == 'application':
+            # Has an application form URL
+            query += " AND application_form_url IS NOT NULL"
+        elif contact_type == 'email':
+            # Has a contact email
+            query += " AND contact_email IS NOT NULL"
 
         # Order: Featured first, then by response rate
         query += """
@@ -177,20 +193,29 @@ def get_public_brands():
         """
         count_params = []
 
-        if featured_only:
-            count_query += " AND is_featured = TRUE"
         if category:
             count_query += " AND category = %s"
             count_params.append(category)
         if niche:
             count_query += " AND %s = ANY(niches)"
             count_params.append(niche)
-        if min_followers is not None:
-            count_query += " AND (min_followers <= %s OR min_followers IS NULL)"
-            count_params.append(min_followers)
         if search:
             count_query += " AND brand_name ILIKE %s"
             count_params.append(f'%{search}%')
+
+        # Activity filters for count
+        if activity == 'new':
+            count_query += " AND created_at >= NOW() - INTERVAL '7 days'"
+        elif activity == 'active':
+            count_query += " AND accepting_pr = TRUE"
+        elif activity == 'responsive':
+            count_query += " AND response_rate >= 50"
+
+        # Contact type filters for count
+        if contact_type == 'application':
+            count_query += " AND application_form_url IS NOT NULL"
+        elif contact_type == 'email':
+            count_query += " AND contact_email IS NOT NULL"
 
         cursor.execute(count_query, count_params)
         total_count = cursor.fetchone()['total']
@@ -215,7 +240,10 @@ def get_public_brands():
                 'responseRate': b['response_rate'],
                 'avgResponseTime': b['avg_response_time_days'],
                 'isFeatured': b['is_featured'],
-                'hasApplication': b['has_application_form']
+                'hasApplication': b['has_application_form'],
+                'hasDirectLink': b['has_direct_link'],
+                'hasEmailContact': b['has_email_contact'],
+                'isNew': b['created_at'] and (b['created_at'].date() >= (date.today() - timedelta(days=7))) if b.get('created_at') else False
             } for b in brands],
             'pagination': {
                 'page': page,
@@ -340,7 +368,11 @@ def unlock_brand_access(slug):
     """
     Authenticated endpoint: Get gated brand data
     Requires: User must be logged in
-    Returns: Application link for Free users, Email for Pro users
+
+    Request body:
+    - unlock_type: 'application' (FREE), 'contact' (PRO only), or 'all' (PRO only)
+
+    Returns: Requested data based on unlock_type and user tier
     """
     from flask import session, current_app as app
     from datetime import date
@@ -350,6 +382,12 @@ def unlock_brand_access(slug):
     print(f"{'='*60}\n")
 
     try:
+        # Get unlock type from request body
+        data = request.get_json() or {}
+        unlock_type = data.get('unlock_type', 'application')  # Default to application for backwards compatibility
+
+        print(f"📋 Unlock type requested: {unlock_type}")
+
         # Check authentication
         user_id = session.get('user_id')
         creator_id = session.get('creator_id')
@@ -372,12 +410,21 @@ def unlock_brand_access(slug):
             return jsonify({'error': 'Creator not found'}), 404
 
         tier = creator['subscription_tier'] or 'free'
+        is_pro = tier in ['pro', 'elite']
 
-        app.logger.info(f"🔍 Unlock request - Creator ID: {creator_id}, Tier: {tier}")
-        print(f"🔍 Unlock request - Creator ID: {creator_id}, Tier: {tier}")
+        app.logger.info(f"🔍 Unlock request - Creator ID: {creator_id}, Tier: {tier}, Type: {unlock_type}")
+        print(f"🔍 Unlock request - Creator ID: {creator_id}, Tier: {tier}, Type: {unlock_type}")
 
-        # Check daily unlock limit for FREE users only
-        if tier == 'free':
+        # Check if user is trying to unlock contact email without PRO
+        if unlock_type in ['contact', 'all'] and not is_pro:
+            conn.close()
+            return jsonify({
+                'error': 'Pro subscription required to unlock contact emails',
+                'upgrade_required': True
+            }), 403
+
+        # Check daily unlock limit for FREE users (only for application unlocks)
+        if tier == 'free' and unlock_type == 'application':
             today = date.today()
             last_unlock = creator.get('last_unlock_date')
             daily_unlocks = creator.get('daily_unlocks_used', 0)
@@ -419,21 +466,30 @@ def unlock_brand_access(slug):
         if not brand:
             return jsonify({'error': 'Brand not found'}), 404
 
-        # Determine what data to return based on tier
+        # Build response based on unlock_type
         response = {
             'brandName': brand['brand_name'],
             'applicationMethod': brand['application_method']
         }
 
-        # Free tier: Gets application link only
-        if tier == 'free':
+        # Return data based on unlock_type
+        if unlock_type == 'application':
+            # Application URL only (FREE tier can access)
             if brand['application_form_url']:
                 response['applicationUrl'] = brand['application_form_url']
             else:
-                response['message'] = 'No public application form available. Upgrade to Pro for email contact.'
+                response['message'] = 'No public application form available for this brand.'
 
-        # Pro/Elite tier: Gets email contact
-        elif tier in ['pro', 'elite']:
+        elif unlock_type == 'contact':
+            # Contact email only (PRO required - already checked above)
+            if brand['contact_email']:
+                response['contactEmail'] = brand['contact_email']
+            else:
+                response['message'] = 'No contact email available for this brand.'
+            response['isPro'] = True
+
+        elif unlock_type == 'all':
+            # Both application URL and contact email (PRO required - already checked above)
             response['applicationUrl'] = brand['application_form_url']
             response['contactEmail'] = brand['contact_email']
             response['isPro'] = True
@@ -454,9 +510,9 @@ def unlock_brand_access(slug):
             ON CONFLICT (creator_id, brand_id) DO UPDATE SET updated_at = NOW()
         """, (creator_id, slug))
 
-        # Update counters
-        if tier == 'free':
-            # FREE users: increment both brands_saved_count (if new) and daily_unlocks_used
+        # Update counters based on tier and unlock type
+        if tier == 'free' and unlock_type == 'application':
+            # FREE users unlocking application: increment daily quota
             today = date.today()
             if not already_saved:
                 cursor.execute('''
@@ -477,16 +533,16 @@ def unlock_brand_access(slug):
                 ''', (today, creator_id))
                 app.logger.info(f"✅ Re-unlocked existing brand - incremented daily quota only for creator {creator_id}")
                 print(f"✅ Re-unlocked existing brand - incremented daily quota only for creator {creator_id}")
-        else:
-            # PRO/ELITE users: only increment brands_saved_count if it's a new brand
+        elif is_pro:
+            # PRO/ELITE users: only increment brands_saved_count if it's a new brand (no daily quota)
             if not already_saved:
                 cursor.execute('''
                     UPDATE creators
                     SET brands_saved_count = brands_saved_count + 1
                     WHERE id = %s
                 ''', (creator_id,))
-                app.logger.info(f"✅ New brand saved - incremented brands_saved_count for creator {creator_id}")
-                print(f"✅ New brand saved - incremented brands_saved_count for creator {creator_id}")
+                app.logger.info(f"✅ New brand saved - incremented brands_saved_count for PRO creator {creator_id}")
+                print(f"✅ New brand saved - incremented brands_saved_count for PRO creator {creator_id}")
 
         conn.commit()
 
