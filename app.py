@@ -44,6 +44,7 @@ from indexnow_routes import indexnow_bp
 from email_cron_routes import email_cron_bp
 from routes.admin_pr_hunter import admin_pr_hunter_bp
 from routes.admin_brands import admin_brands_bp
+from routes.admin_reports import admin_reports_bp
 
 # Load environment variables
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
@@ -154,6 +155,7 @@ app.register_blueprint(indexnow_bp)
 app.register_blueprint(email_cron_bp)
 app.register_blueprint(admin_pr_hunter_bp)
 app.register_blueprint(admin_brands_bp)
+app.register_blueprint(admin_reports_bp)
 
 # Handle OPTIONS preflight requests
 @app.before_request
