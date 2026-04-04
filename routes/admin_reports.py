@@ -122,7 +122,7 @@ def get_overview():
         total_unlocks = cursor.fetchone()['count']
 
         # Total pipeline saves
-        cursor.execute("SELECT COUNT(*) as count FROM creator_pipeline")
+        cursor.execute("SELECT COUNT(*) as count FROM pr_pipeline")
         total_pipeline = cursor.fetchone()['count']
 
         # Subscription breakdown
@@ -237,7 +237,7 @@ def get_today_stats():
         # Pipeline saves today
         cursor.execute("""
             SELECT COUNT(*) as count
-            FROM creator_pipeline
+            FROM pr_pipeline
             WHERE DATE(created_at) = %s
         """, (today,))
         pipeline_saves_today = cursor.fetchone()['count']
@@ -484,15 +484,19 @@ def get_funnel():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Pipeline stage counts
+        # Pipeline stage counts (using status column)
         cursor.execute("""
             SELECT
-                stage,
+                status,
                 COUNT(*) as count
-            FROM creator_pipeline
-            GROUP BY stage
+            FROM pr_pipeline
+            GROUP BY status
         """)
-        stages = {row['stage']: row['count'] for row in cursor.fetchall()}
+        stages = {row['status']: row['count'] for row in cursor.fetchall()}
+
+        # Map 'interested' to 'saved' for clearer display
+        if 'interested' in stages:
+            stages['saved'] = stages.pop('interested')
 
         # Ensure all stages exist
         all_stages = ['saved', 'pitched', 'responded', 'success', 'rejected', 'archived']
@@ -584,7 +588,7 @@ def get_top_users():
                     COALESCE(c.subscription_tier, 'free') as tier,
                     COUNT(*) as count,
                     MAX(cp.created_at) as last_activity
-                FROM creator_pipeline cp
+                FROM pr_pipeline cp
                 JOIN creators c ON cp.creator_id = c.id
                 JOIN users u ON c.user_id = u.id
                 GROUP BY cp.creator_id, u.email, c.username, c.subscription_tier
