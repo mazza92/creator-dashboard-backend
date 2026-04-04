@@ -183,95 +183,99 @@ def get_today_stats():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Use rolling 24-hour windows for better timezone handling
+        # "Today" = last 24 hours, "Yesterday" = 24-48 hours ago
         today = datetime.now().date()
-        yesterday = today - timedelta(days=1)
 
-        # Signups today
+        # Signups in last 24 hours
         cursor.execute("""
             SELECT COUNT(*) as count
             FROM creators
-            WHERE DATE(created_at) = %s
-        """, (today,))
+            WHERE created_at >= NOW() - INTERVAL '24 hours'
+        """)
         signups_today = cursor.fetchone()['count']
 
-        # Signups yesterday (for comparison)
+        # Signups 24-48 hours ago (for comparison)
         cursor.execute("""
             SELECT COUNT(*) as count
             FROM creators
-            WHERE DATE(created_at) = %s
-        """, (yesterday,))
+            WHERE created_at >= NOW() - INTERVAL '48 hours'
+            AND created_at < NOW() - INTERVAL '24 hours'
+        """)
         signups_yesterday = cursor.fetchone()['count']
 
-        # Active users today (unique creators who unlocked)
+        # Active users in last 24 hours (unique creators who unlocked)
         cursor.execute("""
             SELECT COUNT(DISTINCT creator_id) as count
             FROM brand_unlocks
-            WHERE DATE(unlocked_at) = %s
-        """, (today,))
+            WHERE unlocked_at >= NOW() - INTERVAL '24 hours'
+        """)
         active_users_today = cursor.fetchone()['count']
 
-        # Active users yesterday
+        # Active users 24-48 hours ago
         cursor.execute("""
             SELECT COUNT(DISTINCT creator_id) as count
             FROM brand_unlocks
-            WHERE DATE(unlocked_at) = %s
-        """, (yesterday,))
+            WHERE unlocked_at >= NOW() - INTERVAL '48 hours'
+            AND unlocked_at < NOW() - INTERVAL '24 hours'
+        """)
         active_users_yesterday = cursor.fetchone()['count']
 
-        # Total unlocks today
+        # Total unlocks in last 24 hours
         cursor.execute("""
             SELECT COUNT(*) as count
             FROM brand_unlocks
-            WHERE DATE(unlocked_at) = %s
-        """, (today,))
+            WHERE unlocked_at >= NOW() - INTERVAL '24 hours'
+        """)
         unlocks_today = cursor.fetchone()['count']
 
-        # Total unlocks yesterday
+        # Total unlocks 24-48 hours ago
         cursor.execute("""
             SELECT COUNT(*) as count
             FROM brand_unlocks
-            WHERE DATE(unlocked_at) = %s
-        """, (yesterday,))
+            WHERE unlocked_at >= NOW() - INTERVAL '48 hours'
+            AND unlocked_at < NOW() - INTERVAL '24 hours'
+        """)
         unlocks_yesterday = cursor.fetchone()['count']
 
-        # Pipeline saves today
+        # Pipeline saves in last 24 hours
         cursor.execute("""
             SELECT COUNT(*) as count
             FROM creator_pipeline
-            WHERE DATE(created_at) = %s
-        """, (today,))
+            WHERE created_at >= NOW() - INTERVAL '24 hours'
+        """)
         pipeline_saves_today = cursor.fetchone()['count']
 
-        # Users at daily limit today
+        # Users at daily limit (check last_unlock_date = today in server time)
         cursor.execute("""
             SELECT COUNT(*) as count
             FROM creators
             WHERE (subscription_tier = 'free' OR subscription_tier IS NULL)
             AND daily_unlocks_used >= 5
-            AND last_unlock_date = %s
-        """, (today,))
+            AND last_unlock_date >= CURRENT_DATE - INTERVAL '1 day'
+        """)
         users_at_limit = cursor.fetchone()['count']
 
-        # Users near limit today (3-4)
+        # Users near limit (3-4 unlocks)
         cursor.execute("""
             SELECT COUNT(*) as count
             FROM creators
             WHERE (subscription_tier = 'free' OR subscription_tier IS NULL)
             AND daily_unlocks_used >= 3 AND daily_unlocks_used < 5
-            AND last_unlock_date = %s
-        """, (today,))
+            AND last_unlock_date >= CURRENT_DATE - INTERVAL '1 day'
+        """)
         users_near_limit = cursor.fetchone()['count']
 
-        # New pro subscriptions today
+        # New pro subscriptions in last 24 hours
         cursor.execute("""
             SELECT COUNT(*) as count
             FROM creators
             WHERE subscription_tier IN ('pro', 'elite')
-            AND DATE(subscription_started_at) = %s
-        """, (today,))
+            AND subscription_started_at >= NOW() - INTERVAL '24 hours'
+        """)
         new_pro_subscriptions = cursor.fetchone()['count']
 
-        # Top 5 brands unlocked today
+        # Top 5 brands unlocked in last 24 hours
         cursor.execute("""
             SELECT
                 pb.brand_name,
@@ -279,14 +283,14 @@ def get_today_stats():
                 COUNT(*) as unlock_count
             FROM brand_unlocks bu
             JOIN pr_brands pb ON bu.brand_id = pb.id
-            WHERE DATE(bu.unlocked_at) = %s
+            WHERE bu.unlocked_at >= NOW() - INTERVAL '24 hours'
             GROUP BY pb.id, pb.brand_name, pb.category
             ORDER BY unlock_count DESC
             LIMIT 5
-        """, (today,))
+        """)
         top_brands_today = cursor.fetchall()
 
-        # Most active users today
+        # Most active users in last 24 hours
         cursor.execute("""
             SELECT
                 c.id as creator_id,
@@ -297,11 +301,11 @@ def get_today_stats():
             FROM brand_unlocks bu
             JOIN creators c ON bu.creator_id = c.id
             JOIN users u ON c.user_id = u.id
-            WHERE DATE(bu.unlocked_at) = %s
+            WHERE bu.unlocked_at >= NOW() - INTERVAL '24 hours'
             GROUP BY c.id, u.email, c.username, c.subscription_tier
             ORDER BY unlocks_today DESC
             LIMIT 10
-        """, (today,))
+        """)
         most_active_today = cursor.fetchall()
 
         conn.close()
