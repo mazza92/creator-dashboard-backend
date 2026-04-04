@@ -900,3 +900,197 @@ def get_popular_brands():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# BRAND ANALYTICS - Comprehensive Brand Performance
+# ============================================================================
+
+@admin_reports_bp.route('/brand-analytics', methods=['GET'])
+@admin_required
+def get_brand_analytics():
+    """
+    Get comprehensive brand analytics
+
+    Query params:
+        days: Time period (default 30)
+        limit: Number of top brands (default 20)
+
+    Returns:
+        {
+            "overview": {
+                "total_brands": 500,
+                "brands_with_form": 200,
+                "brands_with_email": 350,
+                "total_unlocks": 5000
+            },
+            "top_unlocked_brands": [...],
+            "top_brands_with_form": [...],
+            "top_brands_email_only": [...],
+            "unlocks_by_category": {...},
+            "recent_unlocks": [...]
+        }
+    """
+    try:
+        days = int(request.args.get('days', 30))
+        limit = int(request.args.get('limit', 20))
+        start_date = datetime.now().date() - timedelta(days=days)
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Overview stats
+        cursor.execute("SELECT COUNT(*) as count FROM pr_brands WHERE COALESCE(status, 'published') = 'published'")
+        total_brands = cursor.fetchone()['count']
+
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM pr_brands
+            WHERE COALESCE(status, 'published') = 'published'
+            AND application_form_url IS NOT NULL AND application_form_url != ''
+        """)
+        brands_with_form = cursor.fetchone()['count']
+
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM pr_brands
+            WHERE COALESCE(status, 'published') = 'published'
+            AND contact_email IS NOT NULL AND contact_email != ''
+        """)
+        brands_with_email = cursor.fetchone()['count']
+
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM brand_unlocks
+            WHERE DATE(unlocked_at) >= %s
+        """, (start_date,))
+        total_unlocks_period = cursor.fetchone()['count']
+
+        # Top unlocked brands (all)
+        cursor.execute("""
+            SELECT
+                bu.brand_id,
+                pb.brand_name,
+                pb.slug,
+                pb.category,
+                pb.application_form_url,
+                pb.contact_email,
+                CASE
+                    WHEN pb.application_form_url IS NOT NULL AND pb.application_form_url != '' THEN 'form'
+                    WHEN pb.contact_email IS NOT NULL AND pb.contact_email != '' THEN 'email'
+                    ELSE 'none'
+                END as contact_type,
+                COUNT(*) as unlock_count,
+                COUNT(DISTINCT bu.creator_id) as unique_users,
+                MAX(bu.unlocked_at) as last_unlock
+            FROM brand_unlocks bu
+            JOIN pr_brands pb ON bu.brand_id = pb.id
+            WHERE DATE(bu.unlocked_at) >= %s
+            GROUP BY bu.brand_id, pb.brand_name, pb.slug, pb.category,
+                     pb.application_form_url, pb.contact_email
+            ORDER BY unlock_count DESC
+            LIMIT %s
+        """, (start_date, limit))
+        top_unlocked = cursor.fetchall()
+
+        # Top brands with application forms
+        cursor.execute("""
+            SELECT
+                bu.brand_id,
+                pb.brand_name,
+                pb.slug,
+                pb.category,
+                pb.application_form_url,
+                COUNT(*) as unlock_count,
+                COUNT(DISTINCT bu.creator_id) as unique_users
+            FROM brand_unlocks bu
+            JOIN pr_brands pb ON bu.brand_id = pb.id
+            WHERE DATE(bu.unlocked_at) >= %s
+            AND pb.application_form_url IS NOT NULL
+            AND pb.application_form_url != ''
+            GROUP BY bu.brand_id, pb.brand_name, pb.slug, pb.category, pb.application_form_url
+            ORDER BY unlock_count DESC
+            LIMIT %s
+        """, (start_date, limit))
+        top_with_form = cursor.fetchall()
+
+        # Top brands with email only (no form)
+        cursor.execute("""
+            SELECT
+                bu.brand_id,
+                pb.brand_name,
+                pb.slug,
+                pb.category,
+                pb.contact_email,
+                COUNT(*) as unlock_count,
+                COUNT(DISTINCT bu.creator_id) as unique_users
+            FROM brand_unlocks bu
+            JOIN pr_brands pb ON bu.brand_id = pb.id
+            WHERE DATE(bu.unlocked_at) >= %s
+            AND (pb.application_form_url IS NULL OR pb.application_form_url = '')
+            AND pb.contact_email IS NOT NULL
+            AND pb.contact_email != ''
+            GROUP BY bu.brand_id, pb.brand_name, pb.slug, pb.category, pb.contact_email
+            ORDER BY unlock_count DESC
+            LIMIT %s
+        """, (start_date, limit))
+        top_email_only = cursor.fetchall()
+
+        # Unlocks by category
+        cursor.execute("""
+            SELECT
+                pb.category,
+                COUNT(*) as unlock_count,
+                COUNT(DISTINCT bu.creator_id) as unique_users,
+                COUNT(DISTINCT bu.brand_id) as brands_unlocked
+            FROM brand_unlocks bu
+            JOIN pr_brands pb ON bu.brand_id = pb.id
+            WHERE DATE(bu.unlocked_at) >= %s
+            GROUP BY pb.category
+            ORDER BY unlock_count DESC
+        """, (start_date,))
+        unlocks_by_category = cursor.fetchall()
+
+        # Recent unlocks (last 50)
+        cursor.execute("""
+            SELECT
+                bu.id,
+                bu.unlocked_at,
+                pb.brand_name,
+                pb.category,
+                u.email as user_email,
+                c.username
+            FROM brand_unlocks bu
+            JOIN pr_brands pb ON bu.brand_id = pb.id
+            JOIN creators c ON bu.creator_id = c.id
+            JOIN users u ON c.user_id = u.id
+            ORDER BY bu.unlocked_at DESC
+            LIMIT 50
+        """)
+        recent_unlocks = cursor.fetchall()
+
+        # Convert timestamps
+        for unlock in recent_unlocks:
+            unlock['unlocked_at'] = str(unlock['unlocked_at'])
+
+        for brand in top_unlocked:
+            brand['last_unlock'] = str(brand['last_unlock']) if brand['last_unlock'] else None
+
+        conn.close()
+
+        return jsonify({
+            'overview': {
+                'total_brands': total_brands,
+                'brands_with_form': brands_with_form,
+                'brands_with_email': brands_with_email,
+                'total_unlocks_period': total_unlocks_period
+            },
+            'top_unlocked_brands': top_unlocked,
+            'top_brands_with_form': top_with_form,
+            'top_brands_email_only': top_email_only,
+            'unlocks_by_category': unlocks_by_category,
+            'recent_unlocks': recent_unlocks,
+            'days': days
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
