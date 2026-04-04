@@ -484,15 +484,15 @@ def get_funnel():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Pipeline stage counts (using status column)
+        # Pipeline stage counts (using stage column)
         cursor.execute("""
             SELECT
-                status,
+                stage,
                 COUNT(*) as count
             FROM creator_pipeline
-            GROUP BY status
+            GROUP BY stage
         """)
-        stages = {row['status']: row['count'] for row in cursor.fetchall()}
+        stages = {row['stage']: row['count'] for row in cursor.fetchall()}
 
         # Map 'interested' to 'saved' for clearer display
         if 'interested' in stages:
