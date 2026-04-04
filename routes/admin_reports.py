@@ -88,36 +88,32 @@ def get_overview():
         cursor.execute("SELECT COUNT(*) as count FROM creators")
         total_creators = cursor.fetchone()['count']
 
-        # Active users based on brand_unlocks table
-        today = datetime.now().date()
-        week_ago = today - timedelta(days=7)
-        month_ago = today - timedelta(days=30)
-
-        # Active today
+        # Active users based on creator_pipeline table (since brand_unlocks may be empty)
+        # Active today (last 24 hours)
         cursor.execute("""
             SELECT COUNT(DISTINCT creator_id) as count
-            FROM brand_unlocks
-            WHERE DATE(unlocked_at) = %s
-        """, (today,))
+            FROM creator_pipeline
+            WHERE created_at >= NOW() - INTERVAL '24 hours'
+        """)
         active_today = cursor.fetchone()['count']
 
         # Active last 7 days
         cursor.execute("""
             SELECT COUNT(DISTINCT creator_id) as count
-            FROM brand_unlocks
-            WHERE DATE(unlocked_at) >= %s
-        """, (week_ago,))
+            FROM creator_pipeline
+            WHERE created_at >= NOW() - INTERVAL '7 days'
+        """)
         active_7d = cursor.fetchone()['count']
 
         # Active last 30 days
         cursor.execute("""
             SELECT COUNT(DISTINCT creator_id) as count
-            FROM brand_unlocks
-            WHERE DATE(unlocked_at) >= %s
-        """, (month_ago,))
+            FROM creator_pipeline
+            WHERE created_at >= NOW() - INTERVAL '30 days'
+        """)
         active_30d = cursor.fetchone()['count']
 
-        # Total unlocks
+        # Total unlocks (from brand_unlocks if exists, otherwise 0)
         cursor.execute("SELECT COUNT(*) as count FROM brand_unlocks")
         total_unlocks = cursor.fetchone()['count']
 
@@ -136,6 +132,35 @@ def get_overview():
         """)
         subscription_breakdown = {row['tier']: row['count'] for row in cursor.fetchall()}
 
+        # Top active creators (by pipeline saves)
+        cursor.execute("""
+            SELECT
+                c.id as creator_id,
+                u.email,
+                c.username,
+                COALESCE(c.subscription_tier, 'free') as tier,
+                COUNT(*) as total_saves,
+                COUNT(CASE WHEN cp.created_at >= NOW() - INTERVAL '7 days' THEN 1 END) as saves_7d,
+                MAX(cp.created_at) as last_activity
+            FROM creator_pipeline cp
+            JOIN creators c ON cp.creator_id = c.id
+            JOIN users u ON c.user_id = u.id
+            GROUP BY c.id, u.email, c.username, c.subscription_tier
+            ORDER BY saves_7d DESC, total_saves DESC
+            LIMIT 15
+        """)
+        top_creators = []
+        for row in cursor.fetchall():
+            top_creators.append({
+                'creator_id': row['creator_id'],
+                'email': row['email'],
+                'username': row['username'],
+                'tier': row['tier'],
+                'total_saves': row['total_saves'],
+                'saves_7d': row['saves_7d'],
+                'last_activity': str(row['last_activity']) if row['last_activity'] else None
+            })
+
         conn.close()
 
         return jsonify({
@@ -146,7 +171,8 @@ def get_overview():
             'active_30d': active_30d,
             'total_unlocks': total_unlocks,
             'total_pipeline_saves': total_pipeline,
-            'subscription_breakdown': subscription_breakdown
+            'subscription_breakdown': subscription_breakdown,
+            'top_creators': top_creators
         }), 200
 
     except Exception as e:
@@ -427,14 +453,14 @@ def get_dau():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # DAU based on brand_unlocks activity
+        # DAU based on creator_pipeline activity (brand_unlocks may be empty)
         cursor.execute("""
             SELECT
-                DATE(unlocked_at) as date,
+                DATE(created_at) as date,
                 COUNT(DISTINCT creator_id) as active_users
-            FROM brand_unlocks
-            WHERE DATE(unlocked_at) >= %s
-            GROUP BY DATE(unlocked_at)
+            FROM creator_pipeline
+            WHERE DATE(created_at) >= %s
+            GROUP BY DATE(created_at)
             ORDER BY date ASC
         """, (start_date,))
         daily = cursor.fetchall()
