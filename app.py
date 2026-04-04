@@ -2219,7 +2219,7 @@ def unlock_brand_access(slug):
 
         # Save to wishlist/pipeline
         cursor.execute('''
-            INSERT INTO pr_pipeline (creator_id, brand_id, status, created_at)
+            INSERT INTO creator_pipeline (creator_id, brand_id, status, created_at)
             VALUES (%s, %s, 'interested', NOW())
             ON CONFLICT (creator_id, brand_id) DO UPDATE SET updated_at = NOW()
         ''', (creator_id, brand['id']))

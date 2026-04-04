@@ -122,7 +122,7 @@ def get_overview():
         total_unlocks = cursor.fetchone()['count']
 
         # Total pipeline saves
-        cursor.execute("SELECT COUNT(*) as count FROM pr_pipeline")
+        cursor.execute("SELECT COUNT(*) as count FROM creator_pipeline")
         total_pipeline = cursor.fetchone()['count']
 
         # Subscription breakdown
@@ -237,7 +237,7 @@ def get_today_stats():
         # Pipeline saves today
         cursor.execute("""
             SELECT COUNT(*) as count
-            FROM pr_pipeline
+            FROM creator_pipeline
             WHERE DATE(created_at) = %s
         """, (today,))
         pipeline_saves_today = cursor.fetchone()['count']
@@ -489,7 +489,7 @@ def get_funnel():
             SELECT
                 status,
                 COUNT(*) as count
-            FROM pr_pipeline
+            FROM creator_pipeline
             GROUP BY status
         """)
         stages = {row['status']: row['count'] for row in cursor.fetchall()}
@@ -588,7 +588,7 @@ def get_top_users():
                     COALESCE(c.subscription_tier, 'free') as tier,
                     COUNT(*) as count,
                     MAX(cp.created_at) as last_activity
-                FROM pr_pipeline cp
+                FROM creator_pipeline cp
                 JOIN creators c ON cp.creator_id = c.id
                 JOIN users u ON c.user_id = u.id
                 GROUP BY cp.creator_id, u.email, c.username, c.subscription_tier
