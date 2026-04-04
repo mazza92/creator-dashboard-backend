@@ -132,22 +132,35 @@ def get_overview():
         """)
         subscription_breakdown = {row['tier']: row['count'] for row in cursor.fetchall()}
 
-        # Top active creators (by pipeline saves)
+        # Top active creators (by pipeline saves) with full KPIs
         cursor.execute("""
             SELECT
                 c.id as creator_id,
                 u.email,
                 c.username,
+                c.bio,
+                c.followers_count,
+                c.engagement_rate,
+                c.niche,
+                c.platforms,
+                c.total_posts,
+                c.total_views,
+                c.daily_unlocks_used,
+                c.last_unlock_date,
+                c.brands_saved_count,
+                c.pitches_sent_total,
                 COALESCE(c.subscription_tier, 'free') as tier,
-                COUNT(*) as total_saves,
+                COUNT(cp.id) as total_saves,
                 COUNT(CASE WHEN cp.created_at >= NOW() - INTERVAL '7 days' THEN 1 END) as saves_7d,
                 MAX(cp.created_at) as last_activity
-            FROM creator_pipeline cp
-            JOIN creators c ON cp.creator_id = c.id
+            FROM creators c
             JOIN users u ON c.user_id = u.id
-            GROUP BY c.id, u.email, c.username, c.subscription_tier
-            ORDER BY saves_7d DESC, total_saves DESC
-            LIMIT 15
+            LEFT JOIN creator_pipeline cp ON cp.creator_id = c.id
+            GROUP BY c.id, u.email, c.username, c.bio, c.followers_count, c.engagement_rate,
+                     c.niche, c.platforms, c.total_posts, c.total_views, c.daily_unlocks_used,
+                     c.last_unlock_date, c.brands_saved_count, c.pitches_sent_total, c.subscription_tier
+            ORDER BY saves_7d DESC, total_saves DESC, c.followers_count DESC NULLS LAST
+            LIMIT 20
         """)
         top_creators = []
         for row in cursor.fetchall():
@@ -155,6 +168,17 @@ def get_overview():
                 'creator_id': row['creator_id'],
                 'email': row['email'],
                 'username': row['username'],
+                'bio': row['bio'][:100] + '...' if row['bio'] and len(row['bio']) > 100 else row['bio'],
+                'followers_count': row['followers_count'],
+                'engagement_rate': float(row['engagement_rate']) if row['engagement_rate'] else None,
+                'niche': row['niche'],
+                'platforms': row['platforms'],
+                'total_posts': row['total_posts'],
+                'total_views': row['total_views'],
+                'daily_unlocks_used': row['daily_unlocks_used'],
+                'last_unlock_date': str(row['last_unlock_date']) if row['last_unlock_date'] else None,
+                'brands_saved_count': row['brands_saved_count'],
+                'pitches_sent_total': row['pitches_sent_total'],
                 'tier': row['tier'],
                 'total_saves': row['total_saves'],
                 'saves_7d': row['saves_7d'],
@@ -230,37 +254,37 @@ def get_today_stats():
         """)
         signups_yesterday = cursor.fetchone()['count']
 
-        # Active users in last 24 hours (unique creators who unlocked)
+        # Active users in last 24 hours (from creator_pipeline since brand_unlocks may be empty)
         cursor.execute("""
             SELECT COUNT(DISTINCT creator_id) as count
-            FROM brand_unlocks
-            WHERE unlocked_at >= NOW() - INTERVAL '24 hours'
+            FROM creator_pipeline
+            WHERE created_at >= NOW() - INTERVAL '24 hours'
         """)
         active_users_today = cursor.fetchone()['count']
 
         # Active users 24-48 hours ago
         cursor.execute("""
             SELECT COUNT(DISTINCT creator_id) as count
-            FROM brand_unlocks
-            WHERE unlocked_at >= NOW() - INTERVAL '48 hours'
-            AND unlocked_at < NOW() - INTERVAL '24 hours'
+            FROM creator_pipeline
+            WHERE created_at >= NOW() - INTERVAL '48 hours'
+            AND created_at < NOW() - INTERVAL '24 hours'
         """)
         active_users_yesterday = cursor.fetchone()['count']
 
-        # Total unlocks in last 24 hours
+        # Total pipeline saves in last 24 hours (as "unlocks")
         cursor.execute("""
             SELECT COUNT(*) as count
-            FROM brand_unlocks
-            WHERE unlocked_at >= NOW() - INTERVAL '24 hours'
+            FROM creator_pipeline
+            WHERE created_at >= NOW() - INTERVAL '24 hours'
         """)
         unlocks_today = cursor.fetchone()['count']
 
-        # Total unlocks 24-48 hours ago
+        # Total pipeline saves 24-48 hours ago
         cursor.execute("""
             SELECT COUNT(*) as count
-            FROM brand_unlocks
-            WHERE unlocked_at >= NOW() - INTERVAL '48 hours'
-            AND unlocked_at < NOW() - INTERVAL '24 hours'
+            FROM creator_pipeline
+            WHERE created_at >= NOW() - INTERVAL '48 hours'
+            AND created_at < NOW() - INTERVAL '24 hours'
         """)
         unlocks_yesterday = cursor.fetchone()['count']
 
@@ -301,38 +325,50 @@ def get_today_stats():
         """)
         new_pro_subscriptions = cursor.fetchone()['count']
 
-        # Top 5 brands unlocked in last 24 hours
+        # Top 5 brands saved in last 24 hours (from creator_pipeline)
         cursor.execute("""
             SELECT
                 pb.brand_name,
                 pb.category,
                 COUNT(*) as unlock_count
-            FROM brand_unlocks bu
-            JOIN pr_brands pb ON bu.brand_id = pb.id
-            WHERE bu.unlocked_at >= NOW() - INTERVAL '24 hours'
+            FROM creator_pipeline cp
+            JOIN pr_brands pb ON cp.brand_id = pb.id
+            WHERE cp.created_at >= NOW() - INTERVAL '24 hours'
             GROUP BY pb.id, pb.brand_name, pb.category
             ORDER BY unlock_count DESC
             LIMIT 5
         """)
         top_brands_today = cursor.fetchall()
 
-        # Most active users in last 24 hours
+        # Most active users in last 24 hours (with KPIs)
         cursor.execute("""
             SELECT
                 c.id as creator_id,
                 u.email,
                 c.username,
+                c.followers_count,
+                c.engagement_rate,
                 COALESCE(c.subscription_tier, 'free') as tier,
                 COUNT(*) as unlocks_today
-            FROM brand_unlocks bu
-            JOIN creators c ON bu.creator_id = c.id
+            FROM creator_pipeline cp
+            JOIN creators c ON cp.creator_id = c.id
             JOIN users u ON c.user_id = u.id
-            WHERE bu.unlocked_at >= NOW() - INTERVAL '24 hours'
-            GROUP BY c.id, u.email, c.username, c.subscription_tier
+            WHERE cp.created_at >= NOW() - INTERVAL '24 hours'
+            GROUP BY c.id, u.email, c.username, c.followers_count, c.engagement_rate, c.subscription_tier
             ORDER BY unlocks_today DESC
             LIMIT 10
         """)
-        most_active_today = cursor.fetchall()
+        most_active_today = []
+        for row in cursor.fetchall():
+            most_active_today.append({
+                'creator_id': row['creator_id'],
+                'email': row['email'],
+                'username': row['username'],
+                'followers_count': row['followers_count'],
+                'engagement_rate': float(row['engagement_rate']) if row['engagement_rate'] else None,
+                'tier': row['tier'],
+                'unlocks_today': row['unlocks_today']
+            })
 
         conn.close()
 
