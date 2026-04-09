@@ -1160,3 +1160,327 @@ def get_brand_analytics():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# PITCH ANALYTICS - AI Pitch Credit Usage KPIs
+# ============================================================================
+
+@admin_reports_bp.route('/pitch-analytics', methods=['GET'])
+@admin_required
+def get_pitch_analytics():
+    """
+    Get comprehensive AI pitch/contact analytics
+
+    Query params:
+        days: Time period (default 30)
+
+    Returns:
+        {
+            "today": {
+                "pitches_today": 15,
+                "unique_users_today": 8,
+                "change": 3,
+                "top_users": [...],
+                "top_brands": [...]
+            },
+            "quota": {
+                "at_limit": 5
+            },
+            "period": {
+                "total_pitches": 500
+            },
+            "daily": [...],
+            "top_users": [...],
+            "top_brands": [...],
+            "recent_pitches": [...],
+            "users_at_limit": [...]
+        }
+    """
+    try:
+        days = int(request.args.get('days', 30))
+        start_date = datetime.now().date() - timedelta(days=days)
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # ================== TODAY'S STATS ==================
+
+        # Pitches in last 24 hours (pitched_at is set when user contacts a brand)
+        cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM creator_pipeline
+            WHERE pitched_at >= NOW() - INTERVAL '24 hours'
+        """)
+        pitches_today = cursor.fetchone()['count']
+
+        # Pitches 24-48 hours ago (for comparison)
+        cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM creator_pipeline
+            WHERE pitched_at >= NOW() - INTERVAL '48 hours'
+            AND pitched_at < NOW() - INTERVAL '24 hours'
+        """)
+        pitches_yesterday = cursor.fetchone()['count']
+
+        # Unique users who pitched in last 24 hours
+        cursor.execute("""
+            SELECT COUNT(DISTINCT creator_id) as count
+            FROM creator_pipeline
+            WHERE pitched_at >= NOW() - INTERVAL '24 hours'
+        """)
+        unique_users_today = cursor.fetchone()['count']
+
+        # Top pitch users today
+        cursor.execute("""
+            SELECT
+                c.id as creator_id,
+                u.email,
+                c.username,
+                COALESCE(c.subscription_tier, 'free') as tier,
+                COUNT(*) as pitches_today,
+                (
+                    SELECT COUNT(*) FROM creator_pipeline cp2
+                    WHERE cp2.creator_id = c.id
+                    AND cp2.pitched_at >= DATE_TRUNC('week', NOW())
+                ) as pitches_this_week
+            FROM creator_pipeline cp
+            JOIN creators c ON cp.creator_id = c.id
+            JOIN users u ON c.user_id = u.id
+            WHERE cp.pitched_at >= NOW() - INTERVAL '24 hours'
+            GROUP BY c.id, u.email, c.username, c.subscription_tier
+            ORDER BY pitches_today DESC
+            LIMIT 10
+        """)
+        top_users_today = cursor.fetchall()
+
+        # Top pitched brands today
+        cursor.execute("""
+            SELECT
+                pb.id as brand_id,
+                pb.brand_name,
+                pb.category,
+                CASE
+                    WHEN pb.contact_email IS NOT NULL AND pb.contact_email != '' THEN 'email'
+                    WHEN pb.application_form_url IS NOT NULL AND pb.application_form_url != '' THEN 'form'
+                    ELSE 'unknown'
+                END as contact_type,
+                COUNT(*) as pitch_count
+            FROM creator_pipeline cp
+            JOIN pr_brands pb ON cp.brand_id = pb.id
+            WHERE cp.pitched_at >= NOW() - INTERVAL '24 hours'
+            GROUP BY pb.id, pb.brand_name, pb.category, pb.contact_email, pb.application_form_url
+            ORDER BY pitch_count DESC
+            LIMIT 10
+        """)
+        top_brands_today = cursor.fetchall()
+
+        # ================== QUOTA / LIMIT STATS ==================
+
+        # Free users at weekly pitch limit (3 pitches/week)
+        cursor.execute("""
+            SELECT COUNT(DISTINCT c.id) as count
+            FROM creators c
+            WHERE (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)
+            AND (
+                SELECT COUNT(*) FROM creator_pipeline cp
+                WHERE cp.creator_id = c.id
+                AND cp.pitched_at >= DATE_TRUNC('week', NOW())
+            ) >= 3
+        """)
+        users_at_limit = cursor.fetchone()['count']
+
+        # ================== PERIOD STATS ==================
+
+        # Total pitches in period
+        cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM creator_pipeline
+            WHERE pitched_at >= %s
+        """, (start_date,))
+        total_pitches_period = cursor.fetchone()['count']
+
+        # ================== DAILY TREND ==================
+
+        cursor.execute("""
+            SELECT
+                DATE(pitched_at) as date,
+                COUNT(*) as pitch_count,
+                COUNT(DISTINCT creator_id) as unique_users
+            FROM creator_pipeline
+            WHERE DATE(pitched_at) >= %s
+            AND pitched_at IS NOT NULL
+            GROUP BY DATE(pitched_at)
+            ORDER BY date ASC
+        """, (start_date,))
+        daily_data = [
+            {
+                'date': str(row['date']),
+                'pitch_count': row['pitch_count'],
+                'unique_users': row['unique_users']
+            }
+            for row in cursor.fetchall()
+        ]
+
+        # ================== TOP USERS (PERIOD) ==================
+
+        cursor.execute("""
+            SELECT
+                c.id as creator_id,
+                u.email,
+                c.username,
+                COALESCE(c.subscription_tier, 'free') as tier,
+                (
+                    SELECT COUNT(*) FROM creator_pipeline cp2
+                    WHERE cp2.creator_id = c.id
+                    AND cp2.pitched_at >= DATE_TRUNC('week', NOW())
+                ) as pitches_this_week,
+                COUNT(*) as total_pitches,
+                MAX(cp.pitched_at) as last_pitch_at
+            FROM creator_pipeline cp
+            JOIN creators c ON cp.creator_id = c.id
+            JOIN users u ON c.user_id = u.id
+            WHERE cp.pitched_at >= %s
+            GROUP BY c.id, u.email, c.username, c.subscription_tier
+            ORDER BY total_pitches DESC
+            LIMIT 20
+        """, (start_date,))
+        top_users_period = []
+        for row in cursor.fetchall():
+            top_users_period.append({
+                'creator_id': row['creator_id'],
+                'email': row['email'],
+                'username': row['username'],
+                'tier': row['tier'],
+                'pitches_this_week': row['pitches_this_week'],
+                'total_pitches': row['total_pitches'],
+                'last_pitch_at': str(row['last_pitch_at']) if row['last_pitch_at'] else None
+            })
+
+        # ================== TOP BRANDS (PERIOD) ==================
+
+        cursor.execute("""
+            SELECT
+                pb.id as brand_id,
+                pb.brand_name,
+                pb.category,
+                CASE
+                    WHEN pb.contact_email IS NOT NULL AND pb.contact_email != '' THEN 'email'
+                    WHEN pb.application_form_url IS NOT NULL AND pb.application_form_url != '' THEN 'form'
+                    ELSE 'unknown'
+                END as contact_type,
+                COUNT(*) as pitch_count,
+                COUNT(DISTINCT cp.creator_id) as unique_users
+            FROM creator_pipeline cp
+            JOIN pr_brands pb ON cp.brand_id = pb.id
+            WHERE cp.pitched_at >= %s
+            GROUP BY pb.id, pb.brand_name, pb.category, pb.contact_email, pb.application_form_url
+            ORDER BY pitch_count DESC
+            LIMIT 20
+        """, (start_date,))
+        top_brands_period = cursor.fetchall()
+
+        # ================== RECENT PITCHES ==================
+
+        cursor.execute("""
+            SELECT
+                cp.id,
+                cp.pitched_at,
+                pb.brand_name,
+                CASE
+                    WHEN pb.contact_email IS NOT NULL AND pb.contact_email != '' THEN 'email'
+                    WHEN pb.application_form_url IS NOT NULL AND pb.application_form_url != '' THEN 'form'
+                    ELSE 'unknown'
+                END as contact_type,
+                u.email,
+                c.username
+            FROM creator_pipeline cp
+            JOIN pr_brands pb ON cp.brand_id = pb.id
+            JOIN creators c ON cp.creator_id = c.id
+            JOIN users u ON c.user_id = u.id
+            WHERE cp.pitched_at IS NOT NULL
+            ORDER BY cp.pitched_at DESC
+            LIMIT 20
+        """)
+        recent_pitches = []
+        for row in cursor.fetchall():
+            recent_pitches.append({
+                'id': row['id'],
+                'pitched_at': str(row['pitched_at']),
+                'brand_name': row['brand_name'],
+                'contact_type': row['contact_type'],
+                'email': row['email'],
+                'username': row['username']
+            })
+
+        # ================== USERS AT LIMIT ==================
+
+        cursor.execute("""
+            SELECT
+                c.id as creator_id,
+                u.email,
+                c.username,
+                (
+                    SELECT COUNT(*) FROM creator_pipeline cp2
+                    WHERE cp2.creator_id = c.id
+                    AND cp2.pitched_at >= DATE_TRUNC('week', NOW())
+                ) as pitches_this_week,
+                (
+                    SELECT COUNT(*) FROM creator_pipeline cp3
+                    WHERE cp3.creator_id = c.id
+                    AND cp3.pitched_at IS NOT NULL
+                ) as total_pitches,
+                (
+                    SELECT MAX(cp4.pitched_at) FROM creator_pipeline cp4
+                    WHERE cp4.creator_id = c.id
+                ) as last_pitch_at
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)
+            AND (
+                SELECT COUNT(*) FROM creator_pipeline cp
+                WHERE cp.creator_id = c.id
+                AND cp.pitched_at >= DATE_TRUNC('week', NOW())
+            ) >= 3
+            ORDER BY last_pitch_at DESC
+            LIMIT 20
+        """)
+        users_at_limit_list = []
+        for row in cursor.fetchall():
+            users_at_limit_list.append({
+                'creator_id': row['creator_id'],
+                'email': row['email'],
+                'username': row['username'],
+                'pitches_this_week': row['pitches_this_week'],
+                'total_pitches': row['total_pitches'],
+                'last_pitch_at': str(row['last_pitch_at']) if row['last_pitch_at'] else None
+            })
+
+        conn.close()
+
+        return jsonify({
+            'today': {
+                'pitches_today': pitches_today,
+                'unique_users_today': unique_users_today,
+                'change': pitches_today - pitches_yesterday,
+                'top_users': top_users_today,
+                'top_brands': top_brands_today
+            },
+            'quota': {
+                'at_limit': users_at_limit
+            },
+            'period': {
+                'total_pitches': total_pitches_period
+            },
+            'daily': daily_data,
+            'top_users': top_users_period,
+            'top_brands': top_brands_period,
+            'recent_pitches': recent_pitches,
+            'users_at_limit': users_at_limit_list,
+            'days': days
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500

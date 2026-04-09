@@ -357,63 +357,33 @@ def get_pipeline():
 
 @pr_crm.route('/pipeline/save', methods=['POST'])
 def save_brand_to_pipeline():
-    """Save a brand to pipeline (stage: saved)"""
+    """Save a brand to pipeline (stage: saved) - UNLIMITED for all users"""
     creator_id = get_creator_id_from_session()
     if not creator_id:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
+    conn = None
     try:
-        # Check daily unlock limit (FREE tier only - 5 per day)
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        cursor.execute('''
-            SELECT subscription_tier, daily_unlocks_used, last_unlock_date
-            FROM creators
-            WHERE id = %s
-        ''', (creator_id,))
-        creator = cursor.fetchone()
-
-        if not creator:
-            cursor.close()
-            conn.close()
-            return jsonify({'success': False, 'error': 'Creator not found'}), 404
-
-        tier = creator['subscription_tier'] or 'free'
-
-        # Check daily unlock limit for FREE users
-        if tier == 'free':
-            from datetime import date
-            today = date.today()
-            last_unlock = creator.get('last_unlock_date')
-            daily_unlocks = creator.get('daily_unlocks_used', 0)
-
-            # Reset if it's a new day
-            if last_unlock is None or last_unlock != today:
-                daily_unlocks = 0
-
-            # Check if limit reached
-            DAILY_LIMIT = 5
-            if daily_unlocks >= DAILY_LIMIT:
-                cursor.close()
-                conn.close()
-                return jsonify({
-                    'success': False,
-                    'error': f"You've used all {DAILY_LIMIT} free applications today. Come back tomorrow or upgrade to Pro for unlimited!",
-                    'upgrade_required': True,
-                    'current_count': daily_unlocks,
-                    'limit': DAILY_LIMIT
-                }), 403
-
         data = request.json
         brand_id = data.get('brand_id')
+        brand_slug = data.get('slug')
+
+        # Resolve brand_id from slug if not provided
+        if not brand_id and brand_slug:
+            cursor.execute('SELECT id FROM pr_brands WHERE slug = %s', (brand_slug,))
+            brand_row = cursor.fetchone()
+            if brand_row:
+                brand_id = brand_row['id']
 
         if not brand_id:
             cursor.close()
             conn.close()
-            return jsonify({'success': False, 'error': 'brand_id required'}), 400
+            return jsonify({'success': False, 'error': 'brand_id or slug required'}), 400
 
-        # Insert or update (conn and cursor already initialized above)
+        # Insert or update - saving is unlimited (no quota check)
         cursor.execute('''
             INSERT INTO creator_pipeline (creator_id, brand_id, stage, created_at, updated_at)
             VALUES (%s, %s, 'saved', NOW(), NOW())
@@ -424,17 +394,12 @@ def save_brand_to_pipeline():
 
         pipeline_id = cursor.fetchone()['id']
 
-        # Update creator's brands_saved_count AND daily_unlocks_used (for quota tracking)
-        from datetime import date
-        today = date.today()
-
+        # Update creator's brands_saved_count (no daily limit tracking for saves)
         cursor.execute('''
             UPDATE creators
-            SET brands_saved_count = brands_saved_count + 1,
-                daily_unlocks_used = daily_unlocks_used + 1,
-                last_unlock_date = %s
+            SET brands_saved_count = COALESCE(brands_saved_count, 0) + 1
             WHERE id = %s
-        ''', (today, creator_id,))
+        ''', (creator_id,))
 
         conn.commit()
         cursor.close()
@@ -787,6 +752,409 @@ def get_analytics():
 # ============================================
 # REVEAL CONTACT ENDPOINT
 # ============================================
+
+# ============================================
+# PITCH TRACKING ENDPOINTS
+# ============================================
+
+@pr_crm.route('/pitch-limits', methods=['GET'])
+def get_pitch_limits():
+    """Get creator's pitch limits for the week"""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get creator's subscription tier and pitch count
+        cursor.execute('''
+            SELECT subscription_tier, pitches_sent_this_week, last_pitch_reset
+            FROM creators
+            WHERE id = %s
+        ''', (creator_id,))
+        creator = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        if not creator:
+            return jsonify({'success': False, 'error': 'Creator not found'}), 404
+
+        tier = creator['subscription_tier'] or 'free'
+        pitches_used = creator.get('pitches_sent_this_week') or 0
+        last_reset = creator.get('last_pitch_reset')
+
+        # Reset weekly count if needed
+        from datetime import date, timedelta
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())  # Monday
+
+        if last_reset is None or last_reset < week_start:
+            pitches_used = 0
+
+        # Determine limits based on tier
+        FREE_LIMIT = 3
+        is_pro = tier in ['pro', 'elite']
+
+        return jsonify({
+            'success': True,
+            'used': pitches_used,
+            'limit': FREE_LIMIT if not is_pro else 999,
+            'canPitch': is_pro or pitches_used < FREE_LIMIT,
+            'tier': tier
+        })
+
+    except Exception as e:
+        print(f"Error in get_pitch_limits: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@pr_crm.route('/track-pitch', methods=['POST'])
+def track_pitch():
+    """Track when a creator sends a pitch and update pipeline stage"""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    try:
+        data = request.get_json()
+        brand_id = data.get('brand_id')
+        brand_slug = data.get('slug')
+        pipeline_id = data.get('pipeline_id')
+
+        # Resolve brand_id from slug if not provided
+        if not brand_id and brand_slug:
+            conn_temp = get_db_connection()
+            cursor_temp = conn_temp.cursor(cursor_factory=RealDictCursor)
+            cursor_temp.execute('SELECT id FROM pr_brands WHERE slug = %s', (brand_slug,))
+            brand_row = cursor_temp.fetchone()
+            cursor_temp.close()
+            conn_temp.close()
+            if brand_row:
+                brand_id = brand_row['id']
+
+        if not brand_id:
+            return jsonify({'success': False, 'error': 'brand_id or slug required'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Check pitch limits
+        cursor.execute('''
+            SELECT subscription_tier, pitches_sent_this_week, last_pitch_reset
+            FROM creators
+            WHERE id = %s
+        ''', (creator_id,))
+        creator = cursor.fetchone()
+
+        if not creator:
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Creator not found'}), 404
+
+        tier = creator['subscription_tier'] or 'free'
+        pitches_used = creator.get('pitches_sent_this_week') or 0
+        last_reset = creator.get('last_pitch_reset')
+
+        # Reset weekly count if needed
+        from datetime import date, timedelta
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+
+        if last_reset is None or last_reset < week_start:
+            pitches_used = 0
+
+        # Check if limit reached for free users
+        FREE_LIMIT = 3
+        is_pro = tier in ['pro', 'elite']
+
+        if not is_pro and pitches_used >= FREE_LIMIT:
+            cursor.close()
+            conn.close()
+            return jsonify({
+                'success': False,
+                'error': 'Weekly pitch limit reached',
+                'upgrade_required': True,
+                'used': pitches_used,
+                'limit': FREE_LIMIT
+            }), 403
+
+        # Update pitch count
+        cursor.execute('''
+            UPDATE creators
+            SET pitches_sent_this_week = %s,
+                last_pitch_reset = %s
+            WHERE id = %s
+        ''', (pitches_used + 1, week_start, creator_id))
+
+        # Update pipeline stage to 'pitched' if in pipeline
+        cursor.execute('''
+            INSERT INTO creator_pipeline (creator_id, brand_id, stage, pitched_at, created_at, updated_at)
+            VALUES (%s, %s, 'pitched', NOW(), NOW(), NOW())
+            ON CONFLICT (creator_id, brand_id) DO UPDATE
+            SET stage = 'pitched', pitched_at = NOW(), updated_at = NOW()
+        ''', (creator_id, brand_id))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'message': 'Pitch tracked successfully',
+            'pitches_used': pitches_used + 1,
+            'tier': tier
+        })
+
+    except Exception as e:
+        print(f"Error in track_pitch: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@pr_crm.route('/generate-pitch', methods=['POST'])
+def generate_pitch():
+    """Generate an AI pitch for a brand (uses Golden Template for now)"""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    try:
+        data = request.get_json()
+        brand_id = data.get('brand_id')
+        brand_slug = data.get('slug')
+
+        if not brand_id and not brand_slug:
+            return jsonify({'success': False, 'error': 'brand_id or slug required'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get brand details - try by ID first, then by slug
+        brand = None
+        if brand_id:
+            cursor.execute('SELECT * FROM pr_brands WHERE id = %s', (brand_id,))
+            brand = cursor.fetchone()
+
+        if not brand and brand_slug:
+            cursor.execute('SELECT * FROM pr_brands WHERE slug = %s', (brand_slug,))
+            brand = cursor.fetchone()
+
+        if not brand:
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Brand not found'}), 404
+
+        # Get creator profile
+        cursor.execute('''
+            SELECT c.*, u.first_name, u.last_name, u.email
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE c.id = %s
+        ''', (creator_id,))
+        creator = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        if not creator:
+            return jsonify({'success': False, 'error': 'Creator not found'}), 404
+
+        # Generate pitch using Golden Template
+        pitch = generate_golden_template_pitch(brand, creator)
+
+        # Debug: log what we're returning
+        print(f"[generate_pitch] Brand ID: {brand.get('id')}, Name: {brand.get('brand_name')}")
+        print(f"[generate_pitch] Email: {brand.get('contact_email')}, App URL: {brand.get('application_form_url')}")
+
+        return jsonify({
+            'success': True,
+            **pitch,
+            'brand_email': brand.get('contact_email'),
+            'brand_name': brand.get('brand_name'),
+            'brand_logo': brand.get('logo_url'),
+            'application_form_url': brand.get('application_form_url')
+        })
+
+    except Exception as e:
+        print(f"Error in generate_pitch: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def generate_golden_template_pitch(brand, creator):
+    """Generate a personalized pitch using the Golden Template structure"""
+    import random
+
+    # Extract creator data
+    creator_name = f"{creator.get('first_name', '')} {creator.get('last_name', '')}".strip() or 'Creator'
+    followers = creator.get('followers_count')
+    social_links = creator.get('social_links') or []
+    if isinstance(social_links, str):
+        social_links = json.loads(social_links)
+
+    niche = creator.get('niche')
+    if isinstance(niche, str):
+        try:
+            niche = json.loads(niche)
+        except:
+            niche = [niche]
+    if isinstance(niche, list) and len(niche) > 0:
+        niche = niche[0]
+    else:
+        niche = brand.get('category', 'content')
+
+    # Parse social_links JSON to find platform handles
+    social_links_raw = creator.get('social_links') or []
+    if isinstance(social_links_raw, str):
+        try:
+            social_links_raw = json.loads(social_links_raw)
+        except:
+            social_links_raw = []
+
+    # Build a dict of platform -> handle/url
+    platform_handles = {}
+    for link in social_links_raw:
+        if isinstance(link, dict):
+            plat = link.get('platform', '').lower()
+            # Try to get handle from various possible fields
+            handle = link.get('handle') or link.get('username') or link.get('url') or ''
+            if handle and plat:
+                platform_handles[plat] = handle
+
+    # Determine primary platform and social URL
+    social_url = None
+    platform = 'Instagram'  # Default
+
+    # Priority: TikTok > Instagram > YouTube
+    if 'tiktok' in platform_handles:
+        platform = 'TikTok'
+        handle = platform_handles['tiktok'].replace('@', '').replace('https://tiktok.com/', '').replace('https://www.tiktok.com/', '').strip('/')
+        if handle and not handle.startswith('http'):
+            social_url = f"https://tiktok.com/@{handle}"
+        elif handle.startswith('http'):
+            social_url = handle
+    elif 'instagram' in platform_handles:
+        platform = 'Instagram'
+        handle = platform_handles['instagram'].replace('@', '').replace('https://instagram.com/', '').replace('https://www.instagram.com/', '').strip('/')
+        if handle and not handle.startswith('http'):
+            social_url = f"https://instagram.com/{handle}"
+        elif handle.startswith('http'):
+            social_url = handle
+    elif 'youtube' in platform_handles:
+        platform = 'YouTube'
+        handle = platform_handles['youtube'].replace('@', '')
+        if handle.startswith('http'):
+            social_url = handle
+        else:
+            social_url = f"https://youtube.com/@{handle}"
+
+    # Also check username field as fallback for Instagram
+    if not social_url and creator.get('username'):
+        platform = 'Instagram'
+        social_url = f"https://instagram.com/{creator.get('username')}"
+
+    # Format followers
+    if followers:
+        if followers >= 1000000:
+            followers_str = f"{followers / 1000000:.1f}M"
+        elif followers >= 1000:
+            followers_str = f"{followers / 1000:.1f}K"
+        else:
+            followers_str = str(followers)
+    else:
+        followers_str = 'a growing audience'
+
+    # Get month for content series
+    from datetime import datetime, timedelta
+    next_month = (datetime.now() + timedelta(days=30)).strftime('%B')
+
+    # Generate series name based on niche
+    series_names = {
+        'Beauty': 'product testing',
+        'Skincare': 'skincare routine',
+        'Fashion': 'outfit styling',
+        'Fitness': 'workout gear review',
+        'Food': 'kitchen favorites',
+        'Lifestyle': 'daily essentials',
+        'Tech': 'tech review',
+        'Home': 'home finds',
+        'Pets': 'pet product testing',
+    }
+    series_name = series_names.get(niche, series_names.get(brand.get('category'), 'product review'))
+
+    # Audience interest
+    interests = {
+        'Beauty': 'what products actually work',
+        'Skincare': 'skincare routines and product recs',
+        'Fashion': 'where to find good pieces',
+        'Fitness': 'gear that holds up',
+        'Food': 'kitchen stuff worth buying',
+        'Lifestyle': 'everyday essentials',
+        'Tech': 'tech that makes life easier',
+        'Home': 'home finds',
+        'Pets': 'pet products',
+    }
+    audience_interest = interests.get(niche, interests.get(brand.get('category'), 'product recommendations'))
+
+    brand_name = brand.get('brand_name', 'the brand')
+    category = brand.get('category', '')
+
+    # Human openers
+    openers = [
+        f"I've been using {brand_name} products for a bit now and wanted to reach out about a collab idea.",
+        f"Found {brand_name} a few months back and it's become a staple in my routine - figured I'd shoot my shot.",
+        f"Quick intro - I'm a {category.lower() if category else 'content'} creator and I've had my eye on {brand_name} for a while.",
+        f"Hope this finds the right person! I create {category.lower() if category else ''} content and {brand_name} keeps coming up in my comments.",
+        f"I've been wanting to reach out for a while - {brand_name} fits really well with the content I make."
+    ]
+    opener = random.choice(openers)
+
+    # Build subject
+    subject = f"PR collab idea for {brand_name}"
+
+    # Build social links section
+    social_line = f"My {platform}: {social_url}" if social_url else ""
+    profile_line = f"My profile & past work: https://newcollab.co/c/{creator.get('username', creator.get('id', 'creator'))}"
+
+    # Combine links
+    if social_line:
+        links_section = f"{social_line}\n{profile_line}"
+    else:
+        links_section = profile_line
+
+    # Build body
+    body = f"""Hi there,
+
+{opener}
+
+I'm putting together a {series_name} series for {next_month} and thought {brand_name} would be a good fit. I have {followers_str} on {platform} who are always asking about {audience_interest}.
+
+Here's what I had in mind:
+- A {'TikTok' if platform == 'TikTok' else 'Reel'} showing how I actually use the product (not a basic unboxing)
+- I can also send over the raw clips if your team wants to use them
+
+{links_section}
+
+If you're open to it, I'd love to try some products and see if we can make something work. No pressure either way!
+
+Thanks,
+{creator_name}"""
+
+    return {
+        'subject': subject,
+        'body': body,
+        'creator_stats': {
+            'followers': followers_str if followers else None,
+            'niche': niche,
+            'platform': platform
+        }
+    }
+
 
 @pr_crm.route('/reveal-contact', methods=['POST'])
 def reveal_contact():
