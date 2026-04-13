@@ -608,59 +608,56 @@ def get_funnel():
 @admin_required
 def get_top_users():
     """
-    Get top users by activity
+    Get top users by activity (saves and pitches)
 
     Query params:
         limit: Number of users (default 20)
-        metric: 'unlocks' or 'pipeline' (default 'unlocks')
+        metric: 'saves', 'pitches', or 'all' (default 'all')
+        days: Time period (default 30)
 
     Returns:
         {
             "users": [
-                {"creator_id": 1, "email": "...", "count": 50, "tier": "pro"},
+                {"creator_id": 1, "email": "...", "saves": 50, "pitches": 20, "tier": "pro"},
                 ...
             ]
         }
     """
     try:
         limit = int(request.args.get('limit', 20))
-        metric = request.args.get('metric', 'unlocks')
+        metric = request.args.get('metric', 'all')
+        days = int(request.args.get('days', 30))
+        start_date = datetime.now().date() - timedelta(days=days)
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        if metric == 'unlocks':
-            cursor.execute("""
-                SELECT
-                    bu.creator_id,
-                    u.email,
-                    c.username,
-                    COALESCE(c.subscription_tier, 'free') as tier,
-                    COUNT(*) as count,
-                    MAX(bu.unlocked_at) as last_activity
-                FROM brand_unlocks bu
-                JOIN creators c ON bu.creator_id = c.id
-                JOIN users u ON c.user_id = u.id
-                GROUP BY bu.creator_id, u.email, c.username, c.subscription_tier
-                ORDER BY count DESC
-                LIMIT %s
-            """, (limit,))
-        else:
-            cursor.execute("""
-                SELECT
-                    cp.creator_id,
-                    u.email,
-                    c.username,
-                    COALESCE(c.subscription_tier, 'free') as tier,
-                    COUNT(*) as count,
-                    MAX(cp.created_at) as last_activity
-                FROM creator_pipeline cp
-                JOIN creators c ON cp.creator_id = c.id
-                JOIN users u ON c.user_id = u.id
-                GROUP BY cp.creator_id, u.email, c.username, c.subscription_tier
-                ORDER BY count DESC
-                LIMIT %s
-            """, (limit,))
+        # Get top users with saves and pitches from creator_pipeline
+        cursor.execute("""
+            SELECT
+                cp.creator_id,
+                u.email,
+                c.username,
+                COALESCE(c.subscription_tier, 'free') as tier,
+                COUNT(*) as saves,
+                COUNT(cp.pitched_at) as pitches,
+                (
+                    SELECT COUNT(*) FROM creator_pipeline cp2
+                    WHERE cp2.creator_id = c.id
+                    AND cp2.pitched_at >= DATE_TRUNC('week', NOW())
+                ) as pitches_this_week,
+                MAX(COALESCE(cp.pitched_at, cp.created_at)) as last_activity
+            FROM creator_pipeline cp
+            JOIN creators c ON cp.creator_id = c.id
+            JOIN users u ON c.user_id = u.id
+            WHERE DATE(cp.created_at) >= %s
+            GROUP BY cp.creator_id, u.email, c.username, c.subscription_tier, c.id
+            ORDER BY
+                CASE WHEN %s = 'saves' THEN COUNT(*) END DESC,
+                CASE WHEN %s = 'pitches' THEN COUNT(cp.pitched_at) END DESC,
+                CASE WHEN %s = 'all' THEN COUNT(*) + COUNT(cp.pitched_at) * 2 END DESC
+            LIMIT %s
+        """, (start_date, metric, metric, metric, limit))
 
         users = cursor.fetchall()
 
@@ -672,7 +669,9 @@ def get_top_users():
                 'email': user['email'],
                 'username': user['username'],
                 'tier': user['tier'],
-                'count': user['count'],
+                'saves': user['saves'],
+                'pitches': user['pitches'],
+                'pitches_this_week': user['pitches_this_week'],
                 'last_activity': str(user['last_activity']) if user['last_activity'] else None
             })
 
@@ -680,7 +679,8 @@ def get_top_users():
 
         return jsonify({
             'users': users_data,
-            'metric': metric
+            'metric': metric,
+            'days': days
         }), 200
 
     except Exception as e:
@@ -833,7 +833,7 @@ def get_activity_heatmap():
 @admin_required
 def get_retention():
     """
-    Get retention cohort data
+    Get retention cohort data based on creator_pipeline activity (saves + pitches)
 
     Returns:
         {
@@ -841,10 +841,11 @@ def get_retention():
                 {
                     "signup_week": "2026-W01",
                     "total_users": 50,
-                    "week_1": 30,
-                    "week_2": 20,
-                    "week_3": 15,
-                    "week_4": 12
+                    "week_0": 30,
+                    "week_1": 20,
+                    "week_2": 15,
+                    "week_3": 12,
+                    "week_4": 10
                 },
                 ...
             ]
@@ -854,21 +855,24 @@ def get_retention():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Get signup cohorts from last 8 weeks
+        # Get signup cohorts from last 10 weeks using creator_pipeline activity
         cursor.execute("""
             WITH signup_cohorts AS (
                 SELECT
                     id as creator_id,
                     DATE_TRUNC('week', created_at) as signup_week
                 FROM creators
-                WHERE created_at >= NOW() - INTERVAL '8 weeks'
+                WHERE created_at >= NOW() - INTERVAL '10 weeks'
             ),
             activity AS (
-                SELECT
-                    creator_id,
-                    DATE_TRUNC('week', unlocked_at) as activity_week
-                FROM brand_unlocks
-                WHERE unlocked_at >= NOW() - INTERVAL '12 weeks'
+                -- Combine saves (created_at) and pitches (pitched_at) as activity signals
+                SELECT creator_id, DATE_TRUNC('week', created_at) as activity_week
+                FROM creator_pipeline
+                WHERE created_at >= NOW() - INTERVAL '14 weeks'
+                UNION
+                SELECT creator_id, DATE_TRUNC('week', pitched_at) as activity_week
+                FROM creator_pipeline
+                WHERE pitched_at IS NOT NULL AND pitched_at >= NOW() - INTERVAL '14 weeks'
             )
             SELECT
                 sc.signup_week,
@@ -886,14 +890,20 @@ def get_retention():
 
         cohorts = []
         for row in cursor.fetchall():
+            total = row['total_users'] or 1  # Avoid division by zero
             cohorts.append({
                 'signup_week': str(row['signup_week'].date()) if row['signup_week'] else None,
                 'total_users': row['total_users'],
                 'week_0': row['week_0'],
+                'week_0_pct': round((row['week_0'] / total) * 100, 1),
                 'week_1': row['week_1'],
+                'week_1_pct': round((row['week_1'] / total) * 100, 1),
                 'week_2': row['week_2'],
+                'week_2_pct': round((row['week_2'] / total) * 100, 1),
                 'week_3': row['week_3'],
-                'week_4': row['week_4']
+                'week_3_pct': round((row['week_3'] / total) * 100, 1),
+                'week_4': row['week_4'],
+                'week_4_pct': round((row['week_4'] / total) * 100, 1)
             })
 
         conn.close()
@@ -916,7 +926,7 @@ def get_retention():
 @admin_required
 def get_popular_brands():
     """
-    Get most popular brands by unlock count
+    Get most popular brands by saves and pitches from creator_pipeline
 
     Query params:
         limit: Number of brands (default 20)
@@ -925,7 +935,7 @@ def get_popular_brands():
     Returns:
         {
             "brands": [
-                {"brand_id": 1, "brand_name": "...", "unlock_count": 50},
+                {"brand_id": 1, "brand_name": "...", "save_count": 50, "pitch_count": 20},
                 ...
             ]
         }
@@ -938,18 +948,20 @@ def get_popular_brands():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Get popular brands from creator_pipeline (saves + pitches)
         cursor.execute("""
             SELECT
-                bu.brand_id,
+                cp.brand_id,
                 pb.brand_name,
                 pb.category,
-                COUNT(*) as unlock_count,
-                COUNT(DISTINCT bu.creator_id) as unique_users
-            FROM brand_unlocks bu
-            JOIN pr_brands pb ON bu.brand_id = pb.id
-            WHERE DATE(bu.unlocked_at) >= %s
-            GROUP BY bu.brand_id, pb.brand_name, pb.category
-            ORDER BY unlock_count DESC
+                COUNT(*) as save_count,
+                COUNT(cp.pitched_at) as pitch_count,
+                COUNT(DISTINCT cp.creator_id) as unique_users
+            FROM creator_pipeline cp
+            JOIN pr_brands pb ON cp.brand_id = pb.id
+            WHERE DATE(cp.created_at) >= %s
+            GROUP BY cp.brand_id, pb.brand_name, pb.category
+            ORDER BY save_count DESC
             LIMIT %s
         """, (start_date, limit))
 
@@ -1477,6 +1489,233 @@ def get_pitch_analytics():
             'top_brands': top_brands_period,
             'recent_pitches': recent_pitches,
             'users_at_limit': users_at_limit_list,
+            'days': days
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# ENGAGEMENT ANALYTICS - User Journey & Activation Metrics
+# ============================================================================
+
+@admin_reports_bp.route('/engagement', methods=['GET'])
+@admin_required
+def get_engagement():
+    """
+    Get user engagement and activation analytics
+
+    Query params:
+        days: Time period (default 30)
+
+    Returns:
+        {
+            "activation": {
+                "signups": 100,
+                "saved_brand": 60,
+                "pitched_brand": 30,
+                "activated_rate": 60%
+            },
+            "engagement": {
+                "avg_saves_per_user": 5.2,
+                "avg_pitches_per_user": 2.1,
+                "power_users": 15
+            },
+            "conversion_funnel": {...},
+            "daily_engagement": [...],
+            "user_segments": {...}
+        }
+    """
+    try:
+        days = int(request.args.get('days', 30))
+        start_date = datetime.now().date() - timedelta(days=days)
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # ================== ACTIVATION METRICS ==================
+
+        # Total signups in period
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM creators
+            WHERE DATE(created_at) >= %s
+        """, (start_date,))
+        total_signups = cursor.fetchone()['count']
+
+        # Users who saved at least 1 brand
+        cursor.execute("""
+            SELECT COUNT(DISTINCT c.id) as count
+            FROM creators c
+            JOIN creator_pipeline cp ON c.id = cp.creator_id
+            WHERE DATE(c.created_at) >= %s
+        """, (start_date,))
+        users_saved = cursor.fetchone()['count']
+
+        # Users who pitched at least 1 brand
+        cursor.execute("""
+            SELECT COUNT(DISTINCT c.id) as count
+            FROM creators c
+            JOIN creator_pipeline cp ON c.id = cp.creator_id
+            WHERE DATE(c.created_at) >= %s
+            AND cp.pitched_at IS NOT NULL
+        """, (start_date,))
+        users_pitched = cursor.fetchone()['count']
+
+        # ================== ENGAGEMENT METRICS ==================
+
+        # Average saves per active user
+        cursor.execute("""
+            SELECT
+                COUNT(*) as total_saves,
+                COUNT(DISTINCT creator_id) as active_users
+            FROM creator_pipeline
+            WHERE DATE(created_at) >= %s
+        """, (start_date,))
+        save_stats = cursor.fetchone()
+        avg_saves = round(save_stats['total_saves'] / max(save_stats['active_users'], 1), 1)
+
+        # Average pitches per pitching user
+        cursor.execute("""
+            SELECT
+                COUNT(*) as total_pitches,
+                COUNT(DISTINCT creator_id) as pitching_users
+            FROM creator_pipeline
+            WHERE pitched_at IS NOT NULL
+            AND DATE(pitched_at) >= %s
+        """, (start_date,))
+        pitch_stats = cursor.fetchone()
+        avg_pitches = round(pitch_stats['total_pitches'] / max(pitch_stats['pitching_users'], 1), 1)
+
+        # Power users (5+ pitches in period)
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM (
+                SELECT creator_id, COUNT(*) as pitch_count
+                FROM creator_pipeline
+                WHERE pitched_at IS NOT NULL AND DATE(pitched_at) >= %s
+                GROUP BY creator_id
+                HAVING COUNT(*) >= 5
+            ) as power_users
+        """, (start_date,))
+        power_users = cursor.fetchone()['count']
+
+        # ================== USER SEGMENTS ==================
+
+        # Segment users by activity level
+        cursor.execute("""
+            WITH user_activity AS (
+                SELECT
+                    c.id,
+                    COALESCE(c.subscription_tier, 'free') as tier,
+                    COUNT(cp.id) as save_count,
+                    COUNT(cp.pitched_at) as pitch_count
+                FROM creators c
+                LEFT JOIN creator_pipeline cp ON c.id = cp.creator_id
+                    AND DATE(cp.created_at) >= %s
+                WHERE DATE(c.created_at) >= %s
+                GROUP BY c.id, c.subscription_tier
+            )
+            SELECT
+                CASE
+                    WHEN pitch_count >= 5 THEN 'power_user'
+                    WHEN pitch_count >= 1 THEN 'engaged'
+                    WHEN save_count >= 1 THEN 'exploring'
+                    ELSE 'inactive'
+                END as segment,
+                COUNT(*) as count,
+                COUNT(CASE WHEN tier IN ('pro', 'elite') THEN 1 END) as paid
+            FROM user_activity
+            GROUP BY segment
+        """, (start_date, start_date))
+        segments = {row['segment']: {'count': row['count'], 'paid': row['paid']} for row in cursor.fetchall()}
+
+        # ================== DAILY ENGAGEMENT TREND ==================
+
+        cursor.execute("""
+            SELECT
+                DATE(created_at) as date,
+                COUNT(DISTINCT creator_id) as active_users,
+                COUNT(*) as total_saves,
+                COUNT(pitched_at) as total_pitches
+            FROM creator_pipeline
+            WHERE DATE(created_at) >= %s
+            GROUP BY DATE(created_at)
+            ORDER BY date ASC
+        """, (start_date,))
+        daily_engagement = [
+            {
+                'date': str(row['date']),
+                'active_users': row['active_users'],
+                'saves': row['total_saves'],
+                'pitches': row['total_pitches']
+            }
+            for row in cursor.fetchall()
+        ]
+
+        # ================== CONVERSION FUNNEL ==================
+
+        cursor.execute("""
+            SELECT
+                stage,
+                COUNT(*) as count
+            FROM creator_pipeline
+            WHERE DATE(created_at) >= %s
+            GROUP BY stage
+        """, (start_date,))
+        stages = {row['stage']: row['count'] for row in cursor.fetchall()}
+
+        # Normalize stage names
+        if 'interested' in stages:
+            stages['saved'] = stages.pop('interested')
+
+        # Time to first action
+        cursor.execute("""
+            SELECT
+                AVG(EXTRACT(EPOCH FROM (first_save - signup)) / 3600) as avg_hours_to_save,
+                AVG(EXTRACT(EPOCH FROM (first_pitch - signup)) / 3600) as avg_hours_to_pitch
+            FROM (
+                SELECT
+                    c.id,
+                    c.created_at as signup,
+                    MIN(cp.created_at) as first_save,
+                    MIN(cp.pitched_at) as first_pitch
+                FROM creators c
+                LEFT JOIN creator_pipeline cp ON c.id = cp.creator_id
+                WHERE DATE(c.created_at) >= %s
+                GROUP BY c.id, c.created_at
+            ) as user_times
+        """, (start_date,))
+        time_to_action = cursor.fetchone()
+
+        conn.close()
+
+        activation_rate = round((users_saved / max(total_signups, 1)) * 100, 1)
+        pitch_rate = round((users_pitched / max(total_signups, 1)) * 100, 1)
+
+        return jsonify({
+            'activation': {
+                'signups': total_signups,
+                'saved_brand': users_saved,
+                'pitched_brand': users_pitched,
+                'activation_rate': activation_rate,
+                'pitch_rate': pitch_rate
+            },
+            'engagement': {
+                'avg_saves_per_user': avg_saves,
+                'avg_pitches_per_user': avg_pitches,
+                'power_users': power_users,
+                'total_active_users': save_stats['active_users'],
+                'total_pitching_users': pitch_stats['pitching_users']
+            },
+            'user_segments': segments,
+            'daily_engagement': daily_engagement,
+            'conversion_funnel': stages,
+            'time_to_action': {
+                'avg_hours_to_save': round(time_to_action['avg_hours_to_save'] or 0, 1),
+                'avg_hours_to_pitch': round(time_to_action['avg_hours_to_pitch'] or 0, 1)
+            },
             'days': days
         }), 200
 
