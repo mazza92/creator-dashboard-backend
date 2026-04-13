@@ -18,9 +18,9 @@ from email.mime.multipart import MIMEMultipart
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import psycopg2
 
-# Gmail SMTP Configuration
-GMAIL_USER = os.getenv('GMAIL_USER', 'team@newcollab.co')  # Your Gmail address
-GMAIL_APP_PASSWORD = os.getenv('GMAIL_APP_PASSWORD')  # App password from Google
+# Gmail SMTP Configuration (uses existing env vars)
+GMAIL_USER = os.getenv('SMTP_USERNAME', 'team@newcollab.co')
+GMAIL_APP_PASSWORD = os.getenv('SMTP_PASSWORD')
 
 
 def get_db_connection():
@@ -458,13 +458,14 @@ def create_campaign():
 
         cursor.execute("""
             INSERT INTO email_campaigns
-            (name, template_id, subject_override, segment_type, segment_filters, status, created_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            (name, template_id, subject_override, html_content_override, segment_type, segment_filters, status, created_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """, (
             data['name'],
             data.get('template_id'),
             data.get('subject_override'),
+            data.get('html_content_override'),
             data.get('segment_type', 'all_active'),
             json.dumps(data.get('segment_filters', {})),
             'draft',
@@ -523,7 +524,7 @@ def send_campaign(campaign_id):
 
         # Get campaign
         cursor.execute("""
-            SELECT ec.*, et.subject, et.html_content
+            SELECT ec.*, et.subject, et.html_content as template_html_content
             FROM email_campaigns ec
             JOIN campaign_templates et ON ec.template_id = et.id
             WHERE ec.id = %s
@@ -591,7 +592,7 @@ def send_campaign(campaign_id):
         conn.commit()
 
         subject = campaign['subject_override'] or campaign['subject']
-        html_content = campaign['html_content']
+        html_content = campaign.get('html_content_override') or campaign['template_html_content']
 
         sent_count = 0
         failed_count = 0
@@ -661,7 +662,7 @@ def send_test_email(campaign_id):
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         cursor.execute("""
-            SELECT ec.*, et.subject, et.html_content
+            SELECT ec.*, et.subject, et.html_content as template_html_content
             FROM email_campaigns ec
             JOIN campaign_templates et ON ec.template_id = et.id
             WHERE ec.id = %s
@@ -687,8 +688,9 @@ def send_test_email(campaign_id):
         }
 
         subject = campaign['subject_override'] or campaign['subject']
+        html_content = campaign.get('html_content_override') or campaign['template_html_content']
         personalized_subject = f"[TEST] {personalize_text(subject, sample)}"
-        personalized_content = personalize_text(campaign['html_content'], sample)
+        personalized_content = personalize_text(html_content, sample)
 
         success = send_email_gmail(test_email, personalized_subject, personalized_content)
 
@@ -787,7 +789,7 @@ def personalize_text(text, recipient):
 def send_email_gmail(to_email, subject, html_content):
     """Send email via Gmail SMTP"""
     if not GMAIL_APP_PASSWORD:
-        print("Warning: GMAIL_APP_PASSWORD not set")
+        print(f"Warning: SMTP_PASSWORD not set. GMAIL_USER={GMAIL_USER}")
         return False
 
     try:
@@ -810,13 +812,17 @@ def send_email_gmail(to_email, subject, html_content):
         html_part = MIMEText(html_with_footer, 'html')
         msg.attach(html_part)
 
-        # Connect to Gmail SMTP
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+        # Connect to Gmail SMTP with TLS (port 587)
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls()
             server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
             server.sendmail(GMAIL_USER, to_email, msg.as_string())
 
+        print(f"Email sent successfully to {to_email}")
         return True
 
     except Exception as e:
         print(f"Email send error: {e}")
+        import traceback
+        traceback.print_exc()
         return False
