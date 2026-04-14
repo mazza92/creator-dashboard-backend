@@ -1,3 +1,7 @@
+import os
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
+
 import psycopg2
 from psycopg2 import OperationalError
 from psycopg2.extras import RealDictCursor
@@ -9,7 +13,6 @@ from google.auth.transport.requests import Request
 from flask_session import Session
 import requests
 from flask_cors import CORS
-from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
 from urllib.parse import urlparse
 import time
@@ -17,7 +20,6 @@ from datetime import timedelta, timezone
 import datetime
 import bcrypt
 from supabase import create_client, Client
-import os
 import traceback
 import json
 import uuid
@@ -46,9 +48,6 @@ from routes.admin_pr_hunter import admin_pr_hunter_bp
 from routes.admin_brands import admin_brands_bp
 from routes.admin_reports import admin_reports_bp
 from routes.admin_email import admin_email_bp
-
-# Load environment variables
-load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
 # Initialize Flask app
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

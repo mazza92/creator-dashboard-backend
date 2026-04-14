@@ -795,21 +795,10 @@ def send_email_gmail(to_email, subject, html_content):
     try:
         msg = MIMEMultipart('alternative')
         msg['Subject'] = subject
-        msg['From'] = f"NewCollab <{GMAIL_USER}>"
+        msg['From'] = f"Newcollab <{GMAIL_USER}>"
         msg['To'] = to_email
 
-        # Add unsubscribe link to footer
-        html_with_footer = f"""
-        {html_content}
-        <br><br>
-        <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
-        <p style="font-size: 12px; color: #999; text-align: center;">
-            You're receiving this because you signed up for NewCollab.<br>
-            <a href="https://app.newcollab.co/unsubscribe?email={to_email}" style="color: #999;">Unsubscribe</a>
-        </p>
-        """
-
-        html_part = MIMEText(html_with_footer, 'html')
+        html_part = MIMEText(html_content, 'html')
         msg.attach(html_part)
 
         # Connect to Gmail SMTP with TLS (port 587)
