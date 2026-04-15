@@ -309,6 +309,7 @@ def create_brand():
             data.get('application_requirements'),
             data.get('accepting_pr', True),
             data.get('open_pr_featured', False),
+            data.get('roundup_featured', False),
             data.get('notes'),
             data.get('success_stories'),
             data.get('source_url'),
