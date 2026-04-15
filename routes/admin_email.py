@@ -537,9 +537,8 @@ def send_campaign(campaign_id):
             conn.close()
             return jsonify({'error': 'Campaign not found'}), 404
 
-        if campaign['status'] == 'sent':
-            conn.close()
-            return jsonify({'error': 'Campaign already sent'}), 400
+        # Allow re-sending to catch users who weren't sent to (due to rate limits, errors, etc.)
+        # The deduplication logic below will skip users who already received this campaign
 
         # Get recipients
         segment_id = campaign['segment_type']
@@ -582,14 +581,26 @@ def send_campaign(campaign_id):
             recipient_query += " AND COALESCE(c.pitches_sent_total, 0) >= 5"
 
         cursor.execute(recipient_query)
-        recipients = cursor.fetchall()
+        all_recipients = cursor.fetchall()
+
+        # Exclude users who already received this campaign (for retry/resume)
+        cursor.execute("""
+            SELECT email FROM email_logs
+            WHERE campaign_id = %s AND status = 'sent'
+        """, (campaign_id,))
+        already_sent = {row['email'] for row in cursor.fetchall()}
+
+        recipients = [r for r in all_recipients if r['email'] not in already_sent]
+
+        if already_sent:
+            print(f"Skipping {len(already_sent)} users who already received this campaign")
 
         # Update status
         cursor.execute("""
             UPDATE email_campaigns
             SET status = 'sending', total_recipients = %s
             WHERE id = %s
-        """, (len(recipients), campaign_id))
+        """, (len(all_recipients), campaign_id))
         conn.commit()
 
         subject = campaign['subject_override'] or campaign.get('template_subject') or 'New update from Newcollab'
