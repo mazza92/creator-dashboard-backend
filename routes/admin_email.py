@@ -524,9 +524,9 @@ def send_campaign(campaign_id):
 
         # Get campaign
         cursor.execute("""
-            SELECT ec.*, et.subject, et.html_content as template_html_content
+            SELECT ec.*, et.subject as template_subject, et.html_content as template_html_content
             FROM email_campaigns ec
-            JOIN campaign_templates et ON ec.template_id = et.id
+            LEFT JOIN campaign_templates et ON ec.template_id = et.id
             WHERE ec.id = %s
         """, (campaign_id,))
 
@@ -591,8 +591,12 @@ def send_campaign(campaign_id):
         """, (len(recipients), campaign_id))
         conn.commit()
 
-        subject = campaign['subject_override'] or campaign['subject']
-        html_content = campaign.get('html_content_override') or campaign['template_html_content']
+        subject = campaign['subject_override'] or campaign.get('template_subject') or 'New update from Newcollab'
+        html_content = campaign.get('html_content_override') or campaign.get('template_html_content')
+
+        if not html_content:
+            conn.close()
+            return jsonify({'error': 'Campaign has no email content'}), 400
 
         sent_count = 0
         failed_count = 0
@@ -662,9 +666,9 @@ def send_test_email(campaign_id):
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         cursor.execute("""
-            SELECT ec.*, et.subject, et.html_content as template_html_content
+            SELECT ec.*, et.subject as template_subject, et.html_content as template_html_content
             FROM email_campaigns ec
-            JOIN campaign_templates et ON ec.template_id = et.id
+            LEFT JOIN campaign_templates et ON ec.template_id = et.id
             WHERE ec.id = %s
         """, (campaign_id,))
 
@@ -687,8 +691,11 @@ def send_test_email(campaign_id):
             'brands_saved': 12
         }
 
-        subject = campaign['subject_override'] or campaign['subject']
-        html_content = campaign.get('html_content_override') or campaign['template_html_content']
+        subject = campaign['subject_override'] or campaign.get('template_subject') or 'New update from Newcollab'
+        html_content = campaign.get('html_content_override') or campaign.get('template_html_content')
+
+        if not html_content:
+            return jsonify({'error': 'Campaign has no email content'}), 400
         personalized_subject = f"[TEST] {personalize_text(subject, sample)}"
         personalized_content = personalize_text(html_content, sample)
 
