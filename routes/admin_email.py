@@ -12,6 +12,7 @@ import sys
 import os
 import json
 import smtplib
+import time
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -601,8 +602,12 @@ def send_campaign(campaign_id):
         sent_count = 0
         failed_count = 0
 
-        # Send emails via Gmail
-        for recipient in recipients:
+        # Send emails via Gmail with rate limiting to avoid throttling
+        # Gmail allows ~100 emails/minute, so we add a small delay
+        BATCH_SIZE = 25  # Commit every 25 emails
+        DELAY_BETWEEN_EMAILS = 0.8  # 0.8 seconds between emails (~75/min to be safe)
+
+        for i, recipient in enumerate(recipients):
             try:
                 personalized_subject = personalize_text(subject, recipient)
                 personalized_content = personalize_text(html_content, recipient)
@@ -625,13 +630,28 @@ def send_campaign(campaign_id):
                     sent_count += 1
                 else:
                     failed_count += 1
+                    print(f"Failed to send to {recipient['email']}")
+
+                # Commit in batches to avoid losing progress
+                if (i + 1) % BATCH_SIZE == 0:
+                    cursor.execute("""
+                        UPDATE email_campaigns SET total_sent = %s WHERE id = %s
+                    """, (sent_count, campaign_id))
+                    conn.commit()
+                    print(f"Progress: {i + 1}/{len(recipients)} sent, {sent_count} successful")
+
+                # Rate limiting delay (skip for last email)
+                if i < len(recipients) - 1:
+                    time.sleep(DELAY_BETWEEN_EMAILS)
 
             except Exception as e:
+                print(f"Error sending to {recipient['email']}: {str(e)}")
                 cursor.execute("""
                     INSERT INTO email_logs (campaign_id, user_id, creator_id, email, status, error_message)
                     VALUES (%s, %s, %s, %s, 'failed', %s)
                 """, (campaign_id, recipient['user_id'], recipient['creator_id'], recipient['email'], str(e)))
                 failed_count += 1
+                conn.commit()  # Commit after error to not lose progress
 
         # Mark as sent
         cursor.execute("""
