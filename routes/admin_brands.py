@@ -276,7 +276,7 @@ def create_brand():
                 %s, %s,
                 %s, %s, %s,
                 %s, %s,
-                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s,
                 %s, CURRENT_TIMESTAMP
