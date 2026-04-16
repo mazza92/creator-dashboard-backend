@@ -607,6 +607,33 @@ def _send_emails_background(campaign_id, recipients, subject, html_content):
             pass
 
 
+@admin_email_bp.route('/campaigns/<int:campaign_id>/reset', methods=['POST'])
+@admin_required
+def reset_campaign(campaign_id):
+    """Reset a stuck/failed campaign back to draft so it can be re-sent"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            UPDATE email_campaigns
+            SET status = 'draft', sent_at = NULL
+            WHERE id = %s
+            RETURNING id, status
+        """, (campaign_id,))
+        row = cursor.fetchone()
+        conn.commit()
+        conn.close()
+
+        if not row:
+            return jsonify({'error': 'Campaign not found'}), 404
+
+        return jsonify({'message': 'Campaign reset to draft', 'campaign_id': campaign_id})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @admin_email_bp.route('/campaigns/<int:campaign_id>/send', methods=['POST'])
 @admin_required
 def send_campaign(campaign_id):
@@ -629,10 +656,10 @@ def send_campaign(campaign_id):
             conn.close()
             return jsonify({'error': 'Campaign not found'}), 404
 
-        # Check if already sending
-        if campaign['status'] == 'sending':
+        # Only block if fully sent — 'sending' may be a stuck/crashed thread, allow resume
+        if campaign['status'] == 'sent':
             conn.close()
-            return jsonify({'error': 'Campaign is already being sent'}), 400
+            return jsonify({'error': 'Campaign already fully sent. Use the reset endpoint to re-send.'}), 400
 
         # Get recipients
         segment_id = campaign['segment_type']
