@@ -6,7 +6,7 @@ Using Gmail SMTP for sending
 
 from flask import Blueprint, request, jsonify, session
 from functools import wraps
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import RealDictCursor, execute_values
 from datetime import datetime, timedelta
 import sys
 import os
@@ -28,6 +28,9 @@ GMAIL_APP_PASSWORD = os.getenv('SMTP_PASSWORD')
 def get_db_connection():
     """Get database connection"""
     return psycopg2.connect(os.getenv('DATABASE_URL'), cursor_factory=RealDictCursor)
+
+
+MAX_SEND_ATTEMPTS = 3
 
 
 admin_email_bp = Blueprint('admin_email', __name__, url_prefix='/api/admin/email')
@@ -516,90 +519,262 @@ def get_campaign(campaign_id):
         return jsonify({'error': str(e)}), 500
 
 
+def _upsert_campaign_recipients(cursor, campaign_id, recipients):
+    """Insert recipients once per campaign (idempotent)."""
+    if not recipients:
+        return
+
+    rows = []
+    for r in recipients:
+        rows.append((
+            campaign_id,
+            r['user_id'],
+            r['creator_id'],
+            (r.get('email') or '').strip().lower(),
+            r.get('first_name'),
+            r.get('username'),
+            r.get('niche'),
+            r.get('followers_count') or 0,
+            r.get('tier') or 'free',
+            r.get('pitches_this_week') or 0,
+            r.get('pitches_total') or 0,
+            r.get('brands_saved') or 0,
+        ))
+
+    execute_values(
+        cursor,
+        """
+        INSERT INTO email_campaign_recipients (
+            campaign_id, user_id, creator_id, email, first_name, username, niche,
+            followers_count, tier, pitches_this_week, pitches_total, brands_saved
+        )
+        VALUES %s
+        ON CONFLICT (campaign_id, email) DO UPDATE
+        SET user_id = EXCLUDED.user_id,
+            creator_id = EXCLUDED.creator_id,
+            first_name = EXCLUDED.first_name,
+            username = EXCLUDED.username,
+            niche = EXCLUDED.niche,
+            followers_count = EXCLUDED.followers_count,
+            tier = EXCLUDED.tier,
+            pitches_this_week = EXCLUDED.pitches_this_week,
+            pitches_total = EXCLUDED.pitches_total,
+            brands_saved = EXCLUDED.brands_saved,
+            updated_at = NOW()
+        """,
+        rows
+    )
+
+
+def _recipient_counts(cursor, campaign_id):
+    cursor.execute(
+        """
+        SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE status = 'sent') AS sent,
+            COUNT(*) FILTER (WHERE status = 'sending') AS sending,
+            COUNT(*) FILTER (
+                WHERE status IN ('pending', 'failed_temp') AND attempt_count < %s
+            ) AS retryable,
+            COUNT(*) FILTER (WHERE status IN ('failed_temp', 'failed_perm')) AS failed
+        FROM email_campaign_recipients
+        WHERE campaign_id = %s
+        """,
+        (MAX_SEND_ATTEMPTS, campaign_id)
+    )
+    return cursor.fetchone()
+
+
+def _refresh_campaign_totals_from_recipients(cursor, campaign_id, final=False):
+    """Sync campaign counters from recipient state table."""
+    counts = _recipient_counts(cursor, campaign_id)
+    total = counts['total'] or 0
+    sent = counts['sent'] or 0
+    sending = counts['sending'] or 0
+    retryable = counts['retryable'] or 0
+
+    # When a send batch finishes, status should represent unresolved recipients.
+    if final:
+        if sent == total and total > 0:
+            new_status = 'sent'
+        elif retryable > 0:
+            new_status = 'failed'
+        else:
+            new_status = 'failed'
+    else:
+        new_status = 'sending' if (sending > 0 or retryable > 0) else ('sent' if sent == total and total > 0 else 'draft')
+
+    cursor.execute(
+        """
+        UPDATE email_campaigns
+        SET total_recipients = %s,
+            total_sent = %s,
+            status = %s,
+            sent_at = CASE WHEN %s = 'sent' THEN NOW() ELSE sent_at END
+        WHERE id = %s
+        """,
+        (total, sent, new_status, new_status, campaign_id)
+    )
+    return {
+        'total': total,
+        'sent': sent,
+        'sending': sending,
+        'retryable': retryable,
+        'failed': counts['failed'] or 0,
+        'status': new_status
+    }
+
+
+def _pick_recipients_for_send(cursor, campaign_id):
+    """
+    Atomically claim sendable recipients so parallel send requests don't double-send.
+    """
+    cursor.execute(
+        """
+        WITH picked AS (
+            SELECT id
+            FROM email_campaign_recipients
+            WHERE campaign_id = %s
+              AND status IN ('pending', 'failed_temp')
+              AND attempt_count < %s
+            ORDER BY id
+            FOR UPDATE SKIP LOCKED
+        )
+        UPDATE email_campaign_recipients e
+        SET status = 'sending',
+            attempt_count = e.attempt_count + 1,
+            last_attempt_at = NOW(),
+            last_error = NULL,
+            updated_at = NOW()
+        FROM picked
+        WHERE e.id = picked.id
+        RETURNING
+            e.id, e.user_id, e.creator_id, e.email, e.first_name, e.username, e.niche,
+            e.followers_count, e.tier, e.pitches_this_week, e.pitches_total, e.brands_saved
+        """,
+        (campaign_id, MAX_SEND_ATTEMPTS)
+    )
+    return cursor.fetchall()
+
+
 def _send_emails_background(campaign_id, recipients, subject, html_content):
-    """Background thread function to send emails with rate limiting"""
+    """Background thread function to send emails with rate limiting."""
     print(f"[Background] Starting to send {len(recipients)} emails for campaign {campaign_id}")
 
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
 
+    BATCH_SIZE = 25
+    DELAY_BETWEEN_EMAILS = 0.8
     sent_count = 0
     failed_count = 0
 
-    BATCH_SIZE = 25
-    DELAY_BETWEEN_EMAILS = 0.8
-
     try:
         for i, recipient in enumerate(recipients):
+            recipient_id = recipient['id']
+            recipient_email = (recipient.get('email') or '').strip().lower()
             try:
                 personalized_subject = personalize_text(subject, recipient)
                 personalized_content = personalize_text(html_content, recipient)
 
                 success = send_email_gmail(
-                    to_email=recipient['email'],
+                    to_email=recipient_email,
                     subject=personalized_subject,
                     html_content=personalized_content
                 )
 
-                status = 'sent' if success else 'failed'
-
-                cursor.execute("""
-                    INSERT INTO email_logs (campaign_id, user_id, creator_id, email, status, sent_at)
-                    VALUES (%s, %s, %s, %s, %s, NOW())
-                """, (campaign_id, recipient['user_id'], recipient['creator_id'], recipient['email'], status))
-
                 if success:
+                    cursor.execute(
+                        """
+                        UPDATE email_campaign_recipients
+                        SET status = 'sent',
+                            last_error = NULL,
+                            updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (recipient_id,)
+                    )
+                    cursor.execute(
+                        """
+                        INSERT INTO email_logs (campaign_id, user_id, creator_id, email, status, sent_at)
+                        VALUES (%s, %s, %s, %s, 'sent', NOW())
+                        """,
+                        (campaign_id, recipient['user_id'], recipient['creator_id'], recipient_email)
+                    )
                     sent_count += 1
                 else:
+                    cursor.execute(
+                        """
+                        UPDATE email_campaign_recipients
+                        SET status = 'failed_temp',
+                            last_error = 'SMTP send failed',
+                            updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (recipient_id,)
+                    )
+                    cursor.execute(
+                        """
+                        INSERT INTO email_logs (campaign_id, user_id, creator_id, email, status, error_message)
+                        VALUES (%s, %s, %s, %s, 'failed', %s)
+                        """,
+                        (campaign_id, recipient['user_id'], recipient['creator_id'], recipient_email, 'SMTP send failed')
+                    )
                     failed_count += 1
-                    print(f"[Background] Failed to send to {recipient['email']}")
 
-                # Commit progress in batches
+                # Commit and refresh every batch for live progress
                 if (i + 1) % BATCH_SIZE == 0:
-                    cursor.execute("""
-                        UPDATE email_campaigns SET total_sent = %s WHERE id = %s
-                    """, (sent_count, campaign_id))
+                    _refresh_campaign_totals_from_recipients(cursor, campaign_id, final=False)
                     conn.commit()
-                    print(f"[Background] Progress: {i + 1}/{len(recipients)} sent, {sent_count} successful")
+                    print(f"[Background] Progress: {i + 1}/{len(recipients)} processed")
 
-                # Rate limiting delay (skip after last email)
                 if i < len(recipients) - 1:
                     time.sleep(DELAY_BETWEEN_EMAILS)
 
             except Exception as e:
-                print(f"[Background] Error sending to {recipient['email']}: {str(e)}")
-                try:
-                    cursor.execute("""
-                        INSERT INTO email_logs (campaign_id, user_id, creator_id, email, status, error_message)
-                        VALUES (%s, %s, %s, %s, 'failed', %s)
-                    """, (campaign_id, recipient['user_id'], recipient['creator_id'], recipient['email'], str(e)))
-                    conn.commit()
-                except Exception:
-                    pass
+                error_message = str(e)
+                print(f"[Background] Error sending to {recipient_email}: {error_message}")
+                cursor.execute(
+                    """
+                    UPDATE email_campaign_recipients
+                    SET status = 'failed_temp',
+                        last_error = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (error_message, recipient_id)
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO email_logs (campaign_id, user_id, creator_id, email, status, error_message)
+                    VALUES (%s, %s, %s, %s, 'failed', %s)
+                    """,
+                    (campaign_id, recipient['user_id'], recipient['creator_id'], recipient_email, error_message)
+                )
                 failed_count += 1
+                conn.commit()
 
-        # Mark campaign as fully sent
-        cursor.execute("""
-            UPDATE email_campaigns
-            SET status = 'sent', sent_at = NOW(), total_sent = %s
-            WHERE id = %s
-        """, (sent_count, campaign_id))
+        summary = _refresh_campaign_totals_from_recipients(cursor, campaign_id, final=True)
         conn.commit()
-        print(f"[Background] Campaign {campaign_id} complete: {sent_count} sent, {failed_count} failed")
+        print(
+            f"[Background] Campaign {campaign_id} complete: "
+            f"{summary['sent']} sent, {summary['failed']} failed"
+        )
 
     except Exception as e:
-        # Unexpected crash — mark campaign as failed so it doesn't stay stuck as 'sending'
         print(f"[Background] FATAL error for campaign {campaign_id}: {str(e)}")
         try:
-            cursor.execute("""
+            cursor.execute(
+                """
                 UPDATE email_campaigns
-                SET status = 'failed', total_sent = %s
+                SET status = 'failed'
                 WHERE id = %s
-            """, (sent_count, campaign_id))
+                """,
+                (campaign_id,)
+            )
             conn.commit()
         except Exception:
             pass
-
     finally:
         try:
             conn.close()
@@ -622,6 +797,18 @@ def reset_campaign(campaign_id):
             RETURNING id, status
         """, (campaign_id,))
         row = cursor.fetchone()
+        if row:
+            cursor.execute(
+                """
+                UPDATE email_campaign_recipients
+                SET status = CASE WHEN status = 'sent' THEN 'sent' ELSE 'pending' END,
+                    attempt_count = CASE WHEN status = 'sent' THEN attempt_count ELSE 0 END,
+                    last_error = NULL,
+                    updated_at = NOW()
+                WHERE campaign_id = %s
+                """,
+                (campaign_id,)
+            )
         conn.commit()
         conn.close()
 
@@ -660,6 +847,12 @@ def send_campaign(campaign_id):
         if campaign['status'] == 'sent':
             conn.close()
             return jsonify({'error': 'Campaign already fully sent. Use the reset endpoint to re-send.'}), 400
+
+        subject = campaign['subject_override'] or campaign.get('template_subject') or 'New update from Newcollab'
+        html_content = campaign.get('html_content_override') or campaign.get('template_html_content')
+        if not html_content:
+            conn.close()
+            return jsonify({'error': 'Campaign has no email content'}), 400
 
         # Get recipients
         segment_id = campaign['segment_type']
@@ -704,42 +897,41 @@ def send_campaign(campaign_id):
         cursor.execute(recipient_query)
         all_recipients = cursor.fetchall()
 
-        # Exclude users who already received this campaign
-        cursor.execute("""
-            SELECT email FROM email_logs
-            WHERE campaign_id = %s AND status = 'sent'
-        """, (campaign_id,))
-        already_sent = {row['email'] for row in cursor.fetchall()}
-
-        recipients = [r for r in all_recipients if r['email'] not in already_sent]
-
-        if not recipients:
+        if not all_recipients:
             conn.close()
-            return jsonify({
-                'message': 'No new recipients to send to',
-                'sent': 0,
-                'failed': 0,
-                'already_sent': len(already_sent)
-            })
+            return jsonify({'error': 'No recipients found for this segment'}), 400
 
-        # Update status to sending
-        cursor.execute("""
-            UPDATE email_campaigns
-            SET status = 'sending', total_recipients = %s
-            WHERE id = %s
-        """, (len(all_recipients), campaign_id))
+        _upsert_campaign_recipients(cursor, campaign_id, all_recipients)
+
+        counts_before = _recipient_counts(cursor, campaign_id)
+        already_sent = counts_before['sent'] or 0
+
+        recipients = _pick_recipients_for_send(cursor, campaign_id)
+        if recipients:
+            cursor.execute(
+                """
+                UPDATE email_campaigns
+                SET status = 'sending'
+                WHERE id = %s
+                """,
+                (campaign_id,)
+            )
+            final_summary = None
+        else:
+            final_summary = _refresh_campaign_totals_from_recipients(cursor, campaign_id, final=True)
         conn.commit()
-
-        subject = campaign['subject_override'] or campaign.get('template_subject') or 'New update from Newcollab'
-        html_content = campaign.get('html_content_override') or campaign.get('template_html_content')
-
-        if not html_content:
-            conn.close()
-            return jsonify({'error': 'Campaign has no email content'}), 400
 
         conn.close()
 
-        # Start background thread to send emails
+        if not recipients:
+            return jsonify({
+                'message': 'No new recipients to send to',
+                'sending': 0,
+                'already_sent': already_sent,
+                'status': final_summary['status'] if final_summary else 'draft'
+            })
+
+        # Start background thread to send claimed recipients
         thread = threading.Thread(
             target=_send_emails_background,
             args=(campaign_id, recipients, subject, html_content)
@@ -747,11 +939,10 @@ def send_campaign(campaign_id):
         thread.daemon = True
         thread.start()
 
-        # Return immediately — emails are being sent in the background thread
         return jsonify({
             'message': f'Sending started for {len(recipients)} recipients',
             'sending': len(recipients),
-            'already_sent': len(already_sent),
+            'already_sent': already_sent,
             'status': 'sending'
         })
 
@@ -778,19 +969,13 @@ def get_send_status(campaign_id):
             conn.close()
             return jsonify({'error': 'Campaign not found'}), 404
 
-        cursor.execute("""
-            SELECT
-                COUNT(*) FILTER (WHERE status = 'sent')   AS sent,
-                COUNT(*) FILTER (WHERE status = 'failed') AS failed
-            FROM email_logs
-            WHERE campaign_id = %s
-        """, (campaign_id,))
-        counts = cursor.fetchone()
+        counts = _recipient_counts(cursor, campaign_id)
         conn.close()
 
-        total = campaign['total_recipients'] or 0
+        total = counts['total'] or campaign['total_recipients'] or 0
         sent = counts['sent'] or 0
         failed = counts['failed'] or 0
+        retryable = counts['retryable'] or 0
         progress = round((sent + failed) / total * 100) if total else 0
 
         return jsonify({
@@ -798,6 +983,7 @@ def get_send_status(campaign_id):
             'total_recipients': total,
             'sent': sent,
             'failed': failed,
+            'remaining': retryable,
             'progress': progress
         })
 
@@ -876,7 +1062,7 @@ def get_email_stats():
         cursor.execute("SELECT COUNT(*) as count FROM email_campaigns WHERE status = 'sent'")
         total_campaigns = cursor.fetchone()['count']
 
-        cursor.execute("SELECT COUNT(*) as count FROM email_logs WHERE status = 'sent'")
+        cursor.execute("SELECT COUNT(*) as count FROM email_campaign_recipients WHERE status = 'sent'")
         total_sent = cursor.fetchone()['count']
 
         cursor.execute("SELECT COUNT(*) as count FROM email_logs WHERE status = 'opened'")
@@ -888,10 +1074,20 @@ def get_email_stats():
         open_rate = round((total_opened / total_sent * 100), 1) if total_sent > 0 else 0
 
         cursor.execute("""
-            SELECT ec.id, ec.name, ec.status, ec.sent_at, ec.total_recipients, ec.total_sent,
+            SELECT ec.id, ec.name, ec.status, ec.sent_at,
+                   COALESCE(rc.total_recipients, ec.total_recipients, 0) as total_recipients,
+                   COALESCE(rc.total_sent, ec.total_sent, 0) as total_sent,
                    et.type as template_type
             FROM email_campaigns ec
             LEFT JOIN campaign_templates et ON ec.template_id = et.id
+            LEFT JOIN (
+                SELECT
+                    campaign_id,
+                    COUNT(*) as total_recipients,
+                    COUNT(*) FILTER (WHERE status = 'sent') as total_sent
+                FROM email_campaign_recipients
+                GROUP BY campaign_id
+            ) rc ON rc.campaign_id = ec.id
             ORDER BY ec.created_at DESC
             LIMIT 10
         """)
