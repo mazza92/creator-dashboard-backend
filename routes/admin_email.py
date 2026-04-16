@@ -13,6 +13,7 @@ import os
 import json
 import smtplib
 import time
+import threading
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -515,10 +516,101 @@ def get_campaign(campaign_id):
         return jsonify({'error': str(e)}), 500
 
 
+def _send_emails_background(campaign_id, recipients, subject, html_content):
+    """Background thread function to send emails with rate limiting"""
+    print(f"[Background] Starting to send {len(recipients)} emails for campaign {campaign_id}")
+
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+    sent_count = 0
+    failed_count = 0
+
+    BATCH_SIZE = 25
+    DELAY_BETWEEN_EMAILS = 0.8
+
+    try:
+        for i, recipient in enumerate(recipients):
+            try:
+                personalized_subject = personalize_text(subject, recipient)
+                personalized_content = personalize_text(html_content, recipient)
+
+                success = send_email_gmail(
+                    to_email=recipient['email'],
+                    subject=personalized_subject,
+                    html_content=personalized_content
+                )
+
+                status = 'sent' if success else 'failed'
+
+                cursor.execute("""
+                    INSERT INTO email_logs (campaign_id, user_id, creator_id, email, status, sent_at)
+                    VALUES (%s, %s, %s, %s, %s, NOW())
+                """, (campaign_id, recipient['user_id'], recipient['creator_id'], recipient['email'], status))
+
+                if success:
+                    sent_count += 1
+                else:
+                    failed_count += 1
+                    print(f"[Background] Failed to send to {recipient['email']}")
+
+                # Commit progress in batches
+                if (i + 1) % BATCH_SIZE == 0:
+                    cursor.execute("""
+                        UPDATE email_campaigns SET total_sent = %s WHERE id = %s
+                    """, (sent_count, campaign_id))
+                    conn.commit()
+                    print(f"[Background] Progress: {i + 1}/{len(recipients)} sent, {sent_count} successful")
+
+                # Rate limiting delay (skip after last email)
+                if i < len(recipients) - 1:
+                    time.sleep(DELAY_BETWEEN_EMAILS)
+
+            except Exception as e:
+                print(f"[Background] Error sending to {recipient['email']}: {str(e)}")
+                try:
+                    cursor.execute("""
+                        INSERT INTO email_logs (campaign_id, user_id, creator_id, email, status, error_message)
+                        VALUES (%s, %s, %s, %s, 'failed', %s)
+                    """, (campaign_id, recipient['user_id'], recipient['creator_id'], recipient['email'], str(e)))
+                    conn.commit()
+                except Exception:
+                    pass
+                failed_count += 1
+
+        # Mark campaign as fully sent
+        cursor.execute("""
+            UPDATE email_campaigns
+            SET status = 'sent', sent_at = NOW(), total_sent = %s
+            WHERE id = %s
+        """, (sent_count, campaign_id))
+        conn.commit()
+        print(f"[Background] Campaign {campaign_id} complete: {sent_count} sent, {failed_count} failed")
+
+    except Exception as e:
+        # Unexpected crash — mark campaign as failed so it doesn't stay stuck as 'sending'
+        print(f"[Background] FATAL error for campaign {campaign_id}: {str(e)}")
+        try:
+            cursor.execute("""
+                UPDATE email_campaigns
+                SET status = 'failed', total_sent = %s
+                WHERE id = %s
+            """, (sent_count, campaign_id))
+            conn.commit()
+        except Exception:
+            pass
+
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 @admin_email_bp.route('/campaigns/<int:campaign_id>/send', methods=['POST'])
 @admin_required
 def send_campaign(campaign_id):
-    """Send campaign to all users in segment via Gmail SMTP"""
+    """Send campaign to all users in segment via Gmail SMTP (async)"""
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -537,8 +629,10 @@ def send_campaign(campaign_id):
             conn.close()
             return jsonify({'error': 'Campaign not found'}), 404
 
-        # Allow re-sending to catch users who weren't sent to (due to rate limits, errors, etc.)
-        # The deduplication logic below will skip users who already received this campaign
+        # Check if already sending
+        if campaign['status'] == 'sending':
+            conn.close()
+            return jsonify({'error': 'Campaign is already being sent'}), 400
 
         # Get recipients
         segment_id = campaign['segment_type']
@@ -583,7 +677,7 @@ def send_campaign(campaign_id):
         cursor.execute(recipient_query)
         all_recipients = cursor.fetchall()
 
-        # Exclude users who already received this campaign (for retry/resume)
+        # Exclude users who already received this campaign
         cursor.execute("""
             SELECT email FROM email_logs
             WHERE campaign_id = %s AND status = 'sent'
@@ -592,10 +686,16 @@ def send_campaign(campaign_id):
 
         recipients = [r for r in all_recipients if r['email'] not in already_sent]
 
-        if already_sent:
-            print(f"Skipping {len(already_sent)} users who already received this campaign")
+        if not recipients:
+            conn.close()
+            return jsonify({
+                'message': 'No new recipients to send to',
+                'sent': 0,
+                'failed': 0,
+                'already_sent': len(already_sent)
+            })
 
-        # Update status
+        # Update status to sending
         cursor.execute("""
             UPDATE email_campaigns
             SET status = 'sending', total_recipients = %s
@@ -610,75 +710,68 @@ def send_campaign(campaign_id):
             conn.close()
             return jsonify({'error': 'Campaign has no email content'}), 400
 
-        sent_count = 0
-        failed_count = 0
-
-        # Send emails via Gmail with rate limiting to avoid throttling
-        # Gmail allows ~100 emails/minute, so we add a small delay
-        BATCH_SIZE = 25  # Commit every 25 emails
-        DELAY_BETWEEN_EMAILS = 0.8  # 0.8 seconds between emails (~75/min to be safe)
-
-        for i, recipient in enumerate(recipients):
-            try:
-                personalized_subject = personalize_text(subject, recipient)
-                personalized_content = personalize_text(html_content, recipient)
-
-                # Send email
-                success = send_email_gmail(
-                    to_email=recipient['email'],
-                    subject=personalized_subject,
-                    html_content=personalized_content
-                )
-
-                status = 'sent' if success else 'failed'
-
-                cursor.execute("""
-                    INSERT INTO email_logs (campaign_id, user_id, creator_id, email, status, sent_at)
-                    VALUES (%s, %s, %s, %s, %s, NOW())
-                """, (campaign_id, recipient['user_id'], recipient['creator_id'], recipient['email'], status))
-
-                if success:
-                    sent_count += 1
-                else:
-                    failed_count += 1
-                    print(f"Failed to send to {recipient['email']}")
-
-                # Commit in batches to avoid losing progress
-                if (i + 1) % BATCH_SIZE == 0:
-                    cursor.execute("""
-                        UPDATE email_campaigns SET total_sent = %s WHERE id = %s
-                    """, (sent_count, campaign_id))
-                    conn.commit()
-                    print(f"Progress: {i + 1}/{len(recipients)} sent, {sent_count} successful")
-
-                # Rate limiting delay (skip for last email)
-                if i < len(recipients) - 1:
-                    time.sleep(DELAY_BETWEEN_EMAILS)
-
-            except Exception as e:
-                print(f"Error sending to {recipient['email']}: {str(e)}")
-                cursor.execute("""
-                    INSERT INTO email_logs (campaign_id, user_id, creator_id, email, status, error_message)
-                    VALUES (%s, %s, %s, %s, 'failed', %s)
-                """, (campaign_id, recipient['user_id'], recipient['creator_id'], recipient['email'], str(e)))
-                failed_count += 1
-                conn.commit()  # Commit after error to not lose progress
-
-        # Mark as sent
-        cursor.execute("""
-            UPDATE email_campaigns
-            SET status = 'sent', sent_at = NOW(), total_sent = %s
-            WHERE id = %s
-        """, (sent_count, campaign_id))
-
-        conn.commit()
         conn.close()
 
+        # Start background thread to send emails
+        thread = threading.Thread(
+            target=_send_emails_background,
+            args=(campaign_id, recipients, subject, html_content)
+        )
+        thread.daemon = True
+        thread.start()
+
+        # Return immediately — emails are being sent in the background thread
         return jsonify({
-            'message': 'Campaign sent',
-            'total_recipients': len(recipients),
-            'sent': sent_count,
-            'failed': failed_count
+            'message': f'Sending started for {len(recipients)} recipients',
+            'sending': len(recipients),
+            'already_sent': len(already_sent),
+            'status': 'sending'
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@admin_email_bp.route('/campaigns/<int:campaign_id>/send-status', methods=['GET'])
+@admin_required
+def get_send_status(campaign_id):
+    """Poll live sending progress for a campaign"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            SELECT status, total_recipients, total_sent
+            FROM email_campaigns
+            WHERE id = %s
+        """, (campaign_id,))
+        campaign = cursor.fetchone()
+
+        if not campaign:
+            conn.close()
+            return jsonify({'error': 'Campaign not found'}), 404
+
+        cursor.execute("""
+            SELECT
+                COUNT(*) FILTER (WHERE status = 'sent')   AS sent,
+                COUNT(*) FILTER (WHERE status = 'failed') AS failed
+            FROM email_logs
+            WHERE campaign_id = %s
+        """, (campaign_id,))
+        counts = cursor.fetchone()
+        conn.close()
+
+        total = campaign['total_recipients'] or 0
+        sent = counts['sent'] or 0
+        failed = counts['failed'] or 0
+        progress = round((sent + failed) / total * 100) if total else 0
+
+        return jsonify({
+            'status': campaign['status'],
+            'total_recipients': total,
+            'sent': sent,
+            'failed': failed,
+            'progress': progress
         })
 
     except Exception as e:
