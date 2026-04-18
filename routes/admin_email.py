@@ -32,7 +32,7 @@ def get_db_connection():
 
 MAX_SEND_ATTEMPTS = 3
 STUCK_SENDING_TIMEOUT_MINUTES = 5  # Recipients stuck in 'sending' for this long are recovered
-CRON_BATCH_SIZE = 50  # How many emails to send per cron invocation
+CRON_BATCH_SIZE = 25  # How many emails to send per cron invocation (~20s at 0.8s/email)
 
 
 admin_email_bp = Blueprint('admin_email', __name__, url_prefix='/api/admin/email')

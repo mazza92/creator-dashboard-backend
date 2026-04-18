@@ -39,7 +39,7 @@ def check_subscription_limits(creator_id, action_type):
     cursor = conn.cursor(cursor_factory=RealDictCursor)
 
     cursor.execute('''
-        SELECT subscription_tier, brands_saved_count, pitches_sent_this_month
+        SELECT subscription_tier, brands_saved_count, pitches_sent_this_week
         FROM creators
         WHERE id = %s
     ''', (creator_id,))
@@ -52,35 +52,23 @@ def check_subscription_limits(creator_id, action_type):
 
     tier = creator['subscription_tier'] or 'free'
 
-    # NEW LIMITS STRUCTURE - Taste of success model with 5 free contacts
-    FREE_CONTACT_LIMIT = 10  # Free users get 10 brand contacts
-    PRO_CONTACT_LIMIT = 20  # Pro: 20 brand contacts per month
-    # Elite: unlimited
+    # Weekly limits - 3 free pitches per week for free tier
+    FREE_WEEKLY_LIMIT = 3  # Free users get 3 brand contacts per week
+    # Pro/Elite: unlimited
 
     if tier == 'free':
         # UNLIMITED: Save/browse brands - let free users explore everything
         if action_type == 'save_brand':
             return True, "", 0, -1  # Unlimited saves for free tier
 
-        # UPDATED: Free tier gets 5 free pitches to taste success
+        # Free tier gets 3 pitches per week
         if action_type == 'send_pitch':
-            count = creator['pitches_sent_this_month'] or 0
-            if count >= FREE_CONTACT_LIMIT:
-                return False, f"Free tier limit reached: {FREE_CONTACT_LIMIT} brand contacts used. Upgrade to Pro for 20 contacts/month + pitch templates.", count, FREE_CONTACT_LIMIT
-            return True, "", count, FREE_CONTACT_LIMIT
+            count = creator['pitches_sent_this_week'] or 0
+            if count >= FREE_WEEKLY_LIMIT:
+                return False, f"You've used all {FREE_WEEKLY_LIMIT} free pitches this week. Upgrade to Pro for unlimited pitches!", count, FREE_WEEKLY_LIMIT
+            return True, "", count, FREE_WEEKLY_LIMIT
 
-    elif tier == 'pro':
-        # Pro tier: Unlimited saves, limited pitches
-        if action_type == 'save_brand':
-            return True, "", 0, -1
-
-        if action_type == 'send_pitch':
-            count = creator['pitches_sent_this_month'] or 0
-            if count >= PRO_CONTACT_LIMIT:
-                return False, f"Pro tier limit reached: {PRO_CONTACT_LIMIT} pitches per month. Upgrade to Elite for unlimited.", count, PRO_CONTACT_LIMIT
-            return True, "", count, PRO_CONTACT_LIMIT
-
-    # Elite: unlimited everything
+    # Pro and Elite: unlimited everything
     return True, "", 0, -1  # -1 means unlimited
 
 @subscription_bp.route('/check-limits', methods=['POST'])
