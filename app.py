@@ -447,14 +447,8 @@ def favicon(ext):
     return jsonify({"error": "Favicon not found"}), 404
 
 
-# Stripe Configuration
-# Server-side Stripe calls must always use a secret key (starts with sk_)
-_stripe_key = os.getenv('STRIPE_SECRET_KEY') or os.getenv('STRIPE_API_KEY') or ''
-if _stripe_key.startswith('pk_'):
-    print(f"⚠️  WARNING: STRIPE_SECRET_KEY is a publishable key (pk_). Server-side calls will fail!")
-    print(f"⚠️  Please set STRIPE_SECRET_KEY to your secret key (sk_live_... or sk_test_...)")
-stripe.api_key = _stripe_key if _stripe_key.startswith('sk_') else None
-print(f"[Stripe] API key configured: {(_stripe_key[:12] + '...') if _stripe_key else 'NOT SET'}")
+# Stripe Configuration - must use secret key (sk_), not publishable key (pk_)
+stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
 
 # PayPal Configuration
 #paypalrestsdk.configure({
