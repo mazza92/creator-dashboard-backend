@@ -13,6 +13,8 @@ subscription_bp = Blueprint('subscription', __name__, url_prefix='/api/subscript
 
 # Stripe configuration
 stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
+_stripe_key_preview = (stripe.api_key or '')[:10] + '...' if stripe.api_key else 'NOT SET'
+print(f"[Stripe] API key prefix: {_stripe_key_preview}")
 
 def get_db_connection():
     """Get database connection"""
