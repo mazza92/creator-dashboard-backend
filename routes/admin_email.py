@@ -1522,3 +1522,413 @@ def send_email_gmail(to_email, subject, html_content):
         import traceback
         traceback.print_exc()
         return False
+
+
+# ============================================================================
+# BRAND OUTREACH ENDPOINTS (for brand-acquisition agent)
+# ============================================================================
+
+@admin_email_bp.route('/brands-for-outreach', methods=['GET'])
+@admin_required
+def get_brands_for_outreach():
+    """
+    Get brands that can be contacted for outreach
+
+    Query Params:
+        has_email: Filter to only brands with contact_email (default true)
+        category: Filter by category
+        not_contacted: Only brands we haven't emailed yet (default false)
+        limit: Max results (default 100)
+        offset: Pagination offset (default 0)
+    """
+    try:
+        has_email = request.args.get('has_email', 'true').lower() == 'true'
+        category = request.args.get('category')
+        not_contacted = request.args.get('not_contacted', 'false').lower() == 'true'
+        limit = min(int(request.args.get('limit', 100)), 500)
+        offset = int(request.args.get('offset', 0))
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        query = """
+            SELECT
+                b.id, b.brand_name, b.slug, b.website, b.logo_url,
+                b.contact_email, b.description, b.category, b.niches,
+                b.instagram_handle, b.tiktok_handle,
+                b.application_form_url, b.has_application_form,
+                b.created_at,
+                COALESCE(bo.outreach_count, 0) as times_contacted,
+                bo.last_contacted_at,
+                bo.last_response_status
+            FROM pr_brands b
+            LEFT JOIN brand_outreach_tracking bo ON b.id = bo.brand_id
+            WHERE COALESCE(b.status, 'published') = 'published'
+        """
+        params = []
+
+        if has_email:
+            query += " AND b.contact_email IS NOT NULL AND b.contact_email != ''"
+
+        if category:
+            query += " AND b.category = %s"
+            params.append(category)
+
+        if not_contacted:
+            query += " AND bo.brand_id IS NULL"
+
+        query += " ORDER BY b.created_at DESC LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+
+        cursor.execute(query, params)
+        brands = cursor.fetchall()
+
+        # Get total count
+        count_query = """
+            SELECT COUNT(*) as total FROM pr_brands b
+            LEFT JOIN brand_outreach_tracking bo ON b.id = bo.brand_id
+            WHERE COALESCE(b.status, 'published') = 'published'
+        """
+        if has_email:
+            count_query += " AND b.contact_email IS NOT NULL AND b.contact_email != ''"
+
+        cursor.execute(count_query)
+        total = cursor.fetchone()['total']
+
+        conn.close()
+
+        return jsonify({
+            'brands': brands,
+            'total': total,
+            'limit': limit,
+            'offset': offset
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@admin_email_bp.route('/brand-outreach/send', methods=['POST'])
+@admin_required
+def send_brand_outreach():
+    """
+    Send a single outreach email to a brand
+
+    Body:
+        brand_id: ID of the brand to contact
+        subject: Email subject line
+        html_content: HTML email body
+        template_id: (optional) Use a saved template instead
+    """
+    try:
+        data = request.get_json()
+        brand_id = data.get('brand_id')
+        subject = data.get('subject')
+        html_content = data.get('html_content')
+        template_id = data.get('template_id')
+
+        if not brand_id:
+            return jsonify({'error': 'brand_id is required'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get brand details
+        cursor.execute("""
+            SELECT id, brand_name, contact_email, website, category, description
+            FROM pr_brands WHERE id = %s
+        """, (brand_id,))
+        brand = cursor.fetchone()
+
+        if not brand:
+            conn.close()
+            return jsonify({'error': 'Brand not found'}), 404
+
+        if not brand.get('contact_email'):
+            conn.close()
+            return jsonify({'error': 'Brand has no contact email'}), 400
+
+        # Get template if specified
+        if template_id and not html_content:
+            cursor.execute("""
+                SELECT subject, html_content FROM campaign_templates WHERE id = %s
+            """, (template_id,))
+            template = cursor.fetchone()
+            if template:
+                subject = subject or template['subject']
+                html_content = template['html_content']
+
+        if not subject or not html_content:
+            conn.close()
+            return jsonify({'error': 'subject and html_content are required'}), 400
+
+        # Personalize content with brand data
+        personalized_content = html_content.replace('{{brand_name}}', brand['brand_name'] or '')
+        personalized_content = personalized_content.replace('{{website}}', brand['website'] or '')
+        personalized_content = personalized_content.replace('{{category}}', brand['category'] or '')
+
+        personalized_subject = subject.replace('{{brand_name}}', brand['brand_name'] or '')
+
+        # Send the email
+        success = send_email_gmail(brand['contact_email'], personalized_subject, personalized_content)
+
+        if success:
+            # Track the outreach
+            cursor.execute("""
+                INSERT INTO brand_outreach_tracking (brand_id, outreach_count, last_contacted_at, last_subject)
+                VALUES (%s, 1, NOW(), %s)
+                ON CONFLICT (brand_id) DO UPDATE SET
+                    outreach_count = brand_outreach_tracking.outreach_count + 1,
+                    last_contacted_at = NOW(),
+                    last_subject = EXCLUDED.last_subject
+            """, (brand_id, personalized_subject))
+
+            # Log the email
+            cursor.execute("""
+                INSERT INTO brand_outreach_log (brand_id, email_sent_to, subject, status, sent_at)
+                VALUES (%s, %s, %s, 'sent', NOW())
+            """, (brand_id, brand['contact_email'], personalized_subject))
+
+            conn.commit()
+            conn.close()
+
+            return jsonify({
+                'success': True,
+                'message': f"Email sent to {brand['brand_name']} at {brand['contact_email']}",
+                'brand_id': brand_id,
+                'email': brand['contact_email']
+            })
+        else:
+            conn.close()
+            return jsonify({'error': 'Failed to send email'}), 500
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@admin_email_bp.route('/brand-outreach/bulk', methods=['POST'])
+@admin_required
+def send_bulk_brand_outreach():
+    """
+    Send outreach emails to multiple brands
+
+    Body:
+        brand_ids: List of brand IDs to contact
+        subject: Email subject line (supports {{brand_name}})
+        html_content: HTML email body (supports {{brand_name}}, {{website}}, {{category}})
+        delay_seconds: Delay between emails (default 1)
+    """
+    try:
+        data = request.get_json()
+        brand_ids = data.get('brand_ids', [])
+        subject = data.get('subject')
+        html_content = data.get('html_content')
+        delay_seconds = float(data.get('delay_seconds', 1))
+
+        if not brand_ids:
+            return jsonify({'error': 'brand_ids list is required'}), 400
+        if not subject or not html_content:
+            return jsonify({'error': 'subject and html_content are required'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get all brands
+        cursor.execute("""
+            SELECT id, brand_name, contact_email, website, category
+            FROM pr_brands
+            WHERE id = ANY(%s) AND contact_email IS NOT NULL AND contact_email != ''
+        """, (brand_ids,))
+        brands = cursor.fetchall()
+
+        results = {
+            'sent': [],
+            'failed': [],
+            'skipped': []
+        }
+
+        for brand in brands:
+            # Personalize
+            personalized_content = html_content.replace('{{brand_name}}', brand['brand_name'] or '')
+            personalized_content = personalized_content.replace('{{website}}', brand['website'] or '')
+            personalized_content = personalized_content.replace('{{category}}', brand['category'] or '')
+            personalized_subject = subject.replace('{{brand_name}}', brand['brand_name'] or '')
+
+            success = send_email_gmail(brand['contact_email'], personalized_subject, personalized_content)
+
+            if success:
+                cursor.execute("""
+                    INSERT INTO brand_outreach_tracking (brand_id, outreach_count, last_contacted_at, last_subject)
+                    VALUES (%s, 1, NOW(), %s)
+                    ON CONFLICT (brand_id) DO UPDATE SET
+                        outreach_count = brand_outreach_tracking.outreach_count + 1,
+                        last_contacted_at = NOW(),
+                        last_subject = EXCLUDED.last_subject
+                """, (brand['id'], personalized_subject))
+
+                cursor.execute("""
+                    INSERT INTO brand_outreach_log (brand_id, email_sent_to, subject, status, sent_at)
+                    VALUES (%s, %s, %s, 'sent', NOW())
+                """, (brand['id'], brand['contact_email'], personalized_subject))
+
+                results['sent'].append({
+                    'brand_id': brand['id'],
+                    'brand_name': brand['brand_name'],
+                    'email': brand['contact_email']
+                })
+            else:
+                results['failed'].append({
+                    'brand_id': brand['id'],
+                    'brand_name': brand['brand_name'],
+                    'email': brand['contact_email']
+                })
+
+            time.sleep(delay_seconds)
+
+        # Mark skipped (no email)
+        sent_ids = [b['id'] for b in brands]
+        for bid in brand_ids:
+            if bid not in sent_ids:
+                results['skipped'].append({'brand_id': bid, 'reason': 'No contact email'})
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'total_requested': len(brand_ids),
+            'total_sent': len(results['sent']),
+            'total_failed': len(results['failed']),
+            'total_skipped': len(results['skipped']),
+            'results': results
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@admin_email_bp.route('/brand-outreach/stats', methods=['GET'])
+@admin_required
+def get_brand_outreach_stats():
+    """Get statistics on brand outreach efforts"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Overall stats
+        cursor.execute("""
+            SELECT
+                COUNT(DISTINCT brand_id) as brands_contacted,
+                SUM(outreach_count) as total_emails_sent,
+                COUNT(*) FILTER (WHERE last_response_status = 'replied') as total_replies,
+                COUNT(*) FILTER (WHERE last_response_status = 'signed_up') as total_signups
+            FROM brand_outreach_tracking
+        """)
+        stats = cursor.fetchone()
+
+        # Recent outreach
+        cursor.execute("""
+            SELECT
+                b.brand_name, b.category, bo.last_contacted_at, bo.outreach_count, bo.last_response_status
+            FROM brand_outreach_tracking bo
+            JOIN pr_brands b ON bo.brand_id = b.id
+            ORDER BY bo.last_contacted_at DESC
+            LIMIT 20
+        """)
+        recent = cursor.fetchall()
+
+        # Brands with contact email but not contacted
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM pr_brands b
+            LEFT JOIN brand_outreach_tracking bo ON b.id = bo.brand_id
+            WHERE b.contact_email IS NOT NULL AND b.contact_email != ''
+            AND bo.brand_id IS NULL
+            AND COALESCE(b.status, 'published') = 'published'
+        """)
+        not_contacted = cursor.fetchone()['count']
+
+        conn.close()
+
+        return jsonify({
+            'brands_contacted': stats['brands_contacted'] or 0,
+            'total_emails_sent': stats['total_emails_sent'] or 0,
+            'total_replies': stats['total_replies'] or 0,
+            'total_signups': stats['total_signups'] or 0,
+            'brands_not_contacted': not_contacted,
+            'recent_outreach': recent
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@admin_email_bp.route('/brand-outreach/templates', methods=['GET'])
+@admin_required
+def get_brand_outreach_templates():
+    """Get email templates for brand outreach"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            SELECT id, name, type, subject, html_content, variables, created_at
+            FROM campaign_templates
+            WHERE type = 'brand_outreach' AND is_active = true
+            ORDER BY name
+        """)
+        templates = cursor.fetchall()
+        conn.close()
+
+        return jsonify({'templates': templates})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@admin_email_bp.route('/brand-outreach/log-response', methods=['POST'])
+@admin_required
+def log_brand_response():
+    """
+    Log a response from a brand
+
+    Body:
+        brand_id: ID of the brand
+        response_status: 'replied', 'interested', 'not_interested', 'signed_up'
+        notes: Optional notes about the response
+    """
+    try:
+        data = request.get_json()
+        brand_id = data.get('brand_id')
+        response_status = data.get('response_status')
+        notes = data.get('notes', '')
+
+        if not brand_id or not response_status:
+            return jsonify({'error': 'brand_id and response_status are required'}), 400
+
+        valid_statuses = ['replied', 'interested', 'not_interested', 'signed_up']
+        if response_status not in valid_statuses:
+            return jsonify({'error': f'response_status must be one of: {valid_statuses}'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            UPDATE brand_outreach_tracking
+            SET last_response_status = %s, response_notes = %s, last_response_at = NOW()
+            WHERE brand_id = %s
+        """, (response_status, notes, brand_id))
+
+        if cursor.rowcount == 0:
+            conn.close()
+            return jsonify({'error': 'No outreach record found for this brand'}), 404
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'message': f'Response logged: {response_status}'
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
