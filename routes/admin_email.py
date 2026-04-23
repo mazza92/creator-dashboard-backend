@@ -20,6 +20,17 @@ from email.mime.multipart import MIMEMultipart
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import psycopg2
+from services.outreach_image_gen import (
+    generate_ugc_image,
+    get_showcase_creators,
+    init as init_outreach_image_gen,
+)
+# Initialise schema + seed on first import (idempotent)
+try:
+    init_outreach_image_gen()
+except Exception as _e:
+    import logging as _logging
+    _logging.getLogger(__name__).warning(f"outreach_image_gen init: {_e}")
 
 # Gmail SMTP Configuration (uses existing env vars)
 GMAIL_USER = os.getenv('SMTP_USERNAME', 'team@newcollab.co')
@@ -1946,6 +1957,404 @@ def get_brand_outreach_stats():
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+def _build_ugc_email_html(brand_name: str, vertical: str, creators: list,
+                          hero_image_url: str | None, niches: list = None,
+                          description: str = "") -> str:
+    """
+    Build the full UGC outreach email HTML.
+    Reference design: creator-holding-product hero image + 3 creator cards + CTA.
+    """
+    vertical_label = (vertical or "lifestyle").capitalize()
+
+    # Caption derived from vertical tone
+    captions = {
+        "beauty": "Using only this for my morning routine 🌸 Full review in stories.",
+        "skincare": "My skin has never looked better 💧 Full routine breakdown coming.",
+        "haircare": "Finally found my HG hair product ✨ Tutorial dropping this week.",
+        "makeup": "GRWM using this only — the results spoke for themselves 💄",
+        "fitness": "Pre-workout game changer 🔥 Full review + discount in bio.",
+        "activewear": "Wearing this to every single workout now 💪 Link in bio.",
+        "fashion": "This is my new everyday favourite. Styling inspo coming soon.",
+        "food": "Changed my entire morning ritual ☀️ Recipe and review on stories.",
+        "wellness": "Obsessed with my new wellness routine 🌿 Everything linked in bio.",
+        "supplements": "30-day results update 💪 Honest stack review in bio.",
+        "pet": "Biscuit gives this 5/5 paws 🐾 Full honest review linked in bio.",
+        "home": "Before vs after was insane ✨ Walkthrough video coming this week.",
+        "tech": "Changed how I work from home forever. Review on my channel.",
+        "gaming": "Upgraded my setup and cannot go back 🎮 Full review dropping soon.",
+        "travel": "This carried me through 14 countries ✈️ Packing guide in stories.",
+        "luxury": "Worth every single penny 💎 Unboxing + review now live.",
+        "sustainable": "The sustainable swap I've been looking for 🌱 Review in bio.",
+        "baby": "Mum-approved and toddler-tested 👶 Honest review in stories.",
+        "jewelry": "Wearing this every single day now 🌟 Full haul coming soon.",
+    }
+    caption = captions.get((vertical or "").lower(), "This is my new favourite find. Review coming soon ✨")
+
+    hero_section = ""
+    if hero_image_url:
+        hero_section = f"""
+                    <!-- Hero UGC post mockup -->
+                    <tr>
+                        <td style="padding: 0 40px 28px;">
+                            <table width="100%" cellpadding="0" cellspacing="0"
+                                   style="border:1px solid #ebebeb; border-radius:12px; overflow:hidden;">
+                                <!-- post header -->
+                                <tr>
+                                    <td style="padding:12px 14px; background:#fff;">
+                                        <table cellpadding="0" cellspacing="0">
+                                            <tr>
+                                                <td>
+                                                    <div style="width:32px;height:32px;border-radius:50%;
+                                                                background:linear-gradient(135deg,#f09433,#e6683c,#dc2743,#cc2366,#bc1888);
+                                                                display:inline-block;"></div>
+                                                </td>
+                                                <td style="padding-left:8px;">
+                                                    <span style="font-family:Arial,sans-serif;font-size:13px;
+                                                                 font-weight:700;color:#111;">
+                                                        {creators[0]['handle'] if creators else '@newcollab_creator'}
+                                                    </span><br>
+                                                    <span style="font-family:Arial,sans-serif;font-size:11px;color:#888;">
+                                                        {creators[0].get('content_style','Content Creator') if creators else 'Content Creator'}
+                                                    </span>
+                                                </td>
+                                                <td style="padding-left:16px;">
+                                                    <span style="font-family:Arial,sans-serif;font-size:11px;
+                                                                 color:#fff;background:#0095f6;
+                                                                 padding:3px 8px;border-radius:4px;">Sponsored</span>
+                                                </td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                                <!-- hero image -->
+                                <tr>
+                                    <td style="padding:0;">
+                                        <img src="{hero_image_url}"
+                                             alt="UGC preview for {brand_name}"
+                                             width="100%"
+                                             style="display:block;width:100%;max-height:380px;object-fit:cover;"/>
+                                    </td>
+                                </tr>
+                                <!-- caption -->
+                                <tr>
+                                    <td style="padding:12px 14px 14px; background:#fff;">
+                                        <p style="font-family:Arial,sans-serif;font-size:13px;
+                                                  color:#111;margin:0 0 4px;">
+                                            <strong>{creators[0]['handle'] if creators else '@creator'}</strong>&nbsp;
+                                            {caption}
+                                        </p>
+                                        <p style="font-family:Arial,sans-serif;font-size:11px;
+                                                  color:#aaa;margin:0;">2 HOURS AGO</p>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>"""
+
+    # Build 3 creator style cards
+    creator_cards_html = ""
+    if creators:
+        cards = []
+        for c in creators[:3]:
+            cards.append(f"""
+                                <td style="width:33%;padding:0 6px;vertical-align:top;">
+                                    <table width="100%" cellpadding="0" cellspacing="0"
+                                           style="border:1px solid #ebebeb;border-radius:10px;overflow:hidden;">
+                                        <tr>
+                                            <td style="padding:10px 10px 6px;background:#f9f9f9;text-align:center;">
+                                                <span style="font-family:Arial,sans-serif;font-size:11px;
+                                                             color:#555;font-weight:600;">{c['handle']}</span>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <td style="padding:0;">
+                                                <img src="{hero_image_url or 'https://via.placeholder.com/200x200/f5f5f5/cccccc?text=UGC'}"
+                                                     width="100%"
+                                                     style="display:block;width:100%;height:140px;object-fit:cover;"/>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <td style="padding:8px 10px;background:#fff;text-align:center;">
+                                                <span style="font-family:Arial,sans-serif;font-size:10px;
+                                                             color:#888;text-transform:uppercase;
+                                                             letter-spacing:0.5px;">{c.get('content_style','UGC Content')}</span><br>
+                                                <span style="font-family:Arial,sans-serif;font-size:11px;
+                                                             color:#333;font-weight:600;">{c.get('follower_range','10K-50K')} followers</span>
+                                            </td>
+                                        </tr>
+                                    </table>
+                                </td>""")
+        creator_cards_html = f"""
+                    <tr>
+                        <td style="padding: 8px 40px 28px;">
+                            <p style="font-family:Arial,sans-serif;font-size:13px;
+                                      color:#888;text-transform:uppercase;letter-spacing:1px;
+                                      margin:0 0 12px;font-weight:600;">3 CONTENT STYLES READY FOR YOU</p>
+                            <table width="100%" cellpadding="0" cellspacing="0">
+                                <tr>{''.join(cards)}</tr>
+                            </table>
+                        </td>
+                    </tr>"""
+
+    niche_list = ""
+    if niches:
+        niche_list = f" ({', '.join(niches[:3])})"
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Free UGC Content for {brand_name}</title>
+</head>
+<body style="margin:0;padding:0;font-family:Arial,sans-serif;background-color:#f5f5f5;">
+<table width="100%" cellpadding="0" cellspacing="0"
+       style="background-color:#f5f5f5;padding:32px 20px;">
+    <tr>
+        <td align="center">
+            <table width="600" cellpadding="0" cellspacing="0"
+                   style="background:#fff;border-radius:14px;overflow:hidden;
+                          box-shadow:0 4px 20px rgba(0,0,0,0.08);max-width:600px;">
+
+                <!-- Top label -->
+                <tr>
+                    <td style="padding:20px 40px 0;">
+                        <p style="font-family:Arial,sans-serif;font-size:11px;font-weight:700;
+                                  color:#0095f6;letter-spacing:1px;text-transform:uppercase;
+                                  margin:0;">FREE UGC CONTENT FOR {brand_name.upper()}</p>
+                    </td>
+                </tr>
+
+                <!-- Headline -->
+                <tr>
+                    <td style="padding:10px 40px 20px;">
+                        <h1 style="font-family:Arial,sans-serif;font-size:24px;font-weight:800;
+                                   color:#111;margin:0;line-height:1.3;">
+                            3 creators on Newcollab are ready to make content with your products.
+                        </h1>
+                    </td>
+                </tr>
+
+                {hero_section}
+
+                <!-- AD-READY block -->
+                <tr>
+                    <td style="padding:0 40px 28px;">
+                        <table width="100%" cellpadding="0" cellspacing="0"
+                               style="background:linear-gradient(135deg,#667eea,#764ba2);
+                                      border-radius:10px;padding:20px 24px;">
+                            <tr>
+                                <td>
+                                    <p style="font-family:Arial,sans-serif;font-size:11px;font-weight:700;
+                                              color:rgba(255,255,255,0.85);letter-spacing:1px;
+                                              text-transform:uppercase;margin:0 0 6px;">AD-READY CONTENT</p>
+                                    <p style="font-family:Arial,sans-serif;font-size:14px;color:#fff;
+                                              margin:0 0 8px;line-height:1.5;">
+                                        Every post is made to convert. Real creators, real audiences, real results.
+                                        Drop these straight into your Meta or TikTok ad manager.
+                                    </p>
+                                    <p style="font-family:Arial,sans-serif;font-size:13px;
+                                              color:rgba(255,255,255,0.85);margin:0;">
+                                        UGC ads convert 4x better than brand-created content.
+                                        Average CPM is 50% lower.
+                                    </p>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+
+                {creator_cards_html}
+
+                <!-- Cost comparison -->
+                <tr>
+                    <td style="padding:0 40px 28px;">
+                        <table width="100%" cellpadding="0" cellspacing="0"
+                               style="border:1px solid #ebebeb;border-radius:10px;overflow:hidden;">
+                            <tr>
+                                <td style="padding:16px 20px;border-bottom:1px solid #f0f0f0;">
+                                    <p style="font-family:Arial,sans-serif;font-size:14px;font-weight:700;
+                                              color:#111;margin:0;">What this costs elsewhere:</p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="padding:12px 20px;border-bottom:1px solid #f0f0f0;">
+                                    <table width="100%" cellpadding="0" cellspacing="0">
+                                        <tr>
+                                            <td style="font-family:Arial,sans-serif;font-size:13px;color:#555;">
+                                                UGC agency (3 posts)
+                                            </td>
+                                            <td style="text-align:right;font-family:Arial,sans-serif;
+                                                       font-size:13px;color:#aaa;">
+                                                <s>$1,500 – $3,000</s>
+                                            </td>
+                                        </tr>
+                                    </table>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="padding:12px 20px;border-bottom:1px solid #f0f0f0;">
+                                    <table width="100%" cellpadding="0" cellspacing="0">
+                                        <tr>
+                                            <td style="font-family:Arial,sans-serif;font-size:13px;color:#555;">
+                                                Freelance creators (3 posts)
+                                            </td>
+                                            <td style="text-align:right;font-family:Arial,sans-serif;
+                                                       font-size:13px;color:#aaa;">
+                                                <s>$600 – $1,200</s>
+                                            </td>
+                                        </tr>
+                                    </table>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="padding:12px 20px;background:#f9fff9;">
+                                    <table width="100%" cellpadding="0" cellspacing="0">
+                                        <tr>
+                                            <td style="font-family:Arial,sans-serif;font-size:13px;
+                                                       font-weight:700;color:#111;">
+                                                Newcollab creators
+                                            </td>
+                                            <td style="text-align:right;font-family:Arial,sans-serif;
+                                                       font-size:13px;font-weight:700;color:#22c55e;">
+                                                Free (gifting only)
+                                            </td>
+                                        </tr>
+                                    </table>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+
+                <!-- CTA -->
+                <tr>
+                    <td style="padding:0 40px 36px;text-align:center;">
+                        <p style="font-family:Arial,sans-serif;font-size:15px;color:#333;margin:0 0 20px;">
+                            Creating a free Brand Account takes 2 minutes.
+                            Your next UGC post could be live within days.
+                        </p>
+                        <a href="https://app.newcollab.co/register"
+                           style="display:inline-block;
+                                  background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+                                  color:#fff;text-decoration:none;padding:16px 44px;
+                                  border-radius:10px;font-weight:700;font-size:15px;
+                                  font-family:Arial,sans-serif;">
+                            Claim Your Free Creators →
+                        </a>
+                    </td>
+                </tr>
+
+                <!-- Footer -->
+                <tr>
+                    <td style="background:#f8f9fa;padding:18px 40px;
+                               border-top:1px solid #eee;text-align:center;">
+                        <p style="font-family:Arial,sans-serif;font-size:12px;color:#999;margin:0 0 4px;">
+                            Newcollab · Connecting Brands with Creators ·
+                            <a href="https://newcollab.co" style="color:#667eea;">newcollab.co</a>
+                        </p>
+                        <p style="font-family:Arial,sans-serif;font-size:10px;color:#bbb;margin:0;">
+                            Illustrative preview — not an actual published post.
+                        </p>
+                    </td>
+                </tr>
+
+            </table>
+        </td>
+    </tr>
+</table>
+</body>
+</html>"""
+
+
+@admin_email_bp.route('/brand-outreach/render', methods=['POST'])
+@admin_required
+def render_brand_outreach():
+    """
+    Render a fully personalised UGC outreach email for a brand.
+
+    Body:
+        brand_id (int, required): the brand to render for
+        force_regen (bool, optional): bypass image cache and regenerate
+        style_preset (str, optional): override default style preset
+
+    Returns:
+        {subject, html_content, hero_image_url, creators, brand_name, vertical, cached}
+    """
+    try:
+        data = request.get_json() or {}
+        brand_id = data.get("brand_id")
+        force_regen = bool(data.get("force_regen", False))
+
+        if not brand_id:
+            return jsonify({"error": "brand_id is required"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("""
+            SELECT id, brand_name, category, description, contact_email,
+                   website, niches, logo
+            FROM pr_brands WHERE id = %s
+        """, (brand_id,))
+        brand = cursor.fetchone()
+        conn.close()
+
+        if not brand:
+            return jsonify({"error": "Brand not found"}), 404
+
+        brand_name = brand.get("brand_name") or brand.get("name") or "your brand"
+        vertical = (brand.get("category") or "lifestyle").lower().strip()
+
+        niches = brand.get("niches") or []
+        if isinstance(niches, str):
+            try:
+                niches = json.loads(niches)
+            except Exception:
+                niches = [niches]
+
+        description = brand.get("description") or ""
+
+        # 1. Get creators for this vertical
+        creators = get_showcase_creators(vertical, limit=3)
+
+        # 2. Generate (or fetch cached) UGC hero image
+        hero_image_url = generate_ugc_image(
+            brand_id=brand_id,
+            brand_name=brand_name,
+            vertical=vertical,
+            niches=niches,
+            description=description,
+            force=force_regen,
+        )
+        cached = not force_regen and hero_image_url is not None
+
+        # 3. Build email HTML
+        html_content = _build_ugc_email_html(
+            brand_name=brand_name,
+            vertical=vertical,
+            creators=creators,
+            hero_image_url=hero_image_url,
+            niches=niches,
+            description=description,
+        )
+
+        subject = f"Free UGC content for {brand_name} — 3 creators ready to post"
+
+        return jsonify({
+            "success": True,
+            "subject": subject,
+            "html_content": html_content,
+            "hero_image_url": hero_image_url,
+            "creators": creators,
+            "brand_name": brand_name,
+            "vertical": vertical,
+            "cached": cached,
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @admin_email_bp.route('/brand-outreach/templates', methods=['GET'])
