@@ -14,6 +14,7 @@ import json
 import smtplib
 import time
 import threading
+import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -1522,6 +1523,91 @@ def send_email_gmail(to_email, subject, html_content):
         import traceback
         traceback.print_exc()
         return False
+
+
+# Conservative validator to avoid obvious malformed addresses in bulk sends.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+@admin_email_bp.route('/send', methods=['POST'])
+@admin_required
+def send_admin_email():
+    """
+    Send a direct admin email to a custom recipient list.
+
+    Body:
+        to_emails: [required] list of recipient emails (max 500)
+        subject: [required] subject line
+        html_content: [required] HTML body
+        from_name: [optional] kept for forward compatibility
+    """
+    try:
+        data = request.get_json() or {}
+        to_emails = data.get('to_emails') or data.get('emails') or []
+        subject = (data.get('subject') or '').strip()
+        html_content = data.get('html_content') or data.get('html') or ''
+
+        if not isinstance(to_emails, list) or not to_emails:
+            return jsonify({'error': 'to_emails list is required'}), 400
+        if len(to_emails) > 500:
+            return jsonify({'error': 'Maximum 500 recipients per request'}), 400
+        if not subject:
+            return jsonify({'error': 'subject is required'}), 400
+        if not html_content:
+            return jsonify({'error': 'html_content is required'}), 400
+
+        # Normalize, deduplicate, and validate.
+        normalized = []
+        seen = set()
+        invalid = []
+        for email in to_emails:
+            e = str(email or '').strip().lower()
+            if not e:
+                continue
+            if e in seen:
+                continue
+            seen.add(e)
+            if not _EMAIL_RE.match(e):
+                invalid.append(e)
+                continue
+            normalized.append(e)
+
+        if invalid:
+            return jsonify({
+                'error': 'Invalid email(s) in recipient list',
+                'invalid': invalid[:25]
+            }), 400
+
+        if not normalized:
+            return jsonify({'error': 'No valid recipients provided'}), 400
+
+        sent = 0
+        failed = 0
+        failures = []
+
+        for email in normalized:
+            ok = send_email_gmail(email, subject, html_content)
+            if ok:
+                sent += 1
+            else:
+                failed += 1
+                failures.append(email)
+            # Keep behavior consistent with campaign throttling to avoid SMTP spikes.
+            time.sleep(0.8)
+
+        status_code = 200 if failed == 0 else 207
+        return jsonify({
+            'success': failed == 0,
+            'message': f'Sent {sent} emails, {failed} failed',
+            'sent': sent,
+            'failed': failed,
+            'total_requested': len(to_emails),
+            'total_valid': len(normalized),
+            'failed_emails': failures[:50]
+        }), status_code
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 # ============================================================================
