@@ -51,7 +51,8 @@ ALLOWED_BRAND_TEMPLATE_IDS = {8}
 DISALLOWED_BRAND_TEMPLATE_IDS = {6, 7}
 BLOCKED_OUTREACH_STATUSES = {
     'replied', 'interested', 'not_interested', 'signed_up',
-    'wrong_email', 'bounced', 'do_not_contact', 'unsubscribe'
+    'wrong_email', 'bounced', 'do_not_contact', 'unsubscribe',
+    'reply',  # inbox-sync simplified status (manual follow-up)
 }
 DEFAULT_FOLLOWUP_COOLDOWN_HOURS = 96  # 4 days between follow-ups unless overridden
 
@@ -1735,7 +1736,7 @@ def get_brands_for_outreach():
 
         if not_contacted:
             query += " AND (bo.brand_id IS NULL OR COALESCE(bo.last_response_status, '') = '')"
-            query += " AND COALESCE(bo.last_response_status, '') NOT IN ('replied','interested','not_interested','signed_up','wrong_email','bounced','do_not_contact','unsubscribe')"
+            query += " AND COALESCE(bo.last_response_status, '') NOT IN ('replied','interested','not_interested','signed_up','wrong_email','bounced','do_not_contact','unsubscribe','reply')"
 
         query += " ORDER BY b.created_at DESC LIMIT %s OFFSET %s"
         params.extend([limit, offset])
@@ -1753,7 +1754,7 @@ def get_brands_for_outreach():
             count_query += " AND b.contact_email IS NOT NULL AND b.contact_email != ''"
         if not_contacted:
             count_query += " AND (bo.brand_id IS NULL OR COALESCE(bo.last_response_status, '') = '')"
-            count_query += " AND COALESCE(bo.last_response_status, '') NOT IN ('replied','interested','not_interested','signed_up','wrong_email','bounced','do_not_contact','unsubscribe')"
+            count_query += " AND COALESCE(bo.last_response_status, '') NOT IN ('replied','interested','not_interested','signed_up','wrong_email','bounced','do_not_contact','unsubscribe','reply')"
 
         cursor.execute(count_query)
         total = cursor.fetchone()['total']
@@ -2534,6 +2535,7 @@ def log_brand_response():
         valid_statuses = [
             'replied', 'interested', 'not_interested', 'signed_up',
             'wrong_email', 'bounced', 'do_not_contact', 'unsubscribe',
+            'reply', 'auto_reply',
             'followup_due_day4', 'followup_due_day9', 'auto_replied', 'needs_review'
         ]
         if response_status not in valid_statuses:
@@ -2564,23 +2566,67 @@ def log_brand_response():
         return jsonify({'error': str(e)}), 500
 
 
+@admin_email_bp.route('/brand-outreach/inbox-log', methods=['GET'])
+@admin_required
+def get_brand_outreach_inbox_log():
+    """
+    Resolve inbound From addresses to brand_id using brand_outreach_log.email_sent_to
+    (latest send per normalized email). Query: emails=comma-separated list (max 200).
+    """
+    try:
+        raw = request.args.get('emails', '') or ''
+        parts = [p.strip().lower() for p in raw.split(',') if p.strip()]
+        if not parts:
+            return jsonify({'success': True, 'matches': {}})
+        if len(parts) > 200:
+            return jsonify({'error': 'Maximum 200 emails per request'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("""
+            SELECT DISTINCT ON (LOWER(TRIM(email_sent_to)))
+                LOWER(TRIM(email_sent_to)) AS email_norm,
+                brand_id,
+                sent_at
+            FROM brand_outreach_log
+            WHERE LOWER(TRIM(email_sent_to)) = ANY(%s)
+            ORDER BY LOWER(TRIM(email_sent_to)), sent_at DESC
+        """, (parts,))
+        rows = cursor.fetchall()
+        conn.close()
+
+        matches = {}
+        for row in rows:
+            sent_at = row.get('sent_at')
+            if sent_at is not None and hasattr(sent_at, 'isoformat'):
+                sent_at_s = sent_at.isoformat()
+            else:
+                sent_at_s = str(sent_at) if sent_at is not None else ''
+            matches[row['email_norm']] = {
+                'brand_id': row['brand_id'],
+                'sent_at': sent_at_s,
+            }
+        return jsonify({'success': True, 'matches': matches})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @admin_email_bp.route('/brand-outreach/inbox-sync', methods=['POST'])
 @admin_required
 def sync_brand_outreach_inbox_events():
     """
-    Ingest parsed inbox events (from IMAP worker/agent) and update outreach states.
+    Ingest parsed inbox events (from IMAP pull) and update outreach states.
 
     Body:
       events: [
         {
           "brand_id": 123,
-          "event_type": "bounce|reply|unsubscribe|wrong_contact",
-          "intent": "interested|not_interested|pricing_question|ambiguous|...",
-          "confidence": 0.0-1.0,
-          "action_taken": "auto_reply|draft|human_review|status_only",
+          "event_type": "bounce|auto_reply|reply",
           "summary": "short text"
         }
       ]
+
+    Maps: bounce -> wrong_email, auto_reply -> auto_reply, reply -> reply.
     """
     try:
         data = request.get_json() or {}
@@ -2604,36 +2650,20 @@ def sync_brand_outreach_inbox_events():
                 continue
 
             event_type = (ev.get('event_type') or '').strip().lower()
-            intent = (ev.get('intent') or '').strip().lower()
-            confidence = float(ev.get('confidence', 0.0) or 0.0)
-            action_taken = (ev.get('action_taken') or 'status_only').strip().lower()
             summary = (ev.get('summary') or '')[:500]
 
-            mapped_status = None
-            if event_type in ('bounce',):
-                mapped_status = 'bounced'
-            elif event_type in ('wrong_contact', 'wrong_email'):
+            if event_type == 'bounce':
                 mapped_status = 'wrong_email'
-            elif event_type in ('unsubscribe',):
-                mapped_status = 'do_not_contact'
-            elif event_type in ('reply',):
-                if intent == 'interested':
-                    mapped_status = 'interested'
-                elif intent == 'not_interested':
-                    mapped_status = 'not_interested'
-                elif action_taken == 'human_review' or confidence < 0.6:
-                    mapped_status = 'needs_review'
-                elif action_taken == 'auto_reply':
-                    mapped_status = 'auto_replied'
-                else:
-                    mapped_status = 'replied'
-
-            if not mapped_status:
+            elif event_type == 'auto_reply':
+                mapped_status = 'auto_reply'
+            elif event_type == 'reply':
+                mapped_status = 'reply'
+            else:
                 skipped += 1
                 results.append({'brand_id': brand_id, 'ok': False, 'reason': f'unmapped_event:{event_type}'})
                 continue
 
-            notes = f"inbox_sync event={event_type} intent={intent or 'n/a'} conf={confidence:.2f} action={action_taken}; {summary}"
+            notes = f"inbox_sync event={event_type}; {summary}"
             cursor.execute("""
                 INSERT INTO brand_outreach_tracking (brand_id, outreach_count, last_response_status, response_notes, last_response_at)
                 VALUES (%s, 0, %s, %s, NOW())
@@ -2682,7 +2712,7 @@ def get_followup_candidates():
               AND b.contact_email != ''
               AND bo.last_contacted_at <= NOW() - (%s * INTERVAL '1 day')
               AND COALESCE(bo.last_response_status, '') NOT IN
-                  ('replied','interested','not_interested','signed_up','wrong_email','bounced','do_not_contact','unsubscribe')
+                  ('replied','interested','not_interested','signed_up','wrong_email','bounced','do_not_contact','unsubscribe','reply','auto_reply')
             ORDER BY bo.last_contacted_at ASC
             LIMIT %s
         """, (day, limit))
