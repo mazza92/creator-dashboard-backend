@@ -53,6 +53,7 @@ BLOCKED_OUTREACH_STATUSES = {
     'replied', 'interested', 'not_interested', 'signed_up',
     'wrong_email', 'bounced', 'do_not_contact', 'unsubscribe'
 }
+DEFAULT_FOLLOWUP_COOLDOWN_HOURS = 96  # 4 days between follow-ups unless overridden
 
 
 admin_email_bp = Blueprint('admin_email', __name__, url_prefix='/api/admin/email')
@@ -102,6 +103,19 @@ def _enforce_template_allowlist(template_id: int):
 
 def _is_blocked_outreach_status(status: str) -> bool:
     return (status or '').strip().lower() in BLOCKED_OUTREACH_STATUSES
+
+
+def _has_recent_contact(last_contacted_at, min_hours: int = DEFAULT_FOLLOWUP_COOLDOWN_HOURS) -> bool:
+    if not last_contacted_at:
+        return False
+    try:
+        if isinstance(last_contacted_at, datetime):
+            delta = datetime.utcnow() - last_contacted_at.replace(tzinfo=None)
+        else:
+            return False
+        return delta < timedelta(hours=max(1, int(min_hours)))
+    except Exception:
+        return False
 
 
 # ============================================================================
@@ -1775,6 +1789,8 @@ def send_brand_outreach():
         subject = data.get('subject')
         html_content = data.get('html_content')
         template_id = data.get('template_id')
+        allow_followup = bool(data.get('allow_followup', False))
+        min_followup_hours = int(data.get('min_followup_hours', DEFAULT_FOLLOWUP_COOLDOWN_HOURS))
 
         if not brand_id:
             return jsonify({'error': 'brand_id is required'}), 400
@@ -1809,6 +1825,21 @@ def send_brand_outreach():
             return jsonify({
                 'error': f"Outreach blocked for status '{brand.get('last_response_status')}'",
                 'brand_id': brand_id
+            }), 409
+        if brand.get('last_contacted_at') and not allow_followup:
+            conn.close()
+            return jsonify({
+                'error': 'Duplicate outreach blocked: brand already contacted',
+                'brand_id': brand_id,
+                'last_contacted_at': str(brand.get('last_contacted_at')),
+                'hint': 'Pass allow_followup=true only for intentional day-4/day-9 sequences'
+            }), 409
+        if allow_followup and _has_recent_contact(brand.get('last_contacted_at'), min_hours=min_followup_hours):
+            conn.close()
+            return jsonify({
+                'error': f"Follow-up blocked by cooldown ({min_followup_hours}h)",
+                'brand_id': brand_id,
+                'last_contacted_at': str(brand.get('last_contacted_at'))
             }), 409
 
         # Get template if specified
@@ -1887,6 +1918,8 @@ def send_bulk_brand_outreach():
         subject = data.get('subject')
         html_content = data.get('html_content')
         delay_seconds = float(data.get('delay_seconds', 1))
+        allow_followup = bool(data.get('allow_followup', False))
+        min_followup_hours = int(data.get('min_followup_hours', DEFAULT_FOLLOWUP_COOLDOWN_HOURS))
 
         if not brand_ids:
             return jsonify({'error': 'brand_ids list is required'}), 400
@@ -1920,6 +1953,25 @@ def send_bulk_brand_outreach():
                 results['skipped'].append({
                     'brand_id': brand['id'],
                     'reason': f"blocked_status:{brand.get('last_response_status')}"
+                })
+                continue
+            # do not re-send by default once contacted
+            cursor.execute(
+                "SELECT last_contacted_at FROM brand_outreach_tracking WHERE brand_id=%s",
+                (brand['id'],)
+            )
+            trk = cursor.fetchone() or {}
+            last_contacted_at = trk.get('last_contacted_at')
+            if last_contacted_at and not allow_followup:
+                results['skipped'].append({
+                    'brand_id': brand['id'],
+                    'reason': 'already_contacted'
+                })
+                continue
+            if allow_followup and _has_recent_contact(last_contacted_at, min_hours=min_followup_hours):
+                results['skipped'].append({
+                    'brand_id': brand['id'],
+                    'reason': f'followup_cooldown_{min_followup_hours}h'
                 })
                 continue
             # Personalize
