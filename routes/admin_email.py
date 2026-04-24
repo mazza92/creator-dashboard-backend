@@ -19,6 +19,7 @@ import imaplib
 import email
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.utils import make_msgid
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import psycopg2
@@ -119,6 +120,21 @@ def _has_recent_contact(last_contacted_at, min_hours: int = DEFAULT_FOLLOWUP_COO
         return False
 
 
+def _ensure_brand_outreach_log_message_id_column(cursor) -> None:
+    """
+    Ensure brand_outreach_log has message_id for accurate bounce reconciliation.
+    Safe to call repeatedly.
+    """
+    cursor.execute("""
+        ALTER TABLE brand_outreach_log
+        ADD COLUMN IF NOT EXISTS message_id TEXT
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_brand_outreach_log_message_id
+        ON brand_outreach_log(message_id)
+    """)
+
+
 # ============================================================================
 # TEMPLATES ENDPOINTS
 # ============================================================================
@@ -130,6 +146,7 @@ def get_templates():
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
+        _ensure_brand_outreach_log_message_id_column(cursor)
 
         cursor.execute("""
             SELECT id, name, type, subject, preview_text, html_content, variables, is_active, created_at
@@ -1568,17 +1585,18 @@ def personalize_text(text, recipient):
     return text
 
 
-def send_email_gmail(to_email, subject, html_content):
-    """Send email via Gmail SMTP"""
+def send_email_gmail_with_meta(to_email, subject, html_content):
+    """Send email via Gmail SMTP and return transport metadata."""
     if not GMAIL_APP_PASSWORD:
         print(f"Warning: SMTP_PASSWORD not set. GMAIL_USER={GMAIL_USER}")
-        return False
+        return {"success": False, "error": "SMTP_PASSWORD not set", "message_id": None}
 
     try:
         msg = MIMEMultipart('alternative')
         msg['Subject'] = subject
         msg['From'] = f"Newcollab <{GMAIL_USER}>"
         msg['To'] = to_email
+        msg['Message-ID'] = make_msgid(domain=GMAIL_USER.split("@")[-1] if "@" in GMAIL_USER else None)
 
         html_part = MIMEText(html_content, 'html')
         msg.attach(html_part)
@@ -1590,13 +1608,18 @@ def send_email_gmail(to_email, subject, html_content):
             server.sendmail(GMAIL_USER, to_email, msg.as_string())
 
         print(f"Email sent successfully to {to_email}")
-        return True
+        return {"success": True, "message_id": msg.get("Message-ID")}
 
     except Exception as e:
         print(f"Email send error: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        return {"success": False, "error": str(e), "message_id": None}
+
+
+def send_email_gmail(to_email, subject, html_content):
+    """Backward-compatible bool wrapper."""
+    return bool(send_email_gmail_with_meta(to_email, subject, html_content).get("success"))
 
 
 # Conservative validator to avoid obvious malformed addresses in bulk sends.
@@ -1864,8 +1887,11 @@ def send_brand_outreach():
 
         personalized_subject = subject.replace('{{brand_name}}', brand['brand_name'] or '')
 
-        # Send the email
-        success = send_email_gmail(brand['contact_email'], personalized_subject, personalized_content)
+        # Ensure message_id logging support exists, then send.
+        _ensure_brand_outreach_log_message_id_column(cursor)
+        send_res = send_email_gmail_with_meta(brand['contact_email'], personalized_subject, personalized_content)
+        success = bool(send_res.get("success"))
+        sent_message_id = send_res.get("message_id")
 
         if success:
             # Track the outreach
@@ -1880,9 +1906,9 @@ def send_brand_outreach():
 
             # Log the email
             cursor.execute("""
-                INSERT INTO brand_outreach_log (brand_id, email_sent_to, subject, status, sent_at)
-                VALUES (%s, %s, %s, 'sent', NOW())
-            """, (brand_id, brand['contact_email'], personalized_subject))
+                INSERT INTO brand_outreach_log (brand_id, email_sent_to, subject, status, sent_at, message_id)
+                VALUES (%s, %s, %s, 'sent', NOW(), %s)
+            """, (brand_id, brand['contact_email'], personalized_subject, sent_message_id))
 
             conn.commit()
             conn.close()
@@ -1981,7 +2007,9 @@ def send_bulk_brand_outreach():
             personalized_content = personalized_content.replace('{{category}}', brand['category'] or '')
             personalized_subject = subject.replace('{{brand_name}}', brand['brand_name'] or '')
 
-            success = send_email_gmail(brand['contact_email'], personalized_subject, personalized_content)
+            send_res = send_email_gmail_with_meta(brand['contact_email'], personalized_subject, personalized_content)
+            success = bool(send_res.get("success"))
+            sent_message_id = send_res.get("message_id")
 
             if success:
                 cursor.execute("""
@@ -1994,9 +2022,9 @@ def send_bulk_brand_outreach():
                 """, (brand['id'], personalized_subject))
 
                 cursor.execute("""
-                    INSERT INTO brand_outreach_log (brand_id, email_sent_to, subject, status, sent_at)
-                    VALUES (%s, %s, %s, 'sent', NOW())
-                """, (brand['id'], brand['contact_email'], personalized_subject))
+                    INSERT INTO brand_outreach_log (brand_id, email_sent_to, subject, status, sent_at, message_id)
+                    VALUES (%s, %s, %s, 'sent', NOW(), %s)
+                """, (brand['id'], brand['contact_email'], personalized_subject, sent_message_id))
 
                 results['sent'].append({
                     'brand_id': brand['id'],
@@ -2570,29 +2598,55 @@ def log_brand_response():
 @admin_required
 def get_brand_outreach_inbox_log():
     """
-    Resolve inbound From addresses to brand_id using brand_outreach_log.email_sent_to
-    (latest send per normalized email). Query: emails=comma-separated list (max 200).
+    Resolve inbound artifacts to brand_id using brand_outreach_log.
+    Supports:
+      - emails=comma-separated recipient emails
+      - message_ids=comma-separated Message-ID tokens (with or without <>)
     """
     try:
-        raw = request.args.get('emails', '') or ''
-        parts = [p.strip().lower() for p in raw.split(',') if p.strip()]
-        if not parts:
-            return jsonify({'success': True, 'matches': {}})
-        if len(parts) > 200:
-            return jsonify({'error': 'Maximum 200 emails per request'}), 400
+        raw_emails = request.args.get('emails', '') or ''
+        raw_message_ids = request.args.get('message_ids', '') or ''
+        emails = [p.strip().lower() for p in raw_emails.split(',') if p.strip()]
+        message_ids = []
+        for p in raw_message_ids.split(','):
+            token = (p or '').strip().strip('<>').strip()
+            if token:
+                message_ids.append(token)
+        if len(emails) > 200 or len(message_ids) > 200:
+            return jsonify({'error': 'Maximum 200 items per lookup key'}), 400
+        if not emails and not message_ids:
+            return jsonify({'success': True, 'matches': {}, 'message_id_matches': {}})
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("""
-            SELECT DISTINCT ON (LOWER(TRIM(email_sent_to)))
-                LOWER(TRIM(email_sent_to)) AS email_norm,
-                brand_id,
-                sent_at
-            FROM brand_outreach_log
-            WHERE LOWER(TRIM(email_sent_to)) = ANY(%s)
-            ORDER BY LOWER(TRIM(email_sent_to)), sent_at DESC
-        """, (parts,))
-        rows = cursor.fetchall()
+        _ensure_brand_outreach_log_message_id_column(cursor)
+
+        rows = []
+        if emails:
+            cursor.execute("""
+                SELECT DISTINCT ON (LOWER(TRIM(email_sent_to)))
+                    LOWER(TRIM(email_sent_to)) AS email_norm,
+                    brand_id,
+                    sent_at
+                FROM brand_outreach_log
+                WHERE LOWER(TRIM(email_sent_to)) = ANY(%s)
+                ORDER BY LOWER(TRIM(email_sent_to)), sent_at DESC
+            """, (emails,))
+            rows = cursor.fetchall()
+
+        msg_rows = []
+        if message_ids:
+            cursor.execute("""
+                SELECT DISTINCT ON (TRIM(BOTH '<>' FROM COALESCE(message_id, '')))
+                    TRIM(BOTH '<>' FROM COALESCE(message_id, '')) AS message_id_norm,
+                    brand_id,
+                    email_sent_to,
+                    sent_at
+                FROM brand_outreach_log
+                WHERE TRIM(BOTH '<>' FROM COALESCE(message_id, '')) = ANY(%s)
+                ORDER BY TRIM(BOTH '<>' FROM COALESCE(message_id, '')), sent_at DESC
+            """, (message_ids,))
+            msg_rows = cursor.fetchall()
         conn.close()
 
         matches = {}
@@ -2606,7 +2660,24 @@ def get_brand_outreach_inbox_log():
                 'brand_id': row['brand_id'],
                 'sent_at': sent_at_s,
             }
-        return jsonify({'success': True, 'matches': matches})
+
+        message_id_matches = {}
+        for row in msg_rows:
+            sent_at = row.get('sent_at')
+            if sent_at is not None and hasattr(sent_at, 'isoformat'):
+                sent_at_s = sent_at.isoformat()
+            else:
+                sent_at_s = str(sent_at) if sent_at is not None else ''
+            message_id_matches[row['message_id_norm']] = {
+                'brand_id': row['brand_id'],
+                'email_sent_to': row.get('email_sent_to'),
+                'sent_at': sent_at_s,
+            }
+        return jsonify({
+            'success': True,
+            'matches': matches,  # backward compatibility: email matches
+            'message_id_matches': message_id_matches,
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -2672,6 +2743,23 @@ def sync_brand_outreach_inbox_events():
                     response_notes = EXCLUDED.response_notes,
                     last_response_at = NOW()
             """, (brand_id, mapped_status, notes))
+
+            # Mirror inbox outcome into pr_brands.notes so ops can review
+            # in the same Notes column used by brand pipeline records.
+            note_label = {
+                'wrong_email': 'Wrong email',
+                'auto_reply': 'Automatic reply',
+                'reply': 'Reply',
+            }.get(mapped_status, mapped_status)
+            note_line = f"[INBOX_SYNC] {note_label}: {summary}".strip()
+            cursor.execute("""
+                UPDATE pr_brands
+                SET notes = CASE
+                    WHEN notes IS NULL OR notes = '' THEN %s
+                    ELSE notes || E'\n' || %s
+                END
+                WHERE id = %s
+            """, (note_line, note_line, brand_id))
             updated += 1
             results.append({'brand_id': brand_id, 'ok': True, 'status': mapped_status})
 
