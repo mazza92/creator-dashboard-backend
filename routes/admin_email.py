@@ -15,6 +15,8 @@ import smtplib
 import time
 import threading
 import re
+import imaplib
+import email
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -45,6 +47,12 @@ def get_db_connection():
 MAX_SEND_ATTEMPTS = 3
 STUCK_SENDING_TIMEOUT_MINUTES = 5  # Recipients stuck in 'sending' for this long are recovered
 CRON_BATCH_SIZE = 25  # How many emails to send per cron invocation (~20s at 0.8s/email)
+ALLOWED_BRAND_TEMPLATE_IDS = {8}
+DISALLOWED_BRAND_TEMPLATE_IDS = {6, 7}
+BLOCKED_OUTREACH_STATUSES = {
+    'replied', 'interested', 'not_interested', 'signed_up',
+    'wrong_email', 'bounced', 'do_not_contact', 'unsubscribe'
+}
 
 
 admin_email_bp = Blueprint('admin_email', __name__, url_prefix='/api/admin/email')
@@ -81,6 +89,19 @@ def admin_required(f):
 
         return f(*args, **kwargs)
     return decorated_function
+
+
+def _enforce_template_allowlist(template_id: int):
+    """Return (ok, error_response, status_code)."""
+    if template_id in DISALLOWED_BRAND_TEMPLATE_IDS:
+        return False, {'error': f'template_id {template_id} is disabled'}, 400
+    if template_id not in ALLOWED_BRAND_TEMPLATE_IDS:
+        return False, {'error': f'template_id {template_id} is not allowed for brand outreach'}, 400
+    return True, None, 200
+
+
+def _is_blocked_outreach_status(status: str) -> bool:
+    return (status or '').strip().lower() in BLOCKED_OUTREACH_STATUSES
 
 
 # ============================================================================
@@ -188,6 +209,33 @@ def update_template(template_id):
         conn.close()
 
         return jsonify({'message': 'Template updated'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@admin_email_bp.route('/brand-outreach/templates/cleanup', methods=['POST'])
+@admin_required
+def cleanup_brand_outreach_templates():
+    """
+    Permanently remove known-bad templates (IDs 6 and 7).
+    Keeps only approved outreach template flow (template 8 allowlisted).
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute(
+            "DELETE FROM campaign_templates WHERE id = ANY(%s) RETURNING id",
+            (list(DISALLOWED_BRAND_TEMPLATE_IDS),)
+        )
+        deleted_rows = cursor.fetchall()
+        conn.commit()
+        conn.close()
+        deleted_ids = [r['id'] for r in deleted_rows]
+        return jsonify({
+            'success': True,
+            'deleted_template_ids': deleted_ids,
+            'allowed_template_ids': sorted(list(ALLOWED_BRAND_TEMPLATE_IDS)),
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -1672,7 +1720,8 @@ def get_brands_for_outreach():
             params.append(category)
 
         if not_contacted:
-            query += " AND bo.brand_id IS NULL"
+            query += " AND (bo.brand_id IS NULL OR COALESCE(bo.last_response_status, '') = '')"
+            query += " AND COALESCE(bo.last_response_status, '') NOT IN ('replied','interested','not_interested','signed_up','wrong_email','bounced','do_not_contact','unsubscribe')"
 
         query += " ORDER BY b.created_at DESC LIMIT %s OFFSET %s"
         params.extend([limit, offset])
@@ -1688,6 +1737,9 @@ def get_brands_for_outreach():
         """
         if has_email:
             count_query += " AND b.contact_email IS NOT NULL AND b.contact_email != ''"
+        if not_contacted:
+            count_query += " AND (bo.brand_id IS NULL OR COALESCE(bo.last_response_status, '') = '')"
+            count_query += " AND COALESCE(bo.last_response_status, '') NOT IN ('replied','interested','not_interested','signed_up','wrong_email','bounced','do_not_contact','unsubscribe')"
 
         cursor.execute(count_query)
         total = cursor.fetchone()['total']
@@ -1726,14 +1778,22 @@ def send_brand_outreach():
 
         if not brand_id:
             return jsonify({'error': 'brand_id is required'}), 400
+        if template_id is not None:
+            ok, err, code = _enforce_template_allowlist(int(template_id))
+            if not ok:
+                return jsonify(err), code
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         # Get brand details
         cursor.execute("""
-            SELECT id, brand_name, contact_email, website, category, description
-            FROM pr_brands WHERE id = %s
+            SELECT
+                b.id, b.brand_name, b.contact_email, b.website, b.category, b.description,
+                bo.last_response_status, bo.last_contacted_at
+            FROM pr_brands b
+            LEFT JOIN brand_outreach_tracking bo ON bo.brand_id = b.id
+            WHERE b.id = %s
         """, (brand_id,))
         brand = cursor.fetchone()
 
@@ -1744,6 +1804,12 @@ def send_brand_outreach():
         if not brand.get('contact_email'):
             conn.close()
             return jsonify({'error': 'Brand has no contact email'}), 400
+        if _is_blocked_outreach_status(brand.get('last_response_status')):
+            conn.close()
+            return jsonify({
+                'error': f"Outreach blocked for status '{brand.get('last_response_status')}'",
+                'brand_id': brand_id
+            }), 409
 
         # Get template if specified
         if template_id and not html_content:
@@ -1832,9 +1898,14 @@ def send_bulk_brand_outreach():
 
         # Get all brands
         cursor.execute("""
-            SELECT id, brand_name, contact_email, website, category
-            FROM pr_brands
-            WHERE id = ANY(%s) AND contact_email IS NOT NULL AND contact_email != ''
+            SELECT
+                b.id, b.brand_name, b.contact_email, b.website, b.category,
+                bo.last_response_status
+            FROM pr_brands b
+            LEFT JOIN brand_outreach_tracking bo ON bo.brand_id = b.id
+            WHERE b.id = ANY(%s)
+              AND b.contact_email IS NOT NULL
+              AND b.contact_email != ''
         """, (brand_ids,))
         brands = cursor.fetchall()
 
@@ -1845,6 +1916,12 @@ def send_bulk_brand_outreach():
         }
 
         for brand in brands:
+            if _is_blocked_outreach_status(brand.get('last_response_status')):
+                results['skipped'].append({
+                    'brand_id': brand['id'],
+                    'reason': f"blocked_status:{brand.get('last_response_status')}"
+                })
+                continue
             # Personalize
             personalized_content = html_content.replace('{{brand_name}}', brand['brand_name'] or '')
             personalized_content = personalized_content.replace('{{website}}', brand['website'] or '')
@@ -1883,9 +1960,9 @@ def send_bulk_brand_outreach():
             time.sleep(delay_seconds)
 
         # Mark skipped (no email)
-        sent_ids = [b['id'] for b in brands]
+        fetched_ids = [b['id'] for b in brands]
         for bid in brand_ids:
-            if bid not in sent_ids:
+            if bid not in fetched_ids:
                 results['skipped'].append({'brand_id': bid, 'reason': 'No contact email'})
 
         conn.commit()
@@ -2368,9 +2445,11 @@ def get_brand_outreach_templates():
         cursor.execute("""
             SELECT id, name, type, subject, html_content, variables, created_at
             FROM campaign_templates
-            WHERE type = 'brand_outreach' AND is_active = true
+            WHERE type = 'brand_outreach'
+              AND is_active = true
+              AND id = ANY(%s)
             ORDER BY name
-        """)
+        """, (list(ALLOWED_BRAND_TEMPLATE_IDS),))
         templates = cursor.fetchall()
         conn.close()
 
@@ -2400,7 +2479,11 @@ def log_brand_response():
         if not brand_id or not response_status:
             return jsonify({'error': 'brand_id and response_status are required'}), 400
 
-        valid_statuses = ['replied', 'interested', 'not_interested', 'signed_up']
+        valid_statuses = [
+            'replied', 'interested', 'not_interested', 'signed_up',
+            'wrong_email', 'bounced', 'do_not_contact', 'unsubscribe',
+            'followup_due_day4', 'followup_due_day9', 'auto_replied', 'needs_review'
+        ]
         if response_status not in valid_statuses:
             return jsonify({'error': f'response_status must be one of: {valid_statuses}'}), 400
 
@@ -2425,5 +2508,142 @@ def log_brand_response():
             'message': f'Response logged: {response_status}'
         })
 
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@admin_email_bp.route('/brand-outreach/inbox-sync', methods=['POST'])
+@admin_required
+def sync_brand_outreach_inbox_events():
+    """
+    Ingest parsed inbox events (from IMAP worker/agent) and update outreach states.
+
+    Body:
+      events: [
+        {
+          "brand_id": 123,
+          "event_type": "bounce|reply|unsubscribe|wrong_contact",
+          "intent": "interested|not_interested|pricing_question|ambiguous|...",
+          "confidence": 0.0-1.0,
+          "action_taken": "auto_reply|draft|human_review|status_only",
+          "summary": "short text"
+        }
+      ]
+    """
+    try:
+        data = request.get_json() or {}
+        events = data.get('events', [])
+        if not isinstance(events, list):
+            return jsonify({'error': 'events must be a list'}), 400
+        if not events:
+            return jsonify({'success': True, 'processed': 0, 'updated': 0, 'skipped': 0, 'results': []})
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        updated = 0
+        skipped = 0
+        results = []
+
+        for ev in events:
+            brand_id = ev.get('brand_id')
+            if not brand_id:
+                skipped += 1
+                results.append({'ok': False, 'reason': 'missing_brand_id'})
+                continue
+
+            event_type = (ev.get('event_type') or '').strip().lower()
+            intent = (ev.get('intent') or '').strip().lower()
+            confidence = float(ev.get('confidence', 0.0) or 0.0)
+            action_taken = (ev.get('action_taken') or 'status_only').strip().lower()
+            summary = (ev.get('summary') or '')[:500]
+
+            mapped_status = None
+            if event_type in ('bounce',):
+                mapped_status = 'bounced'
+            elif event_type in ('wrong_contact', 'wrong_email'):
+                mapped_status = 'wrong_email'
+            elif event_type in ('unsubscribe',):
+                mapped_status = 'do_not_contact'
+            elif event_type in ('reply',):
+                if intent == 'interested':
+                    mapped_status = 'interested'
+                elif intent == 'not_interested':
+                    mapped_status = 'not_interested'
+                elif action_taken == 'human_review' or confidence < 0.6:
+                    mapped_status = 'needs_review'
+                elif action_taken == 'auto_reply':
+                    mapped_status = 'auto_replied'
+                else:
+                    mapped_status = 'replied'
+
+            if not mapped_status:
+                skipped += 1
+                results.append({'brand_id': brand_id, 'ok': False, 'reason': f'unmapped_event:{event_type}'})
+                continue
+
+            notes = f"inbox_sync event={event_type} intent={intent or 'n/a'} conf={confidence:.2f} action={action_taken}; {summary}"
+            cursor.execute("""
+                INSERT INTO brand_outreach_tracking (brand_id, outreach_count, last_response_status, response_notes, last_response_at)
+                VALUES (%s, 0, %s, %s, NOW())
+                ON CONFLICT (brand_id) DO UPDATE SET
+                    last_response_status = EXCLUDED.last_response_status,
+                    response_notes = EXCLUDED.response_notes,
+                    last_response_at = NOW()
+            """, (brand_id, mapped_status, notes))
+            updated += 1
+            results.append({'brand_id': brand_id, 'ok': True, 'status': mapped_status})
+
+        conn.commit()
+        conn.close()
+        return jsonify({
+            'success': True,
+            'processed': len(events),
+            'updated': updated,
+            'skipped': skipped,
+            'results': results[:200]
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@admin_email_bp.route('/brand-outreach/followup-candidates', methods=['GET'])
+@admin_required
+def get_followup_candidates():
+    """
+    Return brands due for day-4 / day-9 follow-ups, excluding replied/bounced/opt-out.
+    """
+    try:
+        day = int(request.args.get('day', 4))
+        if day not in (4, 9):
+            return jsonify({'error': 'day must be 4 or 9'}), 400
+        limit = min(int(request.args.get('limit', 200)), 500)
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("""
+            SELECT
+                b.id AS brand_id, b.brand_name, b.contact_email, b.website,
+                bo.last_contacted_at, bo.outreach_count, bo.last_response_status
+            FROM brand_outreach_tracking bo
+            JOIN pr_brands b ON b.id = bo.brand_id
+            WHERE b.contact_email IS NOT NULL
+              AND b.contact_email != ''
+              AND bo.last_contacted_at <= NOW() - (%s * INTERVAL '1 day')
+              AND COALESCE(bo.last_response_status, '') NOT IN
+                  ('replied','interested','not_interested','signed_up','wrong_email','bounced','do_not_contact','unsubscribe')
+            ORDER BY bo.last_contacted_at ASC
+            LIMIT %s
+        """, (day, limit))
+        rows = cursor.fetchall()
+        conn.close()
+
+        followup_status = 'followup_due_day4' if day == 4 else 'followup_due_day9'
+        return jsonify({
+            'success': True,
+            'day': day,
+            'followup_status': followup_status,
+            'total': len(rows),
+            'brands': rows
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
