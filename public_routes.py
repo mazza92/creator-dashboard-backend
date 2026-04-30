@@ -12,6 +12,22 @@ import requests
 
 public_bp = Blueprint('public', __name__, url_prefix='/api/public')
 
+
+def mask_email(email):
+    """Mask email for teaser display: j***@nike.com"""
+    if not email:
+        return None
+    try:
+        local, domain = email.split('@')
+        if len(local) <= 1:
+            masked_local = local[0] + '***'
+        else:
+            masked_local = local[0] + '***'
+        return f"{masked_local}@{domain}"
+    except:
+        return None
+
+
 # IndexNow configuration
 INDEXNOW_KEY = '5b821f1380424d116b8da378e4ca2f143a13f7236d7dd3db58d09cb3e0aeb736'
 INDEXNOW_API_URL = 'https://api.indexnow.org/indexnow'
@@ -115,69 +131,79 @@ def get_public_brands():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Build query with filters
+        # Build query with filters (includes pitch stats from creator_pipeline)
         query = """
             SELECT
-                id,
-                slug,
-                brand_name,
-                logo_url,
-                description,
-                category,
-                niches,
-                min_followers,
-                max_followers,
-                platforms,
-                regions,
-                response_rate,
-                avg_response_time_days,
-                is_featured,
-                has_application_form,
-                created_at,
-                CASE WHEN application_form_url IS NOT NULL THEN TRUE ELSE FALSE END as has_direct_link,
-                CASE WHEN contact_email IS NOT NULL THEN TRUE ELSE FALSE END as has_email_contact
-            FROM pr_brands
-            WHERE (COALESCE(status, 'published') = 'published')
+                b.id,
+                b.slug,
+                b.brand_name,
+                b.logo_url,
+                b.description,
+                b.category,
+                b.niches,
+                b.min_followers,
+                b.max_followers,
+                b.platforms,
+                b.regions,
+                b.response_rate,
+                b.avg_response_time_days,
+                b.is_featured,
+                b.has_application_form,
+                b.created_at,
+                CASE WHEN b.application_form_url IS NOT NULL THEN TRUE ELSE FALSE END as has_direct_link,
+                CASE WHEN b.contact_email IS NOT NULL THEN TRUE ELSE FALSE END as has_email_contact,
+                COALESCE(ps.pitch_count, 0) as pitch_count,
+                COALESCE(ps.response_count, 0) as response_count
+            FROM pr_brands b
+            LEFT JOIN (
+                SELECT
+                    brand_id,
+                    COUNT(*) FILTER (WHERE pitched_at IS NOT NULL) as pitch_count,
+                    COUNT(*) FILTER (WHERE stage IN ('responded', 'accepted', 'received', 'shipped')) as response_count
+                FROM creator_pipeline
+                GROUP BY brand_id
+            ) ps ON b.id = ps.brand_id
+            WHERE (COALESCE(b.status, 'published') = 'published')
         """
         params = []
 
         if category:
-            query += " AND category = %s"
+            query += " AND b.category = %s"
             params.append(category)
 
         if niche:
-            query += " AND %s = ANY(niches)"
+            query += " AND %s = ANY(b.niches)"
             params.append(niche)
 
         if search:
-            query += " AND brand_name ILIKE %s"
+            query += " AND b.brand_name ILIKE %s"
             params.append(f'%{search}%')
 
         # Activity filters
         if activity == 'new':
             # Brands added in the last 7 days
-            query += " AND created_at >= NOW() - INTERVAL '7 days'"
+            query += " AND b.created_at >= NOW() - INTERVAL '7 days'"
         elif activity == 'active':
             # Brands actively accepting PR
-            query += " AND accepting_pr = TRUE"
+            query += " AND b.accepting_pr = TRUE"
         elif activity == 'responsive':
             # High response rate (50% or higher)
-            query += " AND response_rate >= 50"
+            query += " AND b.response_rate >= 50"
 
         # Contact type filters
         if contact_type == 'application':
             # Has an application form URL
-            query += " AND application_form_url IS NOT NULL"
+            query += " AND b.application_form_url IS NOT NULL"
         elif contact_type == 'email':
             # Has a contact email
-            query += " AND contact_email IS NOT NULL"
+            query += " AND b.contact_email IS NOT NULL"
 
         # Order: Featured first, then by response rate
         query += """
             ORDER BY
-                is_featured DESC,
-                response_rate DESC NULLS LAST,
-                brand_name ASC
+                b.is_featured DESC,
+                b.response_rate DESC NULLS LAST,
+                b.brand_name ASC
             LIMIT %s OFFSET %s
         """
         params.extend([limit, offset])
@@ -243,7 +269,12 @@ def get_public_brands():
                 'hasApplication': b['has_application_form'],
                 'hasDirectLink': b['has_direct_link'],
                 'hasEmailContact': b['has_email_contact'],
-                'isNew': b['created_at'] and (b['created_at'].date() >= (date.today() - timedelta(days=7))) if b.get('created_at') else False
+                'isNew': b['created_at'] and (b['created_at'].date() >= (date.today() - timedelta(days=7))) if b.get('created_at') else False,
+                # Pitch stats - social proof for conversions
+                'pitchStats': {
+                    'totalPitches': b['pitch_count'],
+                    'totalResponses': b['response_count']
+                } if b['pitch_count'] > 0 else None
             } for b in brands],
             'pagination': {
                 'page': page,
@@ -277,38 +308,49 @@ def get_public_brand(slug):
 
         cursor.execute("""
             SELECT
-                slug,
-                brand_name,
-                logo_url,
-                website,
-                description,
-                instagram_handle,
-                tiktok_handle,
-                category,
-                niches,
-                product_types,
-                min_followers,
-                max_followers,
-                platforms,
-                regions,
-                has_application_form,
-                response_rate,
-                avg_response_time_days,
-                is_featured,
-                application_method,
-                seo_title,
-                seo_description,
-                -- NOTE: We do NOT select application_form_url or contact_email
+                b.id,
+                b.slug,
+                b.brand_name,
+                b.logo_url,
+                b.website,
+                b.description,
+                b.instagram_handle,
+                b.tiktok_handle,
+                b.category,
+                b.niches,
+                b.product_types,
+                b.min_followers,
+                b.max_followers,
+                b.platforms,
+                b.regions,
+                b.has_application_form,
+                b.response_rate,
+                b.avg_response_time_days,
+                b.is_featured,
+                b.application_method,
+                b.seo_title,
+                b.seo_description,
+                b.contact_email,
                 CASE
-                    WHEN application_form_url IS NOT NULL THEN TRUE
+                    WHEN b.application_form_url IS NOT NULL THEN TRUE
                     ELSE FALSE
                 END as has_direct_link,
                 CASE
-                    WHEN contact_email IS NOT NULL THEN TRUE
+                    WHEN b.contact_email IS NOT NULL THEN TRUE
                     ELSE FALSE
-                END as has_email_contact
-            FROM pr_brands
-            WHERE slug = %s AND (COALESCE(status, 'published') = 'published')
+                END as has_email_contact,
+                COALESCE(ps.pitch_count, 0) as pitch_count,
+                COALESCE(ps.response_count, 0) as response_count
+            FROM pr_brands b
+            LEFT JOIN (
+                SELECT
+                    brand_id,
+                    COUNT(*) FILTER (WHERE pitched_at IS NOT NULL) as pitch_count,
+                    COUNT(*) FILTER (WHERE stage IN ('responded', 'accepted', 'received', 'shipped')) as response_count
+                FROM creator_pipeline
+                GROUP BY brand_id
+            ) ps ON b.id = ps.brand_id
+            WHERE b.slug = %s AND (COALESCE(b.status, 'published') = 'published')
         """, (slug,))
 
         brand = cursor.fetchone()
@@ -338,14 +380,18 @@ def get_public_brand(slug):
             },
             'stats': {
                 'responseRate': brand['response_rate'],
-                'avgResponseTime': brand['avg_response_time_days']
+                'avgResponseTime': brand['avg_response_time_days'],
+                # Pitch stats - social proof
+                'totalPitches': brand['pitch_count'],
+                'totalResponses': brand['response_count']
             },
             'isFeatured': brand['is_featured'],
             'applicationMethod': brand['application_method'],
-            # Gated fields - tell frontend what's locked
+            # Gated fields - tell frontend what's locked (show masked email to create desire)
             'gated': {
                 'hasDirectLink': brand['has_direct_link'],
                 'hasEmailContact': brand['has_email_contact'],
+                'maskedEmail': mask_email(brand['contact_email']),  # Shows "j***@nike.com"
                 'directLink': {'locked': True, 'requiresAuth': True},
                 'emailContact': {'locked': True, 'requiresPro': True}
             },
