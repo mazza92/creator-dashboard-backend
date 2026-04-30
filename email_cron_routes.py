@@ -114,7 +114,7 @@ def send_onboarding_reminders():
                 success, error = send_template_email(
                     to_email=profile['email'],
                     template_name='onboarding_reminder.html',
-                    subject="Complete your NewCollab profile to unlock 229+ PR brands",
+                    subject="Complete your NewCollab profile to unlock 300+ PR brands",
                     context=context
                 )
 

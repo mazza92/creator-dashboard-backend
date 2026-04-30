@@ -308,7 +308,8 @@ def get_subscription_status():
                 subscription_started_at,
                 subscription_ends_at,
                 brands_saved_count,
-                pitches_sent_this_month,
+                pitches_sent_this_week,
+                last_pitch_reset,
                 daily_unlocks_used,
                 last_unlock_date
             FROM creators
@@ -316,23 +317,21 @@ def get_subscription_status():
         ''', (creator_id,))
         creator = cursor.fetchone()
 
-        # Check if daily unlock counter needs reset (new day)
         from datetime import date
         today = date.today()
-        last_unlock = creator.get('last_unlock_date') if creator else None
+        month_start = today.replace(day=1)
 
-        # If last unlock was on a different day (or never), reset the counter
-        daily_unlocks = creator.get('daily_unlocks_used', 0) if creator else 0
-        if creator and (last_unlock is None or last_unlock != today):
-            daily_unlocks = 0
-            # Update DB to reset counter
-            cursor.execute('''
-                UPDATE creators
-                SET daily_unlocks_used = 0,
-                    last_unlock_date = %s
-                WHERE id = %s
-            ''', (today, creator_id))
-            conn.commit()
+        # Check if pitch counter needs reset (new month)
+        pitches_used = creator.get('pitches_sent_this_week', 0) if creator else 0
+        last_pitch_reset = creator.get('last_pitch_reset') if creator else None
+        if creator and (last_pitch_reset is None or last_pitch_reset < month_start):
+            pitches_used = 0
+
+        # Check if unlock counter needs reset (new month)
+        last_unlock = creator.get('last_unlock_date') if creator else None
+        monthly_unlocks = creator.get('daily_unlocks_used', 0) if creator else 0
+        if creator and (last_unlock is None or last_unlock < month_start):
+            monthly_unlocks = 0
 
         cursor.close()
         conn.close()
@@ -346,8 +345,8 @@ def get_subscription_status():
             'started_at': creator.get('subscription_started_at').isoformat() if creator.get('subscription_started_at') else None,
             'ends_at': creator.get('subscription_ends_at').isoformat() if creator.get('subscription_ends_at') else None,
             'brands_saved_count': creator.get('brands_saved_count', 0),
-            'pitches_sent_this_month': creator.get('pitches_sent_this_month', 0),
-            'daily_unlocks_used': daily_unlocks  # Resets daily
+            'pitches_sent_this_week': pitches_used,  # Monthly reset, keeping field name for compatibility
+            'daily_unlocks_used': monthly_unlocks  # Monthly reset, keeping field name for compatibility
         })
 
     except Exception as e:

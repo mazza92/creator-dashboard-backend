@@ -2766,7 +2766,7 @@ NOTIFICATION_TEMPLATES = {
     'WELCOME_CREATOR': {
         'creator': {
             'subject': lambda data: f"Welcome to Newcollab, {data.get('first_name', '')}!",
-            'message': lambda data: f"<h2>Welcome to Newcollab, {data.get('first_name', '')}! 🎉</h2><p>You're all set to start discovering and pitching to PR brands.</p><p>We've added 229+ brands to our directory, and we're adding more every week!</p>",
+            'message': lambda data: f"<h2>Welcome to Newcollab, {data.get('first_name', '')}! 🎉</h2><p>You're all set to start discovering and pitching to PR brands.</p><p>We've added 300+ brands to our directory, and we're adding more every week!</p>",
             'action_url': lambda data: f"{get_base_url()}/directory",
             'action_text': lambda data: "Browse PR Brands",
             'secondary_action_url': lambda data: data.get('public_profile_url'),
