@@ -759,7 +759,7 @@ def get_analytics():
 
 @pr_crm.route('/pitch-limits', methods=['GET'])
 def get_pitch_limits():
-    """Get creator's pitch limits for the week"""
+    """Get creator's pitch limits for the month"""
     creator_id = get_creator_id_from_session()
     if not creator_id:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
@@ -786,24 +786,25 @@ def get_pitch_limits():
         pitches_used = creator.get('pitches_sent_this_week') or 0
         last_reset = creator.get('last_pitch_reset')
 
-        # Reset weekly count if needed
-        from datetime import date, timedelta
+        # Reset monthly count if needed (resets on 1st of each month)
+        from datetime import date
         today = date.today()
-        week_start = today - timedelta(days=today.weekday())  # Monday
+        month_start = today.replace(day=1)
 
-        if last_reset is None or last_reset < week_start:
+        if last_reset is None or last_reset < month_start:
             pitches_used = 0
 
-        # Determine limits based on tier
-        FREE_LIMIT = 3
+        # Determine limits based on tier - FREE users get 3 pitches per MONTH
+        FREE_MONTHLY_LIMIT = 3
         is_pro = tier in ['pro', 'elite']
 
         return jsonify({
             'success': True,
             'used': pitches_used,
-            'limit': FREE_LIMIT if not is_pro else 999,
-            'canPitch': is_pro or pitches_used < FREE_LIMIT,
-            'tier': tier
+            'limit': FREE_MONTHLY_LIMIT if not is_pro else 999,
+            'canPitch': is_pro or pitches_used < FREE_MONTHLY_LIMIT,
+            'tier': tier,
+            'period': 'month'
         })
 
     except Exception as e:
@@ -858,27 +859,27 @@ def track_pitch():
         pitches_used = creator.get('pitches_sent_this_week') or 0
         last_reset = creator.get('last_pitch_reset')
 
-        # Reset weekly count if needed
-        from datetime import date, timedelta
+        # Reset monthly count if needed (resets on 1st of each month)
+        from datetime import date
         today = date.today()
-        week_start = today - timedelta(days=today.weekday())
+        month_start = today.replace(day=1)
 
-        if last_reset is None or last_reset < week_start:
+        if last_reset is None or last_reset < month_start:
             pitches_used = 0
 
-        # Check if limit reached for free users
-        FREE_LIMIT = 3
+        # Check if limit reached for free users - 3 pitches per MONTH
+        FREE_MONTHLY_LIMIT = 3
         is_pro = tier in ['pro', 'elite']
 
-        if not is_pro and pitches_used >= FREE_LIMIT:
+        if not is_pro and pitches_used >= FREE_MONTHLY_LIMIT:
             cursor.close()
             conn.close()
             return jsonify({
                 'success': False,
-                'error': 'Weekly pitch limit reached',
+                'error': 'Monthly pitch limit reached. Upgrade to Pro for unlimited pitches!',
                 'upgrade_required': True,
                 'used': pitches_used,
-                'limit': FREE_LIMIT
+                'limit': FREE_MONTHLY_LIMIT
             }), 403
 
         # Update pitch count
@@ -887,7 +888,7 @@ def track_pitch():
             SET pitches_sent_this_week = %s,
                 last_pitch_reset = %s
             WHERE id = %s
-        ''', (pitches_used + 1, week_start, creator_id))
+        ''', (pitches_used + 1, month_start, creator_id))
 
         # Update pipeline stage to 'pitched' if in pipeline
         cursor.execute('''

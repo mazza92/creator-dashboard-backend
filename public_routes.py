@@ -423,32 +423,33 @@ def unlock_brand_access(slug):
                 'upgrade_required': True
             }), 403
 
-        # Check daily unlock limit for FREE users (only for application unlocks)
+        # Check MONTHLY unlock limit for FREE users (only for application unlocks)
         if tier == 'free' and unlock_type == 'application':
             today = date.today()
+            month_start = today.replace(day=1)
             last_unlock = creator.get('last_unlock_date')
-            daily_unlocks = creator.get('daily_unlocks_used', 0)
+            monthly_unlocks = creator.get('daily_unlocks_used', 0)  # Reusing column for monthly tracking
 
-            app.logger.info(f"🔍 Free user quota check - Current: {daily_unlocks}/5, Last unlock: {last_unlock}, Today: {today}")
-            print(f"🔍 Free user quota check - Current: {daily_unlocks}/5, Last unlock: {last_unlock}, Today: {today}")
+            app.logger.info(f"🔍 Free user quota check - Current: {monthly_unlocks}/5, Last unlock: {last_unlock}, Month start: {month_start}")
+            print(f"🔍 Free user quota check - Current: {monthly_unlocks}/5, Last unlock: {last_unlock}, Month start: {month_start}")
 
-            # Reset if it's a new day
-            if last_unlock is None or last_unlock != today:
-                daily_unlocks = 0
-                app.logger.info(f"🔄 Resetting daily counter (new day or first unlock)")
-                print(f"🔄 Resetting daily counter (new day or first unlock)")
+            # Reset if it's a new month
+            if last_unlock is None or last_unlock < month_start:
+                monthly_unlocks = 0
+                app.logger.info(f"🔄 Resetting monthly counter (new month or first unlock)")
+                print(f"🔄 Resetting monthly counter (new month or first unlock)")
 
-            # Check if limit reached
-            DAILY_LIMIT = 5
-            if daily_unlocks >= DAILY_LIMIT:
-                app.logger.warning(f"🚫 Quota limit reached for creator {creator_id}")
-                print(f"🚫 Quota limit reached for creator {creator_id}")
+            # Check if limit reached - 5 unlocks per MONTH
+            MONTHLY_LIMIT = 5
+            if monthly_unlocks >= MONTHLY_LIMIT:
+                app.logger.warning(f"🚫 Monthly quota limit reached for creator {creator_id}")
+                print(f"🚫 Monthly quota limit reached for creator {creator_id}")
                 conn.close()
                 return jsonify({
-                    'error': f"You've used all {DAILY_LIMIT} free application forms today. Come back tomorrow or upgrade to Pro for unlimited!",
+                    'error': f"You've used all {MONTHLY_LIMIT} free brand unlocks this month. Upgrade to Pro for unlimited access!",
                     'upgrade_required': True,
-                    'current_count': daily_unlocks,
-                    'limit': DAILY_LIMIT
+                    'current_count': monthly_unlocks,
+                    'limit': MONTHLY_LIMIT
                 }), 403
 
         # Get brand data
@@ -512,7 +513,7 @@ def unlock_brand_access(slug):
 
         # Update counters based on tier and unlock type
         if tier == 'free' and unlock_type == 'application':
-            # FREE users unlocking application: increment daily quota
+            # FREE users unlocking application: increment MONTHLY quota
             today = date.today()
             if not already_saved:
                 cursor.execute('''
@@ -531,8 +532,8 @@ def unlock_brand_access(slug):
                         last_unlock_date = %s
                     WHERE id = %s
                 ''', (today, creator_id))
-                app.logger.info(f"✅ Re-unlocked existing brand - incremented daily quota only for creator {creator_id}")
-                print(f"✅ Re-unlocked existing brand - incremented daily quota only for creator {creator_id}")
+                app.logger.info(f"✅ Re-unlocked existing brand - incremented monthly quota for creator {creator_id}")
+                print(f"✅ Re-unlocked existing brand - incremented monthly quota for creator {creator_id}")
         elif is_pro:
             # PRO/ELITE users: only increment brands_saved_count if it's a new brand (no daily quota)
             if not already_saved:
