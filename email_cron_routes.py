@@ -82,7 +82,7 @@ def send_onboarding_reminders():
             SELECT c.id, u.email, c.username, c.created_at, c.last_reminder_sent
             FROM creators c
             JOIN users u ON c.user_id = u.id
-            WHERE u.email_verified = true
+            WHERE u.is_verified = true
               AND c.created_at < NOW() - INTERVAL '24 hours'
               AND (
                 c.instagram_handle IS NULL
@@ -194,7 +194,7 @@ def send_new_brands_notification():
             SELECT DISTINCT c.id, u.email, c.username, c.last_new_brands_email_sent
             FROM creators c
             JOIN users u ON c.user_id = u.id
-            WHERE u.email_verified = true
+            WHERE u.is_verified = true
               AND c.instagram_handle IS NOT NULL
               AND c.instagram_handle != ''
               AND u.last_login > NOW() - INTERVAL '30 days'
@@ -467,7 +467,7 @@ def send_first_pitch_nudge():
             SELECT c.id, u.email, c.username
             FROM creators c
             JOIN users u ON c.user_id = u.id
-            WHERE u.email_verified = true
+            WHERE u.is_verified = true
               AND c.first_pitch_sent_at IS NULL
               AND c.created_at < NOW() - INTERVAL '24 hours'
               AND (
@@ -555,7 +555,7 @@ def send_limit_warning():
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.subscription_tier = 'free'
-              AND u.email_verified = true
+              AND u.is_verified = true
               AND c.pitches_sent_this_week = 2
               AND (
                 c.last_limit_warning_sent IS NULL
@@ -643,7 +643,7 @@ def send_limit_reached():
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.subscription_tier = 'free'
-              AND u.email_verified = true
+              AND u.is_verified = true
               AND c.pitches_sent_this_week >= 3
               AND (
                 c.last_upgrade_email_sent IS NULL
@@ -728,7 +728,7 @@ def send_reengagement():
             SELECT c.id, u.email, c.username
             FROM creators c
             JOIN users u ON c.user_id = u.id
-            WHERE u.email_verified = true
+            WHERE u.is_verified = true
               AND c.first_pitch_sent_at IS NULL
               AND c.created_at < NOW() - INTERVAL '7 days'
               AND (
@@ -812,7 +812,7 @@ def send_monthly_reset():
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.subscription_tier = 'free'
-              AND u.email_verified = true
+              AND u.is_verified = true
               AND c.pitches_sent_this_week >= 3
               AND (
                 c.last_monthly_reset_sent IS NULL
