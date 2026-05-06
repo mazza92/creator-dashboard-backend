@@ -898,6 +898,13 @@ def track_pitch():
             SET stage = 'pitched', pitched_at = NOW(), updated_at = NOW()
         ''', (creator_id, brand_id))
 
+        # Set first_pitch_sent_at if this is their first pitch (for email conversion sequence)
+        cursor.execute('''
+            UPDATE creators
+            SET first_pitch_sent_at = NOW()
+            WHERE id = %s AND first_pitch_sent_at IS NULL
+        ''', (creator_id,))
+
         conn.commit()
         cursor.close()
         conn.close()

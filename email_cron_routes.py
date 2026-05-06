@@ -445,3 +445,431 @@ def process_pr_reminders():
             'success': False,
             'error': str(e)
         }), 500
+
+
+# =============================================================================
+# EMAIL CONVERSION SEQUENCE
+# 5 behavioral emails to convert free users to Creator Pro ($12/month)
+# =============================================================================
+
+@email_cron_bp.route('/send-first-pitch-nudge', methods=['POST'])
+def send_first_pitch_nudge():
+    """
+    Email 1: First Pitch Nudge
+    Target: Signed up 24h+ ago, never sent a pitch, email verified
+    Cron: Daily at 10am UTC
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            SELECT c.id, u.email, c.username
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE u.email_verified = true
+              AND c.first_pitch_sent_at IS NULL
+              AND c.created_at < NOW() - INTERVAL '24 hours'
+              AND (
+                c.last_reminder_sent IS NULL
+                OR c.last_reminder_sent < NOW() - INTERVAL '48 hours'
+              )
+            ORDER BY c.created_at ASC
+            LIMIT 50
+        """)
+
+        creators = cursor.fetchall()
+        sent_count = 0
+        errors = []
+
+        for creator in creators:
+            context = {
+                'email_header_title': 'Your first brand is waiting',
+                'email_header_subtitle': 'It takes less than 3 minutes',
+                'message': f"""
+                    <p>Hey {creator['username'] or 'there'} 👋</p>
+                    <p>You signed up to NewCollab but haven't contacted a brand yet.</p>
+                    <p>Here's how simple it is:</p>
+                    <ol>
+                        <li>Browse the brand directory</li>
+                        <li>Click <strong>Contact</strong> on any brand</li>
+                        <li>Your AI-generated pitch email is ready to send</li>
+                    </ol>
+                    <p>That's it. Nano creators land PR packages every week this way.</p>
+                """,
+                'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/directory",
+                'action_text': 'Browse Brands Now',
+                'user_id': creator['id']
+            }
+
+            success, error = send_template_email(
+                to_email=creator['email'],
+                template_name='onboarding_reminder.html',
+                subject='Your first PR package starts here (3 min)',
+                context=context
+            )
+
+            if success:
+                cursor.execute("""
+                    UPDATE creators SET last_reminder_sent = NOW() WHERE id = %s
+                """, (creator['id'],))
+                conn.commit()
+                sent_count += 1
+                print(f"✅ Sent first pitch nudge to {creator['email']}")
+            else:
+                errors.append(f"{creator['email']}: {error}")
+                print(f"❌ Error sending to {creator['email']}: {error}")
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'sent': sent_count,
+            'errors': len(errors),
+            'error_details': errors[:5]
+        }), 200
+
+    except Exception as e:
+        print(f"❌ Error in send_first_pitch_nudge: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@email_cron_bp.route('/send-limit-warning', methods=['POST'])
+def send_limit_warning():
+    """
+    Email 2: Limit Warning (1 contact left)
+    Target: Free tier, pitches_sent_this_week = 2, warning not sent this month
+    Cron: Daily at 11am UTC
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        cursor.execute("""
+            SELECT c.id, u.email, c.username
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE c.subscription_tier = 'free'
+              AND u.email_verified = true
+              AND c.pitches_sent_this_week = 2
+              AND (
+                c.last_limit_warning_sent IS NULL
+                OR c.last_limit_warning_sent < %s
+              )
+            LIMIT 100
+        """, (month_start,))
+
+        creators = cursor.fetchall()
+        sent_count = 0
+        errors = []
+
+        for creator in creators:
+            context = {
+                'email_header_title': 'You have 1 free contact left this month',
+                'email_header_subtitle': 'Make it count — or go unlimited',
+                'message': f"""
+                    <p>Hey {creator['username'] or 'there'} 👋</p>
+                    <p>You've used 2 of your 3 free brand contacts this month. <strong>1 left.</strong></p>
+                    <p>When it's gone, you'll have to wait until next month — unless you upgrade to Creator Pro.</p>
+                    <p><strong>Creator Pro gives you:</strong></p>
+                    <ul>
+                        <li>Unlimited brand contacts every month</li>
+                        <li>Unlimited AI pitch emails</li>
+                        <li>Full access to all PR contacts in the directory</li>
+                    </ul>
+                    <p>Just $12/month. Cancel anytime.</p>
+                """,
+                'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/upgrade",
+                'action_text': 'Upgrade to Pro — $12/month',
+                'user_id': creator['id']
+            }
+
+            success, error = send_template_email(
+                to_email=creator['email'],
+                template_name='onboarding_reminder.html',
+                subject='You have 1 free contact left this month',
+                context=context
+            )
+
+            if success:
+                cursor.execute("""
+                    UPDATE creators SET last_limit_warning_sent = NOW() WHERE id = %s
+                """, (creator['id'],))
+                conn.commit()
+                sent_count += 1
+                print(f"✅ Sent limit warning to {creator['email']}")
+            else:
+                errors.append(f"{creator['email']}: {error}")
+                print(f"❌ Error sending to {creator['email']}: {error}")
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'sent': sent_count,
+            'errors': len(errors),
+            'error_details': errors[:5]
+        }), 200
+
+    except Exception as e:
+        print(f"❌ Error in send_limit_warning: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@email_cron_bp.route('/send-limit-reached', methods=['POST'])
+def send_limit_reached():
+    """
+    Email 3: Limit Reached (hard upgrade push)
+    Target: Free tier, pitches_sent_this_week >= 3, upgrade email not sent this month
+    Cron: Daily at 11:30am UTC
+    Note: Highest-intent moment — user is actively trying to pitch
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        cursor.execute("""
+            SELECT c.id, u.email, c.username
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE c.subscription_tier = 'free'
+              AND u.email_verified = true
+              AND c.pitches_sent_this_week >= 3
+              AND (
+                c.last_upgrade_email_sent IS NULL
+                OR c.last_upgrade_email_sent < %s
+              )
+            LIMIT 100
+        """, (month_start,))
+
+        creators = cursor.fetchall()
+        sent_count = 0
+        errors = []
+
+        for creator in creators:
+            context = {
+                'email_header_title': "You've hit your free limit",
+                'email_header_subtitle': 'Upgrade now to keep pitching brands',
+                'message': f"""
+                    <p>Hey {creator['username'] or 'there'} 👋</p>
+                    <p>You've used all 3 of your free contacts this month — which means you're actively pitching brands. That's exactly what gets you PR packages.</p>
+                    <p>Don't stop now. Upgrade to Creator Pro and keep going.</p>
+                    <p><strong>What you unlock for $12/month:</strong></p>
+                    <ul>
+                        <li>✅ Unlimited brand contacts — no monthly cap</li>
+                        <li>✅ Unlimited AI-generated pitch emails</li>
+                        <li>✅ Full PR contact directory access</li>
+                        <li>✅ Priority access to new brands added weekly</li>
+                    </ul>
+                    <p>Your contacts reset next month — but why wait? Every week you delay is a week without pitching.</p>
+                """,
+                'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/upgrade",
+                'action_text': 'Upgrade to Creator Pro — $12/month',
+                'user_id': creator['id']
+            }
+
+            success, error = send_template_email(
+                to_email=creator['email'],
+                template_name='onboarding_reminder.html',
+                subject="You've hit your free limit — upgrade to keep pitching",
+                context=context
+            )
+
+            if success:
+                cursor.execute("""
+                    UPDATE creators SET last_upgrade_email_sent = NOW() WHERE id = %s
+                """, (creator['id'],))
+                conn.commit()
+                sent_count += 1
+                print(f"✅ Sent limit reached email to {creator['email']}")
+            else:
+                errors.append(f"{creator['email']}: {error}")
+                print(f"❌ Error sending to {creator['email']}: {error}")
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'sent': sent_count,
+            'errors': len(errors),
+            'error_details': errors[:5]
+        }), 200
+
+    except Exception as e:
+        print(f"❌ Error in send_limit_reached: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@email_cron_bp.route('/send-reengagement', methods=['POST'])
+def send_reengagement():
+    """
+    Email 4: Re-engagement (never pitched, gone quiet)
+    Target: Registered 7+ days ago, never sent a pitch, no re-engagement email in 14 days
+    Cron: Weekly (Mondays) at 9am UTC
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            SELECT c.id, u.email, c.username
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE u.email_verified = true
+              AND c.first_pitch_sent_at IS NULL
+              AND c.created_at < NOW() - INTERVAL '7 days'
+              AND (
+                c.last_reengagement_sent IS NULL
+                OR c.last_reengagement_sent < NOW() - INTERVAL '14 days'
+              )
+            ORDER BY c.created_at ASC
+            LIMIT 50
+        """)
+
+        creators = cursor.fetchall()
+        sent_count = 0
+        errors = []
+
+        for creator in creators:
+            context = {
+                'email_header_title': 'Still looking for your first PR package?',
+                'email_header_subtitle': "You're closer than you think",
+                'message': f"""
+                    <p>Hey {creator['username'] or 'there'} 👋</p>
+                    <p>You haven't contacted a brand yet — and that's okay. Most creators hesitate at first.</p>
+                    <p>Here's the truth: brands on NewCollab accept nano creators every week. You don't need 100k followers. You need one good pitch.</p>
+                    <p>We write the pitch for you. All you do is hit send.</p>
+                    <p>One brand. One email. That's your first PR package.</p>
+                """,
+                'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/directory",
+                'action_text': 'Find Your First Brand',
+                'user_id': creator['id']
+            }
+
+            success, error = send_template_email(
+                to_email=creator['email'],
+                template_name='onboarding_reminder.html',
+                subject='You still have 3 free contacts waiting',
+                context=context
+            )
+
+            if success:
+                cursor.execute("""
+                    UPDATE creators SET last_reengagement_sent = NOW() WHERE id = %s
+                """, (creator['id'],))
+                conn.commit()
+                sent_count += 1
+                print(f"✅ Sent re-engagement email to {creator['email']}")
+            else:
+                errors.append(f"{creator['email']}: {error}")
+                print(f"❌ Error sending to {creator['email']}: {error}")
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'sent': sent_count,
+            'errors': len(errors),
+            'error_details': errors[:5]
+        }), 200
+
+    except Exception as e:
+        print(f"❌ Error in send_reengagement: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@email_cron_bp.route('/send-monthly-reset', methods=['POST'])
+def send_monthly_reset():
+    """
+    Email 5: Monthly Reset
+    Target: Free users who hit the limit last month
+    Cron: 1st of each month at 9am UTC
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        last_month_start = (datetime.now().replace(day=1) - timedelta(days=1)).replace(day=1)
+
+        cursor.execute("""
+            SELECT c.id, u.email, c.username
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE c.subscription_tier = 'free'
+              AND u.email_verified = true
+              AND c.pitches_sent_this_week >= 3
+              AND (
+                c.last_monthly_reset_sent IS NULL
+                OR c.last_monthly_reset_sent < %s
+              )
+            LIMIT 100
+        """, (last_month_start,))
+
+        creators = cursor.fetchall()
+        sent_count = 0
+        errors = []
+
+        for creator in creators:
+            context = {
+                'email_header_title': 'Your 3 free contacts just reset',
+                'email_header_subtitle': 'Start pitching again — or go unlimited',
+                'message': f"""
+                    <p>Hey {creator['username'] or 'there'} 👋</p>
+                    <p>Good news — your free contacts have reset. You have 3 fresh contacts to use this month.</p>
+                    <p>Last month you hit your limit, which means you're pitching. Keep that momentum going.</p>
+                    <p>Or skip the monthly cap entirely — Creator Pro is $12/month for unlimited contacts, unlimited AI pitches, and the full directory.</p>
+                """,
+                'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/directory",
+                'action_text': 'Start Pitching',
+                'user_id': creator['id']
+            }
+
+            success, error = send_template_email(
+                to_email=creator['email'],
+                template_name='onboarding_reminder.html',
+                subject='Your free contacts just reset — start pitching',
+                context=context
+            )
+
+            if success:
+                cursor.execute("""
+                    UPDATE creators SET last_monthly_reset_sent = NOW() WHERE id = %s
+                """, (creator['id'],))
+                conn.commit()
+                sent_count += 1
+                print(f"✅ Sent monthly reset email to {creator['email']}")
+            else:
+                errors.append(f"{creator['email']}: {error}")
+                print(f"❌ Error sending to {creator['email']}: {error}")
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'sent': sent_count,
+            'errors': len(errors),
+            'error_details': errors[:5]
+        }), 200
+
+    except Exception as e:
+        print(f"❌ Error in send_monthly_reset: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
