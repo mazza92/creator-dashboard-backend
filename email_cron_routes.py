@@ -462,31 +462,25 @@ def send_first_pitch_nudge():
     """
     test_mode = request.args.get('test', '').lower() == 'true'
     TEST_EMAIL = 'team@newcollab.co'
+    APP_URL = os.getenv('FRONTEND_URL', 'https://app.newcollab.co').rstrip('/')
 
-    # Test mode: send sample email to team only
     if test_mode:
         context = {
-            'email_header_title': 'Your first brand is waiting',
-            'email_header_subtitle': 'It takes less than 3 minutes',
             'message': """
-                <p>Hey there 👋</p>
-                <p>You signed up to NewCollab but haven't contacted a brand yet.</p>
-                <p>Here's how simple it is:</p>
-                <ol>
-                    <li>Browse the brand directory</li>
-                    <li>Click <strong>Contact</strong> on any brand</li>
-                    <li>Your AI-generated pitch email is ready to send</li>
-                </ol>
-                <p>That's it. Nano creators land PR packages every week this way.</p>
+                <p style="margin: 0 0 16px;">Hey there,</p>
+                <p style="margin: 0 0 16px;">You signed up but haven't reached out to a brand yet. Totally normal. Most people browse first.</p>
+                <p style="margin: 0 0 16px;">But here's the thing: creators with smaller followings are landing PR packages every week through Newcollab. The brands in our directory actually want to hear from you.</p>
+                <p style="margin: 0 0 16px;">Pick one brand. Send one pitch. See what happens.</p>
+                <p style="margin: 0;">We write the pitch for you, so it takes about 2 minutes.</p>
             """,
-            'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/directory",
-            'action_text': 'Browse Brands Now',
+            'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
+            'action_text': 'Browse brands',
             'user_id': 0
         }
         success, error = send_template_email(
             to_email=TEST_EMAIL,
-            template_name='onboarding_reminder.html',
-            subject='[TEST] Your first PR package starts here (3 min)',
+            template_name='conversion_email.html',
+            subject='[TEST] Your first brand is waiting',
             context=context
         )
         return jsonify({
@@ -520,29 +514,24 @@ def send_first_pitch_nudge():
         errors = []
 
         for creator in creators:
+            name = creator['username'] or 'there'
             context = {
-                'email_header_title': 'Your first brand is waiting',
-                'email_header_subtitle': 'It takes less than 3 minutes',
                 'message': f"""
-                    <p>Hey {creator['username'] or 'there'} 👋</p>
-                    <p>You signed up to NewCollab but haven't contacted a brand yet.</p>
-                    <p>Here's how simple it is:</p>
-                    <ol>
-                        <li>Browse the brand directory</li>
-                        <li>Click <strong>Contact</strong> on any brand</li>
-                        <li>Your AI-generated pitch email is ready to send</li>
-                    </ol>
-                    <p>That's it. Nano creators land PR packages every week this way.</p>
+                    <p style="margin: 0 0 16px;">Hey {name},</p>
+                    <p style="margin: 0 0 16px;">You signed up but haven't reached out to a brand yet. Totally normal. Most people browse first.</p>
+                    <p style="margin: 0 0 16px;">But here's the thing: creators with smaller followings are landing PR packages every week through Newcollab. The brands in our directory actually want to hear from you.</p>
+                    <p style="margin: 0 0 16px;">Pick one brand. Send one pitch. See what happens.</p>
+                    <p style="margin: 0;">We write the pitch for you, so it takes about 2 minutes.</p>
                 """,
-                'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/directory",
-                'action_text': 'Browse Brands Now',
+                'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
+                'action_text': 'Browse brands',
                 'user_id': creator['id']
             }
 
             success, error = send_template_email(
                 to_email=creator['email'],
-                template_name='onboarding_reminder.html',
-                subject='Your first PR package starts here (3 min)',
+                template_name='conversion_email.html',
+                subject='Your first brand is waiting',
                 context=context
             )
 
@@ -584,31 +573,25 @@ def send_limit_warning():
     """
     test_mode = request.args.get('test', '').lower() == 'true'
     TEST_EMAIL = 'team@newcollab.co'
+    APP_URL = os.getenv('FRONTEND_URL', 'https://app.newcollab.co').rstrip('/')
 
     if test_mode:
         context = {
-            'email_header_title': 'You have 1 free contact left this month',
-            'email_header_subtitle': 'Make it count — or go unlimited',
             'message': """
-                <p>Hey there 👋</p>
-                <p>You've used 2 of your 3 free brand contacts this month. <strong>1 left.</strong></p>
-                <p>When it's gone, you'll have to wait until next month — unless you upgrade to Creator Pro.</p>
-                <p><strong>Creator Pro gives you:</strong></p>
-                <ul>
-                    <li>Unlimited brand contacts every month</li>
-                    <li>Unlimited AI pitch emails</li>
-                    <li>Full access to all PR contacts in the directory</li>
-                </ul>
-                <p>Just $12/month. Cancel anytime.</p>
+                <p style="margin: 0 0 16px;">Hey there,</p>
+                <p style="margin: 0 0 16px;">Quick heads up: you've used 2 of your 3 free brand contacts this month. One left.</p>
+                <p style="margin: 0 0 16px;">Once it's gone, you'll need to wait until next month to pitch more brands.</p>
+                <p style="margin: 0 0 16px;">If you want to keep going without limits, Pro is $12/month. You get unlimited pitches, unlimited brand contacts, and full access to every PR contact in the directory.</p>
+                <p style="margin: 0;">No pressure either way. Just wanted to give you a heads up before it resets.</p>
             """,
-            'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/upgrade",
-            'action_text': 'Upgrade to Pro — $12/month',
+            'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
+            'action_text': 'Go Pro for $12/mo',
             'user_id': 0
         }
         success, error = send_template_email(
             to_email=TEST_EMAIL,
-            template_name='onboarding_reminder.html',
-            subject='[TEST] You have 1 free contact left this month',
+            template_name='conversion_email.html',
+            subject='[TEST] 1 free contact left this month',
             context=context
         )
         return jsonify({
@@ -643,30 +626,24 @@ def send_limit_warning():
         errors = []
 
         for creator in creators:
+            name = creator['username'] or 'there'
             context = {
-                'email_header_title': 'You have 1 free contact left this month',
-                'email_header_subtitle': 'Make it count — or go unlimited',
                 'message': f"""
-                    <p>Hey {creator['username'] or 'there'} 👋</p>
-                    <p>You've used 2 of your 3 free brand contacts this month. <strong>1 left.</strong></p>
-                    <p>When it's gone, you'll have to wait until next month — unless you upgrade to Creator Pro.</p>
-                    <p><strong>Creator Pro gives you:</strong></p>
-                    <ul>
-                        <li>Unlimited brand contacts every month</li>
-                        <li>Unlimited AI pitch emails</li>
-                        <li>Full access to all PR contacts in the directory</li>
-                    </ul>
-                    <p>Just $12/month. Cancel anytime.</p>
+                    <p style="margin: 0 0 16px;">Hey {name},</p>
+                    <p style="margin: 0 0 16px;">Quick heads up: you've used 2 of your 3 free brand contacts this month. One left.</p>
+                    <p style="margin: 0 0 16px;">Once it's gone, you'll need to wait until next month to pitch more brands.</p>
+                    <p style="margin: 0 0 16px;">If you want to keep going without limits, Pro is $12/month. You get unlimited pitches, unlimited brand contacts, and full access to every PR contact in the directory.</p>
+                    <p style="margin: 0;">No pressure either way. Just wanted to give you a heads up before it resets.</p>
                 """,
-                'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/upgrade",
-                'action_text': 'Upgrade to Pro — $12/month',
+                'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
+                'action_text': 'Go Pro for $12/mo',
                 'user_id': creator['id']
             }
 
             success, error = send_template_email(
                 to_email=creator['email'],
-                template_name='onboarding_reminder.html',
-                subject='You have 1 free contact left this month',
+                template_name='conversion_email.html',
+                subject='1 free contact left this month',
                 context=context
             )
 
@@ -709,32 +686,25 @@ def send_limit_reached():
     """
     test_mode = request.args.get('test', '').lower() == 'true'
     TEST_EMAIL = 'team@newcollab.co'
+    APP_URL = os.getenv('FRONTEND_URL', 'https://app.newcollab.co').rstrip('/')
 
     if test_mode:
         context = {
-            'email_header_title': "You've hit your free limit",
-            'email_header_subtitle': 'Upgrade now to keep pitching brands',
             'message': """
-                <p>Hey there 👋</p>
-                <p>You've used all 3 of your free contacts this month — which means you're actively pitching brands. That's exactly what gets you PR packages.</p>
-                <p>Don't stop now. Upgrade to Creator Pro and keep going.</p>
-                <p><strong>What you unlock for $12/month:</strong></p>
-                <ul>
-                    <li>✅ Unlimited brand contacts — no monthly cap</li>
-                    <li>✅ Unlimited AI-generated pitch emails</li>
-                    <li>✅ Full PR contact directory access</li>
-                    <li>✅ Priority access to new brands added weekly</li>
-                </ul>
-                <p>Your contacts reset next month — but why wait? Every week you delay is a week without pitching.</p>
+                <p style="margin: 0 0 16px;">Hey there,</p>
+                <p style="margin: 0 0 16px;">You've used all 3 of your free brand contacts this month.</p>
+                <p style="margin: 0 0 16px;">That actually says something good about you. You're out there pitching, which is exactly how creators land PR packages.</p>
+                <p style="margin: 0 0 16px;">Your contacts will reset next month. But if you don't want to wait, Pro removes the limit entirely. $12/month, unlimited pitches, cancel anytime.</p>
+                <p style="margin: 0;">Either way, nice work reaching out to brands. Most people never get this far.</p>
             """,
-            'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/upgrade",
-            'action_text': 'Upgrade to Creator Pro — $12/month',
+            'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
+            'action_text': 'Upgrade to Pro',
             'user_id': 0
         }
         success, error = send_template_email(
             to_email=TEST_EMAIL,
-            template_name='onboarding_reminder.html',
-            subject="[TEST] You've hit your free limit — upgrade to keep pitching",
+            template_name='conversion_email.html',
+            subject="[TEST] You've hit your free limit",
             context=context
         )
         return jsonify({
@@ -769,31 +739,24 @@ def send_limit_reached():
         errors = []
 
         for creator in creators:
+            name = creator['username'] or 'there'
             context = {
-                'email_header_title': "You've hit your free limit",
-                'email_header_subtitle': 'Upgrade now to keep pitching brands',
                 'message': f"""
-                    <p>Hey {creator['username'] or 'there'} 👋</p>
-                    <p>You've used all 3 of your free contacts this month — which means you're actively pitching brands. That's exactly what gets you PR packages.</p>
-                    <p>Don't stop now. Upgrade to Creator Pro and keep going.</p>
-                    <p><strong>What you unlock for $12/month:</strong></p>
-                    <ul>
-                        <li>✅ Unlimited brand contacts — no monthly cap</li>
-                        <li>✅ Unlimited AI-generated pitch emails</li>
-                        <li>✅ Full PR contact directory access</li>
-                        <li>✅ Priority access to new brands added weekly</li>
-                    </ul>
-                    <p>Your contacts reset next month — but why wait? Every week you delay is a week without pitching.</p>
+                    <p style="margin: 0 0 16px;">Hey {name},</p>
+                    <p style="margin: 0 0 16px;">You've used all 3 of your free brand contacts this month.</p>
+                    <p style="margin: 0 0 16px;">That actually says something good about you. You're out there pitching, which is exactly how creators land PR packages.</p>
+                    <p style="margin: 0 0 16px;">Your contacts will reset next month. But if you don't want to wait, Pro removes the limit entirely. $12/month, unlimited pitches, cancel anytime.</p>
+                    <p style="margin: 0;">Either way, nice work reaching out to brands. Most people never get this far.</p>
                 """,
-                'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/upgrade",
-                'action_text': 'Upgrade to Creator Pro — $12/month',
+                'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
+                'action_text': 'Upgrade to Pro',
                 'user_id': creator['id']
             }
 
             success, error = send_template_email(
                 to_email=creator['email'],
-                template_name='onboarding_reminder.html',
-                subject="You've hit your free limit — upgrade to keep pitching",
+                template_name='conversion_email.html',
+                subject="You've hit your free limit",
                 context=context
             )
 
@@ -835,26 +798,25 @@ def send_reengagement():
     """
     test_mode = request.args.get('test', '').lower() == 'true'
     TEST_EMAIL = 'team@newcollab.co'
+    APP_URL = os.getenv('FRONTEND_URL', 'https://app.newcollab.co').rstrip('/')
 
     if test_mode:
         context = {
-            'email_header_title': 'Still looking for your first PR package?',
-            'email_header_subtitle': "You're closer than you think",
             'message': """
-                <p>Hey there 👋</p>
-                <p>You haven't contacted a brand yet — and that's okay. Most creators hesitate at first.</p>
-                <p>Here's the truth: brands on NewCollab accept nano creators every week. You don't need 100k followers. You need one good pitch.</p>
-                <p>We write the pitch for you. All you do is hit send.</p>
-                <p>One brand. One email. That's your first PR package.</p>
+                <p style="margin: 0 0 16px;">Hey there,</p>
+                <p style="margin: 0 0 16px;">You haven't reached out to a brand yet, and that's totally fine. A lot of people take their time.</p>
+                <p style="margin: 0 0 16px;">Just wanted to remind you that the brands in our directory work with creators of all sizes. We're talking 500-5k followers landing free products regularly.</p>
+                <p style="margin: 0 0 16px;">You still have 3 free contacts available. We handle the pitch writing, so it's really just picking a brand and hitting send.</p>
+                <p style="margin: 0;">Whenever you're ready.</p>
             """,
-            'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/directory",
-            'action_text': 'Find Your First Brand',
+            'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
+            'action_text': 'Browse brands',
             'user_id': 0
         }
         success, error = send_template_email(
             to_email=TEST_EMAIL,
-            template_name='onboarding_reminder.html',
-            subject='[TEST] You still have 3 free contacts waiting',
+            template_name='conversion_email.html',
+            subject='[TEST] Still have 3 free contacts',
             context=context
         )
         return jsonify({
@@ -888,25 +850,24 @@ def send_reengagement():
         errors = []
 
         for creator in creators:
+            name = creator['username'] or 'there'
             context = {
-                'email_header_title': 'Still looking for your first PR package?',
-                'email_header_subtitle': "You're closer than you think",
                 'message': f"""
-                    <p>Hey {creator['username'] or 'there'} 👋</p>
-                    <p>You haven't contacted a brand yet — and that's okay. Most creators hesitate at first.</p>
-                    <p>Here's the truth: brands on NewCollab accept nano creators every week. You don't need 100k followers. You need one good pitch.</p>
-                    <p>We write the pitch for you. All you do is hit send.</p>
-                    <p>One brand. One email. That's your first PR package.</p>
+                    <p style="margin: 0 0 16px;">Hey {name},</p>
+                    <p style="margin: 0 0 16px;">You haven't reached out to a brand yet, and that's totally fine. A lot of people take their time.</p>
+                    <p style="margin: 0 0 16px;">Just wanted to remind you that the brands in our directory work with creators of all sizes. We're talking 500-5k followers landing free products regularly.</p>
+                    <p style="margin: 0 0 16px;">You still have 3 free contacts available. We handle the pitch writing, so it's really just picking a brand and hitting send.</p>
+                    <p style="margin: 0;">Whenever you're ready.</p>
                 """,
-                'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/directory",
-                'action_text': 'Find Your First Brand',
+                'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
+                'action_text': 'Browse brands',
                 'user_id': creator['id']
             }
 
             success, error = send_template_email(
                 to_email=creator['email'],
-                template_name='onboarding_reminder.html',
-                subject='You still have 3 free contacts waiting',
+                template_name='conversion_email.html',
+                subject='Still have 3 free contacts',
                 context=context
             )
 
@@ -948,25 +909,25 @@ def send_monthly_reset():
     """
     test_mode = request.args.get('test', '').lower() == 'true'
     TEST_EMAIL = 'team@newcollab.co'
+    APP_URL = os.getenv('FRONTEND_URL', 'https://app.newcollab.co').rstrip('/')
 
     if test_mode:
         context = {
-            'email_header_title': 'Your 3 free contacts just reset',
-            'email_header_subtitle': 'Start pitching again — or go unlimited',
             'message': """
-                <p>Hey there 👋</p>
-                <p>Good news — your free contacts have reset. You have 3 fresh contacts to use this month.</p>
-                <p>Last month you hit your limit, which means you're pitching. Keep that momentum going.</p>
-                <p>Or skip the monthly cap entirely — Creator Pro is $12/month for unlimited contacts, unlimited AI pitches, and the full directory.</p>
+                <p style="margin: 0 0 16px;">Hey there,</p>
+                <p style="margin: 0 0 16px;">Your 3 free contacts just reset for the month.</p>
+                <p style="margin: 0 0 16px;">You used all of them last month, which is great. Most people don't even try. But you actually pitched brands, and that's how you land PR packages.</p>
+                <p style="margin: 0 0 16px;">If you want to skip the monthly limit, Pro is $12/month for unlimited contacts. But either way, you've got 3 fresh ones ready to go.</p>
+                <p style="margin: 0;">Good luck this month.</p>
             """,
-            'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/directory",
-            'action_text': 'Start Pitching',
+            'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
+            'action_text': 'Start pitching',
             'user_id': 0
         }
         success, error = send_template_email(
             to_email=TEST_EMAIL,
-            template_name='onboarding_reminder.html',
-            subject='[TEST] Your free contacts just reset — start pitching',
+            template_name='conversion_email.html',
+            subject='[TEST] Your contacts just reset',
             context=context
         )
         return jsonify({
@@ -1001,24 +962,24 @@ def send_monthly_reset():
         errors = []
 
         for creator in creators:
+            name = creator['username'] or 'there'
             context = {
-                'email_header_title': 'Your 3 free contacts just reset',
-                'email_header_subtitle': 'Start pitching again — or go unlimited',
                 'message': f"""
-                    <p>Hey {creator['username'] or 'there'} 👋</p>
-                    <p>Good news — your free contacts have reset. You have 3 fresh contacts to use this month.</p>
-                    <p>Last month you hit your limit, which means you're pitching. Keep that momentum going.</p>
-                    <p>Or skip the monthly cap entirely — Creator Pro is $12/month for unlimited contacts, unlimited AI pitches, and the full directory.</p>
+                    <p style="margin: 0 0 16px;">Hey {name},</p>
+                    <p style="margin: 0 0 16px;">Your 3 free contacts just reset for the month.</p>
+                    <p style="margin: 0 0 16px;">You used all of them last month, which is great. Most people don't even try. But you actually pitched brands, and that's how you land PR packages.</p>
+                    <p style="margin: 0 0 16px;">If you want to skip the monthly limit, Pro is $12/month for unlimited contacts. But either way, you've got 3 fresh ones ready to go.</p>
+                    <p style="margin: 0;">Good luck this month.</p>
                 """,
-                'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/directory",
-                'action_text': 'Start Pitching',
+                'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
+                'action_text': 'Start pitching',
                 'user_id': creator['id']
             }
 
             success, error = send_template_email(
                 to_email=creator['email'],
-                template_name='onboarding_reminder.html',
-                subject='Your free contacts just reset — start pitching',
+                template_name='conversion_email.html',
+                subject='Your contacts just reset',
                 context=context
             )
 

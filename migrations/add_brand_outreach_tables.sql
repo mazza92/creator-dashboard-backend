@@ -57,7 +57,7 @@ INSERT INTO campaign_templates (name, type, subject, preview_text, html_content,
 VALUES (
     'Brand Acquisition - Initial Outreach',
     'brand_outreach',
-    'Partner with 800+ creators on NewCollab - Free for {{brand_name}}',
+    'Partner with 800+ creators on Newcollab - Free for {{brand_name}}',
     'Get authentic UGC content from vetted creators',
     '<!DOCTYPE html>
 <html>
@@ -73,7 +73,7 @@ VALUES (
                     <!-- Header -->
                     <tr>
                         <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 40px 30px; text-align: center;">
-                            <h1 style="color: #ffffff; margin: 0; font-size: 28px; font-weight: 700;">NewCollab</h1>
+                            <h1 style="color: #ffffff; margin: 0; font-size: 28px; font-weight: 700;">Newcollab</h1>
                             <p style="color: rgba(255,255,255,0.9); margin: 10px 0 0; font-size: 16px;">Creator Partnership Platform</p>
                         </td>
                     </tr>
@@ -84,7 +84,7 @@ VALUES (
                             <h2 style="color: #333; margin: 0 0 20px; font-size: 22px;">Hi {{brand_name}} Team,</h2>
 
                             <p style="color: #555; line-height: 1.6; margin: 0 0 20px; font-size: 16px;">
-                                I came across {{brand_name}} and thought you''d be a great fit for our creator community at <strong>NewCollab</strong>.
+                                I came across {{brand_name}} and thought you''d be a great fit for our creator community at <strong>Newcollab</strong>.
                             </p>
 
                             <p style="color: #555; line-height: 1.6; margin: 0 0 20px; font-size: 16px;">
@@ -108,7 +108,7 @@ VALUES (
 
                             <!-- CTA Button -->
                             <div style="text-align: center; margin: 30px 0;">
-                                <a href="https://newcollab.co/brand-signup" style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-weight: 600; font-size: 16px;">Create Free Brand Account</a>
+                                <a href="https://app.newcollab.co/register" style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-weight: 600; font-size: 16px;">Create Free Brand Account</a>
                             </div>
 
                             <p style="color: #555; line-height: 1.6; margin: 25px 0 0; font-size: 16px;">
@@ -117,7 +117,7 @@ VALUES (
 
                             <p style="color: #333; margin: 20px 0 0; font-size: 16px;">
                                 Best,<br>
-                                <strong>The NewCollab Team</strong>
+                                <strong>The Newcollab Team</strong>
                             </p>
                         </td>
                     </tr>
@@ -126,7 +126,7 @@ VALUES (
                     <tr>
                         <td style="background-color: #f8f9fa; padding: 25px 40px; text-align: center; border-top: 1px solid #eee;">
                             <p style="color: #888; margin: 0; font-size: 13px;">
-                                NewCollab - Connecting Brands with Creators<br>
+                                Newcollab - Connecting Brands with Creators<br>
                                 <a href="https://newcollab.co" style="color: #667eea;">newcollab.co</a>
                             </p>
                         </td>

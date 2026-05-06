@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ subject }} - Newcollab</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f5f5f7; color: #1d1d1f;">
+  {% if preheader %}
+  <div style="display: none; font-size: 1px; color: #f5f5f7; line-height: 1px; max-height: 0; max-width: 0; opacity: 0; overflow: hidden;">
+    {{ preheader }}
+  </div>
+  {% endif %}
+
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #f5f5f7;">
+    <tr>
+      <td style="padding: 40px 20px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 520px; margin: 0 auto; background-color: #ffffff; border-radius: 20px; overflow: hidden;">
+
+          <!-- Logo -->
+          <tr>
+            <td style="padding: 32px 32px 24px; text-align: center;">
+              <img src="https://kyawgtojxoglvlhzsotm.supabase.co/storage/v1/object/sign/newcollab/NEWCOLLAB-BRAND.png?token=eyJraWQiOiJzdG9yYWdlLXVybC1zaWduaW5nLWtleV83MmM4MjFmNC03NzYxLTRlYWUtYTYzOS0zN2NlNmRkNzIzNGMiLCJhbGciOiJIUzI1NiJ9.eyJ1cmwiOiJuZXdjb2xsYWIvTkVXQ09MTEFCLUJSQU5ELnBuZyIsImlhdCI6MTc0ODk3NzM2NCwiZXhwIjoxNzgwNTEzMzY0fQ.UPr_r05j7CHUe3_HxmJ5SbqwS51eHMaBzL8R6YveTgk" alt="Newcollab" width="120" style="max-width: 120px;">
+            </td>
+          </tr>
+
+          <!-- Main Content -->
+          <tr>
+            <td style="padding: 0 32px 32px;">
+              <div style="font-size: 16px; line-height: 1.6; color: #1d1d1f;">
+                {{ message | safe }}
+              </div>
+
+              <!-- CTA Button -->
+              {% if action_url and action_text %}
+              <div style="text-align: center; margin: 28px 0 8px;">
+                <a href="{{ action_url }}" style="display: inline-block; padding: 14px 28px; background-color: #1d1d1f; color: #ffffff; text-decoration: none; border-radius: 12px; font-weight: 600; font-size: 15px;">
+                  {{ action_text }}
+                </a>
+              </div>
+              {% endif %}
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="padding: 24px 32px; background-color: #f5f5f7; border-top: 1px solid #e8e8ed;">
+              <p style="font-size: 13px; color: #86868b; margin: 0 0 8px; text-align: center;">
+                Newcollab helps creators land PR packages from brands they love.
+              </p>
+              <p style="font-size: 12px; color: #86868b; margin: 0; text-align: center;">
+                <a href="mailto:team@newcollab.co" style="color: #86868b; text-decoration: underline;">Help</a>
+                &nbsp;&middot;&nbsp;
+                <a href="https://app.newcollab.co/creator/dashboard/settings" style="color: #86868b; text-decoration: underline;">Manage emails</a>
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
