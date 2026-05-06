@@ -458,7 +458,44 @@ def send_first_pitch_nudge():
     Email 1: First Pitch Nudge
     Target: Signed up 24h+ ago, never sent a pitch, email verified
     Cron: Daily at 10am UTC
+    Add ?test=true to only send to team@newcollab.co
     """
+    test_mode = request.args.get('test', '').lower() == 'true'
+    TEST_EMAIL = 'team@newcollab.co'
+
+    # Test mode: send sample email to team only
+    if test_mode:
+        context = {
+            'email_header_title': 'Your first brand is waiting',
+            'email_header_subtitle': 'It takes less than 3 minutes',
+            'message': """
+                <p>Hey there 👋</p>
+                <p>You signed up to NewCollab but haven't contacted a brand yet.</p>
+                <p>Here's how simple it is:</p>
+                <ol>
+                    <li>Browse the brand directory</li>
+                    <li>Click <strong>Contact</strong> on any brand</li>
+                    <li>Your AI-generated pitch email is ready to send</li>
+                </ol>
+                <p>That's it. Nano creators land PR packages every week this way.</p>
+            """,
+            'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/directory",
+            'action_text': 'Browse Brands Now',
+            'user_id': 0
+        }
+        success, error = send_template_email(
+            to_email=TEST_EMAIL,
+            template_name='onboarding_reminder.html',
+            subject='[TEST] Your first PR package starts here (3 min)',
+            context=context
+        )
+        return jsonify({
+            'success': success,
+            'test_mode': True,
+            'sent_to': TEST_EMAIL,
+            'error': error if not success else None
+        }), 200 if success else 500
+
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -543,7 +580,44 @@ def send_limit_warning():
     Email 2: Limit Warning (1 contact left)
     Target: Free tier, pitches_sent_this_week = 2, warning not sent this month
     Cron: Daily at 11am UTC
+    Add ?test=true to only send to team@newcollab.co
     """
+    test_mode = request.args.get('test', '').lower() == 'true'
+    TEST_EMAIL = 'team@newcollab.co'
+
+    if test_mode:
+        context = {
+            'email_header_title': 'You have 1 free contact left this month',
+            'email_header_subtitle': 'Make it count — or go unlimited',
+            'message': """
+                <p>Hey there 👋</p>
+                <p>You've used 2 of your 3 free brand contacts this month. <strong>1 left.</strong></p>
+                <p>When it's gone, you'll have to wait until next month — unless you upgrade to Creator Pro.</p>
+                <p><strong>Creator Pro gives you:</strong></p>
+                <ul>
+                    <li>Unlimited brand contacts every month</li>
+                    <li>Unlimited AI pitch emails</li>
+                    <li>Full access to all PR contacts in the directory</li>
+                </ul>
+                <p>Just $12/month. Cancel anytime.</p>
+            """,
+            'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/upgrade",
+            'action_text': 'Upgrade to Pro — $12/month',
+            'user_id': 0
+        }
+        success, error = send_template_email(
+            to_email=TEST_EMAIL,
+            template_name='onboarding_reminder.html',
+            subject='[TEST] You have 1 free contact left this month',
+            context=context
+        )
+        return jsonify({
+            'success': success,
+            'test_mode': True,
+            'sent_to': TEST_EMAIL,
+            'error': error if not success else None
+        }), 200 if success else 500
+
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -631,7 +705,45 @@ def send_limit_reached():
     Target: Free tier, pitches_sent_this_week >= 3, upgrade email not sent this month
     Cron: Daily at 11:30am UTC
     Note: Highest-intent moment — user is actively trying to pitch
+    Add ?test=true to only send to team@newcollab.co
     """
+    test_mode = request.args.get('test', '').lower() == 'true'
+    TEST_EMAIL = 'team@newcollab.co'
+
+    if test_mode:
+        context = {
+            'email_header_title': "You've hit your free limit",
+            'email_header_subtitle': 'Upgrade now to keep pitching brands',
+            'message': """
+                <p>Hey there 👋</p>
+                <p>You've used all 3 of your free contacts this month — which means you're actively pitching brands. That's exactly what gets you PR packages.</p>
+                <p>Don't stop now. Upgrade to Creator Pro and keep going.</p>
+                <p><strong>What you unlock for $12/month:</strong></p>
+                <ul>
+                    <li>✅ Unlimited brand contacts — no monthly cap</li>
+                    <li>✅ Unlimited AI-generated pitch emails</li>
+                    <li>✅ Full PR contact directory access</li>
+                    <li>✅ Priority access to new brands added weekly</li>
+                </ul>
+                <p>Your contacts reset next month — but why wait? Every week you delay is a week without pitching.</p>
+            """,
+            'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/upgrade",
+            'action_text': 'Upgrade to Creator Pro — $12/month',
+            'user_id': 0
+        }
+        success, error = send_template_email(
+            to_email=TEST_EMAIL,
+            template_name='onboarding_reminder.html',
+            subject="[TEST] You've hit your free limit — upgrade to keep pitching",
+            context=context
+        )
+        return jsonify({
+            'success': success,
+            'test_mode': True,
+            'sent_to': TEST_EMAIL,
+            'error': error if not success else None
+        }), 200 if success else 500
+
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -719,7 +831,39 @@ def send_reengagement():
     Email 4: Re-engagement (never pitched, gone quiet)
     Target: Registered 7+ days ago, never sent a pitch, no re-engagement email in 14 days
     Cron: Weekly (Mondays) at 9am UTC
+    Add ?test=true to only send to team@newcollab.co
     """
+    test_mode = request.args.get('test', '').lower() == 'true'
+    TEST_EMAIL = 'team@newcollab.co'
+
+    if test_mode:
+        context = {
+            'email_header_title': 'Still looking for your first PR package?',
+            'email_header_subtitle': "You're closer than you think",
+            'message': """
+                <p>Hey there 👋</p>
+                <p>You haven't contacted a brand yet — and that's okay. Most creators hesitate at first.</p>
+                <p>Here's the truth: brands on NewCollab accept nano creators every week. You don't need 100k followers. You need one good pitch.</p>
+                <p>We write the pitch for you. All you do is hit send.</p>
+                <p>One brand. One email. That's your first PR package.</p>
+            """,
+            'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/directory",
+            'action_text': 'Find Your First Brand',
+            'user_id': 0
+        }
+        success, error = send_template_email(
+            to_email=TEST_EMAIL,
+            template_name='onboarding_reminder.html',
+            subject='[TEST] You still have 3 free contacts waiting',
+            context=context
+        )
+        return jsonify({
+            'success': success,
+            'test_mode': True,
+            'sent_to': TEST_EMAIL,
+            'error': error if not success else None
+        }), 200 if success else 500
+
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -800,7 +944,38 @@ def send_monthly_reset():
     Email 5: Monthly Reset
     Target: Free users who hit the limit last month
     Cron: 1st of each month at 9am UTC
+    Add ?test=true to only send to team@newcollab.co
     """
+    test_mode = request.args.get('test', '').lower() == 'true'
+    TEST_EMAIL = 'team@newcollab.co'
+
+    if test_mode:
+        context = {
+            'email_header_title': 'Your 3 free contacts just reset',
+            'email_header_subtitle': 'Start pitching again — or go unlimited',
+            'message': """
+                <p>Hey there 👋</p>
+                <p>Good news — your free contacts have reset. You have 3 fresh contacts to use this month.</p>
+                <p>Last month you hit your limit, which means you're pitching. Keep that momentum going.</p>
+                <p>Or skip the monthly cap entirely — Creator Pro is $12/month for unlimited contacts, unlimited AI pitches, and the full directory.</p>
+            """,
+            'action_url': f"{os.getenv('FRONTEND_URL', 'https://app.newcollab.co')}/directory",
+            'action_text': 'Start Pitching',
+            'user_id': 0
+        }
+        success, error = send_template_email(
+            to_email=TEST_EMAIL,
+            template_name='onboarding_reminder.html',
+            subject='[TEST] Your free contacts just reset — start pitching',
+            context=context
+        )
+        return jsonify({
+            'success': success,
+            'test_mode': True,
+            'sent_to': TEST_EMAIL,
+            'error': error if not success else None
+        }), 200 if success else 500
+
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
