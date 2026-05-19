@@ -1623,3 +1623,233 @@ def pipeline_confirm_send_test():
         'sent_to': TEST_EMAIL,
         'error': error if not success else None
     }), 200 if success else 500
+
+
+@email_cron_bp.route('/saved-brand-nudge', methods=['POST'])
+def saved_brand_nudge():
+    """
+    Day 3 - Saved Brand Nudge (Free + Pro)
+    Sends to users who saved brands 3 days ago but haven't contacted them yet.
+    Goal: remind them to take action on saved brands.
+    Cron: Daily at 09:00
+    """
+    test_mode = request.args.get('test', '').lower() == 'true'
+    TEST_EMAIL = 'team@newcollab.co'
+    APP_URL = os.getenv('FRONTEND_URL', 'https://app.newcollab.co').rstrip('/')
+
+    if test_mode:
+        context = {
+            'message': """
+                <p style="margin: 0 0 16px;">Hey there,</p>
+                <p style="margin: 0 0 16px;">You saved <strong>Test Brand</strong> to your pipeline 3 days ago — are you ready to reach out?</p>
+                <p style="margin: 0 0 16px;">Brands get tons of requests, so the sooner you pitch, the better your chances. 🎯</p>
+                <p style="margin: 0;">Open your pipeline and send your first message. We'll even write the email for you!</p>
+            """,
+            'action_url': f"{APP_URL}/creator/dashboard/pr-pipeline?filter=saved",
+            'action_text': 'Contact Test Brand',
+            'user_id': 0
+        }
+        success, error = send_template_email(
+            to_email=TEST_EMAIL,
+            template_name='conversion_email.html',
+            subject='[TEST] Ready to pitch Test Brand?',
+            context=context
+        )
+        return jsonify({
+            'success': success,
+            'test_mode': True,
+            'sent_to': TEST_EMAIL,
+            'error': error if not success else None
+        }), 200 if success else 500
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Find users with brands saved exactly 3 days ago that are still in 'saved' stage
+        cursor.execute("""
+            SELECT
+                cp.id AS pipeline_id,
+                c.id AS creator_id, u.email, c.username,
+                pb.brand_name, pb.category, pb.response_rate
+            FROM creator_pipeline cp
+            JOIN creators c ON c.id = cp.creator_id
+            JOIN users u ON u.id = c.user_id
+            JOIN pr_brands pb ON pb.id = cp.brand_id
+            WHERE cp.stage = 'saved'
+              AND cp.created_at::date = (NOW() - INTERVAL '3 days')::date
+              AND cp.pitched_at IS NULL
+              AND cp.send_confirmed = FALSE
+              AND u.is_verified = true
+              AND u.unsubscribed_at IS NULL
+              AND (
+                c.last_any_email_sent IS NULL
+                OR c.last_any_email_sent < NOW() - INTERVAL '%s hours'
+              )
+            LIMIT 200
+        """, (GLOBAL_EMAIL_COOLDOWN_HOURS,))
+
+        rows = cursor.fetchall()
+        sent_count = 0
+        errors = []
+
+        for row in rows:
+            name = row['username'] or 'there'
+            response_note = f"They have a <strong>{row['response_rate']}% response rate</strong> — " if row['response_rate'] else ''
+            context = {
+                'message': f"""
+                    <p style="margin: 0 0 16px;">Hey {name},</p>
+                    <p style="margin: 0 0 16px;">You saved <strong>{row['brand_name']}</strong> to your pipeline 3 days ago — are you ready to reach out?</p>
+                    <p style="margin: 0 0 16px;">{response_note}Brands get tons of requests, so the sooner you pitch, the better your chances. 🎯</p>
+                    <p style="margin: 0;">Open your pipeline and send your first message. We'll even write the email for you!</p>
+                """,
+                'action_url': f"{APP_URL}/creator/dashboard/pr-pipeline?filter=saved",
+                'action_text': f'Contact {row["brand_name"]}',
+                'user_id': row['creator_id']
+            }
+
+            success, error = send_template_email(
+                to_email=row['email'],
+                template_name='conversion_email.html',
+                subject=f"Ready to pitch {row['brand_name']}?",
+                context=context
+            )
+
+            if success:
+                mark_email_sent(cursor, conn, row['creator_id'], 'saved_brand_nudge')
+                sent_count += 1
+                print(f"✅ Sent saved brand nudge to {row['email']}")
+            else:
+                errors.append(f"{row['email']}: {error}")
+                print(f"❌ Error sending to {row['email']}: {error}")
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'sent': sent_count,
+            'errors': len(errors),
+            'error_details': errors[:5]
+        }), 200
+
+    except Exception as e:
+        print(f"❌ Error in saved_brand_nudge: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@email_cron_bp.route('/saved-brand-reminder', methods=['POST'])
+def saved_brand_reminder():
+    """
+    Day 7 - Saved Brand Reminder (Free + Pro)
+    Sends to users who saved brands 7 days ago but still haven't contacted them.
+    More urgent nudge with social proof.
+    Cron: Daily at 09:00
+    """
+    test_mode = request.args.get('test', '').lower() == 'true'
+    TEST_EMAIL = 'team@newcollab.co'
+    APP_URL = os.getenv('FRONTEND_URL', 'https://app.newcollab.co').rstrip('/')
+
+    if test_mode:
+        context = {
+            'message': """
+                <p style="margin: 0 0 16px;">Hey there,</p>
+                <p style="margin: 0 0 16px;">You saved <strong>Test Brand</strong> a week ago but haven't reached out yet.</p>
+                <p style="margin: 0 0 16px;">Creators who pitch within the first week have a <strong>40% higher success rate</strong>. Don't miss your window! ⏰</p>
+                <p style="margin: 0;">If you're not interested anymore, you can always remove it from your pipeline.</p>
+            """,
+            'action_url': f"{APP_URL}/creator/dashboard/pr-pipeline?filter=saved",
+            'action_text': 'Pitch Test Brand Now',
+            'user_id': 0
+        }
+        success, error = send_template_email(
+            to_email=TEST_EMAIL,
+            template_name='conversion_email.html',
+            subject='[TEST] ⏰ Test Brand is still waiting for your pitch',
+            context=context
+        )
+        return jsonify({
+            'success': success,
+            'test_mode': True,
+            'sent_to': TEST_EMAIL,
+            'error': error if not success else None
+        }), 200 if success else 500
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Find users with brands saved exactly 7 days ago still in 'saved' stage
+        cursor.execute("""
+            SELECT
+                cp.id AS pipeline_id,
+                c.id AS creator_id, u.email, c.username,
+                pb.brand_name, pb.category
+            FROM creator_pipeline cp
+            JOIN creators c ON c.id = cp.creator_id
+            JOIN users u ON u.id = c.user_id
+            JOIN pr_brands pb ON pb.id = cp.brand_id
+            WHERE cp.stage = 'saved'
+              AND cp.created_at::date = (NOW() - INTERVAL '7 days')::date
+              AND cp.pitched_at IS NULL
+              AND cp.send_confirmed = FALSE
+              AND u.is_verified = true
+              AND u.unsubscribed_at IS NULL
+              AND (
+                c.last_any_email_sent IS NULL
+                OR c.last_any_email_sent < NOW() - INTERVAL '%s hours'
+              )
+            LIMIT 200
+        """, (GLOBAL_EMAIL_COOLDOWN_HOURS,))
+
+        rows = cursor.fetchall()
+        sent_count = 0
+        errors = []
+
+        for row in rows:
+            name = row['username'] or 'there'
+            context = {
+                'message': f"""
+                    <p style="margin: 0 0 16px;">Hey {name},</p>
+                    <p style="margin: 0 0 16px;">You saved <strong>{row['brand_name']}</strong> a week ago but haven't reached out yet.</p>
+                    <p style="margin: 0 0 16px;">Creators who pitch within the first week have a <strong>40% higher success rate</strong>. Don't miss your window! ⏰</p>
+                    <p style="margin: 0;">If you're not interested anymore, you can always remove it from your pipeline.</p>
+                """,
+                'action_url': f"{APP_URL}/creator/dashboard/pr-pipeline?filter=saved",
+                'action_text': f'Pitch {row["brand_name"]} Now',
+                'user_id': row['creator_id']
+            }
+
+            success, error = send_template_email(
+                to_email=row['email'],
+                template_name='conversion_email.html',
+                subject=f"⏰ {row['brand_name']} is still waiting for your pitch",
+                context=context
+            )
+
+            if success:
+                mark_email_sent(cursor, conn, row['creator_id'], 'saved_brand_reminder')
+                sent_count += 1
+                print(f"✅ Sent saved brand reminder to {row['email']}")
+            else:
+                errors.append(f"{row['email']}: {error}")
+                print(f"❌ Error sending to {row['email']}: {error}")
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'sent': sent_count,
+            'errors': len(errors),
+            'error_details': errors[:5]
+        }), 200
+
+    except Exception as e:
+        print(f"❌ Error in saved_brand_reminder: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500

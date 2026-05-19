@@ -934,6 +934,7 @@ def generate_pitch():
         data = request.get_json()
         brand_id = data.get('brand_id')
         brand_slug = data.get('slug')
+        is_followup = data.get('is_followup', False)
 
         if not brand_id and not brand_slug:
             return jsonify({'success': False, 'error': 'brand_id or slug required'}), 400
@@ -971,11 +972,14 @@ def generate_pitch():
         if not creator:
             return jsonify({'success': False, 'error': 'Creator not found'}), 404
 
-        # Generate pitch using Golden Template
-        pitch = generate_golden_template_pitch(brand, creator)
+        # Generate pitch using Golden Template or Follow-up Template
+        if is_followup:
+            pitch = generate_followup_pitch(brand, creator)
+        else:
+            pitch = generate_golden_template_pitch(brand, creator)
 
         # Debug: log what we're returning
-        print(f"[generate_pitch] Brand ID: {brand.get('id')}, Name: {brand.get('brand_name')}")
+        print(f"[generate_pitch] Brand ID: {brand.get('id')}, Name: {brand.get('brand_name')}, is_followup: {is_followup}")
         print(f"[generate_pitch] Email: {brand.get('contact_email')}, App URL: {brand.get('application_form_url')}")
 
         return jsonify({
@@ -1164,6 +1168,124 @@ Thanks,
     }
 
 
+def generate_followup_pitch(brand, creator):
+    """Generate a follow-up email for brands already pitched"""
+    import random
+
+    # Extract creator data
+    creator_name = f"{creator.get('first_name', '')} {creator.get('last_name', '')}".strip() or 'Creator'
+    followers = creator.get('followers_count')
+
+    # Parse social_links JSON to find platform handles
+    social_links_raw = creator.get('social_links') or []
+    if isinstance(social_links_raw, str):
+        try:
+            social_links_raw = json.loads(social_links_raw)
+        except:
+            social_links_raw = []
+
+    # Build a dict of platform -> handle/url
+    platform_handles = {}
+    for link in social_links_raw:
+        if isinstance(link, dict):
+            plat = link.get('platform', '').lower()
+            handle = link.get('handle') or link.get('username') or link.get('url') or ''
+            if handle and plat:
+                platform_handles[plat] = handle
+
+    # Determine primary platform and social URL
+    social_url = None
+    platform = 'Instagram'  # Default
+
+    if 'tiktok' in platform_handles:
+        platform = 'TikTok'
+        handle = platform_handles['tiktok'].replace('@', '').replace('https://tiktok.com/', '').replace('https://www.tiktok.com/', '').strip('/')
+        if handle and not handle.startswith('http'):
+            social_url = f"https://tiktok.com/@{handle}"
+        elif handle.startswith('http'):
+            social_url = handle
+    elif 'instagram' in platform_handles:
+        platform = 'Instagram'
+        handle = platform_handles['instagram'].replace('@', '').replace('https://instagram.com/', '').replace('https://www.instagram.com/', '').strip('/')
+        if handle and not handle.startswith('http'):
+            social_url = f"https://instagram.com/{handle}"
+        elif handle.startswith('http'):
+            social_url = handle
+    elif 'youtube' in platform_handles:
+        platform = 'YouTube'
+        handle = platform_handles['youtube'].replace('@', '')
+        if handle.startswith('http'):
+            social_url = handle
+        else:
+            social_url = f"https://youtube.com/@{handle}"
+
+    # Fallback for Instagram
+    if not social_url and creator.get('username'):
+        platform = 'Instagram'
+        social_url = f"https://instagram.com/{creator.get('username')}"
+
+    # Format followers
+    if followers:
+        if followers >= 1000000:
+            followers_str = f"{followers / 1000000:.1f}M"
+        elif followers >= 1000:
+            followers_str = f"{followers / 1000:.1f}K"
+        else:
+            followers_str = str(followers)
+    else:
+        followers_str = 'a growing audience'
+
+    brand_name = brand.get('brand_name', 'the brand')
+    category = brand.get('category', '')
+
+    # Follow-up openers (different from first outreach)
+    openers = [
+        "Just wanted to bump this to the top of your inbox - I reached out recently about a potential collab.",
+        "Following up on my email from last week about working together.",
+        "Hi! Wanted to check in on my collab inquiry from a few days ago.",
+        "Quick follow-up on my previous message - wanted to make sure it didn't get lost in the inbox.",
+        "Circling back on my earlier pitch - still very interested in collaborating!"
+    ]
+    opener = random.choice(openers)
+
+    # Build subject for follow-up
+    subject = f"Following up - PR collab with {brand_name}"
+
+    # Build social links section
+    social_line = f"My {platform}: {social_url}" if social_url else ""
+    profile_line = f"My profile: https://newcollab.co/c/{creator.get('username', creator.get('id', 'creator'))}"
+
+    if social_line:
+        links_section = f"{social_line}\n{profile_line}"
+    else:
+        links_section = profile_line
+
+    # Build follow-up body
+    body = f"""Hi there,
+
+{opener}
+
+I'm still really interested in creating content around {brand_name} products. I have {followers_str} on {platform} and my audience loves discovering new brands in the {category.lower() if category else 'lifestyle'} space.
+
+Happy to send over some content ideas if that helps - or if you want to check out my recent work first:
+
+{links_section}
+
+Would love to hear back either way. Thanks for considering!
+
+{creator_name}"""
+
+    return {
+        'subject': subject,
+        'body': body,
+        'creator_stats': {
+            'followers': followers_str if followers else None,
+            'platform': platform
+        },
+        'is_followup': True
+    }
+
+
 # ============================================
 # NEW PIPELINE ENDPOINTS (PR Pipeline Feature)
 # ============================================
@@ -1211,7 +1333,13 @@ def get_pipeline_full():
                     WHEN cp.pitched_at IS NOT NULL
                     THEN EXTRACT(DAY FROM NOW() - cp.pitched_at)::INT
                     ELSE NULL
-                END AS days_since_pitched
+                END AS days_since_pitched,
+                -- days since follow-up was sent (for follow-up overdue logic)
+                CASE
+                    WHEN cp.followup_sent_at IS NOT NULL
+                    THEN EXTRACT(DAY FROM NOW() - cp.followup_sent_at)::INT
+                    ELSE NULL
+                END AS days_since_followup
             FROM creator_pipeline cp
             JOIN pr_brands pb ON pb.id = cp.brand_id
             WHERE cp.creator_id = %s
@@ -1221,13 +1349,13 @@ def get_pipeline_full():
                     WHEN 'replied'   THEN 1
                     WHEN 'followup'  THEN 2
                     WHEN 'waiting'   THEN 3
+                    WHEN 'pitched'   THEN 3
                     WHEN 'won'       THEN 4
+                    WHEN 'success'   THEN 4
                     WHEN 'saved'     THEN 5
                     WHEN 'received'  THEN 6
-                    WHEN 'pitched'   THEN 3
-                    WHEN 'success'   THEN 4
                 END,
-                cp.pitched_at DESC NULLS LAST
+                COALESCE(cp.pitched_at, cp.created_at) DESC
         """, (creator_id,))
 
         rows = cursor.fetchall()
@@ -1454,6 +1582,62 @@ def _send_pitch_confirmation_email(to_email, creator_name, brand_name):
 
     except Exception as e:
         print(f"Error sending pitch confirmation email: {str(e)}")
+
+
+@pr_crm.route('/pipeline/<int:pipeline_id>/confirm-followup', methods=['POST'])
+def confirm_followup(pipeline_id):
+    """
+    Called when creator confirms they sent a follow-up email.
+    Updates followup_count and followup_sent_at, moves stage to 'followup'.
+    """
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get pipeline item
+        cursor.execute("""
+            SELECT cp.id, cp.followup_count, pb.brand_name
+            FROM creator_pipeline cp
+            LEFT JOIN pr_brands pb ON cp.brand_id = pb.id
+            WHERE cp.id = %s AND cp.creator_id = %s
+        """, (pipeline_id, creator_id))
+        pipeline_item = cursor.fetchone()
+
+        if not pipeline_item:
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Not found'}), 404
+
+        current_count = pipeline_item.get('followup_count', 0) or 0
+
+        cursor.execute("""
+            UPDATE creator_pipeline
+            SET stage = 'followup',
+                followup_count = %s,
+                followup_sent_at = NOW(),
+                updated_at = NOW()
+            WHERE id = %s AND creator_id = %s
+        """, (current_count + 1, pipeline_id, creator_id))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'stage': 'followup',
+            'followup_count': current_count + 1
+        })
+
+    except Exception as e:
+        import traceback
+        print(f"Error in confirm_followup: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @pr_crm.route('/pipeline/<int:pipeline_id>/log-reply', methods=['POST'])
