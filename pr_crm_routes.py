@@ -1164,6 +1164,439 @@ Thanks,
     }
 
 
+# ============================================
+# NEW PIPELINE ENDPOINTS (PR Pipeline Feature)
+# ============================================
+
+def get_subscription_status(creator_id):
+    """Helper to get creator subscription status"""
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    cursor.execute('SELECT subscription_tier FROM creators WHERE id = %s', (creator_id,))
+    result = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return result.get('subscription_tier', 'free') if result else 'free'
+
+
+@pr_crm.route('/pipeline/full', methods=['GET'])
+def get_pipeline_full():
+    """
+    Returns all pipeline items for the authenticated user, grouped by stage with summary stats.
+    This is the enhanced pipeline endpoint for the new PR Pipeline feature.
+    """
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get all pipeline items with brand info and days since pitched
+        cursor.execute("""
+            SELECT
+                cp.id, cp.stage AS pipeline_stage, cp.send_confirmed,
+                cp.pitched_at, cp.followup_count, cp.followup_sent_at,
+                cp.replied_at, cp.reply_type,
+                cp.package_confirmed_at, cp.package_value,
+                cp.expected_delivery, cp.received_at, cp.notes,
+                cp.created_at AS saved_at,
+                pb.id AS brand_id, pb.brand_name, pb.category,
+                pb.logo_url, pb.website AS domain, pb.response_rate,
+                pb.contact_email AS pr_email, pb.instagram_handle, pb.has_application_form,
+                pb.application_form_url,
+                -- days since pitched (for nudge logic in frontend)
+                CASE
+                    WHEN cp.pitched_at IS NOT NULL
+                    THEN EXTRACT(DAY FROM NOW() - cp.pitched_at)::INT
+                    ELSE NULL
+                END AS days_since_pitched
+            FROM creator_pipeline cp
+            JOIN pr_brands pb ON pb.id = cp.brand_id
+            WHERE cp.creator_id = %s
+              AND cp.stage != 'archived'
+            ORDER BY
+                CASE cp.stage
+                    WHEN 'replied'   THEN 1
+                    WHEN 'followup'  THEN 2
+                    WHEN 'waiting'   THEN 3
+                    WHEN 'won'       THEN 4
+                    WHEN 'saved'     THEN 5
+                    WHEN 'received'  THEN 6
+                    WHEN 'pitched'   THEN 3
+                    WHEN 'success'   THEN 4
+                END,
+                cp.pitched_at DESC NULLS LAST
+        """, (creator_id,))
+
+        rows = cursor.fetchall()
+
+        # Summary stats
+        cursor.execute("""
+            SELECT
+                COUNT(*) FILTER (WHERE stage IN ('waiting', 'followup', 'pitched')) AS waiting_count,
+                COUNT(*) FILTER (WHERE stage IN ('won', 'received', 'success')) AS wins_count,
+                COUNT(*) FILTER (WHERE send_confirmed = TRUE OR pitched_at IS NOT NULL) AS total_contacted,
+                COALESCE(SUM(package_value) FILTER (WHERE stage IN ('won', 'received', 'success')), 0) AS pr_value_earned
+            FROM creator_pipeline
+            WHERE creator_id = %s AND stage != 'archived'
+        """, (creator_id,))
+        stats = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'items': [dict(r) for r in rows],
+            'stats': dict(stats) if stats else {}
+        })
+
+    except Exception as e:
+        import traceback
+        print(f"Error in get_pipeline_full: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@pr_crm.route('/pipeline/<int:pipeline_id>/update', methods=['PATCH'])
+def update_pipeline_item(pipeline_id):
+    """
+    Single endpoint to advance or update any pipeline field.
+    Frontend sends only the fields it wants to change.
+    """
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    try:
+        data = request.get_json()
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Security: verify ownership
+        cursor.execute(
+            "SELECT id FROM creator_pipeline WHERE id = %s AND creator_id = %s",
+            (pipeline_id, creator_id)
+        )
+        row = cursor.fetchone()
+        if not row:
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Not found'}), 404
+
+        allowed_fields = {
+            'stage', 'send_confirmed', 'pitched_at',
+            'followup_count', 'followup_sent_at', 'replied_at',
+            'reply_type', 'package_confirmed_at', 'package_value',
+            'expected_delivery', 'received_at', 'notes'
+        }
+        updates = {k: v for k, v in data.items() if k in allowed_fields}
+        if not updates:
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'No valid fields'}), 400
+
+        # Build SET clause with proper SQL handling
+        set_parts = []
+        params = []
+
+        for key, value in updates.items():
+            if value == 'NOW()':
+                set_parts.append(f"{key} = NOW()")
+            else:
+                set_parts.append(f"{key} = %s")
+                params.append(value)
+
+        set_parts.append("updated_at = NOW()")
+        set_clause = ', '.join(set_parts)
+        params.extend([creator_id, pipeline_id])
+
+        cursor.execute(
+            f"UPDATE creator_pipeline SET {set_clause} WHERE creator_id = %s AND id = %s",
+            params
+        )
+
+        # If stage -> 'received', update brand response_rate
+        if updates.get('stage') == 'received':
+            _update_brand_response_rate(cursor, conn, pipeline_id)
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({'success': True})
+
+    except Exception as e:
+        import traceback
+        print(f"Error in update_pipeline_item: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@pr_crm.route('/pipeline/<int:pipeline_id>/confirm-send', methods=['POST'])
+def confirm_send(pipeline_id):
+    """
+    Called when creator confirms they sent the email from their native email app.
+    Optionally sends confirmation email to creator.
+    """
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    data = request.get_json() or {}
+    send_confirmation_email = data.get('send_confirmation_email', False)
+    contact_method = data.get('contact_method', 'email')
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get pipeline item with brand name
+        cursor.execute("""
+            SELECT cp.id, cp.brand_id, cp.pitched_at, cp.send_confirmed, pb.brand_name
+            FROM creator_pipeline cp
+            LEFT JOIN pr_brands pb ON cp.brand_id = pb.id
+            WHERE cp.id = %s AND cp.creator_id = %s
+        """, (pipeline_id, creator_id))
+        pipeline_item = cursor.fetchone()
+
+        if not pipeline_item:
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Not found'}), 404
+
+        cursor.execute("""
+            UPDATE creator_pipeline
+            SET stage = 'waiting',
+                send_confirmed = TRUE,
+                pitched_at = NOW(),
+                updated_at = NOW()
+            WHERE id = %s AND creator_id = %s
+        """, (pipeline_id, creator_id))
+
+        # Increment the monthly contact counter only if this contact was not
+        # already tracked when the email/form was opened from Discover.
+        if not pipeline_item.get('pitched_at') and not pipeline_item.get('send_confirmed'):
+            cursor.execute("""
+                UPDATE creators SET pitches_sent_this_week = COALESCE(pitches_sent_this_week, 0) + 1
+                WHERE id = %s
+            """, (creator_id,))
+
+        # Get creator info for confirmation email
+        if send_confirmation_email:
+            cursor.execute("""
+                SELECT c.id, u.first_name, u.last_name, u.email
+                FROM creators c
+                JOIN users u ON c.user_id = u.id
+                WHERE c.id = %s
+            """, (creator_id,))
+            creator = cursor.fetchone()
+
+            if creator and creator.get('email'):
+                creator_full_name = f"{creator.get('first_name', '')} {creator.get('last_name', '')}".strip() or 'Creator'
+                _send_pitch_confirmation_email(
+                    creator['email'],
+                    creator_full_name,
+                    pipeline_item.get('brand_name', 'the brand')
+                )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({'success': True, 'stage': 'waiting', 'contact_method': contact_method})
+
+    except Exception as e:
+        import traceback
+        print(f"Error in confirm_send: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _send_pitch_confirmation_email(to_email, creator_name, brand_name):
+    """Send confirmation email when creator confirms they contacted a brand."""
+    try:
+        from email_cron_routes import send_template_email
+
+        app_url = os.getenv('FRONTEND_URL', 'https://app.newcollab.co').rstrip('/')
+        subject = f'✓ You contacted {brand_name}!'
+
+        context = {
+            'subject': subject,
+            'preheader': f'Step 1 done — you just reached out to {brand_name}. Here\'s what to do next.',
+            'message': f"""
+                <p style="margin: 0 0 16px;">Hey {creator_name},</p>
+                <p style="margin: 0 0 16px;">You just contacted <strong>{brand_name}</strong> — that's step 1 complete! 🎉</p>
+                <p style="margin: 0 0 12px;">Here's what happens next:</p>
+                <ul style="text-align: left; margin: 0 0 16px; padding-left: 20px; color: #1d1d1f;">
+                    <li style="margin-bottom: 6px;">We'll remind you to follow up in 7 days if you haven't heard back</li>
+                    <li style="margin-bottom: 6px;">Most brands respond within 1–2 weeks</li>
+                    <li style="margin-bottom: 6px;">Track your pipeline and log any replies in your dashboard</li>
+                </ul>
+                <p style="margin: 0; color: #059669; font-weight: 600;">Keep the momentum going — the more brands you contact, the more packages you'll land! 📦</p>
+            """,
+            'action_url': f'{app_url}/creator/dashboard/pr-pipeline',
+            'action_text': 'Track My Pipeline',
+        }
+
+        success, error = send_template_email(
+            to_email=to_email,
+            template_name='conversion_email.html',
+            subject=subject,
+            context=context
+        )
+
+        if not success:
+            print(f"Failed to send pitch confirmation email: {error}")
+
+    except Exception as e:
+        print(f"Error sending pitch confirmation email: {str(e)}")
+
+
+@pr_crm.route('/pipeline/<int:pipeline_id>/log-reply', methods=['POST'])
+def log_reply(pipeline_id):
+    """
+    Called when creator taps one of the 4 reply-type options.
+    """
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    try:
+        is_pro = get_subscription_status(creator_id) in ['pro', 'elite']
+        data = request.get_json()
+        reply_type = data.get('reply_type')
+
+        if reply_type not in ('package_coming', 'need_info', 'not_fit', 'unsure'):
+            return jsonify({'success': False, 'error': 'Invalid reply_type'}), 400
+
+        new_stage = {
+            'package_coming': 'won',
+            'need_info': 'replied',
+            'not_fit': 'archived',
+            'unsure': 'replied',
+        }[reply_type]
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Verify ownership
+        cursor.execute(
+            "SELECT id FROM creator_pipeline WHERE id = %s AND creator_id = %s",
+            (pipeline_id, creator_id)
+        )
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Not found'}), 404
+
+        # Update with stage-specific timestamps
+        if new_stage == 'won':
+            cursor.execute("""
+                UPDATE creator_pipeline
+                SET stage = %s,
+                    reply_type = %s,
+                    replied_at = NOW(),
+                    package_confirmed_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s AND creator_id = %s
+            """, (new_stage, reply_type, pipeline_id, creator_id))
+        else:
+            cursor.execute("""
+                UPDATE creator_pipeline
+                SET stage = %s,
+                    reply_type = %s,
+                    replied_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s AND creator_id = %s
+            """, (new_stage, reply_type, pipeline_id, creator_id))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'stage': new_stage,
+            'show_kit_prompt': reply_type == 'need_info',
+            'show_value_prompt': reply_type == 'package_coming' and is_pro,
+            'show_upgrade': reply_type == 'package_coming' and not is_pro,
+        })
+
+    except Exception as e:
+        import traceback
+        print(f"Error in log_reply: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@pr_crm.route('/pipeline/stats', methods=['GET'])
+def get_pipeline_stats():
+    """
+    Lightweight endpoint for the journey header stats card.
+    """
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    try:
+        is_pro = get_subscription_status(creator_id) in ['pro', 'elite']
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            SELECT
+                COUNT(*) FILTER (WHERE send_confirmed = TRUE OR pitched_at IS NOT NULL) AS total_contacted,
+                COUNT(*) FILTER (WHERE stage IN ('replied', 'won', 'received', 'success')) AS total_responded,
+                COALESCE(SUM(package_value) FILTER (WHERE stage IN ('won', 'received', 'success')), 0) AS pr_value_earned
+            FROM creator_pipeline WHERE creator_id = %s
+        """, (creator_id,))
+        stats = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            **dict(stats),
+            'pr_value_visible': is_pro,
+        })
+
+    except Exception as e:
+        import traceback
+        print(f"Error in get_pipeline_stats: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _update_brand_response_rate(cursor, conn, pipeline_id):
+    """Recalculate brand response rate from real outcomes."""
+    try:
+        cursor.execute("""
+            UPDATE pr_brands b SET
+                response_rate = (
+                    SELECT ROUND(
+                        COUNT(*) FILTER (WHERE stage IN ('replied', 'won', 'received', 'success')) * 100.0
+                        / NULLIF(COUNT(*) FILTER (WHERE send_confirmed = TRUE OR pitched_at IS NOT NULL), 0)
+                    )
+                    FROM creator_pipeline
+                    WHERE brand_id = b.id AND (send_confirmed = TRUE OR pitched_at IS NOT NULL)
+                ),
+                responses_received = (
+                    SELECT COUNT(*) FILTER (WHERE stage IN ('replied', 'won', 'received', 'success'))
+                    FROM creator_pipeline WHERE brand_id = b.id
+                )
+            WHERE b.id = (SELECT brand_id FROM creator_pipeline WHERE id = %s)
+        """, (pipeline_id,))
+        conn.commit()
+    except Exception as e:
+        print(f"Error updating brand response rate: {str(e)}")
+
+
 @pr_crm.route('/reveal-contact', methods=['POST'])
 def reveal_contact():
     """Record when a creator reveals a brand's contact details"""

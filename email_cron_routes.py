@@ -15,6 +15,48 @@ import psycopg2
 
 email_cron_bp = Blueprint('email_cron', __name__, url_prefix='/api/cron')
 
+# =============================================================================
+# GLOBAL EMAIL COOL-OFF SETTINGS
+# Prevents users from receiving multiple emails on the same day
+# =============================================================================
+GLOBAL_EMAIL_COOLDOWN_HOURS = 24  # Minimum hours between ANY emails to same user
+
+
+def check_global_cooloff(cursor, creator_id: int) -> bool:
+    """
+    Check if a creator can receive an email based on global cool-off.
+    Returns True if they CAN receive an email (cooloff passed).
+    Returns False if they should NOT receive an email (too recent).
+    """
+    cursor.execute("""
+        SELECT last_any_email_sent
+        FROM creators
+        WHERE id = %s
+    """, (creator_id,))
+    result = cursor.fetchone()
+
+    if not result or not result.get('last_any_email_sent'):
+        return True  # Never sent, can send
+
+    last_sent = result['last_any_email_sent']
+    cooloff_threshold = datetime.now() - timedelta(hours=GLOBAL_EMAIL_COOLDOWN_HOURS)
+
+    return last_sent < cooloff_threshold
+
+
+def mark_email_sent(cursor, conn, creator_id: int, email_type: str = None):
+    """
+    Update the global last_any_email_sent timestamp after sending an email.
+    Also updates the specific email type timestamp if provided.
+    """
+    cursor.execute("""
+        UPDATE creators
+        SET last_any_email_sent = NOW()
+        WHERE id = %s
+    """, (creator_id,))
+    conn.commit()
+
+
 def get_db_connection():
     """Get database connection"""
     return psycopg2.connect(
@@ -77,12 +119,13 @@ def send_onboarding_reminders():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Find incomplete profiles
+        # Find incomplete profiles (with global cooloff check)
         cursor.execute("""
             SELECT c.id, u.email, c.username, c.created_at, c.last_reminder_sent
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE u.is_verified = true
+              AND u.unsubscribed_at IS NULL
               AND c.created_at < NOW() - INTERVAL '24 hours'
               AND (
                 c.instagram_handle IS NULL
@@ -94,8 +137,12 @@ def send_onboarding_reminders():
                 c.last_reminder_sent IS NULL
                 OR c.last_reminder_sent < NOW() - INTERVAL '7 days'
               )
+              AND (
+                c.last_any_email_sent IS NULL
+                OR c.last_any_email_sent < NOW() - INTERVAL '%s hours'
+              )
             LIMIT 50
-        """)
+        """, (GLOBAL_EMAIL_COOLDOWN_HOURS,))
 
         incomplete_profiles = cursor.fetchall()
 
@@ -119,10 +166,11 @@ def send_onboarding_reminders():
                 )
 
                 if success:
-                    # Update last_reminder_sent timestamp
+                    # Update last_reminder_sent and global timestamp
                     cursor.execute("""
                         UPDATE creators
-                        SET last_reminder_sent = NOW()
+                        SET last_reminder_sent = NOW(),
+                            last_any_email_sent = NOW()
                         WHERE id = %s
                     """, (profile['id'],))
                     conn.commit()
@@ -188,13 +236,14 @@ def send_new_brands_notification():
                 'sent': 0
             }), 200
 
-        # Find active creators who should be notified
+        # Find active creators who should be notified (with global cooloff)
         # Active = logged in within last 30 days, email verified, has completed profile
         cursor.execute("""
             SELECT DISTINCT c.id, u.email, c.username, c.last_new_brands_email_sent
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE u.is_verified = true
+              AND u.unsubscribed_at IS NULL
               AND c.instagram_handle IS NOT NULL
               AND c.instagram_handle != ''
               AND u.last_login > NOW() - INTERVAL '30 days'
@@ -202,8 +251,12 @@ def send_new_brands_notification():
                 c.last_new_brands_email_sent IS NULL
                 OR c.last_new_brands_email_sent < NOW() - INTERVAL '7 days'
               )
+              AND (
+                c.last_any_email_sent IS NULL
+                OR c.last_any_email_sent < NOW() - INTERVAL '%s hours'
+              )
             LIMIT 100
-        """)
+        """, (GLOBAL_EMAIL_COOLDOWN_HOURS,))
 
         creators = cursor.fetchall()
 
@@ -245,10 +298,11 @@ def send_new_brands_notification():
                 )
 
                 if success:
-                    # Update last_new_brands_email_sent timestamp
+                    # Update last_new_brands_email_sent and global timestamp
                     cursor.execute("""
                         UPDATE creators
-                        SET last_new_brands_email_sent = NOW()
+                        SET last_new_brands_email_sent = NOW(),
+                            last_any_email_sent = NOW()
                         WHERE id = %s
                     """, (creator['id'],))
                     conn.commit()
@@ -494,20 +548,26 @@ def send_first_pitch_nudge():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Global cooloff: only select creators who haven't received ANY email in 24h
         cursor.execute("""
             SELECT c.id, u.email, c.username
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE u.is_verified = true
+              AND u.unsubscribed_at IS NULL
               AND c.first_pitch_sent_at IS NULL
               AND c.created_at < NOW() - INTERVAL '24 hours'
               AND (
                 c.last_reminder_sent IS NULL
                 OR c.last_reminder_sent < NOW() - INTERVAL '48 hours'
               )
+              AND (
+                c.last_any_email_sent IS NULL
+                OR c.last_any_email_sent < NOW() - INTERVAL '%s hours'
+              )
             ORDER BY c.created_at ASC
             LIMIT 50
-        """)
+        """, (GLOBAL_EMAIL_COOLDOWN_HOURS,))
 
         creators = cursor.fetchall()
         sent_count = 0
@@ -537,7 +597,10 @@ def send_first_pitch_nudge():
 
             if success:
                 cursor.execute("""
-                    UPDATE creators SET last_reminder_sent = NOW() WHERE id = %s
+                    UPDATE creators
+                    SET last_reminder_sent = NOW(),
+                        last_any_email_sent = NOW()
+                    WHERE id = %s
                 """, (creator['id'],))
                 conn.commit()
                 sent_count += 1
@@ -613,13 +676,18 @@ def send_limit_warning():
             JOIN users u ON c.user_id = u.id
             WHERE c.subscription_tier = 'free'
               AND u.is_verified = true
+              AND u.unsubscribed_at IS NULL
               AND c.pitches_sent_this_week = 2
               AND (
                 c.last_limit_warning_sent IS NULL
                 OR c.last_limit_warning_sent < %s
               )
+              AND (
+                c.last_any_email_sent IS NULL
+                OR c.last_any_email_sent < NOW() - INTERVAL '%s hours'
+              )
             LIMIT 100
-        """, (month_start,))
+        """, (month_start, GLOBAL_EMAIL_COOLDOWN_HOURS))
 
         creators = cursor.fetchall()
         sent_count = 0
@@ -649,7 +717,10 @@ def send_limit_warning():
 
             if success:
                 cursor.execute("""
-                    UPDATE creators SET last_limit_warning_sent = NOW() WHERE id = %s
+                    UPDATE creators
+                    SET last_limit_warning_sent = NOW(),
+                        last_any_email_sent = NOW()
+                    WHERE id = %s
                 """, (creator['id'],))
                 conn.commit()
                 sent_count += 1
@@ -726,13 +797,18 @@ def send_limit_reached():
             JOIN users u ON c.user_id = u.id
             WHERE c.subscription_tier = 'free'
               AND u.is_verified = true
+              AND u.unsubscribed_at IS NULL
               AND c.pitches_sent_this_week >= 3
               AND (
                 c.last_upgrade_email_sent IS NULL
                 OR c.last_upgrade_email_sent < %s
               )
+              AND (
+                c.last_any_email_sent IS NULL
+                OR c.last_any_email_sent < NOW() - INTERVAL '%s hours'
+              )
             LIMIT 100
-        """, (month_start,))
+        """, (month_start, GLOBAL_EMAIL_COOLDOWN_HOURS))
 
         creators = cursor.fetchall()
         sent_count = 0
@@ -762,7 +838,10 @@ def send_limit_reached():
 
             if success:
                 cursor.execute("""
-                    UPDATE creators SET last_upgrade_email_sent = NOW() WHERE id = %s
+                    UPDATE creators
+                    SET last_upgrade_email_sent = NOW(),
+                        last_any_email_sent = NOW()
+                    WHERE id = %s
                 """, (creator['id'],))
                 conn.commit()
                 sent_count += 1
@@ -835,15 +914,20 @@ def send_reengagement():
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE u.is_verified = true
+              AND u.unsubscribed_at IS NULL
               AND c.first_pitch_sent_at IS NULL
               AND c.created_at < NOW() - INTERVAL '7 days'
               AND (
                 c.last_reengagement_sent IS NULL
                 OR c.last_reengagement_sent < NOW() - INTERVAL '14 days'
               )
+              AND (
+                c.last_any_email_sent IS NULL
+                OR c.last_any_email_sent < NOW() - INTERVAL '%s hours'
+              )
             ORDER BY c.created_at ASC
             LIMIT 50
-        """)
+        """, (GLOBAL_EMAIL_COOLDOWN_HOURS,))
 
         creators = cursor.fetchall()
         sent_count = 0
@@ -873,7 +957,10 @@ def send_reengagement():
 
             if success:
                 cursor.execute("""
-                    UPDATE creators SET last_reengagement_sent = NOW() WHERE id = %s
+                    UPDATE creators
+                    SET last_reengagement_sent = NOW(),
+                        last_any_email_sent = NOW()
+                    WHERE id = %s
                 """, (creator['id'],))
                 conn.commit()
                 sent_count += 1
@@ -949,13 +1036,18 @@ def send_monthly_reset():
             JOIN users u ON c.user_id = u.id
             WHERE c.subscription_tier = 'free'
               AND u.is_verified = true
+              AND u.unsubscribed_at IS NULL
               AND c.pitches_sent_this_week >= 3
               AND (
                 c.last_monthly_reset_sent IS NULL
                 OR c.last_monthly_reset_sent < %s
               )
+              AND (
+                c.last_any_email_sent IS NULL
+                OR c.last_any_email_sent < NOW() - INTERVAL '%s hours'
+              )
             LIMIT 100
-        """, (last_month_start,))
+        """, (last_month_start, GLOBAL_EMAIL_COOLDOWN_HOURS))
 
         creators = cursor.fetchall()
         sent_count = 0
@@ -985,7 +1077,10 @@ def send_monthly_reset():
 
             if success:
                 cursor.execute("""
-                    UPDATE creators SET last_monthly_reset_sent = NOW() WHERE id = %s
+                    UPDATE creators
+                    SET last_monthly_reset_sent = NOW(),
+                        last_any_email_sent = NOW()
+                    WHERE id = %s
                 """, (creator['id'],))
                 conn.commit()
                 sent_count += 1
@@ -1009,3 +1104,522 @@ def send_monthly_reset():
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============================================
+# PR PIPELINE EMAIL CRON ENDPOINTS
+# ============================================
+
+@email_cron_bp.route('/pipeline-followup-nudge', methods=['POST'])
+def pipeline_followup_nudge():
+    """
+    Day 7 - Follow-up Nudge (Free + Pro)
+    Sends to ALL users who have a brand in 'waiting' or 'followup' stage
+    pitched exactly 7 days ago and have not already received this nudge.
+    Cron: Daily at 09:00
+    """
+    test_mode = request.args.get('test', '').lower() == 'true'
+    TEST_EMAIL = 'team@newcollab.co'
+    APP_URL = os.getenv('FRONTEND_URL', 'https://app.newcollab.co').rstrip('/')
+
+    if test_mode:
+        context = {
+            'message': """
+                <p style="margin: 0 0 16px;">Hey there,</p>
+                <p style="margin: 0 0 16px;">You pitched <strong>Test Brand</strong> 7 days ago. Brands that receive a follow-up are 2x more likely to respond.</p>
+                <p style="margin: 0 0 16px;">Test Brand has a <strong>45% response rate</strong> - worth the nudge.</p>
+                <p style="margin: 0;">Open your pipeline and send a follow-up to double your chances.</p>
+            """,
+            'action_url': f"{APP_URL}/creator/dashboard/pr-pipeline",
+            'action_text': 'Send Follow-up',
+            'user_id': 0
+        }
+        success, error = send_template_email(
+            to_email=TEST_EMAIL,
+            template_name='conversion_email.html',
+            subject='[TEST] Time to follow up with Test Brand',
+            context=context
+        )
+        return jsonify({
+            'success': success,
+            'test_mode': True,
+            'sent_to': TEST_EMAIL,
+            'error': error if not success else None
+        }), 200 if success else 500
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            SELECT
+                cp.id AS pipeline_id,
+                cp.followup_count,
+                c.id AS creator_id, u.email, c.username,
+                pb.brand_name, pb.response_rate
+            FROM creator_pipeline cp
+            JOIN creators c ON c.id = cp.creator_id
+            JOIN users u ON u.id = c.user_id
+            JOIN pr_brands pb ON pb.id = cp.brand_id
+            WHERE cp.stage IN ('waiting', 'followup', 'pitched')
+              AND (cp.send_confirmed = TRUE OR cp.pitched_at IS NOT NULL)
+              AND cp.pitched_at::date = (NOW() - INTERVAL '7 days')::date
+              AND cp.followup_sent_at IS NULL
+              AND u.is_verified = true
+              AND u.unsubscribed_at IS NULL
+              AND (
+                c.last_any_email_sent IS NULL
+                OR c.last_any_email_sent < NOW() - INTERVAL '%s hours'
+              )
+            LIMIT 200
+        """, (GLOBAL_EMAIL_COOLDOWN_HOURS,))
+
+        rows = cursor.fetchall()
+        sent_count = 0
+        errors = []
+
+        for row in rows:
+            name = row['username'] or 'there'
+            response_rate = row['response_rate'] or 'unknown'
+            context = {
+                'message': f"""
+                    <p style="margin: 0 0 16px;">Hey {name},</p>
+                    <p style="margin: 0 0 16px;">You pitched <strong>{row['brand_name']}</strong> 7 days ago. Brands that receive a follow-up are 2x more likely to respond.</p>
+                    <p style="margin: 0 0 16px;">{row['brand_name']} has a <strong>{response_rate}% response rate</strong> - worth the nudge.</p>
+                    <p style="margin: 0;">Open your pipeline and send a follow-up to double your chances.</p>
+                """,
+                'action_url': f"{APP_URL}/creator/dashboard/pr-pipeline",
+                'action_text': 'Send Follow-up',
+                'user_id': row['creator_id']
+            }
+
+            success, error = send_template_email(
+                to_email=row['email'],
+                template_name='conversion_email.html',
+                subject=f"Time to follow up with {row['brand_name']}",
+                context=context
+            )
+
+            if success:
+                cursor.execute("""
+                    UPDATE creator_pipeline SET followup_sent_at = NOW() WHERE id = %s
+                """, (row['pipeline_id'],))
+                mark_email_sent(cursor, conn, row['creator_id'], 'pipeline_followup_nudge')
+                sent_count += 1
+                print(f"✅ Sent pipeline follow-up nudge to {row['email']}")
+            else:
+                errors.append(f"{row['email']}: {error}")
+                print(f"❌ Error sending to {row['email']}: {error}")
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'sent': sent_count,
+            'errors': len(errors),
+            'error_details': errors[:5]
+        }), 200
+
+    except Exception as e:
+        print(f"❌ Error in pipeline_followup_nudge: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@email_cron_bp.route('/pipeline-status-check', methods=['POST'])
+def pipeline_status_check():
+    """
+    Day 14 - Status Check (Free + Pro)
+    Sends to users who pitched 14 days ago with no reply logged yet.
+    Goal: bring them back to update their pipeline status.
+    Cron: Daily at 09:00
+    """
+    test_mode = request.args.get('test', '').lower() == 'true'
+    TEST_EMAIL = 'team@newcollab.co'
+    APP_URL = os.getenv('FRONTEND_URL', 'https://app.newcollab.co').rstrip('/')
+
+    if test_mode:
+        context = {
+            'message': """
+                <p style="margin: 0 0 16px;">Hey there,</p>
+                <p style="margin: 0 0 16px;">It's been 2 weeks since you pitched <strong>Test Brand</strong>.</p>
+                <p style="margin: 0 0 16px;">Did they get back to you?</p>
+                <p style="margin: 0;">Tap "They Replied" or "Send Follow-up" to keep your pipeline accurate.</p>
+            """,
+            'action_url': f"{APP_URL}/creator/dashboard/pr-pipeline",
+            'action_text': 'Update Pipeline',
+            'user_id': 0
+        }
+        success, error = send_template_email(
+            to_email=TEST_EMAIL,
+            template_name='conversion_email.html',
+            subject='[TEST] Did Test Brand reply? Update your pipeline',
+            context=context
+        )
+        return jsonify({
+            'success': success,
+            'test_mode': True,
+            'sent_to': TEST_EMAIL,
+            'error': error if not success else None
+        }), 200 if success else 500
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            SELECT cp.id AS pipeline_id, c.id AS creator_id, u.email, c.username, pb.brand_name
+            FROM creator_pipeline cp
+            JOIN creators c ON c.id = cp.creator_id
+            JOIN users u ON u.id = c.user_id
+            JOIN pr_brands pb ON pb.id = cp.brand_id
+            WHERE cp.stage IN ('waiting', 'followup', 'pitched')
+              AND (cp.send_confirmed = TRUE OR cp.pitched_at IS NOT NULL)
+              AND cp.pitched_at::date = (NOW() - INTERVAL '14 days')::date
+              AND u.is_verified = true
+              AND u.unsubscribed_at IS NULL
+              AND (
+                c.last_any_email_sent IS NULL
+                OR c.last_any_email_sent < NOW() - INTERVAL '%s hours'
+              )
+            LIMIT 200
+        """, (GLOBAL_EMAIL_COOLDOWN_HOURS,))
+
+        rows = cursor.fetchall()
+        sent_count = 0
+        errors = []
+
+        for row in rows:
+            name = row['username'] or 'there'
+            context = {
+                'message': f"""
+                    <p style="margin: 0 0 16px;">Hey {name},</p>
+                    <p style="margin: 0 0 16px;">It's been 2 weeks since you pitched <strong>{row['brand_name']}</strong>.</p>
+                    <p style="margin: 0 0 16px;">Did they get back to you?</p>
+                    <p style="margin: 0;">Tap "They Replied" or "Send Follow-up" to keep your pipeline accurate.</p>
+                """,
+                'action_url': f"{APP_URL}/creator/dashboard/pr-pipeline",
+                'action_text': 'Update Pipeline',
+                'user_id': row['creator_id']
+            }
+
+            success, error = send_template_email(
+                to_email=row['email'],
+                template_name='conversion_email.html',
+                subject=f"Did {row['brand_name']} reply? Update your pipeline",
+                context=context
+            )
+
+            if success:
+                mark_email_sent(cursor, conn, row['creator_id'], 'pipeline_status_check')
+                sent_count += 1
+                print(f"✅ Sent pipeline status check to {row['email']}")
+            else:
+                errors.append(f"{row['email']}: {error}")
+                print(f"❌ Error sending to {row['email']}: {error}")
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'sent': sent_count,
+            'errors': len(errors),
+            'error_details': errors[:5]
+        }), 200
+
+    except Exception as e:
+        print(f"❌ Error in pipeline_status_check: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@email_cron_bp.route('/pipeline-discover-nudge', methods=['POST'])
+def pipeline_discover_nudge():
+    """
+    Day 21 - Discover New Brands (Pro only)
+    Sends to Pro users 21 days after pitching with no response.
+    Suggests 3 similar brands with higher response rates -> drives back to Discover.
+    Cron: Daily at 09:00
+    """
+    test_mode = request.args.get('test', '').lower() == 'true'
+    TEST_EMAIL = 'team@newcollab.co'
+    APP_URL = os.getenv('FRONTEND_URL', 'https://app.newcollab.co').rstrip('/')
+
+    if test_mode:
+        context = {
+            'message': """
+                <p style="margin: 0 0 16px;">Hey there,</p>
+                <p style="margin: 0 0 16px;">It's been 3 weeks since your <strong>Test Brand</strong> pitch. Some brands are just slow - but here are 3 in the same category with higher response rates:</p>
+                <ul style="margin: 0 0 16px; padding-left: 20px;">
+                    <li><strong>Brand A</strong> - 65% response rate</li>
+                    <li><strong>Brand B</strong> - 55% response rate</li>
+                    <li><strong>Brand C</strong> - 50% response rate</li>
+                </ul>
+                <p style="margin: 0;">Check them out and keep the momentum going!</p>
+            """,
+            'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
+            'action_text': 'Discover These Brands',
+            'user_id': 0
+        }
+        success, error = send_template_email(
+            to_email=TEST_EMAIL,
+            template_name='conversion_email.html',
+            subject='[TEST] Test Brand may be slow - here are 3 better options',
+            context=context
+        )
+        return jsonify({
+            'success': success,
+            'test_mode': True,
+            'sent_to': TEST_EMAIL,
+            'error': error if not success else None
+        }), 200 if success else 500
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            SELECT
+                cp.id AS pipeline_id, c.id AS creator_id, u.email, c.username,
+                pb.brand_name, pb.category
+            FROM creator_pipeline cp
+            JOIN creators c ON c.id = cp.creator_id
+            JOIN users u ON u.id = c.user_id
+            JOIN pr_brands pb ON pb.id = cp.brand_id
+            WHERE cp.stage IN ('waiting', 'followup', 'pitched')
+              AND (cp.send_confirmed = TRUE OR cp.pitched_at IS NOT NULL)
+              AND cp.pitched_at::date = (NOW() - INTERVAL '21 days')::date
+              AND c.subscription_tier IN ('pro', 'elite')
+              AND u.is_verified = true
+              AND u.unsubscribed_at IS NULL
+              AND (
+                c.last_any_email_sent IS NULL
+                OR c.last_any_email_sent < NOW() - INTERVAL '%s hours'
+              )
+            LIMIT 200
+        """, (GLOBAL_EMAIL_COOLDOWN_HOURS,))
+
+        rows = cursor.fetchall()
+        sent_count = 0
+        errors = []
+
+        for row in rows:
+            # Fetch 3 alternative brands in same category with higher response rate
+            cursor.execute("""
+                SELECT brand_name, response_rate, slug
+                FROM pr_brands
+                WHERE category = %s
+                  AND response_rate > 35
+                  AND id != (SELECT brand_id FROM creator_pipeline WHERE id = %s)
+                ORDER BY response_rate DESC LIMIT 3
+            """, (row['category'], row['pipeline_id']))
+            alternatives = cursor.fetchall()
+
+            alt_html = ""
+            for alt in alternatives:
+                alt_html += f"<li><strong>{alt['brand_name']}</strong> - {alt['response_rate']}% response rate</li>"
+
+            if not alt_html:
+                alt_html = "<li>Check Discover for new options in your niche</li>"
+
+            name = row['username'] or 'there'
+            context = {
+                'message': f"""
+                    <p style="margin: 0 0 16px;">Hey {name},</p>
+                    <p style="margin: 0 0 16px;">It's been 3 weeks since your <strong>{row['brand_name']}</strong> pitch. Some brands are just slow - but here are 3 in the same category with higher response rates:</p>
+                    <ul style="margin: 0 0 16px; padding-left: 20px;">{alt_html}</ul>
+                    <p style="margin: 0;">Check them out and keep the momentum going!</p>
+                """,
+                'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
+                'action_text': 'Discover These Brands',
+                'user_id': row['creator_id']
+            }
+
+            success, error = send_template_email(
+                to_email=row['email'],
+                template_name='conversion_email.html',
+                subject=f"{row['brand_name']} may be slow - here are 3 better options",
+                context=context
+            )
+
+            if success:
+                mark_email_sent(cursor, conn, row['creator_id'], 'pipeline_discover_nudge')
+                sent_count += 1
+                print(f"✅ Sent pipeline discover nudge to {row['email']}")
+            else:
+                errors.append(f"{row['email']}: {error}")
+                print(f"❌ Error sending to {row['email']}: {error}")
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'sent': sent_count,
+            'errors': len(errors),
+            'error_details': errors[:5]
+        }), 200
+
+    except Exception as e:
+        print(f"❌ Error in pipeline_discover_nudge: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@email_cron_bp.route('/pipeline-package-nudge', methods=['POST'])
+def pipeline_package_nudge():
+    """
+    Package Arrival Nudge
+    Sends when expected_delivery date is reached and stage is still 'won'.
+    Invites creator back to mark package as received.
+    Cron: Daily at 09:00
+    """
+    test_mode = request.args.get('test', '').lower() == 'true'
+    TEST_EMAIL = 'team@newcollab.co'
+    APP_URL = os.getenv('FRONTEND_URL', 'https://app.newcollab.co').rstrip('/')
+
+    if test_mode:
+        context = {
+            'message': """
+                <p style="margin: 0 0 16px;">Hey there,</p>
+                <p style="margin: 0 0 16px;">Your collab with <strong>Test Brand</strong> was confirmed and your package should be arriving around now.</p>
+                <p style="margin: 0 0 16px;">Once it arrives, mark it as received in your pipeline.</p>
+                <p style="margin: 0;">Don't forget to log it - your PR value stat depends on it!</p>
+            """,
+            'action_url': f"{APP_URL}/creator/dashboard/pr-pipeline",
+            'action_text': 'Mark as Received',
+            'user_id': 0
+        }
+        success, error = send_template_email(
+            to_email=TEST_EMAIL,
+            template_name='conversion_email.html',
+            subject='[TEST] Your Test Brand package should be arriving!',
+            context=context
+        )
+        return jsonify({
+            'success': success,
+            'test_mode': True,
+            'sent_to': TEST_EMAIL,
+            'error': error if not success else None
+        }), 200 if success else 500
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            SELECT cp.id AS pipeline_id, c.id AS creator_id, u.email, c.username, pb.brand_name
+            FROM creator_pipeline cp
+            JOIN creators c ON c.id = cp.creator_id
+            JOIN users u ON u.id = c.user_id
+            JOIN pr_brands pb ON pb.id = cp.brand_id
+            WHERE cp.stage IN ('won', 'success')
+              AND cp.expected_delivery <= NOW()::date
+              AND cp.received_at IS NULL
+              AND u.is_verified = true
+              AND u.unsubscribed_at IS NULL
+              AND (
+                c.last_any_email_sent IS NULL
+                OR c.last_any_email_sent < NOW() - INTERVAL '%s hours'
+              )
+            LIMIT 200
+        """, (GLOBAL_EMAIL_COOLDOWN_HOURS,))
+
+        rows = cursor.fetchall()
+        sent_count = 0
+        errors = []
+
+        for row in rows:
+            name = row['username'] or 'there'
+            context = {
+                'message': f"""
+                    <p style="margin: 0 0 16px;">Hey {name},</p>
+                    <p style="margin: 0 0 16px;">Your collab with <strong>{row['brand_name']}</strong> was confirmed and your package should be arriving around now.</p>
+                    <p style="margin: 0 0 16px;">Once it arrives, mark it as received in your pipeline.</p>
+                    <p style="margin: 0;">Don't forget to log it - your PR value stat depends on it!</p>
+                """,
+                'action_url': f"{APP_URL}/creator/dashboard/pr-pipeline",
+                'action_text': 'Mark as Received',
+                'user_id': row['creator_id']
+            }
+
+            success, error = send_template_email(
+                to_email=row['email'],
+                template_name='conversion_email.html',
+                subject=f"Your {row['brand_name']} package should be arriving!",
+                context=context
+            )
+
+            if success:
+                mark_email_sent(cursor, conn, row['creator_id'], 'pipeline_package_nudge')
+                sent_count += 1
+                print(f"✅ Sent pipeline package nudge to {row['email']}")
+            else:
+                errors.append(f"{row['email']}: {error}")
+                print(f"❌ Error sending to {row['email']}: {error}")
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'sent': sent_count,
+            'errors': len(errors),
+            'error_details': errors[:5]
+        }), 200
+
+    except Exception as e:
+        print(f"❌ Error in pipeline_package_nudge: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@email_cron_bp.route('/pipeline-confirm-send-test', methods=['POST'])
+def pipeline_confirm_send_test():
+    """
+    Test-only endpoint for the pitch confirmation email sent after a creator
+    confirms they contacted a brand (confirm-send flow).
+    Always sends to team@newcollab.co.
+    """
+    TEST_EMAIL = 'team@newcollab.co'
+    APP_URL = os.getenv('FRONTEND_URL', 'https://app.newcollab.co').rstrip('/')
+
+    subject = '[TEST] ✓ You contacted Test Brand Co.!'
+    context = {
+        'subject': subject,
+        'preheader': "Step 1 done — you just reached out to Test Brand Co. Here's what to do next.",
+        'message': """
+            <p style="margin: 0 0 16px;">Hey Test Creator,</p>
+            <p style="margin: 0 0 16px;">You just contacted <strong>Test Brand Co.</strong> — that's step 1 complete! 🎉</p>
+            <p style="margin: 0 0 12px;">Here's what happens next:</p>
+            <ul style="text-align: left; margin: 0 0 16px; padding-left: 20px; color: #1d1d1f;">
+                <li style="margin-bottom: 6px;">We'll remind you to follow up in 7 days if you haven't heard back</li>
+                <li style="margin-bottom: 6px;">Most brands respond within 1–2 weeks</li>
+                <li style="margin-bottom: 6px;">Track your pipeline and log any replies in your dashboard</li>
+            </ul>
+            <p style="margin: 0; color: #059669; font-weight: 600;">Keep the momentum going — the more brands you contact, the more packages you'll land! 📦</p>
+        """,
+        'action_url': f'{APP_URL}/creator/dashboard/pr-pipeline',
+        'action_text': 'Track My Pipeline',
+    }
+
+    success, error = send_template_email(
+        to_email=TEST_EMAIL,
+        template_name='conversion_email.html',
+        subject=subject,
+        context=context
+    )
+
+    return jsonify({
+        'success': success,
+        'test_mode': True,
+        'sent_to': TEST_EMAIL,
+        'error': error if not success else None
+    }), 200 if success else 500
