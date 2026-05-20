@@ -198,11 +198,11 @@ def get_public_brands():
             # Has a contact email
             query += " AND b.contact_email IS NOT NULL"
 
-        # Order: Featured first, then by response rate
+        # Order: Featured first, then most recently added
         query += """
             ORDER BY
                 b.is_featured DESC,
-                b.response_rate DESC NULLS LAST,
+                b.created_at DESC NULLS LAST,
                 b.brand_name ASC
             LIMIT %s OFFSET %s
         """

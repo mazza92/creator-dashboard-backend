@@ -2420,83 +2420,35 @@ def send_welcome_email(user_id, user_role, user_data, template_type='WELCOME_CRE
         secondary_action_url = template.get('secondary_action_url', lambda data: None)(user_data)
         secondary_action_text = template.get('secondary_action_text', lambda data: None)(user_data)
 
-        app.logger.info(f"📧 Welcome email template loaded: subject='{subject}', action_url='{action_url}', secondary_action_url='{secondary_action_url}'")
+        preheader = template.get('preheader', lambda data: None)(user_data) or 'Browse 500+ PR forms for brands with direct application links'
 
-        # Use dedicated welcome email template
+        app.logger.info(f"📧 Welcome email template loaded: subject='{subject}', action_url='{action_url}'")
+
+        # V5 template (conversion_email.html) — clean white card, black CTA
         try:
-            smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
-            smtp_port = int(os.getenv('SMTP_PORT', 587))
-            smtp_username = os.getenv('SMTP_USERNAME')
-            smtp_password = os.getenv('SMTP_PASSWORD')
-            sender_name = os.getenv('EMAIL_SENDER_NAME', 'Newcollab team')
+            from email_cron_routes import send_template_email
 
-            # Load welcome email templates
+            success, error = send_template_email(
+                user_data['email'],
+                'conversion_email.html',
+                subject,
+                {
+                    'subject': subject,
+                    'preheader': preheader,
+                    'message': message,
+                    'action_url': action_url,
+                    'action_text': action_text,
+                }
+            )
+            if success:
+                app.logger.info(f"✅ Welcome email sent successfully to {user_data['email']} for {user_role}")
+                return True
+
+            app.logger.error(f"🔥 Failed to send welcome email to user {user_id}: {error}")
+
+            # Fallback to legacy welcome template
             try:
-                template_dir = os.path.join(os.path.dirname(__file__), 'templates')
-                app.logger.info(f"📧 Template directory: {template_dir}")
-                env = Environment(loader=FileSystemLoader(template_dir))
-                welcome_html_template = env.get_template('welcome_email.html')
-                welcome_text_template = env.get_template('welcome_email.txt')
-                app.logger.info("📧 Welcome email templates loaded successfully")
-            except Exception as template_error:
-                app.logger.error(f"🔥 Failed to load welcome email templates: {str(template_error)}")
-                raise
-
-            # Render welcome email content
-            try:
-                html_content = welcome_html_template.render(
-                    message=message,
-                    data=user_data,
-                    action_url=action_url,
-                    action_text=action_text,
-                    secondary_action_url=secondary_action_url,
-                    secondary_action_text=secondary_action_text,
-                    user_id=user_id
-                )
-                text_content = welcome_text_template.render(
-                    message=message,
-                    data=user_data,
-                    action_url=action_url,
-                    action_text=action_text,
-                    secondary_action_url=secondary_action_url,
-                    secondary_action_text=secondary_action_text,
-                    user_id=user_id
-                )
-                app.logger.info(f"📧 Welcome email content rendered successfully (HTML: {len(html_content)} chars, Text: {len(text_content)} chars)")
-            except Exception as render_error:
-                app.logger.error(f"🔥 Failed to render welcome email content: {str(render_error)}")
-                raise
-
-            msg = MIMEMultipart('alternative')
-            msg['From'] = f"{sender_name} <{smtp_username}>"
-            msg['To'] = user_data['email']
-            msg['Subject'] = subject
-            msg.attach(MIMEText(text_content, 'plain'))
-            msg.attach(MIMEText(html_content, 'html'))
-
-            # Use connection pooling for better performance
-            if not hasattr(send_welcome_email, '_server'):
-                send_welcome_email._server = smtplib.SMTP(smtp_server, smtp_port)
-                send_welcome_email._server.starttls()
-                send_welcome_email._server.login(smtp_username, smtp_password)
-
-            send_welcome_email._server.sendmail(smtp_username, user_data['email'], msg.as_string())
-            app.logger.info(f"✅ Welcome email sent successfully to {user_data['email']} for {user_role}")
-            return True
-
-        except Exception as e:
-            app.logger.error(f"🔥 Failed to send welcome email to user {user_id}: {str(e)}")
-            # Reset server connection on error
-            if hasattr(send_welcome_email, '_server'):
-                try:
-                    send_welcome_email._server.quit()
-                except:
-                    pass
-                delattr(send_welcome_email, '_server')
-
-            # Fallback to regular email function with correct template
-            try:
-                app.logger.info(f"🔄 Attempting fallback to regular email function with welcome template")
+                app.logger.info("🔄 Attempting fallback with welcome_email template")
                 send_email(
                     to_email=user_data['email'],
                     message=message,
@@ -2505,13 +2457,18 @@ def send_welcome_email(user_id, user_role, user_data, template_type='WELCOME_CRE
                     action_text=action_text,
                     user_id=user_id,
                     subject=subject,
-                    template_name='welcome_email'  # Use the correct welcome template
+                    template_name='welcome_email',
+                    preheader=preheader,
                 )
                 app.logger.info(f"✅ Fallback welcome email sent successfully")
                 return True
             except Exception as fallback_error:
                 app.logger.error(f"🔥 Fallback email also failed: {str(fallback_error)}")
                 return False
+
+        except Exception as send_error:
+            app.logger.error(f"🔥 Welcome email send error for user {user_id}: {str(send_error)}")
+            return False
 
     except Exception as e:
         app.logger.error(f"🔥 Failed to send welcome email to user {user_id}: {str(e)}")
@@ -2768,9 +2725,27 @@ NOTIFICATION_TEMPLATES = {
     'WELCOME_CREATOR': {
         'creator': {
             'subject': lambda data: f"Welcome to Newcollab, {data.get('first_name', '')}!",
-            'message': lambda data: f"<h2>Welcome to Newcollab, {data.get('first_name', '')}! 🎉</h2><p>You're all set to start discovering and pitching to PR brands.</p><p>We've added 300+ brands to our directory, and we're adding more every week!</p>",
-            'action_url': lambda data: f"{get_base_url()}/directory",
-            'action_text': lambda data: "Browse PR Brands",
+            'message': lambda data: (
+                f"<p>Hi {data.get('first_name', 'there')},</p>"
+                f"<p>Welcome to Newcollab — your account is ready.</p>"
+                f"<p>You now have access to <strong>500+ brands</strong> with PR application forms and direct contact details. "
+                f"Browse by niche, filter by PR form or email, and start applying today.</p>"
+                f"<p><strong>Your free plan includes:</strong></p>"
+                f"<ul style='margin:0 0 16px;padding-left:20px;line-height:1.7;'>"
+                f"<li>3 brand contacts per month</li>"
+                f"<li>Direct PR application form links</li>"
+                f"<li>Response rate insights per brand</li>"
+                f"</ul>"
+                f"<p>Most creators land their first PR package within 2 weeks when they apply consistently.</p>"
+                + (
+                    f"<p style='margin-top:16px;'><a href=\"{data.get('public_profile_url')}\" "
+                    f"style='color:#1d1d1f;font-weight:600;text-decoration:underline;'>View your public profile →</a></p>"
+                    if data.get('public_profile_url') else ""
+                )
+            ),
+            'preheader': lambda data: 'Browse 500+ PR forms for brands with direct application links',
+            'action_url': lambda data: f"{get_base_url()}/creator/dashboard/pr-brands",
+            'action_text': lambda data: "Browse PR brands",
             'secondary_action_url': lambda data: data.get('public_profile_url'),
             'secondary_action_text': lambda data: "View Your Profile" if data.get('public_profile_url') else None
         },
