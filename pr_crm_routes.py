@@ -108,10 +108,13 @@ def get_brands():
         where_clauses = []
         params = []
 
-        # Filter by category
+        # Filter by category (canonical slug)
         if category:
-            where_clauses.append('category = %s')
-            params.append(category)
+            from brand_categories import normalize_category
+            canon_category = normalize_category(category)
+            if canon_category:
+                where_clauses.append('category = %s')
+                params.append(canon_category)
 
         # Filter by niche
         if niches:
@@ -189,6 +192,18 @@ def get_brands():
         cursor.execute(query, params + [limit, offset])
         brands = cursor.fetchall()
 
+        from brand_stats_synthesis import resolve_brand_stats
+
+        for b in brands:
+            rate, days = resolve_brand_stats(
+                b.get('slug') or str(b['id']),
+                b.get('category'),
+                b.get('response_rate'),
+                b.get('avg_response_time_days'),
+            )
+            b['response_rate'] = rate
+            b['avg_response_time_days'] = days
+
         cursor.close()
         conn.close()
 
@@ -241,6 +256,17 @@ def get_brand_details(brand_id):
                 is_saved = True
                 pipeline_stage = pipeline['stage']
 
+        from brand_stats_synthesis import resolve_brand_stats
+
+        rate, days = resolve_brand_stats(
+            brand.get('slug') or str(brand['id']),
+            brand.get('category'),
+            brand.get('response_rate'),
+            brand.get('avg_response_time_days'),
+        )
+        brand['response_rate'] = rate
+        brand['avg_response_time_days'] = days
+
         cursor.close()
         conn.close()
 
@@ -262,20 +288,24 @@ def get_categories():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
+        from brand_categories import aggregate_category_counts
+
         cursor.execute('''
             SELECT category, COUNT(*) as count
             FROM pr_brands
+            WHERE category IS NOT NULL AND TRIM(category) != ''
             GROUP BY category
-            ORDER BY count DESC
         ''')
-        categories = cursor.fetchall()
+        rows = cursor.fetchall()
 
         cursor.close()
         conn.close()
 
         return jsonify({
             'success': True,
-            'categories': categories
+            'categories': aggregate_category_counts([
+                {'category': r['category'], 'brand_count': r['count']} for r in rows
+            ])
         })
 
     except Exception as e:
@@ -1866,4 +1896,302 @@ def reveal_contact():
         }), 200
 
     except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============================================
+# FOR YOU - PERSONALIZED RECOMMENDATIONS
+# ============================================
+
+@pr_crm.route('/for-you', methods=['GET'])
+def get_for_you():
+    """
+    Get personalized brand recommendations for the For You page.
+    Returns 3 sections: Hot This Week, Matched for You, Right Season
+    """
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get creator subscription status and profile
+        is_pro = get_subscription_status(creator_id) in ['pro', 'elite']
+
+        # Get creator's niche from signup + For You preferences + follower count
+        # Join with media_kits to get total_followers if available
+        cursor.execute("""
+            SELECT c.niche, c.creator_niches, c.creator_followers, c.followers_count,
+                   mk.total_followers AS media_kit_followers
+            FROM creators c
+            LEFT JOIN media_kits mk ON mk.creator_id = c.id
+            WHERE c.id = %s
+        """, (creator_id,))
+        creator = cursor.fetchone()
+
+        # Merge signup niche with For You niches
+        signup_niche = creator.get('niche') if creator else None
+        foryou_niches = creator.get('creator_niches') or [] if creator else []
+
+        # Parse signup niche (could be string or array)
+        parsed_signup_niches = []
+        if signup_niche:
+            if isinstance(signup_niche, list):
+                parsed_signup_niches = [n.lower().strip() for n in signup_niche if n]
+            elif isinstance(signup_niche, str):
+                # Handle JSON array string or comma-separated
+                import json
+                try:
+                    parsed = json.loads(signup_niche)
+                    if isinstance(parsed, list):
+                        parsed_signup_niches = [str(n).lower().strip() for n in parsed if n]
+                    else:
+                        parsed_signup_niches = [str(parsed).lower().strip()]
+                except:
+                    parsed_signup_niches = [n.strip().lower() for n in signup_niche.split(',') if n.strip()]
+
+        # Combine niches, preferring For You selection, falling back to signup
+        niches = foryou_niches if foryou_niches else parsed_signup_niches
+
+        # Use For You followers if set, else media_kit total_followers, else signup followers_count
+        followers = 0
+        if creator:
+            followers = (
+                creator.get('creator_followers') or
+                creator.get('media_kit_followers') or
+                creator.get('followers_count') or
+                0
+            )
+
+        # Get IDs the user has already pitched (exclude from recommendations)
+        cursor.execute("""
+            SELECT brand_id FROM creator_pipeline
+            WHERE creator_id = %s AND (send_confirmed = TRUE OR pitched_at IS NOT NULL)
+        """, (creator_id,))
+        already_pitched = cursor.fetchall()
+        exclude_ids = [r['brand_id'] for r in already_pitched] if already_pitched else [0]
+
+        # ── Section 1: Hot This Week ─────────────────────────────
+        # Top brands by response rate + niche match + recent additions + variety
+        cursor.execute("""
+            SELECT
+                b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
+                b.description, b.category, b.response_rate,
+                b.min_followers, b.website, b.application_form_url,
+                COALESCE(
+                    (SELECT COUNT(*) FROM creator_pipeline cp
+                     WHERE cp.brand_id = b.id
+                     AND cp.stage IN ('won','received','success')
+                     AND cp.package_confirmed_at > NOW() - INTERVAL '30 days'), 0
+                ) AS wins_this_week,
+                COALESCE(
+                    (SELECT COUNT(*) FROM creator_pipeline cp
+                     WHERE cp.brand_id = b.id
+                     AND cp.send_confirmed = TRUE
+                     AND cp.pitched_at > NOW() - INTERVAL '30 days'), 0
+                ) AS pitched_this_week,
+                (
+                    COALESCE(b.response_rate, 0) * 2
+                    + CASE WHEN LOWER(b.category) = ANY(%s) THEN 25 ELSE 0 END
+                    + CASE WHEN b.created_at > NOW() - INTERVAL '30 days' THEN 15 ELSE 0 END
+                    + RANDOM() * 10
+                )::int AS hot_score
+            FROM pr_brands b
+            WHERE b.slug IS NOT NULL
+              AND COALESCE(b.status, 'published') = 'published'
+              AND b.id != ALL(%s)
+              AND b.response_rate > 0
+            ORDER BY hot_score DESC
+            LIMIT 3
+        """, (niches if niches else [''], exclude_ids))
+        hot = cursor.fetchall()
+
+        # Fallback: if not enough brands with response_rate, fill from all brands (prefer niche match)
+        if len(hot) < 3:
+            hot_ids = [r['id'] for r in hot] if hot else [0]
+            cursor.execute("""
+                SELECT
+                    b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
+                    b.description, b.category, b.response_rate,
+                    b.min_followers, b.website, b.application_form_url,
+                    0 AS wins_this_week, 0 AS pitched_this_week
+                FROM pr_brands b
+                WHERE b.slug IS NOT NULL
+                  AND COALESCE(b.status, 'published') = 'published'
+                  AND b.id != ALL(%s)
+                  AND b.id != ALL(%s)
+                ORDER BY
+                    CASE WHEN LOWER(b.category) = ANY(%s) THEN 0 ELSE 1 END,
+                    RANDOM()
+                LIMIT %s
+            """, (exclude_ids, hot_ids, niches if niches else [''], 3 - len(hot)))
+            fallback = cursor.fetchall()
+            hot = list(hot) + list(fallback)
+
+        # ── Section 2: Matched for You ───────────────────────────
+        # Personalized by niche + follower count
+        if niches or followers:
+            cursor.execute("""
+                SELECT
+                    b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
+                    b.description, b.category, b.response_rate,
+                    b.min_followers, b.website, b.application_form_url,
+                    (
+                        CASE WHEN LOWER(b.category) = ANY(%s) THEN 50 ELSE 15 END
+                        + CASE WHEN %s >= COALESCE(b.min_followers, 0) THEN 30 ELSE 10 END
+                        + LEAST(COALESCE(b.response_rate, 0) / 2, 20)
+                        + RANDOM() * 5
+                    )::int AS match_score
+                FROM pr_brands b
+                WHERE b.slug IS NOT NULL
+                  AND COALESCE(b.status, 'published') = 'published'
+                  AND b.id != ALL(%s)
+                ORDER BY match_score DESC, b.response_rate DESC NULLS LAST
+                LIMIT 8
+            """, ([n.lower() for n in niches] if niches else [''], followers, exclude_ids))
+            matched = cursor.fetchall()
+        else:
+            # No profile yet — return variety of top brands
+            cursor.execute("""
+                SELECT
+                    b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
+                    b.description, b.category, b.response_rate,
+                    b.min_followers, b.website, b.application_form_url,
+                    (COALESCE(b.response_rate, 0) + RANDOM() * 20)::int AS match_score
+                FROM pr_brands b
+                WHERE b.slug IS NOT NULL
+                  AND COALESCE(b.status, 'published') = 'published'
+                  AND b.id != ALL(%s)
+                ORDER BY match_score DESC
+                LIMIT 8
+            """, (exclude_ids,))
+            matched = cursor.fetchall()
+
+        # ── Section 3: Right Season ──────────────────────────────
+        month = datetime.now().month
+        seasonal_map = {
+            1:  ['fitness', 'wellness', 'lifestyle'],
+            2:  ['beauty', 'jewelry', 'fashion', 'skincare'],
+            3:  ['beauty', 'fashion', 'skincare'],
+            4:  ['fashion', 'lifestyle', 'beauty'],
+            5:  ['fashion', 'lifestyle', 'skincare'],
+            6:  ['lifestyle', 'beauty', 'skincare', 'fashion'],
+            7:  ['lifestyle', 'beauty', 'fashion'],
+            8:  ['beauty', 'lifestyle', 'fashion'],
+            9:  ['fashion', 'beauty', 'lifestyle'],
+            10: ['fashion', 'beauty', 'lifestyle', 'home'],
+            11: ['beauty', 'fashion', 'home', 'jewelry'],
+            12: ['beauty', 'fashion', 'home', 'jewelry', 'lifestyle'],
+        }
+        seasonal_cats = seasonal_map.get(month, ['beauty', 'lifestyle'])
+
+        seasonal_reasons = {
+            1:  "New Year reset — wellness brands gifting heavily in January",
+            2:  "Valentine's season — beauty and jewelry brands seeking creators",
+            3:  "Spring launch season — skincare brands partnering with creators",
+            4:  "Spring fashion drops — brands seeking fresh campaign content",
+            5:  "Pre-summer prep — lifestyle and skincare brands gifting now",
+            6:  "Summer campaigns — SPF and fashion brands need content now",
+            7:  "Peak summer — lifestyle brands seeking authentic summer content",
+            8:  "Late summer push — fashion and beauty brands preparing for fall",
+            9:  "Back to school/fall — fashion brands refreshing their creator roster",
+            10: "Pre-holiday — beauty and home brands building gifting lists",
+            11: "Holiday gifting season — brands most active for PR partnerships",
+            12: "Year-end gifting — brands clearing PR budgets before January",
+        }
+
+        cursor.execute("""
+            SELECT
+                b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
+                b.description, b.category, b.response_rate,
+                b.min_followers, b.website, b.application_form_url
+            FROM pr_brands b
+            WHERE b.slug IS NOT NULL
+              AND COALESCE(b.status, 'published') = 'published'
+              AND LOWER(b.category) = ANY(%s)
+              AND b.id != ALL(%s)
+            ORDER BY b.response_rate DESC NULLS LAST, RANDOM()
+            LIMIT 4
+        """, ([c.lower() for c in seasonal_cats], exclude_ids))
+        seasonal = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'hot': [dict(r) for r in hot],
+            'matched': [dict(r) for r in matched],
+            'seasonal': [dict(r) for r in seasonal],
+            'seasonal_reason': seasonal_reasons.get(month, ''),
+            'seasonal_month': datetime.now().strftime('%B'),
+            'is_pro': is_pro,
+            'has_profile': bool(niches or followers),
+            'profile': {
+                'niches': niches,
+                'followers': followers,
+            }
+        })
+
+    except Exception as e:
+        print(f"Error in get_for_you: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@pr_crm.route('/creator-profile', methods=['PATCH'])
+def update_creator_profile():
+    """
+    Update creator's niche and follower count for personalized recommendations.
+    Body: { creator_niches: string[], creator_followers: int }
+    """
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    try:
+        data = request.get_json()
+
+        allowed = {'creator_niches', 'creator_followers'}
+        updates = {k: v for k, v in data.items() if k in allowed}
+
+        if not updates:
+            return jsonify({'success': False, 'error': 'Nothing to update'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Build dynamic update query
+        set_parts = []
+        values = []
+        for key, value in updates.items():
+            set_parts.append(f"{key} = %s")
+            values.append(value)
+        values.append(creator_id)
+
+        cursor.execute(f"""
+            UPDATE creators
+            SET {', '.join(set_parts)}
+            WHERE id = %s
+            RETURNING creator_niches, creator_followers
+        """, values)
+
+        updated = cursor.fetchone()
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'profile': {
+                'niches': updated.get('creator_niches') or [],
+                'followers': updated.get('creator_followers') or 0
+            }
+        })
+
+    except Exception as e:
+        print(f"Error in update_creator_profile: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
