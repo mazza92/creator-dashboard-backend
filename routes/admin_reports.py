@@ -1723,3 +1723,503 @@ def get_engagement():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# FOUNDER DASHBOARD - Consolidated KPIs for adminsimple.html
+# ============================================================================
+
+@admin_reports_bp.route('/founder-dashboard', methods=['GET'])
+@admin_required
+def get_founder_dashboard():
+    """
+    Get consolidated founder dashboard data matching adminsimple.html design
+
+    Returns:
+        {
+            "mrr": {...},
+            "at_limit_users": [...],
+            "health": {...},
+            "funnel": {...},
+            "this_month": {...}
+        }
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # ================== MRR CALCULATION ==================
+        # Pro = $12/month (only tier currently available)
+        cursor.execute("""
+            SELECT
+                COALESCE(subscription_tier, 'free') as tier,
+                COUNT(*) as count
+            FROM creators
+            GROUP BY COALESCE(subscription_tier, 'free')
+        """)
+        tier_counts = {row['tier']: row['count'] for row in cursor.fetchall()}
+
+        pro_count_db = tier_counts.get('pro', 0)
+        free_count = tier_counts.get('free', 0)
+
+        # MRR — prefer live Stripe active subs; fall back to DB tier count × $12
+        pro_price = 12
+        mrr_source = 'database'
+        from utils.stripe_mrr import fetch_stripe_mrr
+
+        stripe_mrr = fetch_stripe_mrr()
+        if stripe_mrr:
+            current_mrr = int(stripe_mrr['mrr_dollars'])
+            pro_count = stripe_mrr['active_subscriptions']
+            mrr_source = 'stripe'
+        else:
+            pro_count = pro_count_db
+            current_mrr = pro_count * pro_price
+
+        total_paid_subs = pro_count
+        goal_mrr = 1000
+        progress_pct = min(round((current_mrr / goal_mrr) * 100, 1), 100)
+
+        # Conversion rate (paid / total)
+        total_creators = free_count + pro_count
+        conversion_rate = round((total_paid_subs / max(total_creators, 1)) * 100, 2)
+
+        # Need X more subs to hit goal
+        subs_needed = max(0, int((goal_mrr - current_mrr) / pro_price))
+
+        # ================== AT-LIMIT USERS (Hot Leads) ==================
+        # Free users who maxed 3 pitches/month - prime upgrade candidates
+        cursor.execute("""
+            WITH user_pitch_counts AS (
+                SELECT
+                    c.id as creator_id,
+                    u.email,
+                    c.username,
+                    c.followers_count,
+                    c.niche,
+                    COUNT(*) as pitches_this_month
+                FROM creators c
+                JOIN users u ON c.user_id = u.id
+                JOIN creator_pipeline cp ON c.id = cp.creator_id
+                WHERE (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)
+                AND cp.pitched_at >= DATE_TRUNC('month', NOW())
+                GROUP BY c.id, u.email, c.username, c.followers_count, c.niche
+                HAVING COUNT(*) >= 3
+            )
+            SELECT * FROM user_pitch_counts
+            ORDER BY pitches_this_month DESC
+            LIMIT 10
+        """)
+        at_limit_users = []
+        for row in cursor.fetchall():
+            at_limit_users.append({
+                'creator_id': row['creator_id'],
+                'email': row['email'],
+                'username': row['username'],
+                'followers': row['followers_count'],
+                'niche': row['niche'],
+                'pitches_used': row['pitches_this_month']
+            })
+
+        # Count of users at limit (for display)
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM (
+                SELECT creator_id
+                FROM creator_pipeline cp
+                JOIN creators c ON cp.creator_id = c.id
+                WHERE (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)
+                AND cp.pitched_at >= DATE_TRUNC('month', NOW())
+                GROUP BY cp.creator_id
+                HAVING COUNT(*) >= 3
+            ) as at_limit
+        """)
+        at_limit_count = cursor.fetchone()['count']
+
+        # Users near limit (2/3 pitches this month)
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM (
+                SELECT creator_id
+                FROM creator_pipeline cp
+                JOIN creators c ON cp.creator_id = c.id
+                WHERE (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)
+                AND cp.pitched_at >= DATE_TRUNC('month', NOW())
+                GROUP BY cp.creator_id
+                HAVING COUNT(*) = 2
+            ) as near_limit
+        """)
+        near_limit_count = cursor.fetchone()['count']
+
+        # ================== HEALTH METRICS (This Week) ==================
+        # 7-day sparkline data for signups, pitches, and active creators
+
+        # Signups by day (last 7 days)
+        cursor.execute("""
+            SELECT
+                DATE(created_at) as date,
+                COUNT(*) as count
+            FROM creators
+            WHERE created_at >= NOW() - INTERVAL '7 days'
+            GROUP BY DATE(created_at)
+            ORDER BY date ASC
+        """)
+        signup_daily = [{'date': str(row['date']), 'count': row['count']} for row in cursor.fetchall()]
+
+        # This week vs last week signups
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM creators
+            WHERE created_at >= DATE_TRUNC('week', NOW())
+        """)
+        signups_this_week = cursor.fetchone()['count']
+
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM creators
+            WHERE created_at >= DATE_TRUNC('week', NOW()) - INTERVAL '1 week'
+            AND created_at < DATE_TRUNC('week', NOW())
+        """)
+        signups_last_week = cursor.fetchone()['count']
+
+        # Pitches by day (last 7 days)
+        cursor.execute("""
+            SELECT
+                DATE(pitched_at) as date,
+                COUNT(*) as count
+            FROM creator_pipeline
+            WHERE pitched_at >= NOW() - INTERVAL '7 days'
+            AND pitched_at IS NOT NULL
+            GROUP BY DATE(pitched_at)
+            ORDER BY date ASC
+        """)
+        pitches_daily = [{'date': str(row['date']), 'count': row['count']} for row in cursor.fetchall()]
+
+        # This week vs last week pitches
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM creator_pipeline
+            WHERE pitched_at >= DATE_TRUNC('week', NOW())
+        """)
+        pitches_this_week = cursor.fetchone()['count']
+
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM creator_pipeline
+            WHERE pitched_at >= DATE_TRUNC('week', NOW()) - INTERVAL '1 week'
+            AND pitched_at < DATE_TRUNC('week', NOW())
+        """)
+        pitches_last_week = cursor.fetchone()['count']
+
+        # Active creators by day (last 7 days)
+        cursor.execute("""
+            SELECT
+                DATE(created_at) as date,
+                COUNT(DISTINCT creator_id) as count
+            FROM creator_pipeline
+            WHERE created_at >= NOW() - INTERVAL '7 days'
+            GROUP BY DATE(created_at)
+            ORDER BY date ASC
+        """)
+        active_daily = [{'date': str(row['date']), 'count': row['count']} for row in cursor.fetchall()]
+
+        # This week vs last week active creators
+        cursor.execute("""
+            SELECT COUNT(DISTINCT creator_id) as count FROM creator_pipeline
+            WHERE created_at >= DATE_TRUNC('week', NOW())
+        """)
+        active_this_week = cursor.fetchone()['count']
+
+        cursor.execute("""
+            SELECT COUNT(DISTINCT creator_id) as count FROM creator_pipeline
+            WHERE created_at >= DATE_TRUNC('week', NOW()) - INTERVAL '1 week'
+            AND created_at < DATE_TRUNC('week', NOW())
+        """)
+        active_last_week = cursor.fetchone()['count']
+
+        # ================== CREATOR ACTIVATION FUNNEL (All Time) ==================
+        cursor.execute("SELECT COUNT(*) as count FROM creators")
+        total_signups = cursor.fetchone()['count']
+
+        # Users who saved at least 1 brand
+        cursor.execute("""
+            SELECT COUNT(DISTINCT creator_id) as count FROM creator_pipeline
+        """)
+        saved_brand = cursor.fetchone()['count']
+
+        # Users who pitched at least 1 brand
+        cursor.execute("""
+            SELECT COUNT(DISTINCT creator_id) as count FROM creator_pipeline
+            WHERE pitched_at IS NOT NULL
+        """)
+        sent_pitch = cursor.fetchone()['count']
+
+        # Users who pitched 2+ brands
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM (
+                SELECT creator_id FROM creator_pipeline
+                WHERE pitched_at IS NOT NULL
+                GROUP BY creator_id
+                HAVING COUNT(*) >= 2
+            ) as multi_pitch
+        """)
+        pitched_multiple = cursor.fetchone()['count']
+
+        # Users who got a package (success stage)
+        cursor.execute("""
+            SELECT COUNT(DISTINCT creator_id) as count FROM creator_pipeline
+            WHERE stage = 'success'
+        """)
+        got_package = cursor.fetchone()['count']
+
+        # ================== THIS MONTH STATS ==================
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM creators
+            WHERE created_at >= DATE_TRUNC('month', NOW())
+        """)
+        signups_this_month = cursor.fetchone()['count']
+
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM creator_pipeline
+            WHERE pitched_at >= DATE_TRUNC('month', NOW())
+        """)
+        pitches_this_month = cursor.fetchone()['count']
+
+        cursor.execute("""
+            SELECT COUNT(DISTINCT creator_id) as count FROM creator_pipeline
+            WHERE pitched_at IS NOT NULL
+        """)
+        unique_pitch_users = cursor.fetchone()['count']
+
+        conn.close()
+
+        # ================== TRAFFIC from GA4 ==================
+        traffic = None
+        bust_cache = request.args.get('bust') == '1'
+        try:
+            from utils.ga4 import get_traffic_data
+            traffic_raw = get_traffic_data(bust_cache=bust_cache)
+            if traffic_raw:
+                # Visitor → signup rate: combine GA4 visitors with DB signups
+                visitors = traffic_raw["visitors_this_week"]
+                visitor_signup_rate = round(
+                    (signups_this_week / visitors * 100), 1
+                ) if visitors else 0
+
+                import time as _time
+                fetched_at = traffic_raw.get("fetched_at") or int(_time.time())
+                age_minutes = round((_time.time() - fetched_at) / 60)
+                traffic = {
+                    **traffic_raw,
+                    "visitor_signup_rate": visitor_signup_rate,
+                    "signups_this_week": signups_this_week,
+                    "connected": True,
+                    "cache_age_minutes": age_minutes,
+                    "cache_ttl_minutes": 15,
+                }
+        except Exception as e:
+            print(f"[GA4] Error fetching traffic data: {e}")
+            traffic = {"connected": False, "error": str(e)}
+
+        return jsonify({
+            'mrr': {
+                'current': current_mrr,
+                'goal': goal_mrr,
+                'progress_pct': progress_pct,
+                'pro_count': pro_count,
+                'pro_count_db': pro_count_db,
+                'total_paid': total_paid_subs,
+                'pro_price': pro_price,
+                'subs_needed': subs_needed,
+                'conversion_rate': conversion_rate,
+                'source': mrr_source,
+                'stripe_live': bool(stripe_mrr and stripe_mrr.get('live_mode')),
+            },
+            'at_limit_users': at_limit_users,
+            'at_limit_count': at_limit_count,
+            'near_limit_count': near_limit_count,
+            'health': {
+                'signups': {
+                    'this_week': signups_this_week,
+                    'last_week': signups_last_week,
+                    'change': signups_this_week - signups_last_week,
+                    'daily': signup_daily
+                },
+                'pitches': {
+                    'this_week': pitches_this_week,
+                    'last_week': pitches_last_week,
+                    'change': pitches_this_week - pitches_last_week,
+                    'daily': pitches_daily
+                },
+                'active_creators': {
+                    'this_week': active_this_week,
+                    'last_week': active_last_week,
+                    'change': active_this_week - active_last_week,
+                    'daily': active_daily
+                }
+            },
+            'traffic': traffic,
+            'funnel': {
+                'signed_up': total_signups,
+                'saved_brand': saved_brand,
+                'sent_pitch': sent_pitch,
+                'pitched_multiple': pitched_multiple,
+                'got_package': got_package
+            },
+            'this_month': {
+                'signups': signups_this_month,
+                'total_signups': total_signups,
+                'pitches': pitches_this_month,
+                'unique_pitch_users': unique_pitch_users
+            }
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# SEND NUDGE EMAIL - For at-limit users
+# ============================================================================
+
+@admin_reports_bp.route('/send-nudge', methods=['POST'])
+@admin_required
+def send_nudge_email():
+    """
+    Send a nudge email to an at-limit user encouraging them to upgrade.
+    Respects the global 24-hour email cooldown to avoid email fatigue.
+
+    Request body:
+        {
+            "creator_id": 123,
+            "email": "user@example.com"
+        }
+
+    Returns:
+        {"success": true, "message": "Nudge sent"}
+        or
+        {"success": false, "reason": "cooldown"} if user received email recently
+    """
+    try:
+        import os
+        from jinja2 import Environment, FileSystemLoader
+        from email_cron_routes import send_template_email
+
+        data = request.get_json()
+        creator_id = data.get('creator_id')
+        email = data.get('email')
+
+        if not creator_id or not email:
+            return jsonify({'error': 'Missing creator_id or email'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Check global 24-hour cooldown
+        GLOBAL_EMAIL_COOLDOWN_HOURS = 24
+        FREE_PITCH_LIMIT = 3
+        cursor.execute("""
+            SELECT c.username, c.last_any_email_sent,
+                (
+                    SELECT COUNT(*)::int
+                    FROM creator_pipeline cp
+                    WHERE cp.creator_id = c.id
+                      AND cp.pitched_at >= DATE_TRUNC('month', NOW())
+                ) AS pitches_this_month
+            FROM creators c
+            WHERE c.id = %s
+        """, (creator_id,))
+        result = cursor.fetchone()
+
+        if not result:
+            conn.close()
+            return jsonify({'error': 'Creator not found'}), 404
+
+        username = result.get('username') or 'there'
+        display_name = username.split()[0] if username != 'there' else 'there'
+        pitches_this_month = result.get('pitches_this_month') or FREE_PITCH_LIMIT
+
+        # Cooldown check in SQL (last_any_email_sent is TIMESTAMPTZ)
+        cursor.execute("""
+            SELECT
+                (last_any_email_sent IS NOT NULL
+                 AND last_any_email_sent >= NOW() - INTERVAL '1 hour' * %s) AS on_cooldown,
+                GREATEST(
+                    1,
+                    CEIL(EXTRACT(EPOCH FROM (
+                        last_any_email_sent + INTERVAL '1 hour' * %s - NOW()
+                    )) / 3600)
+                )::int AS hours_until_ok
+            FROM creators
+            WHERE id = %s
+        """, (GLOBAL_EMAIL_COOLDOWN_HOURS, GLOBAL_EMAIL_COOLDOWN_HOURS, creator_id))
+        cooldown_row = cursor.fetchone()
+
+        if cooldown_row and cooldown_row.get('on_cooldown'):
+            hours_until_ok = cooldown_row.get('hours_until_ok') or 1
+            conn.close()
+            return jsonify({
+                'success': False,
+                'reason': 'cooldown',
+                'message': f'User received an email recently. Try again in ~{hours_until_ok}h.'
+            }), 200
+
+        frontend_url = os.getenv('FRONTEND_URL', 'https://newcollab.co').rstrip('/')
+        smtp_username = os.getenv('SMTP_USERNAME')
+        smtp_password = os.getenv('SMTP_PASSWORD')
+
+        if not smtp_username or not smtp_password:
+            print(f"[NUDGE] SMTP not configured - would send to {email}")
+            conn.close()
+            return jsonify({
+                'success': False,
+                'reason': 'smtp_not_configured',
+                'message': 'Email service not configured'
+            }), 200
+
+        templates_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates')
+        jinja_env = Environment(loader=FileSystemLoader(templates_dir))
+        message_html = jinja_env.get_template('upgrade_nudge_email_body.html').render(
+            display_name=display_name,
+            pitch_limit=FREE_PITCH_LIMIT,
+            pitches_this_month=pitches_this_month,
+        )
+
+        subject = f"{display_name}, you've used your free brand contacts this month"
+        email_context = {
+            'subject': subject,
+            'preheader': f'You sent {pitches_this_month or FREE_PITCH_LIMIT} pitches this month. Pro removes the cap so you can keep reaching out.',
+            'message': message_html,
+            'action_url': f'{frontend_url}/creator/dashboard/settings?upgrade=pro',
+            'action_text': 'Upgrade to Pro',
+        }
+
+        success, smtp_error = send_template_email(
+            to_email=email,
+            template_name='conversion_email.html',
+            subject=subject,
+            context=email_context,
+        )
+
+        if not success:
+            conn.close()
+            print(f"[NUDGE] SMTP error sending to {email}: {smtp_error}")
+            return jsonify({
+                'success': False,
+                'reason': 'smtp_error',
+                'message': smtp_error or 'Failed to send email',
+            }), 200
+
+        cursor.execute("""
+            UPDATE creators
+            SET last_any_email_sent = NOW()
+            WHERE id = %s
+        """, (creator_id,))
+        conn.commit()
+        print(f"[NUDGE] Sent upgrade nudge to {email} (creator_id: {creator_id})")
+        conn.close()
+        return jsonify({
+            'success': True,
+            'message': f'Nudge sent to {email}',
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500

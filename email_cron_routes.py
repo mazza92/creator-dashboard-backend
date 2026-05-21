@@ -29,19 +29,15 @@ def check_global_cooloff(cursor, creator_id: int) -> bool:
     Returns False if they should NOT receive an email (too recent).
     """
     cursor.execute("""
-        SELECT last_any_email_sent
+        SELECT (
+            last_any_email_sent IS NULL
+            OR last_any_email_sent < NOW() - INTERVAL '1 hour' * %s
+        ) AS can_send
         FROM creators
         WHERE id = %s
-    """, (creator_id,))
-    result = cursor.fetchone()
-
-    if not result or not result.get('last_any_email_sent'):
-        return True  # Never sent, can send
-
-    last_sent = result['last_any_email_sent']
-    cooloff_threshold = datetime.now() - timedelta(hours=GLOBAL_EMAIL_COOLDOWN_HOURS)
-
-    return last_sent < cooloff_threshold
+    """, (GLOBAL_EMAIL_COOLDOWN_HOURS, creator_id))
+    row = cursor.fetchone()
+    return bool(row and row.get('can_send'))
 
 
 def mark_email_sent(cursor, conn, creator_id: int, email_type: str = None):

@@ -131,3 +131,8 @@ env test.conf
 flask_session/
 tmpclaude-*
 nul
+
+# GA4 / GCP service account keys (never commit)
+secrets/
+ga4-service-account.json
+**/ga4-service-account.json

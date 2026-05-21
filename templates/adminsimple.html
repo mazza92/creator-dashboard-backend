@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NewCollab — Founder Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+* { box-sizing:border-box; margin:0; padding:0; }
+:root {
+  --rose:    #E11D48;
+  --black:   #0F0F0F;
+  --violet:  #7C3AED;
+  --green:   #059669;
+  --amber:   #D97706;
+  --bg:      #F5F5F7;
+  --surface: #FFFFFF;
+  --border:  #E8E8E8;
+  --text:    #0F0F0F;
+  --text-2:  #555;
+  --text-3:  #999;
+}
+body { font-family:'Inter',sans-serif; background:var(--bg); color:var(--text); font-size:14px; -webkit-font-smoothing:antialiased; }
+
+/* HEADER */
+.header {
+  background:#fff;
+  border-bottom:1px solid var(--border);
+  padding:0 28px;
+  height:54px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  position:sticky;
+  top:0;
+  z-index:50;
+}
+.logo { display:flex; align-items:center; gap:9px; }
+.logo-mark { width:26px; height:26px; background:var(--black); border-radius:6px; display:grid; place-items:center; color:#fff; font-weight:900; font-size:13px; }
+.logo-word { font-size:14px; font-weight:800; letter-spacing:-.3px; }
+.logo-word span { color:var(--rose); }
+.header-right { display:flex; align-items:center; gap:8px; }
+.badge { background:var(--bg); border:1px solid var(--border); border-radius:20px; padding:5px 12px; font-size:12px; font-weight:600; color:var(--text-2); }
+.refresh-btn { padding:6px 14px; border-radius:8px; border:1px solid var(--border); background:#fff; font-size:12px; font-weight:600; cursor:pointer; color:var(--text-2); }
+.refresh-btn:hover { background:var(--bg); }
+
+/* MAIN */
+.main { max-width:860px; margin:0 auto; padding:28px 24px 80px; }
+
+/* GOAL CARD */
+.goal-card {
+  background:var(--black);
+  border-radius:20px;
+  padding:28px 32px;
+  margin-bottom:20px;
+  color:#fff;
+  position:relative;
+  overflow:hidden;
+}
+.goal-card::before {
+  content:'';
+  position:absolute;
+  top:-60px; right:-60px;
+  width:220px; height:220px;
+  background:radial-gradient(circle, rgba(225,29,72,.35) 0%, transparent 70%);
+  pointer-events:none;
+}
+.goal-eyebrow { font-size:11px; font-weight:700; letter-spacing:.8px; text-transform:uppercase; opacity:.5; margin-bottom:10px; }
+.goal-row { display:flex; align-items:flex-end; justify-content:space-between; margin-bottom:20px; }
+.goal-left {}
+.goal-mrr { font-size:52px; font-weight:900; letter-spacing:-2px; line-height:1; }
+.goal-mrr span { color:var(--rose); }
+.goal-target { font-size:14px; opacity:.5; margin-top:5px; }
+.goal-right { text-align:right; }
+.goal-subs { font-size:28px; font-weight:800; letter-spacing:-.5px; }
+.goal-subs-label { font-size:12px; opacity:.5; margin-top:2px; }
+.goal-needed { font-size:12px; color:rgba(255,255,255,.6); margin-top:4px; }
+.goal-needed strong { color:rgba(255,255,255,.9); }
+
+/* progress bar */
+.progress-wrap { margin-bottom:10px; }
+.progress-track { height:10px; background:rgba(255,255,255,.12); border-radius:10px; overflow:hidden; }
+.progress-fill { height:100%; border-radius:10px; background:linear-gradient(90deg, var(--rose), #f472b6); transition:width .6s ease; }
+.progress-labels { display:flex; justify-content:space-between; margin-top:6px; font-size:11px; opacity:.5; }
+
+/* next milestone */
+.milestone-row { display:flex; gap:10px; margin-top:16px; }
+.milestone { background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.1); border-radius:10px; padding:10px 14px; flex:1; }
+.milestone-label { font-size:10px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; opacity:.5; margin-bottom:4px; }
+.milestone-val { font-size:16px; font-weight:800; }
+.milestone-sub { font-size:11px; opacity:.5; margin-top:2px; }
+
+
+/* DO THIS TODAY */
+.section-label {
+  font-size:11px; font-weight:700; letter-spacing:.6px; text-transform:uppercase;
+  color:var(--text-3); margin-bottom:12px; display:flex; align-items:center; gap:8px;
+}
+.section-label::after { content:''; flex:1; height:1px; background:var(--border); }
+
+.today-card {
+  background:#fff;
+  border:1px solid var(--border);
+  border-radius:16px;
+  overflow:hidden;
+  margin-bottom:20px;
+  box-shadow:0 1px 3px rgba(0,0,0,.04);
+}
+.today-header {
+  padding:14px 20px;
+  border-bottom:1px solid var(--border);
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+}
+.today-title {
+  font-size:14px;
+  font-weight:700;
+  display:flex;
+  align-items:center;
+  gap:7px;
+}
+.amber-dot { width:8px; height:8px; border-radius:50%; background:var(--amber); animation:pulse 2s infinite; flex-shrink:0; }
+@keyframes pulse { 0%,100%{opacity:1}50%{opacity:.3} }
+.today-subtitle { font-size:12px; color:var(--text-3); }
+
+.user-row {
+  display:flex;
+  align-items:center;
+  gap:12px;
+  padding:12px 20px;
+  border-bottom:1px solid #F5F5F5;
+  transition:background .1s;
+}
+.user-row:last-child { border-bottom:none; }
+.user-row:hover { background:#FAFAFA; }
+.avatar {
+  width:34px; height:34px; border-radius:50%;
+  background:linear-gradient(135deg, #D97706, #F59E0B);
+  color:#fff; display:grid; place-items:center;
+  font-weight:800; font-size:13px; flex-shrink:0;
+}
+.user-info { flex:1; }
+.user-name { font-size:13px; font-weight:700; }
+.user-detail { font-size:11px; color:var(--text-3); margin-top:1px; }
+.user-stat {
+  text-align:right;
+  margin-right:14px;
+}
+.user-pitches { font-size:13px; font-weight:800; color:var(--amber); }
+.user-limit { font-size:10px; color:var(--text-3); }
+.nudge-btn {
+  padding:7px 14px;
+  border-radius:8px;
+  background:var(--amber);
+  color:#fff;
+  border:none;
+  font-size:12px;
+  font-weight:700;
+  cursor:pointer;
+  white-space:nowrap;
+  transition:opacity .15s;
+}
+.nudge-btn:hover { opacity:.85; }
+.nudge-btn.sent { background:var(--green); cursor:default; }
+
+.empty-state {
+  padding:28px 20px;
+  text-align:center;
+  color:var(--text-3);
+  font-size:13px;
+}
+.empty-state strong { display:block; font-size:15px; font-weight:700; color:var(--text-2); margin-bottom:4px; }
+
+/* HEALTH ROW */
+.health-grid {
+  display:grid;
+  grid-template-columns:repeat(3, 1fr);
+  gap:12px;
+  margin-bottom:20px;
+}
+.health-card {
+  background:#fff;
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:18px 20px;
+  box-shadow:0 1px 3px rgba(0,0,0,.04);
+}
+.hc-label {
+  font-size:11px;
+  font-weight:700;
+  color:var(--text-3);
+  text-transform:uppercase;
+  letter-spacing:.5px;
+  margin-bottom:8px;
+}
+.hc-value {
+  font-size:30px;
+  font-weight:900;
+  letter-spacing:-1px;
+  margin-bottom:4px;
+}
+.hc-value.green { color:var(--green); }
+.hc-value.rose  { color:var(--rose); }
+.hc-value.black { color:var(--black); }
+.hc-delta {
+  font-size:12px;
+  font-weight:600;
+  color:var(--text-3);
+}
+.hc-delta.up   { color:var(--green); }
+.hc-delta.down { color:var(--rose); }
+
+/* SPARK */
+.spark-row { display:flex; align-items:flex-end; gap:3px; height:32px; margin-top:10px; }
+.spark-bar { flex:1; border-radius:2px 2px 0 0; background:#F0F0F0; min-height:3px; }
+.spark-bar.today { background:var(--black); }
+.spark-bar.today.green-bar { background:var(--green); }
+.spark-bar.today.rose-bar  { background:var(--rose); }
+
+
+/* FUNNEL INSIGHT */
+.funnel-card {
+  background:#fff;
+  border:1px solid var(--border);
+  border-radius:16px;
+  padding:20px 24px;
+  margin-bottom:20px;
+  box-shadow:0 1px 3px rgba(0,0,0,.04);
+}
+.funnel-title { font-size:14px; font-weight:700; margin-bottom:16px; display:flex; align-items:center; gap:7px; }
+.funnel-steps { display:flex; flex-direction:column; gap:6px; }
+.f-step { display:flex; align-items:center; gap:14px; }
+.f-label { width:130px; font-size:12px; font-weight:600; color:var(--text-2); flex-shrink:0; }
+.f-bar-track { flex:1; height:26px; background:#F5F5F7; border-radius:6px; overflow:hidden; }
+.f-bar-fill { height:100%; border-radius:6px; display:flex; align-items:center; padding-left:10px; font-size:11px; font-weight:700; color:#fff; }
+.f-count { width:40px; text-align:right; font-size:14px; font-weight:800; flex-shrink:0; }
+.f-drop { display:flex; align-items:center; gap:6px; padding:3px 0 3px 144px; font-size:11px; font-weight:600; }
+.f-drop.bad { color:var(--rose); }
+.f-drop.ok  { color:var(--green); }
+
+.insight-box {
+  margin-top:16px;
+  padding:12px 16px;
+  background:#FFF7ED;
+  border:1px solid #FDE68A;
+  border-radius:10px;
+  font-size:12.5px;
+  color:#92400E;
+  line-height:1.5;
+}
+.insight-box strong { font-weight:700; }
+
+/* THIS WEEK PULSE */
+.week-grid {
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:12px;
+  margin-bottom:20px;
+}
+.week-card {
+  background:#fff;
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:16px 18px;
+  box-shadow:0 1px 3px rgba(0,0,0,.04);
+}
+.wc-top { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px; }
+.wc-label { font-size:11px; font-weight:700; color:var(--text-3); text-transform:uppercase; letter-spacing:.5px; }
+.wc-value { font-size:28px; font-weight:900; letter-spacing:-1px; }
+.wc-sub { font-size:11px; color:var(--text-3); margin-bottom:0; }
+.wc-delta { font-size:11px; font-weight:700; }
+.wc-delta.up { color:var(--green); }
+.wc-delta.down { color:var(--rose); }
+
+/* TRAFFIC SECTION */
+.traffic-grid {
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:12px;
+  margin-bottom:12px;
+}
+.traffic-card {
+  background:#fff;
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:16px 18px;
+  box-shadow:0 1px 3px rgba(0,0,0,.04);
+}
+.tc-label { font-size:11px; font-weight:700; color:var(--text-3); text-transform:uppercase; letter-spacing:.5px; margin-bottom:8px; }
+.tc-value { font-size:26px; font-weight:900; letter-spacing:-1px; margin-bottom:3px; }
+.tc-delta { font-size:12px; font-weight:600; }
+.tc-delta.up   { color:var(--green); }
+.tc-delta.down { color:var(--rose); }
+.tc-delta.flat { color:var(--text-3); }
+
+.traffic-bottom {
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:12px;
+  margin-bottom:20px;
+}
+.traffic-sources {
+  background:#fff;
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:18px 20px;
+  box-shadow:0 1px 3px rgba(0,0,0,.04);
+}
+.ts-title { font-size:13px; font-weight:700; margin-bottom:14px; }
+.source-row { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+.source-row:last-child { margin-bottom:0; }
+.source-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.source-label { font-size:12px; font-weight:600; color:var(--text-2); width:90px; flex-shrink:0; }
+.source-bar-track { flex:1; height:8px; background:#F0F0F0; border-radius:4px; overflow:hidden; }
+.source-bar-fill { height:100%; border-radius:4px; }
+.source-pct { font-size:12px; font-weight:800; width:34px; text-align:right; flex-shrink:0; }
+
+.traffic-pages {
+  background:#fff;
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:18px 20px;
+  box-shadow:0 1px 3px rgba(0,0,0,.04);
+}
+.tp-title { font-size:13px; font-weight:700; margin-bottom:14px; }
+.page-row { display:flex; align-items:center; justify-content:space-between; padding:7px 0; border-bottom:1px solid #F5F5F5; }
+.page-row:last-child { border-bottom:none; }
+.page-path { font-size:12px; font-weight:600; color:var(--text-2); font-family:monospace; }
+.page-views { font-size:12px; font-weight:800; }
+.page-badge { font-size:10px; font-weight:700; padding:2px 7px; border-radius:20px; margin-left:6px; }
+.page-badge.converts { background:#ECFDF5; color:var(--green); }
+
+.ga4-badge {
+  display:inline-flex; align-items:center; gap:5px;
+  background:#EFF6FF; border:1px solid #BFDBFE;
+  border-radius:20px; padding:3px 10px;
+  font-size:11px; font-weight:700; color:#1D4ED8;
+}
+
+/* RESPONSIVE */
+@media(max-width:760px) {
+  .traffic-grid   { grid-template-columns:1fr 1fr; }
+  .traffic-bottom { grid-template-columns:1fr; }
+}
+@media(max-width:640px) {
+  .health-grid { grid-template-columns:1fr 1fr; }
+  .week-grid   { grid-template-columns:1fr; }
+  .goal-mrr    { font-size:38px; }
+  .f-label     { width:90px; font-size:11px; }
+}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+  <div class="logo">
+    <div class="logo-mark">N</div>
+    <span class="logo-word">new<span>collab</span></span>
+  </div>
+  <div class="header-right">
+    <span class="badge">📅 May 21, 2026</span>
+    <button class="refresh-btn">↻ Refresh</button>
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- ══ 1. THE GOAL ══════════════════════════════════════════ -->
+  <div class="goal-card">
+    <div class="goal-eyebrow">Your progress to $1,000 MRR</div>
+    <div class="goal-row">
+      <div class="goal-left">
+        <div class="goal-mrr">$<span>30</span></div>
+        <div class="goal-target">Monthly Recurring Revenue</div>
+      </div>
+      <div class="goal-right">
+        <div class="goal-subs">2</div>
+        <div class="goal-subs-label">Pro subscribers</div>
+        <div class="goal-needed">Need <strong>81 more</strong> at $12/mo</div>
+      </div>
+    </div>
+
+    <div class="progress-wrap">
+      <div class="progress-track">
+        <div class="progress-fill" style="width:3%"></div>
+      </div>
+      <div class="progress-labels">
+        <span>$0</span>
+        <span>$250</span>
+        <span>$500</span>
+        <span>$750</span>
+        <span>$1,000</span>
+      </div>
+    </div>
+
+    <div class="milestone-row">
+      <div class="milestone">
+        <div class="milestone-label">Next milestone</div>
+        <div class="milestone-val">$120 MRR</div>
+        <div class="milestone-sub">10 Pro subscribers</div>
+      </div>
+      <div class="milestone">
+        <div class="milestone-label">Conversion rate</div>
+        <div class="milestone-val">0.22%</div>
+        <div class="milestone-sub">Target: 2% industry avg</div>
+      </div>
+      <div class="milestone">
+        <div class="milestone-label">At-limit users</div>
+        <div class="milestone-val" style="color:#F59E0B">18</div>
+        <div class="milestone-sub">Hot leads this month</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 2. DO THIS TODAY ════════════════════════════════════ -->
+  <div class="section-label">Do this today — highest chance of upgrade</div>
+
+  <div class="today-card">
+    <div class="today-header">
+      <div class="today-title">
+        <div class="amber-dot"></div>
+        Users who hit their pitch limit
+      </div>
+      <div class="today-subtitle">One email → could convert today</div>
+    </div>
+
+    <div class="user-row">
+      <div class="avatar">C</div>
+      <div class="user-info">
+        <div class="user-name">carolannreddy</div>
+        <div class="user-detail">17,000 followers · Fashion · c.carolannreddy@gmail.com</div>
+      </div>
+      <div class="user-stat">
+        <div class="user-pitches">3/3</div>
+        <div class="user-limit">pitches used</div>
+      </div>
+      <button class="nudge-btn" onclick="this.textContent='Sent ✓'; this.classList.add('sent')">
+        Send nudge →
+      </button>
+    </div>
+
+    <div class="user-row">
+      <div class="avatar">M</div>
+      <div class="user-info">
+        <div class="user-name">mazza</div>
+        <div class="user-detail">14,200 followers · Beauty · team4@newcollab.co</div>
+      </div>
+      <div class="user-stat">
+        <div class="user-pitches">3/3</div>
+        <div class="user-limit">pitches used</div>
+      </div>
+      <button class="nudge-btn" onclick="this.textContent='Sent ✓'; this.classList.add('sent')">
+        Send nudge →
+      </button>
+    </div>
+
+    <div class="user-row">
+      <div class="avatar">Z</div>
+      <div class="user-info">
+        <div class="user-name">zionne019</div>
+        <div class="user-detail">5,300 followers · Zionne45@gmail.com</div>
+      </div>
+      <div class="user-stat">
+        <div class="user-pitches">3/3</div>
+        <div class="user-limit">pitches used</div>
+      </div>
+      <button class="nudge-btn" onclick="this.textContent='Sent ✓'; this.classList.add('sent')">
+        Send nudge →
+      </button>
+    </div>
+
+    <div class="user-row">
+      <div class="avatar">C</div>
+      <div class="user-info">
+        <div class="user-name">Claire85</div>
+        <div class="user-detail">2,947 followers · fashionstage21@gmail.com</div>
+      </div>
+      <div class="user-stat">
+        <div class="user-pitches">3/3</div>
+        <div class="user-limit">pitches used</div>
+      </div>
+      <button class="nudge-btn" onclick="this.textContent='Sent ✓'; this.classList.add('sent')">
+        Send nudge →
+      </button>
+    </div>
+
+  </div>
+
+  <!-- ══ 3. HEALTH PULSE (this week) ════════════════════════ -->
+  <div class="section-label">This week's health</div>
+
+  <div class="health-grid">
+    <div class="health-card">
+      <div class="hc-label">New signups</div>
+      <div class="hc-value black">9</div>
+      <div class="hc-delta up">↑ +3 vs last week</div>
+      <div class="spark-row">
+        <div class="spark-bar" style="height:40%"></div>
+        <div class="spark-bar" style="height:60%"></div>
+        <div class="spark-bar" style="height:20%"></div>
+        <div class="spark-bar" style="height:80%"></div>
+        <div class="spark-bar" style="height:55%"></div>
+        <div class="spark-bar" style="height:70%"></div>
+        <div class="spark-bar today" style="height:45%"></div>
+      </div>
+    </div>
+
+    <div class="health-card">
+      <div class="hc-label">Pitches sent</div>
+      <div class="hc-value rose">21</div>
+      <div class="hc-delta down">↓ -4 vs last week</div>
+      <div class="spark-row">
+        <div class="spark-bar" style="height:70%"></div>
+        <div class="spark-bar" style="height:90%"></div>
+        <div class="spark-bar" style="height:100%"></div>
+        <div class="spark-bar" style="height:80%"></div>
+        <div class="spark-bar" style="height:65%"></div>
+        <div class="spark-bar" style="height:55%"></div>
+        <div class="spark-bar today rose-bar" style="height:52%"></div>
+      </div>
+    </div>
+
+    <div class="health-card">
+      <div class="hc-label">Active creators</div>
+      <div class="hc-value green">14</div>
+      <div class="hc-delta up">↑ +2 vs last week</div>
+      <div class="spark-row">
+        <div class="spark-bar" style="height:50%"></div>
+        <div class="spark-bar" style="height:65%"></div>
+        <div class="spark-bar" style="height:45%"></div>
+        <div class="spark-bar" style="height:75%"></div>
+        <div class="spark-bar" style="height:60%"></div>
+        <div class="spark-bar" style="height:80%"></div>
+        <div class="spark-bar today green-bar" style="height:70%"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ 4. TRAFFIC ══════════════════════════════════════════ -->
+  <div class="section-label">Traffic — last 7 days <span class="ga4-badge">● GA4 connected</span></div>
+
+  <!-- 4 top metrics -->
+  <div class="traffic-grid">
+    <div class="traffic-card">
+      <div class="tc-label">Unique visitors</div>
+      <div class="tc-value">1,240</div>
+      <div class="tc-delta up">↑ +18% vs last week</div>
+      <div class="spark-row" style="margin-top:10px">
+        <div class="spark-bar" style="height:55%"></div>
+        <div class="spark-bar" style="height:70%"></div>
+        <div class="spark-bar" style="height:45%"></div>
+        <div class="spark-bar" style="height:85%"></div>
+        <div class="spark-bar" style="height:60%"></div>
+        <div class="spark-bar" style="height:75%"></div>
+        <div class="spark-bar today" style="height:80%"></div>
+      </div>
+    </div>
+
+    <div class="traffic-card">
+      <div class="tc-label">Pageviews</div>
+      <div class="tc-value">3,870</div>
+      <div class="tc-delta up">↑ +12% vs last week</div>
+      <div class="spark-row" style="margin-top:10px">
+        <div class="spark-bar" style="height:60%"></div>
+        <div class="spark-bar" style="height:75%"></div>
+        <div class="spark-bar" style="height:50%"></div>
+        <div class="spark-bar" style="height:90%"></div>
+        <div class="spark-bar" style="height:65%"></div>
+        <div class="spark-bar" style="height:80%"></div>
+        <div class="spark-bar today" style="height:70%"></div>
+      </div>
+    </div>
+
+    <div class="traffic-card">
+      <div class="tc-label">Visitor → Signup</div>
+      <div class="tc-value" style="color:var(--violet)">0.7%</div>
+      <div class="tc-delta flat">9 signups / 1,240 visitors</div>
+      <div style="margin-top:10px;font-size:11px;color:var(--text-3);line-height:1.5">
+        Target: 2–3%<br>
+        <span style="color:var(--rose);font-weight:700">Improve signup page CTA</span>
+      </div>
+    </div>
+
+    <div class="traffic-card">
+      <div class="tc-label">Organic search</div>
+      <div class="tc-value" style="color:var(--green)">38%</div>
+      <div class="tc-delta up">↑ growing — SEO working</div>
+      <div style="margin-top:10px;font-size:11px;color:var(--text-3);line-height:1.5">
+        of all traffic<br>
+        <span style="color:var(--green);font-weight:700">Best free acquisition channel</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sources + Top pages -->
+  <div class="traffic-bottom">
+
+    <div class="traffic-sources">
+      <div class="ts-title">Traffic sources</div>
+
+      <div class="source-row">
+        <div class="source-dot" style="background:#059669"></div>
+        <div class="source-label">Organic</div>
+        <div class="source-bar-track">
+          <div class="source-bar-fill" style="width:38%;background:#059669"></div>
+        </div>
+        <div class="source-pct" style="color:#059669">38%</div>
+      </div>
+
+      <div class="source-row">
+        <div class="source-dot" style="background:#0F0F0F"></div>
+        <div class="source-label">Direct</div>
+        <div class="source-bar-track">
+          <div class="source-bar-fill" style="width:29%;background:#0F0F0F"></div>
+        </div>
+        <div class="source-pct">29%</div>
+      </div>
+
+      <div class="source-row">
+        <div class="source-dot" style="background:#E11D48"></div>
+        <div class="source-label">Social</div>
+        <div class="source-bar-track">
+          <div class="source-bar-fill" style="width:22%;background:#E11D48"></div>
+        </div>
+        <div class="source-pct" style="color:#E11D48">22%</div>
+      </div>
+
+      <div class="source-row">
+        <div class="source-dot" style="background:#7C3AED"></div>
+        <div class="source-label">Referral</div>
+        <div class="source-bar-track">
+          <div class="source-bar-fill" style="width:11%;background:#7C3AED"></div>
+        </div>
+        <div class="source-pct" style="color:#7C3AED">11%</div>
+      </div>
+    </div>
+
+    <div class="traffic-pages">
+      <div class="tp-title">Top pages this week</div>
+
+      <div class="page-row">
+        <span class="page-path">/</span>
+        <span><span class="page-views">641</span><span class="page-badge converts">converts</span></span>
+      </div>
+      <div class="page-row">
+        <span class="page-path">/brands</span>
+        <span class="page-views">489</span>
+      </div>
+      <div class="page-row">
+        <span class="page-path">/blog/...</span>
+        <span class="page-views">312</span>
+      </div>
+      <div class="page-row">
+        <span class="page-path">/brands/[id]</span>
+        <span class="page-views">228</span>
+      </div>
+      <div class="page-row">
+        <span class="page-path">/signup</span>
+        <span><span class="page-views">187</span><span class="page-badge converts">converts</span></span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ══ 5. FUNNEL — WHERE ARE YOU LOSING PEOPLE? ══════════ -->
+  <div class="section-label">Where you're losing people</div>
+
+  <div class="funnel-card">
+    <div class="funnel-title">
+      📉 Creator activation funnel — all time
+    </div>
+    <div class="funnel-steps">
+
+      <div class="f-step">
+        <div class="f-label">Signed up</div>
+        <div class="f-bar-track">
+          <div class="f-bar-fill" style="width:100%;background:var(--black)">912 creators</div>
+        </div>
+        <div class="f-count">912</div>
+      </div>
+
+      <div class="f-drop ok">↓ 61% saved a brand — good</div>
+
+      <div class="f-step">
+        <div class="f-label">Saved a brand</div>
+        <div class="f-bar-track">
+          <div class="f-bar-fill" style="width:61%;background:#2563EB">557</div>
+        </div>
+        <div class="f-count">557</div>
+      </div>
+
+      <div class="f-drop bad">↓ only 21% sent a pitch — this is the problem</div>
+
+      <div class="f-step">
+        <div class="f-label">Sent pitch</div>
+        <div class="f-bar-track">
+          <div class="f-bar-fill" style="width:13%;background:var(--violet)">118</div>
+        </div>
+        <div class="f-count">118</div>
+      </div>
+
+      <div class="f-drop ok">↓ 61% pitched more than once — sticky once started</div>
+
+      <div class="f-step">
+        <div class="f-label">Pitched 2+ brands</div>
+        <div class="f-bar-track">
+          <div class="f-bar-fill" style="width:8%;background:var(--rose)">72</div>
+        </div>
+        <div class="f-count">72</div>
+      </div>
+
+      <div class="f-drop bad">↓ no data yet — pipeline tracking will fill this</div>
+
+      <div class="f-step">
+        <div class="f-label">Got a package</div>
+        <div class="f-bar-track">
+          <div class="f-bar-fill" style="width:1%;background:var(--green)">??</div>
+        </div>
+        <div class="f-count" style="color:var(--text-3)">??</div>
+      </div>
+
+    </div>
+
+    <div class="insight-box">
+      <strong>The one thing to fix:</strong> 439 people saved a brand but never pitched. That's your biggest growth lever. The "For You" tab + follow-up nudge emails target this gap directly — watch this number improve over the next 30 days.
+    </div>
+  </div>
+
+  <!-- ══ 5. THIS MONTH SNAPSHOT ═════════════════════════════ -->
+  <div class="section-label">This month</div>
+
+  <div class="week-grid">
+    <div class="week-card">
+      <div class="wc-top">
+        <div class="wc-label">Hot leads (at limit)</div>
+        <span class="wc-delta up">nudge them</span>
+      </div>
+      <div class="wc-value" style="color:var(--amber)">18</div>
+      <div class="wc-sub">Free users who maxed 3 pitches — prime upgrade moment</div>
+    </div>
+
+    <div class="week-card">
+      <div class="wc-top">
+        <div class="wc-label">Almost there (2/3)</div>
+        <span class="wc-delta" style="color:var(--text-3)">watch them</span>
+      </div>
+      <div class="wc-value" style="color:var(--black)">31</div>
+      <div class="wc-sub">One more pitch and they hit the wall — will convert next</div>
+    </div>
+
+    <div class="week-card">
+      <div class="wc-top">
+        <div class="wc-label">Total pitches sent</div>
+        <span class="wc-delta up">↑ vs last month</span>
+      </div>
+      <div class="wc-value">363</div>
+      <div class="wc-sub">Lifetime · 72 unique creators used AI contact</div>
+    </div>
+
+    <div class="week-card">
+      <div class="wc-top">
+        <div class="wc-label">New signups</div>
+        <span class="wc-delta up">↑ growing</span>
+      </div>
+      <div class="wc-value">41</div>
+      <div class="wc-sub">This month · 912 total since launch</div>
+    </div>
+  </div>
+
+</div><!-- /main -->
+</body>
+</html>
