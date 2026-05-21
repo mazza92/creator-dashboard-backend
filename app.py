@@ -602,8 +602,21 @@ def normalize_instagram_url(url):
 
 
 # Google Sign-In endpoint (existing users only)
-@app.route('/google-signup', methods=['POST'])
+@app.route('/google-signup', methods=['POST', 'OPTIONS'])
 def google_signup():
+    if request.method == 'OPTIONS':
+        response = make_response()
+        origin = request.headers.get('Origin', '')
+        allowed = ['https://app.newcollab.co', 'https://newcollab.co', 'http://localhost:3000']
+        if origin in allowed:
+            response.headers['Access-Control-Allow-Origin'] = origin
+        else:
+            response.headers['Access-Control-Allow-Origin'] = 'https://app.newcollab.co'
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-CSRF-Token'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 200
+
     try:
         data = request.get_json()
         if not data or 'idToken' not in data:
@@ -4989,8 +5002,10 @@ def register_brand():
 @app.route('/register/creator/account', methods=['POST', 'OPTIONS'])
 def register_creator_account():
     if request.method == 'OPTIONS':
-        response = jsonify({'success': True})
-        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response = make_response()
+        origin = request.headers.get('Origin', '')
+        allowed = ['https://app.newcollab.co', 'https://newcollab.co', 'http://localhost:3000']
+        response.headers['Access-Control-Allow-Origin'] = origin if origin in allowed else 'https://app.newcollab.co'
         response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-CSRF-Token'
         response.headers['Access-Control-Allow-Credentials'] = 'true'
