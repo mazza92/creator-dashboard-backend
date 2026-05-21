@@ -78,14 +78,38 @@ def send_template_email(to_email, template_name, subject, context):
         Tuple of (success: bool, error_message: str or None)
     """
     try:
-        # Auto-inject unsubscribe_url from user_id if present
-        if 'user_id' in context and 'unsubscribe_url' not in context:
+        # Auto-inject unsubscribe_url for every outgoing email.
+        # Resolves user_id from context if present, otherwise looks it up by email.
+        if 'unsubscribe_url' not in context:
             try:
                 from public_routes import make_unsubscribe_token
-                uid = context['user_id']
-                token = make_unsubscribe_token(str(uid))
                 backend_url = os.getenv('BACKEND_URL', 'https://api.newcollab.co')
-                context = {**context, 'unsubscribe_url': f"{backend_url}/api/public/unsubscribe?uid={uid}&token={token}"}
+
+                uid = context.get('user_id')
+
+                # Fall back: look up user_id by recipient email
+                if not uid:
+                    try:
+                        _conn = psycopg2.connect(
+                            host=os.getenv('DB_HOST'), port=os.getenv('DB_PORT', 5432),
+                            database=os.getenv('DB_NAME'), user=os.getenv('DB_USER'),
+                            password=os.getenv('DB_PASSWORD'),
+                        )
+                        _cur = _conn.cursor()
+                        _cur.execute("SELECT id FROM users WHERE email = %s LIMIT 1", (to_email.strip().lower(),))
+                        row = _cur.fetchone()
+                        if row:
+                            uid = row[0]
+                        _cur.close()
+                        _conn.close()
+                    except Exception:
+                        pass
+
+                if uid:
+                    token = make_unsubscribe_token(str(uid))
+                    context = {**context, 'unsubscribe_url': f"{backend_url}/api/public/unsubscribe?uid={uid}&token={token}"}
+                else:
+                    context = {**context, 'unsubscribe_url': None}
             except Exception:
                 context = {**context, 'unsubscribe_url': None}
 
