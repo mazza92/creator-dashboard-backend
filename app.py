@@ -160,29 +160,42 @@ app.register_blueprint(admin_brands_bp)
 app.register_blueprint(admin_reports_bp)
 app.register_blueprint(admin_email_bp)
 
-# Handle OPTIONS preflight requests
+_CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "https://app.newcollab.co",
+    "https://newcollab.co",
+    "https://www.newcollab.co",
+    "https://api.newcollab.co"
+]
+
+def _cors_preflight_response():
+    """Return a CORS preflight response for the current request origin."""
+    origin = request.headers.get('Origin', '')
+    response = make_response()
+    response.headers['Access-Control-Allow-Origin'] = origin if origin in _CORS_ALLOWED_ORIGINS else 'https://app.newcollab.co'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, PATCH, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-CSRF-Token, X-Admin-Token'
+    response.headers['Access-Control-Allow-Credentials'] = 'true'
+    response.headers['Access-Control-Max-Age'] = '600'
+    return response, 200
+
+# Catch-all OPTIONS handler — covers every route, including those that don't
+# explicitly declare OPTIONS. This is the most reliable approach on Vercel
+# serverless where before_request may not intercept Flask's built-in OPTIONS.
+@app.route('/<path:path>', methods=['OPTIONS'])
+def handle_options_catchall(path):
+    return _cors_preflight_response()
+
+@app.route('/', methods=['OPTIONS'])
+def handle_options_root():
+    return _cors_preflight_response()
+
+# Keep before_request as a secondary safety net
 @app.before_request
 def handle_options():
     if request.method == 'OPTIONS':
-        response = make_response()
-        origin = request.headers.get('Origin')
-        allowed_origins = [
-            "http://localhost:3000",
-            "http://localhost:3001",
-            "https://app.newcollab.co",
-            "https://newcollab.co",
-            "https://www.newcollab.co",
-            "https://api.newcollab.co"
-        ]
-        if origin in allowed_origins:
-            response.headers['Access-Control-Allow-Origin'] = origin
-            response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, PATCH, OPTIONS'
-            response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-CSRF-Token, X-Admin-Token'
-            response.headers['Access-Control-Allow-Credentials'] = 'true'
-            response.headers['Access-Control-Max-Age'] = '600'
-        app.logger.info(f"🟢 Handled OPTIONS preflight for {request.path}")
-        
-        return response, 200
+        return _cors_preflight_response()
 
 def log_request():
     app.logger.info(f"🟢 Raw request: Method={request.method}, Path={request.path}, FullPath={request.full_path}, URL={request.url}, BaseURL={request.base_url}, Headers={dict(request.headers)}, Args={request.args}")
@@ -1277,8 +1290,17 @@ def get_session():
     return response, 200
 
 # Profile Image Upload Endpoint
-@app.route('/profile/update-image', methods=['POST'])
+@app.route('/profile/update-image', methods=['POST', 'OPTIONS'])
 def update_profile_image():
+    if request.method == 'OPTIONS':
+        response = make_response()
+        origin = request.headers.get('Origin', '')
+        allowed = ['https://app.newcollab.co', 'https://newcollab.co', 'http://localhost:3000']
+        response.headers['Access-Control-Allow-Origin'] = origin if origin in allowed else 'https://app.newcollab.co'
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-CSRF-Token'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 200
     try:
         if 'image' not in request.files:
             return jsonify({'error': 'No image file part'}), 400
