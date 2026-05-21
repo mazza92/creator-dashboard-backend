@@ -1557,14 +1557,28 @@ def get_email_stats():
 # HELPER FUNCTIONS
 # ============================================================================
 
+def _build_unsubscribe_url(user_id):
+    """Generate a signed one-click unsubscribe URL for a user."""
+    try:
+        from public_routes import make_unsubscribe_token
+        backend_url = os.getenv('BACKEND_URL', 'https://api.newcollab.co')
+        token = make_unsubscribe_token(str(user_id))
+        return f"{backend_url}/api/public/unsubscribe?uid={user_id}&token={token}"
+    except Exception:
+        return ''
+
+
 def personalize_text(text, recipient):
-    """Replace template variables with recipient data"""
+    """Replace template variables with recipient data."""
     if not text:
         return text
 
     pitches_remaining = 3 - recipient.get('pitches_this_week', 0)
     if recipient.get('tier', 'free') != 'free':
         pitches_remaining = 'unlimited'
+
+    user_id = recipient.get('user_id') or recipient.get('id') or ''
+    unsubscribe_url = _build_unsubscribe_url(user_id) if user_id else ''
 
     replacements = {
         '{{first_name}}': recipient.get('first_name') or recipient.get('username') or 'there',
@@ -1577,10 +1591,20 @@ def personalize_text(text, recipient):
         '{{pitches_remaining}}': str(pitches_remaining),
         '{{pitches_sent_total}}': str(recipient.get('pitches_total', 0)),
         '{{brands_saved_count}}': str(recipient.get('brands_saved', 0)),
+        '{{unsubscribe_url}}': unsubscribe_url,
     }
 
     for var, value in replacements.items():
-        text = text.replace(var, value)
+        text = text.replace(var, str(value))
+
+    # Rewrite any hardcoded unsubscribe links that point to /login or /settings
+    if unsubscribe_url:
+        import re
+        text = re.sub(
+            r'href="https?://[^"]*(?:app\.newcollab\.co/(?:login|creator/dashboard/settings)|newcollab\.co/unsubscribe)[^"]*"([^>]*>(?:[^<]*</a>)?)',
+            lambda m: f'href="{unsubscribe_url}"{m.group(1)}',
+            text
+        )
 
     return text
 
