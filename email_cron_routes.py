@@ -65,7 +65,8 @@ def get_db_connection():
 
 def send_template_email(to_email, template_name, subject, context):
     """
-    Send an email using a Jinja2 template
+    Send an email using a Jinja2 template.
+    Automatically injects unsubscribe_url into context when user_id is present.
 
     Args:
         to_email: Recipient email address
@@ -77,6 +78,17 @@ def send_template_email(to_email, template_name, subject, context):
         Tuple of (success: bool, error_message: str or None)
     """
     try:
+        # Auto-inject unsubscribe_url from user_id if present
+        if 'user_id' in context and 'unsubscribe_url' not in context:
+            try:
+                from public_routes import make_unsubscribe_token
+                uid = context['user_id']
+                token = make_unsubscribe_token(str(uid))
+                backend_url = os.getenv('BACKEND_URL', 'https://api.newcollab.co')
+                context = {**context, 'unsubscribe_url': f"{backend_url}/api/public/unsubscribe?uid={uid}&token={token}"}
+            except Exception:
+                context = {**context, 'unsubscribe_url': None}
+
         env = Environment(loader=FileSystemLoader('templates'))
         template = env.get_template(template_name)
 

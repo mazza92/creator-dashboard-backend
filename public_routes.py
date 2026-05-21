@@ -6,11 +6,117 @@ No authentication required - open to Google crawlers
 from flask import Blueprint, request, jsonify, Response
 from psycopg2.extras import RealDictCursor
 from datetime import date, timedelta
+import hashlib
+import hmac
 import os
 import psycopg2
 import requests
 
+from brand_stats_synthesis import resolve_brand_stats, resolve_pitch_social_proof
+from brand_categories import normalize_category, aggregate_category_counts, category_label
+
 public_bp = Blueprint('public', __name__, url_prefix='/api/public')
+
+
+# ── Unsubscribe token helpers ─────────────────────────────────────────────────
+
+def _unsub_secret():
+    return os.getenv('JWT_SECRET_KEY', os.getenv('SECRET_KEY', 'fallback-secret'))
+
+
+def make_unsubscribe_token(user_id):
+    """Generate a short HMAC token for one-click unsubscribe links."""
+    msg = f"unsub:{user_id}".encode()
+    return hmac.new(_unsub_secret().encode(), msg, hashlib.sha256).hexdigest()[:32]
+
+
+def verify_unsubscribe_token(user_id, token):
+    expected = make_unsubscribe_token(user_id)
+    return hmac.compare_digest(expected, token)
+
+
+@public_bp.route('/unsubscribe', methods=['GET'])
+def unsubscribe():
+    """
+    One-click unsubscribe handler.
+    Called by the link in every email footer: /api/public/unsubscribe?uid=<id>&token=<tok>
+    Sets users.unsubscribed_at = NOW() so no future emails are sent.
+    """
+    user_id = request.args.get('uid')
+    token = request.args.get('token')
+
+    frontend_url = os.getenv('FRONTEND_URL', 'https://newcollab.co')
+
+    if not user_id or not token:
+        return jsonify({'error': 'Missing uid or token'}), 400
+
+    if not verify_unsubscribe_token(user_id, token):
+        return jsonify({'error': 'Invalid unsubscribe link'}), 403
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            UPDATE users
+            SET unsubscribed_at = NOW()
+            WHERE id = %s AND unsubscribed_at IS NULL
+            RETURNING id, email
+        """, (user_id,))
+        row = cursor.fetchone()
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        if row:
+            print(f"[unsubscribe] {row['email']} (id={user_id}) unsubscribed")
+        else:
+            print(f"[unsubscribe] user {user_id} already unsubscribed or not found")
+
+        # Redirect to a confirmation page on the frontend
+        from flask import redirect
+        return redirect(f"{frontend_url}/unsubscribed?status=ok", code=302)
+
+    except Exception as e:
+        print(f"[unsubscribe] error for user {user_id}: {e}")
+        return jsonify({'error': 'Server error'}), 500
+
+
+# ── End unsubscribe ───────────────────────────────────────────────────────────
+
+
+def _format_public_brand_list_item(b):
+    """Format brand for directory cards with synthetic stats when DB values are empty."""
+    response_rate, avg_days = resolve_brand_stats(
+        b['slug'], b['category'], b['response_rate'], b['avg_response_time_days']
+    )
+    pitch_count, response_count = resolve_pitch_social_proof(
+        b['slug'], b.get('pitch_count'), b.get('response_count'), response_rate
+    )
+    return {
+        'id': b['id'],
+        'slug': b['slug'],
+        'name': b['brand_name'],
+        'logo': b['logo_url'],
+        'description': b['description'][:200] if b['description'] else None,
+        'category': b['category'],
+        'niches': b['niches'],
+        'minFollowers': b['min_followers'],
+        'maxFollowers': b['max_followers'],
+        'platforms': b['platforms'],
+        'regions': b['regions'],
+        'responseRate': response_rate,
+        'avgResponseTime': avg_days,
+        'isFeatured': b['is_featured'],
+        'hasApplication': b['has_application_form'],
+        'hasDirectLink': b['has_direct_link'],
+        'hasEmailContact': b['has_email_contact'],
+        'isNew': b['created_at'] and (b['created_at'].date() >= (date.today() - timedelta(days=7))) if b.get('created_at') else False,
+        'pitchStats': {
+            'totalPitches': pitch_count,
+            'totalResponses': response_count,
+        },
+    }
 
 
 def mask_email(email):
@@ -168,8 +274,10 @@ def get_public_brands():
         params = []
 
         if category:
-            query += " AND b.category = %s"
-            params.append(category)
+            canon_category = normalize_category(category)
+            if canon_category:
+                query += " AND b.category = %s"
+                params.append(canon_category)
 
         if niche:
             query += " AND %s = ANY(b.niches)"
@@ -220,8 +328,10 @@ def get_public_brands():
         count_params = []
 
         if category:
-            count_query += " AND category = %s"
-            count_params.append(category)
+            canon_category = normalize_category(category)
+            if canon_category:
+                count_query += " AND category = %s"
+                count_params.append(canon_category)
         if niche:
             count_query += " AND %s = ANY(niches)"
             count_params.append(niche)
@@ -251,31 +361,7 @@ def get_public_brands():
 
         # Format response (NO sensitive data like email or application URLs)
         return jsonify({
-            'brands': [{
-                'id': b['id'],  # Include ID for save/unsave functionality
-                'slug': b['slug'],
-                'name': b['brand_name'],
-                'logo': b['logo_url'],
-                'description': b['description'][:200] if b['description'] else None,  # Truncate for preview
-                'category': b['category'],
-                'niches': b['niches'],
-                'minFollowers': b['min_followers'],
-                'maxFollowers': b['max_followers'],
-                'platforms': b['platforms'],
-                'regions': b['regions'],
-                'responseRate': b['response_rate'],
-                'avgResponseTime': b['avg_response_time_days'],
-                'isFeatured': b['is_featured'],
-                'hasApplication': b['has_application_form'],
-                'hasDirectLink': b['has_direct_link'],
-                'hasEmailContact': b['has_email_contact'],
-                'isNew': b['created_at'] and (b['created_at'].date() >= (date.today() - timedelta(days=7))) if b.get('created_at') else False,
-                # Pitch stats - social proof for conversions
-                'pitchStats': {
-                    'totalPitches': b['pitch_count'],
-                    'totalResponses': b['response_count']
-                } if b['pitch_count'] > 0 else None
-            } for b in brands],
+            'brands': [_format_public_brand_list_item(b) for b in brands],
             'pagination': {
                 'page': page,
                 'limit': limit,
@@ -360,6 +446,13 @@ def get_public_brand(slug):
         if not brand:
             return jsonify({'error': 'Brand not found'}), 404
 
+        response_rate, avg_days = resolve_brand_stats(
+            brand['slug'], brand['category'], brand['response_rate'], brand['avg_response_time_days']
+        )
+        pitch_count, response_count = resolve_pitch_social_proof(
+            brand['slug'], brand['pitch_count'], brand['response_count'], response_rate
+        )
+
         # Format public response
         response = {
             'slug': brand['slug'],
@@ -379,12 +472,13 @@ def get_public_brand(slug):
                 'regions': brand['regions']
             },
             'stats': {
-                'responseRate': brand['response_rate'],
-                'avgResponseTime': brand['avg_response_time_days'],
-                # Pitch stats - social proof
-                'totalPitches': brand['pitch_count'],
-                'totalResponses': brand['response_count']
+                'responseRate': response_rate,
+                'avgResponseTime': avg_days,
+                'totalPitches': pitch_count,
+                'totalResponses': response_count,
             },
+            'responseRate': response_rate,
+            'avgResponseTime': avg_days,
             'isFeatured': brand['is_featured'],
             'applicationMethod': brand['application_method'],
             # Gated fields - tell frontend what's locked (show masked email to create desire)
@@ -618,21 +712,18 @@ def get_categories():
                 category,
                 COUNT(*) as brand_count
             FROM pr_brands
-            WHERE category IS NOT NULL
+            WHERE (COALESCE(status, 'published') = 'published')
+              AND category IS NOT NULL
+              AND TRIM(category) != ''
             GROUP BY category
-            ORDER BY brand_count DESC
         """)
 
-        categories = cursor.fetchall()
+        rows = cursor.fetchall()
         cursor.close()
         conn.close()
 
         return jsonify({
-            'categories': [{
-                'value': c['category'],
-                'label': c['category'].replace('_', ' ').title(),
-                'count': c['brand_count']
-            } for c in categories]
+            'categories': aggregate_category_counts(rows)
         }), 200
 
     except Exception as e:

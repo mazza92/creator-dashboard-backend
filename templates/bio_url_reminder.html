@@ -116,7 +116,7 @@
           <p style="font-size: 12px; color: #6b7280; margin: 0 0 8px;">© 2025 Newcollab. All rights reserved.</p>
           <p style="font-size: 12px; color: #6b7280; margin: 0;">
             <a href="mailto:team@newcollab.co" style="color: #10b981; text-decoration: none;">Contact Support</a> | 
-            <a href="https://newcollab.co/unsubscribe?user_id={{ user_id }}" style="color: #10b981; text-decoration: none;">Unsubscribe</a>
+            {% if unsubscribe_url %}<a href="{{ unsubscribe_url }}" style="color: #10b981; text-decoration: none;">Unsubscribe</a>{% endif %}
           </p>
         </div>
       </td>
