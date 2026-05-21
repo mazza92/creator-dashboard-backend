@@ -1028,13 +1028,23 @@ def login():
         user_id = user['id']
         user_role = user['role']
         app.logger.info(f"🟢 User Found: ID={user_id}, Role={user_role}")
-        cursor.execute("SELECT id FROM creators WHERE user_id = %s", (user_id,))
+        cursor.execute("SELECT id, username, niche FROM creators WHERE user_id = %s", (user_id,))
         creator = cursor.fetchone()
         creator_id = creator['id'] if creator else None
         app.logger.info(f"🟢 Retrieved Creator ID: {creator_id}")
         cursor.execute("SELECT id FROM brands WHERE user_id = %s", (user_id,))
         brand = cursor.fetchone()
         brand_id = brand['id'] if brand else None
+
+        # Check onboarding status for creators
+        onboarding_complete = True
+        if user_role == 'creator':
+            # Onboarding is complete if creator exists with username and niche
+            onboarding_complete = bool(
+                creator and
+                creator.get('username') and
+                creator.get('niche')
+            )
 
         # Clear existing session
         session.clear()
@@ -1043,7 +1053,13 @@ def login():
         session['creator_id'] = creator_id
         session['brand_id'] = brand_id
         session.permanent = True
-        app.logger.info(f"🟢 Session Set: user_id={user_id}, role={user_role}")
+        app.logger.info(f"🟢 Session Set: user_id={user_id}, role={user_role}, onboarding_complete={onboarding_complete}")
+
+        # Determine redirect URL based on role and onboarding status
+        if user_role == 'creator':
+            redirect_url = '/creator/dashboard/pr-brands' if onboarding_complete else '/onboarding'
+        else:
+            redirect_url = '/brand/dashboard/overview'
 
         login_response = {
             'message': 'Login successful',
@@ -1051,7 +1067,8 @@ def login():
             'user_role': user_role,
             'creator_id': creator_id,
             'brand_id': brand_id,
-            'redirect_url': '/creator/dashboard/pr-brands' if user_role == 'creator' else '/brand/dashboard/overview'
+            'onboarding_complete': onboarding_complete,
+            'redirect_url': redirect_url
         }
         response = make_response(jsonify(login_response))
         # Clear old session cookies
@@ -1622,6 +1639,433 @@ def complete_profile():
             cursor.close()
         if 'conn' in locals():
             conn.close()
+
+
+# ============================================================================
+# V4 ONBOARDING - Streamlined 2-step flow (replaces old 3-step)
+# ============================================================================
+
+PLATFORM_FIELD_MAP = {
+    'instagram': ('instagram_handle', 'instagram_followers'),
+    'tiktok':    ('tiktok_handle',    'tiktok_followers'),
+    'youtube':   ('youtube_url',      'youtube_subscribers'),
+    'pinterest': ('pinterest_handle', 'pinterest_monthly_views'),
+    'twitter':   ('twitter_handle',   'twitter_followers'),
+    'blog':      ('blog_url',         'blog_monthly_readers'),
+}
+
+
+@app.route('/api/user/onboarding/step1', methods=['POST', 'OPTIONS'])
+def onboarding_step1():
+    """
+    V4 Onboarding Step 1: Username + Platform + Followers
+    Creates or updates the creators record with basic info.
+    """
+    if request.method == 'OPTIONS':
+        response = jsonify({'success': True})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 200
+
+    try:
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({'error': 'Not authenticated'}), 401
+
+        data = request.get_json() or {}
+        username = data.get('username', '').strip()
+        platform = data.get('platform', '').lower()
+        followers = int(data.get('followers', 0) or 0)
+
+        if not username:
+            return jsonify({'error': 'Username is required'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Check username uniqueness
+        cursor.execute("SELECT id FROM creators WHERE username = %s AND user_id != %s", (username, user_id))
+        if cursor.fetchone():
+            conn.close()
+            return jsonify({'error': 'Username already taken'}), 409
+
+        # Build social_links JSON for the primary platform
+        social_links = []
+        platforms_list = []
+        if platform and platform in PLATFORM_FIELD_MAP:
+            platforms_list = [platform]
+            social_links = [{
+                'platform': platform,
+                'handle': username,
+                'followersCount': followers
+            }]
+
+        # Check if creator profile exists
+        cursor.execute("SELECT id FROM creators WHERE user_id = %s", (user_id,))
+        creator = cursor.fetchone()
+
+        if creator:
+            # Update existing
+            cursor.execute(
+                '''
+                UPDATE creators
+                SET username = %s, followers_count = %s, platforms = %s, social_links = %s
+                WHERE user_id = %s
+                RETURNING id
+                ''',
+                (username, followers, json.dumps(platforms_list), json.dumps(social_links), user_id)
+            )
+        else:
+            # Insert new creator record
+            cursor.execute(
+                '''
+                INSERT INTO creators (user_id, username, followers_count, platforms, social_links)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id
+                ''',
+                (user_id, username, followers, json.dumps(platforms_list), json.dumps(social_links))
+            )
+
+        creator_id = cursor.fetchone()['id']
+        conn.commit()
+
+        # Update session with creator_id
+        session['creator_id'] = creator_id
+        session.modified = True
+
+        conn.close()
+        return jsonify({'ok': True, 'creator_id': creator_id}), 200
+
+    except Exception as e:
+        app.logger.error(f"🔥 Error in onboarding step1: {str(e)}")
+        if 'conn' in locals():
+            conn.rollback()
+            conn.close()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/user/onboarding/step2', methods=['POST', 'OPTIONS'])
+def onboarding_step2():
+    """
+    Onboarding Step 2: Bio + Audience age range.
+    """
+    if request.method == 'OPTIONS':
+        response = jsonify({'success': True})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 200
+
+    try:
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({'error': 'Not authenticated'}), 401
+
+        data = request.get_json() or {}
+        bio = data.get('bio', '').strip()
+        primary_age_range = data.get('primary_age_range', '').strip()
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        updates = []
+        params = []
+        if bio:
+            updates.append('bio = %s')
+            params.append(bio)
+        if primary_age_range:
+            updates.append('primary_age_range = %s')
+            params.append(primary_age_range)
+
+        if updates:
+            params.append(user_id)
+            cursor.execute(
+                f"UPDATE creators SET {', '.join(updates)} WHERE user_id = %s",
+                params
+            )
+            conn.commit()
+
+        conn.close()
+        return jsonify({'ok': True}), 200
+
+    except Exception as e:
+        app.logger.error(f"🔥 Error in onboarding step2: {str(e)}")
+        if 'conn' in locals():
+            conn.close()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/user/onboarding/step3', methods=['POST', 'OPTIONS'])
+def onboarding_step3():
+    """
+    Onboarding Step 3: Niche selection — marks onboarding complete.
+    """
+    if request.method == 'OPTIONS':
+        response = jsonify({'success': True})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 200
+
+    try:
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({'error': 'Not authenticated'}), 401
+
+        data = request.get_json() or {}
+        niches = data.get('niches', [])
+
+        if not niches:
+            return jsonify({'error': 'Select at least one niche'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute(
+            'UPDATE creators SET niche = %s WHERE user_id = %s RETURNING id',
+            (json.dumps(niches), user_id)
+        )
+        result = cursor.fetchone()
+
+        if not result:
+            conn.close()
+            return jsonify({'error': 'Creator profile not found. Complete step 1 first.'}), 400
+
+        creator_id = result['id']
+        sync_niche_to_pr_wishlist(creator_id, json.dumps(niches), conn)
+        conn.commit()
+
+        # Send welcome email now that onboarding is complete
+        try:
+            cursor.execute("SELECT email, first_name FROM users WHERE id = %s", (user_id,))
+            user_data = cursor.fetchone()
+            cursor.execute("SELECT username FROM creators WHERE id = %s", (creator_id,))
+            creator_data = cursor.fetchone()
+            if user_data:
+                send_welcome_email(user_id, 'creator', {
+                    'email': user_data.get('email', ''),
+                    'first_name': user_data.get('first_name', ''),
+                    'username': creator_data.get('username', '') if creator_data else ''
+                })
+        except Exception as welcome_error:
+            app.logger.error(f"⚠️ Failed to send welcome email: {str(welcome_error)}")
+
+        conn.close()
+        base_url = get_base_url()
+        return jsonify({'ok': True, 'redirect': f'{base_url}/creator/dashboard/pr-brands'}), 200
+
+    except Exception as e:
+        app.logger.error(f"🔥 Error in onboarding step3: {str(e)}")
+        if 'conn' in locals():
+            conn.rollback()
+            conn.close()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/user/profile-completeness', methods=['GET', 'OPTIONS'])
+def get_profile_completeness():
+    """
+    Returns profile completeness data for the completeness widget.
+    Reads actual DB state so it works for both new and existing users.
+    """
+    if request.method == 'OPTIONS':
+        response = jsonify({'success': True})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 200
+
+    try:
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({'error': 'Not authenticated'}), 401
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get user data
+        cursor.execute("SELECT first_name, last_name, email FROM users WHERE id = %s", (user_id,))
+        user = cursor.fetchone()
+
+        # Get creator data
+        cursor.execute("""
+            SELECT username, bio, image_profile, niche, regions, primary_age_range, followers_count
+            FROM creators WHERE user_id = %s
+        """, (user_id,))
+        creator = cursor.fetchone()
+
+        conn.close()
+
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        # Parse niche/regions if they're JSON strings
+        niche_val = creator.get('niche') if creator else None
+        if isinstance(niche_val, str):
+            try:
+                niche_val = json.loads(niche_val)
+            except:
+                pass
+
+        regions_val = creator.get('regions') if creator else None
+        if isinstance(regions_val, str):
+            try:
+                regions_val = json.loads(regions_val)
+            except:
+                pass
+
+        # Calculate completeness
+        fields = {
+            'email':         bool(user.get('email')),
+            'username':      bool(creator and creator.get('username')),
+            'niche':         bool(niche_val and len(niche_val) > 0),
+            'profile_photo': bool(creator and creator.get('image_profile')),
+            'bio':           bool(creator and creator.get('bio') and len(creator.get('bio', '').strip()) > 10),
+            'audience_age':  bool(creator and creator.get('primary_age_range')),
+            'regions':       bool(regions_val and len(regions_val) > 0),
+            'name':          bool(user.get('first_name')),
+        }
+
+        completed = sum(1 for v in fields.values() if v)
+        total = len(fields)
+        pct = round(completed / total * 100)
+
+        return jsonify({
+            'fields': fields,
+            'completed': completed,
+            'total': total,
+            'pct': pct,
+        }), 200
+
+    except Exception as e:
+        app.logger.error(f"🔥 Error getting profile completeness: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/user/profile', methods=['PATCH', 'OPTIONS'])
+def update_user_profile():
+    """
+    Update user/creator profile fields. Used by the completeness widget.
+    """
+    if request.method == 'OPTIONS':
+        response = jsonify({'success': True})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'PATCH, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 200
+
+    try:
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({'error': 'Not authenticated'}), 401
+
+        data = request.get_json() or {}
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Fields that go to users table
+        user_fields = ['first_name', 'last_name']
+        user_updates = {k: data[k] for k in user_fields if k in data}
+
+        if user_updates:
+            set_clause = ', '.join(f"{k} = %s" for k in user_updates.keys())
+            cursor.execute(
+                f"UPDATE users SET {set_clause} WHERE id = %s",
+                list(user_updates.values()) + [user_id]
+            )
+
+        # Fields that go to creators table
+        creator_field_map = {
+            'bio': 'bio',
+            'age_range': 'primary_age_range',
+            'primary_age_range': 'primary_age_range',
+            'regions': 'regions',
+            'profile_picture': 'image_profile',
+            'image_profile': 'image_profile',
+            'niches': 'niche',
+            'niche': 'niche',
+            'username': 'username',
+        }
+
+        creator_updates = {}
+        for input_key, db_col in creator_field_map.items():
+            if input_key in data:
+                value = data[input_key]
+                # JSON-encode arrays
+                if isinstance(value, (list, dict)):
+                    value = json.dumps(value)
+                creator_updates[db_col] = value
+
+        if creator_updates:
+            set_clause = ', '.join(f"{k} = %s" for k in creator_updates.keys())
+            cursor.execute(
+                f"UPDATE creators SET {set_clause} WHERE user_id = %s",
+                list(creator_updates.values()) + [user_id]
+            )
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({'ok': True}), 200
+
+    except Exception as e:
+        app.logger.error(f"🔥 Error updating profile: {str(e)}")
+        if 'conn' in locals():
+            conn.rollback()
+            conn.close()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/user/onboarding-status', methods=['GET', 'OPTIONS'])
+def get_onboarding_status():
+    """
+    Check if user has completed onboarding (has a creators record with niche set).
+    """
+    if request.method == 'OPTIONS':
+        response = jsonify({'success': True})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 200
+
+    try:
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({'error': 'Not authenticated'}), 401
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            SELECT id, username, niche FROM creators WHERE user_id = %s
+        """, (user_id,))
+        creator = cursor.fetchone()
+        conn.close()
+
+        # Onboarding complete if creator exists with username and niche
+        onboarding_complete = bool(
+            creator and
+            creator.get('username') and
+            creator.get('niche')
+        )
+
+        return jsonify({
+            'onboarding_complete': onboarding_complete,
+            'has_username': bool(creator and creator.get('username')),
+            'has_niche': bool(creator and creator.get('niche')),
+        }), 200
+
+    except Exception as e:
+        app.logger.error(f"🔥 Error checking onboarding status: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/creator-profile/<int:creator_id>', methods=['GET'])
@@ -4552,16 +4996,29 @@ def register_creator_account():
         return response, 200
 
     try:
-        required_fields = ['firstName', 'lastName', 'email', 'password']
-        missing_fields = [field for field in required_fields if not request.form.get(field)]
-        if missing_fields:
-            return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+        # Handle both JSON and form data
+        if request.is_json:
+            data = request.get_json()
+        else:
+            data = request.form
 
-        first_name = request.form.get('firstName')
-        last_name = request.form.get('lastName')
-        email = request.form.get('email')
-        password = request.form.get('password')
-        pr_list_signup = request.form.get('pr_list_signup') == 'true'
+        # v4 signup: only email + password required at registration
+        # first_name, last_name are optional (collected later via profile completeness)
+        email = data.get('email', '').strip().lower()
+        password = data.get('password', '')
+        terms_accepted = data.get('terms_accepted', data.get('termsAccepted', False))
+
+        # Validate required fields
+        if not email or not password:
+            return jsonify({'error': 'Email and password are required'}), 400
+
+        if len(password) < 8:
+            return jsonify({'error': 'Password must be at least 8 characters'}), 400
+
+        # Optional fields (for backwards compat with old form)
+        first_name = data.get('firstName', data.get('first_name', ''))
+        last_name = data.get('lastName', data.get('last_name', ''))
+        pr_list_signup = data.get('pr_list_signup') in ('true', True, '1')
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -4594,7 +5051,7 @@ def register_creator_account():
                 VALUES (%s, %s, %s, %s, 'creator', %s, %s, %s)
                 RETURNING id
                 ''',
-                (first_name, last_name, email, hashed_password, False, verification_token, pr_list_signup)
+                (first_name or None, last_name or None, email, hashed_password, False, verification_token, pr_list_signup)
             )
         else:
             cursor.execute(
@@ -4603,7 +5060,7 @@ def register_creator_account():
                 VALUES (%s, %s, %s, %s, 'creator', %s, %s)
                 RETURNING id
                 ''',
-                (first_name, last_name, email, hashed_password, False, verification_token)
+                (first_name or None, last_name or None, email, hashed_password, False, verification_token)
             )
         user_id = cursor.fetchone()['id']
         conn.commit()
@@ -5727,12 +6184,17 @@ def verify_email():
             creator_id = None
             onboarding_completed = brand is not None
         else:  # creator
-            cursor.execute("SELECT id, username FROM creators WHERE user_id = %s", (user['id'],))
+            cursor.execute("SELECT id, username, niche FROM creators WHERE user_id = %s", (user['id'],))
             creator = cursor.fetchone()
             creator_id = creator['id'] if creator else None
             username = creator['username'] if creator else None
             brand_id = None
-            onboarding_completed = creator is not None
+            # v4: onboarding complete requires username AND niche
+            onboarding_completed = bool(
+                creator and
+                creator.get('username') and
+                creator.get('niche')
+            )
 
         session['user_id'] = user['id']
         session['user_role'] = user['role']
