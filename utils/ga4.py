@@ -21,6 +21,9 @@ CACHE_TTL = 900  # 15 minutes — balance freshness vs GA4 API rate limits
 
 
 def _use_user_credentials():
+    # Skip if production service account is configured
+    if os.environ.get("GA4_SERVICE_ACCOUNT_JSON") or os.environ.get("GA4_SERVICE_ACCOUNT_PATH"):
+        return False
     if os.environ.get("GA4_USE_USER_CREDENTIALS", "").lower() in ("1", "true", "yes"):
         return True
     # Auto-use seo-assistant token when explicitly pointed or discoverable
@@ -58,6 +61,19 @@ def _get_ga4_client():
         print("[GA4] Using Application Default Credentials")
         return BetaAnalyticsDataClient(credentials=credentials)
 
+    # Production: inline JSON via env var (Vercel / Railway / Render)
+    sa_json = os.environ.get("GA4_SERVICE_ACCOUNT_JSON")
+    if sa_json:
+        import json
+        sa_info = json.loads(sa_json)
+        credentials = service_account.Credentials.from_service_account_info(
+            sa_info,
+            scopes=[GA4_READONLY_SCOPE],
+        )
+        print("[GA4] Using service account credentials from GA4_SERVICE_ACCOUNT_JSON")
+        return BetaAnalyticsDataClient(credentials=credentials)
+
+    # Local dev: file path
     sa_path = os.environ.get("GA4_SERVICE_ACCOUNT_PATH")
     if sa_path and os.path.isfile(sa_path):
         credentials = service_account.Credentials.from_service_account_file(
