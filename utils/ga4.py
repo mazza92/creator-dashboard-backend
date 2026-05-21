@@ -20,6 +20,25 @@ _cache = {"data": None, "expires": 0, "fetched_at": 0}
 CACHE_TTL = 900  # 15 minutes — balance freshness vs GA4 API rate limits
 
 
+def _service_account_email():
+    """Resolve service account email from env JSON or file path."""
+    import json
+    sa_json = os.environ.get("GA4_SERVICE_ACCOUNT_JSON")
+    if sa_json:
+        try:
+            return json.loads(sa_json).get("client_email")
+        except json.JSONDecodeError:
+            pass
+    sa_path = os.environ.get("GA4_SERVICE_ACCOUNT_PATH")
+    if sa_path and os.path.isfile(sa_path):
+        try:
+            with open(sa_path, encoding="utf-8") as f:
+                return json.load(f).get("client_email")
+        except (OSError, json.JSONDecodeError):
+            pass
+    return None
+
+
 def _use_user_credentials():
     # Skip if production service account is configured
     if os.environ.get("GA4_SERVICE_ACCOUNT_JSON") or os.environ.get("GA4_SERVICE_ACCOUNT_PATH"):
@@ -138,11 +157,12 @@ def get_traffic_data(bust_cache=False):
     except PermissionDenied:
         if _use_user_credentials():
             raise
+        sa_email = _service_account_email()
         print(
-            "[GA4] Service account lacks property access. "
-            "Run: python scripts/grant_ga4_access.py "
-            "OR set GA4_USE_USER_CREDENTIALS=true and gcloud auth application-default login "
-            "as team@newcollab.co (local dev only)."
+            "[GA4] Service account lacks Viewer access on this property. "
+            f"Add {sa_email or 'the service account'} in GA4 Admin → "
+            "Property access management → Viewer. "
+            "Or run: python scripts/grant_ga4_access.py"
         )
         return None
 

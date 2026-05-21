@@ -139,8 +139,11 @@ def get_brands():
             params.append(f'%{search}%')
 
         if category:
-            query += " AND category = %s"
-            params.append(category)
+            from brand_categories import normalize_category
+            canon = normalize_category(category)
+            if canon:
+                query += " AND category = %s"
+                params.append(canon)
 
         # Count total
         count_query = query.replace(
@@ -420,6 +423,9 @@ def update_brand(brand_id):
                 update_fields.append(f"{field_mapping[key]} = %s")
                 params.append(value)
             elif key in direct_fields:
+                if key == 'category' and value:
+                    from brand_categories import normalize_category
+                    value = normalize_category(value)
                 update_fields.append(f"{key} = %s")
                 params.append(value)
 

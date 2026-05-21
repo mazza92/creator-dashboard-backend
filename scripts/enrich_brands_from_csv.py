@@ -180,7 +180,11 @@ def csv_value_to_db(csv_col, raw):
         return parse_float(raw)
     if csv_col in JSON_LIST_FIELDS:
         return parse_json_list(raw)
-    return clean_text(raw)
+    val = clean_text(raw)
+    if csv_col == 'Category' and val:
+        from brand_categories import normalize_category
+        return normalize_category(val)
+    return val
 
 
 def build_enrichment(existing, row):

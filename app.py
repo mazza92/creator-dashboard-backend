@@ -1681,6 +1681,10 @@ def onboarding_step1():
 
         if not username:
             return jsonify({'error': 'Username is required'}), 400
+        if not platform:
+            return jsonify({'error': 'Platform is required'}), 400
+        if followers <= 0:
+            return jsonify({'error': 'Follower count is required'}), 400
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -1767,26 +1771,23 @@ def onboarding_step2():
         data = request.get_json() or {}
         bio = data.get('bio', '').strip()
         primary_age_range = data.get('primary_age_range', '').strip()
+        regions = data.get('regions', [])
+
+        if not bio:
+            return jsonify({'error': 'Bio is required'}), 400
+        if not primary_age_range:
+            return jsonify({'error': 'Audience age range is required'}), 400
+        if not regions:
+            return jsonify({'error': 'At least one region is required'}), 400
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        updates = []
-        params = []
-        if bio:
-            updates.append('bio = %s')
-            params.append(bio)
-        if primary_age_range:
-            updates.append('primary_age_range = %s')
-            params.append(primary_age_range)
-
-        if updates:
-            params.append(user_id)
-            cursor.execute(
-                f"UPDATE creators SET {', '.join(updates)} WHERE user_id = %s",
-                params
-            )
-            conn.commit()
+        cursor.execute(
+            'UPDATE creators SET bio = %s, primary_age_range = %s, regions = %s WHERE user_id = %s',
+            (bio, primary_age_range, json.dumps(regions), user_id)
+        )
+        conn.commit()
 
         conn.close()
         return jsonify({'ok': True}), 200

@@ -46,7 +46,10 @@ def load_user_credentials(scopes):
     if not os.path.isfile(token_path):
         return None
 
-    creds = Credentials.from_authorized_user_file(token_path, scopes)
+    # Use scopes stored in the token file for refresh (avoids invalid_scope errors)
+    creds = Credentials.from_authorized_user_file(token_path)
+    if scopes and not creds.has_scopes(scopes):
+        return None
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
         save_user_credentials(creds)
