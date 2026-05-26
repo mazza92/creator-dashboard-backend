@@ -1789,6 +1789,8 @@ def get_founder_dashboard():
 
         # ================== AT-LIMIT USERS (Hot Leads) ==================
         # Free users who maxed 3 pitches/month - prime upgrade candidates
+        # Support at_limit_limit query param for pagination (default 10, max 200)
+        at_limit_limit = min(int(request.args.get('at_limit_limit', 10)), 200)
         cursor.execute("""
             WITH user_pitch_counts AS (
                 SELECT
@@ -1803,13 +1805,15 @@ def get_founder_dashboard():
                 JOIN creator_pipeline cp ON c.id = cp.creator_id
                 WHERE (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)
                 AND cp.pitched_at >= DATE_TRUNC('month', NOW())
+                AND (c.last_any_email_sent IS NULL OR c.last_any_email_sent < NOW() - INTERVAL '24 hours')
+                AND u.unsubscribed_at IS NULL
                 GROUP BY c.id, u.email, c.username, c.followers_count, c.niche
                 HAVING COUNT(*) >= 3
             )
             SELECT * FROM user_pitch_counts
             ORDER BY pitches_this_month DESC
-            LIMIT 10
-        """)
+            LIMIT %s
+        """, (at_limit_limit,))
         at_limit_users = []
         for row in cursor.fetchall():
             at_limit_users.append({
@@ -1821,14 +1825,17 @@ def get_founder_dashboard():
                 'pitches_used': row['pitches_this_month']
             })
 
-        # Count of users at limit (for display)
+        # Count of users at limit (excluding recently emailed and unsubscribed)
         cursor.execute("""
             SELECT COUNT(*) as count FROM (
-                SELECT creator_id
+                SELECT cp.creator_id
                 FROM creator_pipeline cp
                 JOIN creators c ON cp.creator_id = c.id
+                JOIN users u ON c.user_id = u.id
                 WHERE (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)
                 AND cp.pitched_at >= DATE_TRUNC('month', NOW())
+                AND (c.last_any_email_sent IS NULL OR c.last_any_email_sent < NOW() - INTERVAL '24 hours')
+                AND u.unsubscribed_at IS NULL
                 GROUP BY cp.creator_id
                 HAVING COUNT(*) >= 3
             ) as at_limit
@@ -2111,11 +2118,12 @@ def send_nudge_email():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Check global 24-hour cooldown
+        # Check global 24-hour cooldown and unsubscribe status
         GLOBAL_EMAIL_COOLDOWN_HOURS = 24
         FREE_PITCH_LIMIT = 3
         cursor.execute("""
-            SELECT c.username, c.last_any_email_sent,
+            SELECT c.username, u.first_name, c.last_any_email_sent,
+                u.unsubscribed_at,
                 (
                     SELECT COUNT(*)::int
                     FROM creator_pipeline cp
@@ -2123,6 +2131,7 @@ def send_nudge_email():
                       AND cp.pitched_at >= DATE_TRUNC('month', NOW())
                 ) AS pitches_this_month
             FROM creators c
+            JOIN users u ON c.user_id = u.id
             WHERE c.id = %s
         """, (creator_id,))
         result = cursor.fetchone()
@@ -2131,8 +2140,24 @@ def send_nudge_email():
             conn.close()
             return jsonify({'error': 'Creator not found'}), 404
 
-        username = result.get('username') or 'there'
-        display_name = username.split()[0] if username != 'there' else 'there'
+        # Check if user has unsubscribed from emails
+        if result.get('unsubscribed_at'):
+            conn.close()
+            return jsonify({
+                'success': False,
+                'reason': 'unsubscribed',
+                'message': 'User has unsubscribed from emails'
+            }), 200
+
+        # Use first_name for greeting, fallback to username, then 'there'
+        first_name = result.get('first_name')
+        username = result.get('username')
+        if first_name:
+            display_name = first_name.split()[0]
+        elif username:
+            display_name = username.split()[0]
+        else:
+            display_name = 'there'
         pitches_this_month = result.get('pitches_this_month') or FREE_PITCH_LIMIT
 
         # Cooldown check in SQL (last_any_email_sent is TIMESTAMPTZ)
@@ -2173,21 +2198,120 @@ def send_nudge_email():
                 'message': 'Email service not configured'
             }), 200
 
+        # ── Fetch user's actual pitches this month with brand info ──
+        cursor.execute("""
+            SELECT
+                cp.id,
+                cp.stage,
+                cp.pitched_at,
+                cp.followup_sent_at,
+                EXTRACT(DAY FROM NOW() - cp.pitched_at)::INT AS days_since,
+                pb.brand_name,
+                pb.category
+            FROM creator_pipeline cp
+            JOIN pr_brands pb ON cp.brand_id = pb.id
+            WHERE cp.creator_id = %s
+              AND cp.pitched_at >= DATE_TRUNC('month', NOW())
+              AND cp.stage != 'archived'
+            ORDER BY cp.pitched_at ASC
+            LIMIT 3
+        """, (creator_id,))
+        pitch_rows = cursor.fetchall()
+
+        # Build pitches list with status logic
+        pitches = []
+        # Brand colors - predefined palette for variety
+        brand_colors = ['#B5002D', '#2E7D4F', '#1A1A2E', '#6D28D9', '#E85D75', '#1D4ED8', '#C8102E', '#4A7C59']
+        for i, row in enumerate(pitch_rows):
+            days_since = row.get('days_since') or 0
+            stage = row.get('stage') or 'pitched'
+            brand_name = row.get('brand_name') or 'Brand'
+
+            # Determine status and next action based on stage and days
+            if stage in ('replied', 'won', 'success', 'received'):
+                status = 'replied'
+                next_action_copy = 'Log reply + track PR value'
+                next_action_sub = 'build your deal history'
+            elif days_since >= 7:
+                status = 'follow_up_due'
+                next_action_copy = 'Send follow-up email'
+                next_action_sub = 'custom drafted for this brand, ready to send'
+            else:
+                status = 'waiting'
+                days_until = max(1, 7 - days_since)
+                next_action_copy = f'Follow-up in {days_until} day{"s" if days_until != 1 else ""}'
+                next_action_sub = "we'll draft it automatically"
+
+            pitches.append({
+                'brand_name': brand_name,
+                'brand_initial': brand_name[:2].upper(),
+                'brand_color': brand_colors[i % len(brand_colors)],
+                'days_since': days_since,
+                'status': status,
+                'next_action_copy': next_action_copy,
+                'next_action_sub': next_action_sub,
+            })
+
+        # ── Get creator's niche ──
+        cursor.execute("SELECT niche FROM creators WHERE id = %s", (creator_id,))
+        niche_row = cursor.fetchone()
+        user_niche = niche_row.get('niche') if niche_row else None
+        niche_label = user_niche.replace('_', ' ').title() if user_niche else 'your niche'
+
+        # ── Fetch teaser brands (from user's niche, not yet pitched) ──
+        teaser_brands = []
+        if user_niche:
+            pitched_brand_ids = [row.get('id') for row in pitch_rows if row.get('id')]
+            # Get 2 high-response-rate brands in same category/niche
+            cursor.execute("""
+                SELECT
+                    brand_name,
+                    category,
+                    COALESCE(response_rate, 0) AS response_rate
+                FROM pr_brands
+                WHERE category = %s
+                  AND id NOT IN (
+                      SELECT brand_id FROM creator_pipeline WHERE creator_id = %s
+                  )
+                  AND COALESCE(status, 'published') = 'published'
+                ORDER BY response_rate DESC NULLS LAST
+                LIMIT 2
+            """, (user_niche, creator_id))
+            teaser_rows = cursor.fetchall()
+
+            teaser_colors = ['#E85D75', '#6D28D9', '#1D4ED8', '#C8102E']
+            for j, tr in enumerate(teaser_rows):
+                teaser_brands.append({
+                    'name': tr.get('brand_name'),
+                    'initial': (tr.get('brand_name') or 'BR')[:2].upper(),
+                    'logo_color': teaser_colors[j % len(teaser_colors)],
+                    'reply_rate': int(tr.get('response_rate') or 0) if tr.get('response_rate') else None,
+                })
+
         templates_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates')
         jinja_env = Environment(loader=FileSystemLoader(templates_dir))
         message_html = jinja_env.get_template('upgrade_nudge_email_body.html').render(
             display_name=display_name,
             pitch_limit=FREE_PITCH_LIMIT,
             pitches_this_month=pitches_this_month,
+            pitches=pitches,
+            teaser_brands=teaser_brands,
+            niche_label=niche_label,
         )
 
-        subject = f"{display_name}, you've used your free brand contacts this month"
+        # Use first brand name in subject if available for higher open rate
+        first_brand = pitches[0]['brand_name'] if pitches else None
+        if first_brand:
+            subject = f"{first_brand} hasn't replied yet — here's what to do"
+        else:
+            subject = f"{display_name}, your 3 free pitches are out — here's what's next"
+
         email_context = {
             'subject': subject,
-            'preheader': f'You sent {pitches_this_month or FREE_PITCH_LIMIT} pitches this month. Pro removes the cap so you can keep reaching out.',
+            'preheader': f"You've used your 3 free pitches. Here's the status of each one.",
             'message': message_html,
-            'action_url': f'{frontend_url}/creator/dashboard/settings?upgrade=pro',
-            'action_text': 'Upgrade to Pro',
+            'action_url': f'{frontend_url}/creator/dashboard/settings?upgrade=pro&ref=quota_email&utm_source=email&utm_medium=trigger&utm_campaign=quota_hit',
+            'action_text': 'Unlock Pro — $12/month →',
         }
 
         success, smtp_error = send_template_email(

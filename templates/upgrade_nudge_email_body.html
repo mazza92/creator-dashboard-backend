@@ -1,32 +1,190 @@
 {# Inner HTML only — rendered into conversion_email.html via message | safe #}
-<p style="margin: 0 0 20px; font-size: 16px; color: #0F0F0F;">Hey {{ display_name }},</p>
 
-<p style="margin: 0 0 16px; color: #1d1d1f;">
-  You've used all {{ pitch_limit }} free brand contacts for this month.
+<!-- Greeting -->
+<p style="margin: 0 0 6px; font-size: 16px; font-weight: 600; color: #1d1d1f;">
+  Hey {{ display_name }},
+</p>
+<p style="margin: 0 0 20px; font-size: 15px; color: #3d3d3f; line-height: 1.6;">
+  You've used your 3 free pitches this month. Here's where each one stands, and what's waiting for you on Pro.
 </p>
 
-<p style="margin: 0 0 16px; color: #1d1d1f;">
-  Most creators never send one. You sent {{ pitches_this_month or pitch_limit }}.
-  The ones who land brand deals aren't necessarily the biggest — they're the ones who keep reaching out until something clicks.
+<!-- ── PITCH STATUS ROWS ─────────────────────── -->
+{% for pitch in pitches %}
+{% if pitch.status == 'replied' %}
+<!-- Replied pitch - green styling -->
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"
+       style="margin-bottom: 8px; border: 1px solid #d1fae5; border-radius: 12px; overflow: hidden; background-color: #f0fdf4;">
+  <tr>
+    <td style="padding: 12px 14px;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+        <tr>
+          <td style="width: 36px; vertical-align: middle;">
+            <div style="width: 36px; height: 36px; background-color: {{ pitch.brand_color }}; border-radius: 8px; text-align: center; line-height: 36px; font-size: 11px; font-weight: 700; color: #ffffff; letter-spacing: -.3px;">
+              {{ pitch.brand_initial }}
+            </div>
+          </td>
+          <td style="padding-left: 10px; vertical-align: middle;">
+            <div style="font-size: 13.5px; font-weight: 700; color: #1d1d1f;">{{ pitch.brand_name }}</div>
+            <div style="font-size: 12px; color: #86868b;">Pitched {{ pitch.days_since }} day{{ 's' if pitch.days_since != 1 else '' }} ago</div>
+          </td>
+          <td style="text-align: right; vertical-align: middle; padding-left: 8px; white-space: nowrap;">
+            <span style="display: inline-block; background: #d1fae5; color: #065f46; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px;">
+              ✓ Replied
+            </span>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+  <tr>
+    <td style="padding: 0 14px 12px;">
+      <div style="background: #dcfce7; border-radius: 8px; padding: 9px 12px; font-size: 12.5px; color: #86868b;">
+        🔒 <span style="font-weight: 600; color: #065f46;">{{ pitch.next_action_copy }}</span>
+        · {{ pitch.next_action_sub }}
+      </div>
+    </td>
+  </tr>
+</table>
+
+{% elif pitch.status == 'follow_up_due' %}
+<!-- Follow up due pitch - amber styling -->
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"
+       style="margin-bottom: 8px; border: 1px solid #e8e8ed; border-radius: 12px; overflow: hidden;">
+  <tr>
+    <td style="padding: 12px 14px;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+        <tr>
+          <td style="width: 36px; vertical-align: middle;">
+            <div style="width: 36px; height: 36px; background-color: {{ pitch.brand_color }}; border-radius: 8px; text-align: center; line-height: 36px; font-size: 11px; font-weight: 700; color: #ffffff; letter-spacing: -.3px;">
+              {{ pitch.brand_initial }}
+            </div>
+          </td>
+          <td style="padding-left: 10px; vertical-align: middle;">
+            <div style="font-size: 13.5px; font-weight: 700; color: #1d1d1f;">{{ pitch.brand_name }}</div>
+            <div style="font-size: 12px; color: #86868b;">Pitched {{ pitch.days_since }} day{{ 's' if pitch.days_since != 1 else '' }} ago</div>
+          </td>
+          <td style="text-align: right; vertical-align: middle; padding-left: 8px; white-space: nowrap;">
+            <span style="display: inline-block; background: #FFFBEB; color: #92400E; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px;">
+              ⏰ Follow up due
+            </span>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+  <tr>
+    <td style="padding: 0 14px 12px;">
+      <div style="background: #f5f5f7; border-radius: 8px; padding: 9px 12px; font-size: 12.5px; color: #86868b;">
+        🔒 <span style="font-weight: 600; color: #3d3d3f;">{{ pitch.next_action_copy }}</span>
+        · {{ pitch.next_action_sub }}
+      </div>
+    </td>
+  </tr>
+</table>
+
+{% else %}
+<!-- Waiting pitch - blue styling -->
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"
+       style="margin-bottom: 8px; border: 1px solid #e8e8ed; border-radius: 12px; overflow: hidden;">
+  <tr>
+    <td style="padding: 12px 14px;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+        <tr>
+          <td style="width: 36px; vertical-align: middle;">
+            <div style="width: 36px; height: 36px; background-color: {{ pitch.brand_color }}; border-radius: 8px; text-align: center; line-height: 36px; font-size: 11px; font-weight: 700; color: #ffffff; letter-spacing: -.3px;">
+              {{ pitch.brand_initial }}
+            </div>
+          </td>
+          <td style="padding-left: 10px; vertical-align: middle;">
+            <div style="font-size: 13.5px; font-weight: 700; color: #1d1d1f;">{{ pitch.brand_name }}</div>
+            <div style="font-size: 12px; color: #86868b;">Pitched {{ pitch.days_since }} day{{ 's' if pitch.days_since != 1 else '' }} ago</div>
+          </td>
+          <td style="text-align: right; vertical-align: middle; padding-left: 8px; white-space: nowrap;">
+            <span style="display: inline-block; background: #eff6ff; color: #2563eb; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 20px;">
+              Waiting
+            </span>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+  <tr>
+    <td style="padding: 0 14px 12px;">
+      <div style="background: #f5f5f7; border-radius: 8px; padding: 9px 12px; font-size: 12.5px; color: #86868b;">
+        🔒 <span style="font-weight: 600; color: #3d3d3f;">{{ pitch.next_action_copy }}</span>
+        · {{ pitch.next_action_sub }}
+      </div>
+    </td>
+  </tr>
+</table>
+{% endif %}
+{% endfor %}
+
+<!-- Add bottom margin to last pitch card -->
+<div style="margin-bottom: 12px;"></div>
+
+<!-- ── DIVIDER ───────────────────────────────── -->
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"
+       style="margin-bottom: 20px;">
+  <tr>
+    <td style="border-top: 1px solid #e8e8ed; font-size: 0; line-height: 0;">&nbsp;</td>
+  </tr>
+</table>
+
+<!-- ── TEASER BRANDS ──────────────────────────── -->
+{% if teaser_brands and teaser_brands|length > 0 %}
+<p style="margin: 0 0 10px; font-size: 13px; font-weight: 700; color: #1d1d1f;">
+  Also waiting in your {{ niche_label }} feed:
 </p>
 
-<p style="margin: 0 0 20px; color: #1d1d1f;">
-  A monthly cap gets in the way of that.
-</p>
+{% for brand in teaser_brands %}
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"
+       style="margin-bottom: 7px; border: 1px solid #e8e8ed; border-radius: 10px; opacity: {{ 0.7 if loop.index == 1 else 0.45 }};">
+  <tr>
+    <td style="padding: 10px 14px;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+        <tr>
+          <td style="width: 32px; vertical-align: middle;">
+            <div style="width: 32px; height: 32px; background-color: {{ brand.logo_color }}; border-radius: 7px; text-align: center; line-height: 32px; font-size: 10px; font-weight: 700; color: #fff;">
+              {{ brand.initial }}
+            </div>
+          </td>
+          <td style="padding-left: 10px; vertical-align: middle;">
+            <span style="font-size: 13px; font-weight: 700; color: #1d1d1f;">{{ brand.name }}</span>
+            {% if brand.reply_rate %}
+            <span style="font-size: 11.5px; color: #059669; font-weight: 600; margin-left: 8px;">{{ brand.reply_rate }}% reply rate</span>
+            {% endif %}
+          </td>
+          <td style="text-align: right; vertical-align: middle;">
+            <span style="font-size: 11.5px; font-weight: 600; color: #aeaeb2;">🔒 Pitch</span>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+{% endfor %}
 
-<div style="background: #F9F9F9; border-left: 3px solid #0F0F0F; border-radius: 4px; padding: 14px 16px; margin: 0 0 20px;">
-  <p style="margin: 0; font-size: 15px; line-height: 1.6; color: #0F0F0F;">
-    <strong>Pro — $12/month</strong><br>
-    Pitch any brand, any time. No monthly cap.<br>
-    AI writes the pitch for you in seconds — tailored to each brand.
+<div style="margin-bottom: 20px;"></div>
+{% endif %}
+
+<!-- ── PRO HIGHLIGHT BOX ───────────────────────── -->
+<div style="background: #F9F9F9; border-left: 3px solid #0F0F0F; border-radius: 4px; padding: 14px 16px; margin: 0 0 16px;">
+  <p style="margin: 0 0 10px; font-size: 15px; font-weight: 600; color: #0F0F0F;">
+    Pro · $12/month
+  </p>
+  <p style="margin: 0; font-size: 13.5px; line-height: 1.7; color: #3d3d3f;">
+    · Custom outreach emails written for each brand. High open rate, higher reply rate<br>
+    · Your own media kit &amp; portfolio, shareable in one link<br>
+    · A personal creator assistant that finds the right contact, handles wrong emails, and helps you negotiate deals
   </p>
 </div>
 
 <p style="margin: 0 0 6px; font-size: 13px; color: #6B6B6B;">
-  One brand deal — even a gifted package — covers months of Pro.
+  One brand deal (even a gifted package) covers months of Pro.
 </p>
 
-<p style="margin: 20px 0 0; font-size: 14px; color: #86868b;">
-  Reply if you have questions — we read every one.<br>
-  — The NewCollab team
+<p style="margin: 16px 0 0; font-size: 13px; color: #86868b; line-height: 1.6;">
+  Reply if you have questions. We read every one.<br>
+  The Newcollab team
 </p>
