@@ -18,8 +18,10 @@ email_cron_bp = Blueprint('email_cron', __name__, url_prefix='/api/cron')
 # =============================================================================
 # GLOBAL EMAIL COOL-OFF SETTINGS
 # Prevents users from receiving multiple emails on the same day
+# Max 1 email/day, Max 3 emails/week per emailflowbrief.md
 # =============================================================================
 GLOBAL_EMAIL_COOLDOWN_HOURS = 24  # Minimum hours between ANY emails to same user
+MAX_EMAILS_PER_WEEK = 3  # Maximum emails per week per user
 
 
 def check_global_cooloff(cursor, creator_id: int) -> bool:
@@ -27,27 +29,33 @@ def check_global_cooloff(cursor, creator_id: int) -> bool:
     Check if a creator can receive an email based on global cool-off.
     Returns True if they CAN receive an email (cooloff passed).
     Returns False if they should NOT receive an email (too recent).
+
+    Rules enforced:
+    - Max 1 email per day (24h cooldown)
+    - Max 3 emails per week
     """
     cursor.execute("""
-        SELECT (
-            last_any_email_sent IS NULL
-            OR last_any_email_sent < NOW() - INTERVAL '1 hour' * %s
-        ) AS can_send
+        SELECT
+            (last_any_email_sent IS NULL OR last_any_email_sent < NOW() - INTERVAL '1 hour' * %s) AS daily_ok,
+            COALESCE(emails_sent_this_week, 0) < %s AS weekly_ok
         FROM creators
         WHERE id = %s
-    """, (GLOBAL_EMAIL_COOLDOWN_HOURS, creator_id))
+    """, (GLOBAL_EMAIL_COOLDOWN_HOURS, MAX_EMAILS_PER_WEEK, creator_id))
     row = cursor.fetchone()
-    return bool(row and row.get('can_send'))
+    if not row:
+        return False
+    return bool(row.get('daily_ok')) and bool(row.get('weekly_ok'))
 
 
 def mark_email_sent(cursor, conn, creator_id: int, email_type: str = None):
     """
     Update the global last_any_email_sent timestamp after sending an email.
-    Also updates the specific email type timestamp if provided.
+    Also increments the weekly email counter.
     """
     cursor.execute("""
         UPDATE creators
-        SET last_any_email_sent = NOW()
+        SET last_any_email_sent = NOW(),
+            emails_sent_this_week = COALESCE(emails_sent_this_week, 0) + 1
         WHERE id = %s
     """, (creator_id,))
     conn.commit()
@@ -778,13 +786,32 @@ def send_limit_warning():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+def schedule_quota_email(cursor, conn, creator_id: int):
+    """
+    Schedule a quota/upgrade email to be sent 7 days after user hits limit.
+    Per emailflowbrief.md Stage 5: Wait 7 days so pitch cards show "Follow up due" (amber).
+    Called when user sends their 3rd pitch.
+    """
+    cursor.execute("""
+        UPDATE creators
+        SET quota_email_send_at = NOW() + INTERVAL '7 days'
+        WHERE id = %s
+          AND subscription_tier = 'free'
+          AND quota_email_send_at IS NULL
+    """, (creator_id,))
+    conn.commit()
+
+
 @email_cron_bp.route('/send-limit-reached', methods=['POST'])
 def send_limit_reached():
     """
-    Email 3: Limit Reached (hard upgrade push)
-    Target: Free tier, pitches_sent_this_week >= 3, upgrade email not sent this month
+    Stage 5: Quota Hit Email (7-day delayed upgrade push)
+    Per emailflowbrief.md: Wait 7 days after hitting limit so follow-up feature becomes compelling.
+
+    Target: Free tier users with quota_email_send_at <= NOW, not sent this month
     Cron: Daily at 11:30am UTC
-    Note: Highest-intent moment — user is actively trying to pitch
+
+    Key rule: Do NOT send immediately. Wait 7 days so pitch cards show "Follow up due" (amber).
     Add ?test=true to only send to team@newcollab.co
     """
     test_mode = request.args.get('test', '').lower() == 'true'
@@ -821,8 +848,10 @@ def send_limit_reached():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        current_month = datetime.now().strftime('%Y-%m')
 
+        # Per emailflowbrief.md: Find users whose scheduled email time has passed
+        # and who haven't received quota email this month
         cursor.execute("""
             SELECT c.id, u.email, c.username
             FROM creators c
@@ -830,17 +859,16 @@ def send_limit_reached():
             WHERE c.subscription_tier = 'free'
               AND u.is_verified = true
               AND u.unsubscribed_at IS NULL
-              AND c.pitches_sent_this_week >= 3
-              AND (
-                c.last_upgrade_email_sent IS NULL
-                OR c.last_upgrade_email_sent < %s
-              )
+              AND c.quota_email_send_at IS NOT NULL
+              AND c.quota_email_send_at <= NOW()
+              AND (c.quota_email_sent_month IS NULL OR c.quota_email_sent_month != %s)
               AND (
                 c.last_any_email_sent IS NULL
                 OR c.last_any_email_sent < NOW() - INTERVAL '%s hours'
               )
+              AND COALESCE(c.emails_sent_this_week, 0) < %s
             LIMIT 100
-        """, (month_start, GLOBAL_EMAIL_COOLDOWN_HOURS))
+        """, (current_month, GLOBAL_EMAIL_COOLDOWN_HOURS, MAX_EMAILS_PER_WEEK))
 
         creators = cursor.fetchall()
         sent_count = 0
@@ -869,15 +897,19 @@ def send_limit_reached():
             )
 
             if success:
+                # Mark as sent and clear the scheduled time
                 cursor.execute("""
                     UPDATE creators
                     SET last_upgrade_email_sent = NOW(),
-                        last_any_email_sent = NOW()
+                        last_any_email_sent = NOW(),
+                        emails_sent_this_week = COALESCE(emails_sent_this_week, 0) + 1,
+                        quota_email_send_at = NULL,
+                        quota_email_sent_month = %s
                     WHERE id = %s
-                """, (creator['id'],))
+                """, (current_month, creator['id']))
                 conn.commit()
                 sent_count += 1
-                print(f"✅ Sent limit reached email to {creator['email']}")
+                print(f"✅ Sent limit reached email to {creator['email']} (7-day delay)")
             else:
                 errors.append(f"{creator['email']}: {error}")
                 print(f"❌ Error sending to {creator['email']}: {error}")
@@ -1145,10 +1177,16 @@ def send_monthly_reset():
 @email_cron_bp.route('/pipeline-followup-nudge', methods=['POST'])
 def pipeline_followup_nudge():
     """
-    Day 7 - Follow-up Nudge (Free + Pro)
-    Sends to ALL users who have a brand in 'waiting' or 'followup' stage
-    pitched exactly 7 days ago and have not already received this nudge.
+    Stage 6: Follow-up Digest (Free + Pro)
+    Per emailflowbrief.md: ONE email per user listing ALL overdue follow-ups.
+    Never one email per brand.
+
+    Target: Users with pitches >= 7 days old, no reply logged
     Cron: Daily at 09:00
+
+    Subject format:
+    - Single brand: "Time to follow up with {Brand}"
+    - Multiple: "Time to follow up with {Brand} — and {N} others"
     """
     test_mode = request.args.get('test', '').lower() == 'true'
     TEST_EMAIL = 'team@newcollab.co'
@@ -1158,18 +1196,23 @@ def pipeline_followup_nudge():
         context = {
             'message': """
                 <p style="margin: 0 0 16px;">Hey there,</p>
-                <p style="margin: 0 0 16px;">You pitched <strong>Test Brand</strong> 7 days ago. Brands that receive a follow-up are 2x more likely to respond.</p>
-                <p style="margin: 0 0 16px;">Test Brand has a <strong>45% response rate</strong> - worth the nudge.</p>
-                <p style="margin: 0;">Open your pipeline and send a follow-up to double your chances.</p>
+                <p style="margin: 0 0 16px;">You have <strong>3 brands</strong> waiting for a follow-up:</p>
+                <ul style="margin: 0 0 16px; padding-left: 20px;">
+                    <li><strong>Test Brand A</strong> — pitched 10 days ago</li>
+                    <li><strong>Test Brand B</strong> — pitched 8 days ago</li>
+                    <li><strong>Test Brand C</strong> — pitched 7 days ago</li>
+                </ul>
+                <p style="margin: 0 0 16px;">Brands that receive a follow-up are <strong>2x more likely to respond</strong>.</p>
+                <p style="margin: 0;">Open your pipeline and send those follow-ups!</p>
             """,
             'action_url': f"{APP_URL}/creator/dashboard/pr-pipeline",
-            'action_text': 'Send Follow-up',
+            'action_text': 'Send Follow-ups',
             'user_id': 0
         }
         success, error = send_template_email(
             to_email=TEST_EMAIL,
             template_name='conversion_email.html',
-            subject='[TEST] Time to follow up with Test Brand',
+            subject='[TEST] Time to follow up with Test Brand A — and 2 others',
             context=context
         )
         return jsonify({
@@ -1183,65 +1226,112 @@ def pipeline_followup_nudge():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Get ALL overdue pitches (7+ days old, no reply) grouped by user
         cursor.execute("""
             SELECT
                 cp.id AS pipeline_id,
-                cp.followup_count,
-                c.id AS creator_id, u.email, c.username,
-                pb.brand_name, pb.response_rate
+                c.id AS creator_id,
+                u.email,
+                c.username,
+                c.subscription_tier,
+                pb.brand_name,
+                pb.response_rate,
+                EXTRACT(DAY FROM NOW() - cp.pitched_at)::int AS days_ago
             FROM creator_pipeline cp
             JOIN creators c ON c.id = cp.creator_id
             JOIN users u ON u.id = c.user_id
             JOIN pr_brands pb ON pb.id = cp.brand_id
             WHERE cp.stage IN ('waiting', 'followup', 'pitched')
               AND (cp.send_confirmed = TRUE OR cp.pitched_at IS NOT NULL)
-              AND cp.pitched_at::date = (NOW() - INTERVAL '7 days')::date
+              AND cp.pitched_at < NOW() - INTERVAL '7 days'
               AND cp.followup_sent_at IS NULL
               AND u.is_verified = true
               AND u.unsubscribed_at IS NULL
-              AND (
-                c.last_any_email_sent IS NULL
-                OR c.last_any_email_sent < NOW() - INTERVAL '%s hours'
-              )
-            LIMIT 200
-        """, (GLOBAL_EMAIL_COOLDOWN_HOURS,))
+            ORDER BY c.id, cp.pitched_at ASC
+        """)
 
         rows = cursor.fetchall()
+
+        # Group by creator
+        creators_pitches = {}
+        for row in rows:
+            cid = row['creator_id']
+            if cid not in creators_pitches:
+                creators_pitches[cid] = {
+                    'email': row['email'],
+                    'username': row['username'],
+                    'is_pro': row['subscription_tier'] in ('pro', 'elite'),
+                    'pitches': []
+                }
+            creators_pitches[cid]['pitches'].append({
+                'pipeline_id': row['pipeline_id'],
+                'brand_name': row['brand_name'],
+                'response_rate': row['response_rate'],
+                'days_ago': row['days_ago']
+            })
+
         sent_count = 0
         errors = []
 
-        for row in rows:
-            name = row['username'] or 'there'
-            response_rate = row['response_rate'] or 'unknown'
+        for creator_id, data in creators_pitches.items():
+            # Check cooldown per user (daily + weekly limit)
+            if not check_global_cooloff(cursor, creator_id):
+                continue
+
+            pitches = data['pitches']
+            name = data['username'] or 'there'
+            is_pro = data['is_pro']
+
+            # Build subject per brief format
+            first_brand = pitches[0]['brand_name']
+            if len(pitches) == 1:
+                subject = f"Time to follow up with {first_brand}"
+            else:
+                subject = f"Time to follow up with {first_brand} — and {len(pitches) - 1} others"
+
+            # Build brand list HTML
+            brands_html = ""
+            for p in pitches:
+                rate_note = f" ({p['response_rate']}% response rate)" if p['response_rate'] else ""
+                brands_html += f"<li><strong>{p['brand_name']}</strong> — pitched {p['days_ago']} days ago{rate_note}</li>"
+
+            # Different CTA for Pro vs Free
+            cta_text = "Send follow-ups" if is_pro else "Unlock follow-ups with Pro"
+
             context = {
                 'message': f"""
                     <p style="margin: 0 0 16px;">Hey {name},</p>
-                    <p style="margin: 0 0 16px;">You pitched <strong>{row['brand_name']}</strong> 7 days ago. Brands that receive a follow-up are 2x more likely to respond.</p>
-                    <p style="margin: 0 0 16px;">{row['brand_name']} has a <strong>{response_rate}% response rate</strong> - worth the nudge.</p>
-                    <p style="margin: 0;">Open your pipeline and send a follow-up to double your chances.</p>
+                    <p style="margin: 0 0 16px;">You have <strong>{len(pitches)} brand{'s' if len(pitches) > 1 else ''}</strong> waiting for a follow-up:</p>
+                    <ul style="margin: 0 0 16px; padding-left: 20px;">{brands_html}</ul>
+                    <p style="margin: 0 0 16px;">Brands that receive a follow-up are <strong>2x more likely to respond</strong>.</p>
+                    <p style="margin: 0;">{"Open your pipeline and send those follow-ups!" if is_pro else "Upgrade to Pro to send AI-written follow-ups with your Media Kit attached."}</p>
                 """,
                 'action_url': f"{APP_URL}/creator/dashboard/pr-pipeline",
-                'action_text': 'Send Follow-up',
-                'user_id': row['creator_id']
+                'action_text': cta_text,
+                'user_id': creator_id
             }
 
             success, error = send_template_email(
-                to_email=row['email'],
+                to_email=data['email'],
                 template_name='conversion_email.html',
-                subject=f"Time to follow up with {row['brand_name']}",
+                subject=subject,
                 context=context
             )
 
             if success:
+                # Mark all pitches as having received follow-up nudge
+                pipeline_ids = [p['pipeline_id'] for p in pitches]
                 cursor.execute("""
-                    UPDATE creator_pipeline SET followup_sent_at = NOW() WHERE id = %s
-                """, (row['pipeline_id'],))
-                mark_email_sent(cursor, conn, row['creator_id'], 'pipeline_followup_nudge')
+                    UPDATE creator_pipeline
+                    SET followup_sent_at = NOW()
+                    WHERE id = ANY(%s)
+                """, (pipeline_ids,))
+                mark_email_sent(cursor, conn, creator_id, 'pipeline_followup_digest')
                 sent_count += 1
-                print(f"✅ Sent pipeline follow-up nudge to {row['email']}")
+                print(f"✅ Sent follow-up digest to {data['email']} ({len(pitches)} brands)")
             else:
-                errors.append(f"{row['email']}: {error}")
-                print(f"❌ Error sending to {row['email']}: {error}")
+                errors.append(f"{data['email']}: {error}")
+                print(f"❌ Error sending to {data['email']}: {error}")
 
         conn.commit()
         cursor.close()
@@ -1250,6 +1340,7 @@ def pipeline_followup_nudge():
         return jsonify({
             'success': True,
             'sent': sent_count,
+            'users_with_overdue': len(creators_pitches),
             'errors': len(errors),
             'error_details': errors[:5]
         }), 200
@@ -1660,9 +1751,13 @@ def pipeline_confirm_send_test():
 @email_cron_bp.route('/saved-brand-nudge', methods=['POST'])
 def saved_brand_nudge():
     """
-    Day 3 - Saved Brand Nudge (Free + Pro)
-    Sends to users who saved brands 3 days ago but haven't contacted them yet.
-    Goal: remind them to take action on saved brands.
+    Stage 2.1: Saved Brand Nudge (Free + Pro)
+    Per emailflowbrief.md: +2 days after saving (was +3 days).
+
+    Target: Users who saved their FIRST brand 2 days ago but haven't pitched.
+    Note: Only send for the first saved brand, not one email per brand.
+    Exit condition: pitch_count >= 1
+
     Cron: Daily at 09:00
     """
     test_mode = request.args.get('test', '').lower() == 'true'
@@ -1673,7 +1768,7 @@ def saved_brand_nudge():
         context = {
             'message': """
                 <p style="margin: 0 0 16px;">Hey there,</p>
-                <p style="margin: 0 0 16px;">You saved <strong>Test Brand</strong> to your pipeline 3 days ago — are you ready to reach out?</p>
+                <p style="margin: 0 0 16px;">You saved <strong>Test Brand</strong> to your pipeline 2 days ago — are you ready to reach out?</p>
                 <p style="margin: 0 0 16px;">Brands get tons of requests, so the sooner you pitch, the better your chances. 🎯</p>
                 <p style="margin: 0;">Open your pipeline and send your first message. We'll even write the email for you!</p>
             """,
@@ -1698,28 +1793,40 @@ def saved_brand_nudge():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Find users with brands saved exactly 3 days ago that are still in 'saved' stage
+        # Per brief: Only send for FIRST saved brand, +2 days after saving
+        # Exit condition: user has pitched at least once
         cursor.execute("""
+            WITH first_saved AS (
+                SELECT
+                    cp.creator_id,
+                    MIN(cp.created_at) AS first_save_date,
+                    MIN(cp.id) AS first_pipeline_id
+                FROM creator_pipeline cp
+                WHERE cp.stage = 'saved'
+                  AND cp.pitched_at IS NULL
+                  AND cp.send_confirmed = FALSE
+                GROUP BY cp.creator_id
+            )
             SELECT
                 cp.id AS pipeline_id,
                 c.id AS creator_id, u.email, c.username,
                 pb.brand_name, pb.category, pb.response_rate
-            FROM creator_pipeline cp
-            JOIN creators c ON c.id = cp.creator_id
+            FROM first_saved fs
+            JOIN creator_pipeline cp ON cp.id = fs.first_pipeline_id
+            JOIN creators c ON c.id = fs.creator_id
             JOIN users u ON u.id = c.user_id
             JOIN pr_brands pb ON pb.id = cp.brand_id
-            WHERE cp.stage = 'saved'
-              AND cp.created_at::date = (NOW() - INTERVAL '3 days')::date
-              AND cp.pitched_at IS NULL
-              AND cp.send_confirmed = FALSE
+            WHERE fs.first_save_date::date = (NOW() - INTERVAL '2 days')::date
+              AND c.first_pitch_sent_at IS NULL
               AND u.is_verified = true
               AND u.unsubscribed_at IS NULL
               AND (
                 c.last_any_email_sent IS NULL
                 OR c.last_any_email_sent < NOW() - INTERVAL '%s hours'
               )
+              AND COALESCE(c.emails_sent_this_week, 0) < %s
             LIMIT 200
-        """, (GLOBAL_EMAIL_COOLDOWN_HOURS,))
+        """, (GLOBAL_EMAIL_COOLDOWN_HOURS, MAX_EMAILS_PER_WEEK))
 
         rows = cursor.fetchall()
         sent_count = 0
@@ -1731,7 +1838,7 @@ def saved_brand_nudge():
             context = {
                 'message': f"""
                     <p style="margin: 0 0 16px;">Hey {name},</p>
-                    <p style="margin: 0 0 16px;">You saved <strong>{row['brand_name']}</strong> to your pipeline 3 days ago — are you ready to reach out?</p>
+                    <p style="margin: 0 0 16px;">You saved <strong>{row['brand_name']}</strong> to your pipeline 2 days ago — are you ready to reach out?</p>
                     <p style="margin: 0 0 16px;">{response_note}Brands get tons of requests, so the sooner you pitch, the better your chances. 🎯</p>
                     <p style="margin: 0;">Open your pipeline and send your first message. We'll even write the email for you!</p>
                 """,
@@ -1776,9 +1883,13 @@ def saved_brand_nudge():
 @email_cron_bp.route('/saved-brand-reminder', methods=['POST'])
 def saved_brand_reminder():
     """
-    Day 7 - Saved Brand Reminder (Free + Pro)
-    Sends to users who saved brands 7 days ago but still haven't contacted them.
-    More urgent nudge with social proof.
+    Stage 2.2: Saved Brand Reminder (Free + Pro)
+    Per emailflowbrief.md: +6 days after saving (was +7 days).
+
+    Target: Users who saved their FIRST brand 6 days ago but haven't pitched.
+    Note: Only send for the first saved brand, not one email per brand.
+    Exit condition: pitch_count >= 1
+
     Cron: Daily at 09:00
     """
     test_mode = request.args.get('test', '').lower() == 'true'
@@ -1789,7 +1900,7 @@ def saved_brand_reminder():
         context = {
             'message': """
                 <p style="margin: 0 0 16px;">Hey there,</p>
-                <p style="margin: 0 0 16px;">You saved <strong>Test Brand</strong> a week ago but haven't reached out yet.</p>
+                <p style="margin: 0 0 16px;">You saved <strong>Test Brand</strong> 6 days ago but haven't reached out yet.</p>
                 <p style="margin: 0 0 16px;">Creators who pitch within the first week have a <strong>40% higher success rate</strong>. Don't miss your window! ⏰</p>
                 <p style="margin: 0;">If you're not interested anymore, you can always remove it from your pipeline.</p>
             """,
@@ -1814,28 +1925,40 @@ def saved_brand_reminder():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Find users with brands saved exactly 7 days ago still in 'saved' stage
+        # Per brief: Only send for FIRST saved brand, +6 days after saving
+        # Exit condition: user has pitched at least once
         cursor.execute("""
+            WITH first_saved AS (
+                SELECT
+                    cp.creator_id,
+                    MIN(cp.created_at) AS first_save_date,
+                    MIN(cp.id) AS first_pipeline_id
+                FROM creator_pipeline cp
+                WHERE cp.stage = 'saved'
+                  AND cp.pitched_at IS NULL
+                  AND cp.send_confirmed = FALSE
+                GROUP BY cp.creator_id
+            )
             SELECT
                 cp.id AS pipeline_id,
                 c.id AS creator_id, u.email, c.username,
                 pb.brand_name, pb.category
-            FROM creator_pipeline cp
-            JOIN creators c ON c.id = cp.creator_id
+            FROM first_saved fs
+            JOIN creator_pipeline cp ON cp.id = fs.first_pipeline_id
+            JOIN creators c ON c.id = fs.creator_id
             JOIN users u ON u.id = c.user_id
             JOIN pr_brands pb ON pb.id = cp.brand_id
-            WHERE cp.stage = 'saved'
-              AND cp.created_at::date = (NOW() - INTERVAL '7 days')::date
-              AND cp.pitched_at IS NULL
-              AND cp.send_confirmed = FALSE
+            WHERE fs.first_save_date::date = (NOW() - INTERVAL '6 days')::date
+              AND c.first_pitch_sent_at IS NULL
               AND u.is_verified = true
               AND u.unsubscribed_at IS NULL
               AND (
                 c.last_any_email_sent IS NULL
                 OR c.last_any_email_sent < NOW() - INTERVAL '%s hours'
               )
+              AND COALESCE(c.emails_sent_this_week, 0) < %s
             LIMIT 200
-        """, (GLOBAL_EMAIL_COOLDOWN_HOURS,))
+        """, (GLOBAL_EMAIL_COOLDOWN_HOURS, MAX_EMAILS_PER_WEEK))
 
         rows = cursor.fetchall()
         sent_count = 0
@@ -1846,7 +1969,7 @@ def saved_brand_reminder():
             context = {
                 'message': f"""
                     <p style="margin: 0 0 16px;">Hey {name},</p>
-                    <p style="margin: 0 0 16px;">You saved <strong>{row['brand_name']}</strong> a week ago but haven't reached out yet.</p>
+                    <p style="margin: 0 0 16px;">You saved <strong>{row['brand_name']}</strong> 6 days ago but haven't reached out yet.</p>
                     <p style="margin: 0 0 16px;">Creators who pitch within the first week have a <strong>40% higher success rate</strong>. Don't miss your window! ⏰</p>
                     <p style="margin: 0;">If you're not interested anymore, you can always remove it from your pipeline.</p>
                 """,
@@ -1882,6 +2005,85 @@ def saved_brand_reminder():
 
     except Exception as e:
         print(f"❌ Error in saved_brand_reminder: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# =============================================================================
+# WEEKLY RESET CRON
+# Per emailflowbrief.md: Reset weekly email counter every Monday
+# =============================================================================
+
+@email_cron_bp.route('/reset-weekly-email-counter', methods=['POST'])
+def reset_weekly_email_counter():
+    """
+    Weekly Reset - Reset emails_sent_this_week counter for all creators.
+    Per emailflowbrief.md: Max 3 emails/week requires weekly reset.
+
+    Cron: Every Monday at 00:00 UTC
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            UPDATE creators
+            SET emails_sent_this_week = 0
+            WHERE emails_sent_this_week > 0
+        """)
+
+        affected = cursor.rowcount
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        print(f"✅ Reset weekly email counter for {affected} creators")
+
+        return jsonify({
+            'success': True,
+            'message': f'Reset weekly email counter for {affected} creators',
+            'affected': affected
+        }), 200
+
+    except Exception as e:
+        print(f"❌ Error in reset_weekly_email_counter: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@email_cron_bp.route('/schedule-quota-email', methods=['POST'])
+def schedule_quota_email_endpoint():
+    """
+    Schedule quota email for a specific user.
+    Called by pitch creation when user hits 3rd pitch.
+    Per emailflowbrief.md Stage 5: Wait 7 days before sending upgrade email.
+
+    Body: { "creator_id": 123 }
+    """
+    try:
+        data = request.get_json() or {}
+        creator_id = data.get('creator_id')
+
+        if not creator_id:
+            return jsonify({'error': 'creator_id required'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        schedule_quota_email(cursor, conn, creator_id)
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'message': f'Scheduled quota email for creator {creator_id} in 7 days'
+        }), 200
+
+    except Exception as e:
+        print(f"❌ Error in schedule_quota_email_endpoint: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500

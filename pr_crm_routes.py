@@ -913,12 +913,24 @@ def track_pitch():
             }), 403
 
         # Update pitch count
+        new_pitch_count = pitches_used + 1
         cursor.execute('''
             UPDATE creators
             SET pitches_sent_this_week = %s,
-                last_pitch_reset = %s
+                last_pitch_reset = %s,
+                last_pitch_at = NOW()
             WHERE id = %s
-        ''', (pitches_used + 1, month_start, creator_id))
+        ''', (new_pitch_count, month_start, creator_id))
+
+        # Per emailflowbrief.md Stage 5: When user hits 3rd pitch, schedule
+        # quota email for 7 days later (not immediately)
+        if new_pitch_count == 3 and tier == 'free':
+            cursor.execute('''
+                UPDATE creators
+                SET quota_email_send_at = NOW() + INTERVAL '7 days'
+                WHERE id = %s
+                  AND quota_email_send_at IS NULL
+            ''', (creator_id,))
 
         # Update pipeline stage to 'pitched' if in pipeline
         cursor.execute('''
@@ -1539,9 +1551,22 @@ def confirm_send(pipeline_id):
         # already tracked when the email/form was opened from Discover.
         if not pipeline_item.get('pitched_at') and not pipeline_item.get('send_confirmed'):
             cursor.execute("""
-                UPDATE creators SET pitches_sent_this_week = COALESCE(pitches_sent_this_week, 0) + 1
+                UPDATE creators
+                SET pitches_sent_this_week = COALESCE(pitches_sent_this_week, 0) + 1,
+                    last_pitch_at = NOW()
                 WHERE id = %s
+                RETURNING pitches_sent_this_week, subscription_tier
             """, (creator_id,))
+            result = cursor.fetchone()
+
+            # Per emailflowbrief.md Stage 5: When user hits 3rd pitch, schedule
+            # quota email for 7 days later (not immediately)
+            if result and result.get('pitches_sent_this_week') == 3 and result.get('subscription_tier', 'free') == 'free':
+                cursor.execute("""
+                    UPDATE creators
+                    SET quota_email_send_at = NOW() + INTERVAL '7 days'
+                    WHERE id = %s AND quota_email_send_at IS NULL
+                """, (creator_id,))
 
         # Get creator info for confirmation email
         if send_confirmation_email:

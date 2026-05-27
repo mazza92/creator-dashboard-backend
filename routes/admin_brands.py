@@ -793,3 +793,108 @@ def get_roundup_featured_brands():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# WEBSITE SCRAPER - Auto-fill from OpenGraph
+# ============================================================================
+
+@admin_brands_bp.route('/brands/scrape-og', methods=['POST'])
+@admin_required
+def scrape_opengraph():
+    """
+    Scrape OpenGraph metadata from a website URL.
+    Used to auto-fill brand details (name, description, cover image).
+
+    Request Body:
+        { "url": "https://example.com" }
+
+    Returns:
+        {
+            "success": true,
+            "title": "...",
+            "description": "...",
+            "image": "...",
+            "instagram": "..." (if found)
+        }
+    """
+    import requests
+    from bs4 import BeautifulSoup
+    import re
+
+    try:
+        data = request.get_json()
+        url = data.get('url')
+
+        if not url:
+            return jsonify({'error': 'URL is required'}), 400
+
+        # Ensure URL has protocol
+        if not url.startswith('http'):
+            url = f'https://{url}'
+
+        # Fetch the page
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        result = {'success': True}
+
+        # Extract OpenGraph title
+        og_title = soup.find('meta', property='og:title')
+        if og_title and og_title.get('content'):
+            result['title'] = og_title['content'].strip()
+        else:
+            title_tag = soup.find('title')
+            if title_tag:
+                result['title'] = title_tag.get_text().strip()
+
+        # Extract OpenGraph description
+        og_desc = soup.find('meta', property='og:description')
+        if og_desc and og_desc.get('content'):
+            result['description'] = og_desc['content'].strip()
+        else:
+            meta_desc = soup.find('meta', attrs={'name': 'description'})
+            if meta_desc and meta_desc.get('content'):
+                result['description'] = meta_desc['content'].strip()
+
+        # Extract OpenGraph image
+        og_image = soup.find('meta', property='og:image')
+        if og_image and og_image.get('content'):
+            img_url = og_image['content']
+            # Handle relative URLs
+            if img_url.startswith('/'):
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                img_url = f"{parsed.scheme}://{parsed.netloc}{img_url}"
+            result['image'] = img_url
+
+        # Try to find Instagram handle
+        instagram_patterns = [
+            r'instagram\.com/([a-zA-Z0-9_.]+)',
+            r'@([a-zA-Z0-9_.]+)\s*(?:on\s+)?instagram',
+        ]
+        page_text = response.text.lower()
+        for pattern in instagram_patterns:
+            match = re.search(pattern, page_text, re.IGNORECASE)
+            if match:
+                handle = match.group(1)
+                # Filter out common false positives
+                if handle not in ['p', 'reel', 'stories', 'explore', 'accounts']:
+                    result['instagram'] = handle
+                    break
+
+        return jsonify(result), 200
+
+    except requests.exceptions.Timeout:
+        return jsonify({'success': False, 'error': 'Request timed out'}), 200
+    except requests.exceptions.RequestException as e:
+        return jsonify({'success': False, 'error': str(e)}), 200
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 200

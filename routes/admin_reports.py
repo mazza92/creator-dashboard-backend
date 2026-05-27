@@ -1735,16 +1735,66 @@ def get_founder_dashboard():
     """
     Get consolidated founder dashboard data matching adminsimple.html design
 
+    Query Params:
+        period: '7d' (default), '14d', '30d', '90d', '180d', 'all'
+        start_date: Optional custom start date (YYYY-MM-DD)
+        end_date: Optional custom end date (YYYY-MM-DD)
+
     Returns:
         {
             "mrr": {...},
             "at_limit_users": [...],
             "health": {...},
             "funnel": {...},
-            "this_month": {...}
+            "this_month": {...},
+            "period": {...}  # info about selected period
         }
     """
     try:
+        # Parse period parameter
+        period = request.args.get('period', '7d')
+        start_date_str = request.args.get('start_date')
+        end_date_str = request.args.get('end_date')
+
+        # Calculate date range based on period
+        now = datetime.now()
+        end_date = now
+
+        if start_date_str and end_date_str:
+            # Custom date range
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+            period_label = f"{start_date_str} to {end_date_str}"
+            period_days = (end_date - start_date).days + 1
+        elif period == '14d':
+            start_date = now - timedelta(days=14)
+            period_label = 'Last 14 days'
+            period_days = 14
+        elif period == '30d':
+            start_date = now - timedelta(days=30)
+            period_label = 'Last 30 days'
+            period_days = 30
+        elif period == '90d':
+            start_date = now - timedelta(days=90)
+            period_label = 'Last 90 days'
+            period_days = 90
+        elif period == '180d':
+            start_date = now - timedelta(days=180)
+            period_label = 'Last 180 days'
+            period_days = 180
+        elif period == 'all':
+            start_date = datetime(2020, 1, 1)  # Far back enough
+            period_label = 'All time'
+            period_days = (now - start_date).days
+        else:  # Default to 7d
+            start_date = now - timedelta(days=7)
+            period_label = 'Last 7 days'
+            period_days = 7
+
+        # For comparison, calculate previous period
+        prev_end_date = start_date
+        prev_start_date = start_date - timedelta(days=period_days)
+
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -1799,7 +1849,8 @@ def get_founder_dashboard():
                     c.username,
                     c.followers_count,
                     c.niche,
-                    COUNT(*) as pitches_this_month
+                    COUNT(*) as pitches_this_month,
+                    MAX(cp.pitched_at) as last_pitch_at
                 FROM creators c
                 JOIN users u ON c.user_id = u.id
                 JOIN creator_pipeline cp ON c.id = cp.creator_id
@@ -1810,19 +1861,29 @@ def get_founder_dashboard():
                 GROUP BY c.id, u.email, c.username, c.followers_count, c.niche
                 HAVING COUNT(*) >= 3
             )
-            SELECT * FROM user_pitch_counts
-            ORDER BY pitches_this_month DESC
+            SELECT *,
+                EXTRACT(DAY FROM NOW() - last_pitch_at)::INT as days_ago
+            FROM user_pitch_counts
+            ORDER BY
+                CASE WHEN EXTRACT(DAY FROM NOW() - last_pitch_at) >= 7 THEN 0 ELSE 1 END,
+                last_pitch_at ASC
             LIMIT %s
         """, (at_limit_limit,))
         at_limit_users = []
         for row in cursor.fetchall():
+            days_since = None
+            if row['last_pitch_at']:
+                days_since = (datetime.now() - row['last_pitch_at']).days
             at_limit_users.append({
                 'creator_id': row['creator_id'],
                 'email': row['email'],
                 'username': row['username'],
                 'followers': row['followers_count'],
                 'niche': row['niche'],
-                'pitches_used': row['pitches_this_month']
+                'pitches_used': row['pitches_this_month'],
+                'hit_limit_at': row['last_pitch_at'].strftime('%b %d') if row['last_pitch_at'] else None,
+                'days_since_limit': days_since,
+                'needs_followup': days_since >= 7 if days_since is not None else False
             })
 
         # Count of users at limit (excluding recently emailed and unsubscribed)
@@ -1856,87 +1917,84 @@ def get_founder_dashboard():
         """)
         near_limit_count = cursor.fetchone()['count']
 
-        # ================== HEALTH METRICS (This Week) ==================
-        # 7-day sparkline data for signups, pitches, and active creators
+        # ================== HEALTH METRICS (Dynamic Period) ==================
+        # Sparkline data for signups, pitches, and active creators based on selected period
 
-        # Signups by day (last 7 days)
+        # Signups by day (selected period)
         cursor.execute("""
             SELECT
                 DATE(created_at) as date,
                 COUNT(*) as count
             FROM creators
-            WHERE created_at >= NOW() - INTERVAL '7 days'
+            WHERE created_at >= %s AND created_at <= %s
             GROUP BY DATE(created_at)
             ORDER BY date ASC
-        """)
+        """, (start_date, end_date))
         signup_daily = [{'date': str(row['date']), 'count': row['count']} for row in cursor.fetchall()]
 
-        # This week vs last week signups
+        # Current period vs previous period signups
         cursor.execute("""
             SELECT COUNT(*) as count FROM creators
-            WHERE created_at >= DATE_TRUNC('week', NOW())
-        """)
-        signups_this_week = cursor.fetchone()['count']
+            WHERE created_at >= %s AND created_at <= %s
+        """, (start_date, end_date))
+        signups_this_period = cursor.fetchone()['count']
 
         cursor.execute("""
             SELECT COUNT(*) as count FROM creators
-            WHERE created_at >= DATE_TRUNC('week', NOW()) - INTERVAL '1 week'
-            AND created_at < DATE_TRUNC('week', NOW())
-        """)
-        signups_last_week = cursor.fetchone()['count']
+            WHERE created_at >= %s AND created_at < %s
+        """, (prev_start_date, prev_end_date))
+        signups_last_period = cursor.fetchone()['count']
 
-        # Pitches by day (last 7 days)
+        # Pitches by day (selected period)
         cursor.execute("""
             SELECT
                 DATE(pitched_at) as date,
                 COUNT(*) as count
             FROM creator_pipeline
-            WHERE pitched_at >= NOW() - INTERVAL '7 days'
+            WHERE pitched_at >= %s AND pitched_at <= %s
             AND pitched_at IS NOT NULL
             GROUP BY DATE(pitched_at)
             ORDER BY date ASC
-        """)
+        """, (start_date, end_date))
         pitches_daily = [{'date': str(row['date']), 'count': row['count']} for row in cursor.fetchall()]
 
-        # This week vs last week pitches
+        # Current period vs previous period pitches
         cursor.execute("""
             SELECT COUNT(*) as count FROM creator_pipeline
-            WHERE pitched_at >= DATE_TRUNC('week', NOW())
-        """)
-        pitches_this_week = cursor.fetchone()['count']
+            WHERE pitched_at >= %s AND pitched_at <= %s
+        """, (start_date, end_date))
+        pitches_this_period = cursor.fetchone()['count']
 
         cursor.execute("""
             SELECT COUNT(*) as count FROM creator_pipeline
-            WHERE pitched_at >= DATE_TRUNC('week', NOW()) - INTERVAL '1 week'
-            AND pitched_at < DATE_TRUNC('week', NOW())
-        """)
-        pitches_last_week = cursor.fetchone()['count']
+            WHERE pitched_at >= %s AND pitched_at < %s
+        """, (prev_start_date, prev_end_date))
+        pitches_last_period = cursor.fetchone()['count']
 
-        # Active creators by day (last 7 days)
+        # Active creators by day (selected period)
         cursor.execute("""
             SELECT
                 DATE(created_at) as date,
                 COUNT(DISTINCT creator_id) as count
             FROM creator_pipeline
-            WHERE created_at >= NOW() - INTERVAL '7 days'
+            WHERE created_at >= %s AND created_at <= %s
             GROUP BY DATE(created_at)
             ORDER BY date ASC
-        """)
+        """, (start_date, end_date))
         active_daily = [{'date': str(row['date']), 'count': row['count']} for row in cursor.fetchall()]
 
-        # This week vs last week active creators
+        # Current period vs previous period active creators
         cursor.execute("""
             SELECT COUNT(DISTINCT creator_id) as count FROM creator_pipeline
-            WHERE created_at >= DATE_TRUNC('week', NOW())
-        """)
-        active_this_week = cursor.fetchone()['count']
+            WHERE created_at >= %s AND created_at <= %s
+        """, (start_date, end_date))
+        active_this_period = cursor.fetchone()['count']
 
         cursor.execute("""
             SELECT COUNT(DISTINCT creator_id) as count FROM creator_pipeline
-            WHERE created_at >= DATE_TRUNC('week', NOW()) - INTERVAL '1 week'
-            AND created_at < DATE_TRUNC('week', NOW())
-        """)
-        active_last_week = cursor.fetchone()['count']
+            WHERE created_at >= %s AND created_at < %s
+        """, (prev_start_date, prev_end_date))
+        active_last_period = cursor.fetchone()['count']
 
         # ================== CREATOR ACTIVATION FUNNEL (All Time) ==================
         cursor.execute("SELECT COUNT(*) as count FROM creators")
@@ -2004,7 +2062,7 @@ def get_founder_dashboard():
                 # Visitor → signup rate: combine GA4 visitors with DB signups
                 visitors = traffic_raw["visitors_this_week"]
                 visitor_signup_rate = round(
-                    (signups_this_week / visitors * 100), 1
+                    (signups_this_period / visitors * 100), 1
                 ) if visitors else 0
 
                 import time as _time
@@ -2013,7 +2071,7 @@ def get_founder_dashboard():
                 traffic = {
                     **traffic_raw,
                     "visitor_signup_rate": visitor_signup_rate,
-                    "signups_this_week": signups_this_week,
+                    "signups_this_week": signups_this_period,
                     "connected": True,
                     "cache_age_minutes": age_minutes,
                     "cache_ttl_minutes": 15,
@@ -2041,23 +2099,30 @@ def get_founder_dashboard():
             'near_limit_count': near_limit_count,
             'health': {
                 'signups': {
-                    'this_week': signups_this_week,
-                    'last_week': signups_last_week,
-                    'change': signups_this_week - signups_last_week,
+                    'this_week': signups_this_period,  # Keep key name for frontend compat
+                    'last_week': signups_last_period,
+                    'change': signups_this_period - signups_last_period,
                     'daily': signup_daily
                 },
                 'pitches': {
-                    'this_week': pitches_this_week,
-                    'last_week': pitches_last_week,
-                    'change': pitches_this_week - pitches_last_week,
+                    'this_week': pitches_this_period,
+                    'last_week': pitches_last_period,
+                    'change': pitches_this_period - pitches_last_period,
                     'daily': pitches_daily
                 },
                 'active_creators': {
-                    'this_week': active_this_week,
-                    'last_week': active_last_week,
-                    'change': active_this_week - active_last_week,
+                    'this_week': active_this_period,
+                    'last_week': active_last_period,
+                    'change': active_this_period - active_last_period,
                     'daily': active_daily
                 }
+            },
+            'period': {
+                'key': period,
+                'label': period_label,
+                'days': period_days,
+                'start_date': start_date.strftime('%Y-%m-%d'),
+                'end_date': end_date.strftime('%Y-%m-%d'),
             },
             'traffic': traffic,
             'funnel': {
