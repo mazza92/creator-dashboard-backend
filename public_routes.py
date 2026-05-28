@@ -223,6 +223,7 @@ def get_public_brands():
     - search: search brand names
     - activity: filter by brand activity ('new', 'active', 'responsive')
     - contact_type: filter by contact availability ('application', 'email')
+    - region: filter by region/country (e.g., 'Australia', 'US', 'UK', 'Canada')
     """
     try:
         page = int(request.args.get('page', 1))
@@ -234,6 +235,7 @@ def get_public_brands():
         search = request.args.get('search', '').strip()
         activity = request.args.get('activity')  # 'new', 'active', 'responsive'
         contact_type = request.args.get('contact_type')  # 'application', 'email'
+        region = request.args.get('region')  # 'Australia', 'US', 'UK', 'Canada', etc.
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -308,6 +310,11 @@ def get_public_brands():
             # Has a contact email
             query += " AND b.contact_email IS NOT NULL"
 
+        # Region filter (JSONB array contains)
+        if region:
+            query += " AND b.regions @> %s::jsonb"
+            params.append(f'["{region}"]')
+
         # Order: Featured first, then most recently added
         query += """
             ORDER BY
@@ -354,6 +361,11 @@ def get_public_brands():
             count_query += " AND application_form_url IS NOT NULL"
         elif contact_type == 'email':
             count_query += " AND contact_email IS NOT NULL"
+
+        # Region filter for count
+        if region:
+            count_query += " AND regions @> %s::jsonb"
+            count_params.append(f'["{region}"]')
 
         cursor.execute(count_query, count_params)
         total_count = cursor.fetchone()['total']
