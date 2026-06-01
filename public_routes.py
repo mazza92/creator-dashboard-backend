@@ -293,8 +293,8 @@ def get_public_brands():
 
         # Activity filters
         if activity == 'new':
-            # Brands added in the last 7 days
-            query += " AND b.created_at >= NOW() - INTERVAL '7 days'"
+            # "Added recently" - no date filter, just sort by newest (handled in ORDER BY)
+            pass  # Sorting handled below
         elif activity == 'active':
             # Brands actively accepting PR
             query += " AND b.accepting_pr = TRUE"
@@ -315,14 +315,24 @@ def get_public_brands():
             query += " AND b.regions @> %s::jsonb"
             params.append(f'["{region}"]')
 
-        # Order: Featured first, then most recently added
-        query += """
-            ORDER BY
-                b.is_featured DESC,
-                b.created_at DESC NULLS LAST,
-                b.brand_name ASC
-            LIMIT %s OFFSET %s
-        """
+        # Order: depends on activity filter
+        if activity == 'new':
+            # "Added recently" - sort by newest first, ignore featured
+            query += """
+                ORDER BY
+                    b.created_at DESC NULLS LAST,
+                    b.brand_name ASC
+                LIMIT %s OFFSET %s
+            """
+        else:
+            # Default: Featured first, then most recently added
+            query += """
+                ORDER BY
+                    b.is_featured DESC,
+                    b.created_at DESC NULLS LAST,
+                    b.brand_name ASC
+                LIMIT %s OFFSET %s
+            """
         params.extend([limit, offset])
 
         cursor.execute(query, params)
@@ -350,7 +360,7 @@ def get_public_brands():
 
         # Activity filters for count
         if activity == 'new':
-            count_query += " AND created_at >= NOW() - INTERVAL '7 days'"
+            pass  # "Added recently" just sorts, doesn't filter
         elif activity == 'active':
             count_query += " AND accepting_pr = TRUE"
         elif activity == 'responsive':
