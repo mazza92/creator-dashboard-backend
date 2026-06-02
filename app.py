@@ -1083,7 +1083,7 @@ def login():
 
         # Determine redirect URL based on role and onboarding status
         if user_role == 'creator':
-            redirect_url = '/creator/dashboard/pr-brands' if onboarding_complete else '/onboarding'
+            redirect_url = '/creator/dashboard/for-you' if onboarding_complete else '/onboarding'
         else:
             redirect_url = '/brand/dashboard/overview'
 
@@ -1650,7 +1650,7 @@ def complete_profile():
         base_url = get_base_url()
         response = jsonify({
             'message': 'Profile completed!',
-            'redirect_url': f'{base_url}/creator/dashboard/pr-brands'
+            'redirect_url': f'{base_url}/creator/dashboard/for-you'
         })
         response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
         response.headers['Access-Control-Allow-Credentials'] = 'true'
@@ -1892,7 +1892,7 @@ def onboarding_step3():
 
         conn.close()
         base_url = get_base_url()
-        return jsonify({'ok': True, 'redirect': f'{base_url}/creator/dashboard/pr-brands'}), 200
+        return jsonify({'ok': True, 'redirect': f'{base_url}/creator/dashboard/for-you'}), 200
 
     except Exception as e:
         app.logger.error(f"🔥 Error in onboarding step3: {str(e)}")
@@ -6251,7 +6251,7 @@ def verify_email():
         if not onboarding_completed:
             redirect_url = '/onboarding' if user['role'] == 'creator' else '/brand/onboarding'
         else:
-            redirect_url = '/creator/dashboard/pr-brands' if user['role'] == 'creator' else '/brand/dashboard/overview'
+            redirect_url = '/creator/dashboard/for-you' if user['role'] == 'creator' else '/brand/dashboard/overview'
 
         app.logger.info(f"🟢 Email verified for {email}, onboarding_completed={onboarding_completed}, redirecting to: {redirect_url}")
 
