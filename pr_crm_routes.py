@@ -2001,60 +2001,43 @@ def get_for_you():
         already_pitched = cursor.fetchall()
         exclude_ids = [r['brand_id'] for r in already_pitched] if already_pitched else [0]
 
-        # ── Section 1: Hot This Week ─────────────────────────────
-        # Top brands by response rate + niche match + recent additions + variety
+        # ── Section 1: Most Contacted Brands ─────────────────────────────
+        # Top brands by total creators who pitched (stage = 'pitched') in past 30 days
         cursor.execute("""
             SELECT
                 b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                 b.description, b.category, b.response_rate,
-                b.min_followers, b.website, b.application_form_url,
-                COALESCE(
-                    (SELECT COUNT(*) FROM creator_pipeline cp
-                     WHERE cp.brand_id = b.id
-                     AND cp.stage IN ('won','received','success')
-                     AND cp.package_confirmed_at > NOW() - INTERVAL '30 days'), 0
-                ) AS wins_this_week,
-                COALESCE(
-                    (SELECT COUNT(*) FROM creator_pipeline cp
-                     WHERE cp.brand_id = b.id
-                     AND cp.send_confirmed = TRUE
-                     AND cp.pitched_at > NOW() - INTERVAL '30 days'), 0
-                ) AS pitched_this_week,
-                (
-                    COALESCE(b.response_rate, 0) * 2
-                    + CASE WHEN LOWER(b.category) = ANY(%s) THEN 25 ELSE 0 END
-                    + CASE WHEN b.created_at > NOW() - INTERVAL '30 days' THEN 15 ELSE 0 END
-                    + RANDOM() * 10
-                )::int AS hot_score
+                b.min_followers, b.website, b.application_form_url
             FROM pr_brands b
             WHERE b.slug IS NOT NULL
               AND COALESCE(b.status, 'published') = 'published'
               AND b.id != ALL(%s)
-              AND b.response_rate > 0
-            ORDER BY hot_score DESC
-            LIMIT 3
-        """, (niches if niches else [''], exclude_ids))
+            ORDER BY (
+                SELECT COUNT(DISTINCT cp.creator_id) FROM creator_pipeline cp
+                WHERE cp.brand_id = b.id
+                AND cp.stage = 'pitched'
+                AND cp.created_at > NOW() - INTERVAL '30 days'
+            ) DESC, b.response_rate DESC NULLS LAST
+            LIMIT 6
+        """, (exclude_ids,))
         hot = cursor.fetchall()
 
-        # Fallback: if not enough brands with response_rate, fill from all brands (prefer niche match)
+        # Fallback: if not enough brands with pitches, fill from popular brands
         if len(hot) < 3:
             hot_ids = [r['id'] for r in hot] if hot else [0]
             cursor.execute("""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate,
-                    b.min_followers, b.website, b.application_form_url,
-                    0 AS wins_this_week, 0 AS pitched_this_week
+                    b.min_followers, b.website, b.application_form_url
                 FROM pr_brands b
                 WHERE b.slug IS NOT NULL
                   AND COALESCE(b.status, 'published') = 'published'
                   AND b.id != ALL(%s)
                   AND b.id != ALL(%s)
-                ORDER BY
-                    CASE WHEN LOWER(b.category) = ANY(%s) THEN 0 ELSE 1 END,
-                    RANDOM()
+                ORDER BY b.response_rate DESC NULLS LAST, RANDOM()
                 LIMIT %s
-            """, (exclude_ids, hot_ids, niches if niches else [''], 3 - len(hot)))
+            """, (exclude_ids, hot_ids, 6 - len(hot)))
             fallback = cursor.fetchall()
             hot = list(hot) + list(fallback)
 
