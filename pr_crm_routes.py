@@ -193,6 +193,7 @@ def get_brands():
         brands = cursor.fetchall()
 
         from brand_stats_synthesis import resolve_brand_stats
+        from public_routes import _estimate_package_value
 
         for b in brands:
             rate, days = resolve_brand_stats(
@@ -203,6 +204,8 @@ def get_brands():
             )
             b['response_rate'] = rate
             b['avg_response_time_days'] = days
+            # Add estimated package value for quick wins UI
+            b['estimated_value'] = _estimate_package_value(b.get('category'), b.get('brand_name'))
 
         cursor.close()
         conn.close()

@@ -85,23 +85,53 @@ def unsubscribe():
 # ── End unsubscribe ───────────────────────────────────────────────────────────
 
 
-def _estimate_package_value(category):
-    """Estimate average PR package value by category."""
+def _estimate_package_value(category, brand_name=None):
+    """
+    Estimate average PR package value by category and brand positioning.
+    Luxury/premium brands have higher values, mass market brands lower.
+    """
+    # Base values by category
     category_values = {
-        'beauty': 85,
-        'skincare': 120,
-        'fashion': 150,
-        'wellness': 95,
-        'fitness': 80,
-        'food': 60,
-        'lifestyle': 100,
-        'tech': 200,
-        'home': 130,
-        'haircare': 90,
-        'jewelry': 180,
-        'pets': 70,
+        'beauty': 75,
+        'skincare': 100,
+        'fashion': 120,
+        'wellness': 85,
+        'fitness': 70,
+        'food': 50,
+        'lifestyle': 90,
+        'tech': 180,
+        'home': 110,
+        'haircare': 80,
+        'jewelry': 200,
+        'pets': 60,
+        'luxury': 350,
+        'baby & parenting': 90,
     }
-    return category_values.get((category or '').lower(), 100)
+
+    base_value = category_values.get((category or '').lower(), 90)
+
+    # Adjust for luxury/premium brands based on name keywords
+    if brand_name:
+        name_lower = brand_name.lower()
+        # Luxury indicators - higher value
+        luxury_keywords = ['luxury', 'premium', 'couture', 'designer', 'haute',
+                          'gucci', 'prada', 'chanel', 'dior', 'louis vuitton',
+                          'cartier', 'tiffany', 'rolex', 'hermès', 'burberry']
+        # Premium beauty/skincare brands
+        premium_beauty = ['la mer', 'sk-ii', 'la prairie', 'sisley', 'drunk elephant',
+                         'tatcha', 'sunday riley', 'augustinus bader', 'charlotte tilbury']
+        # Mass market - lower value
+        mass_market = ['drugstore', 'affordable', 'budget', 'walmart', 'target',
+                      'elf', 'essence', 'nyx', 'maybelline', 'covergirl', 'loreal']
+
+        if any(kw in name_lower for kw in luxury_keywords):
+            base_value = int(base_value * 2.5)  # Luxury multiplier
+        elif any(kw in name_lower for kw in premium_beauty):
+            base_value = int(base_value * 1.8)  # Premium beauty multiplier
+        elif any(kw in name_lower for kw in mass_market):
+            base_value = int(base_value * 0.6)  # Mass market discount
+
+    return base_value
 
 
 def _format_public_brand_list_item(b):
@@ -113,8 +143,8 @@ def _format_public_brand_list_item(b):
         b['slug'], b.get('pitch_count'), b.get('response_count'), response_rate
     )
 
-    # Calculate estimated package value
-    estimated_value = _estimate_package_value(b['category'])
+    # Calculate estimated package value (considers category + brand positioning)
+    estimated_value = _estimate_package_value(b['category'], b['brand_name'])
 
     # Get recent replies count (last 30 days) - use response_count as proxy
     recent_replies = response_count if response_count else 0
