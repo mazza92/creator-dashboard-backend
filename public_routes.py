@@ -85,6 +85,25 @@ def unsubscribe():
 # ── End unsubscribe ───────────────────────────────────────────────────────────
 
 
+def _estimate_package_value(category):
+    """Estimate average PR package value by category."""
+    category_values = {
+        'beauty': 85,
+        'skincare': 120,
+        'fashion': 150,
+        'wellness': 95,
+        'fitness': 80,
+        'food': 60,
+        'lifestyle': 100,
+        'tech': 200,
+        'home': 130,
+        'haircare': 90,
+        'jewelry': 180,
+        'pets': 70,
+    }
+    return category_values.get((category or '').lower(), 100)
+
+
 def _format_public_brand_list_item(b):
     """Format brand for directory cards with synthetic stats when DB values are empty."""
     response_rate, avg_days = resolve_brand_stats(
@@ -93,6 +112,13 @@ def _format_public_brand_list_item(b):
     pitch_count, response_count = resolve_pitch_social_proof(
         b['slug'], b.get('pitch_count'), b.get('response_count'), response_rate
     )
+
+    # Calculate estimated package value
+    estimated_value = _estimate_package_value(b['category'])
+
+    # Get recent replies count (last 30 days) - use response_count as proxy
+    recent_replies = response_count if response_count else 0
+
     return {
         'id': b['id'],
         'slug': b['slug'],
@@ -117,6 +143,9 @@ def _format_public_brand_list_item(b):
             'totalPitches': pitch_count,
             'totalResponses': response_count,
         },
+        # New fields for quick wins
+        'estimatedValue': estimated_value,
+        'recentReplies': recent_replies,
     }
 
 
