@@ -79,6 +79,7 @@ def serialize_post(post):
         'likes': post['likes'],
         'comments': post['comments'],
         'shares': post['shares'],
+        'saves': post.get('saves', 0),
         'thumbnail_url': post['thumbnail_url'],
         'display_order': post['display_order'],
         'is_featured': post['is_featured'],
@@ -153,9 +154,9 @@ def create_portfolio_post():
         cursor.execute('''
             INSERT INTO portfolio_posts (
                 creator_id, post_url, platform, post_type, brand_name,
-                collab_type, views, likes, comments, shares,
+                collab_type, views, likes, comments, shares, saves,
                 thumbnail_url, display_order, is_featured
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING *
         ''', (
             creator_id,
@@ -168,6 +169,7 @@ def create_portfolio_post():
             int(data.get('likes', 0)),
             int(data.get('comments', 0)),
             int(data.get('shares', 0)),
+            int(data.get('saves', 0)),
             data.get('thumbnail_url'),
             int(data.get('display_order', 0)),
             data.get('is_featured', False),
