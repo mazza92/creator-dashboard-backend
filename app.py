@@ -41,6 +41,7 @@ from flask import Flask, request, jsonify, session
 from subscription_routes import subscription_bp
 from pr_crm_routes import pr_crm
 from media_kit_routes import media_kit_bp
+from portfolio_routes import portfolio_bp
 from public_routes import public_bp
 # from marketplace_routes import marketplace_bp  # Disabled - using inline endpoint instead (newer schema)
 from indexnow_routes import indexnow_bp
@@ -151,6 +152,7 @@ CORS(app, resources={
 app.register_blueprint(subscription_bp)
 app.register_blueprint(pr_crm)
 app.register_blueprint(media_kit_bp)
+app.register_blueprint(portfolio_bp)
 app.register_blueprint(public_bp)
 # app.register_blueprint(marketplace_bp)  # Disabled - using inline endpoint instead (newer schema)
 app.register_blueprint(indexnow_bp)
