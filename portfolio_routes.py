@@ -346,6 +346,8 @@ def update_kit_settings():
         if data.get('publish'):
             updates.append("kit_published = %s")
             values.append(True)
+            # Track when kit was last published
+            updates.append("kit_published_at = NOW()")
 
             # Set kit_slug to username if not already set
             cursor.execute('''
@@ -396,7 +398,7 @@ def get_kit_settings():
 
         cursor.execute('''
             SELECT
-                kit_tagline, kit_published, kit_slug,
+                kit_tagline, kit_published, kit_published_at, kit_slug,
                 rates_reel, rates_tiktok, rates_photo, rates_gifted,
                 username
             FROM creators
@@ -413,6 +415,7 @@ def get_kit_settings():
         return jsonify({
             'kit_tagline': creator['kit_tagline'],
             'kit_published': creator['kit_published'],
+            'kit_published_at': creator['kit_published_at'].isoformat() if creator['kit_published_at'] else None,
             'kit_slug': creator['kit_slug'] or creator['username'],
             'rates_reel': creator['rates_reel'],
             'rates_tiktok': creator['rates_tiktok'],

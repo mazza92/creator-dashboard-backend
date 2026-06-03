@@ -1245,6 +1245,26 @@ def get_profile():
             cursor.execute('SELECT id, bio, followers_count, * FROM creators WHERE user_id = %s', (user_id,))
             creator_data = cursor.fetchone() or {}
             profile_data.update(creator_data)
+
+            # Add computed media kit fields
+            if creator_data:
+                creator_id_val = creator_data.get('id')
+                username = creator_data.get('username')
+                kit_published = creator_data.get('kit_published', False)
+
+                # Count portfolio posts
+                post_count = 0
+                try:
+                    cursor.execute('SELECT COUNT(*) as count FROM portfolio_posts WHERE creator_id = %s', (creator_id_val,))
+                    result = cursor.fetchone()
+                    post_count = result['count'] if result else 0
+                except:
+                    pass  # Table may not exist
+
+                # has_media_kit = kit is published AND has at least 1 post
+                profile_data['has_media_kit'] = bool(kit_published and post_count > 0)
+                profile_data['media_kit_url'] = f"https://newcollab.co/kit/{username}" if username else None
+                profile_data['portfolio_post_count'] = post_count
         else:  # brand
             cursor.execute('SELECT *, logo AS image_profile FROM brands WHERE user_id = %s', (user_id,))
             brand_data = cursor.fetchone() or {}
