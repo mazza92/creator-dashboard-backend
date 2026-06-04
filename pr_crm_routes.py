@@ -2042,18 +2042,68 @@ def get_for_you():
             hot = list(hot) + list(fallback)
 
         # ── Section 2: Matched for You ───────────────────────────
-        # Personalized by niche + follower count
+        # Real matching algorithm with meaningful differentiation
+        # Score breakdown: Niche (0-40) + Followers (0-25) + Response (0-20) + Bonus (0-15) = 100 max
+
+        # Build related niches map for scoring
+        related_niches = {
+            'beauty': ['skincare', 'makeup', 'haircare'],
+            'skincare': ['beauty', 'wellness'],
+            'fashion': ['lifestyle', 'accessories'],
+            'lifestyle': ['fashion', 'home', 'wellness'],
+            'fitness': ['wellness', 'athleisure', 'health'],
+            'wellness': ['fitness', 'skincare', 'health'],
+            'food': ['lifestyle', 'kitchen', 'beverages'],
+            'tech': ['gaming', 'gadgets'],
+            'gaming': ['tech', 'entertainment'],
+            'home': ['lifestyle', 'decor'],
+        }
+
+        # Get related categories for the creator's niches
+        creator_related = set()
+        for n in (niches or []):
+            n_lower = n.lower()
+            creator_related.add(n_lower)
+            creator_related.update(related_niches.get(n_lower, []))
+
         if niches or followers:
+            # Build the scoring SQL with real differentiation
             cursor.execute("""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate,
-                    b.min_followers, b.website, b.application_form_url,
+                    b.min_followers, b.max_followers, b.website, b.application_form_url,
+                    b.niches AS brand_niches,
                     (
-                        CASE WHEN LOWER(b.category) = ANY(%s) THEN 50 ELSE 15 END
-                        + CASE WHEN %s >= COALESCE(b.min_followers, 0) THEN 30 ELSE 10 END
-                        + LEAST(COALESCE(b.response_rate, 0) / 2, 20)
-                        + RANDOM() * 5
+                        -- NICHE MATCH (0-40 points)
+                        CASE
+                            WHEN LOWER(b.category) = ANY(%s) THEN 40  -- Exact niche match
+                            WHEN LOWER(b.category) = ANY(%s) THEN 28  -- Related niche
+                            ELSE 10  -- No match baseline
+                        END
+                        -- FOLLOWER FIT (0-25 points)
+                        + CASE
+                            WHEN %s BETWEEN COALESCE(b.min_followers, 0)
+                                AND COALESCE(b.max_followers, 999999999) THEN 25  -- Ideal range
+                            WHEN %s >= COALESCE(b.min_followers, 0)
+                                AND b.max_followers IS NULL THEN 22  -- Above min, no max
+                            WHEN %s >= COALESCE(b.min_followers, 0) * 0.7 THEN 16  -- Within 30%% of min
+                            WHEN %s >= COALESCE(b.min_followers, 0) * 0.5 THEN 10  -- Within 50%% of min
+                            WHEN %s > COALESCE(b.max_followers, 999999999) THEN 8  -- Too big
+                            ELSE 5  -- Far below requirements
+                        END
+                        -- RESPONSE RATE QUALITY (0-20 points)
+                        + CASE
+                            WHEN COALESCE(b.response_rate, 0) >= 50 THEN 20
+                            WHEN COALESCE(b.response_rate, 0) >= 35 THEN 16
+                            WHEN COALESCE(b.response_rate, 0) >= 20 THEN 12
+                            WHEN COALESCE(b.response_rate, 0) >= 10 THEN 8
+                            ELSE 4
+                        END
+                        -- BONUS POINTS (0-15 points)
+                        + CASE WHEN b.has_application_form = true THEN 5 ELSE 0 END
+                        + CASE WHEN b.contact_email IS NOT NULL AND b.contact_email != '' THEN 5 ELSE 0 END
+                        + (RANDOM() * 5)::int  -- Small randomness
                     )::int AS match_score
                 FROM pr_brands b
                 WHERE b.slug IS NOT NULL
@@ -2061,16 +2111,31 @@ def get_for_you():
                   AND b.id != ALL(%s)
                 ORDER BY match_score DESC, b.response_rate DESC NULLS LAST
                 LIMIT 8
-            """, ([n.lower() for n in niches] if niches else [''], followers, exclude_ids))
+            """, (
+                [n.lower() for n in niches] if niches else [''],  # Exact match niches
+                list(creator_related) if creator_related else [''],  # Related niches
+                followers, followers, followers, followers, followers,  # For follower checks
+                exclude_ids
+            ))
             matched = cursor.fetchall()
         else:
-            # No profile yet — return variety of top brands
+            # No profile yet — return variety of top brands with basic scoring
             cursor.execute("""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate,
-                    b.min_followers, b.website, b.application_form_url,
-                    (COALESCE(b.response_rate, 0) + RANDOM() * 20)::int AS match_score
+                    b.min_followers, b.max_followers, b.website, b.application_form_url,
+                    (
+                        30  -- Base score
+                        + CASE
+                            WHEN COALESCE(b.response_rate, 0) >= 50 THEN 25
+                            WHEN COALESCE(b.response_rate, 0) >= 30 THEN 18
+                            WHEN COALESCE(b.response_rate, 0) >= 15 THEN 12
+                            ELSE 5
+                        END
+                        + CASE WHEN b.has_application_form = true THEN 8 ELSE 0 END
+                        + (RANDOM() * 15)::int
+                    )::int AS match_score
                 FROM pr_brands b
                 WHERE b.slug IS NOT NULL
                   AND COALESCE(b.status, 'published') = 'published'

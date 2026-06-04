@@ -12,9 +12,13 @@ import re
 import json
 import requests
 import uuid
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 from werkzeug.utils import secure_filename
 from supabase import create_client, Client
+from jinja2 import Environment, FileSystemLoader
 
 # Supabase credentials for file uploads
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -433,14 +437,14 @@ def get_kit_settings():
 
 
 # ============================================
-# KIT VIEWS TRACKING
+# KIT VIEWS & INTERACTIONS TRACKING
 # ============================================
 
 @portfolio_bp.route('/views', methods=['GET'])
 def get_kit_views():
     """
     GET /api/portfolio/views
-    Returns kit view stats for the creator
+    Returns kit view stats and interaction analytics for the creator
     """
     creator_id = get_creator_id_from_session()
     if not creator_id:
@@ -458,24 +462,65 @@ def get_kit_views():
             SELECT COUNT(*) as count FROM kit_views
             WHERE creator_id = %s AND viewed_at >= %s
         ''', (creator_id, week_ago))
-
         total_week = cursor.fetchone()['count']
 
-        # Get recent views
-        cursor.execute('''
-            SELECT id, viewed_at, referrer FROM kit_views
-            WHERE creator_id = %s
-            ORDER BY viewed_at DESC
-            LIMIT 10
-        ''', (creator_id,))
+        # Get interaction stats this week (if table exists)
+        interactions = {
+            'portfolio_clicks': 0,
+            'share_clicks': 0,
+            'social_clicks': 0,
+            'contact_clicks': 0
+        }
+        try:
+            cursor.execute('''
+                SELECT interaction_type, COUNT(*) as count
+                FROM kit_interactions
+                WHERE creator_id = %s AND created_at >= %s
+                GROUP BY interaction_type
+            ''', (creator_id, week_ago))
+            for row in cursor.fetchall():
+                # Map singular db types to plural response keys
+                type_to_key = {
+                    'portfolio_click': 'portfolio_clicks',
+                    'share_click': 'share_clicks',
+                    'social_click': 'social_clicks',
+                    'contact_click': 'contact_clicks'
+                }
+                key = type_to_key.get(row['interaction_type'])
+                if key:
+                    interactions[key] = row['count']
+        except Exception as e:
+            # Table may not exist yet
+            pass
 
-        recent = cursor.fetchall()
+        # Get recent views with unique referrers (deduplicated)
+        cursor.execute('''
+            SELECT id, viewed_at, referrer,
+                   ROW_NUMBER() OVER (PARTITION BY COALESCE(referrer, '') ORDER BY viewed_at DESC) as rn
+            FROM kit_views
+            WHERE creator_id = %s AND viewed_at >= %s
+            ORDER BY viewed_at DESC
+        ''', (creator_id, week_ago))
+        all_views = cursor.fetchall()
+
+        # Keep only the most recent view from each unique referrer source
+        seen_sources = set()
+        recent = []
+        for v in all_views:
+            source = v['referrer'] or 'direct'
+            if source not in seen_sources and len(recent) < 5:
+                seen_sources.add(source)
+                recent.append(v)
 
         cursor.close()
         conn.close()
 
         return jsonify({
             'views_this_week': total_week,
+            'portfolio_clicks': interactions['portfolio_clicks'],
+            'share_clicks': interactions['share_clicks'],
+            'social_clicks': interactions['social_clicks'],
+            'contact_clicks': interactions['contact_clicks'],
             'recent': [{
                 'id': v['id'],
                 'viewed_at': v['viewed_at'].isoformat() if v['viewed_at'] else None,
@@ -488,6 +533,48 @@ def get_kit_views():
             conn.close()
         print(f"Error fetching kit views: {e}")
         return jsonify({'error': 'Failed to fetch views'}), 500
+
+
+@portfolio_bp.route('/interaction', methods=['POST'])
+def log_kit_interaction():
+    """
+    POST /api/portfolio/interaction
+    Log an interaction on a public media kit (portfolio click, share, social, contact)
+    Body: { creator_id, interaction_type, target_value? }
+    """
+    try:
+        data = request.get_json() or {}
+        creator_id = data.get('creator_id')
+        interaction_type = data.get('interaction_type')
+        target_value = data.get('target_value', '')
+
+        if not creator_id or not interaction_type:
+            return jsonify({'error': 'creator_id and interaction_type required'}), 400
+
+        valid_types = ['portfolio_click', 'share_click', 'social_click', 'contact_click']
+        if interaction_type not in valid_types:
+            return jsonify({'error': f'Invalid interaction_type. Must be one of: {valid_types}'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        referrer = request.headers.get('Referer', '')[:500]
+        viewer_ip = request.remote_addr
+
+        cursor.execute('''
+            INSERT INTO kit_interactions (creator_id, interaction_type, target_value, referrer, viewer_ip)
+            VALUES (%s, %s, %s, %s, %s)
+        ''', (creator_id, interaction_type, target_value[:255] if target_value else '', referrer, viewer_ip))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({'success': True})
+
+    except Exception as e:
+        print(f"Error logging kit interaction: {e}")
+        return jsonify({'error': 'Failed to log interaction'}), 500
 
 
 # ============================================
@@ -829,6 +916,7 @@ def get_public_kit(slug):
                     socials['twitter'] = url
 
         return jsonify({
+            'creator_id': creator['id'],  # For interaction tracking
             'username': creator['username'],
             'first_name': creator['first_name'],
             'avatar_url': creator['avatar_url'],
@@ -853,3 +941,274 @@ def get_public_kit(slug):
             conn.close()
         print(f"Error fetching public kit: {e}")
         return jsonify({'error': 'Failed to fetch kit'}), 500
+
+
+# ============================================
+# KIT VIEW NOTIFICATIONS (LinkedIn-style)
+# ============================================
+
+def send_kit_view_email(to_email, creator_name, views_count, referrer=None):
+    """
+    Send a kit view notification email.
+    Returns (success: bool, error_message: str or None)
+    """
+    try:
+        smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+        smtp_port = int(os.getenv('SMTP_PORT', 587))
+        smtp_username = os.getenv('SMTP_USERNAME')
+        smtp_password = os.getenv('SMTP_PASSWORD')
+        sender_name = os.getenv('EMAIL_SENDER_NAME', 'NewCollab')
+        frontend_url = os.getenv('FRONTEND_URL', 'https://app.newcollab.co')
+
+        subject = f"👀 Someone viewed your media kit"
+
+        # Build referrer text
+        referrer_text = ""
+        if referrer:
+            try:
+                domain = referrer.split('/')[2].replace('www.', '')
+                referrer_text = f"<p style='color:#6B7280;font-size:13px;margin:8px 0 0;'>Came from: {domain}</p>"
+            except:
+                pass
+
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#F5F5F7;padding:40px 20px;margin:0;">
+            <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:16px;padding:32px;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+                <div style="text-align:center;margin-bottom:24px;">
+                    <div style="width:56px;height:56px;background:linear-gradient(135deg,#6366F1,#8B5CF6);border-radius:50%;display:inline-flex;align-items:center;justify-content:center;">
+                        <span style="font-size:24px;">👁️</span>
+                    </div>
+                </div>
+
+                <h1 style="font-size:22px;font-weight:700;color:#111827;text-align:center;margin:0 0 8px;">
+                    {views_count} {'person' if views_count == 1 else 'people'} viewed your kit
+                </h1>
+
+                <p style="font-size:14px;color:#6B7280;text-align:center;margin:0 0 24px;">
+                    Someone's checking you out, {creator_name}! Keep your kit updated to make a great impression.
+                </p>
+
+                {referrer_text}
+
+                <div style="text-align:center;margin-top:28px;">
+                    <a href="{frontend_url}/creator/dashboard/my-kit" style="display:inline-block;background:#0F0F0F;color:#fff;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:600;font-size:14px;">
+                        View your kit analytics →
+                    </a>
+                </div>
+
+                <p style="font-size:12px;color:#9CA3AF;text-align:center;margin-top:32px;">
+                    You're receiving this because you have a published media kit on NewCollab.
+                </p>
+            </div>
+        </body>
+        </html>
+        """
+
+        msg = MIMEMultipart('alternative')
+        msg['From'] = f"{sender_name} <{smtp_username}>"
+        msg['To'] = to_email
+        msg['Subject'] = subject
+
+        msg.attach(MIMEText(html_content, 'html'))
+
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_username, smtp_password)
+            server.send_message(msg)
+
+        return True, None
+    except Exception as e:
+        print(f"Error sending kit view email: {e}")
+        return False, str(e)
+
+
+def maybe_send_kit_view_notification(creator_id, conn=None):
+    """
+    Check if a creator should receive a kit view notification and send it.
+
+    Rules:
+    - Must have at least 1 view in last 15 minutes
+    - Must not have been notified in last 15 minutes
+    - Respects global email cooloff
+
+    Returns: (sent: bool, reason: str)
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_db_connection()
+        close_conn = True
+
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get creator info and check notification timing
+        cursor.execute('''
+            SELECT
+                c.id,
+                c.username,
+                u.email,
+                c.kit_view_notified_at,
+                c.subscription_tier,
+                c.last_any_email_sent,
+                COALESCE(c.emails_sent_this_week, 0) as emails_sent_this_week
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE c.id = %s AND c.kit_published = true
+        ''', (creator_id,))
+        creator = cursor.fetchone()
+
+        if not creator:
+            if close_conn:
+                conn.close()
+            return False, "Creator not found or kit not published"
+
+        # Check if Pro (free users don't get detailed notifications)
+        tier = creator.get('subscription_tier', 'free') or 'free'
+
+        # Check notification cooldown (15 minutes)
+        notified_at = creator.get('kit_view_notified_at')
+        if notified_at:
+            time_since = datetime.now() - notified_at
+            if time_since < timedelta(minutes=15):
+                if close_conn:
+                    conn.close()
+                return False, "Notified too recently"
+
+        # Check global email cooldown (24h between emails, max 3/week)
+        last_email = creator.get('last_any_email_sent')
+        if last_email:
+            time_since = datetime.now() - last_email
+            if time_since < timedelta(hours=24):
+                if close_conn:
+                    conn.close()
+                return False, "Global email cooldown active"
+
+        if creator.get('emails_sent_this_week', 0) >= 3:
+            if close_conn:
+                conn.close()
+            return False, "Weekly email limit reached"
+
+        # Check for recent views (last 15 minutes)
+        cursor.execute('''
+            SELECT COUNT(*) as count, MAX(referrer) as latest_referrer
+            FROM kit_views
+            WHERE creator_id = %s AND viewed_at >= NOW() - INTERVAL '15 minutes'
+        ''', (creator_id,))
+        views = cursor.fetchone()
+
+        if not views or views['count'] == 0:
+            if close_conn:
+                conn.close()
+            return False, "No recent views"
+
+        # Send the notification
+        success, error = send_kit_view_email(
+            to_email=creator['email'],
+            creator_name=creator['username'],
+            views_count=views['count'],
+            referrer=views.get('latest_referrer')
+        )
+
+        if success:
+            # Update notification timestamp and email counters
+            cursor.execute('''
+                UPDATE creators
+                SET kit_view_notified_at = NOW(),
+                    last_any_email_sent = NOW(),
+                    emails_sent_this_week = COALESCE(emails_sent_this_week, 0) + 1
+                WHERE id = %s
+            ''', (creator_id,))
+            conn.commit()
+
+        cursor.close()
+        if close_conn:
+            conn.close()
+
+        if success:
+            return True, f"Sent notification for {views['count']} views"
+        else:
+            return False, f"Email send failed: {error}"
+
+    except Exception as e:
+        if close_conn and conn:
+            conn.close()
+        return False, str(e)
+
+
+@portfolio_bp.route('/notify-view', methods=['POST'])
+def trigger_kit_view_notification():
+    """
+    POST /api/portfolio/notify-view
+    Manually trigger kit view notification check for current user.
+    Called after a view is logged to potentially send immediate notification.
+    """
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'error': 'Not authenticated'}), 401
+
+    sent, reason = maybe_send_kit_view_notification(creator_id)
+
+    return jsonify({
+        'sent': sent,
+        'reason': reason
+    })
+
+
+@portfolio_bp.route('/cron/check-kit-views', methods=['POST'])
+def cron_check_kit_view_notifications():
+    """
+    POST /api/portfolio/cron/check-kit-views
+    Cron endpoint to check all creators with recent views and send notifications.
+    Should be called every 15 minutes by a scheduler.
+
+    Requires X-Cron-Secret header for authentication.
+    """
+    cron_secret = os.getenv('CRON_SECRET')
+    if cron_secret and request.headers.get('X-Cron-Secret') != cron_secret:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Find creators with recent views who haven't been notified recently
+        cursor.execute('''
+            SELECT DISTINCT kv.creator_id
+            FROM kit_views kv
+            JOIN creators c ON c.id = kv.creator_id
+            WHERE kv.viewed_at >= NOW() - INTERVAL '15 minutes'
+            AND c.kit_published = true
+            AND (c.kit_view_notified_at IS NULL OR c.kit_view_notified_at < NOW() - INTERVAL '15 minutes')
+            AND (c.last_any_email_sent IS NULL OR c.last_any_email_sent < NOW() - INTERVAL '24 hours')
+            AND COALESCE(c.emails_sent_this_week, 0) < 3
+        ''')
+        creators = cursor.fetchall()
+        cursor.close()
+
+        results = []
+        for row in creators:
+            sent, reason = maybe_send_kit_view_notification(row['creator_id'], conn)
+            results.append({
+                'creator_id': row['creator_id'],
+                'sent': sent,
+                'reason': reason
+            })
+
+        conn.close()
+
+        return jsonify({
+            'checked': len(creators),
+            'results': results
+        })
+
+    except Exception as e:
+        if conn:
+            conn.close()
+        return jsonify({'error': str(e)}), 500
