@@ -6,8 +6,45 @@ Handles Stripe subscription checkout and management
 from flask import Blueprint, request, jsonify, session
 import stripe
 import os
+import requests
 from datetime import datetime
 from psycopg2.extras import RealDictCursor
+
+# GA4 Measurement Protocol configuration
+GA4_MEASUREMENT_ID = os.getenv('GA4_MEASUREMENT_ID', 'G-XXXXXXXXXX')  # e.g., G-ABC123XYZ
+GA4_API_SECRET = os.getenv('GA4_API_SECRET')  # From GA4 Admin > Data Streams > Measurement Protocol API secrets
+
+
+def send_ga4_event(client_id, event_name, params=None):
+    """
+    Send server-side event to GA4 using Measurement Protocol.
+    Used for tracking revenue events that happen on the backend (e.g., Stripe webhooks).
+    """
+    if not GA4_API_SECRET:
+        print(f"⚠️  GA4_API_SECRET not set, skipping {event_name} event")
+        return False
+
+    url = f"https://www.google-analytics.com/mp/collect?measurement_id={GA4_MEASUREMENT_ID}&api_secret={GA4_API_SECRET}"
+
+    payload = {
+        "client_id": client_id,
+        "events": [{
+            "name": event_name,
+            "params": params or {}
+        }]
+    }
+
+    try:
+        response = requests.post(url, json=payload, timeout=5)
+        if response.status_code == 204:
+            print(f"✅ GA4 event sent: {event_name}")
+            return True
+        else:
+            print(f"⚠️  GA4 event failed ({response.status_code}): {event_name}")
+            return False
+    except Exception as e:
+        print(f"❌ Error sending GA4 event: {e}")
+        return False
 
 subscription_bp = Blueprint('subscription', __name__, url_prefix='/api/subscription')
 
@@ -382,6 +419,7 @@ def stripe_webhook():
             tier = session['metadata'].get('tier')
             subscription_id = session.get('subscription')
             customer_id = session.get('customer')
+            amount_total = session.get('amount_total', 0)  # In cents
 
             print(f"✅ Checkout completed for creator {creator_id} - {tier} tier")
 
@@ -401,6 +439,19 @@ def stripe_webhook():
             conn.close()
 
             print(f"✅ Updated creator {creator_id} to {tier} tier")
+
+            # Send GA4 pro_upgrade event for revenue attribution
+            send_ga4_event(
+                client_id=customer_id or f"creator_{creator_id}",
+                event_name="pro_upgrade",
+                params={
+                    "tier": tier,
+                    "creator_id": str(creator_id),
+                    "currency": "USD",
+                    "value": amount_total / 100,  # Convert cents to dollars
+                    "transaction_id": subscription_id or session.get('id'),
+                }
+            )
 
         # Handle subscription deleted/canceled
         elif event['type'] == 'customer.subscription.deleted':
