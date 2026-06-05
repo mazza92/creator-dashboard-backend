@@ -27,7 +27,9 @@ from scripts.ga4_credentials import (
 
 load_dotenv()
 
-SCOPES = [MANAGE_USERS_SCOPE, READONLY_SCOPE]
+# GA4 + Search Console scopes
+GSC_READONLY_SCOPE = 'https://www.googleapis.com/auth/webmasters.readonly'
+SCOPES = [MANAGE_USERS_SCOPE, READONLY_SCOPE, GSC_READONLY_SCOPE]
 
 
 def main():
