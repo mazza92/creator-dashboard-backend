@@ -40,6 +40,7 @@ import pusher
 from flask import Flask, request, jsonify, session
 from subscription_routes import subscription_bp
 from pr_crm_routes import pr_crm
+from opportunities_routes import opportunities_bp
 from media_kit_routes import media_kit_bp
 from portfolio_routes import portfolio_bp
 from public_routes import public_bp
@@ -151,6 +152,7 @@ CORS(app, resources={
 # Register blueprints
 app.register_blueprint(subscription_bp)
 app.register_blueprint(pr_crm)
+app.register_blueprint(opportunities_bp)
 app.register_blueprint(media_kit_bp)
 app.register_blueprint(portfolio_bp)
 app.register_blueprint(public_bp)
