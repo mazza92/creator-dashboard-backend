@@ -13,6 +13,23 @@ from datetime import datetime
 
 pr_crm = Blueprint('pr_crm', __name__, url_prefix='/api/pr-crm')
 
+
+def get_min_follower_cap(creator_followers):
+    """
+    Get max brand min_followers requirement to show based on creator size.
+    Prevents showing brands with high requirements to micro-creators.
+    Uses min_followers (brand's creator requirement) as proxy for brand accessibility.
+    """
+    if not creator_followers or creator_followers < 5000:
+        return 10000  # Show brands that accept creators under 10K
+    elif creator_followers < 20000:
+        return 50000  # Show brands that accept creators under 50K
+    elif creator_followers < 50000:
+        return 100000  # Show brands that accept creators under 100K
+    else:
+        return None  # No cap for 50K+ creators
+
+
 def get_db_connection():
     """Get database connection"""
     return psycopg2.connect(
@@ -1044,26 +1061,76 @@ def generate_pitch():
 
 
 def generate_golden_template_pitch(brand, creator):
-    """Generate a personalized pitch using the Golden Template structure"""
+    """Generate a personalized pitch using optimized structure for higher reply rates"""
     import random
 
     # Extract creator data
-    creator_name = f"{creator.get('first_name', '')} {creator.get('last_name', '')}".strip() or 'Creator'
-    followers = creator.get('followers_count')
-    social_links = creator.get('social_links') or []
-    if isinstance(social_links, str):
-        social_links = json.loads(social_links)
+    creator_name = creator.get('first_name', '').strip() or 'Creator'
 
-    niche = creator.get('niche')
-    if isinstance(niche, str):
+    # Use For You followers if set, else media_kit total, else signup followers
+    followers = (
+        creator.get('creator_followers') or
+        creator.get('media_kit_followers') or
+        creator.get('followers_count') or
+        0
+    )
+    engagement_rate = creator.get('engagement_rate') or 5  # Default 5%
+
+    # IMPORTANT: Prefer For You edited niches over signup niches
+    # This ensures pitch matches what user sees in For You page
+    creator_niches_raw = creator.get('creator_niches')  # For You edited niches first
+    if not creator_niches_raw:
+        creator_niches_raw = creator.get('niche')  # Fall back to signup niche
+
+    # Parse niches into a list
+    creator_niches = []
+    if isinstance(creator_niches_raw, str):
         try:
-            niche = json.loads(niche)
+            creator_niches = json.loads(creator_niches_raw)
         except:
-            niche = [niche]
-    if isinstance(niche, list) and len(niche) > 0:
-        niche = niche[0]
-    else:
-        niche = brand.get('category', 'content')
+            creator_niches = [creator_niches_raw]
+    elif isinstance(creator_niches_raw, list):
+        creator_niches = creator_niches_raw
+
+    # Smart niche selection: pick niche that best matches the brand category
+    # This prevents pitching a tech brand with "fitness" when user has both
+    brand_category = (brand.get('category') or '').lower()
+    niche = None
+
+    # Related niches mapping for smart matching
+    related_niches = {
+        'fitness': ['wellness', 'supplements', 'athleisure', 'health'],
+        'wellness': ['fitness', 'skincare', 'supplements', 'health'],
+        'supplements': ['fitness', 'wellness', 'health'],
+        'beauty': ['skincare', 'makeup', 'haircare'],
+        'skincare': ['beauty', 'wellness', 'makeup'],
+        'fashion': ['lifestyle', 'accessories', 'jewelry'],
+        'tech': ['gaming', 'gadgets'],
+        'gaming': ['tech', 'entertainment'],
+    }
+
+    if creator_niches:
+        # First: exact match with brand category
+        for n in creator_niches:
+            if n and n.lower() == brand_category:
+                niche = n
+                break
+
+        # Second: related niche match
+        if not niche:
+            brand_related = related_niches.get(brand_category, [])
+            for n in creator_niches:
+                if n and n.lower() in brand_related:
+                    niche = n
+                    break
+
+        # Third: use first niche as fallback
+        if not niche and len(creator_niches) > 0:
+            niche = creator_niches[0]
+
+    # Final fallback to brand category
+    if not niche:
+        niche = brand_category or 'content'
 
     # Parse social_links JSON to find platform handles
     social_links_raw = creator.get('social_links') or []
@@ -1078,128 +1145,122 @@ def generate_golden_template_pitch(brand, creator):
     for link in social_links_raw:
         if isinstance(link, dict):
             plat = link.get('platform', '').lower()
-            # Try to get handle from various possible fields
             handle = link.get('handle') or link.get('username') or link.get('url') or ''
             if handle and plat:
                 platform_handles[plat] = handle
 
-    # Determine primary platform and social URL
-    social_url = None
+    # Determine primary platform
     platform = 'Instagram'  # Default
-
-    # Priority: TikTok > Instagram > YouTube
     if 'tiktok' in platform_handles:
         platform = 'TikTok'
-        handle = platform_handles['tiktok'].replace('@', '').replace('https://tiktok.com/', '').replace('https://www.tiktok.com/', '').strip('/')
-        if handle and not handle.startswith('http'):
-            social_url = f"https://tiktok.com/@{handle}"
-        elif handle.startswith('http'):
-            social_url = handle
-    elif 'instagram' in platform_handles:
-        platform = 'Instagram'
-        handle = platform_handles['instagram'].replace('@', '').replace('https://instagram.com/', '').replace('https://www.instagram.com/', '').strip('/')
-        if handle and not handle.startswith('http'):
-            social_url = f"https://instagram.com/{handle}"
-        elif handle.startswith('http'):
-            social_url = handle
     elif 'youtube' in platform_handles:
         platform = 'YouTube'
-        handle = platform_handles['youtube'].replace('@', '')
-        if handle.startswith('http'):
-            social_url = handle
-        else:
-            social_url = f"https://youtube.com/@{handle}"
-
-    # Also check username field as fallback for Instagram
-    if not social_url and creator.get('username'):
-        platform = 'Instagram'
-        social_url = f"https://instagram.com/{creator.get('username')}"
 
     # Format followers
-    if followers:
-        if followers >= 1000000:
-            followers_str = f"{followers / 1000000:.1f}M"
-        elif followers >= 1000:
-            followers_str = f"{followers / 1000:.1f}K"
-        else:
-            followers_str = str(followers)
+    if followers >= 1000000:
+        followers_str = f"{followers / 1000000:.1f}M"
+    elif followers >= 1000:
+        followers_str = f"{followers / 1000:.1f}K"
     else:
-        followers_str = 'a growing audience'
-
-    # Get month for content series
-    from datetime import datetime, timedelta
-    next_month = (datetime.now() + timedelta(days=30)).strftime('%B')
-
-    # Generate series name based on niche
-    series_names = {
-        'Beauty': 'product testing',
-        'Skincare': 'skincare routine',
-        'Fashion': 'outfit styling',
-        'Fitness': 'workout gear review',
-        'Food': 'kitchen favorites',
-        'Lifestyle': 'daily essentials',
-        'Tech': 'tech review',
-        'Home': 'home finds',
-        'Pets': 'pet product testing',
-    }
-    series_name = series_names.get(niche, series_names.get(brand.get('category'), 'product review'))
-
-    # Audience interest
-    interests = {
-        'Beauty': 'what products actually work',
-        'Skincare': 'skincare routines and product recs',
-        'Fashion': 'where to find good pieces',
-        'Fitness': 'gear that holds up',
-        'Food': 'kitchen stuff worth buying',
-        'Lifestyle': 'everyday essentials',
-        'Tech': 'tech that makes life easier',
-        'Home': 'home finds',
-        'Pets': 'pet products',
-    }
-    audience_interest = interests.get(niche, interests.get(brand.get('category'), 'product recommendations'))
+        followers_str = str(followers) if followers else 'growing'
 
     brand_name = brand.get('brand_name', 'the brand')
-    category = brand.get('category', '')
+    category = (brand.get('category') or '').lower()
 
-    # Human openers
-    openers = [
-        f"I've been using {brand_name} products for a bit now and wanted to reach out about a collab idea.",
-        f"Found {brand_name} a few months back and it's become a staple in my routine - figured I'd shoot my shot.",
-        f"Quick intro - I'm a {category.lower() if category else 'content'} creator and I've had my eye on {brand_name} for a while.",
-        f"Hope this finds the right person! I create {category.lower() if category else ''} content and {brand_name} keeps coming up in my comments.",
-        f"I've been wanting to reach out for a while - {brand_name} fits really well with the content I make."
+    # Hero product fallback - create natural product references when hero_product isn't set
+    category_product_fallbacks = {
+        'fitness': 'activewear',
+        'beauty': 'products',
+        'skincare': 'skincare line',
+        'fashion': 'pieces',
+        'food': 'products',
+        'wellness': 'wellness products',
+        'supplements': 'supplements',
+        'lifestyle': 'products',
+        'tech': 'products',
+        'pet': 'pet products',
+        'haircare': 'haircare',
+        'makeup': 'makeup',
+        'athleisure': 'activewear',
+        'home': 'products',
+        'accessories': 'accessories',
+        'jewelry': 'jewelry',
+    }
+    hero_product = brand.get('hero_product') or category_product_fallbacks.get(category, 'products')
+
+    # Audience demographics based on niche
+    audience_demos = {
+        'beauty': 'women 18-35 interested in beauty',
+        'skincare': 'skincare enthusiasts 20-40',
+        'fashion': 'style-conscious women 18-35',
+        'fitness': 'active lifestyle audience 22-40',
+        'food': 'home cooks and foodies',
+        'wellness': 'health-conscious consumers 25-45',
+        'supplements': 'fitness and wellness focused audience',
+        'lifestyle': f'{niche} enthusiasts',
+        'tech': 'tech-savvy consumers 18-40',
+        'pet': 'pet owners and animal lovers',
+    }
+    audience_desc = audience_demos.get(niche.lower() if niche else '', audience_demos.get(category, f'{niche} enthusiasts'))
+
+    # Content angles by niche for subject line
+    content_angles = {
+        'beauty': ['honest product review', 'routine video', 'makeup tutorial'],
+        'skincare': ['morning routine video', 'skincare review', '30-day test'],
+        'fashion': ['styling video', 'outfit of the day', 'try-on haul'],
+        'fitness': ['workout gear review', '30-day challenge', 'training content'],
+        'food': ['recipe video', 'taste test', 'cooking tutorial'],
+        'wellness': ['wellness routine', 'honest review', 'daily essentials'],
+        'supplements': ['supplement review', '30-day results', 'fitness content'],
+        'lifestyle': ['product review', 'honest take', 'daily vlog'],
+        'tech': ['tech review', 'unboxing', 'honest take'],
+        'pet': ['pet product test', 'honest review', 'pet content'],
+    }
+    content_angle = random.choice(content_angles.get(niche.lower() if niche else '', content_angles.get(category, ['product review', 'honest take'])))
+
+    # Brand-specific hooks (what makes the pitch feel researched)
+    brand_hooks = {
+        'beauty': f"Your {hero_product} keeps coming up in my comments as a recommendation request.",
+        'skincare': f"My audience has been asking about {hero_product} after seeing it on other creators.",
+        'fashion': f"Your pieces fit the aesthetic my audience loves.",
+        'fitness': f"Your {hero_product} is exactly what my fitness audience looks for.",
+        'food': f"My followers keep asking about products like {hero_product}.",
+        'wellness': f"Your {hero_product} aligns with what my wellness audience wants.",
+        'supplements': f"My fitness audience is always asking about {hero_product}.",
+        'lifestyle': f"Your brand fits the content my audience engages with most.",
+        'tech': f"Your {hero_product} is exactly what my tech audience follows.",
+        'pet': f"My pet-owner audience would love to see {hero_product}.",
+    }
+    brand_hook = brand_hooks.get(niche.lower() if niche else '', brand_hooks.get(category, f"Your {hero_product} fits perfectly with my content."))
+
+    # Content format
+    content_format = 'short-form video' if platform in ['TikTok', 'Instagram'] else 'video'
+
+    # Build subject line (specific, under 10 words, no "PR collab idea")
+    subject_templates = [
+        f"{content_angle.title()} for {followers_str} {niche.lower() if niche else category} followers",
+        f"My {niche.lower() if niche else category} audience and your {hero_product}",
+        f"{followers_str} {platform} followers asking about {hero_product}",
+        f"{content_angle.title()} idea for {brand_name}",
     ]
-    opener = random.choice(openers)
+    subject = random.choice(subject_templates)
 
-    # Build subject
-    subject = f"PR collab idea for {brand_name}"
+    # Profile link
+    profile_url = f"https://newcollab.co/c/{creator.get('username', creator.get('id', 'creator'))}"
 
-    # Build social links section
-    social_line = f"My {platform}: {social_url}" if social_url else ""
-    profile_line = f"My profile & past work: https://newcollab.co/c/{creator.get('username', creator.get('id', 'creator'))}"
+    # Build body (under 80 words, specific, clear ask)
+    body = f"""Hi,
 
-    # Combine links
-    if social_line:
-        links_section = f"{social_line}\n{profile_line}"
-    else:
-        links_section = profile_line
+{brand_hook}
 
-    # Build body
-    body = f"""Hi there,
+I create {niche.lower() if niche else category} content on {platform} ({followers_str} followers, {engagement_rate}% engagement, {audience_desc}).
 
-{opener}
+I'd love to feature your {hero_product} in a {content_format} this month. Authentic, on-brand, specific to what works for your audience.
 
-I'm putting together a {series_name} series for {next_month} and thought {brand_name} would be a good fit. I have {followers_str} on {platform} who are always asking about {audience_interest}.
+Would you be open to sending product?
 
-Here's what I had in mind:
-- A {'TikTok' if platform == 'TikTok' else 'Reel'} showing how I actually use the product (not a basic unboxing)
-- I can also send over the raw clips if your team wants to use them
+{profile_url}
 
-{links_section}
-
-If you're open to it, I'd love to try some products and see if we can make something work. No pressure either way!
-
-Thanks,
 {creator_name}"""
 
     return {
@@ -1214,14 +1275,21 @@ Thanks,
 
 
 def generate_followup_pitch(brand, creator):
-    """Generate a follow-up email for brands already pitched"""
+    """Generate a concise follow-up email for brands already pitched"""
     import random
 
     # Extract creator data
-    creator_name = f"{creator.get('first_name', '')} {creator.get('last_name', '')}".strip() or 'Creator'
-    followers = creator.get('followers_count')
+    creator_name = creator.get('first_name', '').strip() or 'Creator'
 
-    # Parse social_links JSON to find platform handles
+    # Use For You followers if set, else media_kit total, else signup followers
+    followers = (
+        creator.get('creator_followers') or
+        creator.get('media_kit_followers') or
+        creator.get('followers_count') or
+        0
+    )
+
+    # Determine primary platform
     social_links_raw = creator.get('social_links') or []
     if isinstance(social_links_raw, str):
         try:
@@ -1229,94 +1297,43 @@ def generate_followup_pitch(brand, creator):
         except:
             social_links_raw = []
 
-    # Build a dict of platform -> handle/url
-    platform_handles = {}
+    platform = 'Instagram'
     for link in social_links_raw:
         if isinstance(link, dict):
             plat = link.get('platform', '').lower()
-            handle = link.get('handle') or link.get('username') or link.get('url') or ''
-            if handle and plat:
-                platform_handles[plat] = handle
-
-    # Determine primary platform and social URL
-    social_url = None
-    platform = 'Instagram'  # Default
-
-    if 'tiktok' in platform_handles:
-        platform = 'TikTok'
-        handle = platform_handles['tiktok'].replace('@', '').replace('https://tiktok.com/', '').replace('https://www.tiktok.com/', '').strip('/')
-        if handle and not handle.startswith('http'):
-            social_url = f"https://tiktok.com/@{handle}"
-        elif handle.startswith('http'):
-            social_url = handle
-    elif 'instagram' in platform_handles:
-        platform = 'Instagram'
-        handle = platform_handles['instagram'].replace('@', '').replace('https://instagram.com/', '').replace('https://www.instagram.com/', '').strip('/')
-        if handle and not handle.startswith('http'):
-            social_url = f"https://instagram.com/{handle}"
-        elif handle.startswith('http'):
-            social_url = handle
-    elif 'youtube' in platform_handles:
-        platform = 'YouTube'
-        handle = platform_handles['youtube'].replace('@', '')
-        if handle.startswith('http'):
-            social_url = handle
-        else:
-            social_url = f"https://youtube.com/@{handle}"
-
-    # Fallback for Instagram
-    if not social_url and creator.get('username'):
-        platform = 'Instagram'
-        social_url = f"https://instagram.com/{creator.get('username')}"
+            if plat == 'tiktok':
+                platform = 'TikTok'
+                break
+            elif plat == 'youtube':
+                platform = 'YouTube'
 
     # Format followers
-    if followers:
-        if followers >= 1000000:
-            followers_str = f"{followers / 1000000:.1f}M"
-        elif followers >= 1000:
-            followers_str = f"{followers / 1000:.1f}K"
-        else:
-            followers_str = str(followers)
+    if followers >= 1000000:
+        followers_str = f"{followers / 1000000:.1f}M"
+    elif followers >= 1000:
+        followers_str = f"{followers / 1000:.1f}K"
     else:
-        followers_str = 'a growing audience'
+        followers_str = str(followers) if followers else 'growing'
 
     brand_name = brand.get('brand_name', 'the brand')
-    category = brand.get('category', '')
+    hero_product = brand.get('hero_product') or brand.get('category') or 'products'
 
-    # Follow-up openers (different from first outreach)
-    openers = [
-        "Just wanted to bump this to the top of your inbox - I reached out recently about a potential collab.",
-        "Following up on my email from last week about working together.",
-        "Hi! Wanted to check in on my collab inquiry from a few days ago.",
-        "Quick follow-up on my previous message - wanted to make sure it didn't get lost in the inbox.",
-        "Circling back on my earlier pitch - still very interested in collaborating!"
-    ]
-    opener = random.choice(openers)
+    # Concise subject
+    subject = f"Quick follow-up re: {brand_name}"
 
-    # Build subject for follow-up
-    subject = f"Following up - PR collab with {brand_name}"
+    # Profile link
+    profile_url = f"https://newcollab.co/c/{creator.get('username', creator.get('id', 'creator'))}"
 
-    # Build social links section
-    social_line = f"My {platform}: {social_url}" if social_url else ""
-    profile_line = f"My profile: https://newcollab.co/c/{creator.get('username', creator.get('id', 'creator'))}"
+    # Concise follow-up body (under 50 words)
+    body = f"""Hi,
 
-    if social_line:
-        links_section = f"{social_line}\n{profile_line}"
-    else:
-        links_section = profile_line
+Just following up on my pitch from last week. Still interested in featuring your {hero_product}.
 
-    # Build follow-up body
-    body = f"""Hi there,
+{followers_str} {platform} followers ready to see it.
 
-{opener}
+{profile_url}
 
-I'm still really interested in creating content around {brand_name} products. I have {followers_str} on {platform} and my audience loves discovering new brands in the {category.lower() if category else 'lifestyle'} space.
-
-Happy to send over some content ideas if that helps - or if you want to check out my recent work first:
-
-{links_section}
-
-Would love to hear back either way. Thanks for considering!
+Let me know if you're open to sending product.
 
 {creator_name}"""
 
@@ -1993,6 +2010,10 @@ def get_for_you():
                 0
             )
 
+        # Calculate max brand min_followers requirement based on creator size
+        # Prevents showing brands with high requirements to micro-creators
+        min_follower_cap = get_min_follower_cap(followers)
+
         # Get IDs the user has already pitched (exclude from recommendations)
         cursor.execute("""
             SELECT brand_id FROM creator_pipeline
@@ -2003,28 +2024,31 @@ def get_for_you():
 
         # ── Section 1: Most Contacted Brands ─────────────────────────────
         # Top brands by total creators who pitched (stage = 'pitched') in past 30 days
-        cursor.execute("""
-            SELECT
-                b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                b.description, b.category, b.response_rate,
-                b.min_followers, b.website, b.application_form_url
-            FROM pr_brands b
-            WHERE b.slug IS NOT NULL
-              AND COALESCE(b.status, 'published') = 'published'
-              AND b.id != ALL(%s)
-            ORDER BY (
-                SELECT COUNT(DISTINCT cp.creator_id) FROM creator_pipeline cp
-                WHERE cp.brand_id = b.id
-                AND cp.stage = 'pitched'
-                AND cp.created_at > NOW() - INTERVAL '30 days'
-            ) DESC, b.response_rate DESC NULLS LAST
-            LIMIT 6
-        """, (exclude_ids,))
-        hot = cursor.fetchall()
+        # IMPORTANT: Filter by user's niches to show relevant brands, not just any popular brand
+        # Also filter by min_followers requirement to avoid showing brands that won't accept small creators
 
-        # Fallback: if not enough brands with pitches, fill from popular brands
-        if len(hot) < 3:
-            hot_ids = [r['id'] for r in hot] if hot else [0]
+        # Build related niches for Section 1 (same logic as Section 2)
+        related_niches_map = {
+            'beauty': ['skincare', 'makeup', 'haircare'],
+            'skincare': ['beauty', 'wellness'],
+            'fashion': ['lifestyle', 'accessories'],
+            'lifestyle': ['fashion', 'home', 'wellness'],
+            'fitness': ['wellness', 'athleisure', 'health', 'supplements'],
+            'wellness': ['fitness', 'skincare', 'health', 'supplements'],
+            'supplements': ['fitness', 'wellness', 'health'],
+            'food': ['lifestyle', 'kitchen', 'beverages'],
+            'tech': ['gaming', 'gadgets'],
+            'gaming': ['tech', 'entertainment'],
+            'home': ['lifestyle', 'decor'],
+        }
+        hot_related = set()
+        for n in (niches or []):
+            n_lower = n.lower()
+            hot_related.add(n_lower)
+            hot_related.update(related_niches_map.get(n_lower, []))
+        hot_niches_list = list(hot_related) if hot_related else None
+
+        if hot_niches_list and min_follower_cap:
             cursor.execute("""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
@@ -2034,10 +2058,137 @@ def get_for_you():
                 WHERE b.slug IS NOT NULL
                   AND COALESCE(b.status, 'published') = 'published'
                   AND b.id != ALL(%s)
+                  AND (b.min_followers IS NULL OR b.min_followers <= %s)
+                  AND LOWER(b.category) = ANY(%s)
+                ORDER BY (
+                    SELECT COUNT(DISTINCT cp.creator_id) FROM creator_pipeline cp
+                    WHERE cp.brand_id = b.id
+                    AND cp.stage = 'pitched'
+                    AND cp.created_at > NOW() - INTERVAL '30 days'
+                ) DESC, b.response_rate DESC NULLS LAST
+                LIMIT 6
+            """, (exclude_ids, min_follower_cap, hot_niches_list))
+        elif hot_niches_list:
+            cursor.execute("""
+                SELECT
+                    b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
+                    b.description, b.category, b.response_rate,
+                    b.min_followers, b.website, b.application_form_url
+                FROM pr_brands b
+                WHERE b.slug IS NOT NULL
+                  AND COALESCE(b.status, 'published') = 'published'
                   AND b.id != ALL(%s)
-                ORDER BY b.response_rate DESC NULLS LAST, RANDOM()
-                LIMIT %s
-            """, (exclude_ids, hot_ids, 6 - len(hot)))
+                  AND LOWER(b.category) = ANY(%s)
+                ORDER BY (
+                    SELECT COUNT(DISTINCT cp.creator_id) FROM creator_pipeline cp
+                    WHERE cp.brand_id = b.id
+                    AND cp.stage = 'pitched'
+                    AND cp.created_at > NOW() - INTERVAL '30 days'
+                ) DESC, b.response_rate DESC NULLS LAST
+                LIMIT 6
+            """, (exclude_ids, hot_niches_list))
+        elif min_follower_cap:
+            cursor.execute("""
+                SELECT
+                    b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
+                    b.description, b.category, b.response_rate,
+                    b.min_followers, b.website, b.application_form_url
+                FROM pr_brands b
+                WHERE b.slug IS NOT NULL
+                  AND COALESCE(b.status, 'published') = 'published'
+                  AND b.id != ALL(%s)
+                  AND (b.min_followers IS NULL OR b.min_followers <= %s)
+                ORDER BY (
+                    SELECT COUNT(DISTINCT cp.creator_id) FROM creator_pipeline cp
+                    WHERE cp.brand_id = b.id
+                    AND cp.stage = 'pitched'
+                    AND cp.created_at > NOW() - INTERVAL '30 days'
+                ) DESC, b.response_rate DESC NULLS LAST
+                LIMIT 6
+            """, (exclude_ids, min_follower_cap))
+        else:
+            cursor.execute("""
+                SELECT
+                    b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
+                    b.description, b.category, b.response_rate,
+                    b.min_followers, b.website, b.application_form_url
+                FROM pr_brands b
+                WHERE b.slug IS NOT NULL
+                  AND COALESCE(b.status, 'published') = 'published'
+                  AND b.id != ALL(%s)
+                ORDER BY (
+                    SELECT COUNT(DISTINCT cp.creator_id) FROM creator_pipeline cp
+                    WHERE cp.brand_id = b.id
+                    AND cp.stage = 'pitched'
+                    AND cp.created_at > NOW() - INTERVAL '30 days'
+                ) DESC, b.response_rate DESC NULLS LAST
+                LIMIT 6
+            """, (exclude_ids,))
+        hot = cursor.fetchall()
+
+        # Fallback: if not enough brands with pitches, fill from popular brands (also filtered by niche)
+        if len(hot) < 3:
+            hot_ids = [r['id'] for r in hot] if hot else [0]
+            if hot_niches_list and min_follower_cap:
+                cursor.execute("""
+                    SELECT
+                        b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
+                        b.description, b.category, b.response_rate,
+                        b.min_followers, b.website, b.application_form_url
+                    FROM pr_brands b
+                    WHERE b.slug IS NOT NULL
+                      AND COALESCE(b.status, 'published') = 'published'
+                      AND b.id != ALL(%s)
+                      AND b.id != ALL(%s)
+                      AND (b.min_followers IS NULL OR b.min_followers <= %s)
+                      AND LOWER(b.category) = ANY(%s)
+                    ORDER BY b.response_rate DESC NULLS LAST, RANDOM()
+                    LIMIT %s
+                """, (exclude_ids, hot_ids, min_follower_cap, hot_niches_list, 6 - len(hot)))
+            elif hot_niches_list:
+                cursor.execute("""
+                    SELECT
+                        b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
+                        b.description, b.category, b.response_rate,
+                        b.min_followers, b.website, b.application_form_url
+                    FROM pr_brands b
+                    WHERE b.slug IS NOT NULL
+                      AND COALESCE(b.status, 'published') = 'published'
+                      AND b.id != ALL(%s)
+                      AND b.id != ALL(%s)
+                      AND LOWER(b.category) = ANY(%s)
+                    ORDER BY b.response_rate DESC NULLS LAST, RANDOM()
+                    LIMIT %s
+                """, (exclude_ids, hot_ids, hot_niches_list, 6 - len(hot)))
+            elif min_follower_cap:
+                cursor.execute("""
+                    SELECT
+                        b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
+                        b.description, b.category, b.response_rate,
+                        b.min_followers, b.website, b.application_form_url
+                    FROM pr_brands b
+                    WHERE b.slug IS NOT NULL
+                      AND COALESCE(b.status, 'published') = 'published'
+                      AND b.id != ALL(%s)
+                      AND b.id != ALL(%s)
+                      AND (b.min_followers IS NULL OR b.min_followers <= %s)
+                    ORDER BY b.response_rate DESC NULLS LAST, RANDOM()
+                    LIMIT %s
+                """, (exclude_ids, hot_ids, min_follower_cap, 6 - len(hot)))
+            else:
+                cursor.execute("""
+                    SELECT
+                        b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
+                        b.description, b.category, b.response_rate,
+                        b.min_followers, b.website, b.application_form_url
+                    FROM pr_brands b
+                    WHERE b.slug IS NOT NULL
+                      AND COALESCE(b.status, 'published') = 'published'
+                      AND b.id != ALL(%s)
+                      AND b.id != ALL(%s)
+                    ORDER BY b.response_rate DESC NULLS LAST, RANDOM()
+                    LIMIT %s
+                """, (exclude_ids, hot_ids, 6 - len(hot)))
             fallback = cursor.fetchall()
             hot = list(hot) + list(fallback)
 
@@ -2068,7 +2219,20 @@ def get_for_you():
 
         if niches or followers:
             # Build the scoring SQL with real differentiation
-            cursor.execute("""
+            # Filter by brand Instagram followers to avoid showing mega-brands to micro-creators
+            brand_filter_sql = ""
+            query_params = [
+                [n.lower() for n in niches] if niches else [''],  # Exact match niches
+                list(creator_related) if creator_related else [''],  # Related niches
+                followers, followers, followers, followers, followers,  # For follower checks
+                exclude_ids
+            ]
+
+            if min_follower_cap:
+                brand_filter_sql = "AND (b.min_followers IS NULL OR b.min_followers <= %s)"
+                query_params.append(min_follower_cap)
+
+            cursor.execute(f"""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate,
@@ -2109,17 +2273,15 @@ def get_for_you():
                 WHERE b.slug IS NOT NULL
                   AND COALESCE(b.status, 'published') = 'published'
                   AND b.id != ALL(%s)
+                  {brand_filter_sql}
                 ORDER BY match_score DESC, b.response_rate DESC NULLS LAST
                 LIMIT 8
-            """, (
-                [n.lower() for n in niches] if niches else [''],  # Exact match niches
-                list(creator_related) if creator_related else [''],  # Related niches
-                followers, followers, followers, followers, followers,  # For follower checks
-                exclude_ids
-            ))
+            """, tuple(query_params))
             matched = cursor.fetchall()
         else:
             # No profile yet — return variety of top brands with basic scoring
+            # Default to showing smaller brands (safe for any creator size)
+            default_max_followers = 50000  # Safe default for unknown creators
             cursor.execute("""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
@@ -2140,9 +2302,10 @@ def get_for_you():
                 WHERE b.slug IS NOT NULL
                   AND COALESCE(b.status, 'published') = 'published'
                   AND b.id != ALL(%s)
+                  AND (b.min_followers IS NULL OR b.min_followers <= %s)
                 ORDER BY match_score DESC
                 LIMIT 8
-            """, (exclude_ids,))
+            """, (exclude_ids, default_max_followers))
             matched = cursor.fetchall()
 
         # ── Section 3: Right Season ──────────────────────────────
@@ -2271,3 +2434,157 @@ def update_creator_profile():
     except Exception as e:
         print(f"Error in update_creator_profile: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@pr_crm.route('/recent-replies', methods=['GET'])
+def get_recent_replies():
+    """
+    Get recent successful replies for social proof strip.
+    Shows personalized data - creators in SAME niche getting replies from brands.
+    """
+    try:
+        user_id = session.get('user_id')
+        if not user_id:
+            # Return empty for non-logged-in users
+            return jsonify({'success': True, 'replies': []})
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get current user's niches for personalized social proof
+        # IMPORTANT: Use user_id column, not id. And prefer creator_niches over niche.
+        cursor.execute("SELECT creator_niches, niche FROM creators WHERE user_id = %s", (user_id,))
+        user_row = cursor.fetchone()
+        user_niches = []
+        if user_row:
+            # Prefer For You edited niches, fall back to signup niche
+            niche_raw = user_row.get('creator_niches') or user_row.get('niche')
+            if isinstance(niche_raw, str):
+                try:
+                    user_niches = json.loads(niche_raw)
+                except:
+                    user_niches = [niche_raw]
+            elif isinstance(niche_raw, list):
+                user_niches = niche_raw
+        user_niches_lower = [n.lower() for n in user_niches if n]
+
+        # Related niches for broader matching
+        related_niches = {
+            'fitness': ['wellness', 'supplements', 'athleisure', 'health'],
+            'wellness': ['fitness', 'skincare', 'supplements', 'health'],
+            'supplements': ['fitness', 'wellness', 'health'],
+            'beauty': ['skincare', 'makeup', 'haircare'],
+            'skincare': ['beauty', 'wellness', 'makeup'],
+            'fashion': ['lifestyle', 'accessories', 'jewelry'],
+            'lifestyle': ['fashion', 'home', 'wellness'],
+            'pet': ['animals', 'pets'],
+            'tech': ['gaming', 'gadgets'],
+            'food': ['cooking', 'recipes', 'kitchen'],
+        }
+        expanded_niches = set(user_niches_lower)
+        for n in user_niches_lower:
+            expanded_niches.update(related_niches.get(n, []))
+        expanded_niches_list = list(expanded_niches) if expanded_niches else ['']
+
+        # Get recent replies from creators in similar niches, matching brand categories
+        cursor.execute("""
+            SELECT
+                pb.brand_name,
+                pb.category AS brand_category,
+                c.niche AS creator_niche,
+                -- Format follower count as "6.4K" style
+                CASE
+                    WHEN COALESCE(c.followers_count, 0) >= 1000000 THEN ROUND(c.followers_count / 1000000.0, 1)::text || 'M'
+                    WHEN COALESCE(c.followers_count, 0) >= 1000 THEN ROUND(c.followers_count / 1000.0, 1)::text || 'K'
+                    ELSE COALESCE(c.followers_count, 0)::text
+                END AS follower_range,
+                -- Time ago for freshness signal
+                CASE
+                    WHEN cp.replied_at > NOW() - INTERVAL '1 hour' THEN EXTRACT(MINUTE FROM NOW() - cp.replied_at)::int || 'm ago'
+                    WHEN cp.replied_at > NOW() - INTERVAL '24 hours' THEN EXTRACT(HOUR FROM NOW() - cp.replied_at)::int || 'h ago'
+                    ELSE EXTRACT(DAY FROM NOW() - cp.replied_at)::int || 'd ago'
+                END AS time_ago,
+                'got a reply from' AS event
+            FROM creator_pipeline cp
+            JOIN pr_brands pb ON pb.id = cp.brand_id
+            JOIN creators c ON c.id = cp.creator_id
+            WHERE cp.stage = 'replied'
+              AND cp.replied_at > NOW() - INTERVAL '14 days'
+              AND (
+                  LOWER(pb.category) = ANY(%s)
+                  OR EXISTS (
+                      SELECT 1 FROM jsonb_array_elements_text(
+                          CASE WHEN c.niche::text LIKE '[%%' THEN c.niche::jsonb ELSE to_jsonb(ARRAY[c.niche]) END
+                      ) AS elem WHERE LOWER(elem) = ANY(%s)
+                  )
+              )
+            ORDER BY cp.replied_at DESC
+            LIMIT 5
+        """, (expanded_niches_list, expanded_niches_list))
+        replies = cursor.fetchall()
+
+        # If no niche-specific replies, get general recent ones
+        if not replies:
+            cursor.execute("""
+                SELECT
+                    pb.brand_name,
+                    pb.category AS brand_category,
+                    c.niche AS creator_niche,
+                    CASE
+                        WHEN COALESCE(c.followers_count, 0) >= 1000000 THEN ROUND(c.followers_count / 1000000.0, 1)::text || 'M'
+                        WHEN COALESCE(c.followers_count, 0) >= 1000 THEN ROUND(c.followers_count / 1000.0, 1)::text || 'K'
+                        ELSE COALESCE(c.followers_count, 0)::text
+                    END AS follower_range,
+                    CASE
+                        WHEN cp.replied_at > NOW() - INTERVAL '1 hour' THEN EXTRACT(MINUTE FROM NOW() - cp.replied_at)::int || 'm ago'
+                        WHEN cp.replied_at > NOW() - INTERVAL '24 hours' THEN EXTRACT(HOUR FROM NOW() - cp.replied_at)::int || 'h ago'
+                        ELSE EXTRACT(DAY FROM NOW() - cp.replied_at)::int || 'd ago'
+                    END AS time_ago,
+                    'got a reply from' AS event
+                FROM creator_pipeline cp
+                JOIN pr_brands pb ON pb.id = cp.brand_id
+                JOIN creators c ON c.id = cp.creator_id
+                WHERE cp.stage = 'replied'
+                  AND cp.replied_at > NOW() - INTERVAL '14 days'
+                ORDER BY cp.replied_at DESC
+                LIMIT 5
+            """)
+            replies = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        # Format the replies - ALWAYS show user's niche for relevance and personalization
+        # This makes the social proof feel personalized: "A pet creator got a reply..."
+        formatted_replies = []
+        primary_user_niche = user_niches[0] if user_niches else None
+
+        for r in replies:
+            reply_dict = dict(r)
+
+            # Always use user's primary niche for social proof display
+            # This ensures "A pet creator got a reply" for pet users, not "A beauty creator"
+            if primary_user_niche:
+                reply_dict['creator_niche'] = primary_user_niche
+            else:
+                # Fallback: parse and use actual creator niche
+                creator_niche = reply_dict.get('creator_niche', '')
+                if isinstance(creator_niche, str) and creator_niche.startswith('['):
+                    try:
+                        creator_niche = json.loads(creator_niche)
+                    except:
+                        pass
+                if isinstance(creator_niche, list):
+                    creator_niche = creator_niche[0] if creator_niche else ''
+                reply_dict['creator_niche'] = creator_niche or 'creator'
+
+            formatted_replies.append(reply_dict)
+
+        return jsonify({
+            'success': True,
+            'replies': formatted_replies
+        })
+
+    except Exception as e:
+        print(f"Error in get_recent_replies: {str(e)}")
+        return jsonify({'success': False, 'error': str(e), 'replies': []}), 500

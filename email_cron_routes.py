@@ -543,7 +543,7 @@ def process_pr_reminders():
 
 # =============================================================================
 # EMAIL CONVERSION SEQUENCE
-# 5 behavioral emails to convert free users to Creator Pro ($12/month)
+# 5 behavioral emails to convert free users to Creator Pro ($19/month)
 # =============================================================================
 
 @email_cron_bp.route('/send-first-pitch-nudge', methods=['POST'])
@@ -684,11 +684,11 @@ def send_limit_warning():
                 <p style="margin: 0 0 16px;">Hey there,</p>
                 <p style="margin: 0 0 16px;">Quick heads up: you've used 2 of your 3 free brand contacts this month. One left.</p>
                 <p style="margin: 0 0 16px;">Once it's gone, you'll need to wait until next month to pitch more brands.</p>
-                <p style="margin: 0 0 16px;">If you want to keep going without limits, Pro is $12/month. You get unlimited pitches, unlimited brand contacts, and full access to every PR contact in the directory.</p>
+                <p style="margin: 0 0 16px;">If you want to keep going without limits, Pro is $19/month. You get unlimited pitches, unlimited brand contacts, and full access to every PR contact in the directory.</p>
                 <p style="margin: 0;">No pressure either way. Just wanted to give you a heads up before it resets.</p>
             """,
             'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
-            'action_text': 'Go Pro for $12/mo',
+            'action_text': 'Go Pro for $19/mo',
             'user_id': 0
         }
         success, error = send_template_email(
@@ -740,11 +740,11 @@ def send_limit_warning():
                     <p style="margin: 0 0 16px;">Hey {name},</p>
                     <p style="margin: 0 0 16px;">Quick heads up: you've used 2 of your 3 free brand contacts this month. One left.</p>
                     <p style="margin: 0 0 16px;">Once it's gone, you'll need to wait until next month to pitch more brands.</p>
-                    <p style="margin: 0 0 16px;">If you want to keep going without limits, Pro is $12/month. You get unlimited pitches, unlimited brand contacts, and full access to every PR contact in the directory.</p>
+                    <p style="margin: 0 0 16px;">If you want to keep going without limits, Pro is $19/month. You get unlimited pitches, unlimited brand contacts, and full access to every PR contact in the directory.</p>
                     <p style="margin: 0;">No pressure either way. Just wanted to give you a heads up before it resets.</p>
                 """,
                 'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
-                'action_text': 'Go Pro for $12/mo',
+                'action_text': 'Go Pro for $19/mo',
                 'user_id': creator['id']
             }
 
@@ -824,7 +824,7 @@ def send_limit_reached():
                 <p style="margin: 0 0 16px;">Hey there,</p>
                 <p style="margin: 0 0 16px;">You've used all 3 of your free brand contacts this month.</p>
                 <p style="margin: 0 0 16px;">That actually says something good about you. You're out there pitching, which is exactly how creators land PR packages.</p>
-                <p style="margin: 0 0 16px;">Your contacts will reset next month. But if you don't want to wait, Pro removes the limit entirely. $12/month, unlimited pitches, cancel anytime.</p>
+                <p style="margin: 0 0 16px;">Your contacts will reset next month. But if you don't want to wait, Pro removes the limit entirely. $19/month, unlimited pitches, cancel anytime.</p>
                 <p style="margin: 0;">Either way, nice work reaching out to brands. Most people never get this far.</p>
             """,
             'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
@@ -881,7 +881,7 @@ def send_limit_reached():
                     <p style="margin: 0 0 16px;">Hey {name},</p>
                     <p style="margin: 0 0 16px;">You've used all 3 of your free brand contacts this month.</p>
                     <p style="margin: 0 0 16px;">That actually says something good about you. You're out there pitching, which is exactly how creators land PR packages.</p>
-                    <p style="margin: 0 0 16px;">Your contacts will reset next month. But if you don't want to wait, Pro removes the limit entirely. $12/month, unlimited pitches, cancel anytime.</p>
+                    <p style="margin: 0 0 16px;">Your contacts will reset next month. But if you don't want to wait, Pro removes the limit entirely. $19/month, unlimited pitches, cancel anytime.</p>
                     <p style="margin: 0;">Either way, nice work reaching out to brands. Most people never get this far.</p>
                 """,
                 'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
@@ -1068,7 +1068,7 @@ def send_monthly_reset():
                 <p style="margin: 0 0 16px;">Hey there,</p>
                 <p style="margin: 0 0 16px;">Your 3 free contacts just reset for the month.</p>
                 <p style="margin: 0 0 16px;">You used all of them last month, which is great. Most people don't even try. But you actually pitched brands, and that's how you land PR packages.</p>
-                <p style="margin: 0 0 16px;">If you want to skip the monthly limit, Pro is $12/month for unlimited contacts. But either way, you've got 3 fresh ones ready to go.</p>
+                <p style="margin: 0 0 16px;">If you want to skip the monthly limit, Pro is $19/month for unlimited contacts. But either way, you've got 3 fresh ones ready to go.</p>
                 <p style="margin: 0;">Good luck this month.</p>
             """,
             'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
@@ -1124,7 +1124,7 @@ def send_monthly_reset():
                     <p style="margin: 0 0 16px;">Hey {name},</p>
                     <p style="margin: 0 0 16px;">Your 3 free contacts just reset for the month.</p>
                     <p style="margin: 0 0 16px;">You used all of them last month, which is great. Most people don't even try. But you actually pitched brands, and that's how you land PR packages.</p>
-                    <p style="margin: 0 0 16px;">If you want to skip the monthly limit, Pro is $12/month for unlimited contacts. But either way, you've got 3 fresh ones ready to go.</p>
+                    <p style="margin: 0 0 16px;">If you want to skip the monthly limit, Pro is $19/month for unlimited contacts. But either way, you've got 3 fresh ones ready to go.</p>
                     <p style="margin: 0;">Good luck this month.</p>
                 """,
                 'action_url': f"{APP_URL}/creator/dashboard/pr-brands",

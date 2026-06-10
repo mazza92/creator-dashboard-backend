@@ -1799,7 +1799,7 @@ def get_founder_dashboard():
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         # ================== MRR CALCULATION ==================
-        # Pro = $12/month (only tier currently available)
+        # Pro = $19/month (only tier currently available)
         cursor.execute("""
             SELECT
                 COALESCE(subscription_tier, 'free') as tier,
@@ -1812,8 +1812,8 @@ def get_founder_dashboard():
         pro_count_db = tier_counts.get('pro', 0)
         free_count = tier_counts.get('free', 0)
 
-        # MRR — prefer live Stripe active subs; fall back to DB tier count × $12
-        pro_price = 12
+        # MRR — prefer live Stripe active subs; fall back to DB tier count × $19
+        pro_price = 19
         mrr_source = 'database'
         from utils.stripe_mrr import fetch_stripe_mrr
 
@@ -2376,7 +2376,7 @@ def send_nudge_email():
             'preheader': f"You've used your 3 free pitches. Here's the status of each one.",
             'message': message_html,
             'action_url': f'{frontend_url}/creator/dashboard/settings?upgrade=pro&ref=quota_email&utm_source=email&utm_medium=trigger&utm_campaign=quota_hit',
-            'action_text': 'Unlock Pro — $12/month →',
+            'action_text': 'Unlock Pro — $19/month →',
         }
 
         success, smtp_error = send_template_email(
