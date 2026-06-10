@@ -1098,10 +1098,11 @@ def generate_golden_template_pitch(brand, creator):
     niche = None
 
     # Related niches mapping for smart matching
+    # NOTE: fitness ≠ wellness - they are distinct categories
     related_niches = {
-        'fitness': ['wellness', 'supplements', 'athleisure', 'health'],
-        'wellness': ['fitness', 'skincare', 'supplements', 'health'],
-        'supplements': ['fitness', 'wellness', 'health'],
+        'fitness': ['athleisure', 'activewear', 'sports'],
+        'wellness': ['skincare', 'supplements', 'self-care'],
+        'supplements': ['wellness', 'health'],
         'beauty': ['skincare', 'makeup', 'haircare'],
         'skincare': ['beauty', 'wellness', 'makeup'],
         'fashion': ['lifestyle', 'accessories', 'jewelry'],
@@ -2028,14 +2029,15 @@ def get_for_you():
         # Also filter by min_followers requirement to avoid showing brands that won't accept small creators
 
         # Build related niches for Section 1 (same logic as Section 2)
+        # STRICT mapping: wellness ≠ fitness, they're distinct niches
         related_niches_map = {
             'beauty': ['skincare', 'makeup', 'haircare'],
             'skincare': ['beauty', 'wellness'],
             'fashion': ['lifestyle', 'accessories'],
-            'lifestyle': ['fashion', 'home', 'wellness'],
-            'fitness': ['wellness', 'athleisure', 'health', 'supplements'],
-            'wellness': ['fitness', 'skincare', 'health', 'supplements'],
-            'supplements': ['fitness', 'wellness', 'health'],
+            'lifestyle': ['fashion', 'home'],
+            'fitness': ['athleisure', 'activewear', 'sports'],  # NOT wellness
+            'wellness': ['skincare', 'supplements', 'self-care'],  # NOT fitness
+            'supplements': ['wellness', 'health'],
             'food': ['lifestyle', 'kitchen', 'beverages'],
             'tech': ['gaming', 'gadgets'],
             'gaming': ['tech', 'entertainment'],
@@ -2197,13 +2199,14 @@ def get_for_you():
         # Score breakdown: Niche (0-40) + Followers (0-25) + Response (0-20) + Bonus (0-15) = 100 max
 
         # Build related niches map for scoring
+        # NOTE: fitness ≠ wellness - they are distinct categories
         related_niches = {
             'beauty': ['skincare', 'makeup', 'haircare'],
             'skincare': ['beauty', 'wellness'],
             'fashion': ['lifestyle', 'accessories'],
-            'lifestyle': ['fashion', 'home', 'wellness'],
-            'fitness': ['wellness', 'athleisure', 'health'],
-            'wellness': ['fitness', 'skincare', 'health'],
+            'lifestyle': ['fashion', 'home'],
+            'fitness': ['athleisure', 'activewear', 'sports'],
+            'wellness': ['skincare', 'supplements', 'self-care'],
             'food': ['lifestyle', 'kitchen', 'beverages'],
             'tech': ['gaming', 'gadgets'],
             'gaming': ['tech', 'entertainment'],
@@ -2469,14 +2472,15 @@ def get_recent_replies():
         user_niches_lower = [n.lower() for n in user_niches if n]
 
         # Related niches for broader matching
+        # NOTE: fitness ≠ wellness - they are distinct categories
         related_niches = {
-            'fitness': ['wellness', 'supplements', 'athleisure', 'health'],
-            'wellness': ['fitness', 'skincare', 'supplements', 'health'],
-            'supplements': ['fitness', 'wellness', 'health'],
+            'fitness': ['athleisure', 'activewear', 'sports'],
+            'wellness': ['skincare', 'supplements', 'self-care'],
+            'supplements': ['wellness', 'health'],
             'beauty': ['skincare', 'makeup', 'haircare'],
             'skincare': ['beauty', 'wellness', 'makeup'],
             'fashion': ['lifestyle', 'accessories', 'jewelry'],
-            'lifestyle': ['fashion', 'home', 'wellness'],
+            'lifestyle': ['fashion', 'home'],
             'pet': ['animals', 'pets'],
             'tech': ['gaming', 'gadgets'],
             'food': ['cooking', 'recipes', 'kitchen'],
