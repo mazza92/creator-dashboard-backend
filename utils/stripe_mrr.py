@@ -11,7 +11,14 @@ def fetch_stripe_mrr():
     or None on missing config / API error.
     """
     secret_key = os.getenv('STRIPE_SECRET_KEY')
-    pro_price_id = os.getenv('STRIPE_PRICE_ID_PRO')
+
+    # Support both old $12 and new $19 price IDs for grandfathered subscribers
+    pro_price_ids = set()
+    current_price = os.getenv('STRIPE_PRICE_ID_PRO')
+    if current_price:
+        pro_price_ids.add(current_price)
+    # Old $12 price ID (grandfathered subscribers)
+    pro_price_ids.add('price_1TN7n9EYev1UAuLgQcLAr73g')
 
     if not secret_key or not secret_key.startswith('sk_'):
         return None
@@ -37,7 +44,8 @@ def fetch_stripe_mrr():
             for item in sub.get('items', {}).get('data', []):
                 price = item.get('price') or {}
                 price_id = price.get('id')
-                if pro_price_id and price_id != pro_price_id:
+                # Count subscriptions on any Pro price (current or grandfathered)
+                if pro_price_ids and price_id not in pro_price_ids:
                     continue
 
                 amount = price.get('unit_amount') or 0
