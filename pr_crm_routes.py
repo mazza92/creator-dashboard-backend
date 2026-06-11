@@ -2389,6 +2389,8 @@ def update_creator_profile():
     """
     Update creator's niche and follower count for personalized recommendations.
     Body: { creator_niches: string[], creator_followers: int }
+
+    Keeps both niche (JSON string) and creator_niches (array) in sync for consistency.
     """
     creator_id = get_creator_id_from_session()
     if not creator_id:
@@ -2412,6 +2414,13 @@ def update_creator_profile():
         for key, value in updates.items():
             set_parts.append(f"{key} = %s")
             values.append(value)
+
+            # Keep niche column in sync when creator_niches is updated
+            # This ensures consistency across the app (pitch generation, wishlist, etc.)
+            if key == 'creator_niches' and isinstance(value, list):
+                set_parts.append("niche = %s")
+                values.append(json.dumps(value))
+
         values.append(creator_id)
 
         cursor.execute(f"""

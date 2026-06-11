@@ -1885,9 +1885,11 @@ def onboarding_step3():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Set both niche (JSON string for legacy) and creator_niches (array for For You)
+        # This ensures consistency: For You page sees niches immediately
         cursor.execute(
-            'UPDATE creators SET niche = %s WHERE user_id = %s RETURNING id',
-            (json.dumps(niches), user_id)
+            'UPDATE creators SET niche = %s, creator_niches = %s WHERE user_id = %s RETURNING id',
+            (json.dumps(niches), niches, user_id)
         )
         result = cursor.fetchone()
 
