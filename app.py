@@ -678,15 +678,22 @@ def google_signup():
         user = cursor.fetchone()
 
         if user:
-            # Existing user: Fetch creator_id if role is creator
+            # Existing user: Fetch creator_id and onboarding status if role is creator
             user_id = user['id']
             role = user['role']
             creator_id = None
+            onboarding_complete = True
+
             if role == 'creator':
-                cursor.execute('SELECT id FROM creators WHERE user_id = %s', (user_id,))
+                cursor.execute('SELECT id, username, niche FROM creators WHERE user_id = %s', (user_id,))
                 creator = cursor.fetchone()
                 if creator:
                     creator_id = creator['id']
+                    # Check onboarding status (same logic as regular login)
+                    onboarding_complete = bool(
+                        creator.get('username') and
+                        creator.get('niche')
+                    )
                 else:
                     app.logger.error(f"No creator record found for user_id: {user_id}")
                     conn.close()
@@ -697,10 +704,24 @@ def google_signup():
             session['user_role'] = role
             if creator_id:
                 session['creator_id'] = creator_id
-            app.logger.info(f"Logged in existing user: {user_id}, role: {role}, creator_id: {creator_id}")
+
+            # Determine redirect URL based on role and onboarding status
+            if role == 'creator':
+                redirect_url = '/creator/dashboard/for-you' if onboarding_complete else '/onboarding'
+            else:
+                redirect_url = '/brand/dashboard/overview'
+
+            app.logger.info(f"Logged in existing user: {user_id}, role: {role}, creator_id: {creator_id}, onboarding: {onboarding_complete}")
             app.logger.debug(f"Session before response: {session}")
             conn.close()
-            return jsonify({'user_id': user_id, 'user_role': role}), 200
+
+            return jsonify({
+                'user_id': user_id,
+                'user_role': role,
+                'creator_id': creator_id,
+                'onboarding_complete': onboarding_complete,
+                'redirect_url': redirect_url
+            }), 200
         else:
             # New user: Reject and prompt registration
             app.logger.info(f"No account found for email: {email}. User must register.")
