@@ -2592,3 +2592,91 @@ def get_recent_replies():
     except Exception as e:
         print(f"Error in get_recent_replies: {str(e)}")
         return jsonify({'success': False, 'error': str(e), 'replies': []}), 500
+
+
+@pr_crm.route('/social-proof-brands', methods=['GET'])
+def get_social_proof_brands():
+    """
+    Get popular brand names for social proof feed.
+    Returns a mix of brands that have been pitched and replied to.
+    All brands are real from the database - no fakes.
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get brands with recent pitch activity (contacted events)
+        cursor.execute("""
+            SELECT DISTINCT
+                pb.brand_name,
+                'contacted' AS event
+            FROM creator_pipeline cp
+            JOIN pr_brands pb ON pb.id = cp.brand_id
+            WHERE cp.pitched_at > NOW() - INTERVAL '30 days'
+              AND cp.pitched_at IS NOT NULL
+            ORDER BY pb.brand_name
+            LIMIT 15
+        """)
+        pitched_brands = cursor.fetchall()
+
+        # Get brands with recent replies (reply events)
+        cursor.execute("""
+            SELECT DISTINCT
+                pb.brand_name,
+                'reply' AS event
+            FROM creator_pipeline cp
+            JOIN pr_brands pb ON pb.id = cp.brand_id
+            WHERE cp.stage = 'replied'
+              AND cp.replied_at > NOW() - INTERVAL '30 days'
+            ORDER BY pb.brand_name
+            LIMIT 10
+        """)
+        replied_brands = cursor.fetchall()
+
+        # Get brands with packages sent (package events)
+        cursor.execute("""
+            SELECT DISTINCT
+                pb.brand_name,
+                'package' AS event
+            FROM creator_pipeline cp
+            JOIN pr_brands pb ON pb.id = cp.brand_id
+            WHERE cp.stage = 'success'
+              AND cp.updated_at > NOW() - INTERVAL '60 days'
+            ORDER BY pb.brand_name
+            LIMIT 5
+        """)
+        package_brands = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        # Combine and return
+        brands = []
+        seen = set()
+
+        # Add pitched brands (contacted events) - most common
+        for b in pitched_brands:
+            if b['brand_name'] not in seen:
+                brands.append({'name': b['brand_name'], 'event': 'contacted'})
+                seen.add(b['brand_name'])
+
+        # Add replied brands
+        for b in replied_brands:
+            if b['brand_name'] not in seen:
+                brands.append({'name': b['brand_name'], 'event': 'reply'})
+                seen.add(b['brand_name'])
+
+        # Add package brands
+        for b in package_brands:
+            if b['brand_name'] not in seen:
+                brands.append({'name': b['brand_name'], 'event': 'package'})
+                seen.add(b['brand_name'])
+
+        return jsonify({
+            'success': True,
+            'brands': brands
+        })
+
+    except Exception as e:
+        print(f"Error in get_social_proof_brands: {str(e)}")
+        return jsonify({'success': False, 'error': str(e), 'brands': []}), 500
