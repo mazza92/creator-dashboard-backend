@@ -360,7 +360,7 @@ def get_pipeline():
                     cp.*,
                     pb.brand_name, pb.website, pb.logo_url, pb.cover_image_url, pb.category,
                     pb.instagram_handle, pb.contact_email, pb.application_form_url,
-                    pb.has_application_form
+                    pb.has_application_form, pb.description
                 FROM creator_pipeline cp
                 JOIN pr_brands pb ON cp.brand_id = pb.id
                 WHERE cp.creator_id = %s AND cp.stage = %s
@@ -373,7 +373,7 @@ def get_pipeline():
                     cp.*,
                     pb.brand_name, pb.website, pb.logo_url, pb.cover_image_url, pb.category,
                     pb.instagram_handle, pb.contact_email, pb.application_form_url,
-                    pb.has_application_form
+                    pb.has_application_form, pb.description
                 FROM creator_pipeline cp
                 JOIN pr_brands pb ON cp.brand_id = pb.id
                 WHERE cp.creator_id = %s
@@ -1390,7 +1390,7 @@ def get_pipeline_full():
                 pb.id AS brand_id, pb.brand_name, pb.category,
                 pb.logo_url, pb.website AS domain, pb.response_rate,
                 pb.contact_email AS pr_email, pb.instagram_handle, pb.has_application_form,
-                pb.application_form_url,
+                pb.application_form_url, pb.description,
                 -- days since pitched (for nudge logic in frontend)
                 CASE
                     WHEN cp.pitched_at IS NOT NULL
