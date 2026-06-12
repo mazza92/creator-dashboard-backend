@@ -1210,7 +1210,7 @@ def generate_golden_template_pitch(brand, creator):
         hook_templates = [
             f"Your {hero_product} is the one my followers keep asking about after seeing it in my content.",
             f"Your {hero_product} keeps coming up in my comments as a recommendation request.",
-            f"My followers have been screenshotting the {hero_product} from other creators — it fits exactly what they're looking for.",
+            f"My followers have been screenshotting the {hero_product} from other creators. It fits exactly what they're looking for.",
             f"The {hero_product} is exactly what my audience has been asking me to try.",
         ]
     else:
@@ -1221,14 +1221,14 @@ def generate_golden_template_pitch(brand, creator):
     brand_hook = random.choice(hook_templates)
 
     # LINE 2 - Creator proof (exact format from brief)
-    creator_proof = f"I create {niche.lower()} content on {platform} ({followers_str} followers, {engagement_rate}% engagement — {audience_description})."
+    creator_proof = f"I create {niche.lower()} content on {platform} ({followers_str} followers, {engagement_rate}% engagement, {audience_description})."
 
     # LINE 3 - Content idea: specific, names hero product, states format and angle
     if has_specific_hero:
         content_ideas = [
-            f"I'd love to dedicate a {primary_format} to the {hero_product} — showing how it fits into a real daily routine.",
+            f"I'd love to dedicate a {primary_format} to the {hero_product}, showing how it fits into a real daily routine.",
             f"I'd feature the {hero_product} in a {primary_format} showing my honest experience using it.",
-            f"I'd create a {primary_format} around the {hero_product} — my audience responds best to genuine first impressions.",
+            f"I'd create a {primary_format} around the {hero_product}. My audience responds best to genuine first impressions.",
         ]
     else:
         content_ideas = [
@@ -1268,14 +1268,14 @@ def generate_golden_template_pitch(brand, creator):
     if has_specific_hero:
         subject_templates = [
             f"{hero_product} for my {followers_str} {platform} {niche.lower()} audience",
-            f"{hero_product} — {niche.lower()} creator, {followers_str} {platform}",
+            f"{hero_product} | {niche.lower()} creator, {followers_str} {platform}",
             f"Your {hero_product} for my {niche.lower()} content",
             f"{hero_product} in my {niche.lower()} {primary_format}",
         ]
     else:
         subject_templates = [
             f"{niche.title()} creator ({followers_str} {platform}) x {brand_name}",
-            f"Content idea for {brand_name} — {followers_str} {niche.lower()} followers",
+            f"Content idea for {brand_name} | {followers_str} {niche.lower()} followers",
         ]
     subject = random.choice(subject_templates)
 
