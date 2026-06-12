@@ -1061,29 +1061,48 @@ def generate_pitch():
 
 
 def generate_golden_template_pitch(brand, creator):
-    """Generate a personalized pitch using optimized structure for higher reply rates"""
+    """
+    Generate a proven cold PR pitch email that gets brand replies.
+
+    Formula:
+    - Line 1: Specific observation about their exact hero product by name
+    - Line 2: Who you are + one stat proving your audience is their customer
+    - Line 3: The exact video you would make, naming the hero product
+    - Line 4: Direct ask naming the specific product
+    """
     import random
 
-    # Extract creator data
-    creator_name = creator.get('first_name', '').strip() or 'Creator'
+    # ===== CREATOR DATA =====
+    # Get creator's real first name (never username)
+    creator_name = creator.get('first_name', '').strip()
+    if not creator_name:
+        # Try to extract from display_name or last_name
+        display = creator.get('display_name', '') or ''
+        if ' ' in display:
+            creator_name = display.split()[0].capitalize()
+        else:
+            creator_name = ''
 
-    # Use For You followers if set, else media_kit total, else signup followers
+    # Followers
     followers = (
         creator.get('creator_followers') or
         creator.get('media_kit_followers') or
         creator.get('followers_count') or
         0
     )
-    engagement_rate = creator.get('engagement_rate') or 5  # Default 5%
 
-    # IMPORTANT: Prefer For You edited niches over signup niches
-    # This ensures pitch matches what user sees in For You page
-    creator_niches_raw = creator.get('creator_niches')  # For You edited niches first
-    if not creator_niches_raw:
-        creator_niches_raw = creator.get('niche')  # Fall back to signup niche
+    # Format followers
+    if followers >= 1_000_000:
+        followers_str = f"{followers / 1_000_000:.1f}M"
+    elif followers >= 1_000:
+        followers_str = f"{followers / 1_000:.1f}K"
+    else:
+        followers_str = str(followers) if followers else 'growing'
 
-    # Parse niches into a list
-    creator_niches = []
+    engagement_rate = creator.get('engagement_rate') or 5
+
+    # Niche - prefer For You edited niches
+    creator_niches_raw = creator.get('creator_niches') or creator.get('niche')
     if isinstance(creator_niches_raw, str):
         try:
             creator_niches = json.loads(creator_niches_raw)
@@ -1091,49 +1110,35 @@ def generate_golden_template_pitch(brand, creator):
             creator_niches = [creator_niches_raw]
     elif isinstance(creator_niches_raw, list):
         creator_niches = creator_niches_raw
+    else:
+        creator_niches = []
 
-    # Smart niche selection: pick niche that best matches the brand category
-    # This prevents pitching a tech brand with "fitness" when user has both
+    # Smart niche match with brand category
     brand_category = (brand.get('category') or '').lower()
     niche = None
-
-    # Related niches mapping for smart matching
-    # NOTE: fitness ≠ wellness - they are distinct categories
     related_niches = {
         'fitness': ['athleisure', 'activewear', 'sports'],
         'wellness': ['skincare', 'supplements', 'self-care'],
-        'supplements': ['wellness', 'health'],
         'beauty': ['skincare', 'makeup', 'haircare'],
-        'skincare': ['beauty', 'wellness', 'makeup'],
-        'fashion': ['lifestyle', 'accessories', 'jewelry'],
-        'tech': ['gaming', 'gadgets'],
-        'gaming': ['tech', 'entertainment'],
+        'skincare': ['beauty', 'wellness'],
+        'fashion': ['lifestyle', 'accessories'],
     }
 
-    if creator_niches:
-        # First: exact match with brand category
+    for n in creator_niches:
+        if n and n.lower() == brand_category:
+            niche = n
+            break
+    if not niche:
         for n in creator_niches:
-            if n and n.lower() == brand_category:
+            if n and n.lower() in related_niches.get(brand_category, []):
                 niche = n
                 break
-
-        # Second: related niche match
-        if not niche:
-            brand_related = related_niches.get(brand_category, [])
-            for n in creator_niches:
-                if n and n.lower() in brand_related:
-                    niche = n
-                    break
-
-        # Third: use first niche as fallback
-        if not niche and len(creator_niches) > 0:
-            niche = creator_niches[0]
-
-    # Final fallback to brand category
+    if not niche and creator_niches:
+        niche = creator_niches[0]
     if not niche:
         niche = brand_category or 'content'
 
-    # Parse social_links JSON to find platform handles
+    # Platform detection
     social_links_raw = creator.get('social_links') or []
     if isinstance(social_links_raw, str):
         try:
@@ -1141,147 +1146,134 @@ def generate_golden_template_pitch(brand, creator):
         except:
             social_links_raw = []
 
-    # Build a dict of platform -> handle/url
-    platform_handles = {}
+    platform = 'Instagram'
     for link in social_links_raw:
         if isinstance(link, dict):
             plat = link.get('platform', '').lower()
-            handle = link.get('handle') or link.get('username') or link.get('url') or ''
-            if handle and plat:
-                platform_handles[plat] = handle
+            if plat == 'tiktok':
+                platform = 'TikTok'
+                break
+            elif plat == 'youtube':
+                platform = 'YouTube'
 
-    # Determine primary platform
-    platform = 'Instagram'  # Default
-    if 'tiktok' in platform_handles:
-        platform = 'TikTok'
-    elif 'youtube' in platform_handles:
-        platform = 'YouTube'
+    # Content format - use creator's primary_format if set
+    primary_format = creator.get('primary_format') or ('TikTok video' if platform == 'TikTok' else 'Instagram Reel' if platform == 'Instagram' else 'video')
 
-    # Format followers
-    if followers >= 1000000:
-        followers_str = f"{followers / 1000000:.1f}M"
-    elif followers >= 1000:
-        followers_str = f"{followers / 1000:.1f}K"
-    else:
-        followers_str = str(followers) if followers else 'growing'
+    # AUDIENCE DESCRIPTION - most important field
+    # Use creator's own words, NEVER brand's target_audience
+    audience_description = creator.get('audience_description')
+    if not audience_description:
+        # Fallback based on niche
+        niche_audiences = {
+            'beauty': 'beauty enthusiasts who trust creator recommendations over ads',
+            'skincare': 'skincare followers actively seeking product recommendations',
+            'fashion': 'style-conscious followers who shop based on what I wear',
+            'fitness': 'fitness followers who buy gear based on creator content',
+            'wellness': 'wellness seekers looking for trusted product recommendations',
+            'food': 'foodies who try products I feature',
+            'lifestyle': f'{niche} followers who engage with product content',
+        }
+        audience_description = niche_audiences.get(niche.lower() if niche else '', f'{niche} enthusiasts aged 20-35')
 
+    # ===== BRAND DATA =====
     brand_name = brand.get('brand_name', 'the brand')
+    hero_product = brand.get('hero_product')
+    brand_tone = brand.get('tone') or 'premium'
     category = (brand.get('category') or '').lower()
 
-    # Hero product fallback - create natural product references when hero_product isn't set
-    category_product_fallbacks = {
-        'fitness': 'activewear',
-        'beauty': 'products',
-        'skincare': 'skincare line',
-        'fashion': 'pieces',
-        'food': 'products',
-        'wellness': 'wellness products',
-        'supplements': 'supplements',
-        'lifestyle': 'products',
-        'tech': 'products',
-        'pet': 'pet products',
-        'haircare': 'haircare',
-        'makeup': 'makeup',
-        'athleisure': 'activewear',
-        'home': 'products',
-        'accessories': 'accessories',
-        'jewelry': 'jewelry',
-    }
-    hero_product = brand.get('hero_product') or category_product_fallbacks.get(category, 'products')
-    has_specific_hero = bool(brand.get('hero_product'))  # True if we have AI-enriched data
-
-    # Use brand's target_audience if enriched, otherwise fall back to niche-based defaults
-    brand_target_audience = brand.get('target_audience')
-
-    # Audience demographics based on niche (fallback)
-    audience_demos = {
-        'beauty': 'women 18-35 interested in beauty',
-        'skincare': 'skincare enthusiasts 20-40',
-        'fashion': 'style-conscious women 18-35',
-        'fitness': 'active lifestyle audience 22-40',
-        'food': 'home cooks and foodies',
-        'wellness': 'health-conscious consumers 25-45',
-        'supplements': 'fitness and wellness focused audience',
-        'lifestyle': f'{niche} enthusiasts',
-        'tech': 'tech-savvy consumers 18-40',
-        'pet': 'pet owners and animal lovers',
-    }
-    audience_desc = brand_target_audience or audience_demos.get(niche.lower() if niche else '', audience_demos.get(category, f'{niche} enthusiasts'))
-
-    # Content angles by niche for subject line
-    content_angles = {
-        'beauty': ['honest product review', 'routine video', 'makeup tutorial'],
-        'skincare': ['morning routine video', 'skincare review', '30-day test'],
-        'fashion': ['styling video', 'outfit of the day', 'try-on haul'],
-        'fitness': ['workout gear review', '30-day challenge', 'training content'],
-        'food': ['recipe video', 'taste test', 'cooking tutorial'],
-        'wellness': ['wellness routine', 'honest review', 'daily essentials'],
-        'supplements': ['supplement review', '30-day results', 'fitness content'],
-        'lifestyle': ['product review', 'honest take', 'daily vlog'],
-        'tech': ['tech review', 'unboxing', 'honest take'],
-        'pet': ['pet product test', 'honest review', 'pet content'],
-    }
-    content_angle = random.choice(content_angles.get(niche.lower() if niche else '', content_angles.get(category, ['product review', 'honest take'])))
-
-    # Brand-specific hooks (what makes the pitch feel researched)
-    # When we have AI-enriched hero_product, use more specific language
-    if has_specific_hero:
-        brand_hooks = {
-            'beauty': f"I've been eyeing your {hero_product} — my audience keeps asking for recommendations in this space.",
-            'skincare': f"Your {hero_product} has been on my radar, and my followers are always asking what I use.",
-            'fashion': f"I love the look of your {hero_product} — it fits perfectly with my style content.",
-            'fitness': f"Your {hero_product} is exactly what my fitness audience engages with most.",
-            'food': f"My followers have been asking about {hero_product} after seeing it featured elsewhere.",
-            'wellness': f"Your {hero_product} aligns with the wellness routine content my audience loves.",
-            'supplements': f"I've been researching {hero_product} and my fitness audience would be interested.",
-            'lifestyle': f"Your {hero_product} fits the aesthetic my audience engages with most.",
-            'tech': f"Your {hero_product} is exactly what my tech-focused audience follows.",
-            'pet': f"My pet-owner followers would love to see {hero_product} in action.",
+    # Hero product fallback
+    if not hero_product:
+        category_fallbacks = {
+            'skincare': 'skincare products',
+            'beauty': 'beauty products',
+            'fitness': 'activewear',
+            'fashion': 'pieces',
+            'wellness': 'wellness products',
+            'supplements': 'supplements',
+            'food': 'products',
+            'pet': 'pet products',
         }
-    else:
-        brand_hooks = {
-            'beauty': f"Your {hero_product} keeps coming up in my comments as a recommendation request.",
-            'skincare': f"My audience has been asking about products like yours.",
-            'fashion': f"Your pieces fit the aesthetic my audience loves.",
-            'fitness': f"Your {hero_product} is exactly what my fitness audience looks for.",
-            'food': f"My followers keep asking about products like yours.",
-            'wellness': f"Your {hero_product} aligns with what my wellness audience wants.",
-            'supplements': f"My fitness audience is always asking about supplements like yours.",
-            'lifestyle': f"Your brand fits the content my audience engages with most.",
-            'tech': f"Your products are exactly what my tech audience follows.",
-            'pet': f"My pet-owner audience would love to see your products.",
-        }
-    brand_hook = brand_hooks.get(niche.lower() if niche else '', brand_hooks.get(category, f"Your {hero_product} fits perfectly with my content."))
+        hero_product = category_fallbacks.get(category, 'products')
 
-    # Content format
-    content_format = 'short-form video' if platform in ['TikTok', 'Instagram'] else 'video'
-
-    # Build subject line (specific, under 10 words, no "PR collab idea")
-    subject_templates = [
-        f"{content_angle.title()} for {followers_str} {niche.lower() if niche else category} followers",
-        f"My {niche.lower() if niche else category} audience and your {hero_product}",
-        f"{followers_str} {platform} followers asking about {hero_product}",
-        f"{content_angle.title()} idea for {brand_name}",
-    ]
-    subject = random.choice(subject_templates)
+    has_specific_hero = bool(brand.get('hero_product'))
 
     # Profile link
     profile_url = f"https://newcollab.co/c/{creator.get('username', creator.get('id', 'creator'))}"
 
-    # Build body (under 80 words, specific, clear ask)
+    # ===== GENERATE PITCH =====
+
+    # LINE 1 - Brand hook: specific observation about hero product
+    # NEVER start with "I've been eyeing" or "I came across"
+    if has_specific_hero:
+        hook_templates = [
+            f"Your {hero_product} is the one my followers keep asking about after seeing it in my content.",
+            f"Your {hero_product} keeps coming up in my comments as a recommendation request.",
+            f"My followers have been screenshotting the {hero_product} from other creators — it fits exactly what they're looking for.",
+            f"The {hero_product} is exactly what my audience has been asking me to try.",
+        ]
+    else:
+        hook_templates = [
+            f"Your {hero_product} fits perfectly with what my followers look for in {niche} recommendations.",
+            f"My {niche} audience has been asking for recommendations like your {hero_product}.",
+        ]
+    brand_hook = random.choice(hook_templates)
+
+    # LINE 2 - Creator proof (exact format from brief)
+    creator_proof = f"I create {niche.lower()} content on {platform} ({followers_str} followers, {engagement_rate}% engagement — {audience_description})."
+
+    # LINE 3 - Content idea: specific, names hero product, states format and angle
+    if has_specific_hero:
+        content_ideas = [
+            f"I'd love to dedicate a {primary_format} to the {hero_product} — showing how it fits into a real daily routine.",
+            f"I'd feature the {hero_product} in a {primary_format} showing my honest experience using it.",
+            f"I'd create a {primary_format} around the {hero_product} — my audience responds best to genuine first impressions.",
+        ]
+    else:
+        content_ideas = [
+            f"I'd love to feature your {hero_product} in a {primary_format} for my audience.",
+            f"I'd create a {primary_format} showcasing your {hero_product} in my daily routine.",
+        ]
+    content_idea = random.choice(content_ideas)
+
+    # LINE 4 - Ask: specific product named
+    if has_specific_hero:
+        ask = f"Would you be open to sending a {hero_product}?"
+    else:
+        ask = f"Would you be open to sending a sample?"
+
+    # Build body (under 75 words)
     body = f"""Hi,
 
 {brand_hook}
 
-I create {niche.lower() if niche else category} content on {platform} ({followers_str} followers, {engagement_rate}% engagement, {audience_desc}).
+{creator_proof}
 
-I'd love to feature your {hero_product} in a {content_format} this month. Authentic, on-brand, specific to what works for your audience.
+{content_idea}
 
-Would you be open to sending product?
+{ask}
 
-{profile_url}
+{profile_url}"""
 
-{creator_name}"""
+    # Add creator name if we have it
+    if creator_name:
+        body += f"\n\n{creator_name}"
+
+    # ===== SUBJECT LINE =====
+    # Reference hero product and creator's content angle
+    # NEVER use: "PR collab idea", "collaboration request", "partnership"
+    if has_specific_hero:
+        subject_templates = [
+            f"{hero_product} for my {followers_str} {platform} {niche.lower()} audience",
+            f"{hero_product} — {niche.lower()} creator, {followers_str} {platform}",
+            f"Your {hero_product} for my {niche.lower()} content",
+            f"{hero_product} in my {niche.lower()} {primary_format}",
+        ]
+    else:
+        subject_templates = [
+            f"{niche.title()} creator ({followers_str} {platform}) x {brand_name}",
+            f"Content idea for {brand_name} — {followers_str} {niche.lower()} followers",
+        ]
+    subject = random.choice(subject_templates)
 
     return {
         'subject': subject,

@@ -21,7 +21,7 @@ import requests
 import json
 import time
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Load environment variables from .env if present
 try:
@@ -232,7 +232,7 @@ def enrich_brands(limit=None, brand_id=None, retry_failed=False):
             # Mark as attempted so we don't retry endlessly
             cursor.execute(
                 'UPDATE pr_brands SET enriched_at = %s WHERE id = %s',
-                (datetime.utcnow(), brand_id)
+                (datetime.now(timezone.utc), brand_id)
             )
             conn.commit()
             fail_count += 1
@@ -245,7 +245,7 @@ def enrich_brands(limit=None, brand_id=None, retry_failed=False):
             print(f"    SKIP - could not extract data")
             cursor.execute(
                 'UPDATE pr_brands SET enriched_at = %s WHERE id = %s',
-                (datetime.utcnow(), brand_id)
+                (datetime.now(timezone.utc), brand_id)
             )
             conn.commit()
             fail_count += 1
@@ -255,9 +255,29 @@ def enrich_brands(limit=None, brand_id=None, retry_failed=False):
         # Update database
         hero_product = data.get('hero_product')
         target_audience = data.get('target_audience')
-        tone = data.get('tone')
+        tone_raw = data.get('tone')
         price_point_raw = data.get('price_point')
         description = data.get('description')
+
+        # Validate/normalize tone (must be one of valid options, max 50 chars)
+        valid_tones = ['premium', 'casual', 'wellness', 'functional', 'luxury', 'playful', 'minimalist', 'bold']
+        tone = None
+        if tone_raw:
+            tone_lower = tone_raw.lower().strip()
+            # Check if it matches a valid tone
+            for valid in valid_tones:
+                if valid in tone_lower:
+                    tone = valid
+                    break
+            # If no match, truncate to 50 chars
+            if not tone:
+                tone = tone_raw[:50] if len(tone_raw) > 50 else tone_raw
+
+        # Truncate other fields to avoid DB errors
+        if hero_product and len(hero_product) > 255:
+            hero_product = hero_product[:255]
+        if target_audience and len(target_audience) > 255:
+            target_audience = target_audience[:255]
 
         # Convert price_point to int (AI may return string or int)
         price_point = None
@@ -284,7 +304,7 @@ def enrich_brands(limit=None, brand_id=None, retry_failed=False):
             tone,
             price_point,
             description,  # Only update if description is null
-            datetime.utcnow(),
+            datetime.now(timezone.utc),
             brand_id
         ))
         conn.commit()

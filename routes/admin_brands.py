@@ -1033,9 +1033,27 @@ JSON:"""
         # Step 3: Update database
         hero_product = data.get('hero_product')
         target_audience = data.get('target_audience')
-        tone = data.get('tone')
+        tone_raw = data.get('tone')
         price_point_raw = data.get('price_point')
         description = data.get('description')
+
+        # Validate/normalize tone (must be one of valid options, max 50 chars)
+        valid_tones = ['premium', 'casual', 'wellness', 'functional', 'luxury', 'playful', 'minimalist', 'bold']
+        tone = None
+        if tone_raw:
+            tone_lower = tone_raw.lower().strip()
+            for valid in valid_tones:
+                if valid in tone_lower:
+                    tone = valid
+                    break
+            if not tone:
+                tone = tone_raw[:50] if len(tone_raw) > 50 else tone_raw
+
+        # Truncate fields to avoid DB errors
+        if hero_product and len(hero_product) > 255:
+            hero_product = hero_product[:255]
+        if target_audience and len(target_audience) > 255:
+            target_audience = target_audience[:255]
 
         # Convert price_point to int (AI may return string or int)
         price_point = None
