@@ -1197,8 +1197,10 @@ def generate_golden_template_pitch(brand, creator):
 
     has_specific_hero = bool(brand.get('hero_product'))
 
-    # Profile link
-    profile_url = f"https://newcollab.co/c/{creator.get('username', creator.get('id', 'creator'))}"
+    # Media kit link - only include if kit is published
+    kit_published = creator.get('kit_published', False)
+    username = creator.get('username', creator.get('id', 'creator'))
+    media_kit_url = f"https://newcollab.co/kit/{username}" if kit_published else None
 
     # ===== GENERATE PITCH =====
 
@@ -1250,9 +1252,11 @@ def generate_golden_template_pitch(brand, creator):
 
 {content_idea}
 
-{ask}
+{ask}"""
 
-{profile_url}"""
+    # Add media kit link if published
+    if media_kit_url:
+        body += f"\n\n{media_kit_url}"
 
     # Add creator name if we have it
     if creator_name:
@@ -1282,7 +1286,9 @@ def generate_golden_template_pitch(brand, creator):
             'followers': followers_str if followers else None,
             'niche': niche,
             'platform': platform
-        }
+        },
+        'kit_published': kit_published,
+        'media_kit_url': media_kit_url
     }
 
 
@@ -1333,17 +1339,23 @@ def generate_followup_pitch(brand, creator):
     # Concise subject
     subject = f"Quick follow-up re: {brand_name}"
 
-    # Profile link
-    profile_url = f"https://newcollab.co/c/{creator.get('username', creator.get('id', 'creator'))}"
+    # Media kit link - only include if kit is published
+    kit_published = creator.get('kit_published', False)
+    username = creator.get('username', creator.get('id', 'creator'))
+    media_kit_url = f"https://newcollab.co/kit/{username}" if kit_published else None
 
     # Concise follow-up body (under 50 words)
     body = f"""Hi,
 
 Just following up on my pitch from last week. Still interested in featuring your {hero_product}.
 
-{followers_str} {platform} followers ready to see it.
+{followers_str} {platform} followers ready to see it."""
 
-{profile_url}
+    # Add media kit link if published
+    if media_kit_url:
+        body += f"\n\n{media_kit_url}"
+
+    body += f"""
 
 Let me know if you're open to sending product.
 
@@ -1356,7 +1368,9 @@ Let me know if you're open to sending product.
             'followers': followers_str if followers else None,
             'platform': platform
         },
-        'is_followup': True
+        'is_followup': True,
+        'kit_published': kit_published,
+        'media_kit_url': media_kit_url
     }
 
 
