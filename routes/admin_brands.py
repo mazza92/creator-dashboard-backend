@@ -1034,8 +1034,18 @@ JSON:"""
         hero_product = data.get('hero_product')
         target_audience = data.get('target_audience')
         tone = data.get('tone')
-        price_point = data.get('price_point')
+        price_point_raw = data.get('price_point')
         description = data.get('description')
+
+        # Convert price_point to int (AI may return string or int)
+        price_point = None
+        if price_point_raw:
+            try:
+                price_point = int(price_point_raw)
+                if price_point <= 0:
+                    price_point = None
+            except (ValueError, TypeError):
+                price_point = None
 
         cursor.execute('''
             UPDATE pr_brands
@@ -1050,7 +1060,7 @@ JSON:"""
             hero_product,
             target_audience,
             tone,
-            price_point if price_point and price_point > 0 else None,
+            price_point,
             description,
             brand_id
         ))
