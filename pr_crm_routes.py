@@ -1204,42 +1204,103 @@ def generate_golden_template_pitch(brand, creator):
 
     # ===== GENERATE PITCH =====
 
-    # LINE 1 - Brand hook: specific observation about hero product
-    # NEVER start with "I've been eyeing" or "I came across"
+    # Create short product reference for Lines 3 & 4 (avoid repeating full name)
+    # Extract a natural short form: "Daily Moisturizing Lotion" -> "the lotion"
+    def get_short_product_ref(product_name, category):
+        """Get a short natural reference to avoid repeating the full product name."""
+        product_lower = product_name.lower()
+        # Common product type words to extract
+        product_types = [
+            'serum', 'lotion', 'cream', 'oil', 'balm', 'mask', 'cleanser', 'toner',
+            'moisturizer', 'sunscreen', 'spf', 'foundation', 'concealer', 'palette',
+            'lipstick', 'gloss', 'mascara', 'powder', 'blush', 'bronzer', 'highlighter',
+            'shampoo', 'conditioner', 'treatment', 'spray', 'gel', 'wax', 'pomade',
+            'candle', 'fragrance', 'perfume', 'cologne', 'scent',
+            'supplement', 'vitamin', 'protein', 'powder', 'capsules', 'gummies',
+            'leggings', 'shorts', 'top', 'bra', 'jacket', 'hoodie', 'sneakers',
+            'bag', 'wallet', 'watch', 'jewelry', 'earrings', 'necklace', 'bracelet',
+            'bottle', 'jar', 'kit', 'set', 'bundle', 'collection'
+        ]
+        for ptype in product_types:
+            if ptype in product_lower:
+                return f"the {ptype}"
+        # Fallback based on category
+        category_refs = {
+            'skincare': 'the product', 'beauty': 'it', 'haircare': 'the product',
+            'fashion': 'the piece', 'activewear': 'the gear', 'fitness': 'the product',
+            'wellness': 'it', 'supplements': 'it', 'food': 'it', 'beverage': 'it',
+            'fragrance': 'the scent', 'jewelry': 'the piece', 'home': 'it'
+        }
+        return category_refs.get(category, 'it')
+
+    short_ref = get_short_product_ref(hero_product, category) if has_specific_hero else 'it'
+
+    # LINE 1 - Brand hook: specific observation about hero product (ONLY place to use full name)
+    # NEVER: "I've been eyeing", "I came across", "is exactly what my audience has been asking"
     if has_specific_hero:
         hook_templates = [
-            f"Your {hero_product} is the one my followers keep asking about after seeing it in my content.",
-            f"Your {hero_product} keeps coming up in my comments as a recommendation request.",
-            f"My followers have been screenshotting the {hero_product} from other creators. It fits exactly what they're looking for.",
-            f"The {hero_product} is exactly what my audience has been asking me to try.",
+            f"Your {hero_product} keeps coming up in my comments. My followers want to see how I'd use it.",
+            f"The {hero_product} is something my audience specifically asks about when they see similar content.",
+            f"My followers have been screenshotting the {hero_product} from other creators' posts.",
         ]
     else:
         hook_templates = [
-            f"Your {hero_product} fits perfectly with what my followers look for in {niche} recommendations.",
-            f"My {niche} audience has been asking for recommendations like your {hero_product}.",
+            f"My {niche} audience keeps asking for {category} recommendations that actually work.",
+            f"Your {hero_product} fits what my followers look for in {niche} content.",
         ]
     brand_hook = random.choice(hook_templates)
 
     # LINE 2 - Creator proof (exact format from brief)
     creator_proof = f"I create {niche.lower()} content on {platform} ({followers_str} followers, {engagement_rate}% engagement, {audience_description})."
 
-    # LINE 3 - Content idea: specific, names hero product, states format and angle
+    # LINE 3 - Content idea: SPECIFIC SCENE, not content philosophy
+    # Must describe a real moment in the video the brand can picture
+    # Use short_ref instead of full product name
     if has_specific_hero:
-        content_ideas = [
-            f"I'd love to dedicate a {primary_format} to the {hero_product}, showing how it fits into a real daily routine.",
-            f"I'd feature the {hero_product} in a {primary_format} showing my honest experience using it.",
-            f"I'd create a {primary_format} around the {hero_product}. My audience responds best to genuine first impressions.",
-        ]
+        # Scene-based content ideas that vary by niche
+        if niche.lower() in ['fitness', 'activewear', 'wellness']:
+            content_ideas = [
+                f"I'd love to show {short_ref} as part of a post-workout routine.",
+                f"I'd feature {short_ref} in my morning training prep.",
+                f"I'd show {short_ref} in a real gym-to-home transition.",
+            ]
+        elif niche.lower() in ['skincare', 'beauty']:
+            content_ideas = [
+                f"I'd show {short_ref} in my actual morning routine, not a staged demo.",
+                f"I'd feature {short_ref} in a nighttime wind-down routine.",
+                f"I'd show how {short_ref} fits into a real getting-ready moment.",
+            ]
+        elif niche.lower() in ['food', 'beverage', 'cooking']:
+            content_ideas = [
+                f"I'd feature {short_ref} in a real meal prep or cooking moment.",
+                f"I'd show {short_ref} as part of my actual daily eating routine.",
+            ]
+        else:
+            content_ideas = [
+                f"I'd show {short_ref} in a real day-in-my-life moment.",
+                f"I'd feature {short_ref} in my actual daily routine.",
+                f"I'd show how {short_ref} fits into a real moment, not a staged demo.",
+            ]
     else:
         content_ideas = [
-            f"I'd love to feature your {hero_product} in a {primary_format} for my audience.",
-            f"I'd create a {primary_format} showcasing your {hero_product} in my daily routine.",
+            f"I'd feature your products in my actual {niche.lower()} routine.",
+            f"I'd show how your products fit into a real daily moment.",
         ]
     content_idea = random.choice(content_ideas)
 
-    # LINE 4 - Ask: specific product named
+    # LINE 4 - Ask: use generic unit (bottle, sample, piece) not full product name
     if has_specific_hero:
-        ask = f"Would you be open to sending a {hero_product}?"
+        # Determine appropriate unit based on product type
+        product_lower = hero_product.lower()
+        if any(w in product_lower for w in ['lotion', 'serum', 'oil', 'cream', 'shampoo', 'conditioner']):
+            ask_unit = "a bottle"
+        elif any(w in product_lower for w in ['candle', 'fragrance', 'perfume']):
+            ask_unit = "one"
+        elif any(w in product_lower for w in ['palette', 'kit', 'set']):
+            ask_unit = "one"
+        else:
+            ask_unit = "a sample"
+        ask = f"Would you be open to sending {ask_unit}?"
     else:
         ask = f"Would you be open to sending a sample?"
 
