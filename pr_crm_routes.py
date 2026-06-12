@@ -1060,30 +1060,400 @@ def generate_pitch():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# ============================================
+# SEMI-CUSTOM PITCH TEMPLATE ARCHITECTURE
+# Category-based templates with dynamic slots
+# AI fills proven sentences, doesn't invent content
+# ============================================
+
+# LINE 1 TEMPLATES: Brand hook per product category
+# Variables: {product}, {verb_is}, {verb_has}
+LINE1_TEMPLATES = {
+    'spf': [
+        "Your {product} {verb_is} the invisible-finish SPF my followers keep asking me to find.",
+        "The {product} {verb_is} the no-white-cast formula my comments ask for every time I post a sunny-day routine.",
+    ],
+    'serum': [
+        "The {product} {verb_has} the active percentage my audience actually looks for.",
+        "Your {product} {verb_has} the formula my followers ask about when they see my skincare posts.",
+    ],
+    'patches': [
+        "The {product} dissolve by morning. They're the ones showing up in my skincare shelf posts.",
+        "Your {product} {verb_is} the overnight fix my followers screenshot from my content.",
+    ],
+    'supplement': [
+        "The {product} {verb_has} the clean ingredient label my fitness audience actually reads.",
+        "Your {product} {verb_is} the kind of daily stack my followers ask about in every routine post.",
+    ],
+    'fragrance': [
+        "Your {product} {verb_has} the aesthetic my audience screenshots from my content.",
+        "The {product} scent profile {verb_is} what I'd actually have on during a filming day.",
+    ],
+    'activewear': [
+        "The {product} {verb_is} the kind of fit my workout audience asks about in every video.",
+        "Your {product} {verb_has} the look and feel my fitness followers actively search for.",
+    ],
+    'food': [
+        "Your {product} {verb_is} what my audience asks about when they see my kitchen content.",
+        "The {product} {verb_has} the clean label my food followers actually read before buying.",
+    ],
+    'skincare': [
+        "The {product} {verb_has} the formula my followers trust based on my routine content.",
+        "Your {product} {verb_is} what my skincare audience asks for when they see my shelf.",
+    ],
+    'makeup': [
+        "The {product} {verb_has} the finish my audience asks about in every get-ready post.",
+        "Your {product} {verb_is} the kind of quality my beauty followers expect to see.",
+    ],
+    'haircare': [
+        "The {product} {verb_has} the salon-quality formula my followers actively search for.",
+        "Your {product} {verb_is} what my audience asks about when they see my hair routine.",
+    ],
+    'fashion': [
+        "Your {product} {verb_is} the piece my audience saves every time I post a styled look.",
+        "The {product} {verb_has} the fit my followers ask about when they see my outfit content.",
+    ],
+    'home': [
+        "Your {product} {verb_is} the one my followers screenshot every time it appears in my space content.",
+        "The {product} {verb_has} the aesthetic my audience looks for in home finds.",
+    ],
+    'pet': [
+        "Your {product} {verb_is} what my audience asks about every time I show my pet on camera.",
+        "The {product} {verb_has} the quality my pet community expects from brands I feature.",
+    ],
+    'fitness': [
+        "Your {product} {verb_is} what comes up in my comments every time I film a training session.",
+        "The {product} {verb_has} the performance my fitness audience actively looks for.",
+    ],
+    'jewelry': [
+        "Your {product} {verb_is} the piece my followers ask about every time it shows up in my content.",
+        "The {product} {verb_has} the detail my audience zooms in on in every post.",
+    ],
+    'luxury': [
+        "Your {product} {verb_is} what my audience saves every time I feature elevated pieces.",
+        "The {product} {verb_has} the craftsmanship my followers expect from the brands I work with.",
+    ],
+    'lifestyle': [
+        "Your {product} {verb_is} what my audience asks about when they see my daily content.",
+        "The {product} {verb_has} the quality my lifestyle followers look for in my recommendations.",
+    ],
+    'default': [
+        "Your {product} {verb_is} what my audience asks about when they see products like this.",
+        "The {product} {verb_has} the quality my followers expect from brands I feature.",
+    ],
+}
+
+# LINE 3 TEMPLATES: Content idea per product category
+# Variables: {short}, {product}, {activity}, {workout}, {meal}, {timeframe}
+LINE3_TEMPLATES = {
+    'spf': [
+        "I'd film my morning run with {short} already on. No reapplication, no white cast, just the result.",
+        "I'd show the application, then 4 hours later: no shine, no pilling, under makeup.",
+    ],
+    'serum': [
+        "I'd show {short} going on, skin texture before, skin 20 minutes after.",
+        "I'd build a 60-second routine around {short}, showing how it layers between cleanse and SPF.",
+    ],
+    'patches': [
+        "I'd show {short} going on overnight, then the morning reveal. Before and after.",
+        "I'd film applying {short} at night, then the peel-off moment with the gunk visible.",
+    ],
+    'supplement': [
+        "I'd film the morning stack: {short} next to the water bottle, before the workout, as part of the routine my audience follows.",
+        "I'd build a 60-second 'what I take every morning' video around {short}. Timing, why I started, what I pair it with.",
+    ],
+    'fragrance': [
+        "I'd build a getting-ready moment around {short}. Bottle on the counter, the spritz before leaving, the mood it sets.",
+        "I'd show {short} as part of a morning shelf moment. What it sits next to, why it's the one I reach for.",
+    ],
+    'activewear': [
+        "I'd film a full workout with {short}, showing how it holds up through sweat.",
+        "I'd show the gear check before a training session, {short} front and center.",
+    ],
+    'food': [
+        "I'd show {short} in a real recipe: the prep, the cook, the final plate.",
+        "I'd feature {short} in my morning routine, from fridge to table to taste test.",
+    ],
+    'skincare': [
+        "I'd show {short} going on, skin texture before, skin 20 minutes after.",
+        "I'd build a 60-second routine around {short}, showing how it fits my actual skincare steps.",
+    ],
+    'makeup': [
+        "I'd show {short} in a real get-ready, before and after the full look.",
+        "I'd feature {short} in a tutorial, showing the application technique that works.",
+    ],
+    'haircare': [
+        "I'd show {short} in my actual wash-day routine, from application to styled result.",
+        "I'd film the before and after with {short}, showing texture and shine difference.",
+    ],
+    'fashion': [
+        "I'd style {short} three ways: how I'd wear it day-to-day, dressed up, and the way my audience actually lives in it.",
+        "I'd film {short} in a real outfit video: the fit, the fabric close-up, how it moves.",
+    ],
+    'home': [
+        "I'd film {short} styled into a real corner of my space: natural light, what it sits next to, the detail shot.",
+        "I'd show {short} in my actual home: the unboxing, the placement, the before and after of the space.",
+    ],
+    'pet': [
+        "I'd film my pet with {short}: the reaction, the use, and the honest result my audience expects from me.",
+        "I'd show {short} in a real moment with my pet: how they interact with it, whether it holds up.",
+    ],
+    'fitness': [
+        "I'd take {short} through a full session: how it performs, how it holds up, the result after.",
+        "I'd film {short} in my actual workout: the fit check, the sweat test, the honest review.",
+    ],
+    'jewelry': [
+        "I'd show {short} in a getting-ready moment: how it layers, what it goes with, the close-up detail.",
+        "I'd film {short} styled three ways: casual, elevated, and the way I'd actually wear it daily.",
+    ],
+    'luxury': [
+        "I'd dedicate a video to {short}: the craftsmanship, the details, how it fits into my content.",
+        "I'd show {short} in an elevated moment: the unboxing, the styling, the quality close-ups.",
+    ],
+    'lifestyle': [
+        "I'd show {short} in my actual daily routine: how I use it, when I reach for it, why it works.",
+        "I'd film {short} in a real moment: the context, the use, the result my audience can relate to.",
+    ],
+    'default': [
+        "I'd show {short} in a real moment: how I use it, why it fits my content, what my audience would see.",
+        "I'd film {short} in an authentic use-case: the context, the detail, the honest result.",
+    ],
+}
+
+# LINE 4 TEMPLATES: Ask with appropriate unit per category
+# Variables: {short}
+LINE4_TEMPLATES = {
+    'spf': "Would you be open to sending a bottle of {short}?",
+    'serum': "Would you be open to sending a bottle of {short}?",
+    'patches': "Would you be open to sending a pack of {short}?",
+    'supplement': "Would you be open to sending a month's supply?",
+    'fragrance': "Would you be open to sending a bottle to try?",
+    'activewear': "Would you be open to sending a pair to try?",
+    'food': "Would you be open to sending some to try?",
+    'skincare': "Would you be open to sending a bottle of {short}?",
+    'makeup': "Would you be open to sending {short} to try?",
+    'haircare': "Would you be open to sending a bottle of {short}?",
+    'fashion': "Would you be open to sending a piece to try?",
+    'home': "Would you be open to sending one to feature?",
+    'pet': "Would you be open to sending some for my pet to try?",
+    'fitness': "Would you be open to sending some gear to test?",
+    'jewelry': "Would you be open to sending a piece to feature?",
+    'luxury': "Would you be open to loaning a piece for content?",
+    'lifestyle': "Would you be open to sending one to try?",
+    'default': "Would you be open to sending a sample to try?",
+}
+
+# CATEGORY MAP: Maps brand.category strings to template keys
+CATEGORY_MAP = {
+    # SPF/Sunscreen
+    'sunscreen': 'spf', 'spf': 'spf', 'sun care': 'spf', 'sun protection': 'spf',
+    # Serum
+    'serum': 'serum', 'serums': 'serum', 'face oil': 'serum', 'treatment': 'serum',
+    # Patches
+    'patches': 'patches', 'pimple patches': 'patches', 'acne patches': 'patches', 'hydrocolloid': 'patches',
+    # Supplements
+    'supplement': 'supplement', 'supplements': 'supplement', 'vitamins': 'supplement',
+    'wellness': 'supplement', 'gummies': 'supplement', 'capsules': 'supplement',
+    'protein': 'supplement', 'collagen': 'supplement', 'probiotics': 'supplement',
+    # Fragrance
+    'fragrance': 'fragrance', 'perfume': 'fragrance', 'cologne': 'fragrance',
+    'candle': 'fragrance', 'candles': 'fragrance', 'home fragrance': 'fragrance',
+    'scent': 'fragrance', 'mist': 'fragrance',
+    # Activewear
+    'activewear': 'activewear', 'athleisure': 'activewear', 'sportswear': 'activewear',
+    'fitness apparel': 'activewear', 'workout wear': 'activewear', 'leggings': 'activewear',
+    # Food
+    'food': 'food', 'beverage': 'food', 'snacks': 'food', 'drinks': 'food',
+    'cooking': 'food', 'kitchen': 'food', 'pantry': 'food',
+    # Skincare
+    'skincare': 'skincare', 'skin care': 'skincare', 'moisturizer': 'skincare',
+    'cleanser': 'skincare', 'face': 'skincare', 'anti-aging': 'skincare',
+    # Makeup
+    'makeup': 'makeup', 'cosmetics': 'makeup', 'beauty': 'makeup',
+    'lipstick': 'makeup', 'foundation': 'makeup', 'mascara': 'makeup',
+    # Haircare
+    'haircare': 'haircare', 'hair care': 'haircare', 'hair': 'haircare',
+    'shampoo': 'haircare', 'conditioner': 'haircare', 'styling': 'haircare',
+    # Fashion
+    'fashion': 'fashion', 'clothing': 'fashion', 'apparel': 'fashion',
+    'accessories': 'fashion', 'shoes': 'fashion', 'bags': 'fashion',
+    # Home
+    'home': 'home', 'home decor': 'home', 'decor': 'home', 'furniture': 'home',
+    'interiors': 'home', 'home goods': 'home', 'bedding': 'home',
+    # Pet
+    'pet': 'pet', 'pets': 'pet', 'dog': 'pet', 'cat': 'pet',
+    'pet food': 'pet', 'pet care': 'pet', 'pet supplies': 'pet',
+    # Fitness
+    'fitness': 'fitness', 'gym': 'fitness', 'workout': 'fitness',
+    'sports': 'fitness', 'training': 'fitness', 'exercise': 'fitness',
+    # Jewelry
+    'jewelry': 'jewelry', 'jewellery': 'jewelry', 'accessories': 'jewelry',
+    'watches': 'jewelry', 'rings': 'jewelry', 'necklaces': 'jewelry',
+    # Luxury
+    'luxury': 'luxury', 'premium': 'luxury', 'designer': 'luxury',
+    'high-end': 'luxury', 'luxury fashion': 'luxury',
+    # Lifestyle
+    'lifestyle': 'lifestyle', 'other': 'lifestyle',
+    # Tech -> lifestyle (accessories fit lifestyle template)
+    'tech': 'lifestyle', 'technology': 'lifestyle', 'gadgets': 'lifestyle',
+}
+
+
+def get_template_key(category, hero_product=None):
+    """
+    Get the template key for a brand based on category and hero product.
+    Checks hero_product first for product-type keywords, then falls back to category.
+    """
+    # First, check hero_product for specific product types (more accurate)
+    if hero_product:
+        hp_lower = hero_product.lower()
+        # Product-specific detection
+        if any(w in hp_lower for w in ['sunscreen', 'spf', 'sun protection']):
+            return 'spf'
+        if any(w in hp_lower for w in ['serum', 'oil', 'acid']):
+            return 'serum'
+        if any(w in hp_lower for w in ['patch', 'hydro', 'pimple']):
+            return 'patches'
+        if any(w in hp_lower for w in ['supplement', 'vitamin', 'gummy', 'capsule', 'protein', 'collagen', 'probiotic', 'magnesium', 'creatine']):
+            return 'supplement'
+        if any(w in hp_lower for w in ['fragrance', 'perfume', 'cologne', 'candle', 'scent', 'mist']):
+            return 'fragrance'
+        if any(w in hp_lower for w in ['legging', 'shorts', 'sports bra', 'activewear', 'workout gear']):
+            return 'activewear'
+        if any(w in hp_lower for w in ['shampoo', 'conditioner', 'hair mask', 'hair oil']):
+            return 'haircare'
+        if any(w in hp_lower for w in ['foundation', 'lipstick', 'mascara', 'palette', 'eyeshadow', 'blush', 'concealer']):
+            return 'makeup'
+        if any(w in hp_lower for w in ['cleanser', 'moisturizer', 'toner', 'face cream', 'face lotion']):
+            return 'skincare'
+        # New categories
+        if any(w in hp_lower for w in ['dress', 'jacket', 'coat', 'shirt', 'pants', 'jeans', 'sweater', 'top', 'skirt']):
+            return 'fashion'
+        if any(w in hp_lower for w in ['pillow', 'blanket', 'lamp', 'vase', 'rug', 'throw', 'decor']):
+            return 'home'
+        if any(w in hp_lower for w in ['dog food', 'cat food', 'pet toy', 'dog treat', 'cat treat', 'leash', 'collar']):
+            return 'pet'
+        if any(w in hp_lower for w in ['dumbbell', 'kettlebell', 'resistance band', 'yoga mat', 'fitness']):
+            return 'fitness'
+        if any(w in hp_lower for w in ['necklace', 'bracelet', 'ring', 'earring', 'watch', 'chain']):
+            return 'jewelry'
+
+    # Fall back to category map
+    if category:
+        cat_lower = category.lower().strip()
+        return CATEGORY_MAP.get(cat_lower, 'default')
+
+    return 'default'
+
+
 def generate_golden_template_pitch(brand, creator):
     """
-    Generate a proven cold PR pitch email that gets brand replies.
+    Generate a proven cold PR pitch email using semi-custom templates.
+
+    Uses category-based templates with dynamic slot filling.
+    AI fills proven sentences, doesn't invent content.
 
     Formula:
-    - Line 1: Specific observation about their exact hero product by name
-    - Line 2: Who you are + one stat proving your audience is their customer
-    - Line 3: The exact video you would make, naming the hero product
-    - Line 4: Direct ask naming the specific product
+    - Line 1: Category-specific brand hook (from LINE1_TEMPLATES)
+    - Line 2: Creator proof with stats
+    - Line 3: Category-specific content idea (from LINE3_TEMPLATES)
+    - Line 4: Category-specific ask (from LINE4_TEMPLATES)
     """
     import random
+    import re
+
+    # ===== HELPER FUNCTIONS =====
+    def is_valid_first_name(name):
+        """Check if name is a real first name, not a username/handle."""
+        if not name:
+            return False
+        name = name.strip()
+        if name.islower() and len(name) < 4:
+            return False
+        if '_' in name or any(c.isdigit() for c in name):
+            return False
+        if name.lower() in ['admin', 'user', 'creator', 'test', 'social', 'content']:
+            return False
+        return True
+
+    def clean_hero_product(hp):
+        """Strip variant parentheticals from hero_product."""
+        if not hp:
+            return hp
+        return re.sub(r'\s*\([^)]*\)', '', hp).strip()
+
+    def get_short_ref(product_name, template_key):
+        """Get short reference for product based on template key."""
+        p_lower = product_name.lower()
+        words = product_name.split()
+
+        # Category-specific short refs
+        short_refs_by_key = {
+            'spf': 'the SPF',
+            'serum': 'the serum',
+            'patches': 'the patches',
+            'supplement': 'them',
+            'fragrance': 'it',
+            'activewear': 'the gear',
+            'food': 'it',
+            'skincare': 'it',
+            'makeup': 'it',
+            'haircare': 'the product',
+            'fashion': 'the piece',
+            'home': 'it',
+            'pet': 'the product',
+            'fitness': 'the gear',
+            'jewelry': 'the piece',
+            'luxury': 'the piece',
+            'lifestyle': 'it',
+        }
+
+        # Product-type specific overrides
+        type_refs = {
+            'serum': 'the serum', 'lotion': 'the lotion', 'cream': 'the cream',
+            'oil': 'the oil', 'balm': 'the balm', 'mask': 'the mask',
+            'cleanser': 'the cleanser', 'toner': 'the toner', 'sunscreen': 'the SPF',
+            'spf': 'the SPF', 'moisturizer': 'the moisturizer',
+            'patches': 'the patches', 'pads': 'the pads',
+            'candle': 'it', 'fragrance': 'it', 'perfume': 'it', 'mist': 'it',
+            'supplement': 'them', 'vitamins': 'them', 'gummies': 'them',
+            'leggings': 'the leggings', 'shorts': 'the shorts',
+            'shampoo': 'the shampoo', 'conditioner': 'the conditioner',
+            # Fashion
+            'dress': 'the dress', 'jacket': 'the jacket', 'coat': 'the coat',
+            'bag': 'the bag', 'shoes': 'the shoes',
+            # Home
+            'pillow': 'the pillow', 'blanket': 'the blanket', 'lamp': 'the lamp',
+            # Jewelry
+            'necklace': 'the necklace', 'bracelet': 'the bracelet', 'ring': 'the ring',
+            'earrings': 'the earrings', 'watch': 'the watch',
+        }
+
+        for ptype, short in type_refs.items():
+            if ptype in p_lower:
+                return short
+
+        # Use category default
+        if template_key in short_refs_by_key:
+            return short_refs_by_key[template_key]
+
+        # Fallback: first distinctive word
+        if words and words[0].lower() not in ['the', 'a', 'an', 'your', 'our']:
+            return f"the {words[0]}"
+        return 'it'
 
     # ===== CREATOR DATA =====
-    # Get creator's real first name (never username)
-    creator_name = creator.get('first_name', '').strip()
-    if not creator_name:
-        # Try to extract from display_name or last_name
+    creator_name = ''
+    first_name = creator.get('first_name', '').strip()
+    if first_name and is_valid_first_name(first_name):
+        creator_name = first_name.capitalize()
+    else:
         display = creator.get('display_name', '') or ''
         if ' ' in display:
-            creator_name = display.split()[0].capitalize()
-        else:
-            creator_name = ''
+            first_word = display.split()[0].strip()
+            if is_valid_first_name(first_word):
+                creator_name = first_word.capitalize()
 
-    # Followers
     followers = (
         creator.get('creator_followers') or
         creator.get('media_kit_followers') or
@@ -1091,7 +1461,6 @@ def generate_golden_template_pitch(brand, creator):
         0
     )
 
-    # Format followers
     if followers >= 1_000_000:
         followers_str = f"{followers / 1_000_000:.1f}M"
     elif followers >= 1_000:
@@ -1099,9 +1468,10 @@ def generate_golden_template_pitch(brand, creator):
     else:
         followers_str = str(followers) if followers else 'growing'
 
-    engagement_rate = creator.get('engagement_rate') or 5
+    engagement_rate_raw = creator.get('engagement_rate') or 5
+    engagement_rate = round(float(engagement_rate_raw), 1)
 
-    # Niche - prefer For You edited niches
+    # Niche
     creator_niches_raw = creator.get('creator_niches') or creator.get('niche')
     if isinstance(creator_niches_raw, str):
         try:
@@ -1113,7 +1483,6 @@ def generate_golden_template_pitch(brand, creator):
     else:
         creator_niches = []
 
-    # Smart niche match with brand category
     brand_category = (brand.get('category') or '').lower()
     niche = None
     related_niches = {
@@ -1138,7 +1507,7 @@ def generate_golden_template_pitch(brand, creator):
     if not niche:
         niche = brand_category or 'content'
 
-    # Platform detection
+    # Platform
     social_links_raw = creator.get('social_links') or []
     if isinstance(social_links_raw, str):
         try:
@@ -1156,14 +1525,11 @@ def generate_golden_template_pitch(brand, creator):
             elif plat == 'youtube':
                 platform = 'YouTube'
 
-    # Content format - use creator's primary_format if set
     primary_format = creator.get('primary_format') or ('TikTok video' if platform == 'TikTok' else 'Instagram Reel' if platform == 'Instagram' else 'video')
 
-    # AUDIENCE DESCRIPTION - most important field
-    # Use creator's own words, NEVER brand's target_audience
+    # Audience description
     audience_description = creator.get('audience_description')
     if not audience_description:
-        # Fallback based on niche
         niche_audiences = {
             'beauty': 'beauty enthusiasts who trust creator recommendations over ads',
             'skincare': 'skincare followers actively seeking product recommendations',
@@ -1177,134 +1543,65 @@ def generate_golden_template_pitch(brand, creator):
 
     # ===== BRAND DATA =====
     brand_name = brand.get('brand_name', 'the brand')
-    hero_product = brand.get('hero_product')
-    brand_tone = brand.get('tone') or 'premium'
+    hero_product_raw = brand.get('hero_product')
     category = (brand.get('category') or '').lower()
 
-    # Hero product fallback
+    hero_product = clean_hero_product(hero_product_raw) if hero_product_raw else None
     if not hero_product:
-        category_fallbacks = {
-            'skincare': 'skincare products',
-            'beauty': 'beauty products',
-            'fitness': 'activewear',
-            'fashion': 'pieces',
-            'wellness': 'wellness products',
-            'supplements': 'supplements',
-            'food': 'products',
-            'pet': 'pet products',
-        }
-        hero_product = category_fallbacks.get(category, 'products')
+        hero_product = f"{brand_name} products"
 
     has_specific_hero = bool(brand.get('hero_product'))
 
-    # Media kit link - only include if kit is published
+    # Grammar: plural detection
+    product_lower = hero_product.lower()
+    is_plural = (
+        product_lower.endswith('patches') or
+        product_lower.endswith('pads') or
+        product_lower.endswith('gummies') or
+        product_lower.endswith('capsules') or
+        product_lower.endswith('vitamins') or
+        product_lower.endswith('drops') or
+        ' and ' in product_lower
+    )
+    verb_is = "are" if is_plural else "is"
+    verb_has = "have" if is_plural else "has"
+
+    # ===== GET TEMPLATE KEY =====
+    template_key = get_template_key(category, hero_product if has_specific_hero else None)
+
+    # Get short reference
+    short_ref = get_short_ref(hero_product, template_key) if has_specific_hero else 'your products'
+
+    # Media kit
     kit_published = creator.get('kit_published', False)
     username = creator.get('username', creator.get('id', 'creator'))
     media_kit_url = f"https://newcollab.co/kit/{username}" if kit_published else None
 
-    # ===== GENERATE PITCH =====
+    # ===== GENERATE PITCH USING TEMPLATES =====
 
-    # Create short product reference for Lines 3 & 4 (avoid repeating full name)
-    # Extract a natural short form: "Daily Moisturizing Lotion" -> "the lotion"
-    def get_short_product_ref(product_name, category):
-        """Get a short natural reference to avoid repeating the full product name."""
-        product_lower = product_name.lower()
-        # Common product type words to extract
-        product_types = [
-            'serum', 'lotion', 'cream', 'oil', 'balm', 'mask', 'cleanser', 'toner',
-            'moisturizer', 'sunscreen', 'spf', 'foundation', 'concealer', 'palette',
-            'lipstick', 'gloss', 'mascara', 'powder', 'blush', 'bronzer', 'highlighter',
-            'shampoo', 'conditioner', 'treatment', 'spray', 'gel', 'wax', 'pomade',
-            'candle', 'fragrance', 'perfume', 'cologne', 'scent',
-            'supplement', 'vitamin', 'protein', 'powder', 'capsules', 'gummies',
-            'leggings', 'shorts', 'top', 'bra', 'jacket', 'hoodie', 'sneakers',
-            'bag', 'wallet', 'watch', 'jewelry', 'earrings', 'necklace', 'bracelet',
-            'bottle', 'jar', 'kit', 'set', 'bundle', 'collection'
-        ]
-        for ptype in product_types:
-            if ptype in product_lower:
-                return f"the {ptype}"
-        # Fallback based on category
-        category_refs = {
-            'skincare': 'the product', 'beauty': 'it', 'haircare': 'the product',
-            'fashion': 'the piece', 'activewear': 'the gear', 'fitness': 'the product',
-            'wellness': 'it', 'supplements': 'it', 'food': 'it', 'beverage': 'it',
-            'fragrance': 'the scent', 'jewelry': 'the piece', 'home': 'it'
-        }
-        return category_refs.get(category, 'it')
+    # LINE 1: Select from category templates and fill slots
+    line1_templates = LINE1_TEMPLATES.get(template_key, LINE1_TEMPLATES['default'])
+    brand_hook = random.choice(line1_templates).format(
+        product=hero_product,
+        verb_is=verb_is,
+        verb_has=verb_has
+    )
 
-    short_ref = get_short_product_ref(hero_product, category) if has_specific_hero else 'it'
-
-    # LINE 1 - Brand hook: specific observation about hero product (ONLY place to use full name)
-    # NEVER: "I've been eyeing", "I came across", "is exactly what my audience has been asking"
-    if has_specific_hero:
-        hook_templates = [
-            f"Your {hero_product} keeps coming up in my comments. My followers want to see how I'd use it.",
-            f"The {hero_product} is something my audience specifically asks about when they see similar content.",
-            f"My followers have been screenshotting the {hero_product} from other creators' posts.",
-        ]
-    else:
-        hook_templates = [
-            f"My {niche} audience keeps asking for {category} recommendations that actually work.",
-            f"Your {hero_product} fits what my followers look for in {niche} content.",
-        ]
-    brand_hook = random.choice(hook_templates)
-
-    # LINE 2 - Creator proof (exact format from brief)
+    # LINE 2: Creator proof (always same structure)
     creator_proof = f"I create {niche.lower()} content on {platform} ({followers_str} followers, {engagement_rate}% engagement, {audience_description})."
 
-    # LINE 3 - Content idea: SPECIFIC SCENE, not content philosophy
-    # Must describe a real moment in the video the brand can picture
-    # Use short_ref instead of full product name
-    if has_specific_hero:
-        # Scene-based content ideas that vary by niche
-        if niche.lower() in ['fitness', 'activewear', 'wellness']:
-            content_ideas = [
-                f"I'd love to show {short_ref} as part of a post-workout routine.",
-                f"I'd feature {short_ref} in my morning training prep.",
-                f"I'd show {short_ref} in a real gym-to-home transition.",
-            ]
-        elif niche.lower() in ['skincare', 'beauty']:
-            content_ideas = [
-                f"I'd show {short_ref} in my actual morning routine, not a staged demo.",
-                f"I'd feature {short_ref} in a nighttime wind-down routine.",
-                f"I'd show how {short_ref} fits into a real getting-ready moment.",
-            ]
-        elif niche.lower() in ['food', 'beverage', 'cooking']:
-            content_ideas = [
-                f"I'd feature {short_ref} in a real meal prep or cooking moment.",
-                f"I'd show {short_ref} as part of my actual daily eating routine.",
-            ]
-        else:
-            content_ideas = [
-                f"I'd show {short_ref} in a real day-in-my-life moment.",
-                f"I'd feature {short_ref} in my actual daily routine.",
-                f"I'd show how {short_ref} fits into a real moment, not a staged demo.",
-            ]
-    else:
-        content_ideas = [
-            f"I'd feature your products in my actual {niche.lower()} routine.",
-            f"I'd show how your products fit into a real daily moment.",
-        ]
-    content_idea = random.choice(content_ideas)
+    # LINE 3: Select from category templates and fill slots
+    line3_templates = LINE3_TEMPLATES.get(template_key, LINE3_TEMPLATES['default'])
+    content_idea = random.choice(line3_templates).format(
+        short=short_ref,
+        product=hero_product
+    )
 
-    # LINE 4 - Ask: use generic unit (bottle, sample, piece) not full product name
-    if has_specific_hero:
-        # Determine appropriate unit based on product type
-        product_lower = hero_product.lower()
-        if any(w in product_lower for w in ['lotion', 'serum', 'oil', 'cream', 'shampoo', 'conditioner']):
-            ask_unit = "a bottle"
-        elif any(w in product_lower for w in ['candle', 'fragrance', 'perfume']):
-            ask_unit = "one"
-        elif any(w in product_lower for w in ['palette', 'kit', 'set']):
-            ask_unit = "one"
-        else:
-            ask_unit = "a sample"
-        ask = f"Would you be open to sending {ask_unit}?"
-    else:
-        ask = f"Would you be open to sending a sample?"
+    # LINE 4: Category-specific ask
+    line4_template = LINE4_TEMPLATES.get(template_key, LINE4_TEMPLATES['default'])
+    ask = line4_template.format(short=short_ref)
 
-    # Build body (under 75 words)
+    # Build body
     body = f"""Hi,
 
 {brand_hook}
@@ -1315,23 +1612,18 @@ def generate_golden_template_pitch(brand, creator):
 
 {ask}"""
 
-    # Add media kit link if published
     if media_kit_url:
         body += f"\n\n{media_kit_url}"
 
-    # Add creator name if we have it
     if creator_name:
         body += f"\n\n{creator_name}"
 
     # ===== SUBJECT LINE =====
-    # Reference hero product and creator's content angle
-    # NEVER use: "PR collab idea", "collaboration request", "partnership"
     if has_specific_hero:
         subject_templates = [
             f"{hero_product} for my {followers_str} {platform} {niche.lower()} audience",
             f"{hero_product} | {niche.lower()} creator, {followers_str} {platform}",
             f"Your {hero_product} for my {niche.lower()} content",
-            f"{hero_product} in my {niche.lower()} {primary_format}",
         ]
     else:
         subject_templates = [
@@ -1716,17 +2008,17 @@ def _send_pitch_confirmation_email(to_email, creator_name, brand_name):
 
         context = {
             'subject': subject,
-            'preheader': f'Step 1 done — you just reached out to {brand_name}. Here\'s what to do next.',
+            'preheader': f'Step 1 done! You just reached out to {brand_name}. Here\'s what to do next.',
             'message': f"""
                 <p style="margin: 0 0 16px;">Hey {creator_name},</p>
-                <p style="margin: 0 0 16px;">You just contacted <strong>{brand_name}</strong> — that's step 1 complete! 🎉</p>
+                <p style="margin: 0 0 16px;">You just contacted <strong>{brand_name}</strong>. That's step 1 complete! 🎉</p>
                 <p style="margin: 0 0 12px;">Here's what happens next:</p>
                 <ul style="text-align: left; margin: 0 0 16px; padding-left: 20px; color: #1d1d1f;">
                     <li style="margin-bottom: 6px;">We'll remind you to follow up in 7 days if you haven't heard back</li>
-                    <li style="margin-bottom: 6px;">Most brands respond within 1–2 weeks</li>
+                    <li style="margin-bottom: 6px;">Most brands respond within 1-2 weeks</li>
                     <li style="margin-bottom: 6px;">Track your pipeline and log any replies in your dashboard</li>
                 </ul>
-                <p style="margin: 0; color: #059669; font-weight: 600;">Keep the momentum going — the more brands you contact, the more packages you'll land! 📦</p>
+                <p style="margin: 0; color: #059669; font-weight: 600;">Keep the momentum going. The more brands you contact, the more packages you'll land! 📦</p>
             """,
             'action_url': f'{app_url}/creator/dashboard/pr-pipeline',
             'action_text': 'Track My Pipeline',
@@ -2129,6 +2421,18 @@ def get_for_you():
             'gaming': ['tech', 'entertainment'],
             'home': ['lifestyle', 'decor'],
         }
+
+        # Sensitive categories that should only show to specific niches
+        # Prevents tech/food/fitness/parenting creators seeing adult brands
+        SENSITIVE_CATEGORIES = ['intimacy', 'adult', 'sexual wellness']
+        SENSITIVE_ALLOWED_NICHES = ['beauty', 'wellness', 'lifestyle', 'self-care']
+
+        # Build excluded categories based on creator's niches
+        creator_niches_lower = [n.lower() for n in (niches or [])]
+        # If creator is not in allowed niches, exclude sensitive categories
+        exclude_sensitive = not any(n in SENSITIVE_ALLOWED_NICHES for n in creator_niches_lower)
+        excluded_categories = SENSITIVE_CATEGORIES if exclude_sensitive else []
+
         hot_related = set()
         for n in (niches or []):
             n_lower = n.lower()
@@ -2136,8 +2440,12 @@ def get_for_you():
             hot_related.update(related_niches_map.get(n_lower, []))
         hot_niches_list = list(hot_related) if hot_related else None
 
+        # Add sensitive category exclusion clause if needed
+        sensitive_clause = "AND LOWER(b.category) != ALL(%s)" if excluded_categories else ""
+        sensitive_params = [excluded_categories] if excluded_categories else []
+
         if hot_niches_list and min_follower_cap:
-            cursor.execute("""
+            query = f"""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate,
@@ -2148,6 +2456,7 @@ def get_for_you():
                   AND b.id != ALL(%s)
                   AND (b.min_followers IS NULL OR b.min_followers <= %s)
                   AND LOWER(b.category) = ANY(%s)
+                  {sensitive_clause}
                 ORDER BY (
                     SELECT COUNT(DISTINCT cp.creator_id) FROM creator_pipeline cp
                     WHERE cp.brand_id = b.id
@@ -2155,9 +2464,10 @@ def get_for_you():
                     AND cp.created_at > NOW() - INTERVAL '30 days'
                 ) DESC, b.response_rate DESC NULLS LAST
                 LIMIT 6
-            """, (exclude_ids, min_follower_cap, hot_niches_list))
+            """
+            cursor.execute(query, (exclude_ids, min_follower_cap, hot_niches_list, *sensitive_params))
         elif hot_niches_list:
-            cursor.execute("""
+            query = f"""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate,
@@ -2167,6 +2477,7 @@ def get_for_you():
                   AND COALESCE(b.status, 'published') = 'published'
                   AND b.id != ALL(%s)
                   AND LOWER(b.category) = ANY(%s)
+                  {sensitive_clause}
                 ORDER BY (
                     SELECT COUNT(DISTINCT cp.creator_id) FROM creator_pipeline cp
                     WHERE cp.brand_id = b.id
@@ -2174,9 +2485,10 @@ def get_for_you():
                     AND cp.created_at > NOW() - INTERVAL '30 days'
                 ) DESC, b.response_rate DESC NULLS LAST
                 LIMIT 6
-            """, (exclude_ids, hot_niches_list))
+            """
+            cursor.execute(query, (exclude_ids, hot_niches_list, *sensitive_params))
         elif min_follower_cap:
-            cursor.execute("""
+            query = f"""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate,
@@ -2186,6 +2498,7 @@ def get_for_you():
                   AND COALESCE(b.status, 'published') = 'published'
                   AND b.id != ALL(%s)
                   AND (b.min_followers IS NULL OR b.min_followers <= %s)
+                  {sensitive_clause}
                 ORDER BY (
                     SELECT COUNT(DISTINCT cp.creator_id) FROM creator_pipeline cp
                     WHERE cp.brand_id = b.id
@@ -2193,9 +2506,10 @@ def get_for_you():
                     AND cp.created_at > NOW() - INTERVAL '30 days'
                 ) DESC, b.response_rate DESC NULLS LAST
                 LIMIT 6
-            """, (exclude_ids, min_follower_cap))
+            """
+            cursor.execute(query, (exclude_ids, min_follower_cap, *sensitive_params))
         else:
-            cursor.execute("""
+            query = f"""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate,
@@ -2204,6 +2518,7 @@ def get_for_you():
                 WHERE b.slug IS NOT NULL
                   AND COALESCE(b.status, 'published') = 'published'
                   AND b.id != ALL(%s)
+                  {sensitive_clause}
                 ORDER BY (
                     SELECT COUNT(DISTINCT cp.creator_id) FROM creator_pipeline cp
                     WHERE cp.brand_id = b.id
@@ -2211,14 +2526,15 @@ def get_for_you():
                     AND cp.created_at > NOW() - INTERVAL '30 days'
                 ) DESC, b.response_rate DESC NULLS LAST
                 LIMIT 6
-            """, (exclude_ids,))
+            """
+            cursor.execute(query, (exclude_ids, *sensitive_params))
         hot = cursor.fetchall()
 
         # Fallback: if not enough brands with pitches, fill from popular brands (also filtered by niche)
         if len(hot) < 3:
             hot_ids = [r['id'] for r in hot] if hot else [0]
             if hot_niches_list and min_follower_cap:
-                cursor.execute("""
+                query = f"""
                     SELECT
                         b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                         b.description, b.category, b.response_rate,
@@ -2230,11 +2546,13 @@ def get_for_you():
                       AND b.id != ALL(%s)
                       AND (b.min_followers IS NULL OR b.min_followers <= %s)
                       AND LOWER(b.category) = ANY(%s)
+                      {sensitive_clause}
                     ORDER BY b.response_rate DESC NULLS LAST, RANDOM()
                     LIMIT %s
-                """, (exclude_ids, hot_ids, min_follower_cap, hot_niches_list, 6 - len(hot)))
+                """
+                cursor.execute(query, (exclude_ids, hot_ids, min_follower_cap, hot_niches_list, *sensitive_params, 6 - len(hot)))
             elif hot_niches_list:
-                cursor.execute("""
+                query = f"""
                     SELECT
                         b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                         b.description, b.category, b.response_rate,
@@ -2245,11 +2563,13 @@ def get_for_you():
                       AND b.id != ALL(%s)
                       AND b.id != ALL(%s)
                       AND LOWER(b.category) = ANY(%s)
+                      {sensitive_clause}
                     ORDER BY b.response_rate DESC NULLS LAST, RANDOM()
                     LIMIT %s
-                """, (exclude_ids, hot_ids, hot_niches_list, 6 - len(hot)))
+                """
+                cursor.execute(query, (exclude_ids, hot_ids, hot_niches_list, *sensitive_params, 6 - len(hot)))
             elif min_follower_cap:
-                cursor.execute("""
+                query = f"""
                     SELECT
                         b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                         b.description, b.category, b.response_rate,
@@ -2260,11 +2580,13 @@ def get_for_you():
                       AND b.id != ALL(%s)
                       AND b.id != ALL(%s)
                       AND (b.min_followers IS NULL OR b.min_followers <= %s)
+                      {sensitive_clause}
                     ORDER BY b.response_rate DESC NULLS LAST, RANDOM()
                     LIMIT %s
-                """, (exclude_ids, hot_ids, min_follower_cap, 6 - len(hot)))
+                """
+                cursor.execute(query, (exclude_ids, hot_ids, min_follower_cap, *sensitive_params, 6 - len(hot)))
             else:
-                cursor.execute("""
+                query = f"""
                     SELECT
                         b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                         b.description, b.category, b.response_rate,
@@ -2274,9 +2596,11 @@ def get_for_you():
                       AND COALESCE(b.status, 'published') = 'published'
                       AND b.id != ALL(%s)
                       AND b.id != ALL(%s)
+                      {sensitive_clause}
                     ORDER BY b.response_rate DESC NULLS LAST, RANDOM()
                     LIMIT %s
-                """, (exclude_ids, hot_ids, 6 - len(hot)))
+                """
+                cursor.execute(query, (exclude_ids, hot_ids, *sensitive_params, 6 - len(hot)))
             fallback = cursor.fetchall()
             hot = list(hot) + list(fallback)
 
@@ -2320,6 +2644,11 @@ def get_for_you():
             if min_follower_cap:
                 brand_filter_sql = "AND (b.min_followers IS NULL OR b.min_followers <= %s)"
                 query_params.append(min_follower_cap)
+
+            # Add sensitive category exclusion
+            if excluded_categories:
+                brand_filter_sql += " AND LOWER(b.category) != ALL(%s)"
+                query_params.append(excluded_categories)
 
             cursor.execute(f"""
                 SELECT
@@ -2371,7 +2700,7 @@ def get_for_you():
             # No profile yet — return variety of top brands with basic scoring
             # Default to showing smaller brands (safe for any creator size)
             default_max_followers = 50000  # Safe default for unknown creators
-            cursor.execute("""
+            query = f"""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate,
@@ -2392,9 +2721,11 @@ def get_for_you():
                   AND COALESCE(b.status, 'published') = 'published'
                   AND b.id != ALL(%s)
                   AND (b.min_followers IS NULL OR b.min_followers <= %s)
+                  {sensitive_clause}
                 ORDER BY match_score DESC
                 LIMIT 8
-            """, (exclude_ids, default_max_followers))
+            """
+            cursor.execute(query, (exclude_ids, default_max_followers, *sensitive_params))
             matched = cursor.fetchall()
 
         # ── Section 3: Right Season ──────────────────────────────
@@ -2416,21 +2747,21 @@ def get_for_you():
         seasonal_cats = seasonal_map.get(month, ['beauty', 'lifestyle'])
 
         seasonal_reasons = {
-            1:  "New Year reset — wellness brands gifting heavily in January",
-            2:  "Valentine's season — beauty and jewelry brands seeking creators",
-            3:  "Spring launch season — skincare brands partnering with creators",
-            4:  "Spring fashion drops — brands seeking fresh campaign content",
-            5:  "Pre-summer prep — lifestyle and skincare brands gifting now",
-            6:  "Summer campaigns — SPF and fashion brands need content now",
-            7:  "Peak summer — lifestyle brands seeking authentic summer content",
-            8:  "Late summer push — fashion and beauty brands preparing for fall",
-            9:  "Back to school/fall — fashion brands refreshing their creator roster",
-            10: "Pre-holiday — beauty and home brands building gifting lists",
-            11: "Holiday gifting season — brands most active for PR partnerships",
-            12: "Year-end gifting — brands clearing PR budgets before January",
+            1:  "New Year reset: wellness brands gifting heavily in January",
+            2:  "Valentine's season: beauty and jewelry brands seeking creators",
+            3:  "Spring launch season: skincare brands partnering with creators",
+            4:  "Spring fashion drops: brands seeking fresh campaign content",
+            5:  "Pre-summer prep: lifestyle and skincare brands gifting now",
+            6:  "Summer campaigns: SPF and fashion brands need content now",
+            7:  "Peak summer: lifestyle brands seeking authentic summer content",
+            8:  "Late summer push: fashion and beauty brands preparing for fall",
+            9:  "Back to school/fall: fashion brands refreshing their creator roster",
+            10: "Pre-holiday: beauty and home brands building gifting lists",
+            11: "Holiday gifting season: brands most active for PR partnerships",
+            12: "Year-end gifting: brands clearing PR budgets before January",
         }
 
-        cursor.execute("""
+        seasonal_query = f"""
             SELECT
                 b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                 b.description, b.category, b.response_rate,
@@ -2440,9 +2771,11 @@ def get_for_you():
               AND COALESCE(b.status, 'published') = 'published'
               AND LOWER(b.category) = ANY(%s)
               AND b.id != ALL(%s)
+              {sensitive_clause}
             ORDER BY b.response_rate DESC NULLS LAST, RANDOM()
             LIMIT 4
-        """, ([c.lower() for c in seasonal_cats], exclude_ids))
+        """
+        cursor.execute(seasonal_query, ([c.lower() for c in seasonal_cats], exclude_ids, *sensitive_params))
         seasonal = cursor.fetchall()
 
         cursor.close()
