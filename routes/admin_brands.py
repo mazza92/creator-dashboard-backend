@@ -123,6 +123,7 @@ def get_brands():
                 accepting_pr, open_pr_featured, roundup_featured, notes, success_stories, source_url,
                 cover_image_url, avg_product_value, collaboration_type, payment_offered,
                 seo_title, seo_description,
+                hero_product, target_audience, tone, price_point, enriched_at,
                 COALESCE(status, 'published') as status,
                 created_at, updated_at
             FROM pr_brands
@@ -205,6 +206,7 @@ def get_brand(brand_id):
                 accepting_pr, open_pr_featured, roundup_featured, notes, success_stories, source_url,
                 cover_image_url, avg_product_value, collaboration_type, payment_offered,
                 seo_title, seo_description,
+                hero_product, target_audience, tone, price_point, enriched_at,
                 COALESCE(status, 'published') as status,
                 created_at, updated_at
             FROM pr_brands
@@ -343,6 +345,7 @@ def create_brand():
                 accepting_pr, open_pr_featured, roundup_featured, notes, success_stories, source_url,
                 cover_image_url, avg_product_value, collaboration_type, payment_offered,
                 seo_title, seo_description,
+                hero_product, target_audience, tone, price_point, enriched_at,
                 COALESCE(status, 'published') as status,
                 created_at, updated_at
             FROM pr_brands
@@ -404,7 +407,8 @@ def update_brand(brand_id):
             'has_application_form', 'application_method', 'application_requirements',
             'is_premium', 'open_pr_featured', 'roundup_featured', 'notes', 'success_stories', 'source_url',
             'cover_image_url', 'avg_product_value', 'collaboration_type', 'payment_offered',
-            'status', 'seo_title', 'seo_description'
+            'status', 'seo_title', 'seo_description',
+            'hero_product', 'target_audience', 'tone', 'price_point', 'enriched_at'
         ]
 
         update_fields = []
@@ -467,6 +471,7 @@ def update_brand(brand_id):
                 accepting_pr, open_pr_featured, roundup_featured, notes, success_stories, source_url,
                 cover_image_url, avg_product_value, collaboration_type, payment_offered,
                 seo_title, seo_description,
+                hero_product, target_audience, tone, price_point, enriched_at,
                 COALESCE(status, 'published') as status,
                 created_at, updated_at
             FROM pr_brands
@@ -898,3 +903,173 @@ def scrape_opengraph():
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 200
+
+
+# ============================================================================
+# AI ENRICHMENT ENDPOINT
+# ============================================================================
+
+@admin_brands_bp.route('/brands/<int:brand_id>/enrich', methods=['POST'])
+@admin_required
+def enrich_brand(brand_id):
+    """
+    AI-enrich a single brand using Jina AI + Claude Haiku
+    Extracts hero_product, target_audience, tone, price_point from website
+
+    Returns:
+        { "success": true, "data": {...} } on success
+        { "success": false, "error": "..." } on failure
+    """
+    import requests as req
+    import json as jsonlib
+
+    ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
+    if not ANTHROPIC_API_KEY:
+        return jsonify({'success': False, 'error': 'ANTHROPIC_API_KEY not configured'}), 500
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get brand details
+        cursor.execute('SELECT id, brand_name, website, category FROM pr_brands WHERE id = %s', (brand_id,))
+        brand = cursor.fetchone()
+
+        if not brand:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Brand not found'}), 404
+
+        if not brand.get('website'):
+            conn.close()
+            return jsonify({'success': False, 'error': 'Brand has no website URL'}), 400
+
+        website = brand['website']
+        if not website.startswith('http'):
+            website = f'https://{website}'
+
+        # Step 1: Fetch page content via Jina AI
+        try:
+            jina_res = req.get(f"https://r.jina.ai/{website}", timeout=15, headers={
+                'User-Agent': 'Mozilla/5.0 (compatible; BrandEnricher/1.0)'
+            })
+            if jina_res.status_code != 200:
+                conn.close()
+                return jsonify({'success': False, 'error': f'Could not fetch website (status {jina_res.status_code})'}), 200
+
+            page_content = jina_res.text[:6000]  # Cap for token limits
+        except req.Timeout:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Website fetch timed out'}), 200
+        except Exception as e:
+            conn.close()
+            return jsonify({'success': False, 'error': f'Website fetch failed: {str(e)}'}), 200
+
+        # Step 2: Extract data with Claude Haiku
+        category_hint = f"\nBrand category hint: {brand.get('category')}" if brand.get('category') else ""
+
+        prompt = f"""You are extracting structured data from a brand's website content.
+
+Brand: {brand['brand_name']}{category_hint}
+
+Website content:
+{page_content}
+
+Extract the following as JSON:
+{{
+  "hero_product": "their most well-known or bestselling product with SPECIFIC name (e.g. 'Peptide Glazing Fluid', 'Power Leggings', 'Grass-Fed Whey Protein'). If unclear, use their primary product category with a descriptor.",
+  "target_audience": "who they sell to in under 12 words (e.g. 'women 25-40 into clean beauty and skincare')",
+  "tone": "one of: premium / casual / wellness / functional / luxury / playful / minimalist / bold",
+  "price_point": "estimated average single product price in USD as integer (e.g. 32, 85). Use 0 if unclear.",
+  "description": "one sentence max 25 words: [Brand] makes [specific product type] for [specific customer]."
+}}
+
+Return ONLY valid JSON, no explanation.
+
+JSON:"""
+
+        try:
+            claude_res = req.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 400,
+                    "messages": [{"role": "user", "content": prompt}]
+                },
+                timeout=30
+            )
+
+            if claude_res.status_code != 200:
+                conn.close()
+                return jsonify({'success': False, 'error': f'AI extraction failed (status {claude_res.status_code})'}), 200
+
+            response_data = claude_res.json()
+            text = response_data.get("content", [{}])[0].get("text", "")
+
+            # Clean up response
+            text = text.strip()
+            if text.startswith("```"):
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+            text = text.strip()
+
+            data = jsonlib.loads(text)
+
+        except jsonlib.JSONDecodeError:
+            conn.close()
+            return jsonify({'success': False, 'error': 'AI returned invalid JSON'}), 200
+        except req.Timeout:
+            conn.close()
+            return jsonify({'success': False, 'error': 'AI extraction timed out'}), 200
+        except Exception as e:
+            conn.close()
+            return jsonify({'success': False, 'error': f'AI extraction failed: {str(e)}'}), 200
+
+        # Step 3: Update database
+        hero_product = data.get('hero_product')
+        target_audience = data.get('target_audience')
+        tone = data.get('tone')
+        price_point = data.get('price_point')
+        description = data.get('description')
+
+        cursor.execute('''
+            UPDATE pr_brands
+            SET hero_product = %s,
+                target_audience = %s,
+                tone = %s,
+                price_point = %s,
+                description = COALESCE(description, %s),
+                enriched_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        ''', (
+            hero_product,
+            target_audience,
+            tone,
+            price_point if price_point and price_point > 0 else None,
+            description,
+            brand_id
+        ))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'data': {
+                'hero_product': hero_product,
+                'target_audience': target_audience,
+                'tone': tone,
+                'price_point': price_point,
+                'description': description
+            }
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500

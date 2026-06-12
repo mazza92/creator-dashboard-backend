@@ -1188,8 +1188,12 @@ def generate_golden_template_pitch(brand, creator):
         'jewelry': 'jewelry',
     }
     hero_product = brand.get('hero_product') or category_product_fallbacks.get(category, 'products')
+    has_specific_hero = bool(brand.get('hero_product'))  # True if we have AI-enriched data
 
-    # Audience demographics based on niche
+    # Use brand's target_audience if enriched, otherwise fall back to niche-based defaults
+    brand_target_audience = brand.get('target_audience')
+
+    # Audience demographics based on niche (fallback)
     audience_demos = {
         'beauty': 'women 18-35 interested in beauty',
         'skincare': 'skincare enthusiasts 20-40',
@@ -1202,7 +1206,7 @@ def generate_golden_template_pitch(brand, creator):
         'tech': 'tech-savvy consumers 18-40',
         'pet': 'pet owners and animal lovers',
     }
-    audience_desc = audience_demos.get(niche.lower() if niche else '', audience_demos.get(category, f'{niche} enthusiasts'))
+    audience_desc = brand_target_audience or audience_demos.get(niche.lower() if niche else '', audience_demos.get(category, f'{niche} enthusiasts'))
 
     # Content angles by niche for subject line
     content_angles = {
@@ -1220,18 +1224,33 @@ def generate_golden_template_pitch(brand, creator):
     content_angle = random.choice(content_angles.get(niche.lower() if niche else '', content_angles.get(category, ['product review', 'honest take'])))
 
     # Brand-specific hooks (what makes the pitch feel researched)
-    brand_hooks = {
-        'beauty': f"Your {hero_product} keeps coming up in my comments as a recommendation request.",
-        'skincare': f"My audience has been asking about {hero_product} after seeing it on other creators.",
-        'fashion': f"Your pieces fit the aesthetic my audience loves.",
-        'fitness': f"Your {hero_product} is exactly what my fitness audience looks for.",
-        'food': f"My followers keep asking about products like {hero_product}.",
-        'wellness': f"Your {hero_product} aligns with what my wellness audience wants.",
-        'supplements': f"My fitness audience is always asking about {hero_product}.",
-        'lifestyle': f"Your brand fits the content my audience engages with most.",
-        'tech': f"Your {hero_product} is exactly what my tech audience follows.",
-        'pet': f"My pet-owner audience would love to see {hero_product}.",
-    }
+    # When we have AI-enriched hero_product, use more specific language
+    if has_specific_hero:
+        brand_hooks = {
+            'beauty': f"I've been eyeing your {hero_product} — my audience keeps asking for recommendations in this space.",
+            'skincare': f"Your {hero_product} has been on my radar, and my followers are always asking what I use.",
+            'fashion': f"I love the look of your {hero_product} — it fits perfectly with my style content.",
+            'fitness': f"Your {hero_product} is exactly what my fitness audience engages with most.",
+            'food': f"My followers have been asking about {hero_product} after seeing it featured elsewhere.",
+            'wellness': f"Your {hero_product} aligns with the wellness routine content my audience loves.",
+            'supplements': f"I've been researching {hero_product} and my fitness audience would be interested.",
+            'lifestyle': f"Your {hero_product} fits the aesthetic my audience engages with most.",
+            'tech': f"Your {hero_product} is exactly what my tech-focused audience follows.",
+            'pet': f"My pet-owner followers would love to see {hero_product} in action.",
+        }
+    else:
+        brand_hooks = {
+            'beauty': f"Your {hero_product} keeps coming up in my comments as a recommendation request.",
+            'skincare': f"My audience has been asking about products like yours.",
+            'fashion': f"Your pieces fit the aesthetic my audience loves.",
+            'fitness': f"Your {hero_product} is exactly what my fitness audience looks for.",
+            'food': f"My followers keep asking about products like yours.",
+            'wellness': f"Your {hero_product} aligns with what my wellness audience wants.",
+            'supplements': f"My fitness audience is always asking about supplements like yours.",
+            'lifestyle': f"Your brand fits the content my audience engages with most.",
+            'tech': f"Your products are exactly what my tech audience follows.",
+            'pet': f"My pet-owner audience would love to see your products.",
+        }
     brand_hook = brand_hooks.get(niche.lower() if niche else '', brand_hooks.get(category, f"Your {hero_product} fits perfectly with my content."))
 
     # Content format
