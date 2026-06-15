@@ -1230,11 +1230,19 @@ def get_profile():
     brand_id = session.get('brand_id')
 
     if not user_id:
-        app.logger.warning(f"❌ Unauthorized access attempt: No user_id in session, Headers={request.headers}, Session={session}")
-        response = jsonify({'error': 'Unauthorized access.'})
+        app.logger.warning(f"❌ Session expired or invalid: No user_id in session")
+        # Return 401 with clear message for frontend to handle gracefully
+        response = jsonify({
+            'error': 'Session expired',
+            'code': 'SESSION_EXPIRED',
+            'message': 'Your session has expired. Please log in again.',
+            'action': 'redirect_login'
+        })
         response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
         response.headers['Access-Control-Allow-Credentials'] = 'true'
-        return response, 403
+        # Clear invalid session cookie
+        response.set_cookie('session', '', expires=0, httponly=True, secure=True, samesite='None')
+        return response, 401
 
     app.logger.info(f"✅ Fetching profile for user_id={user_id}, role={user_role}, creator_id={creator_id}, brand_id={brand_id}")
 
@@ -2578,8 +2586,34 @@ def get_public_brand_by_slug(slug):
         brand = cursor.fetchone()
 
         if not brand:
+            # Brand not found - try to find similar brands for better UX
+            search_term = slug.replace('-', ' ').replace('_', ' ')
+
+            cursor.execute('''
+                SELECT id, name, slug, logo, min_followers, categories
+                FROM brands
+                WHERE is_visible = true
+                  AND (
+                    LOWER(name) LIKE %s
+                    OR LOWER(slug) LIKE %s
+                  )
+                ORDER BY
+                    CASE WHEN LOWER(slug) = %s THEN 0 ELSE 1 END,
+                    name
+                LIMIT 5
+            ''', (f'%{search_term}%', f'%{search_term}%', slug))
+
+            similar = cursor.fetchall()
             conn.close()
-            return jsonify({'error': 'Brand not found'}), 404
+
+            return jsonify({
+                'error': 'Brand not found',
+                'code': 'BRAND_NOT_FOUND',
+                'message': f"We couldn't find a brand matching '{slug}'.",
+                'slug_searched': slug,
+                'suggestions': similar if similar else [],
+                'redirect': '/brands' if not similar else None
+            }), 404
 
         # Generate SEO metadata
         follower_req = f"{brand['min_followers']:,}+" if brand['min_followers'] else "any follower count"
