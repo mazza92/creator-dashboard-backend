@@ -2448,7 +2448,7 @@ def get_for_you():
             query = f"""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                    b.description, b.category, b.response_rate,
+                    b.description, b.category, b.response_rate, b.price_point, b.price_point,
                     b.min_followers, b.website, b.application_form_url
                 FROM pr_brands b
                 WHERE b.slug IS NOT NULL
@@ -2470,7 +2470,7 @@ def get_for_you():
             query = f"""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                    b.description, b.category, b.response_rate,
+                    b.description, b.category, b.response_rate, b.price_point, b.price_point,
                     b.min_followers, b.website, b.application_form_url
                 FROM pr_brands b
                 WHERE b.slug IS NOT NULL
@@ -2491,7 +2491,7 @@ def get_for_you():
             query = f"""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                    b.description, b.category, b.response_rate,
+                    b.description, b.category, b.response_rate, b.price_point,
                     b.min_followers, b.website, b.application_form_url
                 FROM pr_brands b
                 WHERE b.slug IS NOT NULL
@@ -2512,7 +2512,7 @@ def get_for_you():
             query = f"""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                    b.description, b.category, b.response_rate,
+                    b.description, b.category, b.response_rate, b.price_point,
                     b.min_followers, b.website, b.application_form_url
                 FROM pr_brands b
                 WHERE b.slug IS NOT NULL
@@ -2537,7 +2537,7 @@ def get_for_you():
                 query = f"""
                     SELECT
                         b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                        b.description, b.category, b.response_rate,
+                        b.description, b.category, b.response_rate, b.price_point,
                         b.min_followers, b.website, b.application_form_url
                     FROM pr_brands b
                     WHERE b.slug IS NOT NULL
@@ -2555,7 +2555,7 @@ def get_for_you():
                 query = f"""
                     SELECT
                         b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                        b.description, b.category, b.response_rate,
+                        b.description, b.category, b.response_rate, b.price_point,
                         b.min_followers, b.website, b.application_form_url
                     FROM pr_brands b
                     WHERE b.slug IS NOT NULL
@@ -2572,7 +2572,7 @@ def get_for_you():
                 query = f"""
                     SELECT
                         b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                        b.description, b.category, b.response_rate,
+                        b.description, b.category, b.response_rate, b.price_point,
                         b.min_followers, b.website, b.application_form_url
                     FROM pr_brands b
                     WHERE b.slug IS NOT NULL
@@ -2589,7 +2589,7 @@ def get_for_you():
                 query = f"""
                     SELECT
                         b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                        b.description, b.category, b.response_rate,
+                        b.description, b.category, b.response_rate, b.price_point,
                         b.min_followers, b.website, b.application_form_url
                     FROM pr_brands b
                     WHERE b.slug IS NOT NULL
@@ -2609,15 +2609,18 @@ def get_for_you():
         # Score breakdown: Niche (0-40) + Followers (0-25) + Response (0-20) + Bonus (0-15) = 100 max
 
         # Build related niches map for scoring
-        # NOTE: fitness ≠ wellness - they are distinct categories
+        # Keep relationships tight - only truly related categories
         related_niches = {
             'beauty': ['skincare', 'makeup', 'haircare'],
-            'skincare': ['beauty', 'wellness'],
+            'skincare': ['beauty', 'makeup'],
+            'makeup': ['beauty', 'skincare'],
             'fashion': ['lifestyle', 'accessories'],
-            'lifestyle': ['fashion', 'home'],
-            'fitness': ['athleisure', 'activewear', 'sports'],
-            'wellness': ['skincare', 'supplements', 'self-care'],
-            'food': ['lifestyle', 'kitchen', 'beverages'],
+            'lifestyle': ['fashion', 'home', 'food'],
+            'fitness': ['athleisure', 'activewear', 'sports', 'wellness'],
+            'wellness': ['fitness', 'supplements', 'self-care'],
+            'supplements': ['wellness', 'fitness'],
+            'food': ['lifestyle', 'kitchen', 'beverages', 'food & beverage'],
+            'food & beverage': ['food', 'beverages', 'lifestyle'],
             'tech': ['gaming', 'gadgets'],
             'gaming': ['tech', 'entertainment'],
             'home': ['lifestyle', 'decor'],
@@ -2650,43 +2653,54 @@ def get_for_you():
                 brand_filter_sql += " AND LOWER(b.category) != ALL(%s)"
                 query_params.append(excluded_categories)
 
+            # Add niche relevance filter - only show brands matching creator's niches or related niches
+            all_relevant_niches = list(creator_related) if creator_related else []
+            if all_relevant_niches:
+                brand_filter_sql += " AND LOWER(b.category) = ANY(%s)"
+                query_params.append(all_relevant_niches)
+
             cursor.execute(f"""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                    b.description, b.category, b.response_rate,
+                    b.description, b.category, b.response_rate, b.price_point,
                     b.min_followers, b.max_followers, b.website, b.application_form_url,
                     b.niches AS brand_niches,
-                    (
-                        -- NICHE MATCH (0-40 points)
-                        CASE
-                            WHEN LOWER(b.category) = ANY(%s) THEN 40  -- Exact niche match
-                            WHEN LOWER(b.category) = ANY(%s) THEN 28  -- Related niche
-                            ELSE 10  -- No match baseline
-                        END
-                        -- FOLLOWER FIT (0-25 points)
-                        + CASE
-                            WHEN %s BETWEEN COALESCE(b.min_followers, 0)
-                                AND COALESCE(b.max_followers, 999999999) THEN 25  -- Ideal range
-                            WHEN %s >= COALESCE(b.min_followers, 0)
-                                AND b.max_followers IS NULL THEN 22  -- Above min, no max
-                            WHEN %s >= COALESCE(b.min_followers, 0) * 0.7 THEN 16  -- Within 30%% of min
-                            WHEN %s >= COALESCE(b.min_followers, 0) * 0.5 THEN 10  -- Within 50%% of min
-                            WHEN %s > COALESCE(b.max_followers, 999999999) THEN 8  -- Too big
-                            ELSE 5  -- Far below requirements
-                        END
-                        -- RESPONSE RATE QUALITY (0-20 points)
-                        + CASE
-                            WHEN COALESCE(b.response_rate, 0) >= 50 THEN 20
-                            WHEN COALESCE(b.response_rate, 0) >= 35 THEN 16
-                            WHEN COALESCE(b.response_rate, 0) >= 20 THEN 12
-                            WHEN COALESCE(b.response_rate, 0) >= 10 THEN 8
-                            ELSE 4
-                        END
-                        -- BONUS POINTS (0-15 points)
-                        + CASE WHEN b.has_application_form = true THEN 5 ELSE 0 END
-                        + CASE WHEN b.contact_email IS NOT NULL AND b.contact_email != '' THEN 5 ELSE 0 END
-                        + (RANDOM() * 5)::int  -- Small randomness
-                    )::int AS match_score
+                    -- Match score scaled to 58-91%% range with natural variance
+                    LEAST(91, GREATEST(58, (
+                        58 + (
+                            -- NICHE MATCH (0-12 scaled points)
+                            CASE
+                                WHEN LOWER(b.category) = ANY(%s) THEN 12
+                                WHEN LOWER(b.category) = ANY(%s) THEN 8
+                                ELSE 3
+                            END
+                            -- FOLLOWER FIT (0-9 scaled points)
+                            + CASE
+                                WHEN %s BETWEEN COALESCE(b.min_followers, 0)
+                                    AND COALESCE(b.max_followers, 999999999) THEN 9
+                                WHEN %s >= COALESCE(b.min_followers, 0)
+                                    AND b.max_followers IS NULL THEN 8
+                                WHEN %s >= COALESCE(b.min_followers, 0) * 0.7 THEN 6
+                                WHEN %s >= COALESCE(b.min_followers, 0) * 0.5 THEN 4
+                                WHEN %s > COALESCE(b.max_followers, 999999999) THEN 3
+                                ELSE 2
+                            END
+                            -- RESPONSE RATE (0-7 scaled points)
+                            + CASE
+                                WHEN COALESCE(b.response_rate, 0) >= 50 THEN 7
+                                WHEN COALESCE(b.response_rate, 0) >= 35 THEN 5
+                                WHEN COALESCE(b.response_rate, 0) >= 20 THEN 4
+                                WHEN COALESCE(b.response_rate, 0) >= 10 THEN 2
+                                ELSE 1
+                            END
+                            -- BRAND QUALITY SIGNALS (0-5 scaled points)
+                            + CASE WHEN b.has_application_form = true THEN 2 ELSE 0 END
+                            + CASE WHEN b.contact_email IS NOT NULL AND b.contact_email != '' THEN 1 ELSE 0 END
+                            + CASE WHEN COALESCE(b.price_point, 0) >= 50 THEN 2 ELSE 0 END
+                            -- DETERMINISTIC VARIANCE per brand (0-8 points, prime modulo for spread)
+                            + (b.id %% 9)
+                        )
+                    )))::int AS match_score
                 FROM pr_brands b
                 WHERE b.slug IS NOT NULL
                   AND COALESCE(b.status, 'published') = 'published'
@@ -2703,19 +2717,25 @@ def get_for_you():
             query = f"""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                    b.description, b.category, b.response_rate,
+                    b.description, b.category, b.response_rate, b.price_point,
                     b.min_followers, b.max_followers, b.website, b.application_form_url,
-                    (
-                        30  -- Base score
-                        + CASE
-                            WHEN COALESCE(b.response_rate, 0) >= 50 THEN 25
-                            WHEN COALESCE(b.response_rate, 0) >= 30 THEN 18
-                            WHEN COALESCE(b.response_rate, 0) >= 15 THEN 12
-                            ELSE 5
-                        END
-                        + CASE WHEN b.has_application_form = true THEN 8 ELSE 0 END
-                        + (RANDOM() * 15)::int
-                    )::int AS match_score
+                    -- Match score scaled to 55-82%% range (lower since no profile match)
+                    LEAST(82, GREATEST(55, (
+                        55 + (
+                            -- RESPONSE RATE (0-10 scaled points)
+                            CASE
+                                WHEN COALESCE(b.response_rate, 0) >= 50 THEN 10
+                                WHEN COALESCE(b.response_rate, 0) >= 30 THEN 7
+                                WHEN COALESCE(b.response_rate, 0) >= 15 THEN 5
+                                ELSE 2
+                            END
+                            -- BRAND QUALITY (0-6 scaled points)
+                            + CASE WHEN b.has_application_form = true THEN 3 ELSE 0 END
+                            + CASE WHEN COALESCE(b.price_point, 0) >= 50 THEN 3 ELSE 0 END
+                            -- DETERMINISTIC VARIANCE per brand (0-11 points)
+                            + (b.id %% 12)
+                        )
+                    )))::int AS match_score
                 FROM pr_brands b
                 WHERE b.slug IS NOT NULL
                   AND COALESCE(b.status, 'published') = 'published'
@@ -2764,7 +2784,7 @@ def get_for_you():
         seasonal_query = f"""
             SELECT
                 b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                b.description, b.category, b.response_rate,
+                b.description, b.category, b.response_rate, b.price_point,
                 b.min_followers, b.website, b.application_form_url
             FROM pr_brands b
             WHERE b.slug IS NOT NULL
@@ -2778,6 +2798,28 @@ def get_for_you():
         cursor.execute(seasonal_query, ([c.lower() for c in seasonal_cats], exclude_ids, *sensitive_params))
         seasonal = cursor.fetchall()
 
+        # ── Section 4: New Brands on newcollab ──────────────────────────
+        # 4 most recently added brands, respecting follower cap, sensitive
+        # category exclusions and brands the creator already pitched.
+        # min_follower_cap may be None (50K+ creators) → treat as no cap.
+        newest_follower_cap = min_follower_cap if min_follower_cap else 999999999
+        newest_query = f"""
+            SELECT
+                b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
+                b.description, b.category, b.response_rate, b.price_point,
+                b.min_followers, b.website, b.application_form_url, b.created_at
+            FROM pr_brands b
+            WHERE b.slug IS NOT NULL
+              AND COALESCE(b.status, 'published') = 'published'
+              AND b.id != ALL(%s)
+              AND (b.min_followers IS NULL OR b.min_followers <= %s)
+              {sensitive_clause}
+            ORDER BY b.created_at DESC NULLS LAST
+            LIMIT 4
+        """
+        cursor.execute(newest_query, (exclude_ids, newest_follower_cap, *sensitive_params))
+        newest = cursor.fetchall()
+
         cursor.close()
         conn.close()
 
@@ -2788,6 +2830,7 @@ def get_for_you():
             'seasonal': [dict(r) for r in seasonal],
             'seasonal_reason': seasonal_reasons.get(month, ''),
             'seasonal_month': datetime.now().strftime('%B'),
+            'newest': [dict(r) for r in newest],
             'is_pro': is_pro,
             'has_profile': bool(niches or followers),
             'profile': {
@@ -2801,6 +2844,146 @@ def get_for_you():
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@pr_crm.route('/matched-brands-count', methods=['GET'])
+def get_matched_brands_count():
+    """
+    Count of the creator's matched brands they still need to contact.
+    Powers the "matched brands remaining" notification badge on For You.
+
+    Mirrors the matched-section logic (same niche/follower filtering, same
+    8-brand display cap) so the badge equals what the user sees, then
+    subtracts how many brands they've already contacted. This makes the
+    badge tick down as they pitch (e.g. 8 → 6 after contacting 2), creating
+    the incentive to upgrade and pitch the rest of their matches.
+
+    Returns: { success, count, matched_total, contacted }
+        count          — matched brands left to contact (drives the badge)
+        matched_total  — size of their matched roster (display-capped at 8)
+        contacted      — brands they've already pitched
+    """
+    import json
+
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    MATCHED_DISPLAY_CAP = 8
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Creator niche + follower profile (same resolution as /for-you)
+        cursor.execute("""
+            SELECT c.niche, c.creator_niches, c.creator_followers, c.followers_count,
+                   mk.total_followers AS media_kit_followers
+            FROM creators c
+            LEFT JOIN media_kits mk ON mk.creator_id = c.id
+            WHERE c.id = %s
+        """, (creator_id,))
+        creator = cursor.fetchone()
+
+        foryou_niches = (creator.get('creator_niches') or []) if creator else []
+        signup_niche = creator.get('niche') if creator else None
+        parsed_signup_niches = []
+        if signup_niche:
+            if isinstance(signup_niche, list):
+                parsed_signup_niches = [str(n).lower().strip() for n in signup_niche if n]
+            elif isinstance(signup_niche, str):
+                try:
+                    parsed = json.loads(signup_niche)
+                    if isinstance(parsed, list):
+                        parsed_signup_niches = [str(n).lower().strip() for n in parsed if n]
+                    else:
+                        parsed_signup_niches = [str(parsed).lower().strip()]
+                except Exception:
+                    parsed_signup_niches = [n.strip().lower() for n in signup_niche.split(',') if n.strip()]
+        niches = foryou_niches if foryou_niches else parsed_signup_niches
+
+        followers = 0
+        if creator:
+            followers = (
+                creator.get('creator_followers') or
+                creator.get('media_kit_followers') or
+                creator.get('followers_count') or
+                0
+            )
+        min_follower_cap = get_min_follower_cap(followers)
+
+        # Related niches — keep in sync with the matched section in /for-you
+        related_niches = {
+            'beauty': ['skincare', 'makeup', 'haircare'],
+            'skincare': ['beauty', 'makeup'],
+            'makeup': ['beauty', 'skincare'],
+            'fashion': ['lifestyle', 'accessories'],
+            'lifestyle': ['fashion', 'home', 'food'],
+            'fitness': ['athleisure', 'activewear', 'sports', 'wellness'],
+            'wellness': ['fitness', 'supplements', 'self-care'],
+            'supplements': ['wellness', 'fitness'],
+            'food': ['lifestyle', 'kitchen', 'beverages', 'food & beverage'],
+            'food & beverage': ['food', 'beverages', 'lifestyle'],
+            'tech': ['gaming', 'gadgets'],
+            'gaming': ['tech', 'entertainment'],
+            'home': ['lifestyle', 'decor'],
+        }
+        creator_related = set()
+        for n in (niches or []):
+            n_lower = n.lower()
+            creator_related.add(n_lower)
+            creator_related.update(related_niches.get(n_lower, []))
+
+        # Sensitive-category exclusion (same rule as /for-you)
+        SENSITIVE_CATEGORIES = ['intimacy', 'adult', 'sexual wellness']
+        SENSITIVE_ALLOWED_NICHES = ['beauty', 'wellness', 'lifestyle', 'self-care']
+        creator_niches_lower = [n.lower() for n in (niches or [])]
+        exclude_sensitive = not any(n in SENSITIVE_ALLOWED_NICHES for n in creator_niches_lower)
+        excluded_categories = SENSITIVE_CATEGORIES if exclude_sensitive else []
+
+        # Size of the matched roster (stable — counts the full qualifying pool,
+        # capped at the 8 shown). Mirrors the matched section's filters.
+        where = ["b.slug IS NOT NULL", "COALESCE(b.status, 'published') = 'published'"]
+        params = []
+        if min_follower_cap:
+            where.append("(b.min_followers IS NULL OR b.min_followers <= %s)")
+            params.append(min_follower_cap)
+        if excluded_categories:
+            where.append("LOWER(b.category) != ALL(%s)")
+            params.append(excluded_categories)
+        if creator_related:
+            where.append("LOWER(b.category) = ANY(%s)")
+            params.append(list(creator_related))
+
+        cursor.execute(
+            "SELECT COUNT(*) AS cnt FROM pr_brands b WHERE " + " AND ".join(where),
+            tuple(params),
+        )
+        matched_pool = cursor.fetchone()['cnt']
+        matched_total = min(matched_pool, MATCHED_DISPLAY_CAP)
+
+        # How many brands the creator has already contacted
+        cursor.execute("""
+            SELECT COUNT(DISTINCT brand_id) AS cnt FROM creator_pipeline
+            WHERE creator_id = %s AND (send_confirmed = TRUE OR pitched_at IS NOT NULL)
+        """, (creator_id,))
+        contacted = cursor.fetchone()['cnt']
+
+        remaining = max(0, matched_total - contacted)
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'count': remaining,
+            'matched_total': matched_total,
+            'contacted': contacted,
+        })
+
+    except Exception as e:
+        print(f"Error in get_matched_brands_count: {str(e)}")
+        return jsonify({'success': False, 'error': str(e), 'count': 0}), 500
 
 
 @pr_crm.route('/creator-profile', methods=['PATCH'])
@@ -2831,14 +3014,16 @@ def update_creator_profile():
         set_parts = []
         values = []
         for key, value in updates.items():
-            set_parts.append(f"{key} = %s")
-            values.append(value)
-
-            # Keep niche column in sync when creator_niches is updated
-            # This ensures consistency across the app (pitch generation, wishlist, etc.)
+            # PostgreSQL TEXT[] arrays - psycopg2 handles list adaptation natively
             if key == 'creator_niches' and isinstance(value, list):
+                set_parts.append(f"{key} = %s")
+                values.append(value)
+                # Keep niche column in sync for consistency across the app
                 set_parts.append("niche = %s")
                 values.append(json.dumps(value))
+            else:
+                set_parts.append(f"{key} = %s")
+                values.append(value)
 
         values.append(creator_id)
 
@@ -2850,6 +3035,12 @@ def update_creator_profile():
         """, values)
 
         updated = cursor.fetchone()
+
+        if not updated:
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Creator profile not found'}), 404
+
         conn.commit()
         cursor.close()
         conn.close()
