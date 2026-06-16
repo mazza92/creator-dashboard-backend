@@ -1392,7 +1392,8 @@ def send_campaign(campaign_id):
         elif segment_id == 'power_users':
             recipient_query += " AND COALESCE(c.pitches_sent_total, 0) >= 5"
         elif segment_id == 'specific_users':
-            segment_filters = json.loads(campaign.get('segment_filters') or '{}')
+            raw_filters = campaign.get('segment_filters') or {}
+            segment_filters = raw_filters if isinstance(raw_filters, dict) else json.loads(raw_filters)
             user_ids = [int(uid) for uid in segment_filters.get('user_ids', []) if uid]
             if user_ids:
                 recipient_query += " AND u.id = ANY(%s)"
