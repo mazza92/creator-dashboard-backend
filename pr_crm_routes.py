@@ -30,6 +30,32 @@ def get_min_follower_cap(creator_followers):
         return None  # No cap for 50K+ creators
 
 
+def normalize_niche(niche_str):
+    """
+    Normalize compound niches like "tech & gadgets" into individual components.
+    Returns a list of individual niche terms.
+    Examples:
+        "tech & gadgets" -> ["tech", "gadgets", "tech & gadgets"]
+        "food & beverage" -> ["food", "beverage", "food & beverage"]
+        "fitness" -> ["fitness"]
+    """
+    if not niche_str:
+        return []
+
+    niche_lower = niche_str.lower().strip()
+    result = [niche_lower]  # Always include the original
+
+    # Split by common separators
+    for sep in [' & ', ' and ', '/', ', ']:
+        if sep in niche_lower:
+            parts = [p.strip() for p in niche_lower.split(sep) if p.strip()]
+            result.extend(parts)
+            break
+
+    return list(set(result))  # Dedupe
+
+
+
 def get_db_connection():
     """Get database connection"""
     return psycopg2.connect(
@@ -1491,16 +1517,29 @@ def generate_golden_template_pitch(brand, creator):
         'beauty': ['skincare', 'makeup', 'haircare'],
         'skincare': ['beauty', 'wellness'],
         'fashion': ['lifestyle', 'accessories'],
+        'tech': ['gaming', 'gadgets', 'electronics'],
+        'gadgets': ['tech', 'gaming', 'electronics'],
+        'gaming': ['tech', 'entertainment'],
     }
 
     for n in creator_niches:
-        if n and n.lower() == brand_category:
-            niche = n
+        # Normalize compound niches for matching
+        normalized = normalize_niche(n)
+        for niche_part in normalized:
+            if niche_part == brand_category:
+                niche = n
+                break
+        if niche:
             break
     if not niche:
         for n in creator_niches:
-            if n and n.lower() in related_niches.get(brand_category, []):
-                niche = n
+            # Normalize compound niches for matching
+            normalized = normalize_niche(n)
+            for niche_part in normalized:
+                if niche_part in related_niches.get(brand_category, []):
+                    niche = n
+                    break
+            if niche:
                 break
     if not niche and creator_niches:
         niche = creator_niches[0]
@@ -2171,6 +2210,143 @@ def log_reply(pipeline_id):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@pr_crm.route('/pipeline/bump', methods=['POST'])
+def bump_profile():
+    """
+    Pro feature: Request a manual follow-up from Newcollab team.
+    Adds to queue for admin to send personalized follow-up email to brand.
+    Limited to 2 bumps per Pro user per month.
+    """
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    # Verify Pro subscription
+    subscription = get_subscription_status(creator_id)
+    if subscription not in ['pro', 'elite']:
+        return jsonify({'success': False, 'error': 'Pro subscription required'}), 403
+
+    data = request.get_json() or {}
+    pipeline_id = data.get('pipeline_id')
+    brand_id = data.get('brand_id')
+
+    if not pipeline_id or not brand_id:
+        return jsonify({'success': False, 'error': 'Missing pipeline_id or brand_id'}), 400
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Check bump limit (2 per month)
+        cursor.execute("""
+            SELECT COUNT(*) as bump_count
+            FROM profile_bumps
+            WHERE creator_id = %s
+              AND created_at > DATE_TRUNC('month', CURRENT_DATE)
+        """, (creator_id,))
+        bump_count = cursor.fetchone()['bump_count']
+
+        if bump_count >= 2:
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Monthly bump limit reached (2/month)'}), 400
+
+        # Get creator and brand info for the bump queue
+        cursor.execute("""
+            SELECT c.id, c.username, c.niche, c.followers_count,
+                   u.email as creator_email,
+                   mk.kit_slug
+            FROM creators c
+            JOIN users u ON u.id = c.user_id
+            LEFT JOIN media_kits mk ON mk.creator_id = c.id
+            WHERE c.id = %s
+        """, (creator_id,))
+        creator = cursor.fetchone()
+
+        cursor.execute("""
+            SELECT brand_name, category, pr_email, application_form_url
+            FROM pr_brands WHERE id = %s
+        """, (brand_id,))
+        brand = cursor.fetchone()
+
+        if not creator or not brand:
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Creator or brand not found'}), 404
+
+        # Insert bump request into queue
+        cursor.execute("""
+            INSERT INTO profile_bumps (
+                creator_id, brand_id, pipeline_id,
+                creator_username, creator_niche, creator_followers,
+                creator_email, kit_slug,
+                brand_name, brand_category, brand_email,
+                status, created_at
+            ) VALUES (
+                %s, %s, %s,
+                %s, %s, %s,
+                %s, %s,
+                %s, %s, %s,
+                'pending', NOW()
+            )
+            RETURNING id
+        """, (
+            creator_id, brand_id, pipeline_id,
+            creator.get('username'), creator.get('niche'), creator.get('followers_count'),
+            creator.get('creator_email'), creator.get('kit_slug'),
+            brand.get('brand_name'), brand.get('category'), brand.get('pr_email')
+        ))
+        bump_id = cursor.fetchone()['id']
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'bump_id': bump_id,
+            'bumps_remaining': 2 - (bump_count + 1)
+        })
+
+    except Exception as e:
+        import traceback
+        print(f"Error in bump_profile: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@pr_crm.route('/pipeline/bumps-remaining', methods=['GET'])
+def get_bumps_remaining():
+    """Get remaining bump count for current month."""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            SELECT COUNT(*) as bump_count
+            FROM profile_bumps
+            WHERE creator_id = %s
+              AND created_at > DATE_TRUNC('month', CURRENT_DATE)
+        """, (creator_id,))
+        bump_count = cursor.fetchone()['bump_count']
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'bumps_used': bump_count,
+            'bumps_remaining': max(0, 2 - bump_count)
+        })
+
+    except Exception as e:
+        return jsonify({'success': True, 'bumps_used': 0, 'bumps_remaining': 2})
+
+
 @pr_crm.route('/pipeline/stats', methods=['GET'])
 def get_pipeline_stats():
     """
@@ -2417,7 +2593,8 @@ def get_for_you():
             'wellness': ['skincare', 'supplements', 'self-care'],  # NOT fitness
             'supplements': ['wellness', 'health'],
             'food': ['lifestyle', 'kitchen', 'beverages'],
-            'tech': ['gaming', 'gadgets'],
+            'tech': ['gaming', 'gadgets', 'electronics'],
+            'gadgets': ['tech', 'gaming', 'electronics'],
             'gaming': ['tech', 'entertainment'],
             'home': ['lifestyle', 'decor'],
         }
@@ -2435,9 +2612,11 @@ def get_for_you():
 
         hot_related = set()
         for n in (niches or []):
-            n_lower = n.lower()
-            hot_related.add(n_lower)
-            hot_related.update(related_niches_map.get(n_lower, []))
+            # Normalize compound niches like "tech & gadgets" into ["tech", "gadgets"]
+            normalized = normalize_niche(n)
+            for niche_part in normalized:
+                hot_related.add(niche_part)
+                hot_related.update(related_niches_map.get(niche_part, []))
         hot_niches_list = list(hot_related) if hot_related else None
 
         # Add sensitive category exclusion clause if needed
@@ -2621,17 +2800,21 @@ def get_for_you():
             'supplements': ['wellness', 'fitness'],
             'food': ['lifestyle', 'kitchen', 'beverages', 'food & beverage'],
             'food & beverage': ['food', 'beverages', 'lifestyle'],
-            'tech': ['gaming', 'gadgets'],
+            'tech': ['gaming', 'gadgets', 'electronics'],
+            'gadgets': ['tech', 'gaming', 'electronics'],
             'gaming': ['tech', 'entertainment'],
             'home': ['lifestyle', 'decor'],
         }
 
         # Get related categories for the creator's niches
+        # Normalize compound niches like "tech & gadgets" into ["tech", "gadgets"]
         creator_related = set()
         for n in (niches or []):
-            n_lower = n.lower()
-            creator_related.add(n_lower)
-            creator_related.update(related_niches.get(n_lower, []))
+            # Normalize compound niches first
+            normalized = normalize_niche(n)
+            for niche_part in normalized:
+                creator_related.add(niche_part)
+                creator_related.update(related_niches.get(niche_part, []))
 
         if niches or followers:
             # Build the scoring SQL with real differentiation
@@ -2924,15 +3107,18 @@ def get_matched_brands_count():
             'supplements': ['wellness', 'fitness'],
             'food': ['lifestyle', 'kitchen', 'beverages', 'food & beverage'],
             'food & beverage': ['food', 'beverages', 'lifestyle'],
-            'tech': ['gaming', 'gadgets'],
+            'tech': ['gaming', 'gadgets', 'electronics'],
+            'gadgets': ['tech', 'gaming', 'electronics'],
             'gaming': ['tech', 'entertainment'],
             'home': ['lifestyle', 'decor'],
         }
         creator_related = set()
         for n in (niches or []):
-            n_lower = n.lower()
-            creator_related.add(n_lower)
-            creator_related.update(related_niches.get(n_lower, []))
+            # Normalize compound niches like "tech & gadgets" into ["tech", "gadgets"]
+            normalized = normalize_niche(n)
+            for niche_part in normalized:
+                creator_related.add(niche_part)
+                creator_related.update(related_niches.get(niche_part, []))
 
         # Sensitive-category exclusion (same rule as /for-you)
         SENSITIVE_CATEGORIES = ['intimacy', 'adult', 'sexual wellness']
@@ -3101,12 +3287,17 @@ def get_recent_replies():
             'fashion': ['lifestyle', 'accessories', 'jewelry'],
             'lifestyle': ['fashion', 'home'],
             'pet': ['animals', 'pets'],
-            'tech': ['gaming', 'gadgets'],
+            'tech': ['gaming', 'gadgets', 'electronics'],
+            'gadgets': ['tech', 'gaming', 'electronics'],
             'food': ['cooking', 'recipes', 'kitchen'],
         }
         expanded_niches = set(user_niches_lower)
         for n in user_niches_lower:
-            expanded_niches.update(related_niches.get(n, []))
+            # Normalize compound niches like "tech & gadgets" into ["tech", "gadgets"]
+            normalized = normalize_niche(n)
+            for niche_part in normalized:
+                expanded_niches.add(niche_part)
+                expanded_niches.update(related_niches.get(niche_part, []))
         expanded_niches_list = list(expanded_niches) if expanded_niches else ['']
 
         # Get recent replies from creators in similar niches, matching brand categories
