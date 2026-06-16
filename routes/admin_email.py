@@ -436,6 +436,45 @@ def get_segments():
         return jsonify({'error': str(e)}), 500
 
 
+@admin_email_bp.route('/users/search', methods=['GET'])
+@admin_required
+def search_users():
+    """Search users by email, name or username for individual targeting"""
+    try:
+        q = request.args.get('q', '').strip()
+        if len(q) < 2:
+            return jsonify({'users': []})
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("""
+            SELECT
+                c.id as creator_id,
+                u.id as user_id,
+                u.email,
+                u.first_name,
+                c.username,
+                COALESCE(c.subscription_tier, 'free') as tier,
+                COALESCE(c.followers_count, 0) as followers_count
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE u.unsubscribed_at IS NULL
+              AND (
+                u.email ILIKE %s
+                OR u.first_name ILIKE %s
+                OR c.username ILIKE %s
+              )
+            ORDER BY u.created_at DESC
+            LIMIT 30
+        """, (f'%{q}%', f'%{q}%', f'%{q}%'))
+        users = cursor.fetchall()
+        conn.close()
+        return jsonify({'users': users})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @admin_email_bp.route('/segments/preview', methods=['POST'])
 @admin_required
 def preview_segment():
@@ -492,15 +531,29 @@ def preview_segment():
             """
         elif segment_id == 'free_tier':
             base_query += " AND COALESCE(c.subscription_tier, 'free') = 'free'"
+        elif segment_id == 'specific_users':
+            user_ids = [int(uid) for uid in data.get('user_ids', []) if uid]
+            if user_ids:
+                base_query += " AND u.id = ANY(%s)"
+            else:
+                base_query += " AND FALSE"
 
         # Get total count first
-        count_query = f"SELECT COUNT(*) as total FROM ({base_query}) sub"
-        cursor.execute(count_query)
+        query_params = []
+        if segment_id == 'specific_users' and user_ids:
+            count_query = f"SELECT COUNT(*) as total FROM ({base_query}) sub"
+            cursor.execute(count_query, (user_ids,))
+        else:
+            count_query = f"SELECT COUNT(*) as total FROM ({base_query}) sub"
+            cursor.execute(count_query)
         total_count = cursor.fetchone()['total']
 
         # Get sample users
         base_query += f" ORDER BY u.created_at DESC LIMIT {limit}"
-        cursor.execute(base_query)
+        if segment_id == 'specific_users' and user_ids:
+            cursor.execute(base_query, (user_ids,))
+        else:
+            cursor.execute(base_query)
         users = cursor.fetchall()
 
         conn.close()
@@ -1338,8 +1391,18 @@ def send_campaign(campaign_id):
             recipient_query += " AND c.id IN (SELECT DISTINCT creator_id FROM creator_pipeline WHERE pitched_at IS NOT NULL)"
         elif segment_id == 'power_users':
             recipient_query += " AND COALESCE(c.pitches_sent_total, 0) >= 5"
+        elif segment_id == 'specific_users':
+            segment_filters = json.loads(campaign.get('segment_filters') or '{}')
+            user_ids = [int(uid) for uid in segment_filters.get('user_ids', []) if uid]
+            if user_ids:
+                recipient_query += " AND u.id = ANY(%s)"
+            else:
+                recipient_query += " AND FALSE"
 
-        cursor.execute(recipient_query)
+        if segment_id == 'specific_users' and user_ids:
+            cursor.execute(recipient_query, (user_ids,))
+        else:
+            cursor.execute(recipient_query)
         all_recipients = cursor.fetchall()
 
         if not all_recipients:
