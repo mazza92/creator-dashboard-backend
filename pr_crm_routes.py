@@ -2316,7 +2316,7 @@ def bump_profile():
 
 @pr_crm.route('/pipeline/bumps-remaining', methods=['GET'])
 def get_bumps_remaining():
-    """Get remaining bump count for current month."""
+    """Get remaining bump count for current month and list of bumped pipeline IDs."""
     creator_id = get_creator_id_from_session()
     if not creator_id:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
@@ -2325,6 +2325,7 @@ def get_bumps_remaining():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Get bump count for current month
         cursor.execute("""
             SELECT COUNT(*) as bump_count
             FROM profile_bumps
@@ -2333,17 +2334,26 @@ def get_bumps_remaining():
         """, (creator_id,))
         bump_count = cursor.fetchone()['bump_count']
 
+        # Get all bumped pipeline IDs with their status
+        cursor.execute("""
+            SELECT pipeline_id, status
+            FROM profile_bumps
+            WHERE creator_id = %s
+        """, (creator_id,))
+        bumped_items = {row['pipeline_id']: row['status'] for row in cursor.fetchall()}
+
         cursor.close()
         conn.close()
 
         return jsonify({
             'success': True,
             'bumps_used': bump_count,
-            'bumps_remaining': max(0, 2 - bump_count)
+            'bumps_remaining': max(0, 2 - bump_count),
+            'bumped_items': bumped_items
         })
 
     except Exception as e:
-        return jsonify({'success': True, 'bumps_used': 0, 'bumps_remaining': 2})
+        return jsonify({'success': True, 'bumps_used': 0, 'bumps_remaining': 2, 'bumped_items': {}})
 
 
 @pr_crm.route('/pipeline/stats', methods=['GET'])
