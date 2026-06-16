@@ -2263,7 +2263,7 @@ def bump_profile():
         creator = cursor.fetchone()
 
         cursor.execute("""
-            SELECT brand_name, category, pr_email, application_form_url
+            SELECT brand_name, category, contact_email, application_form_url
             FROM pr_brands WHERE id = %s
         """, (brand_id,))
         brand = cursor.fetchone()
