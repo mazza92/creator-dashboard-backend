@@ -2255,10 +2255,9 @@ def bump_profile():
         cursor.execute("""
             SELECT c.id, c.username, c.niche, c.followers_count,
                    u.email as creator_email,
-                   mk.kit_slug
+                   c.kit_slug
             FROM creators c
             JOIN users u ON u.id = c.user_id
-            LEFT JOIN media_kits mk ON mk.creator_id = c.id
             WHERE c.id = %s
         """, (creator_id,))
         creator = cursor.fetchone()
