@@ -51,6 +51,7 @@ from routes.admin_pr_hunter import admin_pr_hunter_bp
 from routes.admin_brands import admin_brands_bp
 from routes.admin_reports import admin_reports_bp
 from routes.admin_email import admin_email_bp
+from routes.admin_creators import admin_creators_bp
 
 # Initialize Flask app
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -163,6 +164,7 @@ app.register_blueprint(admin_pr_hunter_bp)
 app.register_blueprint(admin_brands_bp)
 app.register_blueprint(admin_reports_bp)
 app.register_blueprint(admin_email_bp)
+app.register_blueprint(admin_creators_bp)
 
 _CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
