@@ -856,12 +856,68 @@ def get_public_kit(slug):
             viewer_ua = request.headers.get('User-Agent', '')[:500]
             referrer = request.headers.get('Referer', '')[:500]
 
-            cursor.execute('''
-                INSERT INTO kit_views (creator_id, viewer_ip, viewer_ua, referrer)
-                VALUES (%s, %s, %s, %s)
-            ''', (creator['id'], viewer_ip, viewer_ua, referrer))
-            conn.commit()
-        except:
+            # Check for tracking token (ref) from pitch-generated URL
+            ref_token = request.args.get('ref')
+            print(f"[KIT_VIEW] Portfolio route - ref token: {ref_token}, username: {slug}")
+
+            if ref_token:
+                import hashlib
+                from datetime import date
+
+                # Look up the pipeline entry for this token to get brand attribution
+                cursor.execute('''
+                    SELECT cp.id as pipeline_id, cp.creator_id, cp.brand_id, pb.brand_name
+                    FROM creator_pipeline cp
+                    JOIN pr_brands pb ON pb.id = cp.brand_id
+                    WHERE cp.kit_token = %s
+                ''', (ref_token,))
+                pipeline = cursor.fetchone()
+                print(f"[KIT_VIEW] Pipeline lookup result: {pipeline}")
+
+                if pipeline:
+                    # Generate IP hash for dedupe (same day)
+                    ip_hash = hashlib.sha256(
+                        f"{viewer_ip}-{date.today()}".encode()
+                    ).hexdigest()
+
+                    # Check for existing view today from same IP
+                    cursor.execute('''
+                        SELECT id, view_count FROM kit_views
+                        WHERE pipeline_id = %s AND ip_hash = %s
+                    ''', (pipeline['pipeline_id'], ip_hash))
+                    existing = cursor.fetchone()
+
+                    if existing:
+                        # Increment view count for repeat view
+                        cursor.execute('''
+                            UPDATE kit_views SET view_count = view_count + 1
+                            WHERE id = %s
+                        ''', (existing['id'],))
+                        print(f"[KIT_VIEW] Updated existing view count for view_id: {existing['id']}")
+                    else:
+                        # New view - insert with brand attribution
+                        cursor.execute('''
+                            INSERT INTO kit_views (creator_id, brand_id, pipeline_id, ip_hash, referrer, viewed_at, view_count)
+                            VALUES (%s, %s, %s, %s, %s, NOW(), 1)
+                        ''', (pipeline['creator_id'], pipeline['brand_id'], pipeline['pipeline_id'], ip_hash, referrer))
+                        print(f"[KIT_VIEW] Inserted new kit_view: creator={pipeline['creator_id']}, brand={pipeline['brand_id']}, brand_name={pipeline['brand_name']}")
+                    conn.commit()
+                else:
+                    # No pipeline found for token, log basic view
+                    cursor.execute('''
+                        INSERT INTO kit_views (creator_id, viewer_ip, viewer_ua, referrer)
+                        VALUES (%s, %s, %s, %s)
+                    ''', (creator['id'], viewer_ip, viewer_ua, referrer))
+                    conn.commit()
+            else:
+                # No ref token, log basic view
+                cursor.execute('''
+                    INSERT INTO kit_views (creator_id, viewer_ip, viewer_ua, referrer)
+                    VALUES (%s, %s, %s, %s)
+                ''', (creator['id'], viewer_ip, viewer_ua, referrer))
+                conn.commit()
+        except Exception as view_err:
+            print(f"[KIT_VIEW] Error logging view: {view_err}")
             pass  # Don't fail if view logging fails
 
         cursor.close()
