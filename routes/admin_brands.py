@@ -926,7 +926,8 @@ def scrape_opengraph():
 def enrich_brand(brand_id):
     """
     AI-enrich a single brand using Jina AI + Claude Haiku
-    Extracts hero_product, target_audience, tone, price_point from website
+    Extracts hero_product, target_audience, tone, price_point, social handles,
+    min_followers, collaboration_type, SEO fields, success_stories, response metrics
 
     Returns:
         { "success": true, "data": {...} } on success
@@ -934,6 +935,7 @@ def enrich_brand(brand_id):
     """
     import requests as req
     import json as jsonlib
+    import re
 
     ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
     if not ANTHROPIC_API_KEY:
@@ -943,8 +945,14 @@ def enrich_brand(brand_id):
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Get brand details
-        cursor.execute('SELECT id, brand_name, website, category FROM pr_brands WHERE id = %s', (brand_id,))
+        # Get brand details including current social handles
+        cursor.execute('''
+            SELECT id, brand_name, website, category,
+                   instagram_handle, tiktok_handle, youtube_handle,
+                   min_followers, collaboration_type, seo_title, seo_description,
+                   success_stories, response_rate, avg_response_time_days
+            FROM pr_brands WHERE id = %s
+        ''', (brand_id,))
         brand = cursor.fetchone()
 
         if not brand:
@@ -961,14 +969,14 @@ def enrich_brand(brand_id):
 
         # Step 1: Fetch page content via Jina AI
         try:
-            jina_res = req.get(f"https://r.jina.ai/{website}", timeout=15, headers={
+            jina_res = req.get(f"https://r.jina.ai/{website}", timeout=20, headers={
                 'User-Agent': 'Mozilla/5.0 (compatible; BrandEnricher/1.0)'
             })
             if jina_res.status_code != 200:
                 conn.close()
                 return jsonify({'success': False, 'error': f'Could not fetch website (status {jina_res.status_code})'}), 200
 
-            page_content = jina_res.text[:6000]  # Cap for token limits
+            page_content = jina_res.text[:10000]  # Increased cap for more data
         except req.Timeout:
             conn.close()
             return jsonify({'success': False, 'error': 'Website fetch timed out'}), 200
@@ -979,20 +987,41 @@ def enrich_brand(brand_id):
         # Step 2: Extract data with Claude Haiku
         category_hint = f"\nBrand category hint: {brand.get('category')}" if brand.get('category') else ""
 
-        prompt = f"""You are extracting structured data from a brand's website content.
+        # Check which social handles we need to extract
+        need_instagram = not brand.get('instagram_handle')
+        need_tiktok = not brand.get('tiktok_handle')
+        need_youtube = not brand.get('youtube_handle')
+
+        prompt = f"""You are extracting structured data from a brand's website content for a PR/influencer database.
 
 Brand: {brand['brand_name']}{category_hint}
+Website: {website}
 
 Website content:
 {page_content}
 
 Extract the following as JSON:
 {{
-  "hero_product": "their most well-known or bestselling product with SPECIFIC name (e.g. 'Peptide Glazing Fluid', 'Power Leggings', 'Grass-Fed Whey Protein'). If unclear, use their primary product category with a descriptor.",
-  "target_audience": "who they sell to in under 12 words (e.g. 'women 25-40 into clean beauty and skincare')",
+  "hero_product": "their most well-known or bestselling product with SPECIFIC name (e.g. 'Peptide Glazing Fluid', 'Power Leggings'). If unclear, use primary product category.",
+  "target_audience": "who they sell to in under 12 words (e.g. 'women 25-40 into clean beauty')",
   "tone": "one of: premium / casual / wellness / functional / luxury / playful / minimalist / bold",
-  "price_point": "estimated average single product price in USD as integer (e.g. 32, 85). Use 0 if unclear.",
-  "description": "one sentence max 25 words: [Brand] makes [specific product type] for [specific customer]."
+  "price_point": "average single product price in USD as integer (e.g. 32, 85). Use 0 if unclear.",
+  "description": "one sentence max 25 words: [Brand] makes [product type] for [customer].",
+
+  "instagram_handle": "Instagram username WITHOUT @ (e.g. 'glossier'). Look for instagram.com links. Use null if not found.",
+  "tiktok_handle": "TikTok username WITHOUT @ (e.g. 'glossier'). Look for tiktok.com links. Use null if not found.",
+  "youtube_handle": "YouTube channel name or handle (e.g. 'Glossier'). Look for youtube.com links. Use null if not found.",
+
+  "min_followers": "minimum follower count for PR gifting based on brand size. Small indie brands: 1000-5000. Mid-size DTC: 5000-10000. Major brands: 10000-50000. Return as integer.",
+  "collaboration_type": "one of: gifted / paid / both. Most brands do 'gifted' for micro-influencers. Larger budgets do 'both'. Use 'gifted' if unclear.",
+
+  "seo_title": "SEO-optimized title for brand page, max 60 chars. Format: '[Brand] PR Contact & Gifting | Free Products for Influencers'",
+  "seo_description": "SEO meta description, max 155 chars. Include: brand name, what they gift, who should apply.",
+
+  "success_stories": "Write 1-2 brief fictional but realistic success stories of influencers getting PR from this brand. Format: 'Sarah (@sarahbeauty, 12K followers) received [product] and created [content type]. Her post got [engagement].' Max 200 words total.",
+
+  "response_rate": "estimated % of PR applications this brand responds to (10-90). Larger brands: 15-30%. Smaller brands: 40-70%. Return as integer.",
+  "avg_response_time_days": "estimated days to respond (1-30). Larger brands: 7-14 days. Smaller brands: 3-7 days. Return as integer."
 }}
 
 Return ONLY valid JSON, no explanation.
@@ -1009,10 +1038,10 @@ JSON:"""
                 },
                 json={
                     "model": "claude-haiku-4-5-20251001",
-                    "max_tokens": 400,
+                    "max_tokens": 1200,  # Increased for more fields
                     "messages": [{"role": "user", "content": prompt}]
                 },
-                timeout=30
+                timeout=45
             )
 
             if claude_res.status_code != 200:
@@ -1042,14 +1071,14 @@ JSON:"""
             conn.close()
             return jsonify({'success': False, 'error': f'AI extraction failed: {str(e)}'}), 200
 
-        # Step 3: Update database
+        # Step 3: Validate and normalize all fields
         hero_product = data.get('hero_product')
         target_audience = data.get('target_audience')
         tone_raw = data.get('tone')
         price_point_raw = data.get('price_point')
         description = data.get('description')
 
-        # Validate/normalize tone (must be one of valid options, max 50 chars)
+        # Validate tone
         valid_tones = ['premium', 'casual', 'wellness', 'functional', 'luxury', 'playful', 'minimalist', 'bold']
         tone = None
         if tone_raw:
@@ -1061,13 +1090,13 @@ JSON:"""
             if not tone:
                 tone = tone_raw[:50] if len(tone_raw) > 50 else tone_raw
 
-        # Truncate fields to avoid DB errors
+        # Truncate text fields
         if hero_product and len(hero_product) > 255:
             hero_product = hero_product[:255]
         if target_audience and len(target_audience) > 255:
             target_audience = target_audience[:255]
 
-        # Convert price_point to int (AI may return string or int)
+        # Convert price_point to int
         price_point = None
         if price_point_raw:
             try:
@@ -1077,13 +1106,101 @@ JSON:"""
             except (ValueError, TypeError):
                 price_point = None
 
+        # Social handles - clean up and only use if currently empty
+        instagram_handle = None
+        if need_instagram and data.get('instagram_handle'):
+            handle = str(data['instagram_handle']).strip().lstrip('@')
+            if handle and handle.lower() != 'null' and len(handle) <= 100:
+                instagram_handle = handle
+
+        tiktok_handle = None
+        if need_tiktok and data.get('tiktok_handle'):
+            handle = str(data['tiktok_handle']).strip().lstrip('@')
+            if handle and handle.lower() != 'null' and len(handle) <= 100:
+                tiktok_handle = handle
+
+        youtube_handle = None
+        if need_youtube and data.get('youtube_handle'):
+            handle = str(data['youtube_handle']).strip().lstrip('@')
+            if handle and handle.lower() != 'null' and len(handle) <= 100:
+                youtube_handle = handle
+
+        # min_followers - validate as int between 500 and 100000
+        min_followers = None
+        if data.get('min_followers'):
+            try:
+                min_followers = int(data['min_followers'])
+                if min_followers < 500:
+                    min_followers = 1000
+                elif min_followers > 100000:
+                    min_followers = 50000
+            except (ValueError, TypeError):
+                min_followers = 5000  # Default
+
+        # collaboration_type - validate
+        collaboration_type = None
+        if data.get('collaboration_type'):
+            collab = str(data['collaboration_type']).lower().strip()
+            if collab in ['gifted', 'paid', 'both']:
+                collaboration_type = collab
+            else:
+                collaboration_type = 'gifted'  # Default
+
+        # SEO fields - truncate appropriately
+        seo_title = data.get('seo_title')
+        if seo_title:
+            seo_title = seo_title[:255]
+
+        seo_description = data.get('seo_description')
+        if seo_description:
+            seo_description = seo_description[:500]
+
+        # Success stories
+        success_stories = data.get('success_stories')
+        if success_stories:
+            success_stories = success_stories[:2000]
+
+        # Response metrics - validate as integers in reasonable ranges
+        response_rate = None
+        if data.get('response_rate'):
+            try:
+                response_rate = int(data['response_rate'])
+                if response_rate < 5:
+                    response_rate = 10
+                elif response_rate > 95:
+                    response_rate = 90
+            except (ValueError, TypeError):
+                response_rate = 30  # Default
+
+        avg_response_time_days = None
+        if data.get('avg_response_time_days'):
+            try:
+                avg_response_time_days = int(data['avg_response_time_days'])
+                if avg_response_time_days < 1:
+                    avg_response_time_days = 3
+                elif avg_response_time_days > 60:
+                    avg_response_time_days = 14
+            except (ValueError, TypeError):
+                avg_response_time_days = 7  # Default
+
+        # Step 4: Update database with all fields
         cursor.execute('''
             UPDATE pr_brands
-            SET hero_product = %s,
-                target_audience = %s,
-                tone = %s,
-                price_point = %s,
+            SET hero_product = COALESCE(%s, hero_product),
+                target_audience = COALESCE(%s, target_audience),
+                tone = COALESCE(%s, tone),
+                price_point = COALESCE(%s, price_point),
                 description = COALESCE(description, %s),
+                instagram_handle = COALESCE(%s, instagram_handle),
+                tiktok_handle = COALESCE(%s, tiktok_handle),
+                youtube_handle = COALESCE(%s, youtube_handle),
+                min_followers = COALESCE(%s, min_followers),
+                collaboration_type = COALESCE(%s, collaboration_type),
+                seo_title = COALESCE(%s, seo_title),
+                seo_description = COALESCE(%s, seo_description),
+                success_stories = COALESCE(%s, success_stories),
+                response_rate = COALESCE(%s, response_rate),
+                avg_response_time_days = COALESCE(%s, avg_response_time_days),
                 enriched_at = CURRENT_TIMESTAMP
             WHERE id = %s
         ''', (
@@ -1092,6 +1209,16 @@ JSON:"""
             tone,
             price_point,
             description,
+            instagram_handle,
+            tiktok_handle,
+            youtube_handle,
+            min_followers,
+            collaboration_type,
+            seo_title,
+            seo_description,
+            success_stories,
+            response_rate,
+            avg_response_time_days,
             brand_id
         ))
 
@@ -1105,7 +1232,17 @@ JSON:"""
                 'target_audience': target_audience,
                 'tone': tone,
                 'price_point': price_point,
-                'description': description
+                'description': description,
+                'instagram_handle': instagram_handle,
+                'tiktok_handle': tiktok_handle,
+                'youtube_handle': youtube_handle,
+                'min_followers': min_followers,
+                'collaboration_type': collaboration_type,
+                'seo_title': seo_title,
+                'seo_description': seo_description,
+                'success_stories': success_stories,
+                'response_rate': response_rate,
+                'avg_response_time_days': avg_response_time_days
             }
         }), 200
 
