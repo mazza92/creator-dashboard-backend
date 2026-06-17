@@ -108,8 +108,16 @@ def _build_where_clause():
     if kit_raw in ('true', 'false'):
         kit = (kit_raw == 'true')
 
-    where_clauses = ["u.unsubscribed_at IS NULL"]
+    where_clauses = ["1=1"]
     params = []
+
+    # Optional filter: unsubscribed=true shows only unsubscribed, false hides them, default shows all
+    unsub_raw = request.args.get('unsubscribed', '').strip().lower()
+    if unsub_raw == 'true':
+        where_clauses.append("u.unsubscribed_at IS NOT NULL")
+    elif unsub_raw == 'false':
+        where_clauses.append("u.unsubscribed_at IS NULL")
+    # default (empty): show everyone
 
     if q:
         where_clauses.append("(u.email ILIKE %s OR u.first_name ILIKE %s OR c.username ILIKE %s)")
@@ -331,7 +339,6 @@ def get_creator_details(creator_id):
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.id = %s
-              AND u.unsubscribed_at IS NULL
         """, (creator_id,))
 
         creator = cursor.fetchone()
