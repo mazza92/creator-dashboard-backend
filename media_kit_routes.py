@@ -616,15 +616,61 @@ def get_public_media_kit(username):
             WHERE username = %s
         ''', (username,))
 
-        # Log view for analytics (optional - for pro users)
+        # Log view for analytics
         viewer_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
         referrer = request.headers.get('Referer', '')
 
+        # Original media_kit_views logging
         cursor.execute('''
             INSERT INTO media_kit_views (media_kit_id, viewer_ip, referrer, viewed_at)
             SELECT id, %s, %s, NOW()
             FROM media_kits WHERE username = %s
         ''', (viewer_ip, referrer, username))
+
+        # Check for tracking token (ref) from pitch-generated URL
+        ref_token = request.args.get('ref')
+        print(f"[KIT_VIEW] Tracking ref token: {ref_token} for username: {username}")
+        if ref_token:
+            import hashlib
+            from datetime import date
+
+            # Look up the pipeline entry for this token to get brand attribution
+            cursor.execute('''
+                SELECT cp.id as pipeline_id, cp.creator_id, cp.brand_id, pb.brand_name
+                FROM creator_pipeline cp
+                JOIN pr_brands pb ON pb.id = cp.brand_id
+                WHERE cp.kit_token = %s
+            ''', (ref_token,))
+            pipeline = cursor.fetchone()
+            print(f"[KIT_VIEW] Pipeline lookup result: {pipeline}")
+
+            if pipeline:
+                # Generate IP hash for dedupe (same day)
+                ip_hash = hashlib.sha256(
+                    f"{viewer_ip}-{date.today()}".encode()
+                ).hexdigest()
+
+                # Check for existing view today from same IP
+                cursor.execute('''
+                    SELECT id, view_count FROM kit_views
+                    WHERE pipeline_id = %s AND ip_hash = %s
+                ''', (pipeline['pipeline_id'], ip_hash))
+                existing = cursor.fetchone()
+
+                if existing:
+                    # Increment view count for repeat view
+                    cursor.execute('''
+                        UPDATE kit_views SET view_count = view_count + 1
+                        WHERE id = %s
+                    ''', (existing['id'],))
+                    print(f"[KIT_VIEW] Updated existing view count for view_id: {existing['id']}")
+                else:
+                    # New view - insert with brand attribution
+                    cursor.execute('''
+                        INSERT INTO kit_views (creator_id, brand_id, pipeline_id, ip_hash, referrer, viewed_at, view_count)
+                        VALUES (%s, %s, %s, %s, %s, NOW(), 1)
+                    ''', (pipeline['creator_id'], pipeline['brand_id'], pipeline['pipeline_id'], ip_hash, referrer))
+                    print(f"[KIT_VIEW] Inserted new kit_view: creator={pipeline['creator_id']}, brand={pipeline['brand_id']}, brand_name={pipeline['brand_name']}")
 
         conn.commit()
         cursor.close()

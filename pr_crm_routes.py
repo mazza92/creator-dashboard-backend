@@ -55,6 +55,16 @@ def normalize_niche(niche_str):
     return list(set(result))  # Dedupe
 
 
+def generate_kit_token(creator_id, brand_id):
+    """
+    Generate a deterministic, unique kit tracking token for a creator/brand pair.
+    Used to track which brand viewed which creator's kit after receiving a pitch.
+    """
+    import hashlib
+    secret = os.getenv('SECRET_KEY', 'fallback-secret-key-change-me')
+    raw = f"{creator_id}-{brand_id}-{secret}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:12]
+
 
 def get_db_connection():
     """Get database connection"""
@@ -978,13 +988,17 @@ def track_pitch():
                   AND quota_email_send_at IS NULL
             ''', (creator_id,))
 
-        # Update pipeline stage to 'pitched' if in pipeline
+        # Generate kit tracking token for this creator/brand pair
+        kit_token = generate_kit_token(creator_id, brand_id)
+        print(f"[TRACK_PITCH] Storing kit_token: {kit_token} for creator_id: {creator_id}, brand_id: {brand_id}")
+
+        # Update pipeline stage to 'pitched' if in pipeline, include kit_token
         cursor.execute('''
-            INSERT INTO creator_pipeline (creator_id, brand_id, stage, pitched_at, created_at, updated_at)
-            VALUES (%s, %s, 'pitched', NOW(), NOW(), NOW())
+            INSERT INTO creator_pipeline (creator_id, brand_id, stage, pitched_at, kit_token, created_at, updated_at)
+            VALUES (%s, %s, 'pitched', NOW(), %s, NOW(), NOW())
             ON CONFLICT (creator_id, brand_id) DO UPDATE
-            SET stage = 'pitched', pitched_at = NOW(), updated_at = NOW()
-        ''', (creator_id, brand_id))
+            SET stage = 'pitched', pitched_at = NOW(), kit_token = COALESCE(creator_pipeline.kit_token, %s), updated_at = NOW()
+        ''', (creator_id, brand_id, kit_token, kit_token))
 
         # Set first_pitch_sent_at if this is their first pitch (for email conversion sequence)
         cursor.execute('''
@@ -1497,17 +1511,27 @@ def generate_golden_template_pitch(brand, creator):
     engagement_rate_raw = creator.get('engagement_rate') or 5
     engagement_rate = round(float(engagement_rate_raw), 1)
 
-    # Niche
+    # Niche - handle various formats (string, JSON string, array)
     creator_niches_raw = creator.get('creator_niches') or creator.get('niche')
     if isinstance(creator_niches_raw, str):
         try:
-            creator_niches = json.loads(creator_niches_raw)
+            parsed = json.loads(creator_niches_raw)
+            if isinstance(parsed, list):
+                # Clean each niche of any remaining quotes/brackets
+                creator_niches = [str(n).strip('"\'[] ') for n in parsed if n]
+            else:
+                creator_niches = [str(parsed).strip('"\'[] ')]
         except:
-            creator_niches = [creator_niches_raw]
+            # Plain string - clean and use as single niche
+            creator_niches = [creator_niches_raw.strip('"\'[] ')]
     elif isinstance(creator_niches_raw, list):
-        creator_niches = creator_niches_raw
+        # Clean each niche of any remaining quotes/brackets
+        creator_niches = [str(n).strip('"\'[] ') for n in creator_niches_raw if n]
     else:
         creator_niches = []
+
+    # Filter out empty values
+    creator_niches = [n for n in creator_niches if n and n.lower() not in ['null', 'none', '']]
 
     brand_category = (brand.get('category') or '').lower()
     niche = None
@@ -1545,6 +1569,20 @@ def generate_golden_template_pitch(brand, creator):
         niche = creator_niches[0]
     if not niche:
         niche = brand_category or 'content'
+
+    # Clean niche value - remove JSON artifacts like brackets and quotes
+    if niche:
+        niche = str(niche).strip()
+        # Remove JSON array formatting if present
+        if niche.startswith('[') and niche.endswith(']'):
+            try:
+                parsed = json.loads(niche)
+                if isinstance(parsed, list) and len(parsed) > 0:
+                    niche = parsed[0]
+            except:
+                niche = niche.strip('[]"\'').split(',')[0].strip().strip('"\'')
+        # Clean any remaining quotes
+        niche = niche.strip('"\'[]')
 
     # Platform
     social_links_raw = creator.get('social_links') or []
@@ -1611,10 +1649,20 @@ def generate_golden_template_pitch(brand, creator):
     # Get short reference
     short_ref = get_short_ref(hero_product, template_key) if has_specific_hero else 'your products'
 
-    # Media kit
+    # Media kit with tracking token
     kit_published = creator.get('kit_published', False)
     username = creator.get('username', creator.get('id', 'creator'))
-    media_kit_url = f"https://newcollab.co/kit/{username}" if kit_published else None
+    if kit_published:
+        # Get IDs from creator/brand dicts for token generation
+        c_id = creator.get('id') or creator.get('creator_id')
+        b_id = brand.get('id') or brand.get('brand_id')
+        if c_id and b_id:
+            kit_token = generate_kit_token(c_id, b_id)
+            media_kit_url = f"https://newcollab.co/kit/{username}?ref={kit_token}"
+        else:
+            media_kit_url = f"https://newcollab.co/kit/{username}"
+    else:
+        media_kit_url = None
 
     # ===== GENERATE PITCH USING TEMPLATES =====
 
@@ -1731,10 +1779,19 @@ def generate_followup_pitch(brand, creator):
     # Concise subject
     subject = f"Quick follow-up re: {brand_name}"
 
-    # Media kit link - only include if kit is published
+    # Media kit link with tracking token - only include if kit is published
     kit_published = creator.get('kit_published', False)
     username = creator.get('username', creator.get('id', 'creator'))
-    media_kit_url = f"https://newcollab.co/kit/{username}" if kit_published else None
+    if kit_published:
+        creator_id = creator.get('id') or creator.get('creator_id')
+        brand_id = brand.get('id') or brand.get('brand_id')
+        if creator_id and brand_id:
+            kit_token = generate_kit_token(creator_id, brand_id)
+            media_kit_url = f"https://newcollab.co/kit/{username}?ref={kit_token}"
+        else:
+            media_kit_url = f"https://newcollab.co/kit/{username}"
+    else:
+        media_kit_url = None
 
     # Concise follow-up body (under 50 words)
     body = f"""Hi,
@@ -2354,6 +2411,109 @@ def get_bumps_remaining():
 
     except Exception as e:
         return jsonify({'success': True, 'bumps_used': 0, 'bumps_remaining': 2, 'bumped_items': {}})
+
+
+@pr_crm.route('/kit-views', methods=['GET'])
+def get_kit_views():
+    """
+    Get kit views with brand attribution for "Who Viewed Your Kit" feature.
+    Free users: Get total count only (teaser)
+    Pro users: Get full list with brand names, timestamps, view counts
+    """
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    try:
+        is_pro = get_subscription_status(creator_id) in ['pro', 'elite']
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        print(f"[KIT_VIEWS_API] Fetching kit views for creator_id: {creator_id}, is_pro: {is_pro}")
+
+        # Get total views this week (for free users teaser)
+        cursor.execute('''
+            SELECT COUNT(*) as total_views
+            FROM kit_views
+            WHERE creator_id = %s
+              AND viewed_at > NOW() - INTERVAL '7 days'
+              AND brand_id IS NOT NULL
+        ''', (creator_id,))
+        total_views = cursor.fetchone()['total_views']
+        print(f"[KIT_VIEWS_API] Total views this week: {total_views}")
+
+        # Get unique brands that viewed (for count display)
+        cursor.execute('''
+            SELECT COUNT(DISTINCT brand_id) as unique_brands
+            FROM kit_views
+            WHERE creator_id = %s
+              AND viewed_at > NOW() - INTERVAL '7 days'
+              AND brand_id IS NOT NULL
+        ''', (creator_id,))
+        unique_brands = cursor.fetchone()['unique_brands']
+
+        if not is_pro:
+            # Free users only get the count (teaser)
+            cursor.close()
+            conn.close()
+            return jsonify({
+                'success': True,
+                'is_pro': False,
+                'views_this_week': total_views,
+                'brands_this_week': unique_brands,
+                'views': []  # Empty list for free users
+            })
+
+        # Pro users get full details
+        cursor.execute('''
+            SELECT
+                kv.id,
+                kv.brand_id,
+                kv.pipeline_id,
+                kv.viewed_at,
+                kv.view_count,
+                pb.brand_name,
+                pb.logo_url,
+                pb.category,
+                cp.stage,
+                cp.replied_at
+            FROM kit_views kv
+            JOIN pr_brands pb ON pb.id = kv.brand_id
+            LEFT JOIN creator_pipeline cp ON cp.id = kv.pipeline_id
+            WHERE kv.creator_id = %s
+              AND kv.brand_id IS NOT NULL
+            ORDER BY kv.viewed_at DESC
+            LIMIT 20
+        ''', (creator_id,))
+        views = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'is_pro': True,
+            'views_this_week': total_views,
+            'brands_this_week': unique_brands,
+            'views': [{
+                'id': v['id'],
+                'brand_id': v['brand_id'],
+                'brand_name': v['brand_name'],
+                'logo_url': v['logo_url'],
+                'category': v['category'],
+                'viewed_at': v['viewed_at'].isoformat() if v['viewed_at'] else None,
+                'view_count': v['view_count'],
+                'has_replied': v['replied_at'] is not None,
+                'pipeline_stage': v['stage']
+            } for v in views]
+        })
+
+    except Exception as e:
+        print(f"Error in get_kit_views: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': True, 'is_pro': False, 'views_this_week': 0, 'brands_this_week': 0, 'views': []})
 
 
 @pr_crm.route('/pipeline/stats', methods=['GET'])
