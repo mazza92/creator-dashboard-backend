@@ -448,7 +448,19 @@ def update_brand(brand_id):
             RETURNING id
         """
 
-        cursor.execute(query, params)
+        try:
+            cursor.execute(query, params)
+        except Exception as db_err:
+            conn.rollback()
+            conn.close()
+            err_str = str(db_err)
+            if 'unique' in err_str.lower() or 'UniqueViolation' in type(db_err).__name__:
+                # Extract which field caused the conflict
+                if 'brand_name' in err_str:
+                    return jsonify({'error': 'A brand with this name already exists. Please use a different name.', 'field': 'brand_name'}), 409
+                return jsonify({'error': 'A duplicate value conflicts with an existing record.', 'field': 'unknown'}), 409
+            raise
+
         result = cursor.fetchone()
 
         if not result:
