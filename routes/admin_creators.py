@@ -121,7 +121,7 @@ def _build_where_clause():
         params.append(f'%{niche}%')
 
     if region:
-        where_clauses.append("COALESCE(c.regions, '[]'::jsonb)::text ILIKE %s")
+        where_clauses.append("COALESCE(c.regions::text, '') ILIKE %s")
         params.append(f'%{region}%')
 
     if tier:
