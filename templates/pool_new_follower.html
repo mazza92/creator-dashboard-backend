@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>New Boost from the Pool!</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f5f5f7; color: #1d1d1f;">
+  <div style="display: none; font-size: 1px; color: #f5f5f7; line-height: 1px; max-height: 0; max-width: 0; opacity: 0; overflow: hidden;">
+    @{{ supporter_username }} just boosted you from the Pool - boost them back!
+  </div>
+
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #f5f5f7;">
+    <tr>
+      <td style="padding: 40px 20px;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 520px; margin: 0 auto; background-color: #ffffff; border-radius: 20px; overflow: hidden;">
+
+          <!-- Logo -->
+          <tr>
+            <td style="padding: 32px 32px 24px; text-align: center;">
+              <img src="https://newcollab.co/newcollab-logo-dark.png" alt="Newcollab" width="120" style="max-width: 120px;">
+            </td>
+          </tr>
+
+          <!-- Content -->
+          <tr>
+            <td style="padding: 0 32px 32px;">
+              <!-- Headline -->
+              <h1 style="font-size: 24px; font-weight: 700; margin: 0 0 16px; text-align: center; color: #1d1d1f;">
+                You got a new follower!
+              </h1>
+
+              <p style="font-size: 16px; line-height: 1.6; color: #1d1d1f; margin: 0 0 24px; text-align: center;">
+                A creator from the Pool just boosted you:
+              </p>
+
+              <!-- Creator Card - Clean admin-style layout -->
+              <div style="background: #f5f5f7; border-radius: 16px; padding: 20px; margin: 0 0 24px;">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                  <tr>
+                    <td style="width: 56px; vertical-align: middle;">
+                      {% if supporter_image %}
+                      <img src="{{ supporter_image }}" alt="@{{ supporter_username }}" style="width: 48px; height: 48px; border-radius: 50%; object-fit: cover;">
+                      {% else %}
+                      <div style="width: 48px; height: 48px; border-radius: 50%; background: linear-gradient(135deg, #7C3AED, #9333EA); color: white; font-size: 20px; font-weight: 600; text-align: center; line-height: 48px;">
+                        {{ supporter_initial }}
+                      </div>
+                      {% endif %}
+                    </td>
+                    <td style="vertical-align: middle; padding-left: 14px;">
+                      <div style="font-size: 17px; font-weight: 700; color: #1d1d1f;">
+                        @{{ supporter_username }}
+                      </div>
+                      {% if supporter_niche %}
+                      <div style="font-size: 14px; color: #86868b; margin-top: 2px;">
+                        {{ supporter_niche }}
+                      </div>
+                      {% endif %}
+                    </td>
+                  </tr>
+                </table>
+              </div>
+
+              <!-- Stats highlight -->
+              {% if total_followers > 0 %}
+              <div style="background: linear-gradient(135deg, #7C3AED, #9333EA); border-radius: 12px; padding: 16px; margin: 0 0 24px; text-align: center;">
+                <span style="font-size: 28px; font-weight: 800; color: white;">{{ total_followers }}</span>
+                <span style="font-size: 14px; color: rgba(255,255,255,0.9); margin-left: 6px;">followers from the Pool</span>
+              </div>
+              {% endif %}
+
+              <!-- CTA Button -->
+              <div style="text-align: center; margin: 28px 0 8px;">
+                <a href="{{ pool_url }}" style="display: inline-block; padding: 14px 28px; background-color: #1d1d1f; color: #ffffff; text-decoration: none; border-radius: 12px; font-weight: 600; font-size: 15px;">
+                  Open Pool
+                </a>
+              </div>
+
+              {% if supporter_social_url %}
+              <div style="text-align: center; margin: 8px 0;">
+                <a href="{{ supporter_social_url }}" style="color: #1d1d1f; font-weight: 600; font-size: 14px; text-decoration: underline;">
+                  Follow @{{ supporter_username }} back →
+                </a>
+              </div>
+              {% endif %}
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="padding: 24px 32px; background-color: #f5f5f7; border-top: 1px solid #e8e8ed;">
+              <p style="font-size: 13px; color: #86868b; margin: 0 0 8px; text-align: center;">
+                You're receiving this because you're active in the Creator Pool.
+              </p>
+              <p style="font-size: 12px; color: #86868b; margin: 0 0 10px; text-align: center;">
+                <a href="mailto:team@newcollab.co" style="color: #86868b; text-decoration: underline;">Help</a>
+                {% if unsubscribe_url %}
+                &nbsp;&middot;&nbsp;
+                <a href="{{ unsubscribe_url }}" style="color: #86868b; text-decoration: underline;">Unsubscribe</a>
+                {% endif %}
+              </p>
+              <p style="font-size: 11px; color: #aeaeb2; margin: 0; text-align: center;">
+                &copy; 2026 Newcollab. All rights reserved.<br>
+                Newcollab Ltd &middot; <a href="https://newcollab.co/privacy-policy" style="color: #aeaeb2; text-decoration: underline;">Privacy Policy</a>
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

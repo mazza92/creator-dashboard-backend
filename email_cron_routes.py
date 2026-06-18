@@ -2087,3 +2087,108 @@ def schedule_quota_email_endpoint():
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# =============================================================================
+# POOL DIGEST EMAIL
+# Sends daily digest of new followers from the Pool
+# =============================================================================
+
+@email_cron_bp.route('/pool-digest', methods=['POST'])
+def send_pool_digest_emails():
+    """
+    Send daily digest emails to creators who received new followers from the Pool.
+    Should be called once per day (e.g., at 9am via cron).
+
+    Only sends to creators who:
+    - Have received at least 1 new follower in the last 24 hours
+    - Haven't exceeded email limits (global cooloff)
+    - Haven't unsubscribed
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Find creators who received followers in the last 24 hours
+        cursor.execute("""
+            SELECT
+                c.id as creator_id,
+                u.id as user_id,
+                u.email,
+                u.first_name,
+                c.username,
+                COUNT(ps.id) as new_followers
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            JOIN pool_supports ps ON ps.target_id = c.id
+            WHERE ps.confirmed_at >= NOW() - INTERVAL '24 hours'
+            AND u.unsubscribed_at IS NULL
+            GROUP BY c.id, u.id, u.email, u.first_name, c.username
+            HAVING COUNT(ps.id) > 0
+        """)
+        recipients = cursor.fetchall()
+
+        sent_count = 0
+        skipped_count = 0
+
+        for recipient in recipients:
+            creator_id = recipient['creator_id']
+
+            # Check global cooloff
+            if not check_global_cooloff(cursor, creator_id):
+                skipped_count += 1
+                continue
+
+            # Get supporter details for the email
+            cursor.execute("""
+                SELECT
+                    c.username,
+                    c.display_name,
+                    c.niche,
+                    c.profile_image_url
+                FROM pool_supports ps
+                JOIN creators c ON c.id = ps.supporter_id
+                WHERE ps.target_id = %s
+                AND ps.confirmed_at >= NOW() - INTERVAL '24 hours'
+                ORDER BY ps.confirmed_at DESC
+                LIMIT 5
+            """, (creator_id,))
+            supporters = cursor.fetchall()
+
+            # Build email context
+            context = {
+                'first_name': recipient['first_name'] or 'Creator',
+                'username': recipient['username'],
+                'new_followers_count': recipient['new_followers'],
+                'supporters': supporters
+            }
+
+            # Send email
+            success, error = send_template_email(
+                to_email=recipient['email'],
+                template_name='pool_digest.html',
+                subject=f"You got {recipient['new_followers']} new follower{'s' if recipient['new_followers'] > 1 else ''} from the Pool",
+                context=context
+            )
+
+            if success:
+                mark_email_sent(cursor, conn, creator_id, 'pool_digest')
+                sent_count += 1
+            else:
+                print(f"[Pool Digest] Failed to send to {recipient['email']}: {error}")
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'sent': sent_count,
+            'skipped': skipped_count,
+            'total_recipients': len(recipients)
+        }), 200
+
+    except Exception as e:
+        print(f"❌ Error in send_pool_digest_emails: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500

@@ -429,6 +429,23 @@ def get_segments():
             'icon': 'user'
         })
 
+        # Kit Unpublished - Creators who haven't published their portfolio
+        cursor.execute("""
+            SELECT COUNT(DISTINCT c.id) as count
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE COALESCE(c.kit_published, false) = false
+            AND u.unsubscribed_at IS NULL
+        """)
+        segments.append({
+            'id': 'kit_unpublished',
+            'name': 'Kit Not Published',
+            'description': 'Creators who haven\'t completed & published their portfolio - nudge to complete',
+            'count': cursor.fetchone()['count'],
+            'icon': 'file-unknown',
+            'highlight': True
+        })
+
         conn.close()
         return jsonify({'segments': segments})
 
@@ -531,6 +548,8 @@ def preview_segment():
             """
         elif segment_id == 'free_tier':
             base_query += " AND COALESCE(c.subscription_tier, 'free') = 'free'"
+        elif segment_id == 'kit_unpublished':
+            base_query += " AND COALESCE(c.kit_published, false) = false"
         elif segment_id == 'specific_users':
             user_ids = [int(uid) for uid in data.get('user_ids', []) if uid]
             if user_ids:
@@ -605,8 +624,15 @@ def create_campaign():
     """Create a new campaign"""
     try:
         data = request.get_json()
+        print(f"[CREATE_CAMPAIGN] Received data: {data}")
+
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # If custom HTML content is provided, don't use template_id (Live Composer mode)
+        template_id = data.get('template_id')
+        if data.get('html_content_override'):
+            template_id = None
 
         cursor.execute("""
             INSERT INTO email_campaigns
@@ -615,7 +641,7 @@ def create_campaign():
             RETURNING id
         """, (
             data['name'],
-            data.get('template_id'),
+            template_id,
             data.get('subject_override'),
             data.get('html_content_override'),
             data.get('segment_type', 'all_active'),
@@ -628,9 +654,13 @@ def create_campaign():
         conn.commit()
         conn.close()
 
+        print(f"[CREATE_CAMPAIGN] Created campaign with id: {campaign_id}")
         return jsonify({'id': campaign_id, 'message': 'Campaign created'})
 
     except Exception as e:
+        import traceback
+        print(f"[CREATE_CAMPAIGN] Error: {e}")
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 
@@ -671,22 +701,27 @@ def _upsert_campaign_recipients(cursor, campaign_id, recipients):
     if not recipients:
         return
 
+    # Deduplicate by email to avoid ON CONFLICT error with duplicate keys in same batch
+    seen_emails = set()
     rows = []
     for r in recipients:
-        rows.append((
-            campaign_id,
-            r['user_id'],
-            r['creator_id'],
-            (r.get('email') or '').strip().lower(),
-            r.get('first_name'),
-            r.get('username'),
-            r.get('niche'),
-            r.get('followers_count') or 0,
-            r.get('tier') or 'free',
-            r.get('pitches_this_week') or 0,
-            r.get('pitches_total') or 0,
-            r.get('brands_saved') or 0,
-        ))
+        email = (r.get('email') or '').strip().lower()
+        if email and email not in seen_emails:
+            seen_emails.add(email)
+            rows.append((
+                campaign_id,
+                r['user_id'],
+                r['creator_id'],
+                email,
+                r.get('first_name'),
+                r.get('username'),
+                r.get('niche'),
+                r.get('followers_count') or 0,
+                r.get('tier') or 'free',
+                r.get('pitches_this_week') or 0,
+                r.get('pitches_total') or 0,
+                r.get('brands_saved') or 0,
+            ))
 
     execute_values(
         cursor,
@@ -804,6 +839,20 @@ def _pick_recipients_for_send(cursor, campaign_id):
     return cursor.fetchall()
 
 
+def _send_with_retry(to_email, subject, html_content, max_retries=3):
+    """Send email with retry logic and exponential backoff for rate limiting."""
+    for attempt in range(max_retries):
+        result = send_email_gmail(to_email, subject, html_content)
+        if result:
+            return True
+        # Check if it's a rate limit / connection issue - retry with backoff
+        if attempt < max_retries - 1:
+            backoff = (attempt + 1) * 10  # 10s, 20s, 30s
+            print(f"[Retry] Attempt {attempt + 1} failed for {to_email}, waiting {backoff}s...")
+            time.sleep(backoff)
+    return False
+
+
 def _send_emails_background(campaign_id, recipients, subject, html_content):
     """Background thread function to send emails with rate limiting."""
     print(f"[Background] Starting to send {len(recipients)} emails for campaign {campaign_id}")
@@ -812,7 +861,9 @@ def _send_emails_background(campaign_id, recipients, subject, html_content):
     cursor = conn.cursor(cursor_factory=RealDictCursor)
 
     BATCH_SIZE = 25
-    DELAY_BETWEEN_EMAILS = 0.8
+    DELAY_BETWEEN_EMAILS = 1.5  # Increased from 0.8 to avoid Gmail rate limits
+    RATE_LIMIT_PAUSE = 30  # Pause every N emails to avoid Gmail connection limits
+    RATE_LIMIT_BATCH = 50  # Pause after this many emails
     sent_count = 0
     failed_count = 0
 
@@ -824,7 +875,8 @@ def _send_emails_background(campaign_id, recipients, subject, html_content):
                 personalized_subject = personalize_text(subject, recipient)
                 personalized_content = personalize_text(html_content, recipient)
 
-                success = send_email_gmail(
+                # Use retry logic for rate limit resilience
+                success = _send_with_retry(
                     to_email=recipient_email,
                     subject=personalized_subject,
                     html_content=personalized_content
@@ -875,7 +927,11 @@ def _send_emails_background(campaign_id, recipients, subject, html_content):
                     conn.commit()
                     print(f"[Background] Progress: {i + 1}/{len(recipients)} processed")
 
-                if i < len(recipients) - 1:
+                # Rate limit pause: longer break every N emails to avoid Gmail connection limits
+                if (i + 1) % RATE_LIMIT_BATCH == 0 and i < len(recipients) - 1:
+                    print(f"[Background] Rate limit pause: {RATE_LIMIT_PAUSE}s after {i + 1} emails...")
+                    time.sleep(RATE_LIMIT_PAUSE)
+                elif i < len(recipients) - 1:
                     time.sleep(DELAY_BETWEEN_EMAILS)
 
             except Exception as e:
@@ -1368,6 +1424,8 @@ def send_campaign(campaign_id):
             WHERE u.unsubscribed_at IS NULL
         """
 
+        user_ids = []  # Initialize before segment checks to avoid NameError
+
         if segment_id == 'new_users_7d':
             recipient_query += " AND u.created_at >= NOW() - INTERVAL '7 days'"
         elif segment_id == 'exploring':
@@ -1391,6 +1449,8 @@ def send_campaign(campaign_id):
             recipient_query += " AND c.id IN (SELECT DISTINCT creator_id FROM creator_pipeline WHERE pitched_at IS NOT NULL)"
         elif segment_id == 'power_users':
             recipient_query += " AND COALESCE(c.pitches_sent_total, 0) >= 5"
+        elif segment_id == 'kit_unpublished':
+            recipient_query += " AND COALESCE(c.kit_published, false) = false"
         elif segment_id == 'specific_users':
             raw_filters = campaign.get('segment_filters') or {}
             segment_filters = raw_filters if isinstance(raw_filters, dict) else json.loads(raw_filters)
@@ -1456,6 +1516,9 @@ def send_campaign(campaign_id):
         })
 
     except Exception as e:
+        import traceback
+        print(f"[SEND_CAMPAIGN] Error: {e}")
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 
