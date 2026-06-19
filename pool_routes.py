@@ -273,14 +273,23 @@ def get_pool_matches():
         already_supported.extend(frontend_exclude)
 
         # Build the matching query with priority scoring
-        # Note: using image_profile instead of profile_image_url, and social_links for handles
-        # Show all creators with social_links, prioritize active ones (have balance or are pro)
-        # Ranking: Pro users always first, then by boost activity (more boosts = higher ranking)
+        # RANKING PHILOSOPHY: Activity > Everything. Keep the Pool 100% active for snowball effect.
+        # 1. Active users (boosted in last 7 days) always rank highest
+        # 2. Pro + Active beats Non-Pro + Active
+        # 3. Active Non-Pro beats Inactive Pro (key change!)
+        # 4. Then by match score and recency
         cursor.execute("""
             WITH boost_counts AS (
-                SELECT supporter_id, COUNT(*) as boosts_given
+                SELECT supporter_id, COUNT(*) as boosts_given,
+                       MAX(confirmed_at) as last_boost_at
                 FROM pool_supports
                 WHERE confirmed_at >= NOW() - INTERVAL '30 days'
+                GROUP BY supporter_id
+            ),
+            recent_activity AS (
+                SELECT supporter_id, COUNT(*) as recent_boosts
+                FROM pool_supports
+                WHERE confirmed_at >= NOW() - INTERVAL '7 days'
                 GROUP BY supporter_id
             ),
             eligible AS (
@@ -290,20 +299,22 @@ def get_pool_matches():
                     c.social_links,
                     COALESCE(pc.balance, 0) as pool_balance,
                     COALESCE(bc.boosts_given, 0) as boosts_given,
+                    COALESCE(ra.recent_boosts, 0) as recent_boosts,
+                    bc.last_boost_at,
                     CASE
                         WHEN LOWER(c.niche) = %s THEN 100
                         WHEN LOWER(c.niche) = ANY(%s) THEN 80
                         WHEN c.regions = %s AND %s IS NOT NULL THEN 60
                         ELSE 40
                     END as match_score,
-                    CASE
-                        WHEN c.subscription_tier = 'pro' THEN 1
-                        WHEN COALESCE(pc.balance, 0) > 0 THEN 1
-                        ELSE 0
-                    END as is_active
+                    -- Activity score: recent boosts in last 7 days (0-10 scale)
+                    LEAST(COALESCE(ra.recent_boosts, 0), 10) as activity_score,
+                    -- Is actively participating (boosted in last 7 days)
+                    CASE WHEN COALESCE(ra.recent_boosts, 0) > 0 THEN 1 ELSE 0 END as is_recently_active
                 FROM creators c
                 LEFT JOIN pool_credits pc ON c.id = pc.creator_id
                 LEFT JOIN boost_counts bc ON c.id = bc.supporter_id
+                LEFT JOIN recent_activity ra ON c.id = ra.supporter_id
                 WHERE c.id != ALL(%s)
                 AND c.kit_published = true
                 AND c.social_links IS NOT NULL
@@ -312,11 +323,21 @@ def get_pool_matches():
             )
             SELECT * FROM eligible
             ORDER BY
-                is_active DESC,
+                -- 1. Recently active users ALWAYS first (boosted in last 7 days)
+                is_recently_active DESC,
+                -- 2. Among active users: Pro + Active > Non-Pro + Active
+                CASE WHEN is_recently_active = 1 AND subscription_tier = 'pro' THEN 2
+                     WHEN is_recently_active = 1 THEN 1
+                     ELSE 0 END DESC,
+                -- 3. More recent activity = higher rank
+                activity_score DESC,
+                -- 4. For inactive users: Pro still gets some priority, but below ALL active users
                 CASE WHEN subscription_tier = 'pro' THEN 1 ELSE 0 END DESC,
-                boosts_given DESC,
+                -- 5. Match score and balance
                 match_score DESC,
                 pool_balance DESC,
+                -- 6. Recency of last boost (even if outside 7 days)
+                last_boost_at DESC NULLS LAST,
                 RANDOM()
             LIMIT %s
         """, (my_niche, adjacent_niches, my_region, my_region, already_supported, limit))
@@ -415,17 +436,26 @@ def get_pool_credits():
         conn.close()
 
         is_pro = credits.get('subscription_tier') == 'pro'
+        streak_days = credits['streak_days'] or 0
+
+        # Calculate daily limit: base 5 + 2 bonus for 3+ day streak
+        base_limit = 5
+        streak_bonus = 2 if streak_days >= 3 else 0
+        daily_limit = base_limit + streak_bonus
 
         return jsonify({
             'balance': credits['balance'] if not is_pro else 999,
             'is_pro': is_pro,
             'lifetime_earned': credits['lifetime_earned'] or 0,
             'lifetime_spent': credits['lifetime_spent'] or 0,
-            'streak_days': credits['streak_days'] or 0,
+            'streak_days': streak_days,
             'last_support_at': credits['last_support_at'].isoformat() if credits['last_support_at'] else None,
             'received_this_week': received['received_this_week'],
             'given_this_week': given['given_this_week'],
-            'given_today': given_today['given_today']
+            'given_today': given_today['given_today'],
+            'daily_limit': daily_limit,
+            'streak_bonus': streak_bonus,
+            'has_streak_bonus': streak_days >= 3
         })
 
     except Exception as e:
@@ -469,14 +499,24 @@ def confirm_support():
             conn.close()
             return jsonify({'error': 'Already boosted this creator'}), 400
 
-        # Check daily limit for free users (3 per day)
+        # Check daily limit for free users
+        # Base: 5/day, Streak bonus: +2 for 3+ day streak = 7 max
         cursor.execute("""
-            SELECT subscription_tier FROM creators WHERE id = %s
+            SELECT c.subscription_tier, COALESCE(pc.streak_days, 0) as streak_days
+            FROM creators c
+            LEFT JOIN pool_credits pc ON c.id = pc.creator_id
+            WHERE c.id = %s
         """, (creator_id,))
         creator_info = cursor.fetchone()
         is_pro = creator_info and creator_info.get('subscription_tier') == 'pro'
+        streak_days = creator_info.get('streak_days', 0) if creator_info else 0
 
         if not is_pro:
+            # Base limit: 5, Streak bonus: +2 if 3+ day streak
+            base_limit = 5
+            streak_bonus = 2 if streak_days >= 3 else 0
+            daily_limit = base_limit + streak_bonus
+
             cursor.execute("""
                 SELECT COUNT(*) as today_count
                 FROM pool_supports
@@ -484,7 +524,7 @@ def confirm_support():
                 AND confirmed_at >= DATE_TRUNC('day', NOW())
             """, (creator_id,))
             daily_count = cursor.fetchone()
-            if daily_count and daily_count['today_count'] >= 3:
+            if daily_count and daily_count['today_count'] >= daily_limit:
                 conn.close()
                 return jsonify({'error': 'Daily limit reached. Come back tomorrow!'}), 429
 
