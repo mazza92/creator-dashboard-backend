@@ -90,6 +90,14 @@ def send_pool_follow_notification(target_user_id, supporter_username):
     except Exception as e:
         print(f"[Pool] Pusher notification error: {e}")
 
+# User IDs to exclude from pool matches (test accounts, team accounts, etc.)
+# These accounts won't appear in the pool for other users, but can still use the pool themselves
+EXCLUDED_USER_IDS = {
+    129, 131, 145, 146, 147, 148, 149, 150, 151,
+    278, 457, 608, 957, 1172, 1280, 1304, 1318,
+    1346, 1443, 1526, 1542, 1611,
+}
+
 # Niche adjacency for matching algorithm
 NICHE_ADJACENCY = {
     'beauty': ['skincare', 'haircare', 'fashion', 'lifestyle'],
@@ -316,6 +324,7 @@ def get_pool_matches():
                 LEFT JOIN boost_counts bc ON c.id = bc.supporter_id
                 LEFT JOIN recent_activity ra ON c.id = ra.supporter_id
                 WHERE c.id != ALL(%s)
+                AND c.user_id != ALL(%s)
                 AND c.kit_published = true
                 AND c.social_links IS NOT NULL
                 AND c.social_links != '[]'
@@ -340,7 +349,7 @@ def get_pool_matches():
                 last_boost_at DESC NULLS LAST,
                 RANDOM()
             LIMIT %s
-        """, (my_niche, adjacent_niches, my_region, my_region, already_supported, limit))
+        """, (my_niche, adjacent_niches, my_region, my_region, already_supported, list(EXCLUDED_USER_IDS), limit))
 
         matches = cursor.fetchall()
         conn.close()
