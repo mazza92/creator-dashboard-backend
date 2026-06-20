@@ -476,7 +476,7 @@ stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
 
 # TikTok Pixel Configuration for server-side tracking
 TIKTOK_ACCESS_TOKEN = os.getenv('TIKTOK_ACCESS_TOKEN')
-TIKTOK_PIXEL_ID = os.getenv('TIKTOK_PIXEL_ID', 'D8RC64JC77U5NRSHKOK0')
+TIKTOK_PIXEL_ID = os.getenv('TIKTOK_PIXEL_ID', 'D8RDMRBC77U5P88O6G70')
 TIKTOK_EVENTS_API_URL = 'https://business-api.tiktok.com/open_api/v1.3/event/track/'
 
 # PayPal Configuration
