@@ -23,6 +23,7 @@ from supabase import create_client, Client
 import traceback
 import json
 import uuid
+import hashlib
 import logging
 import jwt as pyjwt
 import jwt.exceptions
@@ -472,6 +473,11 @@ def favicon(ext):
 
 # Stripe Configuration - must use secret key (sk_), not publishable key (pk_)
 stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
+
+# TikTok Pixel Configuration for server-side tracking
+TIKTOK_ACCESS_TOKEN = os.getenv('TIKTOK_ACCESS_TOKEN')
+TIKTOK_PIXEL_ID = os.getenv('TIKTOK_PIXEL_ID', 'D8RC64JC77U5NRSHKOK0')
+TIKTOK_EVENTS_API_URL = 'https://business-api.tiktok.com/open_api/v1.3/event/track/'
 
 # PayPal Configuration
 #paypalrestsdk.configure({
@@ -7167,6 +7173,74 @@ def confirm_subscription_content(subscription_id):
         conn.rollback()
         return jsonify({"error": str(e)}), 500
 
+
+def send_tiktok_subscribe_event(email, value, currency='USD'):
+    """
+    Send a Subscribe event to TikTok's Conversions API.
+
+    Args:
+        email (str): Customer email address
+        value (float): Subscription value/amount
+        currency (str): Currency code (default: USD)
+
+    Returns:
+        dict: Response from TikTok API or error dict
+    """
+    if not TIKTOK_ACCESS_TOKEN:
+        app.logger.warning('TikTok Access Token not configured. Skipping conversion tracking.')
+        return {'error': 'TIKTOK_ACCESS_TOKEN not set'}
+
+    try:
+        # Hash the email using SHA-256 (required by TikTok for privacy)
+        email_hash = hashlib.sha256(email.lower().strip().encode()).hexdigest()
+
+        # Prepare the event payload
+        payload = {
+            'pixel_code': TIKTOK_PIXEL_ID,
+            'event': 'Subscribe',
+            'event_id': str(uuid.uuid4()),  # Unique event ID for deduplication
+            'timestamp': None,  # TikTok will use server time if not provided
+            'context': {
+                'user': {
+                    'email': email_hash
+                },
+                'ad': {},
+                'page': {}
+            },
+            'properties': {
+                'value': float(value),
+                'currency': currency
+            }
+        }
+
+        # Send the event to TikTok
+        headers = {
+            'Access-Token': TIKTOK_ACCESS_TOKEN,
+            'Content-Type': 'application/json'
+        }
+
+        response = requests.post(
+            TIKTOK_EVENTS_API_URL,
+            headers=headers,
+            json=payload,
+            timeout=10
+        )
+
+        # Log the response
+        if response.status_code == 200:
+            app.logger.info(f'TikTok Subscribe event sent successfully for {email}')
+            return response.json()
+        else:
+            app.logger.error(
+                f'TikTok API error: {response.status_code} - {response.text}'
+            )
+            return {'error': response.text, 'status_code': response.status_code}
+
+    except Exception as e:
+        app.logger.error(f'Failed to send TikTok event: {str(e)}')
+        return {'error': str(e)}
+
+
 @app.route('/webhook/stripe', methods=['POST'])
 def stripe_webhook():
     payload = request.get_data(as_text=True)
@@ -7193,10 +7267,13 @@ def stripe_webhook():
             conn.autocommit = False
             cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-            # Find subscription by transaction_id (payment_intent_id)
+            # Find subscription and customer email by transaction_id (payment_intent_id)
             cursor.execute('''
-                SELECT id, end_date
-                FROM brand_subscriptions WHERE transaction_id = %s AND payment_method = 'stripe'
+                SELECT bs.id, bs.end_date, bs.brand_id, u.email
+                FROM brand_subscriptions bs
+                JOIN brands b ON bs.brand_id = b.id
+                JOIN users u ON b.user_id = u.id
+                WHERE bs.transaction_id = %s AND bs.payment_method = 'stripe'
             ''', (payment_intent_id,))
             subscription = cursor.fetchone()
             if not subscription:
@@ -7221,6 +7298,15 @@ def stripe_webhook():
             ''', (period_end, subscription['id']))
 
             conn.commit()
+
+            # Track subscription conversion in TikTok pixel (server-side)
+            if subscription.get('email'):
+                currency = invoice.get('currency', 'usd').upper()
+                send_tiktok_subscribe_event(
+                    email=subscription['email'],
+                    value=amount,
+                    currency=currency
+                )
 
     return jsonify({"status": "success"}), 200
 
