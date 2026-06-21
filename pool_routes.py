@@ -785,11 +785,11 @@ def get_active_pool_members():
 
         # Get creators who gave a support in the last 7 days
         cursor.execute("""
-            SELECT DISTINCT c.id, c.username, c.username as display_name, c.image_profile as profile_image_url
+            SELECT DISTINCT ON (c.id) c.id, c.username, c.username as display_name, c.image_profile as profile_image_url
             FROM creators c
             JOIN pool_supports ps ON ps.supporter_id = c.id
             WHERE ps.confirmed_at >= NOW() - INTERVAL '7 days'
-            ORDER BY RANDOM()
+            ORDER BY c.id, RANDOM()
             LIMIT 5
         """)
         members = cursor.fetchall()

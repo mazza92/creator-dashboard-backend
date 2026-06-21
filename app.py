@@ -1327,6 +1327,41 @@ def get_profile():
         cursor.close()
         conn.close()
 
+# Event Tracking Endpoint - Logs user interactions for analytics
+@app.route('/api/track-event', methods=['POST', 'OPTIONS'])
+def track_event():
+    """Track user interaction events for Clarity integration and conversion optimization"""
+    if request.method == 'OPTIONS':
+        response = jsonify({'success': True})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 200
+
+    try:
+        data = request.get_json() or {}
+        event = data.get('event')
+        location = data.get('location')
+        user_id = data.get('user_id')
+
+        # Log the event (can be enhanced to store in database later)
+        app.logger.info(f"[TRACKING] Event: {event}, Location: {location}, User: {user_id}")
+
+        # Optional: Store in database if tracking table exists
+        # For now, just return success
+        response = jsonify({'success': True, 'tracked': True})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 200
+
+    except Exception as e:
+        app.logger.error(f"🔥 Error tracking event: {str(e)}")
+        response = jsonify({'success': False, 'error': str(e)})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 500
+
 # Session Data Endpoint - Returns current session contents for debugging and frontend sync
 @app.route('/api/session', methods=['GET', 'OPTIONS'])
 def get_session():
