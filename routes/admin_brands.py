@@ -984,6 +984,44 @@ def enrich_brand(brand_id):
             conn.close()
             return jsonify({'success': False, 'error': f'Website fetch failed: {str(e)}'}), 200
 
+        # Step 1b: Also fetch raw HTML to extract OG image for cover_image_url
+        og_image_url = None
+        try:
+            from bs4 import BeautifulSoup
+            from urllib.parse import urlparse
+            print(f"[AI Enrich] Fetching OG image from: {website}")
+            raw_res = req.get(website, timeout=10, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }, allow_redirects=True)
+            print(f"[AI Enrich] Raw HTML fetch status: {raw_res.status_code}")
+            if raw_res.status_code == 200:
+                soup = BeautifulSoup(raw_res.text, 'html.parser')
+                # Try multiple OG image meta tags
+                og_image = soup.find('meta', property='og:image')
+                if not og_image:
+                    og_image = soup.find('meta', attrs={'name': 'og:image'})
+                if not og_image:
+                    og_image = soup.find('meta', property='twitter:image')
+                if og_image and og_image.get('content'):
+                    img_url = og_image['content']
+                    print(f"[AI Enrich] Found OG image: {img_url}")
+                    # Handle relative URLs
+                    if img_url.startswith('/'):
+                        parsed = urlparse(website)
+                        img_url = f"{parsed.scheme}://{parsed.netloc}{img_url}"
+                    # Handle protocol-relative URLs
+                    elif img_url.startswith('//'):
+                        img_url = f"https:{img_url}"
+                    og_image_url = img_url
+                    print(f"[AI Enrich] Final cover_image_url: {og_image_url}")
+                else:
+                    print(f"[AI Enrich] No OG image meta tag found on {website}")
+            else:
+                print(f"[AI Enrich] Failed to fetch {website}: status {raw_res.status_code}")
+        except Exception as e:
+            # Non-critical, continue without cover image
+            print(f"[AI Enrich] Could not fetch OG image: {str(e)}")
+
         # Step 2: Extract data with Claude Haiku
         category_hint = f"\nBrand category hint: {brand.get('category')}" if brand.get('category') else ""
 
@@ -1007,6 +1045,8 @@ Extract the following as JSON:
   "tone": "one of: premium / casual / wellness / functional / luxury / playful / minimalist / bold",
   "price_point": "average single product price in USD as integer (e.g. 32, 85). Use 0 if unclear.",
   "description": "one sentence max 25 words: [Brand] makes [product type] for [customer].",
+
+  "hero_image_url": "Find the brand's BEST lifestyle/hero banner image URL. PRIORITY: 1) Homepage hero banner showing people using products 2) Campaign photos with models/real customers 3) Bestseller lifestyle imagery 4) Brand ambassador content. MUST BE: Full URL (https://...), LARGE image (look for width=1000+ or 'hero'/'banner'/'lifestyle' in filename), Shows PEOPLE with products OR premium product lifestyle shot. AVOID: Small graphics (width<500), logos, icons, UI elements, plain product cutouts on white background, thumbnails. Return null if no quality lifestyle/hero image found.",
 
   "instagram_handle": "Instagram username WITHOUT @ (e.g. 'glossier'). Look for instagram.com links. Use null if not found.",
   "tiktok_handle": "TikTok username WITHOUT @ (e.g. 'glossier'). Look for tiktok.com links. Use null if not found.",
@@ -1077,6 +1117,32 @@ JSON:"""
         tone_raw = data.get('tone')
         price_point_raw = data.get('price_point')
         description = data.get('description')
+
+        # Extract AI-sourced hero image if OG image not found
+        ai_hero_image = data.get('hero_image_url')
+        if ai_hero_image and ai_hero_image.lower() != 'null' and ai_hero_image.startswith('http'):
+            # Validate image quality - check for width parameter in URL
+            is_valid_size = True
+            import re
+            width_match = re.search(r'width[=_](\d+)', ai_hero_image.lower())
+            if width_match:
+                width = int(width_match.group(1))
+                if width < 400:
+                    print(f"[AI Enrich] Rejecting small image (width={width}): {ai_hero_image}")
+                    is_valid_size = False
+                else:
+                    # Upgrade to larger size if possible (Shopify CDN pattern)
+                    ai_hero_image = re.sub(r'width=\d+', 'width=1200', ai_hero_image)
+                    print(f"[AI Enrich] Upgraded image to width=1200: {ai_hero_image}")
+
+            # Use AI-sourced image if OG image wasn't found and size is valid
+            if is_valid_size and not og_image_url:
+                og_image_url = ai_hero_image
+                print(f"[AI Enrich] Using AI-sourced hero image: {og_image_url}")
+            elif og_image_url:
+                print(f"[AI Enrich] OG image already found, ignoring AI suggestion: {ai_hero_image}")
+        else:
+            print(f"[AI Enrich] AI did not find a suitable hero image")
 
         # Validate tone
         valid_tones = ['premium', 'casual', 'wellness', 'functional', 'luxury', 'playful', 'minimalist', 'bold']
@@ -1201,6 +1267,7 @@ JSON:"""
                 success_stories = COALESCE(%s, success_stories),
                 response_rate = COALESCE(%s, response_rate),
                 avg_response_time_days = COALESCE(%s, avg_response_time_days),
+                cover_image_url = COALESCE(%s, cover_image_url),
                 enriched_at = CURRENT_TIMESTAMP
             WHERE id = %s
         ''', (
@@ -1219,6 +1286,7 @@ JSON:"""
             success_stories,
             response_rate,
             avg_response_time_days,
+            og_image_url,
             brand_id
         ))
 
@@ -1242,7 +1310,8 @@ JSON:"""
                 'seo_description': seo_description,
                 'success_stories': success_stories,
                 'response_rate': response_rate,
-                'avg_response_time_days': avg_response_time_days
+                'avg_response_time_days': avg_response_time_days,
+                'cover_image_url': og_image_url
             }
         }), 200
 
