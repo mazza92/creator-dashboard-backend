@@ -2756,9 +2756,12 @@ def get_for_you():
         related_niches_map = {
             'beauty': ['skincare', 'makeup', 'haircare'],
             'skincare': ['beauty', 'wellness'],
-            'fashion': ['lifestyle', 'accessories'],
+            'fashion': ['lifestyle', 'accessories', 'activewear'],
             'lifestyle': ['fashion', 'home'],
             'fitness': ['athleisure', 'activewear', 'sports'],  # NOT wellness
+            'activewear': ['fitness', 'athleisure', 'sports', 'fashion'],
+            'athleisure': ['fitness', 'activewear', 'sports', 'fashion'],
+            'sports': ['fitness', 'activewear', 'athleisure'],
             'wellness': ['skincare', 'supplements', 'self-care'],  # NOT fitness
             'supplements': ['wellness', 'health'],
             'food': ['lifestyle', 'kitchen', 'beverages'],
@@ -2962,9 +2965,12 @@ def get_for_you():
             'beauty': ['skincare', 'makeup', 'haircare'],
             'skincare': ['beauty', 'makeup'],
             'makeup': ['beauty', 'skincare'],
-            'fashion': ['lifestyle', 'accessories'],
+            'fashion': ['lifestyle', 'accessories', 'activewear'],
             'lifestyle': ['fashion', 'home', 'food'],
             'fitness': ['athleisure', 'activewear', 'sports', 'wellness'],
+            'activewear': ['fitness', 'athleisure', 'sports', 'wellness', 'fashion'],
+            'athleisure': ['fitness', 'activewear', 'sports', 'fashion'],
+            'sports': ['fitness', 'activewear', 'athleisure'],
             'wellness': ['fitness', 'supplements', 'self-care'],
             'supplements': ['wellness', 'fitness'],
             'food': ['lifestyle', 'kitchen', 'beverages', 'food & beverage'],
@@ -3098,6 +3104,30 @@ def get_for_you():
                 LIMIT 8
             """
             cursor.execute(query, (exclude_ids, default_max_followers, *sensitive_params))
+            matched = cursor.fetchall()
+
+        # Fallback: if 0 matched brands, return popular brands regardless of niche
+        # Never leave user with an empty For You page
+        if len(matched) == 0:
+            fallback_query = f"""
+                SELECT
+                    b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
+                    b.description, b.category, b.response_rate, b.price_point,
+                    b.min_followers, b.website, b.application_form_url,
+                    65 AS match_score
+                FROM pr_brands b
+                WHERE b.slug IS NOT NULL
+                  AND COALESCE(b.status, 'published') = 'published'
+                  AND b.id != ALL(%s)
+                  {("AND (b.min_followers IS NULL OR b.min_followers <= %s)" if min_follower_cap else "")}
+                  {sensitive_clause}
+                ORDER BY b.response_rate DESC NULLS LAST, RANDOM()
+                LIMIT 8
+            """
+            if min_follower_cap:
+                cursor.execute(fallback_query, (exclude_ids, min_follower_cap, *sensitive_params))
+            else:
+                cursor.execute(fallback_query, (exclude_ids, *sensitive_params))
             matched = cursor.fetchall()
 
         # ── Section 3: Right Season ──────────────────────────────
@@ -3269,9 +3299,12 @@ def get_matched_brands_count():
             'beauty': ['skincare', 'makeup', 'haircare'],
             'skincare': ['beauty', 'makeup'],
             'makeup': ['beauty', 'skincare'],
-            'fashion': ['lifestyle', 'accessories'],
+            'fashion': ['lifestyle', 'accessories', 'activewear'],
             'lifestyle': ['fashion', 'home', 'food'],
             'fitness': ['athleisure', 'activewear', 'sports', 'wellness'],
+            'activewear': ['fitness', 'athleisure', 'sports', 'wellness', 'fashion'],
+            'athleisure': ['fitness', 'activewear', 'sports', 'fashion'],
+            'sports': ['fitness', 'activewear', 'athleisure'],
             'wellness': ['fitness', 'supplements', 'self-care'],
             'supplements': ['wellness', 'fitness'],
             'food': ['lifestyle', 'kitchen', 'beverages', 'food & beverage'],
