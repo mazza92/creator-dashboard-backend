@@ -1010,7 +1010,7 @@ def track_pitch():
         ''', (creator_id, brand_id, kit_token, tracking_token, kit_token, tracking_token))
 
         result = cursor.fetchone()
-        final_tracking_token = result[0] if result else tracking_token
+        final_tracking_token = result['tracking_token'] if result else tracking_token
 
         # Set first_pitch_sent_at if this is their first pitch (for email conversion sequence)
         cursor.execute('''
@@ -1718,7 +1718,7 @@ def generate_golden_template_pitch(brand, creator):
 {ask}"""
 
     if media_kit_url:
-        body += f"\n\n{media_kit_url}"
+        body += f"\n\nPlease find my portfolio here: {media_kit_url}"
 
     if creator_name:
         body += f"\n\n{creator_name}"
@@ -1820,7 +1820,7 @@ Just following up on my pitch from last week. Still interested in featuring your
 
     # Add media kit link if published
     if media_kit_url:
-        body += f"\n\n{media_kit_url}"
+        body += f"\n\nPlease find my portfolio here: {media_kit_url}"
 
     body += f"""
 
