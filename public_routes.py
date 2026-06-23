@@ -85,6 +85,67 @@ def unsubscribe():
 # ── End unsubscribe ───────────────────────────────────────────────────────────
 
 
+# ── Email Open Tracking Pixel ─────────────────────────────────────────────────
+
+# 1x1 transparent PNG
+TRACKING_PIXEL = bytes([
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+    0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00,
+    0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+    0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82
+])
+
+
+@public_bp.route('/t/<token>.png', methods=['GET'])
+def track_email_open(token):
+    """
+    Tracking pixel endpoint. When brand opens email containing this pixel,
+    we log the open event on the creator's pipeline.
+    """
+    try:
+        from app import get_db_connection
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        # Update pipeline entry - mark as opened
+        cur.execute("""
+            UPDATE creator_pipeline
+            SET email_opened = true,
+                email_opened_at = COALESCE(email_opened_at, NOW()),
+                email_open_count = COALESCE(email_open_count, 0) + 1,
+                updated_at = NOW()
+            WHERE tracking_token = %s
+            RETURNING id, creator_id, brand_id
+        """, (token,))
+
+        result = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        if result:
+            print(f"[tracking] Email opened: pipeline_id={result[0]}, creator={result[1]}, brand={result[2]}")
+
+    except Exception as e:
+        print(f"[tracking] Error logging open for token {token}: {e}")
+
+    # Always return the pixel (even on error)
+    return Response(
+        TRACKING_PIXEL,
+        mimetype='image/png',
+        headers={
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0'
+        }
+    )
+
+
+# ── End Email Tracking ────────────────────────────────────────────────────────
+
+
 def _estimate_package_value(category, brand_name=None):
     """
     Estimate average PR package value by category and brand positioning.

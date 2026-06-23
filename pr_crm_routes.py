@@ -992,13 +992,25 @@ def track_pitch():
         kit_token = generate_kit_token(creator_id, brand_id)
         print(f"[TRACK_PITCH] Storing kit_token: {kit_token} for creator_id: {creator_id}, brand_id: {brand_id}")
 
-        # Update pipeline stage to 'pitched' if in pipeline, include kit_token
+        # Generate email tracking token (for open tracking pixel)
+        import uuid
+        tracking_token = str(uuid.uuid4()).replace('-', '')[:32]
+
+        # Update pipeline stage to 'pitched' if in pipeline, include kit_token and tracking_token
         cursor.execute('''
-            INSERT INTO creator_pipeline (creator_id, brand_id, stage, pitched_at, kit_token, created_at, updated_at)
-            VALUES (%s, %s, 'pitched', NOW(), %s, NOW(), NOW())
+            INSERT INTO creator_pipeline (creator_id, brand_id, stage, pitched_at, kit_token, tracking_token, created_at, updated_at)
+            VALUES (%s, %s, 'pitched', NOW(), %s, %s, NOW(), NOW())
             ON CONFLICT (creator_id, brand_id) DO UPDATE
-            SET stage = 'pitched', pitched_at = NOW(), kit_token = COALESCE(creator_pipeline.kit_token, %s), updated_at = NOW()
-        ''', (creator_id, brand_id, kit_token, kit_token))
+            SET stage = 'pitched',
+                pitched_at = NOW(),
+                kit_token = COALESCE(creator_pipeline.kit_token, %s),
+                tracking_token = COALESCE(creator_pipeline.tracking_token, %s),
+                updated_at = NOW()
+            RETURNING tracking_token
+        ''', (creator_id, brand_id, kit_token, tracking_token, kit_token, tracking_token))
+
+        result = cursor.fetchone()
+        final_tracking_token = result[0] if result else tracking_token
 
         # Set first_pitch_sent_at if this is their first pitch (for email conversion sequence)
         cursor.execute('''
@@ -1011,11 +1023,17 @@ def track_pitch():
         cursor.close()
         conn.close()
 
+        # Build tracking pixel URL
+        api_base = os.getenv('API_BASE_URL', 'https://api.newcollab.co')
+        tracking_pixel_url = f"{api_base}/api/public/t/{final_tracking_token}.png"
+
         return jsonify({
             'success': True,
             'message': 'Pitch tracked successfully',
             'pitches_used': pitches_used + 1,
-            'tier': tier
+            'tier': tier,
+            'tracking_token': final_tracking_token,
+            'tracking_pixel_url': tracking_pixel_url
         })
 
     except Exception as e:
@@ -1861,6 +1879,7 @@ def get_pipeline_full():
                 cp.package_confirmed_at, cp.package_value,
                 cp.expected_delivery, cp.received_at, cp.notes,
                 cp.created_at AS saved_at,
+                cp.email_opened, cp.email_opened_at, cp.email_open_count,
                 pb.id AS brand_id, pb.brand_name, pb.category,
                 pb.logo_url, pb.website AS domain, pb.response_rate,
                 pb.contact_email AS pr_email, pb.instagram_handle, pb.has_application_form,

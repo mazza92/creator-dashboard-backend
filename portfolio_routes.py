@@ -889,6 +889,17 @@ def get_public_kit(slug):
                             VALUES (%s, %s, %s, %s, %s, NOW())
                         ''', (pipeline['creator_id'], pipeline['brand_id'], pipeline['pipeline_id'], viewer_ip, referrer))
                         print(f"[KIT_VIEW] Inserted new kit_view: creator={pipeline['creator_id']}, brand={pipeline['brand_id']}, brand_name={pipeline['brand_name']}")
+
+                        # Mark pipeline entry as "opened" - brand viewed the media kit
+                        cursor.execute('''
+                            UPDATE creator_pipeline
+                            SET email_opened = true,
+                                email_opened_at = COALESCE(email_opened_at, NOW()),
+                                email_open_count = COALESCE(email_open_count, 0) + 1,
+                                updated_at = NOW()
+                            WHERE id = %s
+                        ''', (pipeline['pipeline_id'],))
+                        print(f"[KIT_VIEW] Marked pipeline {pipeline['pipeline_id']} as opened")
                     conn.commit()
                 else:
                     # No pipeline found for token, log basic view
