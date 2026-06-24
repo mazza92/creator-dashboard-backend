@@ -1077,9 +1077,20 @@ def generate_pitch():
             conn.close()
             return jsonify({'success': False, 'error': 'Brand not found'}), 404
 
-        # Get creator profile
+        # Get creator profile with collab count for tiered pitch generation
         cursor.execute('''
-            SELECT c.*, u.first_name, u.last_name, u.email
+            SELECT c.*, u.first_name, u.last_name, u.email,
+                   (SELECT COUNT(*) FROM creator_pipeline cp
+                    WHERE cp.creator_id = c.id
+                    AND cp.stage IN ('success', 'responded')) AS collab_count,
+                   (SELECT cp2.brand_id FROM creator_pipeline cp2
+                    JOIN pr_brands pb ON pb.id = cp2.brand_id
+                    WHERE cp2.creator_id = c.id AND cp2.stage = 'success'
+                    ORDER BY cp2.updated_at DESC LIMIT 1) AS last_collab_brand_id,
+                   (SELECT pb.brand_name FROM creator_pipeline cp2
+                    JOIN pr_brands pb ON pb.id = cp2.brand_id
+                    WHERE cp2.creator_id = c.id AND cp2.stage = 'success'
+                    ORDER BY cp2.updated_at DESC LIMIT 1) AS last_collab_brand_name
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.id = %s
@@ -1119,9 +1130,223 @@ def generate_pitch():
 
 
 # ============================================
-# SEMI-CUSTOM PITCH TEMPLATE ARCHITECTURE
-# Category-based templates with dynamic slots
-# AI fills proven sentences, doesn't invent content
+# TIERED PITCH GENERATION SYSTEM
+# Different strategies based on creator tier
+# ============================================
+
+# Tier definitions:
+# - Tier 1 (Starter): 0-999 followers, 0 past collabs
+# - Tier 2 (Growing): 1k-9.9k followers OR has 1+ past collab
+# - Tier 3 (Established): 10k+ followers
+
+def compute_creator_tier(followers, collab_count):
+    """
+    Compute creator tier based on followers and collab history.
+
+    Returns: (tier_number, tier_label)
+    - Tier 1: Starter (0-999 followers, no collabs)
+    - Tier 2: Growing (1k-9.9k followers OR has collabs)
+    - Tier 3: Established (10k+ followers)
+    """
+    followers = followers or 0
+    collab_count = collab_count or 0
+
+    # Tier 3: 10k+ followers (regardless of collab history)
+    if followers >= 10000:
+        return (3, 'established')
+
+    # Tier 2: 1k-9.9k with collabs OR under 1k with collabs
+    if followers >= 1000 or collab_count >= 1:
+        return (2, 'growing')
+
+    # Tier 1: Under 1k, no collabs
+    return (1, 'starter')
+
+
+# Banned phrases that make pitches sound AI-generated
+BANNED_PHRASES = [
+    'in today\'s world', 'unlock', 'leverage', 'elevate', 'game changer',
+    'game-changer', 'dive into', 'seamless', 'unparalleled', 'in the realm of',
+    'delve', 'cutting-edge', 'synergy', 'revolutionary', 'disruptive',
+    'best-in-class', 'world-class', 'state-of-the-art', 'next-level',
+    'take it to the next level', 'resonate', 'impactful', 'holistic',
+]
+
+# Phrases that Tier 1 (Starter) creators should NOT use
+TIER1_BANNED_PHRASES = [
+    'my followers ask', 'my audience', 'my followers', 'my comments ask',
+    'followers ask', 'audience loves', 'followers love', 'community loves',
+    'followers trust', 'audience trusts', 'followers expect', 'audience expects',
+    'followers screenshot', 'followers save', 'followers engage',
+    'comments ask', 'DMs asking', 'keep asking me',
+]
+
+
+def validate_pitch_content(body, tier):
+    """
+    Validate pitch content for banned phrases.
+    Returns (is_valid, issues_list)
+    """
+    issues = []
+    body_lower = body.lower()
+
+    # Check for em dashes (AI writing signature)
+    if '—' in body:
+        issues.append('Contains em dash (—)')
+
+    # Check for general banned phrases
+    for phrase in BANNED_PHRASES:
+        if phrase.lower() in body_lower:
+            issues.append(f'Contains banned phrase: "{phrase}"')
+
+    # Tier 1 specific: no audience/follower claims
+    if tier == 1:
+        for phrase in TIER1_BANNED_PHRASES:
+            if phrase.lower() in body_lower:
+                issues.append(f'Tier 1 cannot claim: "{phrase}"')
+
+    return (len(issues) == 0, issues)
+
+
+# ============================================
+# TIER-SPECIFIC TEMPLATES
+# ============================================
+
+# TIER 1 (Starter): Focus on content creation skills, NOT audience
+# These templates emphasize UGC value and content quality
+TIER1_LINE1_TEMPLATES = {
+    'skincare': [
+        "I create skincare content that brands use for their own ads and social.",
+        "I make before-and-after skincare content with real lighting and real results.",
+    ],
+    'beauty': [
+        "I create beauty content that works as UGC for brand social and ads.",
+        "I film clean, well-lit beauty tutorials that brands can repurpose.",
+    ],
+    'wellness': [
+        "I create wellness content that brands use for authentic social proof.",
+        "I make routine-based wellness videos with real product integration.",
+    ],
+    'fitness': [
+        "I create workout content that shows products in real training scenarios.",
+        "I film fitness content that brands can use for UGC ads and social.",
+    ],
+    'fashion': [
+        "I create styled content that shows how pieces actually look and move.",
+        "I film outfit content with clean backgrounds and natural movement.",
+    ],
+    'food': [
+        "I create recipe content that shows products in real kitchen use.",
+        "I make food content with clear process shots and final plating.",
+    ],
+    'supplement': [
+        "I create routine content showing how supplements fit into a real day.",
+        "I film morning-stack videos that brands use for authentic social proof.",
+    ],
+    'default': [
+        "I create content that brands use for their social and UGC ads.",
+        "I make product content with clean visuals and authentic integration.",
+    ],
+}
+
+# TIER 2 (Growing): Reference past collabs and engagement
+TIER2_LINE1_TEMPLATES = {
+    'skincare': [
+        "I've partnered with skincare brands before and my content drives real engagement.",
+        "I create skincare content with {engagement_rate}% engagement from followers who actually buy.",
+    ],
+    'beauty': [
+        "My beauty content consistently drives engagement and saves from followers ready to purchase.",
+        "I've worked with beauty brands and know how to create content that converts.",
+    ],
+    'wellness': [
+        "I create wellness content that my {followers_str} followers actively engage with.",
+        "My wellness audience has {engagement_rate}% engagement and trusts my recommendations.",
+    ],
+    'fitness': [
+        "My fitness content reaches {followers_str} followers who engage at {engagement_rate}%.",
+        "I've partnered with fitness brands and my audience responds to gear recommendations.",
+    ],
+    'fashion': [
+        "My fashion content drives {engagement_rate}% engagement from style-focused followers.",
+        "I create fashion content that {followers_str} followers actively save and shop from.",
+    ],
+    'food': [
+        "My food content reaches {followers_str} followers who try products I feature.",
+        "I create recipe content with {engagement_rate}% engagement from foodies who cook along.",
+    ],
+    'default': [
+        "I create content for {followers_str} followers with {engagement_rate}% engagement.",
+        "My content drives real engagement from followers who act on recommendations.",
+    ],
+}
+
+# TIER 3 (Established): Lead with audience data and past partners
+TIER3_LINE1_TEMPLATES = {
+    'skincare': [
+        "Your {product} {verb_is} what my {followers_str} skincare followers ask about.",
+        "The {product} {verb_has} the formula my {followers_str} audience looks for.",
+    ],
+    'beauty': [
+        "Your {product} {verb_is} what my {followers_str} beauty followers request.",
+        "The {product} {verb_has} the quality my {followers_str} audience expects.",
+    ],
+    'wellness': [
+        "Your {product} {verb_is} what my {followers_str} wellness audience asks about.",
+        "The {product} {verb_has} the clean profile my {followers_str} followers look for.",
+    ],
+    'fitness': [
+        "Your {product} {verb_is} what my {followers_str} fitness followers want to see.",
+        "The {product} {verb_has} the performance my {followers_str} audience expects.",
+    ],
+    'fashion': [
+        "Your {product} {verb_is} what my {followers_str} fashion followers save.",
+        "The {product} {verb_has} the style my {followers_str} audience shops for.",
+    ],
+    'food': [
+        "Your {product} {verb_is} what my {followers_str} foodie followers ask about.",
+        "The {product} {verb_has} the quality my {followers_str} audience looks for.",
+    ],
+    'default': [
+        "Your {product} {verb_is} what my {followers_str} followers ask about.",
+        "The {product} {verb_has} the quality my audience of {followers_str} expects.",
+    ],
+}
+
+# TIER-SPECIFIC LINE 2 (Creator proof)
+def get_tier_proof_line(tier, creator_data, past_collab_brand=None, past_collab_views=None):
+    """Generate tier-appropriate creator proof line."""
+    followers_str = creator_data.get('followers_str', 'growing')
+    engagement_rate = creator_data.get('engagement_rate', 5.0)
+    platform = creator_data.get('platform', 'Instagram')
+    niche = creator_data.get('niche', 'content')
+
+    if tier == 1:
+        # Tier 1: Focus on content skills, not audience
+        return f"I create {niche.lower()} content on {platform}. Even while building my following, I make UGC-style videos that brands can use directly in their own ads."
+
+    elif tier == 2:
+        # Tier 2: Reference engagement and past work if available
+        if past_collab_brand and past_collab_views:
+            return f"I previously partnered with {past_collab_brand} and that video reached {past_collab_views} views. I create {niche.lower()} content for {followers_str} followers with {engagement_rate}% engagement."
+        elif past_collab_brand:
+            return f"I've partnered with brands like {past_collab_brand}. I create {niche.lower()} content on {platform} for {followers_str} followers with {engagement_rate}% engagement."
+        else:
+            return f"I create {niche.lower()} content on {platform} for {followers_str} followers with {engagement_rate}% engagement rate."
+
+    else:
+        # Tier 3: Full stats
+        return f"I create {niche.lower()} content on {platform} ({followers_str} followers, {engagement_rate}% engagement)."
+
+
+# TIER-SPECIFIC ASK LINES
+TIER1_ASK = "Would you be open to sending product in exchange for content you can use on your own channels?"
+TIER2_ASK = "Would you be open to a gifted collaboration?"
+TIER3_ASK = "Would you be open to discussing a gifted post or potential partnership?"
+
+
+# ============================================
+# LEGACY TEMPLATES (kept for Tier 3 / fallback)
 # ============================================
 
 # LINE 1 TEMPLATES: Brand hook per product category
@@ -1682,29 +1907,71 @@ def generate_golden_template_pitch(brand, creator):
     else:
         media_kit_url = None
 
-    # ===== GENERATE PITCH USING TEMPLATES =====
+    # ===== COMPUTE CREATOR TIER =====
+    collab_count = creator.get('collab_count', 0) or 0
+    tier_num, tier_label = compute_creator_tier(followers, collab_count)
+    last_collab_brand = creator.get('last_collab_brand_name')
 
-    # LINE 1: Select from category templates and fill slots
-    line1_templates = LINE1_TEMPLATES.get(template_key, LINE1_TEMPLATES['default'])
-    brand_hook = random.choice(line1_templates).format(
-        product=hero_product,
-        verb_is=verb_is,
-        verb_has=verb_has
+    # Debug logging
+    print(f"[Pitch Generator] Creator tier: {tier_num} ({tier_label}), followers: {followers}, collabs: {collab_count}")
+
+    # ===== GENERATE PITCH USING TIERED TEMPLATES =====
+
+    # Prepare creator data dict for template functions
+    creator_data = {
+        'followers_str': followers_str,
+        'engagement_rate': engagement_rate,
+        'platform': platform,
+        'niche': niche,
+        'audience_description': audience_description,
+    }
+
+    # LINE 1: Tier-specific brand hook
+    if tier_num == 1:
+        # Tier 1 (Starter): Focus on content skills, not audience
+        tier_templates = TIER1_LINE1_TEMPLATES.get(template_key, TIER1_LINE1_TEMPLATES['default'])
+        brand_hook = random.choice(tier_templates)
+    elif tier_num == 2:
+        # Tier 2 (Growing): Reference engagement and past work
+        tier_templates = TIER2_LINE1_TEMPLATES.get(template_key, TIER2_LINE1_TEMPLATES['default'])
+        brand_hook = random.choice(tier_templates).format(
+            followers_str=followers_str,
+            engagement_rate=engagement_rate,
+            product=hero_product,
+            verb_is=verb_is,
+            verb_has=verb_has
+        )
+    else:
+        # Tier 3 (Established): Full audience claims allowed
+        tier_templates = TIER3_LINE1_TEMPLATES.get(template_key, TIER3_LINE1_TEMPLATES['default'])
+        brand_hook = random.choice(tier_templates).format(
+            followers_str=followers_str,
+            product=hero_product,
+            verb_is=verb_is,
+            verb_has=verb_has
+        )
+
+    # LINE 2: Tier-specific creator proof
+    creator_proof = get_tier_proof_line(
+        tier_num,
+        creator_data,
+        past_collab_brand=last_collab_brand if tier_num >= 2 else None
     )
 
-    # LINE 2: Creator proof (always same structure)
-    creator_proof = f"I create {niche.lower()} content on {platform} ({followers_str} followers, {engagement_rate}% engagement, {audience_description})."
-
-    # LINE 3: Select from category templates and fill slots
+    # LINE 3: Content idea (same for all tiers - focuses on what they'll create)
     line3_templates = LINE3_TEMPLATES.get(template_key, LINE3_TEMPLATES['default'])
     content_idea = random.choice(line3_templates).format(
         short=short_ref,
         product=hero_product
     )
 
-    # LINE 4: Category-specific ask
-    line4_template = LINE4_TEMPLATES.get(template_key, LINE4_TEMPLATES['default'])
-    ask = line4_template.format(short=short_ref)
+    # LINE 4: Tier-specific ask
+    if tier_num == 1:
+        ask = TIER1_ASK
+    elif tier_num == 2:
+        ask = TIER2_ASK
+    else:
+        ask = TIER3_ASK
 
     # Build body
     body = f"""Hi,
@@ -1723,18 +1990,62 @@ def generate_golden_template_pitch(brand, creator):
     if creator_name:
         body += f"\n\n{creator_name}"
 
-    # ===== SUBJECT LINE =====
-    if has_specific_hero:
+    # ===== VALIDATE PITCH CONTENT =====
+    is_valid, issues = validate_pitch_content(body, tier_num)
+    if not is_valid:
+        print(f"[Pitch Generator] Validation issues: {issues}")
+        # For Tier 1, if validation fails, regenerate with safer template
+        if tier_num == 1 and any('Tier 1 cannot claim' in issue for issue in issues):
+            # Use the safest possible template
+            brand_hook = f"I create {niche.lower()} content that brands use for UGC and social."
+            creator_proof = f"I make {platform} content with clean visuals and authentic product integration. I'm building my following and focused on creating content brands can actually use."
+            body = f"""Hi,
+
+{brand_hook}
+
+{creator_proof}
+
+{content_idea}
+
+{ask}"""
+            if media_kit_url:
+                body += f"\n\nPlease find my portfolio here: {media_kit_url}"
+            if creator_name:
+                body += f"\n\n{creator_name}"
+
+    # ===== SUBJECT LINE (Tier-aware) =====
+    if tier_num == 1:
+        # Tier 1: Don't lead with follower count
         subject_templates = [
-            f"{hero_product} for my {followers_str} {platform} {niche.lower()} audience",
-            f"{hero_product} | {niche.lower()} creator, {followers_str} {platform}",
-            f"Your {hero_product} for my {niche.lower()} content",
+            f"{niche.title()} content creator x {brand_name}",
+            f"UGC content idea for {brand_name}",
+            f"Content creator for your {niche.lower()} products",
         ]
+    elif tier_num == 2:
+        # Tier 2: Can mention platform and engagement
+        if has_specific_hero:
+            subject_templates = [
+                f"{hero_product} | {niche.lower()} creator, {followers_str} on {platform}",
+                f"Content idea for {hero_product}",
+            ]
+        else:
+            subject_templates = [
+                f"{niche.title()} creator ({followers_str}) x {brand_name}",
+                f"Collab idea for {brand_name}",
+            ]
     else:
-        subject_templates = [
-            f"{niche.title()} creator ({followers_str} {platform}) x {brand_name}",
-            f"Content idea for {brand_name} | {followers_str} {niche.lower()} followers",
-        ]
+        # Tier 3: Full stats in subject
+        if has_specific_hero:
+            subject_templates = [
+                f"{hero_product} for my {followers_str} {platform} {niche.lower()} audience",
+                f"{hero_product} | {niche.lower()} creator, {followers_str} {platform}",
+                f"Your {hero_product} for my {niche.lower()} content",
+            ]
+        else:
+            subject_templates = [
+                f"{niche.title()} creator ({followers_str} {platform}) x {brand_name}",
+                f"Content idea for {brand_name} | {followers_str} {niche.lower()} followers",
+            ]
     subject = random.choice(subject_templates)
 
     return {
@@ -1746,7 +2057,9 @@ def generate_golden_template_pitch(brand, creator):
             'platform': platform
         },
         'kit_published': kit_published,
-        'media_kit_url': media_kit_url
+        'media_kit_url': media_kit_url,
+        'tier': tier_num,
+        'tier_label': tier_label
     }
 
 
@@ -3036,6 +3349,16 @@ def get_for_you():
                 brand_filter_sql += " AND LOWER(b.category) = ANY(%s)"
                 query_params.append(all_relevant_niches)
 
+            # Multi-niche users: add contact popularity to secondary sort
+            has_multiple_niches = len(niches) > 1 if niches else False
+            order_clause = """
+                ORDER BY match_score DESC,
+                    (SELECT COUNT(DISTINCT cp.creator_id) FROM creator_pipeline cp
+                     WHERE cp.brand_id = b.id AND cp.stage = 'pitched'
+                     AND cp.created_at > NOW() - INTERVAL '30 days') DESC,
+                    b.response_rate DESC NULLS LAST
+            """ if has_multiple_niches else "ORDER BY match_score DESC, b.response_rate DESC NULLS LAST"
+
             cursor.execute(f"""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
@@ -3083,7 +3406,7 @@ def get_for_you():
                   AND COALESCE(b.status, 'published') = 'published'
                   AND b.id != ALL(%s)
                   {brand_filter_sql}
-                ORDER BY match_score DESC, b.response_rate DESC NULLS LAST
+                {order_clause}
                 LIMIT 8
             """, tuple(query_params))
             matched = cursor.fetchall()
