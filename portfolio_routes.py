@@ -16,6 +16,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
+import threading
 from werkzeug.utils import secure_filename
 from supabase import create_client, Client
 from jinja2 import Environment, FileSystemLoader
@@ -863,7 +864,8 @@ def get_public_kit(slug):
             if ref_token:
                 # Look up the pipeline entry for this token to get brand attribution
                 cursor.execute('''
-                    SELECT cp.id as pipeline_id, cp.creator_id, cp.brand_id, pb.brand_name
+                    SELECT cp.id as pipeline_id, cp.creator_id, cp.brand_id,
+                           pb.brand_name, pb.category as brand_category
                     FROM creator_pipeline cp
                     JOIN pr_brands pb ON pb.id = cp.brand_id
                     WHERE cp.kit_token = %s
@@ -900,6 +902,54 @@ def get_public_kit(slug):
                             WHERE id = %s
                         ''', (pipeline['pipeline_id'],))
                         print(f"[KIT_VIEW] Marked pipeline {pipeline['pipeline_id']} as opened")
+
+                        # Send brand view notification email (Pro upgrade CTA for free users)
+                        try:
+                            # Get creator email and subscription tier
+                            cursor.execute('''
+                                SELECT c.username, c.subscription_tier, c.brand_view_email_sent_at,
+                                       u.email
+                                FROM creators c
+                                JOIN users u ON c.user_id = u.id
+                                WHERE c.id = %s
+                            ''', (pipeline['creator_id'],))
+                            creator_info = cursor.fetchone()
+
+                            if creator_info and creator_info['email']:
+                                # Rate limit: Don't send more than 1 brand view email per hour
+                                last_sent = creator_info.get('brand_view_email_sent_at')
+                                should_send = True
+                                if last_sent:
+                                    time_since = datetime.now() - last_sent
+                                    if time_since < timedelta(hours=1):
+                                        should_send = False
+                                        print(f"[BRAND_VIEW_EMAIL] Skipping - sent {int(time_since.total_seconds()/60)} mins ago")
+
+                                if should_send:
+                                    tier = creator_info.get('subscription_tier', 'free') or 'free'
+                                    is_pro = tier in ('pro', 'elite')
+
+                                    # Update last sent timestamp
+                                    cursor.execute('''
+                                        UPDATE creators SET brand_view_email_sent_at = NOW() WHERE id = %s
+                                    ''', (pipeline['creator_id'],))
+
+                                    # Send email in background thread
+                                    def send_async():
+                                        send_brand_view_notification(
+                                            to_email=creator_info['email'],
+                                            creator_name=creator_info['username'],
+                                            brand_name=pipeline['brand_name'],
+                                            brand_category=pipeline.get('brand_category'),
+                                            is_pro=is_pro,
+                                            viewed_at=datetime.now()
+                                        )
+                                    threading.Thread(target=send_async, daemon=True).start()
+                                    print(f"[BRAND_VIEW_EMAIL] Queued for {creator_info['email']} (Pro: {is_pro}, Category: {pipeline.get('brand_category')})")
+                        except Exception as email_err:
+                            print(f"[BRAND_VIEW_EMAIL] Error: {email_err}")
+                            pass  # Don't fail the request if email fails
+
                     conn.commit()
                 else:
                     # No pipeline found for token, log basic view
@@ -1001,6 +1051,208 @@ def get_public_kit(slug):
 # ============================================
 # KIT VIEW NOTIFICATIONS (LinkedIn-style)
 # ============================================
+
+def send_brand_view_notification(to_email, creator_name, brand_name, brand_category, is_pro, viewed_at=None):
+    """
+    Send a brand view notification email when a brand clicks a tracked ref link.
+    For free users: Shows brand category (taste of value) + upgrade CTA
+    For Pro users: Brand name revealed with follow-up CTA
+
+    Returns (success: bool, error_message: str or None)
+    """
+    try:
+        smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+        smtp_port = int(os.getenv('SMTP_PORT', 587))
+        smtp_username = os.getenv('SMTP_USERNAME')
+        smtp_password = os.getenv('SMTP_PASSWORD')
+        sender_name = os.getenv('EMAIL_SENDER_NAME', 'Newcollab')
+        frontend_url = os.getenv('FRONTEND_URL', 'https://app.newcollab.co')
+
+        # Format time ago
+        time_ago = "just now"
+        if viewed_at:
+            diff = datetime.now() - viewed_at
+            minutes = int(diff.total_seconds() / 60)
+            hours = int(diff.total_seconds() / 3600)
+            if minutes < 1:
+                time_ago = "just now"
+            elif minutes < 60:
+                time_ago = f"{minutes} minute{'s' if minutes > 1 else ''} ago"
+            elif hours < 24:
+                time_ago = f"{hours} hour{'s' if hours > 1 else ''} ago"
+
+        # Format brand category for display (e.g. "skincare" -> "A skincare brand")
+        category_display = "A brand"
+        if brand_category:
+            cat_lower = brand_category.lower().strip()
+            if cat_lower and cat_lower not in ('other', 'unknown', 'n/a'):
+                # Add article
+                vowels = ('a', 'e', 'i', 'o', 'u')
+                article = "An" if cat_lower[0] in vowels else "A"
+                category_display = f"{article} {cat_lower} brand"
+
+        if is_pro:
+            subject = f"{brand_name} just viewed your media kit"
+            preheader = f"They checked out your profile {time_ago}. Follow up now."
+            headline = f"{brand_name} viewed your kit"
+            subtitle = f"They checked out your profile {time_ago}. Now is the perfect time to follow up."
+            body_html = f"""
+                <p style="margin: 0 0 16px 0; font-size: 15px; color: #374151; line-height: 1.7;">
+                    Hey {creator_name},
+                </p>
+                <p style="margin: 0 0 24px 0; font-size: 15px; color: #374151; line-height: 1.7;">
+                    <strong>{brand_name}</strong> clicked through to your media kit {time_ago}. This means they are actively evaluating you for a potential collab.
+                </p>
+                <p style="margin: 0 0 24px 0; font-size: 15px; color: #374151; line-height: 1.7;">
+                    Follow up while they are engaged. Most replies happen in the first 24 hours.
+                </p>
+            """
+            cta_label = "Send Follow-Up Now"
+            cta_url = f"{frontend_url}/creator/dashboard/pr-pipeline?utm_source=email&utm_medium=brand_view"
+            urgency_box = ""
+            features_html = ""
+            footer_note = ""
+        else:
+            # Free users get brand category (taste of value) but not identity
+            subject = f"{category_display} just viewed your media kit"
+            preheader = f"See who it was and follow up while they are still interested."
+            headline = f"{category_display} viewed your kit"
+            subtitle = f"They checked out your profile {time_ago}. See who and follow up while they are still engaged."
+            body_html = f"""
+                <p style="margin: 0 0 16px 0; font-size: 15px; color: #374151; line-height: 1.7;">
+                    Hey {creator_name},
+                </p>
+                <p style="margin: 0 0 24px 0; font-size: 15px; color: #374151; line-height: 1.7;">
+                    {category_display} just clicked through to view your media kit. They are checking you out right now.
+                </p>
+            """
+            urgency_box = """
+                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                    <tr>
+                        <td style="padding: 0 0 24px 0;">
+                            <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%"
+                                   style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border-radius: 12px; border: 1px solid #fbbf24;">
+                                <tr>
+                                    <td style="padding: 20px 24px; text-align: center;">
+                                        <p style="margin: 0 0 8px 0; font-size: 24px;">🔥</p>
+                                        <p style="margin: 0 0 6px 0; font-size: 16px; font-weight: 700; color: #92400e;">
+                                            Strike while it is hot
+                                        </p>
+                                        <p style="margin: 0; font-size: 14px; color: #a16207; line-height: 1.5;">
+                                            Follow up while they are engaged. Most replies happen in the first 24 hours.
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                </table>
+            """
+            features_html = """
+                <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                    <tr>
+                        <td style="padding: 0 0 24px 0;">
+                            <p style="margin: 0 0 14px 0; font-size: 13px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px;">
+                                With Pro you can:
+                            </p>
+                            <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                                <tr><td style="padding: 0 0 10px 0; font-size: 14px; color: #374151;">&#128065; <strong>See exactly which brand</strong> viewed your kit</td></tr>
+                                <tr><td style="padding: 0 0 10px 0; font-size: 14px; color: #374151;">&#128231; <strong>Send a follow-up pitch</strong> while they are engaged</td></tr>
+                                <tr><td style="padding: 0 0 10px 0; font-size: 14px; color: #374151;">&#128230; <strong>Unlimited pitches</strong> to any brand, every month</td></tr>
+                            </table>
+                        </td>
+                    </tr>
+                </table>
+            """
+            cta_label = "See Who and Follow Up - $19/mo"
+            # Link to for-you page with upgrade param to trigger upgrade modal -> Stripe checkout
+            cta_url = f"{frontend_url}/creator/dashboard/for-you?upgrade=kit_views&utm_source=email&utm_medium=brand_view"
+            footer_note = '<p style="margin: 14px 0 0 0; font-size: 12px; color: #9ca3af;">Cancel anytime. One PR package pays for a year of Pro.</p>'
+
+        # Preheader padding to prevent email client from pulling body text
+        preheader_padding = '&nbsp;' * 100
+
+        html_content = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>{headline}</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f3f4f6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+    <!-- Preheader text (hidden) -->
+    <div style="display: none; max-height: 0; overflow: hidden;">{preheader}{preheader_padding}</div>
+
+    <div style="max-width: 560px; margin: 0 auto; padding: 32px 16px;">
+
+        <!-- Logo -->
+        <div style="text-align: center; padding-bottom: 28px;">
+            <a href="{frontend_url}" style="text-decoration: none;">
+                <img src="https://app.newcollab.co/newcollab-logo-dark.png" alt="Newcollab" height="36" style="height: 36px; width: auto;" />
+            </a>
+        </div>
+
+        <!-- Main Card -->
+        <div style="background: #ffffff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); padding: 36px 40px;">
+
+            <!-- Hero -->
+            <div style="text-align: center; margin-bottom: 24px;">
+                <h1 style="margin: 0 0 8px 0; font-size: 24px; font-weight: 800; color: #111827;">{headline}</h1>
+                <p style="margin: 0; font-size: 15px; color: #6b7280;">{subtitle}</p>
+            </div>
+
+            <!-- Body -->
+            {body_html}
+
+            <!-- Urgency Box (free users) -->
+            {urgency_box}
+
+            <!-- Features (free users) -->
+            {features_html}
+
+            <!-- CTA -->
+            <div style="text-align: center; padding-top: 8px;">
+                <a href="{cta_url}" style="display: inline-block; background: linear-gradient(135deg, #7C3AED, #E11D48); color: #ffffff; font-size: 16px; font-weight: 700; padding: 16px 40px; border-radius: 10px; text-decoration: none;">
+                    {cta_label}
+                </a>
+                {footer_note}
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div style="text-align: center; padding: 28px 24px;">
+            <p style="margin: 0 0 10px 0; font-size: 13px; color: #6b7280;">
+                You are receiving this because a brand clicked your tracked kit link.
+            </p>
+            <p style="margin: 0; font-size: 12px; color: #d1d5db;">
+                2026 Newcollab. All rights reserved.
+            </p>
+        </div>
+    </div>
+</body>
+</html>
+        """
+
+        msg = MIMEMultipart('alternative')
+        msg['From'] = f"{sender_name} <{smtp_username}>"
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(html_content, 'html'))
+
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_username, smtp_password)
+            server.send_message(msg)
+
+        print(f"[BRAND_VIEW_EMAIL] Sent to {to_email} (Pro: {is_pro}, Brand: {brand_name})")
+        return True, None
+
+    except Exception as e:
+        print(f"[BRAND_VIEW_EMAIL] Error sending: {e}")
+        return False, str(e)
+
 
 def send_kit_view_email(to_email, creator_name, views_count, referrer=None):
     """
