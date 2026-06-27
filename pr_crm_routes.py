@@ -9,7 +9,18 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import os
 import json
+import re
+import requests
 from datetime import datetime
+from urllib.parse import urlparse, urljoin
+
+# Try to import BeautifulSoup for Tier 2 web scraping
+try:
+    from bs4 import BeautifulSoup
+    HAS_BS4 = True
+except ImportError:
+    HAS_BS4 = False
+    print("⚠️ BeautifulSoup not installed - Tier 2 web scraping will be limited")
 
 pr_crm = Blueprint('pr_crm', __name__, url_prefix='/api/pr-crm')
 
@@ -362,6 +373,922 @@ def get_categories():
             'categories': aggregate_category_counts([
                 {'category': r['category'], 'brand_count': r['count']} for r in rows
             ])
+        })
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============================================
+# UNIVERSAL BRAND DISCOVERY (Phase 1)
+# ============================================
+
+def normalize_brand_name(name):
+    """Normalize brand name for matching: lowercase, no spaces, no special chars"""
+    import re
+    if not name:
+        return ''
+    return re.sub(r'[^a-z0-9]', '', name.lower().strip())
+
+
+def check_discovery_rate_limit(creator_id, conn, cursor):
+    """
+    Check if creator has hit their daily discovery limit (5 attempts/day).
+    Returns (can_discover: bool, attempts_today: int, limit: int)
+    """
+    from datetime import date
+    today = date.today()
+
+    cursor.execute('''
+        SELECT attempts FROM creator_discovery_limits
+        WHERE creator_id = %s AND date = %s
+    ''', (creator_id, today))
+    row = cursor.fetchone()
+
+    attempts_today = row['attempts'] if row else 0
+    daily_limit = 5
+
+    return attempts_today < daily_limit, attempts_today, daily_limit
+
+
+def increment_discovery_attempt(creator_id, conn, cursor):
+    """Increment the daily discovery attempt counter"""
+    from datetime import date
+    today = date.today()
+
+    cursor.execute('''
+        INSERT INTO creator_discovery_limits (creator_id, date, attempts)
+        VALUES (%s, %s, 1)
+        ON CONFLICT (creator_id, date)
+        DO UPDATE SET attempts = creator_discovery_limits.attempts + 1, updated_at = NOW()
+    ''', (creator_id, today))
+    conn.commit()
+
+
+def log_discovery_attempt(creator_id, search_query, normalized_query, found_brand_id, result_tier, result_status, conn, cursor):
+    """Log a discovery attempt for analytics"""
+    from flask import request as flask_request
+    ip_address = flask_request.headers.get('X-Forwarded-For', flask_request.remote_addr)
+    user_agent = flask_request.headers.get('User-Agent', '')[:500]
+
+    cursor.execute('''
+        INSERT INTO brand_discovery_logs
+        (creator_id, search_query, normalized_query, found_brand_id, result_tier, result_status, ip_address, user_agent)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    ''', (creator_id, search_query, normalized_query, found_brand_id, result_tier, result_status, ip_address, user_agent))
+    conn.commit()
+
+
+# ============================================
+# TIER 2: WEB SCRAPING FOR PR CONTACTS
+# ============================================
+
+# Common PR/press page paths to check
+PR_PAGE_PATHS = [
+    '/press', '/pr', '/contact', '/partnerships', '/influencers',
+    '/affiliates', '/collaborate', '/press-room', '/media',
+    '/about/press', '/about/contact', '/contact-us', '/work-with-us',
+    '/creator-program', '/ambassador', '/brand-ambassadors',
+    '/influencer-program', '/collab', '/partner'
+]
+
+# Email patterns that indicate PR/press contacts
+PR_EMAIL_PREFIXES = ['pr', 'press', 'partnerships', 'marketing', 'collab',
+                      'collaborate', 'influencer', 'creator', 'media', 'hello',
+                      'contact', 'info', 'brand', 'ambassador', 'affiliate']
+
+
+def guess_brand_domain(brand_name):
+    """
+    Guess a brand's domain from its name.
+    Tries common patterns like brandname.com, brandname.co, etc.
+    Returns list of possible domains to try.
+    """
+    normalized = normalize_brand_name(brand_name)
+
+    # Common domain patterns
+    domains = [
+        f"{normalized}.com",
+        f"{normalized}.co",
+        f"www.{normalized}.com",
+        f"shop{normalized}.com",
+        f"{normalized}beauty.com",
+        f"get{normalized}.com",
+        f"{normalized}skin.com",
+        f"the{normalized}.com",
+        f"{normalized}official.com",
+    ]
+
+    # Handle common brand name patterns
+    # e.g., "Sol de Janeiro" -> "soldejaneiro.com"
+    words = brand_name.lower().split()
+    if len(words) > 1:
+        joined = ''.join(words)
+        domains.insert(0, f"{joined}.com")
+
+    return domains
+
+
+def validate_domain(domain, timeout=5):
+    """
+    Check if a domain is valid by making a HEAD request.
+    Returns the final URL if valid, None otherwise.
+    """
+    try:
+        # Try HTTPS first
+        url = f"https://{domain}" if not domain.startswith('http') else domain
+        response = requests.head(url, timeout=timeout, allow_redirects=True)
+        if response.status_code < 400:
+            return response.url
+    except:
+        pass
+
+    try:
+        # Try HTTP as fallback
+        url = f"http://{domain}" if not domain.startswith('http') else domain
+        response = requests.head(url, timeout=timeout, allow_redirects=True)
+        if response.status_code < 400:
+            return response.url
+    except:
+        pass
+
+    return None
+
+
+def extract_emails_from_text(text):
+    """
+    Extract email addresses from text using regex.
+    Returns list of unique emails found.
+    """
+    # Email regex pattern
+    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+    emails = re.findall(email_pattern, text.lower())
+
+    # Filter out common false positives
+    exclude_patterns = ['example.com', 'email.com', 'domain.com', 'yoursite.com',
+                        'yourdomain.com', '.png', '.jpg', '.gif', 'wixpress.com',
+                        'sentry.io', 'facebook.com', 'twitter.com', 'instagram.com']
+
+    filtered = []
+    for email in emails:
+        if not any(excl in email for excl in exclude_patterns):
+            filtered.append(email)
+
+    return list(set(filtered))
+
+
+def scrape_page_for_emails(url, timeout=10):
+    """
+    Scrape a webpage for email addresses.
+    Returns list of emails found on the page.
+    """
+    if not HAS_BS4:
+        # Fallback to basic regex if BeautifulSoup not available
+        try:
+            response = requests.get(url, timeout=timeout, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            })
+            if response.status_code == 200:
+                return extract_emails_from_text(response.text)
+        except:
+            pass
+        return []
+
+    try:
+        response = requests.get(url, timeout=timeout, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+        if response.status_code != 200:
+            return []
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Get all text content
+        text = soup.get_text()
+        emails = extract_emails_from_text(text)
+
+        # Also check href attributes for mailto: links
+        for a_tag in soup.find_all('a', href=True):
+            href = a_tag['href']
+            if href.startswith('mailto:'):
+                email = href.replace('mailto:', '').split('?')[0].lower()
+                if '@' in email and email not in emails:
+                    emails.append(email)
+
+        return emails
+    except Exception as e:
+        print(f"⚠️ Error scraping {url}: {e}")
+        return []
+
+
+def find_pr_email_from_list(emails, domain=None):
+    """
+    From a list of emails, find the most likely PR/press contact.
+    Prioritizes known PR prefixes.
+    """
+    if not emails:
+        return None
+
+    # Score emails based on PR likelihood
+    scored_emails = []
+    for email in emails:
+        prefix = email.split('@')[0].lower()
+        email_domain = email.split('@')[1].lower() if '@' in email else ''
+
+        score = 0
+
+        # Boost if email matches brand domain
+        if domain and domain.replace('www.', '') in email_domain:
+            score += 10
+
+        # Score based on prefix
+        if prefix in ['pr', 'press']:
+            score += 100
+        elif prefix in ['partnerships', 'collab', 'collaborate']:
+            score += 80
+        elif prefix in ['influencer', 'influencers', 'creator', 'creators']:
+            score += 70
+        elif prefix in ['marketing', 'brand']:
+            score += 60
+        elif prefix in ['hello', 'hi', 'info', 'contact']:
+            score += 40
+        elif prefix in ['support', 'help', 'sales']:
+            score += 10
+
+        scored_emails.append((email, score))
+
+    # Sort by score descending
+    scored_emails.sort(key=lambda x: x[1], reverse=True)
+
+    # Return highest scoring email if it has any relevance
+    if scored_emails and scored_emails[0][1] > 0:
+        return scored_emails[0][0]
+
+    return None
+
+
+def tier2_web_scrape(brand_name, known_domain=None):
+    """
+    Tier 2 Discovery: Scrape brand website for PR contacts.
+
+    1. Determine brand domain (use known or guess)
+    2. Check common PR page paths
+    3. Extract emails from pages
+    4. Return best PR email found
+
+    Returns: {
+        'found': bool,
+        'email': str or None,
+        'domain': str or None,
+        'source_url': str or None,
+        'all_emails': list
+    }
+    """
+    result = {
+        'found': False,
+        'email': None,
+        'domain': None,
+        'source_url': None,
+        'all_emails': []
+    }
+
+    # Determine domain to use
+    domains_to_try = []
+    if known_domain:
+        domains_to_try.append(known_domain)
+    domains_to_try.extend(guess_brand_domain(brand_name))
+
+    # Find a valid domain
+    valid_base_url = None
+    valid_domain = None
+    for domain in domains_to_try:
+        url = validate_domain(domain)
+        if url:
+            valid_base_url = url
+            parsed = urlparse(url)
+            valid_domain = parsed.netloc.replace('www.', '')
+            result['domain'] = valid_domain
+            break
+
+    if not valid_base_url:
+        print(f"⚠️ Tier 2: Could not find valid domain for {brand_name}")
+        return result
+
+    print(f"✓ Tier 2: Found valid domain {valid_domain} for {brand_name}")
+
+    # Scrape homepage first
+    all_emails = scrape_page_for_emails(valid_base_url)
+
+    # Try PR page paths
+    for path in PR_PAGE_PATHS:
+        try:
+            page_url = urljoin(valid_base_url, path)
+            emails = scrape_page_for_emails(page_url, timeout=5)
+            if emails:
+                all_emails.extend(emails)
+                result['source_url'] = page_url
+                print(f"✓ Tier 2: Found emails on {page_url}: {emails}")
+        except:
+            pass
+
+    # Dedupe
+    all_emails = list(set(all_emails))
+    result['all_emails'] = all_emails
+
+    # Find best PR email
+    pr_email = find_pr_email_from_list(all_emails, valid_domain)
+    if pr_email:
+        result['found'] = True
+        result['email'] = pr_email
+        print(f"✓ Tier 2: Best PR email for {brand_name}: {pr_email}")
+
+    return result
+
+
+# ============================================
+# TIER 3: PATTERN-BASED EMAIL INFERENCE
+# ============================================
+
+def tier3_pattern_inference(brand_name, domain=None):
+    """
+    Tier 3 Discovery: Generate likely email addresses based on common patterns.
+    These are UNVERIFIED and should be labeled as such.
+
+    Returns: {
+        'found': bool,
+        'email': str or None,  # Primary inferred email
+        'alternatives': list,  # Other possible emails
+        'domain': str or None,
+        'verified': False  # Always false for Tier 3
+    }
+    """
+    result = {
+        'found': False,
+        'email': None,
+        'alternatives': [],
+        'domain': None,
+        'verified': False
+    }
+
+    # Determine domain
+    if not domain:
+        # Try to find a valid domain
+        domains_to_try = guess_brand_domain(brand_name)
+        for d in domains_to_try[:3]:  # Only try first 3
+            url = validate_domain(d, timeout=3)
+            if url:
+                parsed = urlparse(url)
+                domain = parsed.netloc.replace('www.', '')
+                break
+
+    if not domain:
+        print(f"⚠️ Tier 3: Could not determine domain for {brand_name}")
+        return result
+
+    result['domain'] = domain
+
+    # Generate inferred emails in order of likelihood
+    inferred_emails = [
+        f"pr@{domain}",
+        f"press@{domain}",
+        f"partnerships@{domain}",
+        f"hello@{domain}",
+        f"collab@{domain}",
+        f"marketing@{domain}",
+        f"influencer@{domain}",
+        f"creators@{domain}",
+        f"contact@{domain}",
+        f"info@{domain}",
+    ]
+
+    result['found'] = True
+    result['email'] = inferred_emails[0]  # pr@ is most common
+    result['alternatives'] = inferred_emails[1:5]  # Next 4 alternatives
+
+    print(f"✓ Tier 3: Generated inferred emails for {brand_name}: {inferred_emails[:3]}")
+
+    return result
+
+
+@pr_crm.route('/brands/discover', methods=['POST'])
+def discover_brand():
+    """
+    Universal Brand Discovery endpoint.
+    Searches for a brand by name, first in curated directory, then in known contacts (Tier 1).
+    If found in known contacts but not in directory, creates a discovered brand entry.
+
+    Request body:
+    - query (str): Brand name to search for
+
+    Returns:
+    - found (bool): Whether a match was found
+    - brand (obj): Brand data if found
+    - source (str): 'curated', 'discovered', 'known_contact', 'not_found'
+    - discovery_tier (int): 1, 2, 3 or null
+    - can_discover (bool): If false, rate limit hit
+    """
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    try:
+        data = request.get_json() or {}
+        search_query = (data.get('query') or '').strip()
+
+        if not search_query or len(search_query) < 2:
+            return jsonify({
+                'success': False,
+                'error': 'Search query must be at least 2 characters'
+            }), 400
+
+        normalized_query = normalize_brand_name(search_query)
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # ============================================
+        # STEP 1: Check curated directory first
+        # ============================================
+        cursor.execute('''
+            SELECT
+                id, brand_name, website, logo_url, cover_image_url, category, niches,
+                product_types, regions, platforms, min_followers, max_followers,
+                contact_email, instagram_handle, tiktok_handle, youtube_handle,
+                has_application_form, application_form_url,
+                response_rate, avg_response_time_days, is_premium, notes,
+                avg_product_value, collaboration_type, payment_offered,
+                source, discovery_tier, verified_contact
+            FROM pr_brands
+            WHERE LOWER(REPLACE(brand_name, ' ', '')) ILIKE %s
+               OR brand_name ILIKE %s
+            ORDER BY
+                CASE WHEN source = 'curated' THEN 0 ELSE 1 END,
+                search_count DESC NULLS LAST
+            LIMIT 1
+        ''', (f'%{normalized_query}%', f'%{search_query}%'))
+
+        existing_brand = cursor.fetchone()
+
+        if existing_brand:
+            # Found in directory - increment search count and return
+            source_type = existing_brand.get('source') or 'curated'
+            print(f"✓ Step 1: Found '{existing_brand['brand_name']}' in {source_type} directory (email: {existing_brand.get('contact_email')})")
+            cursor.execute('''
+                UPDATE pr_brands SET search_count = COALESCE(search_count, 0) + 1 WHERE id = %s
+            ''', (existing_brand['id'],))
+            conn.commit()
+
+            log_discovery_attempt(
+                creator_id, search_query, normalized_query,
+                existing_brand['id'], existing_brand.get('discovery_tier'),
+                f'found_{source_type}', conn, cursor
+            )
+
+            # Enrich with stats
+            from brand_stats_synthesis import resolve_brand_stats
+            from public_routes import _estimate_package_value
+
+            rate, days = resolve_brand_stats(
+                str(existing_brand['id']),
+                existing_brand.get('category'),
+                existing_brand.get('response_rate'),
+                existing_brand.get('avg_response_time_days'),
+            )
+            existing_brand['response_rate'] = rate
+            existing_brand['avg_response_time_days'] = days
+            existing_brand['estimated_value'] = _estimate_package_value(
+                existing_brand.get('category'), existing_brand.get('brand_name')
+            )
+
+            cursor.close()
+            conn.close()
+
+            return jsonify({
+                'success': True,
+                'found': True,
+                'brand': existing_brand,
+                'source': source_type,
+                'discovery_tier': existing_brand.get('discovery_tier'),
+                'verified_contact': existing_brand.get('verified_contact', True)
+            })
+
+        # ============================================
+        # STEP 2: Check rate limit before discovery
+        # ============================================
+        print(f"🔍 Step 1: Not found in directory, checking rate limit...")
+        can_discover, attempts_today, daily_limit = check_discovery_rate_limit(creator_id, conn, cursor)
+        print(f"   Rate limit: {attempts_today}/{daily_limit} attempts today")
+
+        if not can_discover:
+            print(f"⚠️ Step 2: Rate limit reached for {search_query}")
+            log_discovery_attempt(
+                creator_id, search_query, normalized_query,
+                None, None, 'rate_limited', conn, cursor
+            )
+            cursor.close()
+            conn.close()
+
+            return jsonify({
+                'success': True,
+                'found': False,
+                'source': 'not_found',
+                'can_discover': False,
+                'rate_limit': {
+                    'attempts_today': attempts_today,
+                    'daily_limit': daily_limit,
+                    'message': f'Discovery limit reached ({daily_limit}/day). Try again tomorrow.'
+                }
+            })
+
+        # ============================================
+        # STEP 3: Tier 1 - Check known_brand_contacts
+        # ============================================
+        print(f"🔍 Step 3 Tier 1: Checking known_brand_contacts for '{search_query}'...")
+        cursor.execute('''
+            SELECT * FROM known_brand_contacts
+            WHERE normalized_name ILIKE %s
+               OR brand_name ILIKE %s
+            ORDER BY verified DESC, usage_count DESC
+            LIMIT 1
+        ''', (f'%{normalized_query}%', f'%{search_query}%'))
+
+        known_contact = cursor.fetchone()
+
+        if known_contact:
+            # Found in known contacts! Create a discovered brand entry
+            print(f"✓ Tier 1: Found known contact for '{known_contact['brand_name']}': {known_contact['contact_email']}")
+            increment_discovery_attempt(creator_id, conn, cursor)
+
+            # Infer category from brand name (basic heuristic for Phase 1)
+            category = 'beauty'  # Default for most known contacts
+            brand_name_lower = known_contact['brand_name'].lower()
+            if any(w in brand_name_lower for w in ['gym', 'fit', 'yoga', 'active', 'sport']):
+                category = 'fitness'
+            elif any(w in brand_name_lower for w in ['fashion', 'style', 'wear', 'cloth']):
+                category = 'fashion'
+
+            # Insert into pr_brands as discovered
+            cursor.execute('''
+                INSERT INTO pr_brands (
+                    brand_name, website, contact_email, category,
+                    source, discovery_tier, discovered_at, verified_contact, search_count
+                )
+                VALUES (%s, %s, %s, %s, 'discovered', 1, NOW(), %s, 1)
+                ON CONFLICT DO NOTHING
+                RETURNING id, brand_name, website, contact_email, category, source, discovery_tier, verified_contact
+            ''', (
+                known_contact['brand_name'],
+                f"https://{known_contact['domain']}" if known_contact.get('domain') else None,
+                known_contact['contact_email'],
+                category,
+                known_contact.get('verified', True)
+            ))
+
+            new_brand = cursor.fetchone()
+
+            if new_brand:
+                # Update known contact usage
+                cursor.execute('''
+                    UPDATE known_brand_contacts
+                    SET usage_count = usage_count + 1, last_used_at = NOW()
+                    WHERE id = %s
+                ''', (known_contact['id'],))
+                conn.commit()
+
+                log_discovery_attempt(
+                    creator_id, search_query, normalized_query,
+                    new_brand['id'], 1, 'discovered_new', conn, cursor
+                )
+
+                # Enrich with estimated values
+                from public_routes import _estimate_package_value
+                new_brand['estimated_value'] = _estimate_package_value(category, new_brand['brand_name'])
+                new_brand['response_rate'] = None
+                new_brand['avg_response_time_days'] = None
+
+                cursor.close()
+                conn.close()
+
+                return jsonify({
+                    'success': True,
+                    'found': True,
+                    'brand': dict(new_brand),
+                    'source': 'discovered',
+                    'discovery_tier': 1,
+                    'verified_contact': known_contact.get('verified', True),
+                    'is_new_discovery': True
+                })
+            else:
+                # Brand might already exist from another discovery
+                cursor.execute('''
+                    SELECT * FROM pr_brands WHERE LOWER(brand_name) = LOWER(%s) LIMIT 1
+                ''', (known_contact['brand_name'],))
+                existing = cursor.fetchone()
+
+                if existing:
+                    cursor.execute('''
+                        UPDATE pr_brands SET search_count = COALESCE(search_count, 0) + 1 WHERE id = %s
+                    ''', (existing['id'],))
+                    conn.commit()
+
+                    log_discovery_attempt(
+                        creator_id, search_query, normalized_query,
+                        existing['id'], existing.get('discovery_tier'), 'found_discovered', conn, cursor
+                    )
+
+                    cursor.close()
+                    conn.close()
+
+                    return jsonify({
+                        'success': True,
+                        'found': True,
+                        'brand': dict(existing),
+                        'source': existing.get('source', 'discovered'),
+                        'discovery_tier': existing.get('discovery_tier'),
+                        'verified_contact': existing.get('verified_contact', True)
+                    })
+
+        # ============================================
+        # STEP 4: Tier 2 - Web Scrape for PR Contacts
+        # ============================================
+        print(f"🔍 Tier 2: Starting web scrape for {search_query}")
+        tier2_result = tier2_web_scrape(search_query)
+
+        if tier2_result['found'] and tier2_result['email']:
+            increment_discovery_attempt(creator_id, conn, cursor)
+
+            # Infer category from brand name
+            category = 'beauty'  # Default
+            brand_name_lower = search_query.lower()
+            if any(w in brand_name_lower for w in ['gym', 'fit', 'yoga', 'active', 'sport']):
+                category = 'fitness'
+            elif any(w in brand_name_lower for w in ['fashion', 'style', 'wear', 'cloth', 'dress']):
+                category = 'fashion'
+            elif any(w in brand_name_lower for w in ['tech', 'gadget', 'electronic', 'phone', 'computer']):
+                category = 'tech'
+            elif any(w in brand_name_lower for w in ['food', 'drink', 'snack', 'beverage']):
+                category = 'food'
+
+            # Insert as Tier 2 discovered brand
+            cursor.execute('''
+                INSERT INTO pr_brands (
+                    brand_name, website, contact_email, category,
+                    source, discovery_tier, discovered_at, verified_contact, search_count
+                )
+                VALUES (%s, %s, %s, %s, 'discovered', 2, NOW(), true, 1)
+                ON CONFLICT DO NOTHING
+                RETURNING id, brand_name, website, contact_email, category, source, discovery_tier, verified_contact
+            ''', (
+                search_query.title(),  # Capitalize brand name
+                f"https://{tier2_result['domain']}" if tier2_result.get('domain') else None,
+                tier2_result['email'],
+                category
+            ))
+
+            new_brand = cursor.fetchone()
+
+            if new_brand:
+                # Also save to known_brand_contacts for future lookups
+                cursor.execute('''
+                    INSERT INTO known_brand_contacts (
+                        brand_name, normalized_name, domain, contact_email,
+                        contact_type, source, verified, usage_count
+                    )
+                    VALUES (%s, %s, %s, %s, 'pr', 'web_scrape', true, 1)
+                    ON CONFLICT (normalized_name, contact_email) DO UPDATE
+                    SET usage_count = known_brand_contacts.usage_count + 1,
+                        last_used_at = NOW()
+                ''', (
+                    search_query.title(),
+                    normalized_query,
+                    tier2_result.get('domain'),
+                    tier2_result['email']
+                ))
+                conn.commit()
+
+                log_discovery_attempt(
+                    creator_id, search_query, normalized_query,
+                    new_brand['id'], 2, 'discovered_tier2', conn, cursor
+                )
+
+                from public_routes import _estimate_package_value
+                new_brand['estimated_value'] = _estimate_package_value(category, new_brand['brand_name'])
+                new_brand['response_rate'] = None
+                new_brand['avg_response_time_days'] = None
+
+                cursor.close()
+                conn.close()
+
+                return jsonify({
+                    'success': True,
+                    'found': True,
+                    'brand': dict(new_brand),
+                    'source': 'discovered',
+                    'discovery_tier': 2,
+                    'verified_contact': True,  # Tier 2 emails are scraped from official pages
+                    'is_new_discovery': True,
+                    'discovery_method': 'web_scrape',
+                    'all_emails_found': tier2_result.get('all_emails', [])[:5]  # Show alternatives
+                })
+
+        # ============================================
+        # STEP 5: Tier 3 - Pattern-Based Email Inference
+        # ============================================
+        print(f"🔍 Tier 3: Starting pattern inference for {search_query}")
+        tier3_result = tier3_pattern_inference(search_query, domain=tier2_result.get('domain'))
+
+        if tier3_result['found'] and tier3_result['email']:
+            increment_discovery_attempt(creator_id, conn, cursor)
+
+            # Infer category
+            category = 'beauty'
+            brand_name_lower = search_query.lower()
+            if any(w in brand_name_lower for w in ['gym', 'fit', 'yoga', 'active', 'sport']):
+                category = 'fitness'
+            elif any(w in brand_name_lower for w in ['fashion', 'style', 'wear', 'cloth', 'dress']):
+                category = 'fashion'
+            elif any(w in brand_name_lower for w in ['tech', 'gadget', 'electronic', 'phone', 'computer']):
+                category = 'tech'
+            elif any(w in brand_name_lower for w in ['food', 'drink', 'snack', 'beverage']):
+                category = 'food'
+
+            # Insert as Tier 3 discovered brand (UNVERIFIED)
+            cursor.execute('''
+                INSERT INTO pr_brands (
+                    brand_name, website, contact_email, category,
+                    source, discovery_tier, discovered_at, verified_contact, search_count
+                )
+                VALUES (%s, %s, %s, %s, 'discovered', 3, NOW(), false, 1)
+                ON CONFLICT DO NOTHING
+                RETURNING id, brand_name, website, contact_email, category, source, discovery_tier, verified_contact
+            ''', (
+                search_query.title(),
+                f"https://{tier3_result['domain']}" if tier3_result.get('domain') else None,
+                tier3_result['email'],
+                category
+            ))
+
+            new_brand = cursor.fetchone()
+
+            if new_brand:
+                # Save inferred contact (marked as not verified)
+                cursor.execute('''
+                    INSERT INTO known_brand_contacts (
+                        brand_name, normalized_name, domain, contact_email,
+                        contact_type, source, verified, usage_count
+                    )
+                    VALUES (%s, %s, %s, %s, 'pr', 'pattern_inference', false, 1)
+                    ON CONFLICT (normalized_name, contact_email) DO UPDATE
+                    SET usage_count = known_brand_contacts.usage_count + 1,
+                        last_used_at = NOW()
+                ''', (
+                    search_query.title(),
+                    normalized_query,
+                    tier3_result.get('domain'),
+                    tier3_result['email']
+                ))
+                conn.commit()
+
+                log_discovery_attempt(
+                    creator_id, search_query, normalized_query,
+                    new_brand['id'], 3, 'discovered_tier3', conn, cursor
+                )
+
+                from public_routes import _estimate_package_value
+                new_brand['estimated_value'] = _estimate_package_value(category, new_brand['brand_name'])
+                new_brand['response_rate'] = None
+                new_brand['avg_response_time_days'] = None
+
+                cursor.close()
+                conn.close()
+
+                return jsonify({
+                    'success': True,
+                    'found': True,
+                    'brand': dict(new_brand),
+                    'source': 'discovered',
+                    'discovery_tier': 3,
+                    'verified_contact': False,  # Tier 3 emails are inferred, NOT verified
+                    'is_new_discovery': True,
+                    'discovery_method': 'pattern_inference',
+                    'alternative_emails': tier3_result.get('alternatives', []),
+                    'warning': 'This email was inferred from common patterns and may not be correct. Try alternatives if no response.'
+                })
+
+        # ============================================
+        # STEP 6: Not found after all tiers
+        # ============================================
+        increment_discovery_attempt(creator_id, conn, cursor)
+        log_discovery_attempt(
+            creator_id, search_query, normalized_query,
+            None, None, 'not_found', conn, cursor
+        )
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'found': False,
+            'source': 'not_found',
+            'can_discover': True,
+            'search_query': search_query,
+            'domain_tried': tier2_result.get('domain') or tier3_result.get('domain'),
+            'message': f'We couldn\'t find PR contact information for "{search_query}". The brand may not have a public PR program or their contact info isn\'t publicly available.'
+        })
+
+    except Exception as e:
+        import traceback
+        print(f"❌ Error in discover_brand: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@pr_crm.route('/brands/search-suggestions', methods=['GET'])
+def get_search_suggestions():
+    """
+    Get brand name suggestions for search autocomplete.
+    Returns top matches from both curated and discovered brands.
+    """
+    try:
+        query = request.args.get('q', '').strip()
+        if len(query) < 2:
+            return jsonify({'success': True, 'suggestions': []})
+
+        normalized = normalize_brand_name(query)
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Search curated brands first, then discovered
+        cursor.execute('''
+            SELECT id, brand_name, logo_url, category, source
+            FROM pr_brands
+            WHERE brand_name ILIKE %s
+               OR LOWER(REPLACE(brand_name, ' ', '')) ILIKE %s
+            ORDER BY
+                CASE WHEN source = 'curated' THEN 0 ELSE 1 END,
+                search_count DESC NULLS LAST,
+                brand_name ASC
+            LIMIT 8
+        ''', (f'%{query}%', f'%{normalized}%'))
+
+        suggestions = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'suggestions': [
+                {
+                    'id': s['id'],
+                    'name': s['brand_name'],
+                    'logo': s['logo_url'],
+                    'category': s['category'],
+                    'source': s.get('source', 'curated')
+                }
+                for s in suggestions
+            ]
+        })
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@pr_crm.route('/brands/top-searched', methods=['GET'])
+def get_top_searched_brands():
+    """
+    Get top searched brands for discovery analytics.
+    Admin endpoint for reviewing which brands to add to curated list.
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Top searched discovered brands (candidates for curation)
+        cursor.execute('''
+            SELECT
+                normalized_query,
+                COUNT(*) as search_count,
+                COUNT(DISTINCT creator_id) as unique_searchers,
+                MAX(created_at) as last_searched,
+                result_status
+            FROM brand_discovery_logs
+            WHERE created_at >= NOW() - INTERVAL '30 days'
+            GROUP BY normalized_query, result_status
+            ORDER BY search_count DESC
+            LIMIT 50
+        ''')
+
+        top_queries = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'top_queries': top_queries
         })
 
     except Exception as e:
