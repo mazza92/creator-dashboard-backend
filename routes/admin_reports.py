@@ -2049,6 +2049,39 @@ def get_founder_dashboard():
         """)
         unique_pitch_users = cursor.fetchone()['count']
 
+        # ================== TOP BRANDS BY PITCHES ==================
+        # Most pitched brands by creators - useful for partnership insights
+        cursor.execute("""
+            SELECT
+                pb.id as brand_id,
+                pb.brand_name,
+                pb.category,
+                pb.logo_url,
+                COUNT(*) as saves,
+                SUM(CASE WHEN cp.pitched_at IS NOT NULL THEN 1 ELSE 0 END) as pitch_count,
+                SUM(CASE WHEN cp.stage = 'replied' THEN 1 ELSE 0 END) as replies,
+                SUM(CASE WHEN cp.stage = 'deal_closed' THEN 1 ELSE 0 END) as deals
+            FROM creator_pipeline cp
+            JOIN pr_brands pb ON cp.brand_id = pb.id
+            GROUP BY pb.id, pb.brand_name, pb.category, pb.logo_url
+            ORDER BY saves DESC
+            LIMIT 15
+        """)
+        top_brands = []
+        for row in cursor.fetchall():
+            reply_rate = round((row['replies'] / row['pitch_count']) * 100, 1) if row['pitch_count'] > 0 else 0
+            top_brands.append({
+                'brand_id': row['brand_id'],
+                'brand_name': row['brand_name'],
+                'category': row['category'],
+                'logo_url': row['logo_url'],
+                'saves': row['saves'],
+                'pitch_count': row['pitch_count'],
+                'replies': row['replies'],
+                'deals': row['deals'],
+                'reply_rate': reply_rate
+            })
+
         conn.close()
 
         # ================== TRAFFIC from GA4 ==================
@@ -2096,6 +2129,7 @@ def get_founder_dashboard():
             'at_limit_users': at_limit_users,
             'at_limit_count': at_limit_count,
             'near_limit_count': near_limit_count,
+            'top_brands': top_brands,
             'health': {
                 'signups': {
                     'this_week': signups_this_period,  # Keep key name for frontend compat
