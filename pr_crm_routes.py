@@ -927,13 +927,13 @@ def discover_brand():
             elif any(w in brand_name_lower for w in ['fashion', 'style', 'wear', 'cloth']):
                 category = 'fashion'
 
-            # Insert into pr_brands as discovered
+            # Insert into pr_brands as discovered (status=draft for moderation)
             cursor.execute('''
                 INSERT INTO pr_brands (
                     brand_name, website, contact_email, category,
-                    source, discovery_tier, discovered_at, verified_contact, search_count
+                    source, discovery_tier, discovered_at, verified_contact, search_count, status
                 )
-                VALUES (%s, %s, %s, %s, 'discovered', 1, NOW(), %s, 1)
+                VALUES (%s, %s, %s, %s, 'discovered', 1, NOW(), %s, 1, 'draft')
                 ON CONFLICT DO NOTHING
                 RETURNING id, brand_name, website, contact_email, category, source, discovery_tier, verified_contact
             ''', (
@@ -1029,13 +1029,13 @@ def discover_brand():
             elif any(w in brand_name_lower for w in ['food', 'drink', 'snack', 'beverage']):
                 category = 'food'
 
-            # Insert as Tier 2 discovered brand
+            # Insert as Tier 2 discovered brand (status=draft for moderation)
             cursor.execute('''
                 INSERT INTO pr_brands (
                     brand_name, website, contact_email, category,
-                    source, discovery_tier, discovered_at, verified_contact, search_count
+                    source, discovery_tier, discovered_at, verified_contact, search_count, status
                 )
-                VALUES (%s, %s, %s, %s, 'discovered', 2, NOW(), true, 1)
+                VALUES (%s, %s, %s, %s, 'discovered', 2, NOW(), true, 1, 'draft')
                 ON CONFLICT DO NOTHING
                 RETURNING id, brand_name, website, contact_email, category, source, discovery_tier, verified_contact
             ''', (
@@ -1112,13 +1112,13 @@ def discover_brand():
             elif any(w in brand_name_lower for w in ['food', 'drink', 'snack', 'beverage']):
                 category = 'food'
 
-            # Insert as Tier 3 discovered brand (UNVERIFIED)
+            # Insert as Tier 3 discovered brand (UNVERIFIED, status=draft for moderation)
             cursor.execute('''
                 INSERT INTO pr_brands (
                     brand_name, website, contact_email, category,
-                    source, discovery_tier, discovered_at, verified_contact, search_count
+                    source, discovery_tier, discovered_at, verified_contact, search_count, status
                 )
-                VALUES (%s, %s, %s, %s, 'discovered', 3, NOW(), false, 1)
+                VALUES (%s, %s, %s, %s, 'discovered', 3, NOW(), false, 1, 'draft')
                 ON CONFLICT DO NOTHING
                 RETURNING id, brand_name, website, contact_email, category, source, discovery_tier, verified_contact
             ''', (
