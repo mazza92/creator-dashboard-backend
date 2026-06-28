@@ -36,6 +36,7 @@ from markupsafe import Markup, escape
 import decimal
 import redis
 from redis.exceptions import ConnectionError, AuthenticationError
+import re
 from retry import retry
 import pusher
 from flask import Flask, request, jsonify, session
@@ -540,6 +541,67 @@ ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'pdf', 'txt', 'mp4', 'mov', 'webm', 
 # Utility function to validate file extensions
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def normalize_social_handle(handle, platform=None):
+    """
+    Normalize a social media handle by:
+    - Extracting handle from full URLs
+    - Removing @ symbols
+    - Removing emojis and special characters
+    - Stripping whitespace
+
+    Args:
+        handle: The raw input (could be URL, @username, or just username)
+        platform: Optional platform name for URL parsing (instagram, tiktok, youtube, etc.)
+
+    Returns:
+        Cleaned handle string (just the username part)
+    """
+    if not handle:
+        return handle
+
+    handle = str(handle).strip()
+
+    # URL patterns for common social platforms
+    url_patterns = [
+        # Instagram
+        r'(?:https?://)?(?:www\.)?instagram\.com/([a-zA-Z0-9_.]+)/?.*',
+        # TikTok
+        r'(?:https?://)?(?:www\.)?tiktok\.com/@?([a-zA-Z0-9_.]+)/?.*',
+        # YouTube channel/user
+        r'(?:https?://)?(?:www\.)?youtube\.com/(?:@|channel/|user/|c/)?([a-zA-Z0-9_-]+)/?.*',
+        # Twitter/X
+        r'(?:https?://)?(?:www\.)?(?:twitter|x)\.com/([a-zA-Z0-9_]+)/?.*',
+        # Pinterest
+        r'(?:https?://)?(?:www\.)?pinterest\.com/([a-zA-Z0-9_]+)/?.*',
+    ]
+
+    # Try to extract handle from URL
+    for pattern in url_patterns:
+        match = re.match(pattern, handle, re.IGNORECASE)
+        if match:
+            handle = match.group(1)
+            break
+
+    # Remove leading @ symbols (handle multiple @@)
+    handle = handle.lstrip('@')
+
+    # Remove emojis and most special characters, keep alphanumeric, underscore, period, hyphen
+    # This regex removes emojis and special unicode characters
+    handle = re.sub(r'[^\w.\-]', '', handle, flags=re.UNICODE)
+
+    # Remove any remaining non-ASCII characters (emojis that slipped through)
+    handle = handle.encode('ascii', 'ignore').decode('ascii')
+
+    # Clean up multiple dots or underscores
+    handle = re.sub(r'\.{2,}', '.', handle)
+    handle = re.sub(r'_{2,}', '_', handle)
+
+    # Strip leading/trailing special chars
+    handle = handle.strip('._-')
+
+    return handle
 
 
 def is_production_environment():
@@ -1628,6 +1690,18 @@ def complete_profile():
             social_links_list = json.loads(social_links)
         except Exception:
             social_links_list = []
+
+        # Normalize all social handles in the list
+        for link in social_links_list:
+            if link.get('handle'):
+                raw_handle = link['handle']
+                link['handle'] = normalize_social_handle(raw_handle, link.get('platform'))
+                if raw_handle != link['handle']:
+                    app.logger.info(f"📝 Handle normalized: '{raw_handle}' -> '{link['handle']}'")
+
+        # Update social_links JSON with normalized handles
+        social_links = json.dumps(social_links_list)
+
         try:
             platforms = [link.get('platform') for link in social_links_list if link.get('platform')]
             followers_count = sum(int(link.get('followersCount', 0)) for link in social_links_list if str(link.get('followersCount', '')).isdigit())
@@ -1808,9 +1882,13 @@ def onboarding_step1():
             return jsonify({'error': 'Not authenticated'}), 401
 
         data = request.get_json() or {}
-        username = data.get('username', '').strip()
+        raw_username = data.get('username', '').strip()
         platform = data.get('platform', '').lower()
         followers = int(data.get('followers', 0) or 0)
+
+        # Normalize the social handle (remove URLs, @, emojis, special chars)
+        username = normalize_social_handle(raw_username, platform)
+        app.logger.info(f"📝 Handle normalized: '{raw_username}' -> '{username}'")
 
         if not username:
             return jsonify({'error': 'Username is required'}), 400
@@ -5336,6 +5414,14 @@ def register_creator():
         except json.JSONDecodeError:
             conn.close()
             return jsonify({'error': 'Invalid JSON format'}), 400
+
+        # Normalize all social handles
+        for link in social_links:
+            if link.get('handle'):
+                raw_handle = link['handle']
+                link['handle'] = normalize_social_handle(raw_handle, link.get('platform'))
+                if raw_handle != link['handle']:
+                    app.logger.info(f"📝 Handle normalized: '{raw_handle}' -> '{link['handle']}'")
 
         metrics = {
             "total_posts": int(request.form.get('totalPosts', 0)),
