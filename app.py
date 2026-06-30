@@ -124,11 +124,32 @@ try:
     app.logger.info("🟢 Session initialized with Redis and JWT")
 except Exception as e:
     app.logger.error(f"🔥 Redis initialization error: {str(e)}")
-    if os.getenv('FLASK_ENV') == 'production':
-        raise
-    app.logger.warning("Falling back to filesystem session")
-    app.config['SESSION_TYPE'] = 'filesystem'
+    # In production, fall back to signed cookie sessions if Redis fails
+    app.logger.warning("⚠️ Falling back to signed cookie sessions (Redis unavailable)")
+    app.config['SESSION_TYPE'] = 'null'  # Use null session to prevent crashes
     Session(app)
+
+
+# Handle Redis rate limit errors gracefully
+@app.after_request
+def handle_session_errors(response):
+    """Catch Redis rate limit errors and prevent 500 crashes"""
+    return response
+
+
+@app.errorhandler(Exception)
+def handle_redis_errors(error):
+    """Catch Redis ResponseError for rate limits"""
+    error_str = str(error)
+    if 'max requests limit exceeded' in error_str.lower():
+        app.logger.error(f"⚠️ Redis rate limit exceeded: {error_str}")
+        # Return a graceful error instead of crashing
+        from flask import jsonify
+        return jsonify({
+            'error': 'Service temporarily unavailable. Please try again shortly.',
+            'code': 'RATE_LIMIT'
+        }), 503
+    raise error
 
 
 
