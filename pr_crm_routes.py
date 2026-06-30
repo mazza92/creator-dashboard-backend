@@ -2004,6 +2004,32 @@ def generate_pitch():
             conn.close()
             return jsonify({'success': False, 'error': 'Brand not found'}), 404
 
+        # ========== CREDIT UNLOCK GATE ==========
+        # Check if user can unlock this brand (or already has)
+        # Skip unlock check for follow-ups (brand already unlocked if they pitched before)
+        if not is_followup:
+            unlock_result = attempt_unlock(creator_id, brand['id'], conn)
+
+            if unlock_result['status'] == 'paywall':
+                cursor.close()
+                conn.close()
+                return jsonify({
+                    'success': False,
+                    'paywall': True,
+                    'remaining': 0,
+                    'reset_at': unlock_result.get('reset_at'),
+                    'message': "You've used all 5 brand unlocks this month."
+                }), 402  # Payment Required
+
+            if unlock_result['status'] == 'error':
+                cursor.close()
+                conn.close()
+                return jsonify({'success': False, 'error': unlock_result.get('error', 'Unlock failed')}), 500
+
+            # Log the unlock for debugging
+            print(f"[generate_pitch] Unlock result for creator {creator_id}, brand {brand['id']}: {unlock_result}")
+        # ========================================
+
         # Get creator profile with collab count for tiered pitch generation
         cursor.execute('''
             SELECT c.*, u.first_name, u.last_name, u.email,
@@ -2040,13 +2066,18 @@ def generate_pitch():
         print(f"[generate_pitch] Brand ID: {brand.get('id')}, Name: {brand.get('brand_name')}, is_followup: {is_followup}")
         print(f"[generate_pitch] Email: {brand.get('contact_email')}, App URL: {brand.get('application_form_url')}")
 
+        # Get current unlock balance for response
+        unlock_balance = get_creator_unlock_balance(creator_id)
+
         return jsonify({
             'success': True,
             **pitch,
             'brand_email': brand.get('contact_email'),
             'brand_name': brand.get('brand_name'),
             'brand_logo': brand.get('logo_url'),
-            'application_form_url': brand.get('application_form_url')
+            'application_form_url': brand.get('application_form_url'),
+            'brand_unlocked': True,  # Indicates this brand is now unlocked
+            'unlock_balance': unlock_balance  # Current remaining unlocks
         })
 
     except Exception as e:
@@ -3094,6 +3125,248 @@ def get_subscription_status(creator_id):
     cursor.close()
     conn.close()
     return result.get('subscription_tier', 'free') if result else 'free'
+
+
+# ============================================
+# CREDIT UNLOCK SYSTEM
+# ============================================
+
+def attempt_unlock(creator_id, brand_id, conn=None):
+    """
+    Core unlock gate function. Call this before generating a pitch.
+
+    Returns:
+        - {"status": "already_unlocked", "credits_used": 0} - brand was previously unlocked
+        - {"status": "unlocked", "credits_used": 0|1, "remaining": N} - brand now unlocked
+        - {"status": "paywall", "credits_used": 0, "reset_at": timestamp} - no credits left
+    """
+    close_conn = False
+    if not conn:
+        conn = get_db_connection()
+        close_conn = True
+
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        # Check if already unlocked (free pass - no credit charge)
+        cursor.execute('''
+            SELECT id FROM brand_unlocks
+            WHERE creator_id = %s AND brand_id = %s
+        ''', (creator_id, brand_id))
+
+        if cursor.fetchone():
+            return {"status": "already_unlocked", "credits_used": 0}
+
+        # Get creator's unlock status
+        cursor.execute('''
+            SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier
+            FROM creators WHERE id = %s
+        ''', (creator_id,))
+        creator = cursor.fetchone()
+
+        if not creator:
+            return {"status": "error", "error": "Creator not found"}
+
+        # Pro/Elite users get unlimited unlocks
+        if creator.get('unlocks_tier') == 'pro' or creator.get('subscription_tier') in ('pro', 'elite'):
+            # Create unlock record without charging
+            cursor.execute('''
+                INSERT INTO brand_unlocks (creator_id, brand_id, unlocked_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (creator_id, brand_id) DO NOTHING
+            ''', (creator_id, brand_id))
+            conn.commit()
+            return {"status": "unlocked", "credits_used": 0, "remaining": None, "tier": "pro"}
+
+        # Free tier: check if reset needed
+        unlocks_remaining = creator.get('unlocks_remaining') or 0
+        unlocks_reset_at = creator.get('unlocks_reset_at')
+
+        if unlocks_reset_at and datetime.now() > unlocks_reset_at:
+            # Reset the monthly credits
+            unlocks_remaining = 5
+            cursor.execute('''
+                UPDATE creators
+                SET unlocks_remaining = 5,
+                    unlocks_reset_at = NOW() + INTERVAL '30 days'
+                WHERE id = %s
+            ''', (creator_id,))
+            cursor.execute('SELECT unlocks_reset_at FROM creators WHERE id = %s', (creator_id,))
+            unlocks_reset_at = cursor.fetchone().get('unlocks_reset_at')
+
+        # Check if user has credits
+        if unlocks_remaining <= 0:
+            return {
+                "status": "paywall",
+                "credits_used": 0,
+                "remaining": 0,
+                "reset_at": unlocks_reset_at.isoformat() if unlocks_reset_at else None
+            }
+
+        # Deduct credit and create unlock
+        cursor.execute('''
+            UPDATE creators
+            SET unlocks_remaining = unlocks_remaining - 1
+            WHERE id = %s
+            RETURNING unlocks_remaining
+        ''', (creator_id,))
+        new_remaining = cursor.fetchone().get('unlocks_remaining')
+
+        cursor.execute('''
+            INSERT INTO brand_unlocks (creator_id, brand_id, unlocked_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (creator_id, brand_id) DO NOTHING
+        ''', (creator_id, brand_id))
+
+        conn.commit()
+
+        return {
+            "status": "unlocked",
+            "credits_used": 1,
+            "remaining": new_remaining,
+            "tier": "free"
+        }
+
+    except Exception as e:
+        print(f"Error in attempt_unlock: {e}")
+        conn.rollback()
+        return {"status": "error", "error": str(e)}
+    finally:
+        cursor.close()
+        if close_conn:
+            conn.close()
+
+
+def check_brand_unlock_status(creator_id, brand_id, conn=None):
+    """Check if a brand is already unlocked for a creator"""
+    close_conn = False
+    if not conn:
+        conn = get_db_connection()
+        close_conn = True
+
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    cursor.execute('''
+        SELECT id, unlocked_at FROM brand_unlocks
+        WHERE creator_id = %s AND brand_id = %s
+    ''', (creator_id, brand_id))
+    result = cursor.fetchone()
+    cursor.close()
+
+    if close_conn:
+        conn.close()
+
+    return result is not None
+
+
+def get_creator_unlock_balance(creator_id, conn=None):
+    """Get creator's current unlock balance and status"""
+    close_conn = False
+    if not conn:
+        conn = get_db_connection()
+        close_conn = True
+
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    cursor.execute('''
+        SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier
+        FROM creators WHERE id = %s
+    ''', (creator_id,))
+    creator = cursor.fetchone()
+    cursor.close()
+
+    if close_conn:
+        conn.close()
+
+    if not creator:
+        return None
+
+    # Pro/Elite = unlimited
+    if creator.get('unlocks_tier') == 'pro' or creator.get('subscription_tier') in ('pro', 'elite'):
+        return {
+            "tier": "pro",
+            "remaining": None,  # unlimited
+            "reset_at": None,
+            "is_unlimited": True
+        }
+
+    # Check if reset needed
+    unlocks_remaining = creator.get('unlocks_remaining') or 0
+    unlocks_reset_at = creator.get('unlocks_reset_at')
+
+    if unlocks_reset_at and datetime.now() > unlocks_reset_at:
+        unlocks_remaining = 5  # Would reset on next attempt_unlock
+
+    return {
+        "tier": "free",
+        "remaining": unlocks_remaining,
+        "reset_at": unlocks_reset_at.isoformat() if unlocks_reset_at else None,
+        "is_unlimited": False
+    }
+
+
+@pr_crm.route('/unlocks/balance', methods=['GET'])
+def get_unlock_balance():
+    """API endpoint to get creator's current unlock balance"""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    balance = get_creator_unlock_balance(creator_id)
+    if not balance:
+        return jsonify({'success': False, 'error': 'Creator not found'}), 404
+
+    return jsonify({'success': True, **balance})
+
+
+@pr_crm.route('/unlocks/check/<int:brand_id>', methods=['GET'])
+def check_unlock_status(brand_id):
+    """API endpoint to check if a specific brand is unlocked"""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    is_unlocked = check_brand_unlock_status(creator_id, brand_id)
+    balance = get_creator_unlock_balance(creator_id)
+
+    return jsonify({
+        'success': True,
+        'is_unlocked': is_unlocked,
+        'balance': balance
+    })
+
+
+@pr_crm.route('/unlocks/batch-check', methods=['POST'])
+def batch_check_unlocks():
+    """Check unlock status for multiple brands at once (for brand cards)"""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    data = request.get_json() or {}
+    brand_ids = data.get('brand_ids', [])
+
+    if not brand_ids:
+        return jsonify({'success': True, 'unlocked': [], 'balance': get_creator_unlock_balance(creator_id)})
+
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+    # Get all unlocked brand IDs for this creator
+    cursor.execute('''
+        SELECT brand_id FROM brand_unlocks
+        WHERE creator_id = %s AND brand_id = ANY(%s)
+    ''', (creator_id, brand_ids))
+
+    unlocked_ids = [row['brand_id'] for row in cursor.fetchall()]
+    cursor.close()
+    conn.close()
+
+    balance = get_creator_unlock_balance(creator_id)
+
+    return jsonify({
+        'success': True,
+        'unlocked': unlocked_ids,
+        'balance': balance
+    })
 
 
 @pr_crm.route('/pipeline/full', methods=['GET'])
