@@ -682,9 +682,9 @@ def send_limit_warning():
         context = {
             'message': """
                 <p style="margin: 0 0 16px;">Hey there,</p>
-                <p style="margin: 0 0 16px;">Quick heads up: you've used 2 of your 3 free brand contacts this month. One left.</p>
-                <p style="margin: 0 0 16px;">Once it's gone, you'll need to wait until next month to pitch more brands.</p>
-                <p style="margin: 0 0 16px;">If you want to keep going without limits, Pro is $19/month. You get unlimited pitches, unlimited brand contacts, and full access to every PR contact in the directory.</p>
+                <p style="margin: 0 0 16px;">Quick heads up: you've used 4 of your 5 free contacts this month. One left.</p>
+                <p style="margin: 0 0 16px;">Once it's gone, you'll need to wait until next month to contact more brands.</p>
+                <p style="margin: 0 0 16px;">If you want to keep going without limits, Pro is $19/month. You get unlimited contacts and full access to every PR email in the directory.</p>
                 <p style="margin: 0;">No pressure either way. Just wanted to give you a heads up before it resets.</p>
             """,
             'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
@@ -738,9 +738,9 @@ def send_limit_warning():
             context = {
                 'message': f"""
                     <p style="margin: 0 0 16px;">Hey {name},</p>
-                    <p style="margin: 0 0 16px;">Quick heads up: you've used 2 of your 3 free brand contacts this month. One left.</p>
-                    <p style="margin: 0 0 16px;">Once it's gone, you'll need to wait until next month to pitch more brands.</p>
-                    <p style="margin: 0 0 16px;">If you want to keep going without limits, Pro is $19/month. You get unlimited pitches, unlimited brand contacts, and full access to every PR contact in the directory.</p>
+                    <p style="margin: 0 0 16px;">Quick heads up: you've used 4 of your 5 free contacts this month. One left.</p>
+                    <p style="margin: 0 0 16px;">Once it's gone, you'll need to wait until next month to contact more brands.</p>
+                    <p style="margin: 0 0 16px;">If you want to keep going without limits, Pro is $19/month. You get unlimited contacts and full access to every PR email in the directory.</p>
                     <p style="margin: 0;">No pressure either way. Just wanted to give you a heads up before it resets.</p>
                 """,
                 'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
@@ -824,7 +824,7 @@ def send_limit_reached():
                 <p style="margin: 0 0 16px;">Hey there,</p>
                 <p style="margin: 0 0 16px;">You've used all 3 of your free brand contacts this month.</p>
                 <p style="margin: 0 0 16px;">That actually says something good about you. You're out there pitching, which is exactly how creators land PR packages.</p>
-                <p style="margin: 0 0 16px;">Your contacts will reset next month. But if you don't want to wait, Pro removes the limit entirely. $19/month, unlimited pitches, cancel anytime.</p>
+                <p style="margin: 0 0 16px;">Your contacts will reset next month. But if you don't want to wait, Pro removes the limit entirely. $19/month, unlimited contacts, cancel anytime.</p>
                 <p style="margin: 0;">Either way, nice work reaching out to brands. Most people never get this far.</p>
             """,
             'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
@@ -881,7 +881,7 @@ def send_limit_reached():
                     <p style="margin: 0 0 16px;">Hey {name},</p>
                     <p style="margin: 0 0 16px;">You've used all 3 of your free brand contacts this month.</p>
                     <p style="margin: 0 0 16px;">That actually says something good about you. You're out there pitching, which is exactly how creators land PR packages.</p>
-                    <p style="margin: 0 0 16px;">Your contacts will reset next month. But if you don't want to wait, Pro removes the limit entirely. $19/month, unlimited pitches, cancel anytime.</p>
+                    <p style="margin: 0 0 16px;">Your contacts will reset next month. But if you don't want to wait, Pro removes the limit entirely. $19/month, unlimited contacts, cancel anytime.</p>
                     <p style="margin: 0;">Either way, nice work reaching out to brands. Most people never get this far.</p>
                 """,
                 'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
@@ -949,7 +949,7 @@ def send_reengagement():
                 <p style="margin: 0 0 16px;">Hey there,</p>
                 <p style="margin: 0 0 16px;">You haven't reached out to a brand yet, and that's totally fine. A lot of people take their time.</p>
                 <p style="margin: 0 0 16px;">Just wanted to remind you that the brands in our directory work with creators of all sizes. We're talking 500-5k followers landing free products regularly.</p>
-                <p style="margin: 0 0 16px;">You still have 3 free contacts available. We handle the pitch writing, so it's really just picking a brand and hitting send.</p>
+                <p style="margin: 0 0 16px;">You still have 5 free contacts available. We handle the pitch writing, so it's really just picking a brand and hitting send.</p>
                 <p style="margin: 0;">Whenever you're ready.</p>
             """,
             'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
@@ -959,7 +959,7 @@ def send_reengagement():
         success, error = send_template_email(
             to_email=TEST_EMAIL,
             template_name='conversion_email.html',
-            subject='[TEST] Still have 3 free contacts',
+            subject='[TEST] Still have 5 free contacts',
             context=context
         )
         return jsonify({
@@ -1004,7 +1004,7 @@ def send_reengagement():
                     <p style="margin: 0 0 16px;">Hey {name},</p>
                     <p style="margin: 0 0 16px;">You haven't reached out to a brand yet, and that's totally fine. A lot of people take their time.</p>
                     <p style="margin: 0 0 16px;">Just wanted to remind you that the brands in our directory work with creators of all sizes. We're talking 500-5k followers landing free products regularly.</p>
-                    <p style="margin: 0 0 16px;">You still have 3 free contacts available. We handle the pitch writing, so it's really just picking a brand and hitting send.</p>
+                    <p style="margin: 0 0 16px;">You still have 5 free contacts available. We handle the pitch writing, so it's really just picking a brand and hitting send.</p>
                     <p style="margin: 0;">Whenever you're ready.</p>
                 """,
                 'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
@@ -1015,7 +1015,7 @@ def send_reengagement():
             success, error = send_template_email(
                 to_email=creator['email'],
                 template_name='conversion_email.html',
-                subject='Still have 3 free contacts',
+                subject='Still have 5 free contacts',
                 context=context
             )
 
@@ -1066,7 +1066,7 @@ def send_monthly_reset():
         context = {
             'message': """
                 <p style="margin: 0 0 16px;">Hey there,</p>
-                <p style="margin: 0 0 16px;">Your 3 free contacts just reset for the month.</p>
+                <p style="margin: 0 0 16px;">Your 5 free contacts just reset for the month.</p>
                 <p style="margin: 0 0 16px;">You used all of them last month, which is great. Most people don't even try. But you actually pitched brands, and that's how you land PR packages.</p>
                 <p style="margin: 0 0 16px;">If you want to skip the monthly limit, Pro is $19/month for unlimited contacts. But either way, you've got 3 fresh ones ready to go.</p>
                 <p style="margin: 0;">Good luck this month.</p>
@@ -1122,7 +1122,7 @@ def send_monthly_reset():
             context = {
                 'message': f"""
                     <p style="margin: 0 0 16px;">Hey {name},</p>
-                    <p style="margin: 0 0 16px;">Your 3 free contacts just reset for the month.</p>
+                    <p style="margin: 0 0 16px;">Your 5 free contacts just reset for the month.</p>
                     <p style="margin: 0 0 16px;">You used all of them last month, which is great. Most people don't even try. But you actually pitched brands, and that's how you land PR packages.</p>
                     <p style="margin: 0 0 16px;">If you want to skip the monthly limit, Pro is $19/month for unlimited contacts. But either way, you've got 3 fresh ones ready to go.</p>
                     <p style="margin: 0;">Good luck this month.</p>

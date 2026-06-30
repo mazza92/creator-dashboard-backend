@@ -3443,7 +3443,7 @@ NOTIFICATION_TEMPLATES = {
                 f"Browse by niche, filter by PR form or email, and start applying today.</p>"
                 f"<p><strong>Your free plan includes:</strong></p>"
                 f"<ul style='margin:0 0 16px;padding-left:20px;line-height:1.7;'>"
-                f"<li>3 brand contacts per month</li>"
+                f"<li>5 brand contacts per month</li>"
                 f"<li>Direct PR application form links</li>"
                 f"<li>Response rate insights per brand</li>"
                 f"</ul>"
