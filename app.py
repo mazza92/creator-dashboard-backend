@@ -75,6 +75,7 @@ app.config['SESSION_TYPE'] = 'redis'
 app.config['SESSION_PERMANENT'] = True
 app.config['SESSION_USE_SIGNER'] = False
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=1)
+app.config['SESSION_REFRESH_EACH_REQUEST'] = False  # CRITICAL: Don't refresh TTL on every request (saves Redis ops)
 # Production uses HTTPS with Secure cookies, development uses HTTP without
 app.config['SESSION_COOKIE_SECURE'] = is_production
 app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -1448,6 +1449,7 @@ def track_event():
 # Session Data Endpoint - Returns current session contents for debugging and frontend sync
 @app.route('/api/session', methods=['GET', 'OPTIONS'])
 def get_session():
+    """Read-only session check - does not trigger session save"""
     if request.method == 'OPTIONS':
         response = jsonify({'success': True})
         response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
@@ -1456,6 +1458,9 @@ def get_session():
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         return response, 200
 
+    # Mark session as not modified to prevent unnecessary Redis write
+    session.modified = False
+
     session_contents = {
         'user_id': session.get('user_id'),
         'user_role': session.get('user_role'),
@@ -1463,7 +1468,8 @@ def get_session():
         'brand_id': session.get('brand_id')
     }
 
-    app.logger.info(f"🔍 Session contents requested: {session_contents}")
+    # Only log occasionally to reduce noise
+    # app.logger.info(f"🔍 Session contents requested: {session_contents}")
 
     response = jsonify({'session_contents': session_contents})
     response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
