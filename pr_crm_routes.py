@@ -2042,6 +2042,18 @@ def generate_pitch():
 
             # Track if this was a fresh unlock or already unlocked
             was_already_unlocked = (unlock_result['status'] == 'already_unlocked')
+
+            # IMPORTANT: Store kit_token in pipeline NOW (not waiting for track_pitch)
+            # This ensures view tracking works even if user copies pitch without clicking "Pitch Sent"
+            kit_token = generate_kit_token(creator_id, brand['id'])
+            cursor.execute('''
+                UPDATE creator_pipeline
+                SET kit_token = COALESCE(kit_token, %s),
+                    updated_at = NOW()
+                WHERE creator_id = %s AND brand_id = %s
+            ''', (kit_token, creator_id, brand['id']))
+            conn.commit()
+            print(f"[generate_pitch] Stored kit_token: {kit_token} for pipeline creator={creator_id}, brand={brand['id']}")
         else:
             # For follow-ups, brand was already unlocked when they first pitched
             was_already_unlocked = True
