@@ -2006,31 +2006,32 @@ def generate_pitch():
             conn.close()
             return jsonify({'success': False, 'error': 'Brand not found'}), 404
 
-        # ========== CREDIT UNLOCK CHECK (NO DEDUCTION) ==========
-        # Check if user CAN unlock this brand - actual credit deduction happens in confirm-send
-        # Skip check for follow-ups (brand already unlocked if they pitched before)
+        # ========== CREDIT UNLOCK GATE ==========
+        # Deduct credit when user clicks "Pitch Now" / "Contact"
+        # Value delivered: brand contact email + AI-generated pitch
+        # Skip for follow-ups (brand already unlocked if they pitched before)
         if not is_followup:
-            unlock_check = can_unlock(creator_id, brand['id'], conn)
+            unlock_result = attempt_unlock(creator_id, brand['id'], conn)
 
-            if not unlock_check.get('can_unlock'):
+            if unlock_result['status'] == 'paywall':
                 cursor.close()
                 conn.close()
                 return jsonify({
                     'success': False,
                     'paywall': True,
                     'remaining': 0,
-                    'reset_at': unlock_check.get('reset_at'),
+                    'reset_at': unlock_result.get('reset_at'),
                     'message': "You've used all 5 contacts this month."
                 }), 402  # Payment Required
 
-            if unlock_check.get('error'):
+            if unlock_result['status'] == 'error':
                 cursor.close()
                 conn.close()
-                return jsonify({'success': False, 'error': unlock_check.get('error', 'Unlock check failed')}), 500
+                return jsonify({'success': False, 'error': unlock_result.get('error', 'Unlock failed')}), 500
 
-            # Log the check for debugging (no credit deducted yet!)
-            print(f"[generate_pitch] Unlock CHECK (no deduction) for creator {creator_id}, brand {brand['id']}: {unlock_check}")
-        # =========================================================
+            # Log the unlock (credit deducted on first access to this brand)
+            print(f"[generate_pitch] Unlock result for creator {creator_id}, brand {brand['id']}: {unlock_result}")
+        # ========================================
 
         # Get creator profile with collab count for tiered pitch generation
         cursor.execute('''
@@ -3697,28 +3698,10 @@ def confirm_send(pipeline_id):
             WHERE id = %s AND creator_id = %s
         """, (pipeline_id, creator_id))
 
-        # ========== CREDIT UNLOCK DEDUCTION ==========
-        # Only deduct credit and track if this is a NEW send (not a re-confirm)
+        # Track send confirmation (credit already deducted in generate-pitch)
+        # Only update counters if this is a NEW send (not a re-confirm)
         if not pipeline_item.get('pitched_at') and not pipeline_item.get('send_confirmed'):
-            brand_id = pipeline_item.get('brand_id')
-            if brand_id:
-                # Actually deduct the credit now (on confirmed send)
-                unlock_result = attempt_unlock(creator_id, brand_id, conn)
-                print(f"[confirm_send] Unlock result for creator {creator_id}, brand {brand_id}: {unlock_result}")
-
-                # If paywall hit (edge case - user ran out while composing), return error
-                if unlock_result.get('status') == 'paywall':
-                    cursor.close()
-                    conn.close()
-                    return jsonify({
-                        'success': False,
-                        'paywall': True,
-                        'remaining': 0,
-                        'reset_at': unlock_result.get('reset_at'),
-                        'message': "You've used all 5 contacts this month."
-                    }), 402
-
-            # Legacy: also increment old pitch counter for backwards compatibility
+            # Legacy: increment old pitch counter for backwards compatibility
             cursor.execute("""
                 UPDATE creators
                 SET pitches_sent_this_week = COALESCE(pitches_sent_this_week, 0) + 1,
@@ -3728,7 +3711,7 @@ def confirm_send(pipeline_id):
             """, (creator_id,))
             result = cursor.fetchone()
 
-            # Schedule quota email when user hits 5th contact (changed from 3)
+            # Schedule quota email when user hits 5th contact
             if result and result.get('pitches_sent_this_week') == 5 and result.get('subscription_tier', 'free') == 'free':
                 cursor.execute("""
                     UPDATE creators
