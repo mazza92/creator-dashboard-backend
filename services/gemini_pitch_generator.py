@@ -45,7 +45,12 @@ except Exception as e1:
 GEMINI_MODEL = "gemini-2.5-flash"
 TEMPERATURE = 0.6
 TOP_P = 0.9
-MAX_OUTPUT_TOKENS = 800
+# gemini-2.5-flash "thinks" by default. On the deprecated google-generativeai
+# SDK we cannot set thinking_budget=0, so thinking tokens count against this
+# cap. Keep it high enough that thinking + the full JSON both fit, otherwise the
+# JSON is truncated mid-object and parsing fails. The pitch JSON itself is only
+# ~700 tokens; the headroom is for reasoning tokens.
+MAX_OUTPUT_TOKENS = 4096
 MAX_RETRIES = 2
 TIMEOUT_SECONDS = 5
 
