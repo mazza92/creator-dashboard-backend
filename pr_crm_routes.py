@@ -1807,8 +1807,9 @@ def get_pitch_limits():
         if last_reset is None or last_reset < month_start:
             pitches_used = 0
 
-        # Determine limits based on tier - FREE users get 3 pitches per MONTH
-        FREE_MONTHLY_LIMIT = 3
+        # DEPRECATED: Use /api/pr-crm/unlocks/balance instead
+        # FREE users get 5 contacts per MONTH (new credit unlock system)
+        FREE_MONTHLY_LIMIT = 5
         is_pro = tier in ['pro', 'elite']
 
         return jsonify({
@@ -1880,8 +1881,9 @@ def track_pitch():
         if last_reset is None or last_reset < month_start:
             pitches_used = 0
 
-        # Check if limit reached for free users - 3 pitches per MONTH
-        FREE_MONTHLY_LIMIT = 3
+        # DEPRECATED: Use new credit unlock system (attempt_unlock) instead
+        # Free users get 5 contacts per MONTH
+        FREE_MONTHLY_LIMIT = 5
         is_pro = tier in ['pro', 'elite']
 
         if not is_pro and pitches_used >= FREE_MONTHLY_LIMIT:
@@ -1889,7 +1891,7 @@ def track_pitch():
             conn.close()
             return jsonify({
                 'success': False,
-                'error': 'Monthly pitch limit reached. Upgrade to Pro for unlimited pitches!',
+                'error': 'Monthly contact limit reached. Upgrade to Pro for unlimited contacts!',
                 'upgrade_required': True,
                 'used': pitches_used,
                 'limit': FREE_MONTHLY_LIMIT
@@ -2004,31 +2006,31 @@ def generate_pitch():
             conn.close()
             return jsonify({'success': False, 'error': 'Brand not found'}), 404
 
-        # ========== CREDIT UNLOCK GATE ==========
-        # Check if user can unlock this brand (or already has)
-        # Skip unlock check for follow-ups (brand already unlocked if they pitched before)
+        # ========== CREDIT UNLOCK CHECK (NO DEDUCTION) ==========
+        # Check if user CAN unlock this brand - actual credit deduction happens in confirm-send
+        # Skip check for follow-ups (brand already unlocked if they pitched before)
         if not is_followup:
-            unlock_result = attempt_unlock(creator_id, brand['id'], conn)
+            unlock_check = can_unlock(creator_id, brand['id'], conn)
 
-            if unlock_result['status'] == 'paywall':
+            if not unlock_check.get('can_unlock'):
                 cursor.close()
                 conn.close()
                 return jsonify({
                     'success': False,
                     'paywall': True,
                     'remaining': 0,
-                    'reset_at': unlock_result.get('reset_at'),
-                    'message': "You've used all 5 brand unlocks this month."
+                    'reset_at': unlock_check.get('reset_at'),
+                    'message': "You've used all 5 contacts this month."
                 }), 402  # Payment Required
 
-            if unlock_result['status'] == 'error':
+            if unlock_check.get('error'):
                 cursor.close()
                 conn.close()
-                return jsonify({'success': False, 'error': unlock_result.get('error', 'Unlock failed')}), 500
+                return jsonify({'success': False, 'error': unlock_check.get('error', 'Unlock check failed')}), 500
 
-            # Log the unlock for debugging
-            print(f"[generate_pitch] Unlock result for creator {creator_id}, brand {brand['id']}: {unlock_result}")
-        # ========================================
+            # Log the check for debugging (no credit deducted yet!)
+            print(f"[generate_pitch] Unlock CHECK (no deduction) for creator {creator_id}, brand {brand['id']}: {unlock_check}")
+        # =========================================================
 
         # Get creator profile with collab count for tiered pitch generation
         cursor.execute('''
@@ -3148,6 +3150,8 @@ def attempt_unlock(creator_id, brand_id, conn=None):
     cursor = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
+        print(f"[attempt_unlock] Checking creator {creator_id}, brand {brand_id}")
+
         # Check if already unlocked (free pass - no credit charge)
         cursor.execute('''
             SELECT id FROM brand_unlocks
@@ -3155,6 +3159,7 @@ def attempt_unlock(creator_id, brand_id, conn=None):
         ''', (creator_id, brand_id))
 
         if cursor.fetchone():
+            print(f"[attempt_unlock] Brand {brand_id} already unlocked for creator {creator_id}")
             return {"status": "already_unlocked", "credits_used": 0}
 
         # Get creator's unlock status
@@ -3196,11 +3201,13 @@ def attempt_unlock(creator_id, brand_id, conn=None):
 
         # Check if user has credits
         if unlocks_remaining <= 0:
+            print(f"[attempt_unlock] PAYWALL triggered for creator {creator_id}: unlocks_remaining={creator.get('unlocks_remaining')}, tier={creator.get('unlocks_tier')}")
             return {
                 "status": "paywall",
                 "credits_used": 0,
                 "remaining": 0,
-                "reset_at": unlocks_reset_at.isoformat() if unlocks_reset_at else None
+                "reset_at": unlocks_reset_at.isoformat() if unlocks_reset_at else None,
+                "debug_db_value": creator.get('unlocks_remaining')  # For debugging
             }
 
         # Deduct credit and create unlock
@@ -3231,6 +3238,79 @@ def attempt_unlock(creator_id, brand_id, conn=None):
         print(f"Error in attempt_unlock: {e}")
         conn.rollback()
         return {"status": "error", "error": str(e)}
+    finally:
+        cursor.close()
+        if close_conn:
+            conn.close()
+
+
+def can_unlock(creator_id, brand_id, conn=None):
+    """
+    Check if a creator CAN unlock a brand WITHOUT actually deducting credits.
+    Use this for pre-checks before showing pitch UI. Call attempt_unlock() on actual send.
+
+    Returns:
+        - {"can_unlock": True, "already_unlocked": True} - brand already unlocked, free to use
+        - {"can_unlock": True, "already_unlocked": False, "remaining": N} - user has credits
+        - {"can_unlock": False, "paywall": True, "reset_at": timestamp} - no credits left
+    """
+    close_conn = False
+    if not conn:
+        conn = get_db_connection()
+        close_conn = True
+
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        # Check if already unlocked
+        cursor.execute('''
+            SELECT id FROM brand_unlocks
+            WHERE creator_id = %s AND brand_id = %s
+        ''', (creator_id, brand_id))
+
+        if cursor.fetchone():
+            return {"can_unlock": True, "already_unlocked": True}
+
+        # Get creator's unlock status
+        cursor.execute('''
+            SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier
+            FROM creators WHERE id = %s
+        ''', (creator_id,))
+        creator = cursor.fetchone()
+
+        if not creator:
+            return {"can_unlock": False, "error": "Creator not found"}
+
+        # Pro/Elite users always can unlock
+        if creator.get('unlocks_tier') == 'pro' or creator.get('subscription_tier') in ('pro', 'elite'):
+            return {"can_unlock": True, "already_unlocked": False, "remaining": None, "tier": "pro"}
+
+        # Free tier: check credits
+        unlocks_remaining = creator.get('unlocks_remaining') or 0
+        unlocks_reset_at = creator.get('unlocks_reset_at')
+
+        # Check if reset needed (but don't actually reset here)
+        if unlocks_reset_at and datetime.now() > unlocks_reset_at:
+            unlocks_remaining = 5  # Would be reset on next attempt_unlock
+
+        if unlocks_remaining <= 0:
+            return {
+                "can_unlock": False,
+                "paywall": True,
+                "remaining": 0,
+                "reset_at": unlocks_reset_at.isoformat() if unlocks_reset_at else None
+            }
+
+        return {
+            "can_unlock": True,
+            "already_unlocked": False,
+            "remaining": unlocks_remaining,
+            "tier": "free"
+        }
+
+    except Exception as e:
+        print(f"Error in can_unlock: {e}")
+        return {"can_unlock": False, "error": str(e)}
     finally:
         cursor.close()
         if close_conn:
@@ -3315,6 +3395,43 @@ def get_unlock_balance():
         return jsonify({'success': False, 'error': 'Creator not found'}), 404
 
     return jsonify({'success': True, **balance})
+
+
+@pr_crm.route('/unlocks/debug', methods=['GET'])
+def debug_unlock_status():
+    """DEBUG: Show raw DB values for current user's unlock state"""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+    # Get raw creator data
+    cursor.execute('''
+        SELECT id, unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier
+        FROM creators WHERE id = %s
+    ''', (creator_id,))
+    creator = cursor.fetchone()
+
+    # Count brand_unlocks
+    cursor.execute('SELECT COUNT(*) as count FROM brand_unlocks WHERE creator_id = %s', (creator_id,))
+    unlock_count = cursor.fetchone()['count']
+
+    cursor.close()
+    conn.close()
+
+    return jsonify({
+        'success': True,
+        'creator_id': creator_id,
+        'raw_db': {
+            'unlocks_tier': creator.get('unlocks_tier') if creator else None,
+            'unlocks_remaining': creator.get('unlocks_remaining') if creator else None,
+            'unlocks_reset_at': creator.get('unlocks_reset_at').isoformat() if creator and creator.get('unlocks_reset_at') else None,
+            'subscription_tier': creator.get('subscription_tier') if creator else None,
+        },
+        'brand_unlocks_count': unlock_count
+    })
 
 
 @pr_crm.route('/unlocks/check/<int:brand_id>', methods=['GET'])
@@ -3574,9 +3691,28 @@ def confirm_send(pipeline_id):
             WHERE id = %s AND creator_id = %s
         """, (pipeline_id, creator_id))
 
-        # Increment the monthly contact counter only if this contact was not
-        # already tracked when the email/form was opened from Discover.
+        # ========== CREDIT UNLOCK DEDUCTION ==========
+        # Only deduct credit and track if this is a NEW send (not a re-confirm)
         if not pipeline_item.get('pitched_at') and not pipeline_item.get('send_confirmed'):
+            brand_id = pipeline_item.get('brand_id')
+            if brand_id:
+                # Actually deduct the credit now (on confirmed send)
+                unlock_result = attempt_unlock(creator_id, brand_id, conn)
+                print(f"[confirm_send] Unlock result for creator {creator_id}, brand {brand_id}: {unlock_result}")
+
+                # If paywall hit (edge case - user ran out while composing), return error
+                if unlock_result.get('status') == 'paywall':
+                    cursor.close()
+                    conn.close()
+                    return jsonify({
+                        'success': False,
+                        'paywall': True,
+                        'remaining': 0,
+                        'reset_at': unlock_result.get('reset_at'),
+                        'message': "You've used all 5 contacts this month."
+                    }), 402
+
+            # Legacy: also increment old pitch counter for backwards compatibility
             cursor.execute("""
                 UPDATE creators
                 SET pitches_sent_this_week = COALESCE(pitches_sent_this_week, 0) + 1,
@@ -3586,9 +3722,8 @@ def confirm_send(pipeline_id):
             """, (creator_id,))
             result = cursor.fetchone()
 
-            # Per emailflowbrief.md Stage 5: When user hits 3rd pitch, schedule
-            # quota email for 7 days later (not immediately)
-            if result and result.get('pitches_sent_this_week') == 3 and result.get('subscription_tier', 'free') == 'free':
+            # Schedule quota email when user hits 5th contact (changed from 3)
+            if result and result.get('pitches_sent_this_week') == 5 and result.get('subscription_tier', 'free') == 'free':
                 cursor.execute("""
                     UPDATE creators
                     SET quota_email_send_at = NOW() + INTERVAL '7 days'
