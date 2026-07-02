@@ -3284,6 +3284,12 @@ def attempt_unlock(creator_id, brand_id, conn=None):
                 VALUES (%s, %s, NOW())
                 ON CONFLICT (creator_id, brand_id) DO NOTHING
             ''', (creator_id, brand_id))
+            # Also save to pipeline so brand appears in inbox
+            cursor.execute('''
+                INSERT INTO creator_pipeline (creator_id, brand_id, stage, created_at, updated_at)
+                VALUES (%s, %s, 'saved', NOW(), NOW())
+                ON CONFLICT (creator_id, brand_id) DO NOTHING
+            ''', (creator_id, brand_id))
             conn.commit()
             return {"status": "unlocked", "credits_used": 0, "remaining": None, "tier": "pro"}
 
@@ -3326,6 +3332,13 @@ def attempt_unlock(creator_id, brand_id, conn=None):
         cursor.execute('''
             INSERT INTO brand_unlocks (creator_id, brand_id, unlocked_at)
             VALUES (%s, %s, NOW())
+            ON CONFLICT (creator_id, brand_id) DO NOTHING
+        ''', (creator_id, brand_id))
+
+        # Also save to pipeline so brand appears in inbox
+        cursor.execute('''
+            INSERT INTO creator_pipeline (creator_id, brand_id, stage, created_at, updated_at)
+            VALUES (%s, %s, 'saved', NOW(), NOW())
             ON CONFLICT (creator_id, brand_id) DO NOTHING
         ''', (creator_id, brand_id))
 
