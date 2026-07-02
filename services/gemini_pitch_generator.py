@@ -294,9 +294,10 @@ FORBIDDEN_PHRASES = [
 ]
 
 # Gender-assumed words for women (when niche isn't explicitly women's fashion)
+# NOTE: "leggings" removed - they're unisex athletic wear (men's leggings are common at Gymshark, Lululemon, etc.)
 GENDER_WORDS_WOMEN = [
     "dress", "skirt", "blouse", "she'd", "her outfit", "her style",
-    "women's", "feminine", "bra ", "leggings"  # note space after bra to avoid "brand"
+    "women's", "feminine", "bra "  # note space after bra to avoid "brand"
 ]
 
 # Gender-assumed words for men (when niche isn't explicitly men's fashion)
