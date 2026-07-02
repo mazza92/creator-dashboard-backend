@@ -89,8 +89,9 @@ def check_subscription_limits(creator_id, action_type):
 
     tier = creator['subscription_tier'] or 'free'
 
-    # Weekly limits - 3 free pitches per week for free tier
-    FREE_WEEKLY_LIMIT = 3  # Free users get 3 brand contacts per week
+    # DEPRECATED: Use new credit unlock system in pr_crm_routes.py instead
+    # Free users now get 5 contacts per MONTH (not week)
+    FREE_MONTHLY_LIMIT = 5
     # Pro/Elite: unlimited
 
     if tier == 'free':
@@ -98,12 +99,12 @@ def check_subscription_limits(creator_id, action_type):
         if action_type == 'save_brand':
             return True, "", 0, -1  # Unlimited saves for free tier
 
-        # Free tier gets 3 pitches per week
+        # DEPRECATED: New system uses unlocks_remaining in creators table
         if action_type == 'send_pitch':
             count = creator['pitches_sent_this_week'] or 0
-            if count >= FREE_WEEKLY_LIMIT:
-                return False, f"You've used all {FREE_WEEKLY_LIMIT} free pitches this week. Upgrade to Pro for unlimited pitches!", count, FREE_WEEKLY_LIMIT
-            return True, "", count, FREE_WEEKLY_LIMIT
+            if count >= FREE_MONTHLY_LIMIT:
+                return False, f"You've used all your free contacts this month. Upgrade to Pro for unlimited contacts!", count, FREE_MONTHLY_LIMIT
+            return True, "", count, FREE_MONTHLY_LIMIT
 
     # Pro and Elite: unlimited everything
     return True, "", 0, -1  # -1 means unlimited

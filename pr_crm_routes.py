@@ -14,6 +14,14 @@ import requests
 from datetime import datetime
 from urllib.parse import urlparse, urljoin
 
+# Gemini Pitch Generator (LLM-based pitch generation)
+try:
+    from services.gemini_pitch_generator import get_generator as get_gemini_generator
+    HAS_GEMINI = True
+except ImportError as e:
+    HAS_GEMINI = False
+    print(f"⚠️ Gemini pitch generator not available: {e}")
+
 # Try to import BeautifulSoup for Tier 2 web scraping
 try:
     from bs4 import BeautifulSoup
@@ -2031,6 +2039,12 @@ def generate_pitch():
 
             # Log the unlock (credit deducted on first access to this brand)
             print(f"[generate_pitch] Unlock result for creator {creator_id}, brand {brand['id']}: {unlock_result}")
+
+            # Track if this was a fresh unlock or already unlocked
+            was_already_unlocked = (unlock_result['status'] == 'already_unlocked')
+        else:
+            # For follow-ups, brand was already unlocked when they first pitched
+            was_already_unlocked = True
         # ========================================
 
         # Get creator profile with collab count for tiered pitch generation
@@ -2059,14 +2073,102 @@ def generate_pitch():
         if not creator:
             return jsonify({'success': False, 'error': 'Creator not found'}), 404
 
-        # Generate pitch using Golden Template or Follow-up Template
+        # Generate pitch using Gemini LLM or Follow-up Template
         if is_followup:
+            # Follow-ups use template (no LLM cost for re-pitches)
             pitch = generate_followup_pitch(brand, creator)
+            pitch_body = pitch.get('body', '')
+            pitch_subject = pitch.get('subject', '')
+            pitch_source = 'template'
         else:
-            pitch = generate_golden_template_pitch(brand, creator)
+            # Initial pitches use Gemini LLM with template fallback
+            if HAS_GEMINI:
+                gemini = get_gemini_generator()
+                result = gemini.generate(
+                    brand=dict(brand),
+                    creator=dict(creator),
+                    template_fallback_fn=generate_golden_template_pitch
+                )
+
+                if result.success:
+                    pitch_body = result.body_plain or ''
+                    pitch_subject = result.subject or ''
+                    pitch_source = result.source  # 'gemini' or 'template_fallback'
+
+                    # Strip any portfolio/URL lines the LLM snuck in despite the prompt rule.
+                    # Split by line, drop any line containing portfolio-related keywords or URLs.
+                    import re as _re
+                    _PORTFOLIO_KW = ("http", "portfolio", "media kit", "find my", "check out my work")
+                    _clean_lines = [
+                        l for l in pitch_body.split('\n')
+                        if not any(kw in l.lower() for kw in _PORTFOLIO_KW)
+                    ]
+                    pitch_body = _re.sub(r'\n{3,}', '\n\n', '\n'.join(_clean_lines)).strip()
+
+                    # Inject portfolio link before the sign-off in the sending layer.
+                    # The sign-off is the last \n\n-separated paragraph (e.g. "Best,\nMahery").
+                    # We insert the portfolio line between the body and the sign-off so the
+                    # final order is: ...body...\n\nPlease find my portfolio here: {url}\n\nSign-off
+                    if creator.get('kit_published'):
+                        username = creator.get('username', creator.get('id', 'creator'))
+                        creator_id_for_kit = creator.get('id') or creator.get('creator_id')
+                        brand_id_for_kit = brand.get('id') or brand.get('brand_id')
+                        if creator_id_for_kit and brand_id_for_kit:
+                            kit_token = generate_kit_token(creator_id_for_kit, brand_id_for_kit)
+                            media_kit_url = f"https://newcollab.co/kit/{username}?ref={kit_token}"
+                        else:
+                            media_kit_url = f"https://newcollab.co/kit/{username}"
+
+                        portfolio_line = f"Please find my portfolio here: {media_kit_url}"
+
+                        # Detect sign-off: last paragraph that is short (≤3 lines, ≤40 chars/line)
+                        _paragraphs = pitch_body.split('\n\n')
+                        _last = _paragraphs[-1] if _paragraphs else ''
+                        _last_lines = [l for l in _last.split('\n') if l.strip()]
+                        _is_signoff = (
+                            len(_last_lines) <= 3
+                            and all(len(l) <= 40 for l in _last_lines)
+                            and len(_paragraphs) > 1
+                        )
+                        if _is_signoff:
+                            # Insert portfolio before the sign-off paragraph
+                            pitch_body = '\n\n'.join(_paragraphs[:-1]) + f"\n\n{portfolio_line}\n\n" + _last
+                        else:
+                            pitch_body += f"\n\n{portfolio_line}"
+                else:
+                    # Gemini failed completely - use template
+                    print(f"[generate_pitch] Gemini failed: {result.error}")
+                    pitch = generate_golden_template_pitch(brand, creator)
+                    pitch_body = pitch.get('body', '')
+                    pitch_subject = pitch.get('subject', '')
+                    pitch_source = 'template_fallback'
+            else:
+                # Gemini not available - use template
+                pitch = generate_golden_template_pitch(brand, creator)
+                pitch_body = pitch.get('body', '')
+                pitch_subject = pitch.get('subject', '')
+                pitch_source = 'template'
+
+        # Build response with normalized structure
+        # Template returns 'body', Gemini returns body_plain
+        # Normalize to 'body' for frontend compatibility
+        pitch_response = {
+            'subject': pitch_subject,
+            'body': pitch_body,
+            'source': pitch_source,
+        }
+
+        # Add template-specific fields if using template
+        if pitch_source in ('template', 'template_fallback') and not is_followup:
+            template_pitch = generate_golden_template_pitch(brand, creator)
+            pitch_response['creator_stats'] = template_pitch.get('creator_stats')
+            pitch_response['tier'] = template_pitch.get('tier')
+            pitch_response['tier_label'] = template_pitch.get('tier_label')
+            pitch_response['kit_published'] = template_pitch.get('kit_published')
+            pitch_response['media_kit_url'] = template_pitch.get('media_kit_url')
 
         # Debug: log what we're returning
-        print(f"[generate_pitch] Brand ID: {brand.get('id')}, Name: {brand.get('brand_name')}, is_followup: {is_followup}")
+        print(f"[generate_pitch] Brand ID: {brand.get('id')}, Name: {brand.get('brand_name')}, is_followup: {is_followup}, source: {pitch_source}")
         print(f"[generate_pitch] Email: {brand.get('contact_email')}, App URL: {brand.get('application_form_url')}")
 
         # Get current unlock balance for response
@@ -2074,12 +2176,13 @@ def generate_pitch():
 
         return jsonify({
             'success': True,
-            **pitch,
+            **pitch_response,
             'brand_email': brand.get('contact_email'),
             'brand_name': brand.get('brand_name'),
             'brand_logo': brand.get('logo_url'),
             'application_form_url': brand.get('application_form_url'),
-            'brand_unlocked': True,  # Indicates this brand is now unlocked
+            'brand_unlocked': not was_already_unlocked,  # True only if credit was used this time
+            'already_unlocked': was_already_unlocked,    # True if brand was previously unlocked (no credit used)
             'unlock_balance': unlock_balance  # Current remaining unlocks
         })
 
@@ -3402,6 +3505,39 @@ def get_unlock_balance():
         return jsonify({'success': False, 'error': 'Creator not found'}), 404
 
     return jsonify({'success': True, **balance})
+
+
+@pr_crm.route('/unlocks/brands', methods=['GET'])
+def get_unlocked_brands():
+    """Get list of brand IDs that the creator has already unlocked"""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        # Get all unlocked brand IDs for this creator
+        cursor.execute('''
+            SELECT brand_id FROM brand_unlocks
+            WHERE creator_id = %s
+        ''', (creator_id,))
+        rows = cursor.fetchall()
+        unlocked_brand_ids = [row['brand_id'] for row in rows]
+
+        return jsonify({
+            'success': True,
+            'unlocked_brand_ids': unlocked_brand_ids,
+            'count': len(unlocked_brand_ids)
+        })
+
+    except Exception as e:
+        print(f"Error in get_unlocked_brands: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
 
 
 @pr_crm.route('/unlocks/debug', methods=['GET'])
