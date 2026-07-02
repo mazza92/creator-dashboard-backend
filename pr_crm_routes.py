@@ -3375,9 +3375,15 @@ def get_creator_unlock_balance(creator_id, conn=None):
     if unlocks_reset_at and datetime.now() > unlocks_reset_at:
         unlocks_remaining = 5  # Would reset on next attempt_unlock
 
+    # Calculate used for Hunter.io style display: "X remaining (Y used of 5)"
+    FREE_LIMIT = 5
+    used = FREE_LIMIT - unlocks_remaining
+
     return {
         "tier": "free",
         "remaining": unlocks_remaining,
+        "used": used,
+        "limit": FREE_LIMIT,
         "reset_at": unlocks_reset_at.isoformat() if unlocks_reset_at else None,
         "is_unlimited": False
     }
