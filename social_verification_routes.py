@@ -341,20 +341,28 @@ def update_creator_verification(creator_id: int, platform: str, data: dict,
 @social_verification_bp.route('/check-region', methods=['GET'])
 def check_region():
     """
-    Pre-check if user's region is allowed before showing OAuth buttons.
-    Called before social connect step in onboarding.
+    Pre-check if user's region is allowed before showing onboarding.
+    Called on mount - does NOT require authentication.
+    Uses IP-based geolocation to detect country.
     """
-    creator_id = get_creator_id_from_session()
-    if not creator_id:
-        return jsonify({'error': 'Not authenticated'}), 401
+    creator_id = get_creator_id_from_session()  # Optional - may be None during early onboarding
 
+    # Try to get country from session first
     user_country = get_user_country_from_session()
+
+    # If no country in session, detect from IP
+    if not user_country:
+        user_country = detect_country_from_ip()
+        if user_country:
+            print(f"🌍 Region check - IP detection: {user_country}")
+
     country_code = (user_country or '').upper().strip()
 
+    # If we still have no country, allow by default (better UX than blocking)
     is_allowed = country_code not in RESTRICTED_REGIONS if country_code else True
 
-    # Log the region check
-    if not is_allowed:
+    # Log the region check (only if we have creator_id)
+    if not is_allowed and creator_id:
         result = {
             "passed": False,
             "failure_reason": "restricted_region",
@@ -362,6 +370,8 @@ def check_region():
             "stats": {"country": country_code}
         }
         log_verification_check(creator_id, 'region_precheck', None, result, country_code)
+    elif not is_allowed:
+        print(f"🚫 Region check blocked: {country_code} (no creator_id yet)")
 
     return jsonify({
         'allowed': is_allowed,
