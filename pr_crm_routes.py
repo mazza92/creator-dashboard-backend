@@ -120,6 +120,84 @@ def get_creator_id_from_session():
 
     return None
 
+
+def check_media_kit_complete(creator_id):
+    """
+    Check if creator has a complete and published media kit.
+    Returns (is_complete, error_message)
+
+    Required fields:
+    - display_name
+    - tagline
+    - niches (at least 1)
+    - content_types (at least 1)
+    - total_followers > 0
+    - is_published = true
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute('''
+            SELECT
+                mk.display_name,
+                mk.tagline,
+                mk.niches,
+                mk.content_types,
+                mk.total_followers,
+                mk.is_published
+            FROM media_kits mk
+            WHERE mk.creator_id = %s
+        ''', (creator_id,))
+
+        kit = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not kit:
+            return False, 'No media kit found. Please create and publish your media kit before pitching brands.'
+
+        if not kit.get('is_published'):
+            return False, 'Your media kit is not published. Please publish your media kit so brands can see your portfolio.'
+
+        # Check required fields
+        missing = []
+        if not kit.get('display_name') or not str(kit.get('display_name', '')).strip():
+            missing.append('display name')
+        if not kit.get('tagline') or not str(kit.get('tagline', '')).strip():
+            missing.append('tagline')
+
+        niches = kit.get('niches')
+        if isinstance(niches, str):
+            try:
+                niches = json.loads(niches)
+            except:
+                niches = []
+        if not niches or len(niches) == 0:
+            missing.append('niche')
+
+        content_types = kit.get('content_types')
+        if isinstance(content_types, str):
+            try:
+                content_types = json.loads(content_types)
+            except:
+                content_types = []
+        if not content_types or len(content_types) == 0:
+            missing.append('content types')
+
+        if not kit.get('total_followers') or kit.get('total_followers', 0) <= 0:
+            missing.append('follower count')
+
+        if missing:
+            return False, f'Your media kit is missing: {", ".join(missing)}. Please complete your media kit before pitching brands.'
+
+        return True, None
+
+    except Exception as e:
+        print(f"Error checking media kit: {e}")
+        return False, 'Unable to verify media kit. Please try again.'
+
+
 # ============================================
 # BRAND DISCOVERY ENDPOINTS
 # ============================================
@@ -1841,6 +1919,15 @@ def track_pitch():
     if not creator_id:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
+    # Check media kit completeness - must have complete & published kit to pitch
+    kit_complete, kit_error = check_media_kit_complete(creator_id)
+    if not kit_complete:
+        return jsonify({
+            'success': False,
+            'error': kit_error,
+            'media_kit_required': True
+        }), 403
+
     try:
         data = request.get_json()
         brand_id = data.get('brand_id')
@@ -1992,6 +2079,16 @@ def generate_pitch():
         brand_id = data.get('brand_id')
         brand_slug = data.get('slug')
         is_followup = data.get('is_followup', False)
+
+        # Check media kit completeness for initial pitches (not follow-ups)
+        if not is_followup:
+            kit_complete, kit_error = check_media_kit_complete(creator_id)
+            if not kit_complete:
+                return jsonify({
+                    'success': False,
+                    'error': kit_error,
+                    'media_kit_required': True
+                }), 403
 
         if not brand_id and not brand_slug:
             return jsonify({'success': False, 'error': 'brand_id or slug required'}), 400
