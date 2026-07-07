@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>About newcollab — Built for Creators Who Want Brand Deals</title>
+<meta name="description" content="newcollab was built by a founder who spent years in influencer marketing and saw the same problem everywhere: creators with great content, no system to reach brands. So we built one.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --rose:#E11D48;--rose-light:#FFF1F3;--rose-mid:#FECDD3;
+  --black:#0F0F0F;--black2:#1a1a1a;
+  --violet:#7C3AED;--violet-light:#F5F3FF;
+  --green:#059669;--green-light:#ECFDF5;
+  --amber:#D97706;
+  --bg:#FAFAF9;--surface:#FFFFFF;
+  --border:#EBEBEB;
+  --text:#0F0F0F;--text2:#4A4A4A;--text3:#8A8A8A;
+  --pro:linear-gradient(135deg,#E11D48,#7C3AED);
+  --sh:0 1px 4px rgba(0,0,0,.05),0 4px 16px rgba(0,0,0,.06);
+  --sh-lg:0 8px 40px rgba(0,0,0,.10);
+}
+html{scroll-behavior:smooth}
+body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var(--text);font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
+
+/* ── NAV ─────────────────────────────────────────────────── */
+nav{
+  position:sticky;top:0;z-index:100;
+  background:rgba(250,250,249,.94);backdrop-filter:blur(16px);
+  border-bottom:1px solid var(--border);
+  padding:0 24px;height:56px;
+  display:flex;align-items:center;justify-content:space-between;
+  transition:box-shadow .2s;
+}
+nav.scrolled{box-shadow:0 2px 20px rgba(0,0,0,.07)}
+.nav-logo{display:flex;align-items:center;gap:8px;text-decoration:none}
+.nav-logo-mark{width:28px;height:28px;background:var(--black);border-radius:7px;display:grid;place-items:center;color:#fff;font-weight:900;font-size:13px}
+.nav-logo-word{font-size:15px;font-weight:800;color:var(--text);letter-spacing:-.3px}
+.nav-logo-word em{color:var(--rose);font-style:normal}
+.nav-links{display:flex;align-items:center;gap:24px}
+.nav-links a{font-size:13px;font-weight:600;color:var(--text2);text-decoration:none;transition:color .15s}
+.nav-links a:hover,.nav-links a.active{color:var(--text)}
+.nav-right{display:flex;align-items:center;gap:10px}
+.nav-signin{font-size:13px;font-weight:600;color:var(--text2);text-decoration:none}
+.nav-cta{background:var(--black);color:#fff;padding:8px 16px;border-radius:9px;font-size:13px;font-weight:700;text-decoration:none;transition:opacity .15s}
+.nav-cta:hover{opacity:.85}
+@media(max-width:768px){.nav-links{display:none}.nav-signin{display:none}}
+
+/* ── LAYOUT ───────────────────────────────────────────────── */
+.container{max-width:1040px;margin:0 auto;padding:0 20px}
+.container-sm{max-width:680px;margin:0 auto;padding:0 20px}
+section{padding:64px 20px}
+
+/* ── TYPOGRAPHY ───────────────────────────────────────────── */
+.eyebrow{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--rose);margin-bottom:12px}
+.eyebrow-dot{width:5px;height:5px;border-radius:50%;background:var(--rose)}
+h1{font-size:clamp(32px,5vw,52px);font-weight:900;letter-spacing:-1.5px;line-height:1.08;color:var(--text)}
+h1 em{font-style:normal;color:var(--rose)}
+h2{font-size:clamp(24px,3.5vw,36px);font-weight:900;letter-spacing:-1px;line-height:1.15}
+h2 em{font-style:normal;color:var(--rose)}
+.subline{font-size:16px;color:var(--text2);line-height:1.65;margin-top:12px}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:13px 22px;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;transition:all .15s;border:none;font-family:'Inter',sans-serif;text-decoration:none}
+.btn-black{background:var(--black);color:#fff}
+.btn-black:hover{background:var(--black2)}
+.btn-rose{background:var(--rose);color:#fff}
+.btn-rose:hover{opacity:.9}
+.btn-outline{background:#fff;color:var(--text);border:1.5px solid var(--border)}
+.btn-lg{padding:15px 28px;font-size:16px;border-radius:14px}
+
+/* ── HERO ─────────────────────────────────────────────────── */
+.hero{
+  padding:72px 20px 56px;
+  background:
+    radial-gradient(ellipse at 5% 0%, rgba(225,29,72,.07) 0%, transparent 55%),
+    radial-gradient(ellipse at 95% 100%, rgba(124,58,237,.06) 0%, transparent 50%),
+    #FAFAF9;
+  text-align:center;
+}
+.hero h1{max-width:700px;margin:0 auto}
+.hero .subline{max-width:520px;margin:14px auto 0}
+.hero-cta{margin-top:28px;display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap}
+
+/* ── FOUNDER SECTION ──────────────────────────────────────── */
+.founder-section{background:#fff;padding:64px 20px}
+.founder-inner{
+  max-width:1040px;margin:0 auto;
+  display:grid;grid-template-columns:280px 1fr;
+  gap:64px;align-items:start;
+}
+@media(max-width:760px){.founder-inner{grid-template-columns:1fr;gap:32px;text-align:center}}
+.founder-photo-wrap{position:relative}
+.founder-photo{
+  width:100%;aspect-ratio:3/4;
+  border-radius:20px;overflow:hidden;
+  background:linear-gradient(160deg,#FFF1F3,#F5F3FF);
+  box-shadow:var(--sh-lg);
+}
+/* Replace this placeholder with <img src="/images/founder.jpg"> */
+.founder-photo-placeholder{
+  width:100%;height:100%;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:10px;
+}
+.founder-photo-placeholder .ph-avatar{
+  width:80px;height:80px;border-radius:50%;
+  background:linear-gradient(135deg,var(--rose),var(--violet));
+  display:grid;place-items:center;color:#fff;font-size:30px;font-weight:900;
+}
+.founder-photo-placeholder .ph-label{font-size:12px;color:var(--text3);font-weight:600}
+.founder-badge{
+  position:absolute;bottom:-14px;left:50%;transform:translateX(-50%);
+  background:#fff;border:1px solid var(--border);border-radius:12px;
+  padding:10px 16px;box-shadow:var(--sh-lg);
+  display:flex;align-items:center;gap:9px;white-space:nowrap;
+}
+.founder-badge-avatar{
+  width:32px;height:32px;border-radius:50%;
+  background:linear-gradient(135deg,var(--rose),var(--violet));
+  display:grid;place-items:center;color:#fff;font-weight:900;font-size:13px;flex-shrink:0;
+}
+.founder-badge-text{font-size:12.5px}
+.founder-badge-name{font-weight:800;color:var(--text);display:block}
+.founder-badge-role{color:var(--text3);font-size:11.5px}
+
+.founder-content{padding-top:4px}
+.founder-content .eyebrow{margin-bottom:16px}
+.founder-content h2{font-size:clamp(22px,3vw,32px);margin-bottom:18px}
+.founder-content p{font-size:15px;color:var(--text2);line-height:1.75;margin-bottom:16px}
+.founder-content p:last-of-type{margin-bottom:0}
+.founder-content p strong{color:var(--text);font-weight:700}
+
+/* ── MISSION STRIP ────────────────────────────────────────── */
+.mission-strip{
+  background:var(--black);
+  padding:56px 20px;
+  text-align:center;
+}
+.mission-statement{
+  max-width:680px;margin:0 auto;
+  font-size:clamp(22px,3.5vw,34px);
+  font-weight:900;color:#fff;
+  letter-spacing:-1px;line-height:1.2;
+}
+.mission-statement em{color:#FDA4AF;font-style:normal}
+.mission-sub{
+  max-width:480px;margin:16px auto 0;
+  font-size:15px;color:rgba(255,255,255,.5);line-height:1.6;
+}
+
+/* ── WHO IT'S FOR ─────────────────────────────────────────── */
+.for-section{background:var(--bg);padding:64px 20px}
+.for-grid{
+  display:grid;grid-template-columns:1fr 1fr;
+  gap:12px;margin-top:36px;
+}
+@media(max-width:640px){.for-grid{grid-template-columns:1fr}}
+.for-card{
+  background:#fff;border:1px solid var(--border);border-radius:16px;
+  padding:24px;box-shadow:var(--sh);
+}
+.for-card-tag{
+  display:inline-flex;align-items:center;gap:6px;
+  font-size:11px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;
+  padding:4px 11px;border-radius:20px;margin-bottom:14px;
+}
+.for-card-tag.yes{background:var(--green-light);color:var(--green)}
+.for-card-tag.no{background:#F3F3F3;color:var(--text3)}
+.for-card h3{font-size:16px;font-weight:800;margin-bottom:10px;line-height:1.3}
+.for-card ul{display:flex;flex-direction:column;gap:7px;padding:0;list-style:none}
+.for-card ul li{font-size:13.5px;color:var(--text2);display:flex;align-items:flex-start;gap:8px}
+.for-card ul li::before{flex-shrink:0;margin-top:2px;font-size:12px}
+.for-card.yes-card ul li::before{content:'✓';color:var(--green);font-weight:800}
+.for-card.no-card ul li::before{content:'—';color:var(--text3)}
+
+/* ── HONEST NUMBERS ───────────────────────────────────────── */
+.numbers-section{background:#fff;padding:64px 20px}
+.numbers-grid{
+  display:grid;grid-template-columns:repeat(3,1fr);
+  gap:12px;margin-top:36px;
+}
+@media(max-width:560px){.numbers-grid{grid-template-columns:1fr}}
+.number-card{
+  background:var(--bg);border:1px solid var(--border);border-radius:16px;
+  padding:24px 20px;text-align:center;
+}
+.number-val{font-size:40px;font-weight:900;letter-spacing:-2px;margin-bottom:4px}
+.number-label{font-size:13px;color:var(--text2);font-weight:600;margin-bottom:6px}
+.number-context{font-size:12px;color:var(--text3);line-height:1.5}
+
+/* ── WHAT NEWCOLLAB IS NOT ────────────────────────────────── */
+.honest-section{background:var(--bg);padding:64px 20px}
+.honest-grid{
+  display:grid;grid-template-columns:1fr 1fr;
+  gap:12px;margin-top:36px;
+}
+@media(max-width:640px){.honest-grid{grid-template-columns:1fr}}
+.honest-not{
+  background:#fff;border:1px solid var(--border);border-radius:14px;
+  padding:20px;
+}
+.honest-not-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);margin-bottom:8px}
+.honest-not-text{font-size:14px;color:var(--text2);line-height:1.55}
+.honest-is{
+  background:var(--black);border-radius:14px;
+  padding:20px;grid-column:span 2;
+}
+@media(max-width:640px){.honest-is{grid-column:span 1}}
+.honest-is-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:rgba(255,255,255,.35);margin-bottom:8px}
+.honest-is-text{font-size:16px;font-weight:700;color:#fff;line-height:1.55}
+.honest-is-text em{color:#FDA4AF;font-style:normal}
+
+/* ── ROADMAP ──────────────────────────────────────────────── */
+.roadmap-section{background:#fff;padding:64px 20px}
+.roadmap-list{
+  max-width:640px;margin:36px auto 0;
+  display:flex;flex-direction:column;gap:0;
+}
+.roadmap-item{
+  display:flex;gap:20px;padding-bottom:32px;position:relative;
+}
+.roadmap-item:not(:last-child)::before{
+  content:'';position:absolute;left:15px;top:32px;
+  width:2px;height:calc(100% - 8px);
+  background:var(--border);
+}
+.roadmap-dot{
+  width:32px;height:32px;border-radius:50%;
+  display:grid;place-items:center;flex-shrink:0;
+  font-size:12px;font-weight:800;position:relative;z-index:1;
+}
+.roadmap-dot.done{background:var(--black);color:#fff}
+.roadmap-dot.now{background:var(--rose);color:#fff}
+.roadmap-dot.next{background:var(--bg);border:2px solid var(--border);color:var(--text3)}
+.roadmap-content{padding-top:5px}
+.roadmap-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.roadmap-label.done{color:var(--text3)}
+.roadmap-label.now{color:var(--rose)}
+.roadmap-label.next{color:var(--text3)}
+.roadmap-title{font-size:15px;font-weight:800;color:var(--text);margin-bottom:3px}
+.roadmap-desc{font-size:13.5px;color:var(--text2);line-height:1.5}
+
+/* ── FINAL CTA ────────────────────────────────────────────── */
+.final-cta{
+  background:var(--black);padding:80px 20px;
+  text-align:center;position:relative;overflow:hidden;
+}
+.final-cta::before{
+  content:'';position:absolute;top:-80px;left:50%;transform:translateX(-50%);
+  width:500px;height:500px;
+  background:radial-gradient(circle,rgba(225,29,72,.25) 0%,transparent 65%);
+  pointer-events:none;
+}
+.final-cta h2{color:#fff;position:relative;z-index:1}
+.final-cta h2 em{color:#FDA4AF}
+.final-cta .subline{color:rgba(255,255,255,.5);max-width:440px;margin:10px auto 0;position:relative;z-index:1}
+.final-cta-actions{display:flex;flex-direction:column;align-items:center;gap:10px;margin-top:28px;position:relative;z-index:1}
+.final-cta-trust{font-size:12px;color:rgba(255,255,255,.3)}
+
+/* ── FOOTER ───────────────────────────────────────────────── */
+footer{background:var(--black);border-top:1px solid rgba(255,255,255,.06);padding:44px 20px 28px}
+.footer-inner{max-width:1040px;margin:0 auto}
+.footer-top{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:36px;margin-bottom:40px}
+@media(max-width:600px){.footer-top{grid-template-columns:1fr 1fr}}
+.footer-logo{display:flex;align-items:center;gap:7px;margin-bottom:10px}
+.footer-logo-mark{width:26px;height:26px;background:rgba(255,255,255,.1);border-radius:6px;display:grid;place-items:center;color:#fff;font-weight:900;font-size:12px}
+.footer-logo-word{font-size:14px;font-weight:800;color:#fff;letter-spacing:-.3px}
+.footer-logo-word em{color:#FDA4AF;font-style:normal}
+.footer-desc{font-size:12.5px;color:rgba(255,255,255,.35);line-height:1.6;max-width:220px}
+.footer-col-title{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:rgba(255,255,255,.25);margin-bottom:12px}
+.footer-links{display:flex;flex-direction:column;gap:8px}
+.footer-links a{font-size:13px;color:rgba(255,255,255,.55);text-decoration:none;font-weight:500;transition:color .15s}
+.footer-links a:hover{color:#fff}
+.footer-bottom{border-top:1px solid rgba(255,255,255,.06);padding-top:20px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
+.footer-copy{font-size:12px;color:rgba(255,255,255,.25)}
+.footer-bottom-links{display:flex;gap:18px}
+.footer-bottom-links a{font-size:12px;color:rgba(255,255,255,.25);text-decoration:none}
+.footer-bottom-links a:hover{color:rgba(255,255,255,.5)}
+</style>
+</head>
+<body>
+
+<!-- ── NAV ─────────────────────────────────────────────────── -->
+<nav id="nav">
+  <a class="nav-logo" href="/">
+    <div class="nav-logo-mark">N</div>
+    <span class="nav-logo-word">new<em>collab</em></span>
+  </a>
+  <div class="nav-links">
+    <a href="/#how-it-works">How it works</a>
+    <a href="/#brands">Brands</a>
+    <a href="/#pricing">Pricing</a>
+    <a href="/about" class="active">About</a>
+  </div>
+  <div class="nav-right">
+    <a class="nav-signin" href="/login">Sign in</a>
+    <a class="nav-cta" href="/register">Start free →</a>
+  </div>
+</nav>
+
+<!-- ── HERO ──────────────────────────────────────────────────── -->
+<section class="hero">
+  <div class="eyebrow"><div class="eyebrow-dot"></div> About newcollab</div>
+  <h1>Built for creators who are tired of<br><em>guessing how to reach brands.</em></h1>
+  <p class="subline">
+    A solo-founder product, built after years watching talented creators get ignored — not because their content was bad, but because they had no system.
+  </p>
+  <div class="hero-cta">
+    <a class="btn btn-black btn-lg" href="/register">Try it free →</a>
+    <a class="btn btn-outline" href="/#brands">Browse brands</a>
+  </div>
+</section>
+
+<!-- ── FOUNDER SECTION ───────────────────────────────────────── -->
+<section class="founder-section">
+  <div class="founder-inner">
+    <div class="founder-photo-wrap">
+      <!--
+        REPLACE THIS PLACEHOLDER WITH:
+        <img src="/images/founder.jpg" alt="[Founder name], founder of newcollab"
+             style="width:100%;height:100%;object-fit:cover;border-radius:20px">
+      -->
+      <div class="founder-photo">
+        <div class="founder-photo-placeholder">
+          <div class="ph-avatar">M</div>
+          <div class="ph-label">← replace with founder photo</div>
+        </div>
+      </div>
+      <div class="founder-badge">
+        <div class="founder-badge-avatar">M</div>
+        <div class="founder-badge-text">
+          <span class="founder-badge-name">Mahery</span>
+          <span class="founder-badge-role">Founder, newcollab</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="founder-content">
+      <div class="eyebrow"><div class="eyebrow-dot"></div> The founder</div>
+      <h2>I spent years in influencer marketing.<br>Watching creators get <em>left behind.</em></h2>
+
+      <p>I started in talent agencies, then moved to managing creator campaigns for global brands. For over a decade, I watched the same problem from both sides: creators with genuinely great content, sending emails into the void. Brands with real PR budgets, struggling to find the right people.</p>
+
+      <p>The tools that existed were built for agencies — expensive, complicated, and completely out of reach for a solo creator with 8,000 followers who just wanted to pitch Rhode Skin.</p>
+
+      <p><strong>So I built the tool I wish existed.</strong> Something a nano creator could pick up in 5 minutes — that handles the brand contacts, writes the pitch, attaches the media kit, and keeps track of every outreach. No agency needed. No guessing.</p>
+
+      <p>newcollab is still early. I'm one person, building in public, shipping fast. If something's broken, I'll fix it. If you have a brand to add, tell me. This is a product built with its users — not launched at them.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── MISSION STRIP ─────────────────────────────────────────── -->
+<div class="mission-strip">
+  <p class="mission-statement">
+    Every creator deserves a real shot at brand deals —<br>
+    <em>not just the ones who know the right people.</em>
+  </p>
+  <p class="mission-sub">
+    That's what newcollab is for. Contacts, pitch, media kit, tracking — everything a creator needs to reach brands professionally, in one place.
+  </p>
+</div>
+
+<!-- ── WHO IT'S FOR ──────────────────────────────────────────── -->
+<section class="for-section">
+  <div class="container-sm">
+    <div style="text-align:center">
+      <div class="eyebrow" style="justify-content:center"><div class="eyebrow-dot"></div> Who this is for</div>
+      <h2>Built for nano and micro creators.<br>Not for <em>everyone.</em></h2>
+      <p class="subline">newcollab isn't trying to serve every creator at every stage. It's built for one specific person.</p>
+    </div>
+    <div class="for-grid">
+      <div class="for-card yes-card">
+        <div class="for-card-tag yes">This is for you if...</div>
+        <h3>You're a creator who wants brand deals and doesn't know where to start.</h3>
+        <ul>
+          <li>You create content on Instagram, TikTok, YouTube or a blog</li>
+          <li>You have between 1,000 and 100,000 followers</li>
+          <li>You want PR packages and paid collabs — not just gifted posts</li>
+          <li>You're ready to reach out to brands but have no system</li>
+          <li>You've DMd brands before and got no reply</li>
+          <li>You don't have a media kit and don't know where to start</li>
+        </ul>
+      </div>
+      <div class="for-card no-card">
+        <div class="for-card-tag no">This probably isn't for you if...</div>
+        <h3>You're an agency, a mega-influencer, or a brand looking to run campaigns.</h3>
+        <ul>
+          <li>You have a full team managing brand relationships</li>
+          <li>You already have a talent manager or agent</li>
+          <li>You're a brand looking to source creators (not pitch them)</li>
+          <li>You're looking for a full CRM with workflow automation</li>
+          <li>You have 500K+ followers and brands already come to you</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── HONEST NUMBERS ────────────────────────────────────────── -->
+<section class="numbers-section">
+  <div class="container">
+    <div style="text-align:center">
+      <div class="eyebrow" style="justify-content:center"><div class="eyebrow-dot"></div> Where we are today</div>
+      <h2>Honest numbers.<br>Early stage, <em>growing fast.</em></h2>
+    </div>
+    <div class="numbers-grid">
+      <div class="number-card">
+        <div class="number-val" style="color:var(--rose)">900+</div>
+        <div class="number-label">Creators signed up</div>
+        <div class="number-context">Nano and micro creators using newcollab to find and pitch brands.</div>
+      </div>
+      <div class="number-card">
+        <div class="number-val">500+</div>
+        <div class="number-label">Brand PR contacts</div>
+        <div class="number-context">Verified brand contacts, direct PR emails, and reply rates. Updated weekly.</div>
+      </div>
+      <div class="number-card">
+        <div class="number-val" style="color:var(--green)">52%</div>
+        <div class="number-label">Top brand reply rate</div>
+        <div class="number-context">The highest reply rate on the platform — brands that respond fastest to creator pitches.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── WHAT NEWCOLLAB IS / IS NOT ─────────────────────────────── -->
+<section class="honest-section">
+  <div class="container-sm">
+    <div style="text-align:center">
+      <div class="eyebrow" style="justify-content:center"><div class="eyebrow-dot"></div> What newcollab is</div>
+      <h2>Let's be direct about<br>what this <em>actually does.</em></h2>
+    </div>
+    <div class="honest-grid">
+      <div class="honest-not">
+        <div class="honest-not-label">Not a marketplace</div>
+        <div class="honest-not-text">We don't connect you to brands through a platform they also have to join. You pitch them directly — by email — like a professional.</div>
+      </div>
+      <div class="honest-not">
+        <div class="honest-not-label">Not a PR agency</div>
+        <div class="honest-not-text">We don't manage your outreach for you. You're in control. We give you the contacts, the pitch, and the tracking — you send it.</div>
+      </div>
+      <div class="honest-not">
+        <div class="honest-not-label">Not a follower growth tool</div>
+        <div class="honest-not-text">We don't grow your audience. We help you monetise the audience you already have through brand partnerships, PR packages, and gifted collabs.</div>
+      </div>
+      <div class="honest-not">
+        <div class="honest-not-label">Not for huge creators</div>
+        <div class="honest-not-text">If brands are already coming to you, you don't need this. newcollab is built for the creator who has to make the first move — and wins when they do.</div>
+      </div>
+      <div class="honest-is">
+        <div class="honest-is-label">What it actually is</div>
+        <div class="honest-is-text">
+          A complete outreach system. <em>Brand contacts, AI pitch emails, auto-generated media kit, and a deal-tracking pipeline</em> — everything a small creator needs to reach brands like a professional and land deals on repeat.
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── ROADMAP ───────────────────────────────────────────────── -->
+<section class="roadmap-section">
+  <div class="container-sm">
+    <div style="text-align:center">
+      <div class="eyebrow" style="justify-content:center"><div class="eyebrow-dot"></div> What's coming</div>
+      <h2>Building this in the open.<br>Here's <em>what's next.</em></h2>
+      <p class="subline">newcollab ships fast. If you want a feature, tell us — the best ideas come from creators using it every day.</p>
+    </div>
+    <div class="roadmap-list">
+      <div class="roadmap-item">
+        <div class="roadmap-dot done">✓</div>
+        <div class="roadmap-content">
+          <div class="roadmap-label done">Shipped</div>
+          <div class="roadmap-title">Brand directory — 500+ PR contacts</div>
+          <div class="roadmap-desc">Verified brand emails, reply rates, niche filters. Updated weekly.</div>
+        </div>
+      </div>
+      <div class="roadmap-item">
+        <div class="roadmap-dot done">✓</div>
+        <div class="roadmap-content">
+          <div class="roadmap-label done">Shipped</div>
+          <div class="roadmap-title">AI pitch writer + media kit auto-generation</div>
+          <div class="roadmap-desc">Personalised email per brand. Media kit generated from your profile and auto-attached.</div>
+        </div>
+      </div>
+      <div class="roadmap-item">
+        <div class="roadmap-dot done">✓</div>
+        <div class="roadmap-content">
+          <div class="roadmap-label done">Shipped</div>
+          <div class="roadmap-title">PR Pipeline + follow-up reminders</div>
+          <div class="roadmap-desc">Track every pitch. Auto day-7 follow-up alert. Log replies, packages, and PR value.</div>
+        </div>
+      </div>
+      <div class="roadmap-item">
+        <div class="roadmap-dot now">→</div>
+        <div class="roadmap-content">
+          <div class="roadmap-label now">In progress</div>
+          <div class="roadmap-title">For You feed — weekly personalised brand matches</div>
+          <div class="roadmap-desc">Brands matched to your niche, platform, and follower count. Seasonal alerts included.</div>
+        </div>
+      </div>
+      <div class="roadmap-item">
+        <div class="roadmap-dot next">·</div>
+        <div class="roadmap-content">
+          <div class="roadmap-label next">Coming next</div>
+          <div class="roadmap-title">Batch pitching — 10 brands in one session</div>
+          <div class="roadmap-desc">Select multiple brands, generate all pitches at once, send in bulk. Pro feature.</div>
+        </div>
+      </div>
+      <div class="roadmap-item">
+        <div class="roadmap-dot next">·</div>
+        <div class="roadmap-content">
+          <div class="roadmap-label next">On the list</div>
+          <div class="roadmap-title">Creator community + shared pitch wins</div>
+          <div class="roadmap-desc">See which brands other creators in your niche are landing. Real-time success feed.</div>
+        </div>
+      </div>
+    </div>
+    <div style="text-align:center;margin-top:36px">
+      <p style="font-size:14px;color:var(--text3);margin-bottom:14px">Have a feature request? Tell us directly.</p>
+      <a class="btn btn-outline" href="mailto:hello@newcollab.co">Email the founder →</a>
+    </div>
+  </div>
+</section>
+
+<!-- ── FINAL CTA ──────────────────────────────────────────────── -->
+<section class="final-cta">
+  <div class="container-sm">
+    <div class="eyebrow" style="color:#FDA4AF;justify-content:center"><div class="eyebrow-dot" style="background:#FDA4AF"></div> Ready to start</div>
+    <h2>Stop waiting for brands<br>to find <em>you.</em></h2>
+    <p class="subline">Join 900+ creators who are pitching brands directly — with a complete system that handles every step.</p>
+    <div class="final-cta-actions">
+      <a class="btn btn-rose btn-lg" href="/register">Start for free — no credit card →</a>
+      <div class="final-cta-trust">Free plan · 3 AI pitches/month · Media kit included</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ────────────────────────────────────────────────── -->
+<footer>
+  <div class="footer-inner">
+    <div class="footer-top">
+      <div>
+        <div class="footer-logo">
+          <div class="footer-logo-mark">N</div>
+          <span class="footer-logo-word">new<em>collab</em></span>
+        </div>
+        <div class="footer-desc">The complete brand outreach tool for nano and micro creators.</div>
+      </div>
+      <div>
+        <div class="footer-col-title">Product</div>
+        <div class="footer-links">
+          <a href="/#brands">Brand Directory</a>
+          <a href="/register">AI Pitch Writer</a>
+          <a href="/register">PR Pipeline</a>
+          <a href="/register">For You Feed</a>
+        </div>
+      </div>
+      <div>
+        <div class="footer-col-title">Company</div>
+        <div class="footer-links">
+          <a href="/about">About</a>
+          <a href="/blog">Blog</a>
+          <a href="/#pricing">Pricing</a>
+          <a href="mailto:hello@newcollab.co">Contact</a>
+        </div>
+      </div>
+      <div>
+        <div class="footer-col-title">Guides</div>
+        <div class="footer-links">
+          <a href="/blog/how-to-get-brand-deals">How to get brand deals</a>
+          <a href="/blog/media-kit-guide">Media kit guide</a>
+          <a href="/blog/pitch-email-templates">Pitch email templates</a>
+          <a href="/blog/micro-influencer-tips">Micro creator tips</a>
+        </div>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <div class="footer-copy">© 2026 newcollab.co · All rights reserved</div>
+      <div class="footer-bottom-links">
+        <a href="/privacy">Privacy</a>
+        <a href="/terms">Terms</a>
+        <a href="/cookies">Cookies</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script>
+window.addEventListener('scroll', () => {
+  document.getElementById('nav').classList.toggle('scrolled', window.scrollY > 20);
+});
+</script>
+</body>
+</html>

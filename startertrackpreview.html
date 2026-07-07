@@ -1,0 +1,1224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Starter Track — Newcollab Preview</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #f0f0ef;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  padding: 40px 20px 80px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 48px;
+}
+
+.scene-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  align-self: flex-start;
+  max-width: 900px;
+  width: 100%;
+  margin-bottom: -36px;
+}
+
+.phones-row {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 960px;
+  width: 100%;
+}
+
+/* ── Phone shell ── */
+.phone {
+  width: 320px;
+  background: #fff;
+  border-radius: 40px;
+  box-shadow: 0 0 0 10px #1a1a1a, 0 24px 60px rgba(0,0,0,.3);
+  overflow: hidden;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.phone-notch {
+  background: #1a1a1a;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.notch-pill {
+  width: 80px; height: 22px;
+  background: #000;
+  border-radius: 20px;
+}
+
+.phone-screen {
+  background: #FAFAF9;
+  min-height: 580px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.phone-home {
+  background: #f0f0ef;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.home-bar {
+  width: 100px; height: 4px;
+  background: #1a1a1a;
+  border-radius: 4px;
+}
+
+/* ── App components ── */
+.app-header {
+  background: #fff;
+  padding: 14px 16px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #f0f0ef;
+}
+
+.app-logo {
+  font-size: 13px;
+  font-weight: 800;
+  color: #0f0f0f;
+  letter-spacing: -.3px;
+}
+.app-logo span { color: #E11D48; }
+
+.header-badge {
+  background: #f3f4f6;
+  border-radius: 20px;
+  padding: 4px 10px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #6b7280;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.badge-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #f59e0b;
+}
+
+.scroll-area {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 14px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ── Readiness Score Card ── */
+.score-card {
+  background: linear-gradient(135deg, #0f0f0f 0%, #1e1035 100%);
+  border-radius: 14px;
+  padding: 16px;
+  position: relative;
+  overflow: hidden;
+}
+.score-card::after {
+  content: '';
+  position: absolute;
+  top: -20px; right: -20px;
+  width: 100px; height: 100px;
+  background: radial-gradient(circle, rgba(124,58,237,.3) 0%, transparent 70%);
+}
+
+.score-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.score-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(255,255,255,.5);
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  margin-bottom: 3px;
+}
+
+.score-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: #fff;
+  line-height: 1.2;
+}
+
+.score-number {
+  font-size: 36px;
+  font-weight: 900;
+  color: #fff;
+  line-height: 1;
+}
+.score-number span {
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(255,255,255,.4);
+}
+
+.score-bar-bg {
+  background: rgba(255,255,255,.12);
+  border-radius: 8px;
+  height: 6px;
+  margin-bottom: 8px;
+}
+.score-bar-fill {
+  height: 6px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #7c3aed, #E11D48);
+  width: 42%;
+}
+
+.score-meta {
+  font-size: 10px;
+  color: rgba(255,255,255,.45);
+}
+.score-meta strong { color: rgba(255,255,255,.7); }
+
+/* ── Progress path ── */
+.progress-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.card-eyebrow {
+  font-size: 10px;
+  font-weight: 700;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  margin-bottom: 10px;
+}
+
+.step-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid #f3f4f6;
+}
+.step-row:last-child { border-bottom: none; }
+
+.step-icon {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.step-icon.done { background: #f0fdf4; }
+.step-icon.active { background: #fef3c7; }
+.step-icon.locked { background: #f3f4f6; font-size: 11px; }
+
+.step-text {
+  flex: 1;
+}
+.step-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f0f0f;
+  line-height: 1.2;
+}
+.step-name.locked-text { color: #9ca3af; }
+.step-sub {
+  font-size: 10.5px;
+  color: #6b7280;
+  line-height: 1.3;
+}
+
+.step-pill {
+  font-size: 9.5px;
+  font-weight: 700;
+  border-radius: 20px;
+  padding: 2px 7px;
+  flex-shrink: 0;
+}
+.pill-done { background: #f0fdf4; color: #059669; }
+.pill-active { background: #fef3c7; color: #d97706; }
+.pill-locked { background: #f3f4f6; color: #9ca3af; }
+
+/* ── Wishlist ── */
+.wishlist-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.wishlist-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.wishlist-count {
+  font-size: 10px;
+  font-weight: 700;
+  color: #E11D48;
+  background: #fff0f3;
+  padding: 2px 8px;
+  border-radius: 20px;
+}
+
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid #f3f4f6;
+}
+.brand-row:last-child { border-bottom: none; padding-bottom: 0; }
+
+.brand-avatar {
+  width: 34px; height: 34px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 800;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.brand-info { flex: 1; }
+.brand-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f0f0f;
+}
+.brand-cat {
+  font-size: 10.5px;
+  color: #9ca3af;
+}
+
+.lock-btn {
+  background: #f3f4f6;
+  border: none;
+  border-radius: 8px;
+  padding: 5px 9px;
+  font-size: 11px;
+  color: #9ca3af;
+  font-weight: 700;
+  cursor: default;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.unlock-cta {
+  margin-top: 10px;
+  background: linear-gradient(90deg, #f9fafb, #f0fdf4);
+  border: 1px dashed #bbf7d0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.unlock-text {
+  font-size: 11px;
+  font-weight: 600;
+  color: #059669;
+  line-height: 1.3;
+}
+.unlock-sub {
+  font-size: 10px;
+  color: #6b7280;
+}
+
+.unlock-progress {
+  text-align: right;
+}
+.unlock-num {
+  font-size: 16px;
+  font-weight: 900;
+  color: #059669;
+  line-height: 1;
+}
+.unlock-denom {
+  font-size: 10px;
+  color: #9ca3af;
+}
+
+/* ── Pool card ── */
+.pool-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.pool-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.pool-creator {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.creator-av {
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 800;
+  color: #fff;
+  position: relative;
+}
+
+.follow-badge {
+  position: absolute;
+  bottom: -2px; right: -2px;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: #059669;
+  border: 2px solid #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  color: #fff;
+}
+
+.creator-handle {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: #374151;
+  text-align: center;
+  line-height: 1.2;
+}
+.creator-followers {
+  font-size: 9px;
+  color: #9ca3af;
+}
+
+.pool-cta {
+  background: #0f0f0f;
+  border: none;
+  border-radius: 10px;
+  width: 100%;
+  padding: 9px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  cursor: pointer;
+  text-align: center;
+}
+
+/* ── Pitch preview locked ── */
+.locked-pitch {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  overflow: hidden;
+  position: relative;
+}
+
+.locked-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 20%, rgba(255,255,255,.95) 60%, #fff 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 14px;
+  z-index: 2;
+}
+
+.locked-badge {
+  background: #0f0f0f;
+  color: #fff;
+  border-radius: 20px;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.locked-caption {
+  font-size: 10.5px;
+  color: #6b7280;
+  text-align: center;
+}
+
+.pitch-preview-inner {
+  padding: 14px;
+  opacity: .4;
+  filter: blur(1px);
+  pointer-events: none;
+}
+.pitch-subject {
+  font-size: 10px;
+  font-weight: 700;
+  color: #E11D48;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin-bottom: 4px;
+}
+.pitch-body {
+  font-size: 10.5px;
+  color: #374151;
+  line-height: 1.5;
+}
+
+/* ── Bottom nav ── */
+.bottom-nav {
+  background: #fff;
+  border-top: 1px solid #e5e7eb;
+  display: flex;
+  padding: 8px 0 4px;
+}
+
+.nav-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+}
+
+.nav-icon { font-size: 18px; }
+.nav-label {
+  font-size: 9px;
+  font-weight: 700;
+  color: #9ca3af;
+}
+.nav-item.active .nav-label { color: #E11D48; }
+.nav-item.active .nav-icon { filter: none; }
+
+.nav-dot {
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  background: #E11D48;
+  margin-top: -2px;
+}
+
+/* ── Notification moment ── */
+.notif-card {
+  background: linear-gradient(135deg, #059669 0%, #047857 100%);
+  border-radius: 14px;
+  padding: 16px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.notif-icon {
+  width: 40px; height: 40px;
+  background: rgba(255,255,255,.2);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  flex-shrink: 0;
+}
+
+.notif-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: #fff;
+  line-height: 1.2;
+  margin-bottom: 3px;
+}
+.notif-sub {
+  font-size: 11px;
+  color: rgba(255,255,255,.7);
+  line-height: 1.3;
+}
+.notif-btn {
+  display: inline-block;
+  margin-top: 8px;
+  background: #fff;
+  color: #059669;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* ── Pro unlocked state ── */
+.pro-brand-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid #f3f4f6;
+}
+.pro-brand-row:last-child { border-bottom: none; }
+
+.pitch-btn {
+  background: #E11D48;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #fff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.credit-pill {
+  background: #f0fdf4;
+  border-radius: 20px;
+  padding: 3px 8px;
+  font-size: 9.5px;
+  font-weight: 700;
+  color: #059669;
+}
+
+/* Caption below phone */
+.phone-caption {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #6b7280;
+  margin-top: 10px;
+  letter-spacing: .03em;
+}
+</style>
+</head>
+<body>
+
+<!-- ═══ SCENE 1: Starter home ═══ -->
+<div class="scene-label">Screen 1 — Home tab for a starter creator (800 followers)</div>
+
+<div class="phones-row">
+
+<!-- Phone 1A: Grow tab -->
+<div>
+<div class="phone">
+  <div class="phone-notch"><div class="notch-pill"></div></div>
+  <div class="phone-screen">
+
+    <div class="app-header">
+      <div class="app-logo">new<span>collab</span></div>
+      <div class="header-badge">
+        <div class="badge-dot"></div>
+        Starter · 800 followers
+      </div>
+    </div>
+
+    <div class="scroll-area">
+
+      <!-- Readiness score -->
+      <div class="score-card">
+        <div class="score-top">
+          <div>
+            <div class="score-label">Brand Readiness</div>
+            <div class="score-title">You're building<br>something real.</div>
+          </div>
+          <div>
+            <div class="score-number">42<span>/100</span></div>
+          </div>
+        </div>
+        <div class="score-bar-bg"><div class="score-bar-fill"></div></div>
+        <div class="score-meta"><strong>Next:</strong> Post 3x this week → +15 points</div>
+      </div>
+
+      <!-- Checklist -->
+      <div class="progress-card">
+        <div class="card-eyebrow">Your path to first PR package</div>
+
+        <div class="step-row">
+          <div class="step-icon done">✅</div>
+          <div class="step-text">
+            <div class="step-name">Profile complete</div>
+            <div class="step-sub">Bio, niche, photo — done</div>
+          </div>
+          <span class="step-pill pill-done">Done</span>
+        </div>
+
+        <div class="step-row">
+          <div class="step-icon done">✅</div>
+          <div class="step-text">
+            <div class="step-name">Niche defined</div>
+            <div class="step-sub">Beauty · TikTok</div>
+          </div>
+          <span class="step-pill pill-done">Done</span>
+        </div>
+
+        <div class="step-row">
+          <div class="step-icon active">📅</div>
+          <div class="step-text">
+            <div class="step-name">Post 3x this week</div>
+            <div class="step-sub">1 of 3 posted so far</div>
+          </div>
+          <span class="step-pill pill-active">In progress</span>
+        </div>
+
+        <div class="step-row">
+          <div class="step-icon locked">🔒</div>
+          <div class="step-text">
+            <div class="step-name locked-text">Reach 1k followers</div>
+            <div class="step-sub">200 followers away</div>
+          </div>
+          <span class="step-pill pill-locked">Locked</span>
+        </div>
+
+        <div class="step-row">
+          <div class="step-icon locked">🔒</div>
+          <div class="step-text">
+            <div class="step-name locked-text">Reach 5k followers</div>
+            <div class="step-sub">Unlocks pitch access</div>
+          </div>
+          <span class="step-pill pill-locked">Locked</span>
+        </div>
+
+      </div>
+
+      <!-- Wishlist teaser -->
+      <div class="wishlist-card">
+        <div class="wishlist-header">
+          <div class="card-eyebrow" style="margin:0">Saved brands</div>
+          <div class="wishlist-count">3 saved</div>
+        </div>
+
+        <div class="brand-row">
+          <div class="brand-avatar" style="background:#E11D48">G</div>
+          <div class="brand-info">
+            <div class="brand-name">Glossier</div>
+            <div class="brand-cat">Skincare · beauty</div>
+          </div>
+          <div class="lock-btn">🔒 5k</div>
+        </div>
+
+        <div class="brand-row">
+          <div class="brand-avatar" style="background:#7c3aed">A</div>
+          <div class="brand-info">
+            <div class="brand-name">Aesop</div>
+            <div class="brand-cat">Skincare · wellness</div>
+          </div>
+          <div class="lock-btn">🔒 5k</div>
+        </div>
+
+        <div class="brand-row">
+          <div class="brand-avatar" style="background:#059669">P</div>
+          <div class="brand-info">
+            <div class="brand-name">Peach Slices</div>
+            <div class="brand-cat">Skincare · K-beauty</div>
+          </div>
+          <div class="lock-btn">🔒 5k</div>
+        </div>
+
+        <div class="unlock-cta">
+          <div>
+            <div class="unlock-text">Pitches unlock at 5k followers</div>
+            <div class="unlock-sub">Your brands are waiting</div>
+          </div>
+          <div class="unlock-progress">
+            <div class="unlock-num">800</div>
+            <div class="unlock-denom">of 5,000</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="bottom-nav">
+      <div class="nav-item active">
+        <div class="nav-icon">🌱</div>
+        <div class="nav-label" style="color:#E11D48">Grow</div>
+        <div class="nav-dot"></div>
+      </div>
+      <div class="nav-item">
+        <div class="nav-icon">🔖</div>
+        <div class="nav-label">Saved</div>
+      </div>
+      <div class="nav-item">
+        <div class="nav-icon">👥</div>
+        <div class="nav-label">Pool</div>
+      </div>
+      <div class="nav-item">
+        <div class="nav-icon">👤</div>
+        <div class="nav-label">Profile</div>
+      </div>
+    </div>
+
+  </div>
+  <div class="phone-home"><div class="home-bar"></div></div>
+</div>
+<div class="phone-caption">Starter — Home · 800 followers</div>
+</div>
+
+
+<!-- Phone 1B: Creator Pool tab -->
+<div>
+<div class="phone">
+  <div class="phone-notch"><div class="notch-pill"></div></div>
+  <div class="phone-screen">
+
+    <div class="app-header">
+      <div class="app-logo">new<span>collab</span></div>
+      <div class="header-badge">
+        <div class="badge-dot"></div>
+        Beauty Pool · Growing
+      </div>
+    </div>
+
+    <div class="scroll-area">
+
+      <div class="score-card" style="padding:12px 14px;">
+        <div class="score-label" style="margin-bottom:2px">Creator Pool</div>
+        <div class="score-title" style="font-size:12px;">Beauty creators growing alongside you</div>
+        <div style="margin-top:8px; font-size:10px; color:rgba(255,255,255,.45);">Follow creators in your niche · Grow together</div>
+      </div>
+
+      <div class="pool-card">
+        <div class="card-eyebrow">Seedling tier · 500–2k followers</div>
+        <div class="pool-grid">
+
+          <div class="pool-creator">
+            <div class="creator-av" style="background:#E11D48;">
+              T
+              <div class="follow-badge">✓</div>
+            </div>
+            <div class="creator-handle">@taylormade</div>
+            <div class="creator-followers">1.2K</div>
+          </div>
+
+          <div class="pool-creator">
+            <div class="creator-av" style="background:#7c3aed;">S</div>
+            <div class="creator-handle">@skinbysoph</div>
+            <div class="creator-followers">890</div>
+          </div>
+
+          <div class="pool-creator">
+            <div class="creator-av" style="background:#059669;">M</div>
+            <div class="creator-handle">@merakibeauty</div>
+            <div class="creator-followers">1.8K</div>
+          </div>
+
+          <div class="pool-creator">
+            <div class="creator-av" style="background:#d97706;">L</div>
+            <div class="creator-handle">@lucyglows</div>
+            <div class="creator-followers">760</div>
+          </div>
+
+          <div class="pool-creator">
+            <div class="creator-av" style="background:#db2777;">R</div>
+            <div class="creator-handle">@rosabeauty</div>
+            <div class="creator-followers">2.1K</div>
+          </div>
+
+          <div class="pool-creator">
+            <div class="creator-av" style="background:#0891b2;">N</div>
+            <div class="creator-handle">@nellzglow</div>
+            <div class="creator-followers">1.4K</div>
+          </div>
+
+        </div>
+
+        <button class="pool-cta">Follow all in your niche →</button>
+      </div>
+
+      <!-- Activity feed -->
+      <div class="progress-card">
+        <div class="card-eyebrow">Pool activity</div>
+
+        <div class="step-row">
+          <div class="creator-av" style="width:28px;height:28px;font-size:11px;border-radius:50%;background:#E11D48;flex-shrink:0;">T</div>
+          <div class="step-text">
+            <div class="step-name" style="font-size:11px;">@taylormade followed you</div>
+            <div class="step-sub">Beauty pool · 2m ago</div>
+          </div>
+        </div>
+
+        <div class="step-row">
+          <div class="creator-av" style="width:28px;height:28px;font-size:11px;border-radius:50%;background:#7c3aed;flex-shrink:0;">S</div>
+          <div class="step-text">
+            <div class="step-name" style="font-size:11px;">@skinbysoph reached 1k 🎉</div>
+            <div class="step-sub">Beauty pool · 1h ago</div>
+          </div>
+        </div>
+
+        <div class="step-row">
+          <div class="creator-av" style="width:28px;height:28px;font-size:11px;border-radius:50%;background:#059669;flex-shrink:0;">M</div>
+          <div class="step-text">
+            <div class="step-name" style="font-size:11px;">@merakibeauty got first PR 🎁</div>
+            <div class="step-sub">Growing tier · 3h ago</div>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+
+    <div class="bottom-nav">
+      <div class="nav-item">
+        <div class="nav-icon">🌱</div>
+        <div class="nav-label">Grow</div>
+      </div>
+      <div class="nav-item">
+        <div class="nav-icon">🔖</div>
+        <div class="nav-label">Saved</div>
+      </div>
+      <div class="nav-item active">
+        <div class="nav-icon">👥</div>
+        <div class="nav-label" style="color:#E11D48">Pool</div>
+        <div class="nav-dot"></div>
+      </div>
+      <div class="nav-item">
+        <div class="nav-icon">👤</div>
+        <div class="nav-label">Profile</div>
+      </div>
+    </div>
+
+  </div>
+  <div class="phone-home"><div class="home-bar"></div></div>
+</div>
+<div class="phone-caption">Starter — Creator Pool tab</div>
+</div>
+
+
+<!-- Phone 1C: Pitch preview (locked) -->
+<div>
+<div class="phone">
+  <div class="phone-notch"><div class="notch-pill"></div></div>
+  <div class="phone-screen">
+
+    <div class="app-header">
+      <div class="app-logo">new<span>collab</span></div>
+      <div class="header-badge">
+        <div class="badge-dot"></div>
+        Pitch preview
+      </div>
+    </div>
+
+    <div class="scroll-area">
+
+      <!-- Teaser: what's waiting -->
+      <div class="score-card">
+        <div class="score-label">Pitch access unlocks at 5k</div>
+        <div class="score-title" style="margin-bottom:8px;">Here's what your<br>first pitch looks like.</div>
+        <div style="background:rgba(255,255,255,.1);border-radius:8px;padding:8px 10px;">
+          <div style="font-size:9.5px;color:rgba(255,255,255,.5);margin-bottom:2px;">SUBJECT LINE</div>
+          <div style="font-size:11px;color:#fff;font-weight:600;">Glossier You for my beauty TikTok audience</div>
+        </div>
+      </div>
+
+      <!-- Blurred pitch preview -->
+      <div class="locked-pitch">
+        <div class="pitch-preview-inner">
+          <div class="pitch-subject">Email body preview</div>
+          <div class="pitch-body">
+            Hi,<br><br>
+            Your Glossier You perfume is the one my followers
+            keep screenshotting from my shelf content.<br><br>
+            I create beauty content on TikTok (800 followers,
+            8.2% engagement — beauty followers who actively
+            buy based on creator recommendations).<br><br>
+            I'd build a getting-ready moment around Glossier You
+            — bottle on the counter, the spritz, the mood it sets.<br><br>
+            Would you be open to sending a bottle?<br><br>
+            [Name]<br>
+            newcollab.co/kit/you
+          </div>
+        </div>
+        <div class="locked-overlay">
+          <div class="locked-badge">🔒 Unlock at 5,000 followers</div>
+          <div class="locked-caption">You're 4,200 away.<br>Keep going — this email is ready when you are.</div>
+        </div>
+      </div>
+
+      <!-- Progress to unlock -->
+      <div class="wishlist-card">
+        <div class="card-eyebrow" style="margin-bottom:10px">Your progress to pitch access</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+          <span style="font-size:11px;font-weight:700;color:#0f0f0f;">800 followers</span>
+          <span style="font-size:11px;font-weight:700;color:#059669;">5,000 goal</span>
+        </div>
+        <div style="background:#f3f4f6;border-radius:8px;height:8px;margin-bottom:8px;">
+          <div style="background:linear-gradient(90deg,#E11D48,#7c3aed);height:8px;border-radius:8px;width:16%;"></div>
+        </div>
+        <div style="font-size:10.5px;color:#6b7280;">4,200 followers to go · <strong style="color:#0f0f0f;">3 brands saved</strong> and waiting</div>
+      </div>
+
+    </div>
+
+    <div class="bottom-nav">
+      <div class="nav-item active">
+        <div class="nav-icon">🌱</div>
+        <div class="nav-label" style="color:#E11D48">Grow</div>
+        <div class="nav-dot"></div>
+      </div>
+      <div class="nav-item">
+        <div class="nav-icon">🔖</div>
+        <div class="nav-label">Saved</div>
+      </div>
+      <div class="nav-item">
+        <div class="nav-icon">👥</div>
+        <div class="nav-label">Pool</div>
+      </div>
+      <div class="nav-item">
+        <div class="nav-icon">👤</div>
+        <div class="nav-label">Profile</div>
+      </div>
+    </div>
+
+  </div>
+  <div class="phone-home"><div class="home-bar"></div></div>
+</div>
+<div class="phone-caption">Starter — Pitch preview (locked)</div>
+</div>
+
+</div><!-- end phones-row -->
+
+
+<!-- ═══ SCENE 2: The unlock moment + Pro ═══ -->
+<div class="scene-label">Screen 2 — The unlock moment → Pro conversion</div>
+
+<div class="phones-row">
+
+<!-- Phone 2A: 5k notification -->
+<div>
+<div class="phone">
+  <div class="phone-notch"><div class="notch-pill"></div></div>
+  <div class="phone-screen">
+
+    <div class="app-header">
+      <div class="app-logo">new<span>collab</span></div>
+      <div class="header-badge" style="background:#f0fdf4;color:#059669;">
+        <div class="badge-dot" style="background:#059669;"></div>
+        You hit 5k 🎉
+      </div>
+    </div>
+
+    <div class="scroll-area">
+
+      <!-- The moment -->
+      <div class="notif-card">
+        <div class="notif-icon">🎁</div>
+        <div>
+          <div class="notif-title">You're PR-ready.</div>
+          <div class="notif-sub">5,000 followers hit. Your 3 saved brands are waiting. Your pitches are written.</div>
+          <button class="notif-btn">Send your first pitch →</button>
+        </div>
+      </div>
+
+      <!-- Wishlist now unlocked -->
+      <div class="wishlist-card">
+        <div class="wishlist-header">
+          <div class="card-eyebrow" style="margin:0">Your saved brands — ready to pitch</div>
+          <div class="wishlist-count">3 saved</div>
+        </div>
+
+        <div class="pro-brand-row">
+          <div class="brand-avatar" style="background:#E11D48">G</div>
+          <div class="brand-info">
+            <div class="brand-name">Glossier</div>
+            <div class="brand-cat">Glossier You · skincare</div>
+          </div>
+          <button class="pitch-btn">Pitch →</button>
+        </div>
+
+        <div class="pro-brand-row">
+          <div class="brand-avatar" style="background:#7c3aed">A</div>
+          <div class="brand-info">
+            <div class="brand-name">Aesop</div>
+            <div class="brand-cat">Resurrection Aromatique</div>
+          </div>
+          <button class="pitch-btn">Pitch →</button>
+        </div>
+
+        <div class="pro-brand-row">
+          <div class="brand-avatar" style="background:#059669">P</div>
+          <div class="brand-info">
+            <div class="brand-name">Peach Slices</div>
+            <div class="brand-cat">Snail Rescue Serum</div>
+          </div>
+          <button class="pitch-btn">Pitch →</button>
+        </div>
+
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid #f3f4f6;display:flex;align-items:center;justify-content:space-between;">
+          <div style="font-size:10.5px;color:#6b7280;">5 free contacts included</div>
+          <div class="credit-pill">5 contacts left</div>
+        </div>
+      </div>
+
+      <!-- Upgrade nudge -->
+      <div style="background:#0f0f0f;border-radius:14px;padding:14px;">
+        <div style="font-size:10px;font-weight:700;color:rgba(255,255,255,.4);text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px;">Unlock unlimited pitches</div>
+        <div style="font-size:13px;font-weight:800;color:#fff;margin-bottom:8px;">Go Pro · £19/mo</div>
+        <div style="font-size:10.5px;color:rgba(255,255,255,.5);margin-bottom:12px;">Unlimited contacts · All 1,340 brands · Reply tracking</div>
+        <button style="background:#E11D48;border:none;border-radius:10px;width:100%;padding:10px;font-size:12px;font-weight:700;color:#fff;cursor:pointer;">Upgrade to Pro →</button>
+      </div>
+
+    </div>
+
+    <div class="bottom-nav">
+      <div class="nav-item active">
+        <div class="nav-icon">✨</div>
+        <div class="nav-label" style="color:#E11D48">For You</div>
+        <div class="nav-dot"></div>
+      </div>
+      <div class="nav-item">
+        <div class="nav-icon">🔖</div>
+        <div class="nav-label">Saved</div>
+      </div>
+      <div class="nav-item">
+        <div class="nav-icon">📦</div>
+        <div class="nav-label">Pipeline</div>
+      </div>
+      <div class="nav-item">
+        <div class="nav-icon">👤</div>
+        <div class="nav-label">Profile</div>
+      </div>
+    </div>
+
+  </div>
+  <div class="phone-home"><div class="home-bar"></div></div>
+</div>
+<div class="phone-caption">The unlock moment — 5k reached</div>
+</div>
+
+
+<!-- Phone 2B: Pro mode (same creator, upgraded) -->
+<div>
+<div class="phone">
+  <div class="phone-notch"><div class="notch-pill"></div></div>
+  <div class="phone-screen">
+
+    <div class="app-header">
+      <div class="app-logo">new<span>collab</span></div>
+      <div class="header-badge" style="background:#fff0f3;color:#E11D48;">
+        ✦ Pro
+      </div>
+    </div>
+
+    <div class="scroll-area">
+
+      <!-- Pro score card -->
+      <div class="score-card">
+        <div class="score-top">
+          <div>
+            <div class="score-label">Pipeline</div>
+            <div class="score-title">You've sent<br>3 pitches.</div>
+          </div>
+          <div>
+            <div class="score-number" style="font-size:28px;">1<span style="font-size:13px;"> reply</span></div>
+          </div>
+        </div>
+        <div style="background:rgba(255,255,255,.1);border-radius:8px;padding:8px;margin-top:4px;">
+          <div style="font-size:10px;color:rgba(255,255,255,.5);margin-bottom:2px;">LATEST</div>
+          <div style="font-size:11px;color:#fff;font-weight:600;">Glossier replied · 2 days ago 🎉</div>
+        </div>
+      </div>
+
+      <!-- For You brands -->
+      <div class="wishlist-card">
+        <div class="wishlist-header">
+          <div class="card-eyebrow" style="margin:0">Matched brands for you</div>
+          <span style="font-size:10px;color:#9ca3af;">5.1K followers</span>
+        </div>
+
+        <div class="pro-brand-row">
+          <div class="brand-avatar" style="background:#db2777">C</div>
+          <div class="brand-info">
+            <div class="brand-name">Charlotte Tilbury</div>
+            <div class="brand-cat">Flawless Filter · makeup</div>
+          </div>
+          <button class="pitch-btn">Pitch →</button>
+        </div>
+
+        <div class="pro-brand-row">
+          <div class="brand-avatar" style="background:#0891b2">K</div>
+          <div class="brand-info">
+            <div class="brand-name">Krave Beauty</div>
+            <div class="brand-cat">Beet The Sun SPF · skincare</div>
+          </div>
+          <button class="pitch-btn">Pitch →</button>
+        </div>
+
+        <div class="pro-brand-row">
+          <div class="brand-avatar" style="background:#7c3aed">O</div>
+          <div class="brand-info">
+            <div class="brand-name">Ordinary</div>
+            <div class="brand-cat">Hyaluronic Acid 2%</div>
+          </div>
+          <button class="pitch-btn">Pitch →</button>
+        </div>
+
+        <div style="margin-top:10px;text-align:center;">
+          <div style="font-size:10.5px;color:#9ca3af;">Showing 3 of 438 beauty brands</div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="bottom-nav">
+      <div class="nav-item active">
+        <div class="nav-icon">✨</div>
+        <div class="nav-label" style="color:#E11D48">For You</div>
+        <div class="nav-dot"></div>
+      </div>
+      <div class="nav-item">
+        <div class="nav-icon">🔖</div>
+        <div class="nav-label">Saved</div>
+      </div>
+      <div class="nav-item">
+        <div class="nav-icon">📦</div>
+        <div class="nav-label">Pipeline</div>
+      </div>
+      <div class="nav-item">
+        <div class="nav-icon">👤</div>
+        <div class="nav-label">Profile</div>
+      </div>
+    </div>
+
+  </div>
+  <div class="phone-home"><div class="home-bar"></div></div>
+</div>
+<div class="phone-caption">Pro mode — after upgrading</div>
+</div>
+
+</div><!-- end phones-row -->
+
+</body>
+</html>

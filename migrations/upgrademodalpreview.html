@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Upgrade Modal — Preview</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --black: #0F0F0F;
+    --rose: #E11D48;
+    --violet: #7C3AED;
+    --green: #059669;
+    --border: #e5e7eb;
+    --muted: #6b7280;
+    --text: #374151;
+    --bg: #F4F4F3;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+    background: #1a1a2e;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 28px 16px 60px;
+  }
+
+  /* VARIANT SWITCHER */
+  .switcher {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .switch-btn {
+    padding: 7px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    border: 1.5px solid rgba(255,255,255,.2);
+    background: rgba(255,255,255,.05);
+    color: rgba(255,255,255,.6);
+    cursor: pointer;
+    transition: all .15s;
+  }
+  .switch-btn:hover { border-color: rgba(255,255,255,.4); color: #fff; }
+  .switch-btn.active {
+    background: #fff;
+    border-color: #fff;
+    color: var(--black);
+  }
+  .switcher-label {
+    width: 100%;
+    text-align: center;
+    font-size: 11px;
+    color: rgba(255,255,255,.35);
+    margin-bottom: 4px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+
+  /* BACKDROP */
+  .backdrop {
+    background: rgba(0,0,0,.55);
+    border-radius: 20px;
+    padding: 2px;
+    width: 100%;
+    max-width: 480px;
+  }
+
+  /* MODAL */
+  .modal {
+    background: #fff;
+    border-radius: 18px;
+    padding: 32px 28px 24px;
+    position: relative;
+    width: 100%;
+  }
+
+  .modal-close {
+    position: absolute;
+    top: 16px; right: 16px;
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    background: #f3f4f6;
+    border: none;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; color: var(--muted);
+    transition: background .15s;
+  }
+  .modal-close:hover { background: #e5e7eb; }
+
+  /* ICON */
+  .modal-icon {
+    width: 52px; height: 52px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #7C3AED, #E11D48);
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 16px;
+  }
+
+  /* HEADLINE */
+  .modal-headline {
+    font-size: 20px;
+    font-weight: 900;
+    color: var(--black);
+    letter-spacing: -.02em;
+    text-align: center;
+    line-height: 1.2;
+    margin-bottom: 7px;
+  }
+  .modal-subtext {
+    font-size: 13px;
+    color: var(--muted);
+    text-align: center;
+    line-height: 1.5;
+    margin-bottom: 16px;
+  }
+
+  /* PROGRESS BAR */
+  .progress-row {
+    background: #f9fafb;
+    border-radius: 10px;
+    padding: 10px 14px;
+    margin-bottom: 16px;
+  }
+  .progress-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    margin-bottom: 7px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .progress-label span {
+    font-weight: 800;
+    color: var(--black);
+  }
+  .progress-track {
+    height: 5px;
+    background: #e5e7eb;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    border-radius: 4px;
+    background: linear-gradient(90deg, #7C3AED, #E11D48);
+  }
+
+  /* PROOF STRIP — NEW */
+  .proof-strip {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 16px;
+  }
+  .proof-stat {
+    padding: 10px 8px;
+    text-align: center;
+    border-right: 1px solid var(--border);
+  }
+  .proof-stat:last-child { border-right: none; }
+  .proof-val {
+    font-size: 16px;
+    font-weight: 900;
+    color: var(--black);
+    margin-bottom: 2px;
+  }
+  .proof-lbl {
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--muted);
+    line-height: 1.3;
+  }
+
+  /* PRO CARD */
+  .pro-card {
+    border: 1.5px solid #c4b5fd;
+    border-radius: 14px;
+    padding: 18px;
+    background: linear-gradient(160deg, #f8f7ff 0%, #fdf2f8 100%);
+    margin-bottom: 14px;
+  }
+  .pro-card-header {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 5px;
+  }
+  .pro-label {
+    font-size: 13px;
+    font-weight: 800;
+    color: var(--violet);
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+  .pro-price {
+    font-size: 26px;
+    font-weight: 900;
+    color: var(--black);
+    letter-spacing: -.03em;
+  }
+  .pro-price span {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--muted);
+  }
+  .pro-roi-line {
+    font-size: 12px;
+    color: var(--green);
+    font-weight: 600;
+    margin-bottom: 14px;
+  }
+
+  /* FEATURE LIST */
+  .feature-list {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    margin-bottom: 14px;
+  }
+  .feature-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    font-size: 13px;
+    color: var(--text);
+    line-height: 1.4;
+  }
+  .feature-check {
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: var(--green);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .feature-item.highlight .feature-check {
+    background: var(--violet);
+  }
+  .feature-item strong { font-weight: 700; color: var(--black); }
+
+  /* ROI BOX */
+  .roi-box {
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    border-radius: 10px;
+    padding: 11px 13px;
+    font-size: 12px;
+    color: #065f46;
+    line-height: 1.5;
+    text-align: center;
+  }
+  .roi-box strong { font-weight: 700; }
+
+  /* CTA */
+  .cta-btn {
+    width: 100%;
+    padding: 14px;
+    border: none;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #7C3AED, #E11D48);
+    color: #fff;
+    font-size: 15px;
+    font-weight: 800;
+    cursor: pointer;
+    letter-spacing: -.01em;
+    transition: opacity .15s;
+    margin-bottom: 0;
+  }
+  .cta-btn:hover { opacity: .9; }
+
+  .modal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding-top: 12px;
+    border-top: 1px solid #f3f4f6;
+    margin-top: 12px;
+  }
+  .footer-item {
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  /* DIFF INDICATOR */
+  .new-tag {
+    background: var(--violet);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 800;
+    padding: 1px 5px;
+    border-radius: 6px;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    margin-left: 4px;
+    vertical-align: middle;
+  }
+
+  /* CHANGE NOTES */
+  .change-notes {
+    max-width: 480px;
+    margin-top: 28px;
+    width: 100%;
+  }
+  .change-notes-title {
+    font-size: 11px;
+    color: rgba(255,255,255,.35);
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    margin-bottom: 10px;
+    text-align: center;
+  }
+  .change-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 9px 0;
+    border-bottom: 1px solid rgba(255,255,255,.06);
+    font-size: 12px;
+    color: rgba(255,255,255,.6);
+    line-height: 1.5;
+  }
+  .change-item:last-child { border-bottom: none; }
+  .change-badge {
+    font-size: 9px;
+    font-weight: 800;
+    padding: 2px 7px;
+    border-radius: 6px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .change-badge.added { background: #22c55e; color: #fff; }
+  .change-badge.updated { background: #f59e0b; color: #fff; }
+  .change-badge.kept { background: rgba(255,255,255,.15); color: rgba(255,255,255,.7); }
+</style>
+</head>
+<body>
+
+<!-- VARIANT SWITCHER -->
+<div class="switcher">
+  <div class="switcher-label">Context variant</div>
+  <button class="switch-btn active" onclick="setVariant('pitch')">Pitch limit hit</button>
+  <button class="switch-btn" onclick="setVariant('opportunities')">Opportunity limit</button>
+  <button class="switch-btn" onclick="setVariant('locked')">Locked Pro match</button>
+  <button class="switch-btn" onclick="setVariant('foryou')">For You banner</button>
+</div>
+
+<!-- MODAL -->
+<div class="backdrop">
+<div class="modal">
+  <button class="modal-close">&times;</button>
+
+  <div class="modal-icon">
+    <svg width="22" height="22" viewBox="0 0 16 16" fill="white">
+      <path d="M11.251.068a.5.5 0 0 1 .227.58L9.677 6.5H13a.5.5 0 0 1 .364.843l-8 8.5a.5.5 0 0 1-.842-.49L6.323 9.5H3a.5.5 0 0 1-.364-.843l8-8.5a.5.5 0 0 1 .615-.09z"/>
+    </svg>
+  </div>
+
+  <div id="modal-headline" class="modal-headline">
+    Your matched brands are waiting.
+  </div>
+  <div id="modal-subtext" class="modal-subtext">
+    3 free pitches used this month. Upgrade to keep pitching.
+  </div>
+
+  <!-- PROGRESS BAR -->
+  <div id="progress-row" class="progress-row">
+    <div class="progress-label">
+      <span id="progress-label-text">3 / 3 pitches used this month</span>
+    </div>
+    <div class="progress-track">
+      <div class="progress-fill" id="progress-fill" style="width:100%;"></div>
+    </div>
+  </div>
+
+  <!-- PROOF STRIP — NEW -->
+  <div class="proof-strip">
+    <div class="proof-stat">
+      <div class="proof-val">40%+</div>
+      <div class="proof-lbl">Avg reply rate for Pro pitches</div>
+    </div>
+    <div class="proof-stat">
+      <div class="proof-val">~$45</div>
+      <div class="proof-lbl">Avg PR kit value received</div>
+    </div>
+    <div class="proof-stat">
+      <div class="proof-val">30d</div>
+      <div class="proof-lbl">Avg time to first PR</div>
+    </div>
+  </div>
+
+  <!-- PRO CARD -->
+  <div class="pro-card">
+    <div class="pro-card-header">
+      <div class="pro-label">Pro</div>
+      <div class="pro-price">$12<span>/month</span></div>
+    </div>
+    <div class="pro-roi-line">One gifted package covers your subscription for the year</div>
+
+    <div class="feature-list">
+      <div class="feature-item">
+        <div class="feature-check">
+          <svg width="9" height="9" viewBox="0 0 10 10" fill="none">
+            <path d="M2 5l2.5 2.5L8 3" stroke="white" stroke-width="1.5"/>
+          </svg>
+        </div>
+        <div><strong>Unlimited pitches</strong> to any brand every month</div>
+      </div>
+
+      <div class="feature-item highlight">
+        <div class="feature-check">
+          <svg width="9" height="9" viewBox="0 0 10 10" fill="none">
+            <path d="M2 5l2.5 2.5L8 3" stroke="white" stroke-width="1.5"/>
+          </svg>
+        </div>
+        <div>
+          <strong>Apply to brand casting calls</strong> — exclusive opportunities posted by brands looking for creators now
+          <span class="new-tag">new</span>
+        </div>
+      </div>
+
+      <div class="feature-item">
+        <div class="feature-check">
+          <svg width="9" height="9" viewBox="0 0 10 10" fill="none">
+            <path d="M2 5l2.5 2.5L8 3" stroke="white" stroke-width="1.5"/>
+          </svg>
+        </div>
+        <div><strong>Unlock your top matches</strong> with 38 to 55% reply rates</div>
+      </div>
+
+      <div class="feature-item">
+        <div class="feature-check">
+          <svg width="9" height="9" viewBox="0 0 10 10" fill="none">
+            <path d="M2 5l2.5 2.5L8 3" stroke="white" stroke-width="1.5"/>
+          </svg>
+        </div>
+        <div><strong>See which brands viewed your kit</strong> and when</div>
+      </div>
+
+      <div class="feature-item">
+        <div class="feature-check">
+          <svg width="9" height="9" viewBox="0 0 10 10" fill="none">
+            <path d="M2 5l2.5 2.5L8 3" stroke="white" stroke-width="1.5"/>
+          </svg>
+        </div>
+        <div>AI pitch written for every brand you contact, direct to their PR inbox</div>
+      </div>
+    </div>
+
+    <div class="roi-box">
+      Most Pro creators receive their first PR package within 30 days.<br>
+      <strong>That covers your $12 in product.</strong>
+    </div>
+  </div>
+
+  <button class="cta-btn" id="cta-btn">Get Pro for $12/month</button>
+
+  <div class="modal-footer">
+    <div class="footer-item">
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="#9ca3af"><path d="M8 1a2 2 0 0 1 2 2v4H6V3a2 2 0 0 1 2-2m3 6V3a3 3 0 0 0-6 0v4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2"/></svg>
+      Cancel anytime
+    </div>
+    <div class="footer-item">
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="#9ca3af"><path d="M5.338 1.59a61 61 0 0 0-2.837.856.48.48 0 0 0-.328.39c-.554 4.157.726 7.19 2.253 9.188a10.7 10.7 0 0 0 2.287 2.233c.346.244.652.42.893.533q.18.085.293.118a1 1 0 0 0 .101.025 1 1 0 0 0 .1-.025q.114-.034.294-.118c.24-.113.547-.29.893-.533a10.7 10.7 0 0 0 2.287-2.233c1.527-1.997 2.807-5.031 2.253-9.188a.48.48 0 0 0-.328-.39c-.651-.213-1.75-.56-2.837-.855C9.552 1.29 8.531 1.067 8 1.067c-.53 0-1.552.223-2.662.524z"/></svg>
+      Secure checkout
+    </div>
+    <div class="footer-item">
+      No commitment
+    </div>
+  </div>
+
+</div>
+</div>
+
+<!-- CHANGE NOTES -->
+<div class="change-notes">
+  <div class="change-notes-title">What changed vs current modal</div>
+  <div class="change-item">
+    <div class="change-badge added">Added</div>
+    Proof strip (3 stats): 40%+ reply rate, ~$45 avg PR value, 30d avg time to first PR. Answers the 3 buyer questions before the price card.
+  </div>
+  <div class="change-item">
+    <div class="change-badge added">Added</div>
+    "Apply to brand casting calls" as second feature in list. Opportunities tab is a new Pro differentiator. Marked NEW in the UI.
+  </div>
+  <div class="change-item">
+    <div class="change-badge updated">Updated</div>
+    "Unlimited brand contacts" rewritten as "Unlimited pitches to any brand every month" — removes the word "contacts" which sounds transactional.
+  </div>
+  <div class="change-item">
+    <div class="change-badge updated">Updated</div>
+    "Unlock your top matches with 38 to 55% reply rates" replaces vague "Custom outreach emails" feature. Uses real numbers from the locked cards.
+  </div>
+  <div class="change-item">
+    <div class="change-badge updated">Updated</div>
+    Subtext is shorter and direct per context. Old: one generic line. New: context-specific one-liner that names the exact thing they just ran out of.
+  </div>
+  <div class="change-item">
+    <div class="change-badge updated">Updated</div>
+    ROI box: "gifted package covers your Pro for the year" kept and strengthened with "30 days" specificity. Social proof anchored to timeline.
+  </div>
+  <div class="change-item">
+    <div class="change-badge kept">Kept</div>
+    Gradient progress bar, Pro card design, gradient CTA button, "Cancel anytime" footer. These are all working well.
+  </div>
+  <div class="change-item">
+    <div class="change-badge kept">Kept</div>
+    $12/month price. Note: raising to $19 at a future date requires only a price token change — copy supports either price point.
+  </div>
+</div>
+
+<script>
+  const variants = {
+    pitch: {
+      headline: 'Your matched brands are waiting.',
+      subtext: '3 free pitches used this month. Upgrade to keep pitching.',
+      progressLabel: '3 / 3 pitches used this month',
+      progressWidth: '100%',
+      cta: 'Get Pro for $12/month'
+    },
+    opportunities: {
+      headline: 'Brands are reviewing applications right now.',
+      subtext: '3 free applications used this month. Pro gives you unlimited access.',
+      progressLabel: '3 / 3 applications used this month',
+      progressWidth: '100%',
+      cta: 'Unlock unlimited applications'
+    },
+    locked: {
+      headline: 'Your top matches reply 4x more than average.',
+      subtext: 'These brands are locked to Pro. They reply to 38 to 55% of pitches.',
+      progressLabel: '3 / 3 pitches used this month',
+      progressWidth: '100%',
+      cta: 'Unlock Pro matches for $12/month'
+    },
+    foryou: {
+      headline: 'Creators in your niche are landing PR this month.',
+      subtext: 'Pro unlocks your top matches, brand casting calls, and kit view tracking.',
+      progressLabel: '1 / 3 pitches used this month',
+      progressWidth: '33%',
+      cta: 'Get Pro for $12/month'
+    }
+  };
+
+  function setVariant(key) {
+    const v = variants[key];
+    document.getElementById('modal-headline').textContent = v.headline;
+    document.getElementById('modal-subtext').textContent = v.subtext;
+    document.getElementById('progress-label-text').textContent = v.progressLabel;
+    document.getElementById('progress-fill').style.width = v.progressWidth;
+    document.getElementById('cta-btn').textContent = v.cta;
+
+    document.querySelectorAll('.switch-btn').forEach(b => b.classList.remove('active'));
+    event.target.classList.add('active');
+  }
+</script>
+</body>
+</html>

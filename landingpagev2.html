@@ -1,0 +1,1476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>newcollab — Brand Outreach Tool for Micro Creators | Find Brands, Pitch, Track</title>
+<meta name="description" content="Find 500+ brand PR contacts, auto-generate your media kit, send AI-powered pitch emails, and track every outreach in one place. The complete brand deal system for micro creators.">
+<meta property="og:title" content="newcollab — The Complete Brand Outreach Tool for Creators">
+<meta property="og:description" content="Stop guessing how to get brand deals. newcollab gives you everything: brand contacts, AI pitch emails, auto-generated media kit, and outreach tracking.">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {"@type":"Question","name":"How do I get my first brand deal as a small creator?","acceptedAnswer":{"@type":"Answer","text":"Sign up to newcollab, browse the brand directory filtered to your niche, and use the AI pitch writer to send a professional pitch with your auto-generated media kit attached. Most creators land their first deal within 2 weeks of consistent outreach."}},
+    {"@type":"Question","name":"How do I contact a brand for a PR package?","acceptedAnswer":{"@type":"Answer","text":"newcollab gives you direct PR contact details for 500+ brands. Use the AI pitch writer to generate a personalised email with your media kit auto-attached, then track the reply in your PR pipeline."}},
+    {"@type":"Question","name":"Do I need a media kit to pitch brands?","acceptedAnswer":{"@type":"Answer","text":"Yes — brands want to see your stats, audience demographics, and niche before they reply. newcollab auto-generates your media kit from your profile so you never pitch without one."}},
+    {"@type":"Question","name":"How many followers do you need to work with brands?","acceptedAnswer":{"@type":"Answer","text":"No minimum. Nano and micro creators (1K–50K followers) often have higher engagement rates than larger accounts, and many brands actively prefer them. newcollab filters brands by follower fit so you only see relevant opportunities."}}
+  ]
+}
+</script>
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --rose:#E11D48;--rose-light:#FFF1F3;--rose-mid:#FECDD3;
+  --black:#0F0F0F;--black2:#1a1a1a;
+  --violet:#7C3AED;--violet-light:#F5F3FF;
+  --green:#059669;--green-light:#ECFDF5;--green-mid:#A7F3D0;
+  --amber:#D97706;--amber-light:#FFFBEB;
+  --bg:#FAFAF9;--surface:#FFFFFF;
+  --border:#EBEBEB;--border2:#F3F3F3;
+  --text:#0F0F0F;--text2:#4A4A4A;--text3:#8A8A8A;
+  --pro:linear-gradient(135deg,#E11D48,#7C3AED);
+  --sh:0 1px 4px rgba(0,0,0,.05),0 4px 16px rgba(0,0,0,.06);
+  --sh-lg:0 8px 40px rgba(0,0,0,.10);
+}
+html{scroll-behavior:smooth}
+body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var(--text);font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
+
+/* ── NAV ─────────────────────────────────────────────────── */
+nav{
+  position:sticky;top:0;z-index:100;
+  background:rgba(250,250,249,.94);
+  backdrop-filter:blur(16px);
+  border-bottom:1px solid var(--border);
+  padding:0 24px;height:56px;
+  display:flex;align-items:center;justify-content:space-between;
+  transition:box-shadow .2s;
+}
+nav.scrolled{box-shadow:0 2px 20px rgba(0,0,0,.07)}
+.nav-logo{display:flex;align-items:center;gap:8px;text-decoration:none}
+.nav-logo-mark{width:28px;height:28px;background:var(--black);border-radius:7px;display:grid;place-items:center;color:#fff;font-weight:900;font-size:13px}
+.nav-logo-word{font-size:15px;font-weight:800;color:var(--text);letter-spacing:-.3px}
+.nav-logo-word em{color:var(--rose);font-style:normal}
+.nav-links{display:flex;align-items:center;gap:24px}
+.nav-links a{font-size:13px;font-weight:600;color:var(--text2);text-decoration:none;transition:color .15s}
+.nav-links a:hover{color:var(--text)}
+.nav-right{display:flex;align-items:center;gap:10px}
+.nav-signin{font-size:13px;font-weight:600;color:var(--text2);text-decoration:none}
+.nav-cta{background:var(--black);color:#fff;padding:8px 16px;border-radius:9px;font-size:13px;font-weight:700;text-decoration:none;transition:opacity .15s}
+.nav-cta:hover{opacity:.85}
+@media(max-width:768px){.nav-links{display:none}.nav-signin{display:none}}
+
+/* ── SECTIONS ─────────────────────────────────────────────── */
+section{padding:64px 20px}
+.container{max-width:1040px;margin:0 auto}
+.container-sm{max-width:680px;margin:0 auto}
+
+/* ── TYPOGRAPHY ───────────────────────────────────────────── */
+.eyebrow{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--rose);margin-bottom:12px}
+.eyebrow-dot{width:5px;height:5px;border-radius:50%;background:var(--rose)}
+h1{font-size:clamp(34px,5vw,54px);font-weight:900;letter-spacing:-1.5px;line-height:1.06;color:var(--text)}
+h1 em{font-style:normal;color:var(--rose)}
+h2{font-size:clamp(26px,4vw,38px);font-weight:900;letter-spacing:-1px;line-height:1.15;color:var(--text)}
+h2 em{font-style:normal;color:var(--rose)}
+h3{font-size:20px;font-weight:800;letter-spacing:-.4px;line-height:1.25;margin-bottom:10px}
+.subline{font-size:16px;color:var(--text2);line-height:1.6;margin-top:12px}
+.subline strong{color:var(--text);font-weight:700}
+.section-center{text-align:center}
+.section-center .subline{max-width:540px;margin:12px auto 0}
+
+/* ── BUTTONS ──────────────────────────────────────────────── */
+.btn{display:inline-flex;align-items:center;gap:8px;padding:13px 22px;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;transition:all .15s;border:none;font-family:'Inter',sans-serif;text-decoration:none}
+.btn:active{transform:scale(.98)}
+.btn-black{background:var(--black);color:#fff}
+.btn-black:hover{background:var(--black2)}
+.btn-rose{background:var(--rose);color:#fff}
+.btn-rose:hover{opacity:.9}
+.btn-outline{background:#fff;color:var(--text);border:1.5px solid var(--border)}
+.btn-outline:hover{background:var(--bg)}
+.btn-lg{padding:15px 28px;font-size:16px;border-radius:14px}
+
+/* ── HERO ─────────────────────────────────────────────────── */
+.hero-section{
+  padding:60px 20px 52px;
+  background:
+    radial-gradient(ellipse at 5% 0%, rgba(225,29,72,.08) 0%, transparent 50%),
+    radial-gradient(ellipse at 95% 100%, rgba(124,58,237,.07) 0%, transparent 50%),
+    #FAFAF9;
+}
+.hero-inner{
+  max-width:1040px;margin:0 auto;
+  display:grid;grid-template-columns:1fr 1fr;
+  gap:52px;align-items:center;
+}
+@media(max-width:800px){
+  .hero-inner{grid-template-columns:1fr;gap:36px;text-align:center}
+  .hero-proof-row{justify-content:center}
+  .hero-visual{order:-1}
+}
+.hero-cta-row{display:flex;align-items:center;gap:12px;margin-top:24px;flex-wrap:wrap}
+@media(max-width:800px){.hero-cta-row{justify-content:center}}
+.hero-cta-note{font-size:12px;color:var(--text3);font-weight:500}
+.hero-proof-row{display:flex;align-items:center;gap:10px;margin-top:18px}
+.proof-avatars{display:flex}
+.proof-av{width:24px;height:24px;border-radius:50%;border:2.5px solid #fff;margin-right:-7px;font-size:9px;font-weight:800;color:#fff;display:grid;place-items:center}
+.proof-text{font-size:12px;font-weight:600;color:var(--text2);margin-left:12px;line-height:1.4}
+.proof-text span{color:var(--rose);font-weight:700}
+
+/* GIF visual */
+.hero-visual{position:relative}
+.hero-gif-wrap{
+  position:relative;
+  border-radius:20px;
+  overflow:hidden;
+  box-shadow:var(--sh-lg);
+  background:linear-gradient(135deg,#FFF1F3,#F5F3FF);
+  aspect-ratio:4/3;
+  display:flex;align-items:center;justify-content:center;
+}
+.hero-gif-wrap img{width:100%;height:100%;object-fit:cover;border-radius:20px}
+.hero-badge{
+  position:absolute;bottom:16px;left:16px;
+  background:#fff;border-radius:12px;
+  padding:9px 13px;
+  box-shadow:0 4px 20px rgba(0,0,0,.12);
+  display:flex;align-items:center;gap:9px;
+  animation:float 3s ease-in-out infinite;
+}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+.hero-badge-icon{width:34px;height:34px;background:var(--green-light);border-radius:9px;display:grid;place-items:center;font-size:17px;flex-shrink:0}
+.hero-badge-text{font-size:11.5px}
+.hero-badge-title{font-weight:800;color:var(--text)}
+.hero-badge-sub{color:var(--text3);font-size:11px}
+.hero-badge2{
+  position:absolute;top:16px;right:16px;
+  background:var(--black);color:#fff;
+  border-radius:10px;padding:7px 12px;
+  font-size:11px;font-weight:700;
+  box-shadow:0 4px 16px rgba(0,0,0,.2);
+  animation:float 3s ease-in-out infinite .8s;
+}
+
+/* ── TICKER ───────────────────────────────────────────────── */
+.ticker-wrap{background:var(--black);padding:11px 0;overflow:hidden}
+.ticker-inner{display:flex;gap:0;animation:ticker 28s linear infinite}
+.ticker-item{white-space:nowrap;padding:0 28px;font-size:12.5px;font-weight:600;color:rgba(255,255,255,.65);display:flex;align-items:center;gap:7px}
+.ticker-item em{color:#fff;font-style:normal}
+.ticker-sep{color:rgba(255,255,255,.15)}
+@keyframes ticker{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+
+/* ── CLARITY STRIP ────────────────────────────────────────── */
+.clarity-section{padding:40px 20px;background:#fff;border-bottom:1px solid var(--border)}
+.clarity-strip{
+  max-width:860px;margin:0 auto;
+  display:grid;grid-template-columns:repeat(4,1fr);
+  gap:0;
+}
+@media(max-width:580px){.clarity-strip{grid-template-columns:1fr 1fr;gap:10px}}
+.clarity-item{text-align:center;padding:16px 12px;position:relative}
+.clarity-item:not(:last-child)::after{
+  content:'→';position:absolute;right:-8px;top:50%;transform:translateY(-50%);
+  font-size:16px;color:var(--border);font-weight:900;
+}
+@media(max-width:580px){.clarity-item:nth-child(2)::after,.clarity-item:nth-child(4)::after{display:none}}
+.clarity-icon{font-size:26px;margin-bottom:7px}
+.clarity-label{font-size:13px;font-weight:800;color:var(--text);margin-bottom:2px}
+.clarity-sub{font-size:11.5px;color:var(--text3);font-weight:500}
+
+/* ── PROBLEM (relatable moments) ──────────────────────────── */
+.problem-section{background:var(--bg)}
+.problem-section h2{margin-bottom:8px}
+.relatable-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:36px}
+@media(max-width:560px){.relatable-grid{grid-template-columns:1fr}}
+.relatable-card{
+  background:#fff;border:1px solid var(--border);border-radius:16px;
+  padding:22px 20px;
+  transition:transform .2s,box-shadow .2s;
+}
+.relatable-card:hover{transform:translateY(-2px);box-shadow:var(--sh-lg)}
+.relatable-mood{font-size:28px;margin-bottom:10px}
+.relatable-card h3{font-size:16px;font-weight:800;margin-bottom:6px;line-height:1.3}
+.relatable-card p{font-size:13.5px;color:var(--text2);line-height:1.5}
+.relatable-divider{
+  margin-top:32px;
+  background:var(--black);border-radius:16px;
+  padding:20px 28px;
+  display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;
+}
+.relatable-divider-text{font-size:17px;font-weight:800;color:#fff}
+.relatable-divider-text em{color:#FDA4AF;font-style:normal}
+
+/* ── LIFESTYLE PHOTO ROW ──────────────────────────────────── */
+.lifestyle-section{padding:0;overflow:hidden}
+.lifestyle-row{display:flex;gap:10px;padding:10px 20px}
+.lifestyle-img{
+  flex:1;min-width:200px;border-radius:16px;overflow:hidden;
+  aspect-ratio:3/4;position:relative;
+}
+.lifestyle-img .img-ph{
+  width:100%;height:100%;
+  display:flex;align-items:flex-end;padding:14px;
+}
+.lifestyle-img .img-caption{
+  background:rgba(0,0,0,.45);backdrop-filter:blur(6px);
+  color:#fff;border-radius:10px;padding:8px 12px;font-size:12px;font-weight:700;width:100%;
+}
+@media(max-width:600px){
+  .lifestyle-row{gap:7px;padding:7px 14px}
+  .lifestyle-img{min-width:140px}
+}
+
+/* ── SOLUTION FLOW ────────────────────────────────────────── */
+.solution-section{
+  background:var(--black);
+  padding:64px 20px;
+}
+.solution-section h2{color:#fff}
+.solution-section h2 em{color:#FDA4AF}
+.solution-section .subline{color:rgba(255,255,255,.55);max-width:520px;margin:10px auto 0}
+.flow-steps{
+  display:flex;gap:0;margin-top:48px;position:relative;
+  overflow-x:auto;padding-bottom:4px;
+}
+.flow-step{
+  flex:1;min-width:140px;
+  text-align:center;padding:0 12px;position:relative;
+}
+.flow-step:not(:last-child)::after{
+  content:'';
+  position:absolute;top:22px;right:0;
+  width:1px;height:28px;
+  background:rgba(255,255,255,.1);
+}
+.flow-icon{
+  width:44px;height:44px;border-radius:12px;
+  display:grid;place-items:center;font-size:20px;
+  margin:0 auto 12px;position:relative;
+  border:1px solid rgba(255,255,255,.08);
+}
+.flow-num{
+  position:absolute;top:-5px;right:-5px;
+  width:16px;height:16px;border-radius:50%;
+  background:var(--rose);color:#fff;
+  font-size:8px;font-weight:900;
+  display:grid;place-items:center;
+}
+.flow-title{font-size:12.5px;font-weight:800;color:#fff;margin-bottom:4px}
+.flow-body{font-size:11.5px;color:rgba(255,255,255,.45);line-height:1.45}
+
+/* ── BRAND DIRECTORY SECTION ──────────────────────────────── */
+.directory-section{background:#fff;padding:64px 20px}
+.directory-preview{
+  max-width:1040px;margin:36px auto 0;
+  background:var(--bg);border:1px solid var(--border);
+  border-radius:20px;overflow:hidden;box-shadow:var(--sh-lg);
+}
+.dp-header{
+  background:#fff;border-bottom:1px solid var(--border);
+  padding:14px 20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;
+}
+.dp-search{
+  display:flex;align-items:center;gap:7px;background:var(--bg);border:1.5px solid var(--border);border-radius:9px;padding:8px 12px;flex:1;max-width:280px;
+}
+.dp-search input{border:none;background:transparent;font-size:12.5px;font-family:'Inter',sans-serif;outline:none;flex:1;color:var(--text)}
+.dp-search input::placeholder{color:var(--text3)}
+.dp-filters{display:flex;gap:6px;flex-wrap:wrap}
+.dp-filter{padding:5px 12px;border:1.5px solid var(--border);border-radius:20px;font-size:12px;font-weight:700;cursor:pointer;background:#fff;color:var(--text2);transition:all .15s;user-select:none}
+.dp-filter.active{background:var(--black);border-color:var(--black);color:#fff}
+.dp-grid{
+  display:grid;grid-template-columns:repeat(3,1fr);
+  gap:12px;padding:16px 20px;
+}
+@media(max-width:680px){.dp-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:420px){.dp-grid{grid-template-columns:1fr}}
+.dp-brand-card{
+  background:#fff;border:1px solid var(--border);border-radius:14px;
+  padding:16px;transition:all .2s;cursor:pointer;
+}
+.dp-brand-card:hover{border-color:var(--black);box-shadow:0 4px 20px rgba(0,0,0,.08);transform:translateY(-2px)}
+
+/* Brand logo block — colored letter square */
+.brand-logo-block{
+  width:44px;height:44px;border-radius:10px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:15px;font-weight:900;color:#fff;
+  margin-bottom:10px;letter-spacing:-.5px;
+  flex-shrink:0;
+}
+.dp-name{font-size:13.5px;font-weight:800;margin-bottom:2px}
+.dp-cat{font-size:11px;color:var(--text3);margin-bottom:10px}
+.dp-meta{display:flex;align-items:center;justify-content:space-between}
+.dp-rate{font-size:11.5px;font-weight:700}
+.dp-rate.hi{color:var(--green)}
+.dp-rate.mid{color:var(--amber)}
+.dp-rate.lo{color:var(--text3)}
+.dp-btn{background:var(--black);color:#fff;border:none;border-radius:7px;padding:6px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif}
+.dp-lock{background:var(--bg);color:var(--text3);border:1.5px solid var(--border);border-radius:7px;padding:6px 11px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;display:flex;align-items:center;gap:3px}
+.dp-footer{
+  border-top:1px solid var(--border);padding:12px 20px;
+  display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;
+  background:#fff;
+}
+.dp-count{font-size:12.5px;color:var(--text3);font-weight:500}
+.dp-count strong{color:var(--text);font-weight:700}
+
+/* ── FEATURE ROWS ─────────────────────────────────────────── */
+.feature-section{padding:64px 20px}
+.feature-row{
+  max-width:1040px;margin:0 auto;
+  display:grid;grid-template-columns:1fr 1fr;
+  gap:60px;align-items:center;
+}
+.feature-row.reverse{direction:rtl}
+.feature-row.reverse>*{direction:ltr}
+@media(max-width:800px){
+  .feature-row{grid-template-columns:1fr;gap:32px}
+  .feature-row.reverse{direction:ltr}
+}
+.feature-tag{display:inline-flex;align-items:center;gap:6px;background:var(--rose-light);color:var(--rose);font-size:11px;font-weight:700;padding:4px 11px;border-radius:20px;letter-spacing:.3px;margin-bottom:12px}
+.feature-text h3{font-size:26px;font-weight:900;letter-spacing:-.6px;margin-bottom:10px;line-height:1.2}
+.feature-text p{font-size:14.5px;color:var(--text2);line-height:1.65;margin-bottom:14px}
+.feature-callout{background:var(--bg);border:1px solid var(--border);border-left:3px solid var(--rose);border-radius:9px;padding:11px 14px;font-size:13px;font-weight:600;color:var(--text2);line-height:1.5}
+.feature-callout em{color:var(--rose);font-style:normal;font-weight:800}
+.feature-bullet{display:flex;flex-direction:column;gap:8px;margin-top:14px}
+.feature-bullet-item{display:flex;align-items:flex-start;gap:8px;font-size:13.5px;color:var(--text2)}
+.feature-bullet-item::before{content:'✓';color:var(--green);font-weight:800;flex-shrink:0;margin-top:1px}
+
+/* ── MOCKUP CARDS ─────────────────────────────────────────── */
+.feature-visual{position:relative}
+.mockup-card{
+  background:#fff;border:1px solid var(--border);border-radius:18px;
+  box-shadow:var(--sh-lg);overflow:hidden;
+}
+.mockup-header{
+  background:var(--bg);border-bottom:1px solid var(--border);
+  padding:10px 14px;display:flex;align-items:center;gap:7px;
+}
+.mockup-dots{display:flex;gap:4px}
+.mockup-dot{width:9px;height:9px;border-radius:50%}
+.mockup-title{font-size:11.5px;font-weight:600;color:var(--text3);margin-left:6px}
+.mockup-body{padding:14px}
+
+/* Kit mockup */
+.kit-card{background:linear-gradient(135deg,#FFF1F3,#F5F3FF);border-radius:12px;padding:14px}
+.kit-header{display:flex;align-items:center;gap:9px;margin-bottom:12px}
+.kit-avatar{width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,var(--rose),var(--violet));display:grid;place-items:center;color:#fff;font-weight:900;font-size:15px}
+.kit-name{font-size:13.5px;font-weight:800}
+.kit-handle{font-size:10.5px;color:var(--text3)}
+.kit-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:10px}
+.kit-stat{background:#fff;border-radius:9px;padding:9px;text-align:center;border:1px solid rgba(0,0,0,.05)}
+.kit-stat-val{font-size:15px;font-weight:900;color:var(--text)}
+.kit-stat-lbl{font-size:9.5px;color:var(--text3);font-weight:600}
+.kit-niches{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px}
+.kit-niche{background:var(--rose);color:#fff;font-size:10px;font-weight:700;padding:3px 8px;border-radius:20px}
+.kit-attached-badge{display:flex;align-items:center;gap:5px;background:var(--green-light);border:1px solid var(--green-mid);border-radius:7px;padding:7px 10px;font-size:11.5px;font-weight:700;color:var(--green)}
+
+/* Pipeline mockup */
+.pipeline-brand-card{background:#fff;border:1px solid var(--border);border-radius:9px;padding:10px 12px}
+.pbc-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.pbc-name{font-size:12px;font-weight:800}
+.pbc-tag{font-size:9.5px;font-weight:700;padding:2px 7px;border-radius:20px}
+.pbc-tag.waiting{background:#EFF6FF;color:#2563EB}
+.pbc-tag.replied{background:var(--green-light);color:var(--green)}
+.pbc-tag.won{background:var(--rose-light);color:var(--rose)}
+.pbc-sub{font-size:10.5px;color:var(--text3)}
+.pbc-nudge{margin-top:6px;font-size:10.5px;font-weight:700;color:var(--amber);display:flex;align-items:center;gap:3px}
+.pipeline-col-label{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);margin-bottom:6px;display:flex;align-items:center;gap:5px}
+.pipeline-col-label span{background:var(--bg);border:1px solid var(--border);border-radius:20px;padding:1px 7px;font-size:10px}
+
+/* For You mockup */
+.fy-card{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:10px}
+.fy-logo{width:36px;height:36px;border-radius:8px;display:grid;place-items:center;font-size:16px;flex-shrink:0}
+.fy-info{flex:1}
+.fy-name{font-size:12.5px;font-weight:800;margin-bottom:1px}
+.fy-meta{font-size:10.5px;color:var(--text3)}
+.fy-match{font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px;flex-shrink:0}
+.fy-match.hot{background:#FFF3CD;color:#92400E}
+.fy-match.matched{background:var(--rose-light);color:var(--rose)}
+.fy-pitch-btn{background:var(--black);color:#fff;border:none;border-radius:7px;padding:6px 11px;font-size:10.5px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;flex-shrink:0}
+.foryou-list{display:flex;flex-direction:column;gap:7px}
+
+/* ── SOCIAL PROOF ─────────────────────────────────────────── */
+.proof-section{background:var(--bg)}
+
+/* Stats row */
+.stats-row{
+  display:grid;grid-template-columns:repeat(4,1fr);
+  gap:10px;margin-top:32px margin-bottom:36px;
+}
+@media(max-width:560px){.stats-row{grid-template-columns:1fr 1fr}}
+.stat-card{background:#fff;border:1px solid var(--border);border-radius:14px;padding:20px;text-align:center;box-shadow:var(--sh)}
+.stat-num{font-size:32px;font-weight:900;letter-spacing:-1.5px;margin-bottom:3px}
+.stat-lbl{font-size:12px;color:var(--text3);font-weight:500}
+
+/* Testimonials — IG comment style */
+.testimonial-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:32px}
+@media(max-width:700px){.testimonial-grid{grid-template-columns:1fr}}
+.testimonial-card{
+  background:#fff;border:1px solid var(--border);border-radius:16px;
+  padding:20px;box-shadow:var(--sh);
+}
+.t-creator{display:flex;align-items:center;gap:9px;margin-bottom:14px}
+.t-av{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;font-size:14px;font-weight:800;color:#fff;flex-shrink:0}
+.t-name{font-size:13px;font-weight:800}
+.t-meta{font-size:11px;color:var(--text3)}
+.t-result{
+  background:var(--green-light);border-radius:10px;padding:10px 13px;
+  font-size:13px;color:#065F46;font-weight:700;line-height:1.45;
+  margin-bottom:12px;display:flex;align-items:flex-start;gap:7px;
+}
+.t-result-icon{font-size:16px;flex-shrink:0;margin-top:1px}
+.t-quote{font-size:12.5px;color:var(--text3);line-height:1.5;font-style:italic}
+.t-stars{color:#F59E0B;font-size:11px;letter-spacing:1px;margin-bottom:10px}
+
+/* Creator notification wall */
+.notif-wall{
+  display:flex;flex-direction:column;gap:8px;
+  max-width:400px;margin:32px auto 0;
+}
+.notif-pill{
+  display:flex;align-items:center;gap:10px;
+  background:#fff;border:1px solid var(--border);border-radius:12px;
+  padding:10px 14px;box-shadow:var(--sh);
+  animation:slide-in .4s ease both;
+}
+@keyframes slide-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.notif-icon{font-size:18px;flex-shrink:0}
+.notif-text{font-size:12.5px;font-weight:600;color:var(--text);flex:1}
+.notif-text span{color:var(--text3);font-weight:500}
+.notif-time{font-size:11px;color:var(--text3)}
+
+/* ── HOW IT WORKS ─────────────────────────────────────────── */
+.how-section{background:#fff}
+.how-steps{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:40px}
+@media(max-width:580px){.how-steps{grid-template-columns:1fr}}
+.how-step{text-align:center;padding:0 8px}
+.how-num{
+  width:48px;height:48px;border-radius:14px;
+  background:var(--black);color:#fff;
+  font-size:20px;font-weight:900;
+  display:grid;place-items:center;
+  margin:0 auto 16px;
+}
+.how-step h3{font-size:17px;margin-bottom:8px}
+.how-step p{font-size:13.5px;color:var(--text2);line-height:1.6}
+
+/* ── PRICING ──────────────────────────────────────────────── */
+.pricing-section{
+  background:
+    radial-gradient(ellipse at 50% 0%,rgba(225,29,72,.06) 0%,transparent 60%),
+    var(--bg);
+}
+.pricing-grid{
+  display:grid;grid-template-columns:1fr 1fr;
+  gap:14px;margin-top:36px;max-width:720px;margin-left:auto;margin-right:auto;
+}
+@media(max-width:520px){.pricing-grid{grid-template-columns:1fr}}
+.pricing-card{
+  background:#fff;border:1px solid var(--border);
+  border-radius:20px;padding:28px 24px;
+  box-shadow:var(--sh);
+}
+.pricing-card.featured{border-color:var(--black);border-width:2px;position:relative}
+.pricing-badge{
+  position:absolute;top:-12px;left:50%;transform:translateX(-50%);
+  background:var(--black);color:#fff;
+  font-size:10.5px;font-weight:800;padding:4px 14px;
+  border-radius:20px;white-space:nowrap;letter-spacing:.3px;text-transform:uppercase;
+}
+.pricing-tier{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--text3);margin-bottom:8px}
+.pricing-price{font-size:42px;font-weight:900;letter-spacing:-2px;margin-bottom:3px}
+.pricing-price sup{font-size:20px;letter-spacing:0;vertical-align:top;margin-top:9px}
+.pricing-price-sub{font-size:12.5px;color:var(--text3);margin-bottom:18px}
+.pricing-features{display:flex;flex-direction:column;gap:9px;margin-bottom:20px}
+.pf-item{display:flex;align-items:flex-start;gap:8px;font-size:13.5px;color:var(--text2)}
+.pf-check{color:var(--green);font-weight:800;flex-shrink:0;margin-top:1px}
+.pf-cross{color:var(--border);font-weight:800;flex-shrink:0;margin-top:1px}
+.pf-lock{font-size:12px;color:var(--text3)}
+.pricing-note{font-size:12px;color:var(--text3);text-align:center;margin-top:12px}
+
+/* ── FAQ ─────────────────────────────────────────────────── */
+.faq-section{background:#fff}
+.faq-list{max-width:680px;margin:36px auto 0;display:flex;flex-direction:column;gap:0}
+.faq-item{border-bottom:1px solid var(--border)}
+.faq-item:first-child{border-top:1px solid var(--border)}
+.faq-q{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:18px 0;cursor:pointer;gap:14px;
+  font-size:15px;font-weight:700;color:var(--text);
+  list-style:none;
+}
+.faq-q::-webkit-details-marker{display:none}
+.faq-icon{
+  width:26px;height:26px;border-radius:7px;background:var(--bg);
+  display:grid;place-items:center;font-size:15px;flex-shrink:0;
+  transition:transform .2s;color:var(--text2);font-weight:400;
+}
+details[open] .faq-icon{transform:rotate(45deg)}
+.faq-a{padding:0 0 18px;font-size:14px;color:var(--text2);line-height:1.65}
+
+/* ── FINAL CTA ────────────────────────────────────────────── */
+.final-cta{
+  background:var(--black);padding:80px 20px;
+  position:relative;overflow:hidden;text-align:center;
+}
+.final-cta::before{
+  content:'';position:absolute;top:-80px;left:50%;transform:translateX(-50%);
+  width:500px;height:500px;
+  background:radial-gradient(circle,rgba(225,29,72,.28) 0%,transparent 65%);
+  pointer-events:none;
+}
+.final-cta h2{color:#fff;position:relative;z-index:1}
+.final-cta h2 em{color:#FDA4AF}
+.final-cta .subline{color:rgba(255,255,255,.55);position:relative;z-index:1;max-width:480px;margin:10px auto 0}
+.final-cta-actions{display:flex;flex-direction:column;align-items:center;gap:12px;margin-top:32px;position:relative;z-index:1}
+.final-cta-trust{font-size:12px;color:rgba(255,255,255,.35);font-weight:500}
+
+/* ── FOOTER ───────────────────────────────────────────────── */
+footer{background:var(--black);border-top:1px solid rgba(255,255,255,.06);padding:44px 20px 28px}
+.footer-inner{max-width:1040px;margin:0 auto}
+.footer-top{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:36px;margin-bottom:40px}
+@media(max-width:600px){.footer-top{grid-template-columns:1fr 1fr}}
+.footer-logo{display:flex;align-items:center;gap:7px;margin-bottom:10px}
+.footer-logo-mark{width:26px;height:26px;background:rgba(255,255,255,.1);border-radius:6px;display:grid;place-items:center;color:#fff;font-weight:900;font-size:12px}
+.footer-logo-word{font-size:14px;font-weight:800;color:#fff;letter-spacing:-.3px}
+.footer-logo-word em{color:#FDA4AF;font-style:normal}
+.footer-desc{font-size:12.5px;color:rgba(255,255,255,.35);line-height:1.6;max-width:220px}
+.footer-col-title{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:rgba(255,255,255,.25);margin-bottom:12px}
+.footer-links{display:flex;flex-direction:column;gap:8px}
+.footer-links a{font-size:13px;color:rgba(255,255,255,.55);text-decoration:none;font-weight:500;transition:color .15s}
+.footer-links a:hover{color:#fff}
+.footer-bottom{border-top:1px solid rgba(255,255,255,.06);padding-top:20px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
+.footer-copy{font-size:12px;color:rgba(255,255,255,.25)}
+.footer-bottom-links{display:flex;gap:18px}
+.footer-bottom-links a{font-size:12px;color:rgba(255,255,255,.25);text-decoration:none}
+.footer-bottom-links a:hover{color:rgba(255,255,255,.5)}
+
+/* ── UTILS ───────────────────────────────────────────────── */
+.tag-pill{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:700}
+.tag-free{background:var(--green-light);color:var(--green)}
+.tag-pro{background:linear-gradient(135deg,var(--rose),var(--violet));color:#fff}
+.mt-8{margin-top:8px}
+.mt-32{margin-top:32px}
+.mt-36{margin-top:36px}
+.mt-48{margin-top:48px}
+</style>
+</head>
+<body>
+
+<!-- ── NAV ─────────────────────────────────────────────────── -->
+<nav id="nav">
+  <a class="nav-logo" href="/">
+    <div class="nav-logo-mark">N</div>
+    <span class="nav-logo-word">new<em>collab</em></span>
+  </a>
+  <div class="nav-links">
+    <a href="#how-it-works">How it works</a>
+    <a href="#brands">Brands</a>
+    <a href="#pricing">Pricing</a>
+  </div>
+  <div class="nav-right">
+    <a class="nav-signin" href="/login">Sign in</a>
+    <a class="nav-cta" href="/register">Start free →</a>
+  </div>
+</nav>
+
+<!-- ── HERO ─────────────────────────────────────────────────── -->
+<section class="hero-section">
+  <div class="hero-inner">
+    <div class="hero-text">
+      <div class="eyebrow"><div class="eyebrow-dot"></div> For nano & micro creators</div>
+      <h1>Land brand deals.<br><em>On repeat.</em><br>No guessing.</h1>
+      <p class="subline">
+        The complete outreach system — brand contacts, AI pitch, auto media kit, deal tracking. All in one place.
+      </p>
+      <div class="hero-cta-row">
+        <a class="btn btn-black btn-lg" href="/register">Start for free →</a>
+        <a class="btn btn-outline" href="#brands">See brands ↓</a>
+      </div>
+      <div class="hero-proof-row">
+        <div class="proof-avatars">
+          <div class="proof-av" style="background:#E11D48">C</div>
+          <div class="proof-av" style="background:#7C3AED">M</div>
+          <div class="proof-av" style="background:#059669">Z</div>
+          <div class="proof-av" style="background:#D97706">A</div>
+          <div class="proof-av" style="background:#2563EB">S</div>
+        </div>
+        <div class="proof-text">
+          <span>900+ creators</span> already getting brand deals<br>
+          Free to start · No credit card
+        </div>
+      </div>
+    </div>
+
+    <!-- ↓ REPLACE src WITH YOUR ACTUAL GIF PATH e.g. src="/assets/hero.gif" -->
+    <div class="hero-visual">
+      <div class="hero-gif-wrap">
+        <img src="hero.gif" alt="Creator landing a brand deal with newcollab" onerror="this.style.display='none'">
+        <!-- Fallback if gif not found -->
+        <div id="gif-fallback" style="text-align:center;padding:36px 24px">
+          <div style="font-size:52px;margin-bottom:14px">🎉</div>
+          <div style="font-size:17px;font-weight:800;color:var(--text);margin-bottom:5px">Package received!</div>
+          <div style="font-size:13px;color:var(--text2)">Rhode Skin just replied to @carolstyle</div>
+          <div style="margin-top:6px;font-size:11px;color:var(--text3)">← replace with hero.gif</div>
+        </div>
+      </div>
+      <div class="hero-badge">
+        <div class="hero-badge-icon">📦</div>
+        <div class="hero-badge-text">
+          <div class="hero-badge-title">Package received!</div>
+          <div class="hero-badge-sub">Rhode Skin → @carolstyle</div>
+        </div>
+      </div>
+      <div class="hero-badge2">✍️ 6 pitches sent today</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── TICKER ──────────────────────────────────────────────── -->
+<div class="ticker-wrap">
+  <div class="ticker-inner">
+    <div class="ticker-item">🎁 <em>carolstyle</em> landed Rhode Skin — 3 days after joining</div>
+    <div class="ticker-item ticker-sep">·</div>
+    <div class="ticker-item">📬 <em>glowwith_m</em> got 2 brand replies in 48 hours</div>
+    <div class="ticker-item ticker-sep">·</div>
+    <div class="ticker-item">📦 <em>zionne019</em> received Anua PR package this week</div>
+    <div class="ticker-item ticker-sep">·</div>
+    <div class="ticker-item">✍️ <em>sarahlooks</em> pitched 8 brands in one afternoon</div>
+    <div class="ticker-item ticker-sep">·</div>
+    <div class="ticker-item">🎁 <em>dailybyzoe</em> landed Oh Polly — media kit auto-attached</div>
+    <div class="ticker-item ticker-sep">·</div>
+    <div class="ticker-item">📬 <em>plates.co</em> got a food brand collab after first pitch</div>
+    <div class="ticker-item ticker-sep">·</div>
+    <!-- Duplicate for seamless loop -->
+    <div class="ticker-item">🎁 <em>carolstyle</em> landed Rhode Skin — 3 days after joining</div>
+    <div class="ticker-item ticker-sep">·</div>
+    <div class="ticker-item">📬 <em>glowwith_m</em> got 2 brand replies in 48 hours</div>
+    <div class="ticker-item ticker-sep">·</div>
+    <div class="ticker-item">📦 <em>zionne019</em> received Anua PR package this week</div>
+    <div class="ticker-item ticker-sep">·</div>
+    <div class="ticker-item">✍️ <em>sarahlooks</em> pitched 8 brands in one afternoon</div>
+    <div class="ticker-item ticker-sep">·</div>
+    <div class="ticker-item">🎁 <em>dailybyzoe</em> landed Oh Polly — media kit auto-attached</div>
+    <div class="ticker-item ticker-sep">·</div>
+    <div class="ticker-item">📬 <em>plates.co</em> got a food brand collab after first pitch</div>
+    <div class="ticker-item ticker-sep">·</div>
+  </div>
+</div>
+
+<!-- ── CLARITY STRIP ───────────────────────────────────────── -->
+<div class="clarity-section">
+  <div class="clarity-strip">
+    <div class="clarity-item">
+      <div class="clarity-icon">🔍</div>
+      <div class="clarity-label">Find brands</div>
+      <div class="clarity-sub">500+ PR contacts, your niche</div>
+    </div>
+    <div class="clarity-item">
+      <div class="clarity-icon">📄</div>
+      <div class="clarity-label">Auto media kit</div>
+      <div class="clarity-sub">Generated, always ready</div>
+    </div>
+    <div class="clarity-item">
+      <div class="clarity-icon">✍️</div>
+      <div class="clarity-label">AI pitch email</div>
+      <div class="clarity-sub">Personalised in 60 seconds</div>
+    </div>
+    <div class="clarity-item">
+      <div class="clarity-icon">📊</div>
+      <div class="clarity-label">Track everything</div>
+      <div class="clarity-sub">Pipeline · follow-ups · wins</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── LIFESTYLE PHOTO ROW ─────────────────────────────────── -->
+<div class="lifestyle-section">
+  <div class="lifestyle-row">
+    <!-- These are lifestyle image placeholders — replace src with actual creator lifestyle photos -->
+    <div class="lifestyle-img">
+      <div class="img-ph" style="background:linear-gradient(160deg,#FFDDE7,#FFB3C6)">
+        <div class="img-caption">📦 PR haul incoming</div>
+      </div>
+    </div>
+    <div class="lifestyle-img" style="flex:1.4">
+      <div class="img-ph" style="background:linear-gradient(160deg,#E0D4FB,#C4B5FD)">
+        <div class="img-caption">✨ First brand email reply</div>
+      </div>
+    </div>
+    <div class="lifestyle-img">
+      <div class="img-ph" style="background:linear-gradient(160deg,#D1FAE5,#A7F3D0)">
+        <div class="img-caption">🎉 Package opened!</div>
+      </div>
+    </div>
+    <div class="lifestyle-img" style="flex:1.2">
+      <div class="img-ph" style="background:linear-gradient(160deg,#FEF3C7,#FDE68A)">
+        <div class="img-caption">📸 Content day</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── PROBLEM ─────────────────────────────────────────────── -->
+<section class="problem-section">
+  <div class="container">
+    <div class="section-center">
+      <div class="eyebrow"><div class="eyebrow-dot"></div> We've all been there</div>
+      <h2>Getting brand deals feels<br><em>impossible.</em> It doesn't have to.</h2>
+    </div>
+    <div class="relatable-grid">
+      <div class="relatable-card">
+        <div class="relatable-mood">🔍</div>
+        <h3>"Where do I even find brand PR emails?"</h3>
+        <p>Googled it for hours. Found nothing useful. No real contacts, no idea who's open to new creators.</p>
+      </div>
+      <div class="relatable-card">
+        <div class="relatable-mood">📄</div>
+        <h3>"They want a media kit and I don't have one."</h3>
+        <p>Brands expect your stats, demographics, niche. No media kit = no reply. Most creators lose deals here.</p>
+      </div>
+      <div class="relatable-card">
+        <div class="relatable-mood">✍️</div>
+        <h3>"I open a blank email and freeze every time."</h3>
+        <p>Too formal? Too casual? What to include? Most creators spend hours — or never press send.</p>
+      </div>
+      <div class="relatable-card">
+        <div class="relatable-mood">📭</div>
+        <h3>"I sent 3 emails last month and forgot to follow up."</h3>
+        <p>No system. No visibility. Warm leads went cold. You're not lazy — you just had no tool.</p>
+      </div>
+    </div>
+    <div class="relatable-divider">
+      <div class="relatable-divider-text">newcollab handles <em>all of this</em> — automatically.</div>
+      <a class="btn btn-rose" href="/register">Start for free →</a>
+    </div>
+  </div>
+</section>
+
+<!-- ── SOLUTION FLOW ───────────────────────────────────────── -->
+<section class="solution-section">
+  <div class="container">
+    <div class="section-center">
+      <div class="eyebrow" style="color:#FDA4AF;justify-content:center"><div class="eyebrow-dot" style="background:#FDA4AF"></div> The full system</div>
+      <h2>Not just a tool.<br>The <em>complete outreach flow.</em></h2>
+      <p class="subline">From finding the right brand to receiving the package — newcollab runs every step.</p>
+    </div>
+    <div class="flow-steps mt-48">
+      <div class="flow-step">
+        <div class="flow-icon" style="background:rgba(225,29,72,.15)">
+          🔍<div class="flow-num">1</div>
+        </div>
+        <div class="flow-title">Discover</div>
+        <div class="flow-body">500+ brand PR contacts filtered to your niche</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon" style="background:rgba(37,99,235,.15)">
+          📄<div class="flow-num">2</div>
+        </div>
+        <div class="flow-title">Prepare</div>
+        <div class="flow-body">Auto-generated media kit from your profile</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon" style="background:rgba(124,58,237,.15)">
+          ✍️<div class="flow-num">3</div>
+        </div>
+        <div class="flow-title">Pitch</div>
+        <div class="flow-body">AI email + media kit attached · batch-send 10 at once</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon" style="background:rgba(217,119,6,.15)">
+          📊<div class="flow-num">4</div>
+        </div>
+        <div class="flow-title">Track</div>
+        <div class="flow-body">Pipeline + auto follow-up reminders at day 7</div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-icon" style="background:rgba(5,150,105,.15)">
+          🎁<div class="flow-num">5</div>
+        </div>
+        <div class="flow-title">Win</div>
+        <div class="flow-body">Package arrives · log your $PR value · repeat</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── BRAND DIRECTORY SECTION ──────────────────────────────── -->
+<section id="brands" class="directory-section">
+  <div class="container">
+    <div class="section-center">
+      <div class="eyebrow"><div class="eyebrow-dot"></div> Brand Directory</div>
+      <h2>500+ brands open to creators.<br><em>Real PR contacts.</em></h2>
+      <p class="subline">Real email addresses. Real reply rates. Verified weekly. Filter by niche — pitch in one click.</p>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="directory-preview">
+      <div class="dp-header">
+        <div class="dp-search">
+          <span style="font-size:13px;color:var(--text3)">🔍</span>
+          <input type="text" placeholder="Search brands..." readonly>
+        </div>
+        <div class="dp-filters">
+          <div class="dp-filter active" onclick="filterBrands(this,'all')">All</div>
+          <div class="dp-filter" onclick="filterBrands(this,'beauty')">💄 Beauty</div>
+          <div class="dp-filter" onclick="filterBrands(this,'fashion')">👗 Fashion</div>
+          <div class="dp-filter" onclick="filterBrands(this,'skincare')">🌿 Skincare</div>
+          <div class="dp-filter" onclick="filterBrands(this,'food')">🍽️ Food</div>
+          <div class="dp-filter" onclick="filterBrands(this,'wellness')">💪 Wellness</div>
+        </div>
+      </div>
+
+      <div class="dp-grid" id="brand-grid">
+
+        <!-- Brand logo colors: real brand-adjacent palette -->
+        <div class="dp-brand-card" data-cat="skincare">
+          <div class="brand-logo-block" style="background:#B5002D">RS</div>
+          <div class="dp-name">Rhode Skin</div>
+          <div class="dp-cat">Skincare · Replies in 2–3 days</div>
+          <div class="dp-meta">
+            <div class="dp-rate hi">52% reply</div>
+            <button class="dp-btn" onclick="signupRedirect()">Pitch →</button>
+          </div>
+        </div>
+
+        <div class="dp-brand-card" data-cat="beauty">
+          <div class="brand-logo-block" style="background:#2E7D4F">AN</div>
+          <div class="dp-name">Anua</div>
+          <div class="dp-cat">K-Beauty · Replies in 3–5 days</div>
+          <div class="dp-meta">
+            <div class="dp-rate hi">38% reply</div>
+            <button class="dp-btn" onclick="signupRedirect()">Pitch →</button>
+          </div>
+        </div>
+
+        <div class="dp-brand-card" data-cat="fashion">
+          <div class="brand-logo-block" style="background:#1A1A2E">OP</div>
+          <div class="dp-name">Oh Polly</div>
+          <div class="dp-cat">Fashion · Replies in 4–6 days</div>
+          <div class="dp-meta">
+            <div class="dp-rate hi">44% reply</div>
+            <button class="dp-btn" onclick="signupRedirect()">Pitch →</button>
+          </div>
+        </div>
+
+        <div class="dp-brand-card" data-cat="beauty">
+          <div class="brand-logo-block" style="background:#C8102E">FB</div>
+          <div class="dp-name">Fenty Beauty</div>
+          <div class="dp-cat">Beauty · Replies in 5–7 days</div>
+          <div class="dp-meta">
+            <div class="dp-rate mid">28% reply</div>
+            <button class="dp-lock" onclick="signupRedirect()">🔒 Sign up</button>
+          </div>
+        </div>
+
+        <div class="dp-brand-card" data-cat="food">
+          <div class="brand-logo-block" style="background:#4A7C59">NP</div>
+          <div class="dp-name">Nopalera</div>
+          <div class="dp-cat">Wellness · Replies in 3–4 days</div>
+          <div class="dp-meta">
+            <div class="dp-rate hi">41% reply</div>
+            <button class="dp-btn" onclick="signupRedirect()">Pitch →</button>
+          </div>
+        </div>
+
+        <div class="dp-brand-card" data-cat="wellness">
+          <div class="brand-logo-block" style="background:#1D4ED8">AB</div>
+          <div class="dp-name">Aura Bora</div>
+          <div class="dp-cat">Wellness Drinks · Replies in 2–4 days</div>
+          <div class="dp-meta">
+            <div class="dp-rate hi">35% reply</div>
+            <button class="dp-lock" onclick="signupRedirect()">🔒 Sign up</button>
+          </div>
+        </div>
+
+        <div class="dp-brand-card" data-cat="skincare">
+          <div class="brand-logo-block" style="background:#E85D75">GR</div>
+          <div class="dp-name">Glow Recipe</div>
+          <div class="dp-cat">Skincare · Replies in 4–5 days</div>
+          <div class="dp-meta">
+            <div class="dp-rate mid">29% reply</div>
+            <button class="dp-lock" onclick="signupRedirect()">🔒 Sign up</button>
+          </div>
+        </div>
+
+        <div class="dp-brand-card" data-cat="fashion">
+          <div class="brand-logo-block" style="background:#6D28D9">PP</div>
+          <div class="dp-name">Princess Polly</div>
+          <div class="dp-cat">Fashion · Replies in 3–5 days</div>
+          <div class="dp-meta">
+            <div class="dp-rate hi">47% reply</div>
+            <button class="dp-lock" onclick="signupRedirect()">🔒 Sign up</button>
+          </div>
+        </div>
+
+        <div class="dp-brand-card" style="background:linear-gradient(135deg,#FFF1F3,#F5F3FF);border-style:dashed;" data-cat="all">
+          <div style="text-align:center;padding:16px 0">
+            <div style="font-size:26px;margin-bottom:7px">🔒</div>
+            <div style="font-size:13px;font-weight:800;margin-bottom:3px">492 more brands</div>
+            <div style="font-size:11.5px;color:var(--text3);margin-bottom:12px">Sign up free to unlock all</div>
+            <button class="dp-btn" style="margin:0 auto;display:block" onclick="signupRedirect()">Get access →</button>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="dp-footer">
+        <div class="dp-count">Showing <strong>8 of 500+</strong> brands · Updated weekly</div>
+        <a class="btn btn-black" href="/register" style="padding:8px 16px;font-size:13px">Unlock all contacts →</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FEATURE 1: MEDIA KIT ─────────────────────────────────── -->
+<section class="feature-section" style="background:var(--bg)">
+  <div class="feature-row container">
+    <div class="feature-text">
+      <div class="feature-tag">📄 Auto Media Kit</div>
+      <h3>Your media kit, generated automatically. Every pitch looks pro.</h3>
+      <p>Brands won't reply without one. newcollab builds your media kit from your profile — stats, audience, niche — and attaches it to every pitch automatically. No Canva. No design skills. Done in 30 seconds.</p>
+      <div class="feature-bullet">
+        <div class="feature-bullet-item">Stats pulled live from your profile</div>
+        <div class="feature-bullet-item">Audience age, niche, platform included</div>
+        <div class="feature-bullet-item">Auto-attached to every AI pitch</div>
+        <div class="feature-bullet-item">Always up to date — no manual edits</div>
+      </div>
+    </div>
+    <div class="feature-visual">
+      <div class="mockup-card">
+        <div class="mockup-header">
+          <div class="mockup-dots">
+            <div class="mockup-dot" style="background:#FF5F57"></div>
+            <div class="mockup-dot" style="background:#FFBD2E"></div>
+            <div class="mockup-dot" style="background:#28CA41"></div>
+          </div>
+          <div class="mockup-title">My Media Kit — newcollab</div>
+        </div>
+        <div class="mockup-body">
+          <div class="kit-card">
+            <div class="kit-header">
+              <div class="kit-avatar">C</div>
+              <div>
+                <div class="kit-name">carolstyle</div>
+                <div class="kit-handle">@carolstyle · Fashion & Lifestyle</div>
+              </div>
+            </div>
+            <div class="kit-stats">
+              <div class="kit-stat">
+                <div class="kit-stat-val">17K</div>
+                <div class="kit-stat-lbl">Followers</div>
+              </div>
+              <div class="kit-stat">
+                <div class="kit-stat-val">6.2%</div>
+                <div class="kit-stat-lbl">Eng. Rate</div>
+              </div>
+              <div class="kit-stat">
+                <div class="kit-stat-val">18–34</div>
+                <div class="kit-stat-lbl">Audience Age</div>
+              </div>
+            </div>
+            <div class="kit-niches">
+              <div class="kit-niche">Fashion</div>
+              <div class="kit-niche">Lifestyle</div>
+              <div class="kit-niche">Beauty</div>
+            </div>
+          </div>
+          <div style="margin-top:10px">
+            <div class="kit-attached-badge">
+              <span>📎</span>
+              <span>Auto-attached to your pitch email</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FEATURE 2: AI PITCH ──────────────────────────────────── -->
+<section class="feature-section" style="background:#fff">
+  <div class="feature-row reverse container">
+    <div class="feature-text">
+      <div class="feature-tag">✍️ AI Pitch Writer</div>
+      <h3>Perfect pitch in 60 seconds. Send to 10 brands at once.</h3>
+      <p>AI writes a personalised email for each brand — their name, their niche, why you're the right fit. Media kit attaches automatically. Batch-pitch up to 10 brands in one session on Pro.</p>
+      <div class="feature-bullet">
+        <div class="feature-bullet-item">Personalised per brand — not a generic template</div>
+        <div class="feature-bullet-item">Media kit auto-attached every time</div>
+        <div class="feature-bullet-item">Batch-pitch 10 brands in one session <span class="tag-pill tag-pro">Pro</span></div>
+        <div class="feature-bullet-item">AI follow-up at day 7 <span class="tag-pill tag-pro">Pro</span></div>
+      </div>
+    </div>
+    <div class="feature-visual">
+      <div class="mockup-card">
+        <div class="mockup-header">
+          <div class="mockup-dots">
+            <div class="mockup-dot" style="background:#FF5F57"></div>
+            <div class="mockup-dot" style="background:#FFBD2E"></div>
+            <div class="mockup-dot" style="background:#28CA41"></div>
+          </div>
+          <div class="mockup-title">AI Pitch Generator</div>
+        </div>
+        <div class="mockup-body">
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px;display:flex;align-items:center;gap:10px">
+            <div class="brand-logo-block" style="background:#B5002D;width:36px;height:36px;border-radius:8px;font-size:11px;margin:0;flex-shrink:0">RS</div>
+            <div>
+              <div style="font-size:13px;font-weight:800">Rhode Skin</div>
+              <div style="font-size:11px;color:var(--green);font-weight:700">52% reply rate</div>
+            </div>
+          </div>
+          <div style="background:#fff;border:1.5px solid var(--black);border-radius:10px;padding:12px;font-size:12px;color:var(--text2);line-height:1.6">
+            <div style="font-size:10px;font-weight:700;color:var(--text3);margin-bottom:7px;text-transform:uppercase;letter-spacing:.5px">AI-Generated Pitch</div>
+            Hi Rhode Skin team,<br><br>
+            I'm <strong style="color:var(--text)">@carolstyle</strong>, a fashion & beauty creator with <strong style="color:var(--text)">17K followers</strong> (6.2% engagement). My audience is 85% female, 18–34 — a strong fit for your skincare launches...<br><br>
+            <span style="color:var(--text3);font-size:11px">Media kit attached for your review.</span>
+          </div>
+          <div style="margin-top:10px;display:flex;gap:7px">
+            <div style="flex:1;background:var(--green-light);border:1px solid var(--green-mid);border-radius:7px;padding:7px 10px;font-size:11.5px;font-weight:700;color:var(--green);display:flex;align-items:center;gap:5px">📎 Kit attached</div>
+            <button style="background:var(--black);color:#fff;border:none;border-radius:7px;padding:7px 14px;font-size:11.5px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif">Send →</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FEATURE 3: PIPELINE ──────────────────────────────────── -->
+<section class="feature-section" style="background:var(--bg)">
+  <div class="feature-row container">
+    <div class="feature-text">
+      <div class="feature-tag">📊 PR Pipeline</div>
+      <h3>Track every pitch. Follow up before it goes cold.</h3>
+      <p>Every brand you contact lives in your pipeline. We remind you to follow up at day 7 — when most brands respond. Never lose a warm lead again.</p>
+      <div class="feature-callout">
+        <em>Creators who follow up are 3× more likely to land the deal.</em> We make sure you never forget.
+      </div>
+      <div class="feature-bullet mt-8">
+        <div class="feature-bullet-item">Stages: Saved → Waiting → Replied → Won</div>
+        <div class="feature-bullet-item">Auto day-7 follow-up reminder</div>
+        <div class="feature-bullet-item">Log replies, packages, $PR value <span class="tag-pill tag-pro">Pro</span></div>
+      </div>
+    </div>
+    <div class="feature-visual">
+      <div class="mockup-card">
+        <div class="mockup-header">
+          <div class="mockup-dots">
+            <div class="mockup-dot" style="background:#FF5F57"></div>
+            <div class="mockup-dot" style="background:#FFBD2E"></div>
+            <div class="mockup-dot" style="background:#28CA41"></div>
+          </div>
+          <div class="mockup-title">My PR Pipeline</div>
+        </div>
+        <div class="mockup-body" style="display:flex;flex-direction:column;gap:12px">
+          <div>
+            <div class="pipeline-col-label">⚡ Action needed <span>1</span></div>
+            <div class="pipeline-brand-card" style="border-left:3px solid var(--amber)">
+              <div class="pbc-top">
+                <div style="display:flex;align-items:center;gap:7px">
+                  <div class="brand-logo-block" style="background:#B5002D;width:28px;height:28px;border-radius:6px;font-size:9px;margin:0;flex-shrink:0">RS</div>
+                  <div class="pbc-name">Rhode Skin</div>
+                </div>
+                <div class="pbc-tag waiting">Waiting</div>
+              </div>
+              <div class="pbc-sub">Pitched 7 days ago</div>
+              <div class="pbc-nudge">⏰ Time to follow up</div>
+            </div>
+          </div>
+          <div>
+            <div class="pipeline-col-label">✅ Replied <span>2</span></div>
+            <div class="pipeline-brand-card">
+              <div class="pbc-top">
+                <div style="display:flex;align-items:center;gap:7px">
+                  <div class="brand-logo-block" style="background:#2E7D4F;width:28px;height:28px;border-radius:6px;font-size:9px;margin:0;flex-shrink:0">AN</div>
+                  <div class="pbc-name">Anua</div>
+                </div>
+                <div class="pbc-tag replied">Replied ✓</div>
+              </div>
+              <div class="pbc-sub">Package confirmed · coming in 5 days</div>
+            </div>
+            <div class="pipeline-brand-card" style="margin-top:6px">
+              <div class="pbc-top">
+                <div style="display:flex;align-items:center;gap:7px">
+                  <div class="brand-logo-block" style="background:#1A1A2E;width:28px;height:28px;border-radius:6px;font-size:9px;margin:0;flex-shrink:0">OP</div>
+                  <div class="pbc-name">Oh Polly</div>
+                </div>
+                <div class="pbc-tag won">Package coming 📦</div>
+              </div>
+              <div class="pbc-sub">Est. value $120</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FEATURE 4: FOR YOU FEED ──────────────────────────────── -->
+<section class="feature-section" style="background:#fff">
+  <div class="feature-row reverse container">
+    <div class="feature-text">
+      <div class="feature-tag">✨ For You Feed</div>
+      <h3>The right brands, delivered to you every week.</h3>
+      <p>Based on your niche, platform, and following — newcollab surfaces the brands most likely to reply to you right now. Hot this week. Seasonal campaigns. Brands that just responded to creators like you.</p>
+      <div class="feature-bullet">
+        <div class="feature-bullet-item">Matched to your niche + follower count</div>
+        <div class="feature-bullet-item">Seasonal alerts — pitch before everyone else</div>
+        <div class="feature-bullet-item">Full personalised feed <span class="tag-pill tag-pro">Pro</span></div>
+      </div>
+    </div>
+    <div class="feature-visual">
+      <div class="mockup-card">
+        <div class="mockup-header">
+          <div class="mockup-dots">
+            <div class="mockup-dot" style="background:#FF5F57"></div>
+            <div class="mockup-dot" style="background:#FFBD2E"></div>
+            <div class="mockup-dot" style="background:#28CA41"></div>
+          </div>
+          <div class="mockup-title">✨ For You</div>
+        </div>
+        <div class="mockup-body">
+          <div style="font-size:10.5px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:9px">🔥 Hot this week — Beauty</div>
+          <div class="foryou-list">
+            <div class="fy-card">
+              <div class="brand-logo-block" style="background:#B5002D;width:36px;height:36px;border-radius:8px;font-size:11px;margin:0;flex-shrink:0">RS</div>
+              <div class="fy-info">
+                <div class="fy-name">Rhode Skin</div>
+                <div class="fy-meta">Skincare · 52% reply rate</div>
+              </div>
+              <div class="fy-match hot">🔥 Hot</div>
+              <button class="fy-pitch-btn">Pitch →</button>
+            </div>
+            <div class="fy-card">
+              <div class="brand-logo-block" style="background:#2E7D4F;width:36px;height:36px;border-radius:8px;font-size:11px;margin:0;flex-shrink:0">AN</div>
+              <div class="fy-info">
+                <div class="fy-name">Anua</div>
+                <div class="fy-meta">K-Beauty · 38% reply rate</div>
+              </div>
+              <div class="fy-match matched">✨ Match</div>
+              <button class="fy-pitch-btn">Pitch →</button>
+            </div>
+          </div>
+          <div style="margin-top:12px;font-size:10.5px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:9px">🗓️ Seasonal — pitch now</div>
+          <div class="fy-card">
+            <div class="fy-logo" style="background:#FFF7ED">☀️</div>
+            <div class="fy-info">
+              <div class="fy-name">Summer skincare brands</div>
+              <div class="fy-meta">SPF + After-sun · June window</div>
+            </div>
+            <div class="fy-match" style="background:#EFF6FF;color:#2563EB">📅 Now</div>
+          </div>
+          <div style="margin-top:10px;background:linear-gradient(135deg,#FFF1F3,#F5F3FF);border-radius:9px;padding:10px;text-align:center;font-size:12px;font-weight:600;color:var(--text2)">
+            🔒 5 more matches · <a href="/register" style="color:var(--rose);font-weight:700;text-decoration:none">Upgrade to Pro →</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── SOCIAL PROOF ────────────────────────────────────────── -->
+<section class="proof-section">
+  <div class="container">
+    <div class="section-center">
+      <div class="eyebrow"><div class="eyebrow-dot"></div> Creator stories</div>
+      <h2>Real results. Real creators.<br><em>Just like you.</em></h2>
+    </div>
+
+    <!-- Notification wall -->
+    <div class="notif-wall">
+      <div class="notif-pill" style="animation-delay:0s">
+        <div class="notif-icon">📦</div>
+        <div class="notif-text"><strong>@carolstyle</strong> received a Rhode Skin PR package <span>· 2 hours ago</span></div>
+      </div>
+      <div class="notif-pill" style="animation-delay:.1s">
+        <div class="notif-icon">💬</div>
+        <div class="notif-text"><strong>@glowwith_m</strong> got a reply from Anua <span>· 5 hours ago</span></div>
+      </div>
+      <div class="notif-pill" style="animation-delay:.2s">
+        <div class="notif-icon">✍️</div>
+        <div class="notif-text"><strong>@sarahlooks</strong> pitched 8 brands in one afternoon <span>· today</span></div>
+      </div>
+      <div class="notif-pill" style="animation-delay:.3s">
+        <div class="notif-icon">🎉</div>
+        <div class="notif-text"><strong>@zionne019</strong> landed her first brand deal — 5.3K followers <span>· yesterday</span></div>
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats-row mt-36" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:32px">
+      <div class="stat-card">
+        <div class="stat-num" style="color:var(--rose)">900+</div>
+        <div class="stat-lbl">Active creators</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num">500+</div>
+        <div class="stat-lbl">Brand PR contacts</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num" style="color:var(--green)">52%</div>
+        <div class="stat-lbl">Top reply rate</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num" style="color:var(--violet)">363</div>
+        <div class="stat-lbl">Pitches sent this month</div>
+      </div>
+    </div>
+
+    <!-- Testimonials -->
+    <div class="testimonial-grid">
+      <div class="testimonial-card">
+        <div class="t-creator">
+          <div class="t-av" style="background:#E11D48">C</div>
+          <div>
+            <div class="t-name">@carolstyle</div>
+            <div class="t-meta">17K · Fashion · London</div>
+          </div>
+        </div>
+        <div class="t-stars">★★★★★</div>
+        <div class="t-result"><div class="t-result-icon">📦</div>Landed Rhode Skin within 3 days. The auto media kit made me look so professional — they actually commented on it.</div>
+        <div class="t-quote">"I'd spent months DMing brands on IG. Nothing. This changed everything."</div>
+      </div>
+      <div class="testimonial-card">
+        <div class="t-creator">
+          <div class="t-av" style="background:#7C3AED">M</div>
+          <div>
+            <div class="t-name">@glowwith_m</div>
+            <div class="t-meta">8.9K · Skincare · Paris</div>
+          </div>
+        </div>
+        <div class="t-stars">★★★★★</div>
+        <div class="t-result"><div class="t-result-icon">💬</div>Pitched 6 brands in one afternoon. 2 replied in 48 hours. The pipeline keeps me on top of everything.</div>
+        <div class="t-quote">"I finally feel like a professional creator, not just a girl sending emails into the void."</div>
+      </div>
+      <div class="testimonial-card">
+        <div class="t-creator">
+          <div class="t-av" style="background:#059669">Z</div>
+          <div>
+            <div class="t-name">@zionne019</div>
+            <div class="t-meta">5.3K · Beauty · NYC</div>
+          </div>
+        </div>
+        <div class="t-stars">★★★★★</div>
+        <div class="t-result"><div class="t-result-icon">🎉</div>First PR package arrived 2 weeks after signing up. Found Anua in the For You feed — they actively wanted micro creators.</div>
+        <div class="t-quote">"I thought you needed 100K followers. I had 5K and it still worked."</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── HOW IT WORKS ─────────────────────────────────────────── -->
+<section id="how-it-works" class="how-section">
+  <div class="container">
+    <div class="section-center">
+      <div class="eyebrow"><div class="eyebrow-dot"></div> Simple process</div>
+      <h2>Your first brand deal<br><em>in 3 steps.</em></h2>
+    </div>
+    <div class="how-steps">
+      <div class="how-step">
+        <div class="how-num">1</div>
+        <h3>Find your brands</h3>
+        <p>Browse 500+ PR contacts by niche and reply speed. Or check your For You feed — matched brands, every week. Save the ones you want to pitch.</p>
+      </div>
+      <div class="how-step">
+        <div class="how-num">2</div>
+        <h3>Send a complete pitch</h3>
+        <p>AI writes a personalised email. Media kit auto-attached. Hit send. Pitch one brand — or ten — in the same session.</p>
+      </div>
+      <div class="how-step">
+        <div class="how-num">3</div>
+        <h3>Track, follow up, win</h3>
+        <p>Your pipeline tracks everything. Day-7 reminder fires automatically. Brand replies? Log it. Package ships? Mark it won.</p>
+      </div>
+    </div>
+    <div style="text-align:center;margin-top:40px">
+      <a class="btn btn-black btn-lg" href="/register">Start landing brand deals →</a>
+      <div style="margin-top:10px;font-size:12.5px;color:var(--text3)">Free plan · No credit card · Ready in 2 minutes</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── PRICING ─────────────────────────────────────────────── -->
+<section id="pricing" class="pricing-section">
+  <div class="container">
+    <div class="section-center">
+      <div class="eyebrow"><div class="eyebrow-dot"></div> Pricing</div>
+      <h2>Free to start.<br><em>Upgrade when you're ready.</em></h2>
+      <p class="subline">Most creators land their first deal on the free plan.</p>
+    </div>
+    <div class="pricing-grid">
+      <div class="pricing-card">
+        <div class="pricing-tier">Free</div>
+        <div class="pricing-price"><sup>$</sup>0</div>
+        <div class="pricing-price-sub">Forever free · No credit card</div>
+        <div class="pricing-features">
+          <div class="pf-item"><span class="pf-check">✓</span> Brand directory — full access</div>
+          <div class="pf-item"><span class="pf-check">✓</span> For You feed — top 3 brands/week</div>
+          <div class="pf-item"><span class="pf-check">✓</span> AI pitch writer — 3 per month</div>
+          <div class="pf-item"><span class="pf-check">✓</span> Auto media kit</div>
+          <div class="pf-item"><span class="pf-check">✓</span> PR Pipeline</div>
+          <div class="pf-item"><span class="pf-cross">—</span> <span class="pf-lock">Batch pitching</span></div>
+          <div class="pf-item"><span class="pf-cross">—</span> <span class="pf-lock">AI follow-up writer</span></div>
+          <div class="pf-item"><span class="pf-cross">—</span> <span class="pf-lock">$PR Value dashboard</span></div>
+          <div class="pf-item"><span class="pf-cross">—</span> <span class="pf-lock">Full For You feed</span></div>
+        </div>
+        <a class="btn btn-outline" href="/register" style="justify-content:center;width:100%">Get started free</a>
+      </div>
+
+      <div class="pricing-card featured">
+        <div class="pricing-badge">Most popular</div>
+        <div class="pricing-tier" style="color:var(--rose)">Pro</div>
+        <div class="pricing-price" style="background:var(--pro);-webkit-background-clip:text;-webkit-text-fill-color:transparent"><sup>$</sup>12</div>
+        <div class="pricing-price-sub">per month · Cancel anytime</div>
+        <div class="pricing-features">
+          <div class="pf-item"><span class="pf-check">✓</span> Everything in Free</div>
+          <div class="pf-item"><span class="pf-check">✓</span> <strong>Unlimited AI pitches</strong></div>
+          <div class="pf-item"><span class="pf-check">✓</span> <strong>Batch pitching</strong> — 10 brands at once</div>
+          <div class="pf-item"><span class="pf-check">✓</span> <strong>AI follow-up writer</strong></div>
+          <div class="pf-item"><span class="pf-check">✓</span> <strong>Full For You feed</strong></div>
+          <div class="pf-item"><span class="pf-check">✓</span> <strong>$PR Value dashboard</strong></div>
+          <div class="pf-item"><span class="pf-check">✓</span> Priority brand alerts</div>
+        </div>
+        <a class="btn btn-black" href="/register?plan=pro" style="justify-content:center;width:100%">Start Pro — $12/mo</a>
+        <div class="pricing-note">Cancel anytime · No contracts</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FAQ ─────────────────────────────────────────────────── -->
+<section class="faq-section">
+  <div class="container">
+    <div class="section-center">
+      <div class="eyebrow"><div class="eyebrow-dot"></div> FAQ</div>
+      <h2>Quick answers.</h2>
+    </div>
+    <div class="faq-list">
+
+      <details class="faq-item">
+        <summary class="faq-q">How do I get my first brand deal as a small creator?<div class="faq-icon">+</div></summary>
+        <div class="faq-a">Sign up, browse the brand directory filtered to your niche, and send an AI-generated pitch with your auto-attached media kit. Most creators land their first deal within 2 weeks — the key is sending enough pitches and following up. The free plan gives you 5 contacts per month to start.</div>
+      </details>
+
+      <details class="faq-item">
+        <summary class="faq-q">Do I need a media kit to pitch brands?<div class="faq-icon">+</div></summary>
+        <div class="faq-a">Yes — it's the #1 reason brands ignore cold emails. newcollab auto-generates yours from your profile, so every pitch includes your stats, audience demographics, niche, and past collabs. No design skills needed.</div>
+      </details>
+
+      <details class="faq-item">
+        <summary class="faq-q">How many followers do you need to work with brands?<div class="faq-icon">+</div></summary>
+        <div class="faq-a">No minimum. 63% of brands prefer working with nano and micro creators (1K–50K followers) — engagement is more genuine and content feels authentic. newcollab filters brands by follower fit so you only see relevant opportunities.</div>
+      </details>
+
+      <details class="faq-item">
+        <summary class="faq-q">What is a PR package?<div class="faq-icon">+</div></summary>
+        <div class="faq-a">A PR package is when a brand sends you their products for free in exchange for content on your channels — a post, TikTok, story, or reel. You pitch the brand directly via email with your media kit. newcollab handles finding the brand, writing the pitch, and tracking the reply.</div>
+      </details>
+
+      <details class="faq-item">
+        <summary class="faq-q">Is newcollab free?<div class="faq-icon">+</div></summary>
+        <div class="faq-a">Yes — free plan includes full brand directory access, auto media kit, PR pipeline, and 5 brand contacts per month. Pro ($19/month) unlocks unlimited contacts, batch send, full For You feed, and the $PR Value dashboard.</div>
+      </details>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── FINAL CTA ────────────────────────────────────────────── -->
+<section class="final-cta">
+  <div class="container-sm">
+    <div class="eyebrow" style="color:#FDA4AF;justify-content:center"><div class="eyebrow-dot" style="background:#FDA4AF"></div> Start today</div>
+    <h2>Your first brand deal<br>is one pitch <em>away.</em></h2>
+    <p class="subline">Join 900+ creators who stopped guessing — and started getting brand deals.</p>
+    <div class="final-cta-actions">
+      <a class="btn btn-rose btn-lg" href="/register">Start for free — no credit card →</a>
+      <div class="final-cta-trust">Free plan · 3 AI pitches · Media kit included · Pro cancel anytime</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ───────────────────────────────────────────────── -->
+<footer>
+  <div class="footer-inner">
+    <div class="footer-top">
+      <div>
+        <div class="footer-logo">
+          <div class="footer-logo-mark">N</div>
+          <span class="footer-logo-word">new<em>collab</em></span>
+        </div>
+        <div class="footer-desc">The complete brand outreach tool for nano and micro creators.</div>
+      </div>
+      <div>
+        <div class="footer-col-title">Product</div>
+        <div class="footer-links">
+          <a href="#brands">Brand Directory</a>
+          <a href="/register">AI Pitch Writer</a>
+          <a href="/register">PR Pipeline</a>
+          <a href="/register">For You Feed</a>
+          <a href="/register">Media Kit Builder</a>
+        </div>
+      </div>
+      <div>
+        <div class="footer-col-title">Company</div>
+        <div class="footer-links">
+          <a href="/about">About</a>
+          <a href="/blog">Blog</a>
+          <a href="#pricing">Pricing</a>
+          <a href="mailto:hello@newcollab.co">Contact</a>
+        </div>
+      </div>
+      <div>
+        <div class="footer-col-title">Guides</div>
+        <div class="footer-links">
+          <a href="/blog/how-to-get-brand-deals">How to get brand deals</a>
+          <a href="/blog/media-kit-guide">Media kit guide</a>
+          <a href="/blog/pitch-email-templates">Pitch email templates</a>
+          <a href="/blog/micro-influencer-tips">Micro creator tips</a>
+        </div>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <div class="footer-copy">© 2026 newcollab.co · All rights reserved</div>
+      <div class="footer-bottom-links">
+        <a href="/privacy">Privacy</a>
+        <a href="/terms">Terms</a>
+        <a href="/cookies">Cookies</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script>
+window.addEventListener('scroll', () => {
+  document.getElementById('nav').classList.toggle('scrolled', window.scrollY > 20);
+});
+
+function filterBrands(btn, cat) {
+  document.querySelectorAll('.dp-filter').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('.dp-brand-card').forEach(card => {
+    const cardCat = card.dataset.cat || 'all';
+    card.style.display = (cat === 'all' || cardCat === cat || cardCat === 'all') ? '' : 'none';
+  });
+}
+
+function signupRedirect() {
+  window.location.href = '/register';
+}
+
+const heroImg = document.querySelector('.hero-gif-wrap img');
+if (heroImg) {
+  heroImg.addEventListener('load', () => {
+    const fb = document.getElementById('gif-fallback');
+    if (fb) fb.style.display = 'none';
+  });
+}
+</script>
+</body>
+</html>

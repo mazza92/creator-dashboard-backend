@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NewCollab — For You</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --primary:        #E11D48;
+    --primary-light:  #FFF1F3;
+    --primary-border: #FECDD3;
+    --action:         #0F0F0F;
+    --accent:         #7C3AED;
+    --accent-light:   #F5F3FF;
+    --accent-border:  #DDD6FE;
+    --success:        #059669;
+    --success-light:  #ECFDF5;
+    --success-border: #A7F3D0;
+    --warn:           #D97706;
+    --warn-light:     #FFFBEB;
+    --bg:             #F5F5F7;
+    --surface:        #FFFFFF;
+    --border:         #E8E8E8;
+    --text:           #0F0F0F;
+    --text-2:         #4B4B4B;
+    --text-3:         #8C8C8C;
+    --subtle:         #F4F4F4;
+    --pro-gradient:   linear-gradient(135deg, #E11D48, #7C3AED);
+    --shadow-sm:      0 1px 3px rgba(15,15,15,.05), 0 1px 8px rgba(15,15,15,.04);
+    --shadow-md:      0 4px 20px rgba(15,15,15,.07);
+  }
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg); color: var(--text);
+    font-size: 14px; line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── NAV ── */
+  .nav {
+    background: #fff; box-shadow: 0 1px 0 var(--border);
+    padding: 0 32px; height: 60px;
+    display: flex; align-items: center; justify-content: space-between;
+    position: sticky; top: 0; z-index: 50;
+  }
+  .nav-left  { display: flex; align-items: center; gap: 32px; }
+  .logo      { display: flex; align-items: center; gap: 9px; text-decoration: none; }
+  .logo-mark { width: 32px; height: 32px; background: var(--action); border-radius: 9px; display: grid; place-items: center; color: #fff; font-weight: 900; font-size: 16px; }
+  .logo-word { font-size: 16px; font-weight: 800; letter-spacing: -.5px; color: var(--text); }
+  .logo-word span { color: var(--primary); }
+  .nav-tabs  { display: flex; gap: 2px; background: var(--subtle); padding: 4px; border-radius: 100px; }
+  .nav-tab   { padding: 7px 16px; border-radius: 100px; font-size: 13.5px; font-weight: 500; color: var(--text-2); text-decoration: none; transition: all .15s; white-space: nowrap; }
+  .nav-tab.active { background: var(--action); color: #fff; font-weight: 600; }
+  .nav-right { display: flex; align-items: center; gap: 10px; }
+  .icon-btn  { width: 38px; height: 38px; border-radius: 50%; background: var(--subtle); border: none; cursor: pointer; display: grid; place-items: center; font-size: 16px; }
+  .avatar-pill { display: flex; align-items: center; gap: 8px; padding: 4px 14px 4px 4px; background: var(--subtle); border: none; border-radius: 100px; cursor: pointer; }
+  .avatar    { width: 28px; height: 28px; border-radius: 50%; background: var(--primary); color: #fff; display: grid; place-items: center; font-weight: 800; font-size: 11px; }
+
+  /* ── PAGE ── */
+  .page { max-width: 1160px; margin: 0 auto; padding: 32px 24px 80px; }
+
+  /* ── PAGE HEADER ── */
+  .page-header {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    margin-bottom: 28px; gap: 16px; flex-wrap: wrap;
+  }
+  .page-title-wrap {}
+  .page-eyebrow { font-size: 11px; font-weight: 700; color: var(--primary); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 4px; }
+  .page-title   { font-size: 24px; font-weight: 800; letter-spacing: -.5px; margin-bottom: 4px; }
+  .page-sub     { font-size: 13px; color: var(--text-3); }
+
+  /* Profile pill */
+  .profile-pill {
+    display: flex; align-items: center; gap: 10px;
+    background: #fff; border: 1px solid var(--border);
+    border-radius: 14px; padding: 10px 16px;
+    box-shadow: var(--shadow-sm); flex-shrink: 0;
+  }
+  .profile-avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--primary); color: #fff; display: grid; place-items: center; font-weight: 800; font-size: 12px; }
+  .profile-info {}
+  .profile-name  { font-size: 13px; font-weight: 700; }
+  .profile-niche { font-size: 11px; color: var(--text-3); margin-top: 1px; }
+  .profile-edit  { font-size: 12px; color: var(--primary); font-weight: 600; cursor: pointer; white-space: nowrap; }
+  .profile-edit:hover { text-decoration: underline; }
+
+  /* ── SECTION ── */
+  .section { margin-bottom: 36px; }
+  .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  .section-left   { display: flex; align-items: center; gap: 10px; }
+  .section-icon   { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; font-size: 17px; flex-shrink: 0; }
+  .section-icon.hot      { background: #FFF7ED; }
+  .section-icon.match    { background: var(--accent-light); }
+  .section-icon.seasonal { background: var(--success-light); }
+  .section-title-wrap {}
+  .section-title { font-size: 16px; font-weight: 800; letter-spacing: -.2px; }
+  .section-desc  { font-size: 12px; color: var(--text-3); margin-top: 1px; }
+  .section-link  { font-size: 12.5px; color: var(--text-3); cursor: pointer; font-weight: 500; white-space: nowrap; }
+  .section-link:hover { color: var(--text); }
+
+  /* ── CARD GRID ── */
+  .card-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  @media(max-width:1024px) { .card-grid { grid-template-columns: repeat(2,1fr); } }
+  @media(max-width:640px)  { .card-grid { grid-template-columns: 1fr; } }
+
+  /* ── BRAND CARD ── */
+  .brand-card {
+    background: #fff; border: 1px solid var(--border);
+    border-radius: 18px; padding: 18px;
+    position: relative; transition: all .2s;
+    box-shadow: var(--shadow-sm); display: flex; flex-direction: column;
+  }
+  .brand-card:hover { border-color: #D4D4D4; box-shadow: var(--shadow-md); transform: translateY(-2px); }
+
+  /* Logo box */
+  .logo-box {
+    width: 100%; aspect-ratio: 2.2/1;
+    background: var(--subtle); border: 1px solid #F0F0F0;
+    border-radius: 12px; display: grid; place-items: center;
+    margin-bottom: 14px; overflow: hidden; padding: 14px 20px;
+    position: relative;
+  }
+  .logo-box img { max-width: 100%; max-height: 100%; object-fit: contain; mix-blend-mode: multiply; }
+  .logo-text { font-size: 20px; font-weight: 800; letter-spacing: -1px; color: var(--text); }
+
+  /* Badges on logo */
+  .logo-badge {
+    position: absolute; top: 10px; left: 10px;
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 4px 9px; border-radius: 100px;
+    font-size: 10px; font-weight: 700; letter-spacing: .2px;
+    white-space: nowrap;
+  }
+  .badge-hot      { background: #FFF7ED; color: #C2410C; border: 1px solid #FED7AA; }
+  .badge-seasonal { background: var(--success-light); color: var(--success); border: 1px solid var(--success-border); }
+  .badge-new      { background: var(--accent-light); color: var(--accent); border: 1px solid var(--accent-border); }
+  .badge-featured { background: linear-gradient(135deg,#FBBF24,#F59E0B); color: #78350F; box-shadow: 0 2px 6px rgba(251,191,36,.25); }
+
+  /* Match score — top right */
+  .match-badge {
+    position: absolute; top: 10px; right: 10px;
+    background: var(--action); color: #fff;
+    font-size: 11px; font-weight: 800;
+    padding: 4px 9px; border-radius: 100px;
+    letter-spacing: .2px;
+  }
+
+  /* Card body */
+  .card-name { font-size: 16px; font-weight: 700; text-align: center; margin-bottom: 4px; letter-spacing: -.2px; }
+  .card-desc { font-size: 12.5px; color: var(--text-3); text-align: center; margin-bottom: 12px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.5; }
+
+  /* Tags */
+  .card-tags { display: flex; justify-content: center; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .tag { background: var(--subtle); color: var(--text-2); padding: 3px 9px; border-radius: 100px; font-size: 11px; font-weight: 600; }
+  .tag-followers { background: var(--primary-light); color: var(--primary); }
+
+  /* Stats row */
+  .stats-row { display: flex; justify-content: center; gap: 16px; margin-bottom: 6px; }
+  .stat-item { text-align: center; }
+  .stat-val  { font-size: 16px; font-weight: 800; letter-spacing: -.3px; }
+  .stat-val.green { color: var(--success); }
+  .stat-lbl  { font-size: 10px; color: var(--text-3); font-weight: 500; margin-top: 1px; text-transform: uppercase; letter-spacing: .3px; }
+
+  /* Social proof */
+  .social-proof { text-align: center; font-size: 11px; color: var(--text-3); margin-bottom: 14px; }
+  .social-proof .green { color: var(--success); font-weight: 700; }
+
+  /* Why this brand — Pro feature */
+  .why-box {
+    background: var(--accent-light);
+    border: 1px solid var(--accent-border);
+    border-radius: 10px; padding: 9px 12px;
+    margin-bottom: 14px;
+    font-size: 12px; color: var(--accent);
+    display: flex; gap: 7px; align-items: flex-start;
+  }
+  .why-icon { flex-shrink: 0; font-size: 13px; margin-top: 1px; }
+
+  /* Momentum bar */
+  .momentum { margin-bottom: 14px; }
+  .momentum-label { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--text-3); margin-bottom: 4px; }
+  .momentum-label span { font-weight: 700; color: var(--success); }
+  .momentum-track { height: 4px; background: var(--subtle); border-radius: 2px; overflow: hidden; }
+  .momentum-fill  { height: 100%; border-radius: 2px; background: linear-gradient(90deg, var(--success), #34D399); transition: width .4s ease; }
+
+  /* CTA */
+  .pitch-btn {
+    display: flex; align-items: center; justify-content: center; gap: 7px;
+    width: 100%; padding: 12px;
+    background: var(--action); color: #fff;
+    border: none; border-radius: 10px;
+    font-size: 13.5px; font-weight: 700;
+    cursor: pointer; font-family: inherit;
+    transition: all .15s; margin-top: auto;
+  }
+  .pitch-btn:hover { background: #1C1C1C; transform: translateY(-1px); }
+  .pitch-btn.saved-btn {
+    background: var(--success-light); color: var(--success);
+    border: 1.5px solid var(--success-border);
+  }
+
+  /* ── PRO PAYWALL OVERLAY ── */
+  .paywall-section { position: relative; }
+  .paywall-grid-wrap { position: relative; }
+
+  /* Blur the cards underneath */
+  .paywall-grid-wrap .card-grid { filter: blur(3px); pointer-events: none; user-select: none; }
+
+  .paywall-overlay {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    z-index: 10;
+    background: linear-gradient(to bottom, rgba(245,245,247,0) 0%, rgba(245,245,247,.7) 30%, rgba(245,245,247,.97) 60%);
+    border-radius: 18px;
+  }
+  .paywall-card {
+    background: #fff; border: 1px solid var(--border);
+    border-radius: 20px; padding: 28px 32px;
+    text-align: center; max-width: 380px; width: 90%;
+    box-shadow: 0 8px 40px rgba(15,15,15,.1);
+    position: relative;
+  }
+  .paywall-icon { font-size: 36px; margin-bottom: 12px; }
+  .paywall-title { font-size: 18px; font-weight: 800; letter-spacing: -.3px; margin-bottom: 6px; }
+  .paywall-sub { font-size: 13px; color: var(--text-2); line-height: 1.6; margin-bottom: 20px; }
+  .paywall-features { display: flex; flex-direction: column; gap: 8px; text-align: left; margin-bottom: 22px; }
+  .paywall-feature { display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 500; }
+  .paywall-check { width: 20px; height: 20px; border-radius: 50%; background: var(--success-light); border: 1px solid var(--success-border); color: var(--success); display: grid; place-items: center; font-size: 11px; font-weight: 800; flex-shrink: 0; }
+  .upgrade-btn {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%; padding: 14px;
+    background: var(--pro-gradient); color: #fff;
+    border: none; border-radius: 12px;
+    font-size: 14.5px; font-weight: 700;
+    cursor: pointer; font-family: inherit;
+    box-shadow: 0 4px 14px rgba(225,29,72,.25);
+    transition: all .2s;
+    margin-bottom: 10px;
+  }
+  .upgrade-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(225,29,72,.35); }
+  .paywall-hint { font-size: 11.5px; color: var(--text-3); }
+
+  /* ── SEASONAL CARD — wider treatment ── */
+  .seasonal-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 14px; }
+  @media(max-width:640px) { .seasonal-grid { grid-template-columns: 1fr; } }
+
+  .seasonal-card {
+    background: #fff; border: 1px solid var(--border);
+    border-radius: 18px; padding: 20px;
+    display: flex; gap: 16px; align-items: center;
+    box-shadow: var(--shadow-sm); transition: all .2s;
+  }
+  .seasonal-card:hover { border-color: #D4D4D4; box-shadow: var(--shadow-md); }
+  .seasonal-logo-box {
+    width: 64px; height: 64px; border-radius: 14px;
+    background: var(--subtle); border: 1px solid var(--border);
+    display: grid; place-items: center; flex-shrink: 0;
+    overflow: hidden; padding: 8px;
+  }
+  .seasonal-logo-box img { max-width: 100%; max-height: 100%; object-fit: contain; mix-blend-mode: multiply; }
+  .seasonal-logo-text { font-size: 12px; font-weight: 800; color: var(--text); text-align: center; }
+  .seasonal-info { flex: 1; min-width: 0; }
+  .seasonal-name { font-size: 15px; font-weight: 700; margin-bottom: 2px; }
+  .seasonal-reason { font-size: 12px; color: var(--text-3); margin-bottom: 8px; line-height: 1.4; }
+  .seasonal-stats { display: flex; gap: 12px; margin-bottom: 12px; }
+  .seasonal-stat-val { font-size: 14px; font-weight: 800; }
+  .seasonal-stat-val.green { color: var(--success); }
+  .seasonal-stat-lbl { font-size: 10px; color: var(--text-3); font-weight: 500; text-transform: uppercase; }
+  .seasonal-btn {
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    width: 100%; padding: 10px;
+    background: var(--action); color: #fff;
+    border: none; border-radius: 9px;
+    font-size: 13px; font-weight: 700;
+    cursor: pointer; font-family: inherit; transition: all .15s;
+  }
+  .seasonal-btn:hover { background: #1C1C1C; }
+
+  /* ── REFRESH HINT ── */
+  .refresh-hint {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    font-size: 12px; color: var(--text-3); margin-top: -20px; margin-bottom: 32px;
+  }
+  .refresh-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.3; } }
+
+  @media(max-width:640px) {
+    .nav { padding: 0 16px; }
+    .nav-tabs { display: none; }
+    .page { padding: 20px 14px 80px; }
+    .page-header { flex-direction: column; }
+    .profile-pill { width: 100%; }
+  }
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="nav">
+  <div class="nav-left">
+    <a class="logo" href="#">
+      <div class="logo-mark">N</div>
+      <span class="logo-word">new<span>collab</span></span>
+    </a>
+    <div class="nav-tabs">
+      <a class="nav-tab" href="#">Discover</a>
+      <a class="nav-tab" href="#">Saved <span style="background:#E11D48;color:#fff;font-size:10px;padding:1px 6px;border-radius:100px;margin-left:2px">8</span></a>
+      <a class="nav-tab active" href="#">For You ✨</a>
+      <a class="nav-tab" href="#">My Kit <span style="background:linear-gradient(135deg,#E11D48,#7C3AED);color:#fff;font-size:9px;padding:2px 6px;border-radius:100px;margin-left:2px;font-weight:800">NEW</span></a>
+    </div>
+  </div>
+  <div class="nav-right">
+    <button class="icon-btn">🔔</button>
+    <button class="avatar-pill">
+      <div class="avatar">M</div>
+      <span style="font-size:13px;font-weight:600">mazza</span>
+    </button>
+  </div>
+</nav>
+
+<div class="page">
+
+  <!-- Page header -->
+  <div class="page-header">
+    <div class="page-title-wrap">
+      <div class="page-eyebrow">✨ Personalised for you</div>
+      <div class="page-title">Your Brand Matches</div>
+      <div class="page-sub">Curated daily based on your niche, following and pitch history</div>
+    </div>
+    <div class="profile-pill">
+      <div class="profile-avatar">M</div>
+      <div class="profile-info">
+        <div class="profile-name">mazza · Beauty & Lifestyle</div>
+        <div class="profile-niche">Instagram · 12K followers</div>
+      </div>
+      <div class="profile-edit">Edit profile →</div>
+    </div>
+  </div>
+
+  <!-- Refresh hint -->
+  <div class="refresh-hint">
+    <span class="refresh-dot"></span>
+    Matches refresh every Monday · Last updated today
+  </div>
+
+  <!-- ════════════════════════════════
+       SECTION 1: Hot This Week
+  ════════════════════════════════ -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-left">
+        <div class="section-icon hot">🔥</div>
+        <div class="section-title-wrap">
+          <div class="section-title">Hot This Week</div>
+          <div class="section-desc">Brands with rising response rates — creators are landing collabs right now</div>
+        </div>
+      </div>
+      <span class="section-link">See all →</span>
+    </div>
+
+    <div class="card-grid">
+
+      <!-- Babe Original — hot -->
+      <div class="brand-card">
+        <div class="logo-box">
+          <div class="logo-badge badge-hot">🔥 3 wins this week</div>
+          <div class="logo-text" style="font-size:13px;letter-spacing:1px">BABE ORIGINAL</div>
+        </div>
+        <div class="card-name">Babe Original</div>
+        <div class="card-desc">Lash and brow care brand offering serums and accessories for natural-looking enhancement.</div>
+        <div class="card-tags">
+          <span class="tag">beauty</span>
+          <span class="tag tag-followers">6K+ followers</span>
+        </div>
+        <div class="momentum" style="margin-bottom:10px">
+          <div class="momentum-label">Response rate this week <span>↑ 58%</span></div>
+          <div class="momentum-track"><div class="momentum-fill" style="width:58%"></div></div>
+        </div>
+        <div class="social-proof">👥 17 pitched · <span class="green">3 got packages this week</span></div>
+        <button class="pitch-btn">✉ Pitch Now</button>
+      </div>
+
+      <!-- Pela Case — hot -->
+      <div class="brand-card">
+        <div class="logo-box">
+          <div class="logo-badge badge-hot">🔥 Rising fast</div>
+          <img src="https://logo.clearbit.com/pelacase.com"
+               onerror="this.style.display='none';this.nextElementSibling.style.display='block'" alt="Pela">
+          <div class="logo-text" style="display:none">pela</div>
+        </div>
+        <div class="card-name">Pela Case</div>
+        <div class="card-desc">Sustainable phone case brand offering compostable, eco-friendly phone cases for all devices.</div>
+        <div class="card-tags">
+          <span class="tag">lifestyle</span>
+          <span class="tag tag-followers">3K+ followers</span>
+        </div>
+        <div class="momentum" style="margin-bottom:10px">
+          <div class="momentum-label">Response rate this week <span>↑ 55%</span></div>
+          <div class="momentum-track"><div class="momentum-fill" style="width:55%"></div></div>
+        </div>
+        <div class="social-proof">👥 9 pitched · <span class="green">2 got responses</span></div>
+        <button class="pitch-btn saved-btn">✓ Already in Pipeline</button>
+      </div>
+
+      <!-- Briogeo — hot -->
+      <div class="brand-card">
+        <div class="logo-box">
+          <div class="logo-badge badge-hot">🔥 5 wins this week</div>
+          <img src="https://logo.clearbit.com/briogeo.com"
+               onerror="this.style.display='none';this.nextElementSibling.style.display='block'" alt="Briogeo">
+          <div class="logo-text" style="display:none">Briogeo</div>
+        </div>
+        <div class="card-name">Briogeo</div>
+        <div class="card-desc">Clean haircare brand offering 6-free-from products with naturally derived ingredients.</div>
+        <div class="card-tags">
+          <span class="tag">haircare</span>
+          <span class="tag tag-followers">8K+ followers</span>
+        </div>
+        <div class="momentum" style="margin-bottom:10px">
+          <div class="momentum-label">Response rate this week <span>↑ 42%</span></div>
+          <div class="momentum-track"><div class="momentum-fill" style="width:42%"></div></div>
+        </div>
+        <div class="social-proof">👥 25 pitched · <span class="green">5 got packages</span></div>
+        <button class="pitch-btn">✉ Pitch Now</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════
+       SECTION 2: Matched for You (Pro gate)
+  ════════════════════════════════ -->
+  <div class="section paywall-section">
+    <div class="section-header">
+      <div class="section-left">
+        <div class="section-icon match">🎯</div>
+        <div class="section-title-wrap">
+          <div class="section-title">Matched for You</div>
+          <div class="section-desc">Brands scored by fit with your niche, following and platform</div>
+        </div>
+      </div>
+      <span style="display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700;background:var(--pro-gradient);-webkit-background-clip:text;-webkit-text-fill-color:transparent">⚡ Pro</span>
+    </div>
+
+    <!-- Show 1 free card + blur the rest -->
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:0;position:relative">
+
+      <!-- Free card — visible -->
+      <div class="brand-card">
+        <div class="logo-box">
+          <div class="match-badge">94% match</div>
+          <img src="https://logo.clearbit.com/glossier.com"
+               onerror="this.style.display='none';this.nextElementSibling.style.display='block'" alt="Glossier">
+          <div class="logo-text" style="display:none">Glossier</div>
+        </div>
+        <div class="card-name">Glossier</div>
+        <div class="card-desc">Beauty brand built on real people, real routines, real skin. Community-first approach to beauty.</div>
+        <div class="card-tags">
+          <span class="tag">beauty</span>
+          <span class="tag tag-followers">10K+ followers</span>
+        </div>
+        <div class="stats-row">
+          <div class="stat-item">
+            <div class="stat-val green">48%</div>
+            <div class="stat-lbl">Response</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-val">~6d</div>
+            <div class="stat-lbl">Avg reply</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-val">31</div>
+            <div class="stat-lbl">Pitched</div>
+          </div>
+        </div>
+        <div style="height:1px;background:var(--border);margin:10px 0 12px"></div>
+        <button class="pitch-btn">✉ Pitch Now</button>
+      </div>
+
+      <!-- 2 blurred cards -->
+      <div class="brand-card" style="filter:blur(4px);pointer-events:none;user-select:none">
+        <div class="logo-box">
+          <div class="match-badge">91% match</div>
+          <div class="logo-text">FENTY</div>
+        </div>
+        <div class="card-name">Fenty Beauty</div>
+        <div class="card-desc">Rihanna's inclusive beauty brand offering foundation in 50 shades for all skin tones worldwide.</div>
+        <div class="card-tags">
+          <span class="tag">beauty</span>
+          <span class="tag tag-followers">8K+ followers</span>
+        </div>
+        <div class="stats-row">
+          <div class="stat-item"><div class="stat-val green">52%</div><div class="stat-lbl">Response</div></div>
+          <div class="stat-item"><div class="stat-val">~4d</div><div class="stat-lbl">Avg reply</div></div>
+        </div>
+        <div style="height:1px;background:var(--border);margin:10px 0 12px"></div>
+        <button class="pitch-btn">✉ Pitch Now</button>
+      </div>
+
+      <div class="brand-card" style="filter:blur(4px);pointer-events:none;user-select:none">
+        <div class="logo-box">
+          <div class="match-badge">88% match</div>
+          <div class="logo-text" style="font-size:14px">RARE BEAUTY</div>
+        </div>
+        <div class="card-name">Rare Beauty</div>
+        <div class="card-desc">Selena Gomez's beauty brand focused on breaking down unrealistic standards of perfection.</div>
+        <div class="card-tags">
+          <span class="tag">beauty</span>
+          <span class="tag tag-followers">12K+ followers</span>
+        </div>
+        <div class="stats-row">
+          <div class="stat-item"><div class="stat-val green">39%</div><div class="stat-lbl">Response</div></div>
+          <div class="stat-item"><div class="stat-val">~8d</div><div class="stat-lbl">Avg reply</div></div>
+        </div>
+        <div style="height:1px;background:var(--border);margin:10px 0 12px"></div>
+        <button class="pitch-btn">✉ Pitch Now</button>
+      </div>
+
+      <!-- Paywall overlay -->
+      <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:10;background:linear-gradient(to bottom,rgba(245,245,247,0) 0%,rgba(245,245,247,.5) 20%,rgba(245,245,247,.97) 55%);border-radius:18px">
+        <div class="paywall-card" style="margin-top:60px">
+          <div class="paywall-icon">🎯</div>
+          <div class="paywall-title">See your full brand matches</div>
+          <div class="paywall-sub">Get 8 brands scored and ranked specifically for your niche, following and pitch history — updated every week.</div>
+          <div class="paywall-features">
+            <div class="paywall-feature">
+              <div class="paywall-check">✓</div>
+              Match score explained — why each brand fits you
+            </div>
+            <div class="paywall-feature">
+              <div class="paywall-check">✓</div>
+              8 personalised matches, refreshed weekly
+            </div>
+            <div class="paywall-feature">
+              <div class="paywall-check">✓</div>
+              48h early access to newly added brands
+            </div>
+            <div class="paywall-feature">
+              <div class="paywall-check">✓</div>
+              Unlimited contacts + AI follow-up emails
+            </div>
+          </div>
+          <button class="upgrade-btn">⚡ Upgrade to Pro — $12/mo</button>
+          <div class="paywall-hint">Cancel anytime · Most creators land their first collab within 2 weeks</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════
+       SECTION 3: Right Season
+  ════════════════════════════════ -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-left">
+        <div class="section-icon seasonal">📅</div>
+        <div class="section-title-wrap">
+          <div class="section-title">Right Season — June</div>
+          <div class="section-desc">Brands actively gifting for summer campaigns right now</div>
+        </div>
+      </div>
+      <span class="section-link">Why seasonal? →</span>
+    </div>
+
+    <div class="seasonal-grid">
+
+      <div class="seasonal-card">
+        <div class="seasonal-logo-box">
+          <img src="https://logo.clearbit.com/supergoop.com"
+               onerror="this.style.display='none';this.nextElementSibling.style.display='block'" alt="">
+          <div class="seasonal-logo-text" style="display:none">SG</div>
+        </div>
+        <div class="seasonal-info">
+          <div class="seasonal-name">Supergoop!</div>
+          <div class="seasonal-reason">☀️ Summer SPF season — gifting heavily for June–Aug content</div>
+          <div class="seasonal-stats">
+            <div>
+              <div class="seasonal-stat-val green">61%</div>
+              <div class="seasonal-stat-lbl">Response</div>
+            </div>
+            <div>
+              <div class="seasonal-stat-val">~5d</div>
+              <div class="seasonal-stat-lbl">Avg reply</div>
+            </div>
+          </div>
+          <button class="seasonal-btn">✉ Pitch Now</button>
+        </div>
+      </div>
+
+      <div class="seasonal-card">
+        <div class="seasonal-logo-box">
+          <img src="https://logo.clearbit.com/eltamd.com"
+               onerror="this.style.display='none';this.nextElementSibling.style.display='block'" alt="">
+          <div class="seasonal-logo-text" style="display:none">EltaMD</div>
+        </div>
+        <div class="seasonal-info">
+          <div class="seasonal-name">EltaMD Skincare</div>
+          <div class="seasonal-reason">☀️ Summer skincare push — partnering with nano creators for authentic content</div>
+          <div class="seasonal-stats">
+            <div>
+              <div class="seasonal-stat-val green">44%</div>
+              <div class="seasonal-stat-lbl">Response</div>
+            </div>
+            <div>
+              <div class="seasonal-stat-val">~7d</div>
+              <div class="seasonal-stat-lbl">Avg reply</div>
+            </div>
+          </div>
+          <button class="seasonal-btn">✉ Pitch Now</button>
+        </div>
+      </div>
+
+      <div class="seasonal-card">
+        <div class="seasonal-logo-box">
+          <img src="https://logo.clearbit.com/revolve.com"
+               onerror="this.style.display='none';this.nextElementSibling.style.display='block'" alt="">
+          <div class="seasonal-logo-text" style="display:none">REVOLVE</div>
+        </div>
+        <div class="seasonal-info">
+          <div class="seasonal-name">Revolve</div>
+          <div class="seasonal-reason">👙 Summer fashion drops — looking for lifestyle creators for June lookbooks</div>
+          <div class="seasonal-stats">
+            <div>
+              <div class="seasonal-stat-val green">38%</div>
+              <div class="seasonal-stat-lbl">Response</div>
+            </div>
+            <div>
+              <div class="seasonal-stat-val">~9d</div>
+              <div class="seasonal-stat-lbl">Avg reply</div>
+            </div>
+          </div>
+          <button class="seasonal-btn">✉ Pitch Now</button>
+        </div>
+      </div>
+
+      <div class="seasonal-card">
+        <div class="seasonal-logo-box">
+          <img src="https://logo.clearbit.com/tatcha.com"
+               onerror="this.style.display='none';this.nextElementSibling.style.display='block'" alt="">
+          <div class="seasonal-logo-text" style="display:none">TATCHA</div>
+        </div>
+        <div class="seasonal-info">
+          <div class="seasonal-name">Tatcha</div>
+          <div class="seasonal-reason">🌿 Summer hydration campaign — gifting dewy skin products to beauty creators</div>
+          <div class="seasonal-stats">
+            <div>
+              <div class="seasonal-stat-val green">36%</div>
+              <div class="seasonal-stat-lbl">Response</div>
+            </div>
+            <div>
+              <div class="seasonal-stat-val">~6d</div>
+              <div class="seasonal-stat-lbl">Avg reply</div>
+            </div>
+          </div>
+          <button class="seasonal-btn">✉ Pitch Now</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

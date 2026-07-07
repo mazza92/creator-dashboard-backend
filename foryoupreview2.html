@@ -1,0 +1,1272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>For You — Newcollab</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --rose: #E11D48;
+    --black: #0F0F0F;
+    --violet: #7C3AED;
+    --green: #059669;
+    --bg: #FAFAF9;
+    --border: #e5e7eb;
+    --text-muted: #6b7280;
+    --text-secondary: #374151;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--black);
+    min-height: 100vh;
+  }
+
+  /* ── NAV ── */
+  .nav {
+    background: #fff;
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+    height: 52px;
+    display: flex;
+    align-items: center;
+    gap: 0;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .nav-logo {
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    color: var(--black);
+    margin-right: 28px;
+    text-transform: uppercase;
+  }
+
+  .nav-items {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex: 1;
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-muted);
+    cursor: pointer;
+    text-decoration: none;
+    transition: background 0.15s;
+  }
+
+  .nav-item:hover { background: #f3f4f6; color: var(--black); }
+
+  .nav-item.active {
+    background: var(--black);
+    color: #fff;
+    font-weight: 600;
+  }
+
+  .nav-item svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+  .nav-badge {
+    background: var(--rose);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 10px;
+    letter-spacing: 0.03em;
+  }
+
+  .nav-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-left: auto;
+  }
+
+  .nav-bell {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: #f3f4f6;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+  }
+
+  .nav-avatar {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #f9a8d4, #c084fc);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; color: #fff;
+    cursor: pointer;
+  }
+
+  /* ── LAYOUT ── */
+  .page {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 28px 20px 60px;
+  }
+
+  /* ── PAGE HEADER ── */
+  .page-eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--rose);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 6px;
+  }
+
+  .page-title {
+    font-size: 22px;
+    font-weight: 800;
+    color: var(--black);
+    letter-spacing: -0.02em;
+    margin-bottom: 4px;
+  }
+
+  .page-subtitle {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-bottom: 16px;
+  }
+
+  .creator-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 5px 12px 5px 8px;
+    margin-bottom: 20px;
+  }
+
+  .creator-chip-avatar {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #f9a8d4, #c084fc);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 700; color: #fff;
+  }
+
+  .creator-chip-text {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--black);
+  }
+
+  .creator-chip-edit {
+    font-size: 11px;
+    color: var(--text-muted);
+    cursor: pointer;
+    margin-left: 4px;
+  }
+
+  .creator-chip-edit:hover { color: var(--black); }
+
+  /* ── BANNERS ── */
+  .banner-kit {
+    background: #fefce8;
+    border: 1px solid #fde68a;
+    border-radius: 12px;
+    padding: 14px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+
+  .banner-kit-badge {
+    background: #f59e0b;
+    color: #fff;
+    font-size: 15px;
+    font-weight: 800;
+    padding: 6px 10px;
+    border-radius: 8px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .banner-kit-content { flex: 1; }
+
+  .banner-kit-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #92400e;
+    margin-bottom: 2px;
+  }
+
+  .banner-kit-sub {
+    font-size: 12px;
+    color: #a16207;
+  }
+
+  .banner-kit-btn {
+    background: var(--black);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* ── DEAD ZONE BANNER (Fix 5) ── */
+  .banner-pending {
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    border-radius: 12px;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+
+  .banner-pending-icon { font-size: 20px; flex-shrink: 0; }
+
+  .banner-pending-content { flex: 1; }
+
+  .banner-pending-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #065f46;
+  }
+
+  .banner-pending-sub {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 1px;
+  }
+
+  .banner-pending-link {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--green);
+    cursor: pointer;
+    white-space: nowrap;
+    text-decoration: none;
+  }
+
+  /* ── PITCH EXPLAINER (Fix 1) ── */
+  .pitch-explainer {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+  }
+
+  .pitch-explainer-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 12px;
+  }
+
+  .pitch-steps {
+    display: flex;
+    gap: 0;
+  }
+
+  .pitch-step {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    position: relative;
+    padding-right: 12px;
+  }
+
+  .pitch-step:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 10px;
+    width: 1px;
+    height: 32px;
+    background: var(--border);
+  }
+
+  .pitch-step:not(:first-child) { padding-left: 12px; padding-right: 12px; }
+  .pitch-step:last-child { padding-right: 0; }
+
+  .pitch-step-num {
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    background: var(--black);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 6px;
+    flex-shrink: 0;
+  }
+
+  .pitch-step-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--black);
+    margin-bottom: 3px;
+    line-height: 1.3;
+  }
+
+  .pitch-step-sub {
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  /* ── REFRESH STATUS ── */
+  .refresh-status {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-align: center;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .refresh-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+  }
+
+  /* ── SECTION HEADER ── */
+  .section-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 4px;
+  }
+
+  .section-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--black);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .section-sub {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 14px;
+  }
+
+  .pro-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: linear-gradient(135deg, #7C3AED, #a855f7);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 10px;
+    letter-spacing: 0.03em;
+  }
+
+  /* ── SOCIAL PROOF STRIP (Fix 2) ── */
+  .social-proof {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 0 14px;
+  }
+
+  .avatar-stack {
+    display: flex;
+    flex-shrink: 0;
+  }
+
+  .avatar-stack img, .avatar-sm {
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    border: 2px solid #fff;
+    object-fit: cover;
+    background: #e5e7eb;
+    margin-left: -6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 700;
+    color: #fff;
+    overflow: hidden;
+  }
+
+  .avatar-sm:first-child { margin-left: 0; }
+
+  .avatar-sm-1 { background: linear-gradient(135deg, #fda4af, #f43f5e); }
+  .avatar-sm-2 { background: linear-gradient(135deg, #86efac, #22c55e); }
+  .avatar-sm-3 { background: linear-gradient(135deg, #93c5fd, #3b82f6); }
+
+  .social-proof-text {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.4;
+  }
+
+  .social-proof-text strong {
+    color: var(--text-secondary);
+    font-weight: 600;
+  }
+
+  /* ── BRAND CARDS GRID ── */
+  .brand-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  @media (max-width: 500px) {
+    .brand-grid { grid-template-columns: 1fr; }
+    .pitch-steps { flex-direction: column; gap: 10px; }
+    .pitch-step:not(:last-child)::after { display: none; }
+    .pitch-step, .pitch-step:not(:first-child) { padding: 0; }
+  }
+
+  .brand-card {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px 16px 14px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    position: relative;
+  }
+
+  .match-chip {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    background: var(--violet);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 10px;
+  }
+
+  .brand-logo-placeholder {
+    width: 48px; height: 48px;
+    border-radius: 12px;
+    background: #f3f4f6;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+    letter-spacing: -0.02em;
+  }
+
+  .brand-name {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--black);
+    margin-bottom: 4px;
+    text-align: center;
+  }
+
+  .brand-desc {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-align: center;
+    line-height: 1.5;
+    margin-bottom: 10px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .brand-tag {
+    background: #f3f4f6;
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 10px;
+    margin-bottom: 12px;
+    align-self: center;
+  }
+
+  .brand-stats {
+    display: flex;
+    gap: 16px;
+    width: 100%;
+    justify-content: center;
+    margin-bottom: 12px;
+  }
+
+  .stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .stat-value {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--green);
+  }
+
+  .stat-label {
+    font-size: 9px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .stat-divider {
+    width: 1px;
+    background: var(--border);
+    align-self: stretch;
+  }
+
+  .pitch-btn {
+    width: 100%;
+    background: var(--black);
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    padding: 11px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    transition: opacity 0.15s;
+  }
+
+  .pitch-btn:hover { opacity: 0.85; }
+
+  /* ── PRO LOCKED CARDS ── */
+  .pro-section-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .locked-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .locked-card {
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+    border-radius: 12px;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .locked-reply {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex-shrink: 0;
+    min-width: 48px;
+  }
+
+  .locked-reply-val {
+    font-size: 16px;
+    font-weight: 800;
+    color: #d97706;
+  }
+
+  .locked-reply-label {
+    font-size: 9px;
+    font-weight: 600;
+    color: #92400e;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .locked-info { flex: 1; }
+
+  .locked-multiplier {
+    font-size: 12px;
+    font-weight: 700;
+    color: #92400e;
+    margin-bottom: 2px;
+  }
+
+  .locked-category {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .locked-icon {
+    font-size: 16px;
+    opacity: 0.5;
+    flex-shrink: 0;
+  }
+
+  .more-matches {
+    text-align: center;
+    font-size: 12px;
+    color: var(--text-muted);
+    padding: 6px 0 14px;
+  }
+
+  /* ── UPGRADE BANNER ── */
+  .banner-upgrade {
+    background: linear-gradient(135deg, #7C3AED, #E11D48);
+    border-radius: 12px;
+    padding: 14px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 28px;
+  }
+
+  .banner-upgrade-content { flex: 1; }
+
+  .banner-upgrade-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 3px;
+  }
+
+  .banner-upgrade-sub {
+    font-size: 11px;
+    color: rgba(255,255,255,0.75);
+  }
+
+  .banner-upgrade-btn {
+    background: #fff;
+    color: var(--violet);
+    border: none;
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* ── TRENDING SECTION ── */
+  .trending-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+
+  .trending-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--black);
+  }
+
+  .trending-sub {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 14px;
+  }
+
+  .trending-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 28px;
+  }
+
+  @media (max-width: 500px) {
+    .trending-grid { grid-template-columns: 1fr; }
+  }
+
+  .trending-card {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 12px 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .trending-logo {
+    width: 44px; height: 44px;
+    border-radius: 10px;
+    background: #f3f4f6;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+    font-weight: 800;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+  }
+
+  .trending-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--black);
+    text-align: center;
+    margin-bottom: 4px;
+  }
+
+  .trending-desc {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-align: center;
+    line-height: 1.4;
+    margin-bottom: 8px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .brand-tag-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .follower-tag {
+    background: #ede9fe;
+    color: var(--violet);
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 8px;
+  }
+
+  .trend-rate {
+    font-size: 11px;
+    color: var(--green);
+    font-weight: 600;
+    text-align: center;
+    margin-bottom: 10px;
+    width: 100%;
+  }
+
+  /* ── SEASONAL SECTION ── */
+  .seasonal-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+
+  .seasonal-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--black);
+  }
+
+  .seasonal-sub {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 14px;
+  }
+
+  .seasonal-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  @media (max-width: 500px) {
+    .seasonal-grid { grid-template-columns: 1fr; }
+  }
+
+  .seasonal-card {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .seasonal-card-top {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .seasonal-logo {
+    width: 36px; height: 36px;
+    border-radius: 8px;
+    background: #f3f4f6;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px;
+    font-weight: 800;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+
+  .seasonal-info { flex: 1; }
+
+  .seasonal-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--black);
+    margin-bottom: 2px;
+  }
+
+  .seasonal-pick {
+    font-size: 10px;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .seasonal-stats {
+    display: flex;
+    gap: 14px;
+    margin-bottom: 12px;
+  }
+
+  .seasonal-stat-val {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--green);
+  }
+
+  .seasonal-stat-label {
+    font-size: 9px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  /* ── ICON SVG INLINE ── */
+  .icon-envelope { display: inline-block; }
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="nav">
+  <div class="nav-logo">Newcollab</div>
+  <div class="nav-items">
+    <a class="nav-item active">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5a.5.5 0 0 1 .4.2l5.5 7A.5.5 0 0 1 13.5 9H13v5.5a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5V11H7v3.5a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5V9H2.5a.5.5 0 0 1-.4-.8l5.5-7a.5.5 0 0 1 .4-.2z"/></svg>
+      For You
+    </a>
+    <a class="nav-item">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.099zm-5.242 1.156a5.5 5.5 0 1 1 0-11 5.5 5.5 0 0 1 0 11z"/></svg>
+      Discover
+    </a>
+    <a class="nav-item">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v13.5a.5.5 0 0 1-.777.416L8 13.101l-5.223 2.815A.5.5 0 0 1 2 15.5zm2-1a1 1 0 0 0-1 1v12.566l4.723-2.482a.5.5 0 0 1 .554 0L13 14.566V2a1 1 0 0 0-1-1z"/></svg>
+      Saved
+    </a>
+    <a class="nav-item">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 1a.5.5 0 0 0-.5.5v3a.5.5 0 0 1-1 0v-3A1.5 1.5 0 0 1 1.5 0h3a.5.5 0 0 1 0 1zM11 .5a.5.5 0 0 1 .5-.5h3A1.5 1.5 0 0 1 16 1.5v3a.5.5 0 0 1-1 0v-3a.5.5 0 0 0-.5-.5h-3a.5.5 0 0 1-.5-.5M.5 11a.5.5 0 0 1 .5.5v3a.5.5 0 0 0 .5.5h3a.5.5 0 0 1 0 1h-3A1.5 1.5 0 0 1 0 14.5v-3a.5.5 0 0 1 .5-.5m15 0a.5.5 0 0 1 .5.5v3a1.5 1.5 0 0 1-1.5 1.5h-3a.5.5 0 0 1 0-1h3a.5.5 0 0 0 .5-.5v-3a.5.5 0 0 1 .5-.5"/></svg>
+      My Kit
+      <span class="nav-badge">NEW</span>
+    </a>
+  </div>
+  <div class="nav-right">
+    <div class="nav-bell">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="#6b7280"><path d="M8 16a2 2 0 0 0 2-2H6a2 2 0 0 0 2 2M8 1.918l-.797.161A4.002 4.002 0 0 0 4 6c0 .628-.134 2.197-.459 3.742-.16.767-.376 1.566-.663 2.258h10.244c-.287-.692-.502-1.49-.663-2.258C12.134 8.197 12 6.628 12 6a4.002 4.002 0 0 0-3.203-3.92zM14.22 12c.223.447.481.801.78 1H1c.299-.199.557-.553.78-1C2.68 10.2 3 6.88 3 6c0-2.42 1.72-4.44 4.005-4.901a1 1 0 1 1 1.99 0A5.002 5.002 0 0 1 13 6c0 .88.32 4.2 1.22 6"/></svg>
+    </div>
+    <div class="nav-avatar">M</div>
+  </div>
+</nav>
+
+<!-- PAGE -->
+<div class="page">
+
+  <!-- PAGE HEADER -->
+  <div class="page-eyebrow">✦ Personalized for you</div>
+  <div class="page-title">Your Brand Matches</div>
+  <div class="page-subtitle">Curated daily based on your niche, following and pitch history</div>
+
+  <div class="creator-chip">
+    <div class="creator-chip-avatar">M</div>
+    <span class="creator-chip-text">Creator · Beauty &nbsp;·&nbsp; 5K followers</span>
+    <span class="creator-chip-edit">Edit niches ›</span>
+  </div>
+
+  <!-- KIT NUDGE BANNER -->
+  <div class="banner-kit">
+    <div class="banner-kit-badge">3×</div>
+    <div class="banner-kit-content">
+      <div class="banner-kit-title">Build your media kit to get 3× more replies</div>
+      <div class="banner-kit-sub">Brands want to see your content before they respond. Takes 2 minutes.</div>
+    </div>
+    <button class="banner-kit-btn">Build my kit →</button>
+  </div>
+
+  <!-- DEAD ZONE BANNER (Fix 5) — shown after first pitch -->
+  <div class="banner-pending">
+    <div class="banner-pending-icon">📬</div>
+    <div class="banner-pending-content">
+      <div class="banner-pending-title">Your pitch to Cowshed is in their inbox</div>
+      <div class="banner-pending-sub">Avg reply time is ~5 days · We'll notify you when they respond</div>
+    </div>
+    <a class="banner-pending-link">View pipeline →</a>
+  </div>
+
+  <!-- PITCH EXPLAINER (Fix 1 — updated copy) -->
+  <div class="pitch-explainer">
+    <div class="pitch-explainer-label">What happens when you tap "Pitch Now"</div>
+    <div class="pitch-steps">
+      <div class="pitch-step">
+        <div class="pitch-step-num">1</div>
+        <div class="pitch-step-title">Your pitch goes straight to their PR inbox</div>
+        <div class="pitch-step-sub">Pre-filled with their PR contact + your AI-written pitch — sent from your email so it feels personal</div>
+      </div>
+      <div class="pitch-step">
+        <div class="pitch-step-num">2</div>
+        <div class="pitch-step-title">You review &amp; hit send</div>
+        <div class="pitch-step-sub">Edit the pitch if you want, then send from your own inbox</div>
+      </div>
+      <div class="pitch-step">
+        <div class="pitch-step-num">3</div>
+        <div class="pitch-step-title">We track replies for you</div>
+        <div class="pitch-step-sub">Follow up in your pipeline and get PR packages</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- REFRESH STATUS -->
+  <div class="refresh-status">
+    <div class="refresh-dot"></div>
+    Matches refresh every Monday · Last updated today
+  </div>
+
+  <!-- MATCHED FOR YOU -->
+  <div class="section-header">
+    <div class="section-title">
+      <span>🎯</span> Matched for You
+      <span class="pro-badge">↑ Pro</span>
+    </div>
+  </div>
+  <div class="section-sub">8 brands match your profile</div>
+
+  <!-- SOCIAL PROOF STRIP (Fix 2) -->
+  <div class="social-proof">
+    <div class="avatar-stack">
+      <div class="avatar-sm avatar-sm-1">S</div>
+      <div class="avatar-sm avatar-sm-2">A</div>
+      <div class="avatar-sm avatar-sm-3">J</div>
+    </div>
+    <div class="social-proof-text">
+      <strong>Creators with under 10K followers</strong> got PR from brands like these this month
+    </div>
+  </div>
+
+  <!-- FREE BRAND CARDS -->
+  <div style="font-size:12px;color:var(--text-muted);font-weight:600;margin-bottom:10px;">Your top matches</div>
+  <div class="brand-grid">
+
+    <div class="brand-card">
+      <span class="match-chip">96% match</span>
+      <div class="brand-logo-placeholder" style="font-size:13px;color:#374151;">C</div>
+      <div class="brand-name">Cowshed</div>
+      <div class="brand-desc">British spa and skincare brand rooted in natural ingredients. Known for body care, candles and gifting sets.</div>
+      <div class="brand-tag">Beauty</div>
+      <div class="brand-stats">
+        <div class="stat">
+          <div class="stat-value">46%</div>
+          <div class="stat-label">Response</div>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat">
+          <div class="stat-value">~5d</div>
+          <div class="stat-label">Avg Reply</div>
+        </div>
+      </div>
+      <button class="pitch-btn">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855H.766l-.452.18a.5.5 0 0 0-.082.887l.41.26.001.002 4.995 3.178 3.178 4.995.002.002.26.41a.5.5 0 0 0 .886-.083zm-1.833 1.89L6.637 10.07l-.215-.338L1.999 6.927z"/></svg>
+        Pitch Now
+      </button>
+    </div>
+
+    <div class="brand-card">
+      <span class="match-chip">95% match</span>
+      <div class="brand-logo-placeholder" style="font-size:13px;color:#374151;">EN</div>
+      <div class="brand-name">Ex Nihilo</div>
+      <div class="brand-desc">Luxury fragrance house from Paris. Bespoke fragrances and modern perfumery with a bold identity.</div>
+      <div class="brand-tag">Beauty</div>
+      <div class="brand-stats">
+        <div class="stat">
+          <div class="stat-value">47%</div>
+          <div class="stat-label">Response</div>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat">
+          <div class="stat-value">~5d</div>
+          <div class="stat-label">Avg Reply</div>
+        </div>
+      </div>
+      <button class="pitch-btn">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855H.766l-.452.18a.5.5 0 0 0-.082.887l.41.26.001.002 4.995 3.178 3.178 4.995.002.002.26.41a.5.5 0 0 0 .886-.083zm-1.833 1.89L6.637 10.07l-.215-.338L1.999 6.927z"/></svg>
+        Pitch Now
+      </button>
+    </div>
+
+  </div>
+
+  <!-- PRO LOCKED CARDS -->
+  <div class="pro-section-label">
+    <span>🔒</span> Pro matches (6 brands)
+  </div>
+  <div class="locked-cards">
+    <div class="locked-card">
+      <div class="locked-reply">
+        <div class="locked-reply-val">45%</div>
+        <div class="locked-reply-label">Reply Rate</div>
+      </div>
+      <div class="locked-info">
+        <div class="locked-multiplier">5x higher than average</div>
+        <div class="locked-category">Beauty · Skincare</div>
+      </div>
+      <div class="locked-icon">🔒</div>
+    </div>
+    <div class="locked-card">
+      <div class="locked-reply">
+        <div class="locked-reply-val">41%</div>
+        <div class="locked-reply-label">Reply Rate</div>
+      </div>
+      <div class="locked-info">
+        <div class="locked-multiplier">4x higher than average</div>
+        <div class="locked-category">Beauty · Haircare</div>
+      </div>
+      <div class="locked-icon">🔒</div>
+    </div>
+    <div class="locked-card">
+      <div class="locked-reply">
+        <div class="locked-reply-val">36%</div>
+        <div class="locked-reply-label">Reply Rate</div>
+      </div>
+      <div class="locked-info">
+        <div class="locked-multiplier">4x higher than average</div>
+        <div class="locked-category">Beauty · Lifestyle</div>
+      </div>
+      <div class="locked-icon">🔒</div>
+    </div>
+  </div>
+  <div class="more-matches">+ 3 more matched brands</div>
+
+  <!-- SINGLE UPGRADE BANNER -->
+  <div class="banner-upgrade">
+    <div class="banner-upgrade-content">
+      <div class="banner-upgrade-title">Your top locked match replies to 45% of pitches</div>
+      <div class="banner-upgrade-sub">That's 5x the industry average. Upgrade to contact them.</div>
+    </div>
+    <button class="banner-upgrade-btn">$12/mo →</button>
+  </div>
+
+  <!-- TRENDING IN BEAUTY (Fix 3 — no mega-brands) -->
+  <div class="trending-header">
+    <span style="font-size:16px;">🔥</span>
+    <div class="trending-title">Trending in Beauty</div>
+  </div>
+  <div class="trending-sub">Popular with creators in your niche this week</div>
+
+  <div class="trending-grid">
+
+    <div class="trending-card">
+      <div class="trending-logo">A</div>
+      <div class="trending-name">Anua</div>
+      <div class="trending-desc">Korean clean beauty loved for heartleaf and PDRN-infused skincare. Active PR program for micro-creators.</div>
+      <div class="brand-tag-row">
+        <div class="brand-tag">Beauty</div>
+        <div class="follower-tag">1K+ ok</div>
+      </div>
+      <div class="trend-rate">Response rate this week &nbsp;+6%</div>
+      <button class="pitch-btn" style="font-size:12px;padding:9px;">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855H.766l-.452.18a.5.5 0 0 0-.082.887l.41.26.001.002 4.995 3.178 3.178 4.995.002.002.26.41a.5.5 0 0 0 .886-.083zm-1.833 1.89L6.637 10.07l-.215-.338L1.999 6.927z"/></svg>
+        Pitch Now
+      </button>
+    </div>
+
+    <div class="trending-card">
+      <div class="trending-logo" style="font-size:13px;">ILIA</div>
+      <div class="trending-name">ILIA Beauty</div>
+      <div class="trending-desc">Clean beauty brand with skin-forward formulas. Regularly partners with nano and micro-creators for launches.</div>
+      <div class="brand-tag-row">
+        <div class="brand-tag">Beauty</div>
+        <div class="follower-tag">2K+ ok</div>
+      </div>
+      <div class="trend-rate">Response rate this week &nbsp;+12%</div>
+      <button class="pitch-btn" style="font-size:12px;padding:9px;">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855H.766l-.452.18a.5.5 0 0 0-.082.887l.41.26.001.002 4.995 3.178 3.178 4.995.002.002.26.41a.5.5 0 0 0 .886-.083zm-1.833 1.89L6.637 10.07l-.215-.338L1.999 6.927z"/></svg>
+        Pitch Now
+      </button>
+    </div>
+
+    <div class="trending-card">
+      <div class="trending-logo" style="font-size:12px;color:#7C3AED;">BYO</div>
+      <div class="trending-name">Byoma</div>
+      <div class="trending-desc">Barrier-care skincare brand. Gen Z focused, actively seeding micro-creators with PR kits.</div>
+      <div class="brand-tag-row">
+        <div class="brand-tag">Beauty</div>
+        <div class="follower-tag">500+ ok</div>
+      </div>
+      <div class="trend-rate">Response rate this week &nbsp;+19%</div>
+      <button class="pitch-btn" style="font-size:12px;padding:9px;">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855H.766l-.452.18a.5.5 0 0 0-.082.887l.41.26.001.002 4.995 3.178 3.178 4.995.002.002.26.41a.5.5 0 0 0 .886-.083zm-1.833 1.89L6.637 10.07l-.215-.338L1.999 6.927z"/></svg>
+        Pitch Now
+      </button>
+    </div>
+
+  </div>
+
+  <!-- RIGHT SEASON: JUNE (Fix 4 — differentiated stats) -->
+  <div class="seasonal-header">
+    <span style="font-size:16px;">☀️</span>
+    <div class="seasonal-title">Right Season: June</div>
+  </div>
+  <div class="seasonal-sub">Summer campaigns — SPF and wellness brands need content now</div>
+
+  <div class="seasonal-grid">
+
+    <div class="seasonal-card">
+      <div class="seasonal-card-top">
+        <div class="seasonal-logo" style="background:#fef3c7;color:#92400e;">P</div>
+        <div class="seasonal-info">
+          <div class="seasonal-name">Pela Case</div>
+          <div class="seasonal-pick">🇺🇸 Seasonal pick · Summer campaigns</div>
+        </div>
+      </div>
+      <div class="seasonal-stats">
+        <div class="stat">
+          <div class="seasonal-stat-val">55%</div>
+          <div class="seasonal-stat-label">Response</div>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat">
+          <div class="seasonal-stat-val">~4d</div>
+          <div class="seasonal-stat-label">Avg Reply</div>
+        </div>
+      </div>
+      <button class="pitch-btn" style="font-size:12px;padding:9px;">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855H.766l-.452.18a.5.5 0 0 0-.082.887l.41.26.001.002 4.995 3.178 3.178 4.995.002.002.26.41a.5.5 0 0 0 .886-.083zm-1.833 1.89L6.637 10.07l-.215-.338L1.999 6.927z"/></svg>
+        Pitch Now
+      </button>
+    </div>
+
+    <div class="seasonal-card">
+      <div class="seasonal-card-top">
+        <div class="seasonal-logo" style="background:#d1fae5;color:#065f46;font-size:12px;">BS</div>
+        <div class="seasonal-info">
+          <div class="seasonal-name">Bondi Sands</div>
+          <div class="seasonal-pick">🇦🇺 Seasonal pick · Summer campaigns</div>
+        </div>
+      </div>
+      <div class="seasonal-stats">
+        <div class="stat">
+          <div class="seasonal-stat-val">48%</div>
+          <div class="seasonal-stat-label">Response</div>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat">
+          <div class="seasonal-stat-val">~6d</div>
+          <div class="seasonal-stat-label">Avg Reply</div>
+        </div>
+      </div>
+      <button class="pitch-btn" style="font-size:12px;padding:9px;">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855H.766l-.452.18a.5.5 0 0 0-.082.887l.41.26.001.002 4.995 3.178 3.178 4.995.002.002.26.41a.5.5 0 0 0 .886-.083zm-1.833 1.89L6.637 10.07l-.215-.338L1.999 6.927z"/></svg>
+        Pitch Now
+      </button>
+    </div>
+
+    <div class="seasonal-card">
+      <div class="seasonal-card-top">
+        <div class="seasonal-logo" style="background:#f3f4f6;color:#374151;">Ae</div>
+        <div class="seasonal-info">
+          <div class="seasonal-name">Aesop</div>
+          <div class="seasonal-pick">🇦🇺 Seasonal pick · Summer campaigns</div>
+        </div>
+      </div>
+      <div class="seasonal-stats">
+        <div class="stat">
+          <div class="seasonal-stat-val">43%</div>
+          <div class="seasonal-stat-label">Response</div>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat">
+          <div class="seasonal-stat-val">~7d</div>
+          <div class="seasonal-stat-label">Avg Reply</div>
+        </div>
+      </div>
+      <button class="pitch-btn" style="font-size:12px;padding:9px;">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855H.766l-.452.18a.5.5 0 0 0-.082.887l.41.26.001.002 4.995 3.178 3.178 4.995.002.002.26.41a.5.5 0 0 0 .886-.083zm-1.833 1.89L6.637 10.07l-.215-.338L1.999 6.927z"/></svg>
+        Pitch Now
+      </button>
+    </div>
+
+    <div class="seasonal-card">
+      <div class="seasonal-card-top">
+        <div class="seasonal-logo" style="background:#ede9fe;color:#7C3AED;font-size:11px;">BIO</div>
+        <div class="seasonal-info">
+          <div class="seasonal-name">Biossance</div>
+          <div class="seasonal-pick">🇺🇸 Seasonal pick · Summer campaigns</div>
+        </div>
+      </div>
+      <div class="seasonal-stats">
+        <div class="stat">
+          <div class="seasonal-stat-val">51%</div>
+          <div class="seasonal-stat-label">Response</div>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat">
+          <div class="seasonal-stat-val">~5d</div>
+          <div class="seasonal-stat-label">Avg Reply</div>
+        </div>
+      </div>
+      <button class="pitch-btn" style="font-size:12px;padding:9px;">
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855H.766l-.452.18a.5.5 0 0 0-.082.887l.41.26.001.002 4.995 3.178 3.178 4.995.002.002.26.41a.5.5 0 0 0 .886-.083zm-1.833 1.89L6.637 10.07l-.215-.338L1.999 6.927z"/></svg>
+        Pitch Now
+      </button>
+    </div>
+
+  </div>
+
+</div><!-- /page -->
+</body>
+</html>

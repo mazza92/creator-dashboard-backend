@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Newcollab — Conversion Redesign</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #F0F0EE; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif; padding: 40px 20px; }
+
+  .page-title { text-align: center; font-size: 13px; font-weight: 600; color: #6B7280; letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 8px; }
+  .page-sub { text-align: center; font-size: 22px; font-weight: 800; color: #111; margin-bottom: 6px; }
+  .page-desc { text-align: center; font-size: 14px; color: #6B7280; margin-bottom: 48px; max-width: 480px; margin-left: auto; margin-right: auto; }
+
+  .row { display: flex; gap: 32px; justify-content: center; align-items: flex-start; flex-wrap: wrap; margin-bottom: 48px; }
+
+  .annotation { font-size: 11px; font-weight: 700; color: #E11D48; text-transform: uppercase; letter-spacing: 0.5px; text-align: center; margin-bottom: 10px; }
+  .annotation-sub { font-size: 12px; color: #6B7280; text-align: center; margin-bottom: 16px; max-width: 320px; }
+
+  /* Phone shell */
+  .phone {
+    width: 390px;
+    background: #fff;
+    border-radius: 44px;
+    box-shadow: 0 32px 80px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.08);
+    overflow: hidden;
+    position: relative;
+  }
+  .phone-notch {
+    background: #0F0F0F;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+  .phone-notch::after {
+    content: '';
+    width: 120px; height: 28px;
+    background: #0F0F0F;
+    border-radius: 0 0 20px 20px;
+    position: absolute;
+    top: 0; left: 50%; transform: translateX(-50%);
+    border: 2px solid #2a2a2a;
+    border-top: none;
+  }
+  .phone-screen { background: #FAFAF9; }
+
+  /* Nav */
+  .nav {
+    background: #fff;
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid #F3F4F6;
+    position: sticky; top: 0; z-index: 10;
+  }
+  .nav-logo { font-size: 13px; font-weight: 900; letter-spacing: -0.3px; color: #0F0F0F; }
+  .nav-logo span { color: #E11D48; }
+  .nav-right { display: flex; align-items: center; gap: 10px; }
+  .nav-bell { width: 32px; height: 32px; border-radius: 50%; background: #F3F4F6; display: flex; align-items: center; justify-content: center; font-size: 14px; position: relative; }
+  .nav-bell-dot { position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; background: #E11D48; border-radius: 50%; border: 1.5px solid #fff; }
+  .nav-avatar { width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg, #7C3AED, #E11D48); display: flex; align-items: center; justify-content: center; font-size: 12px; color: #fff; font-weight: 700; }
+
+  /* Tab bar */
+  .tabs { display: flex; background: #fff; border-bottom: 1px solid #F3F4F6; }
+  .tab { flex: 1; padding: 11px 4px 10px; text-align: center; font-size: 11.5px; font-weight: 600; color: #9CA3AF; position: relative; cursor: pointer; }
+  .tab.active { color: #0F0F0F; }
+  .tab.active::after { content: ''; position: absolute; bottom: 0; left: 20%; right: 20%; height: 2px; background: #0F0F0F; border-radius: 2px 2px 0 0; }
+  .tab-badge { display: inline-flex; align-items: center; justify-content: center; background: #E11D48; color: #fff; font-size: 9px; font-weight: 800; width: 16px; height: 16px; border-radius: 8px; margin-left: 3px; vertical-align: middle; }
+  .tab-new { display: inline-block; background: #7C3AED; color: #fff; font-size: 8px; font-weight: 800; padding: 1px 5px; border-radius: 4px; margin-left: 3px; vertical-align: middle; letter-spacing: 0.3px; }
+
+  /* Notification banner */
+  .notif-banner {
+    margin: 12px 16px 0;
+    background: linear-gradient(135deg, #0F0F0F, #1a1a1a);
+    border-radius: 14px;
+    padding: 12px 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .notif-icon { font-size: 22px; flex-shrink: 0; }
+  .notif-text { flex: 1; }
+  .notif-title { font-size: 12.5px; font-weight: 700; color: #fff; }
+  .notif-sub { font-size: 11px; color: #9CA3AF; margin-top: 1px; }
+  .notif-cta {
+    background: #E11D48;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 6px 11px;
+    border-radius: 8px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* Section header */
+  .section-hd { padding: 14px 16px 8px; display: flex; align-items: center; justify-content: space-between; }
+  .section-hd-title { font-size: 13px; font-weight: 800; color: #111; }
+  .section-hd-sub { font-size: 11px; color: #9CA3AF; font-weight: 500; }
+  .section-hd-link { font-size: 11.5px; font-weight: 700; color: #7C3AED; }
+
+  /* Brand card */
+  .brand-card {
+    margin: 0 16px 10px;
+    background: #fff;
+    border-radius: 18px;
+    overflow: hidden;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+  .brand-card-img {
+    height: 100px;
+    background: #F9FAFB;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 32px;
+    position: relative;
+  }
+  .brand-card-body { padding: 12px 14px 14px; }
+  .brand-card-name { font-size: 15px; font-weight: 800; color: #0F0F0F; margin-bottom: 4px; }
+  .brand-card-desc { font-size: 11.5px; color: #6B7280; margin-bottom: 10px; line-height: 1.4; }
+  .brand-pills { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .pill {
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .pill-fire { background: #FEF3C7; color: #92400E; }
+  .pill-value { background: #FCE7F3; color: #9D174D; }
+  .pill-niche { background: #EFF6FF; color: #1D4ED8; }
+  .pill-green { background: #D1FAE5; color: #065F46; }
+  .brand-stats { display: flex; gap: 16px; margin-bottom: 12px; }
+  .brand-stat { text-align: center; }
+  .brand-stat-val { font-size: 16px; font-weight: 800; color: #059669; }
+  .brand-stat-lbl { font-size: 10px; color: #9CA3AF; font-weight: 500; margin-top: 1px; }
+  .brand-actions { display: flex; gap: 8px; }
+  .btn-primary {
+    flex: 1; padding: 11px; border-radius: 12px;
+    font-size: 13px; font-weight: 700; border: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+  }
+  .btn-green { background: #059669; color: #fff; }
+  .btn-rose { background: #FFF1F2; color: #E11D48; border: 1.5px solid #FECDD3; }
+  .btn-outline { background: #F9FAFB; color: #374151; border: 1.5px solid #E5E7EB; }
+
+  /* Match score badge */
+  .match-badge {
+    position: absolute;
+    top: 10px; left: 10px;
+    background: linear-gradient(135deg, #7C3AED, #E11D48);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 800;
+    padding: 3px 9px;
+    border-radius: 20px;
+    letter-spacing: 0.3px;
+  }
+
+  /* Featured badge */
+  .featured-badge {
+    position: absolute;
+    top: 10px; left: 10px;
+    background: #FEF3C7;
+    color: #92400E;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 3px 9px;
+    border-radius: 20px;
+  }
+
+  /* Locked card overlay */
+  .locked-card {
+    margin: 0 16px 10px;
+    background: #fff;
+    border-radius: 18px;
+    overflow: hidden;
+    border: 1.5px dashed #DDD6FE;
+    position: relative;
+  }
+  .locked-blur-area {
+    padding: 14px;
+    filter: blur(4px);
+    pointer-events: none;
+    user-select: none;
+  }
+  .locked-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(255,255,255,0.7);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+  .locked-icon { font-size: 22px; }
+  .locked-title { font-size: 13px; font-weight: 800; color: #0F0F0F; }
+  .locked-sub { font-size: 11px; color: #6B7280; text-align: center; padding: 0 20px; }
+  .locked-stats-row { display: flex; gap: 10px; align-items: center; }
+  .locked-stat-pill {
+    background: #F3F4F6;
+    border-radius: 20px;
+    padding: 4px 10px;
+    font-size: 11px;
+    color: #374151;
+    font-weight: 600;
+  }
+  .locked-unlock-btn {
+    background: linear-gradient(135deg, #7C3AED, #E11D48);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 8px 20px;
+    border-radius: 10px;
+    border: none;
+    margin-top: 4px;
+  }
+
+  /* Pro gate banner */
+  .pro-gate {
+    margin: 4px 16px 16px;
+    background: linear-gradient(135deg, #4C1D95, #831843);
+    border-radius: 18px;
+    padding: 18px;
+    text-align: center;
+  }
+  .pro-gate-eyebrow { font-size: 10px; font-weight: 800; color: rgba(255,255,255,0.6); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .pro-gate-title { font-size: 17px; font-weight: 900; color: #fff; margin-bottom: 4px; line-height: 1.2; }
+  .pro-gate-sub { font-size: 12px; color: rgba(255,255,255,0.7); margin-bottom: 14px; }
+  .pro-gate-features { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; text-align: left; }
+  .pro-gate-feat { font-size: 12px; color: rgba(255,255,255,0.9); display: flex; align-items: center; gap: 8px; }
+  .pro-gate-feat::before { content: '✓'; font-weight: 800; color: #A78BFA; flex-shrink: 0; }
+  .pro-gate-btn {
+    background: #fff;
+    color: #4C1D95;
+    font-size: 14px;
+    font-weight: 800;
+    padding: 13px;
+    border-radius: 12px;
+    border: none;
+    width: 100%;
+    cursor: pointer;
+  }
+  .pro-gate-price { font-size: 11px; color: rgba(255,255,255,0.5); margin-top: 8px; }
+
+  /* For You section */
+  .for-you-header {
+    margin: 12px 16px 0;
+    background: linear-gradient(135deg, #F5F3FF, #FDF2F8);
+    border: 1.5px solid #DDD6FE;
+    border-radius: 14px;
+    padding: 14px;
+  }
+  .for-you-eyebrow { font-size: 10px; font-weight: 800; color: #7C3AED; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+  .for-you-title { font-size: 15px; font-weight: 800; color: #0F0F0F; margin-bottom: 3px; }
+  .for-you-sub { font-size: 12px; color: #6B7280; }
+  .for-you-meta { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .for-you-tag { background: #fff; border: 1px solid #DDD6FE; border-radius: 20px; padding: 4px 10px; font-size: 11px; font-weight: 600; color: #7C3AED; }
+
+  /* Match card (accessible) */
+  .match-card {
+    margin: 10px 16px 0;
+    background: #fff;
+    border-radius: 16px;
+    padding: 12px 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+  .match-logo {
+    width: 44px; height: 44px;
+    border-radius: 12px;
+    background: #F3F4F6;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px;
+    flex-shrink: 0;
+  }
+  .match-info { flex: 1; }
+  .match-name { font-size: 13px; font-weight: 800; color: #0F0F0F; }
+  .match-meta { font-size: 11px; color: #6B7280; margin-top: 1px; }
+  .match-score {
+    background: linear-gradient(135deg, #7C3AED, #E11D48);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 800;
+    padding: 5px 10px;
+    border-radius: 10px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .match-score-label { font-size: 9px; opacity: 0.8; font-weight: 600; }
+
+  /* Locked match card */
+  .match-card-locked {
+    margin: 8px 16px 0;
+    background: #F9FAFB;
+    border-radius: 16px;
+    padding: 12px 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border: 1.5px dashed #E5E7EB;
+  }
+  .match-logo-locked {
+    width: 44px; height: 44px;
+    border-radius: 12px;
+    background: #E5E7EB;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    flex-shrink: 0;
+  }
+  .match-info-locked { flex: 1; }
+  .match-name-locked {
+    height: 12px; width: 100px;
+    background: linear-gradient(90deg, #E5E7EB 25%, #F3F4F6 50%, #E5E7EB 75%);
+    background-size: 200% 100%;
+    border-radius: 6px;
+    animation: shimmer 1.5s infinite;
+  }
+  .match-meta-locked {
+    height: 10px; width: 70px;
+    background: #F3F4F6;
+    border-radius: 5px;
+    margin-top: 6px;
+  }
+  @keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+  .match-lock-icon { font-size: 18px; color: #9CA3AF; }
+  .visible-stat {
+    font-size: 10px;
+    font-weight: 700;
+    color: #059669;
+    white-space: nowrap;
+  }
+
+  /* Unlock CTA row */
+  .unlock-row {
+    margin: 12px 16px 16px;
+    background: linear-gradient(135deg, #7C3AED, #E11D48);
+    border-radius: 14px;
+    padding: 14px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .unlock-text { flex: 1; }
+  .unlock-title { font-size: 13px; font-weight: 800; color: #fff; }
+  .unlock-sub { font-size: 11px; color: rgba(255,255,255,0.75); margin-top: 2px; }
+  .unlock-btn {
+    background: #fff;
+    color: #7C3AED;
+    font-size: 12px;
+    font-weight: 800;
+    padding: 8px 14px;
+    border-radius: 10px;
+    border: none;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* Kit view notification */
+  .kit-notif {
+    margin: 12px 16px 0;
+    background: #fff;
+    border-radius: 16px;
+    border: 1.5px solid #A7F3D0;
+    padding: 14px;
+  }
+  .kit-notif-top { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .kit-notif-dot { width: 10px; height: 10px; border-radius: 50%; background: #10B981; flex-shrink: 0; animation: pulseDot 2s infinite; }
+  @keyframes pulseDot { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .kit-notif-label { font-size: 10px; font-weight: 800; color: #059669; text-transform: uppercase; letter-spacing: 0.4px; }
+  .kit-notif-body { font-size: 13px; font-weight: 700; color: #0F0F0F; margin-bottom: 4px; }
+  .kit-notif-sub { font-size: 11.5px; color: #6B7280; }
+  .kit-notif-actions { display: flex; gap: 8px; margin-top: 12px; }
+  .kit-notif-primary {
+    flex: 1; background: #0F0F0F; color: #fff;
+    font-size: 12px; font-weight: 700;
+    padding: 10px; border-radius: 10px; border: none; cursor: pointer;
+    text-align: center;
+  }
+  .kit-notif-secondary {
+    flex: 1; background: #F3F4F6; color: #374151;
+    font-size: 12px; font-weight: 600;
+    padding: 10px; border-radius: 10px; border: none; cursor: pointer;
+    text-align: center;
+  }
+  .kit-view-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+  .kit-view-item { display: flex; align-items: center; gap: 10px; }
+  .kit-view-logo {
+    width: 36px; height: 36px; border-radius: 10px;
+    background: #F3F4F6;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; flex-shrink: 0;
+  }
+  .kit-view-info { flex: 1; }
+  .kit-view-brand { font-size: 12px; font-weight: 700; color: #0F0F0F; }
+  .kit-view-time { font-size: 11px; color: #9CA3AF; }
+  .kit-view-locked {
+    font-size: 11px; font-weight: 700; color: #7C3AED;
+    background: #F5F3FF; padding: 4px 8px; border-radius: 6px;
+  }
+
+  /* Upgrade modal */
+  .upgrade-modal-bg {
+    background: rgba(0,0,0,0.5);
+    padding: 0;
+  }
+  .upgrade-modal {
+    background: #fff;
+    border-radius: 28px 28px 0 0;
+    padding: 24px 20px 32px;
+    margin-top: 100px;
+  }
+  .modal-handle { width: 36px; height: 4px; background: #E5E7EB; border-radius: 2px; margin: 0 auto 20px; }
+  .modal-eyebrow { font-size: 10px; font-weight: 800; color: #7C3AED; text-transform: uppercase; letter-spacing: 0.5px; text-align: center; margin-bottom: 8px; }
+  .modal-title { font-size: 22px; font-weight: 900; color: #0F0F0F; text-align: center; line-height: 1.2; margin-bottom: 6px; }
+  .modal-sub { font-size: 13px; color: #6B7280; text-align: center; margin-bottom: 20px; line-height: 1.4; }
+  .modal-proof { display: flex; gap: 10px; margin-bottom: 20px; }
+  .modal-proof-item {
+    flex: 1;
+    background: #F9FAFB;
+    border-radius: 14px;
+    padding: 12px;
+    text-align: center;
+  }
+  .modal-proof-val { font-size: 20px; font-weight: 900; color: #0F0F0F; }
+  .modal-proof-lbl { font-size: 10px; color: #9CA3AF; font-weight: 500; margin-top: 2px; }
+  .modal-features { display: flex; flex-direction: column; gap: 10px; margin-bottom: 24px; }
+  .modal-feat { display: flex; align-items: center; gap: 12px; padding: 12px; background: #F9FAFB; border-radius: 12px; }
+  .modal-feat-icon { font-size: 22px; flex-shrink: 0; }
+  .modal-feat-text { flex: 1; }
+  .modal-feat-title { font-size: 13px; font-weight: 700; color: #0F0F0F; }
+  .modal-feat-sub { font-size: 11.5px; color: #6B7280; margin-top: 1px; }
+  .modal-feat-new { font-size: 9px; font-weight: 800; background: #7C3AED; color: #fff; padding: 2px 6px; border-radius: 4px; margin-left: 6px; vertical-align: middle; }
+  .modal-cta {
+    background: #0F0F0F; color: #fff;
+    font-size: 16px; font-weight: 800;
+    padding: 16px; border-radius: 14px;
+    border: none; width: 100%; cursor: pointer;
+    margin-bottom: 8px;
+  }
+  .modal-price { text-align: center; font-size: 12px; color: #9CA3AF; }
+  .modal-price strong { color: #0F0F0F; }
+
+  /* Bottom bar */
+  .bottom-bar {
+    background: #fff;
+    border-top: 1px solid #F3F4F6;
+    display: flex;
+    padding: 8px 0 20px;
+  }
+  .bottom-tab {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #9CA3AF;
+    padding: 6px 0;
+    position: relative;
+  }
+  .bottom-tab.active { color: #0F0F0F; }
+  .bottom-tab-icon { font-size: 20px; }
+  .bottom-badge {
+    position: absolute; top: 2px; right: calc(50% - 18px);
+    background: #E11D48; color: #fff;
+    font-size: 9px; font-weight: 800;
+    width: 16px; height: 16px;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .bottom-new {
+    position: absolute; top: 2px; right: calc(50% - 22px);
+    background: #7C3AED; color: #fff;
+    font-size: 8px; font-weight: 800;
+    padding: 1px 4px; border-radius: 3px;
+  }
+
+  /* Dividers between screens */
+  .screen-divider { height: 1px; background: transparent; margin: 8px 0; }
+
+  /* Annotation labels */
+  .annotation-wrap { text-align: center; margin-bottom: 6px; }
+  .annotation-label {
+    display: inline-block;
+    background: #0F0F0F; color: #fff;
+    font-size: 11px; font-weight: 700;
+    padding: 4px 12px; border-radius: 20px;
+    margin-bottom: 4px;
+  }
+  .annotation-desc { font-size: 12px; color: #6B7280; max-width: 340px; margin: 0 auto; }
+
+  /* Section label */
+  .section-label {
+    font-size: 10px; font-weight: 800; color: #9CA3AF;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    padding: 10px 16px 0;
+  }
+
+  /* Spacer */
+  .spacer { height: 12px; }
+</style>
+</head>
+<body>
+
+<p class="page-title">Conversion Redesign</p>
+<p class="page-sub">From passive browser to paid subscriber</p>
+<p class="page-desc">Three screens that close the value gap. Each one designed to create urgency before the paywall.</p>
+
+<div class="row">
+
+  <!-- SCREEN 1: For You tab -->
+  <div>
+    <div class="annotation-wrap">
+      <div class="annotation-label">Screen 1 — "For You" tab</div>
+      <p class="annotation-desc">Pull-based paywall. Creator sees matched brands but can't pitch without Pro. Curiosity does the selling.</p>
+    </div>
+
+    <div class="phone">
+      <div class="phone-notch"></div>
+      <div class="phone-screen">
+
+        <div class="nav">
+          <div class="nav-logo">N NEWCOLLAB</div>
+          <div class="nav-right">
+            <div class="nav-bell">🔔<div class="nav-bell-dot"></div></div>
+            <div class="nav-avatar">M</div>
+          </div>
+        </div>
+
+        <div class="tabs">
+          <div class="tab">🔍 Discover</div>
+          <div class="tab">🔖 Saved <span class="tab-badge">16</span></div>
+          <div class="tab active">✨ For You</div>
+          <div class="tab">📄 My Kit <span class="tab-new">NEW</span></div>
+        </div>
+
+        <!-- For You header -->
+        <div class="for-you-header">
+          <div class="for-you-eyebrow">Personalized for you</div>
+          <div class="for-you-title">14 brands match your profile</div>
+          <div class="for-you-sub">Based on your niche, follower count, and location</div>
+          <div class="for-you-meta">
+            <div class="for-you-tag">Fitness · Beauty</div>
+            <div class="for-you-tag">10K–25K</div>
+            <div class="for-you-tag">US</div>
+          </div>
+        </div>
+
+        <div class="section-hd" style="padding-top:14px;">
+          <div class="section-hd-title">🔓 You can pitch (2 left)</div>
+          <div class="section-hd-sub">Free tier</div>
+        </div>
+
+        <!-- Accessible match card 1 -->
+        <div class="match-card">
+          <div class="match-logo">🌿</div>
+          <div class="match-info">
+            <div class="match-name">Kopari Beauty</div>
+            <div class="match-meta">Skincare · 61% reply rate · ~$65 value</div>
+          </div>
+          <div class="match-score">
+            <div>94%</div>
+            <div class="match-score-label">match</div>
+          </div>
+        </div>
+
+        <!-- Accessible match card 2 -->
+        <div class="match-card" style="margin-top:8px;">
+          <div class="match-logo">💪</div>
+          <div class="match-info">
+            <div class="match-name">Momentous</div>
+            <div class="match-meta">Wellness · 48% reply rate · ~$80 value</div>
+          </div>
+          <div class="match-score">
+            <div>88%</div>
+            <div class="match-score-label">match</div>
+          </div>
+        </div>
+
+        <div class="section-hd" style="padding-top:16px;">
+          <div class="section-hd-title">🔒 Pro matches (12 brands)</div>
+          <div class="section-hd-sub">Upgrade to unlock</div>
+        </div>
+
+        <!-- Locked match cards -->
+        <div class="match-card-locked">
+          <div class="match-logo-locked">🛁</div>
+          <div class="match-info-locked">
+            <div class="match-name-locked"></div>
+            <div class="match-meta-locked"></div>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+            <div class="visible-stat">🔥 71% reply rate</div>
+            <div class="match-lock-icon">🔒</div>
+          </div>
+        </div>
+
+        <div class="match-card-locked" style="margin-top:8px;">
+          <div class="match-logo-locked">✨</div>
+          <div class="match-info-locked">
+            <div class="match-name-locked"></div>
+            <div class="match-meta-locked"></div>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+            <div class="visible-stat">💸 ~$120 value</div>
+            <div class="match-lock-icon">🔒</div>
+          </div>
+        </div>
+
+        <div class="match-card-locked" style="margin-top:8px;">
+          <div class="match-logo-locked">🌸</div>
+          <div class="match-info-locked">
+            <div class="match-name-locked"></div>
+            <div class="match-meta-locked"></div>
+          </div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+            <div class="visible-stat">✓ Replied last week</div>
+            <div class="match-lock-icon">🔒</div>
+          </div>
+        </div>
+
+        <!-- Unlock CTA -->
+        <div class="unlock-row">
+          <div class="unlock-text">
+            <div class="unlock-title">Unlock 12 matched brands</div>
+            <div class="unlock-sub">Brands ready to work with creators your size</div>
+          </div>
+          <button class="unlock-btn">$12/mo →</button>
+        </div>
+
+        <div class="bottom-bar">
+          <div class="bottom-tab">
+            <div class="bottom-tab-icon">🔍</div>
+            Discover
+          </div>
+          <div class="bottom-tab">
+            <div class="bottom-tab-icon">🔖</div>
+            Saved
+            <div class="bottom-badge">16</div>
+          </div>
+          <div class="bottom-tab active">
+            <div class="bottom-tab-icon">✨</div>
+            For You
+          </div>
+          <div class="bottom-tab">
+            <div class="bottom-tab-icon">📄</div>
+            My Kit
+            <div class="bottom-new">NEW</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- SCREEN 2: Kit view notification -->
+  <div>
+    <div class="annotation-wrap">
+      <div class="annotation-label">Screen 2 — Kit view notification</div>
+      <p class="annotation-desc">"A brand viewed your kit" is the most powerful trigger. Urgency without any pushy copy.</p>
+    </div>
+
+    <div class="phone">
+      <div class="phone-notch"></div>
+      <div class="phone-screen">
+
+        <div class="nav">
+          <div class="nav-logo">N NEWCOLLAB</div>
+          <div class="nav-right">
+            <div class="nav-bell">🔔<div class="nav-bell-dot"></div></div>
+            <div class="nav-avatar">M</div>
+          </div>
+        </div>
+
+        <div class="tabs">
+          <div class="tab">🔍 Discover</div>
+          <div class="tab">🔖 Saved <span class="tab-badge">16</span></div>
+          <div class="tab">✨ For You</div>
+          <div class="tab active">📄 My Kit <span class="tab-new">NEW</span></div>
+        </div>
+
+        <div class="spacer"></div>
+
+        <!-- Kit view notification -->
+        <div class="kit-notif">
+          <div class="kit-notif-top">
+            <div class="kit-notif-dot"></div>
+            <div class="kit-notif-label">Live · Just now</div>
+          </div>
+          <div class="kit-notif-body">3 brands viewed your media kit this week</div>
+          <div class="kit-notif-sub">Upgrade to see who viewed and reach out while you're top of mind.</div>
+          <div class="kit-view-list">
+            <div class="kit-view-item">
+              <div class="kit-view-logo">🛁</div>
+              <div class="kit-view-info">
+                <div class="kit-view-brand">Viewed 2 hours ago</div>
+                <div class="kit-view-time">Fitness & Wellness brand · US</div>
+              </div>
+              <div class="kit-view-locked">See who →</div>
+            </div>
+            <div class="kit-view-item">
+              <div class="kit-view-logo">💄</div>
+              <div class="kit-view-info">
+                <div class="kit-view-brand">Viewed yesterday</div>
+                <div class="kit-view-time">Beauty brand · US</div>
+              </div>
+              <div class="kit-view-locked">See who →</div>
+            </div>
+            <div class="kit-view-item">
+              <div class="kit-view-logo">🌿</div>
+              <div class="kit-view-info">
+                <div class="kit-view-brand">Viewed 3 days ago</div>
+                <div class="kit-view-time">Skincare brand · US</div>
+              </div>
+              <div class="kit-view-locked">See who →</div>
+            </div>
+          </div>
+          <div class="kit-notif-actions">
+            <button class="kit-notif-primary">Unlock viewer names — $12/mo</button>
+          </div>
+        </div>
+
+        <div class="spacer"></div>
+
+        <!-- My Kit preview -->
+        <div class="section-hd">
+          <div class="section-hd-title">Your media kit</div>
+          <div class="section-hd-link">Edit →</div>
+        </div>
+
+        <div style="margin: 0 16px; background:#fff; border-radius:16px; padding:16px; box-shadow:0 1px 4px rgba(0,0,0,0.06);">
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+            <div style="width:48px;height:48px;border-radius:50%;background:linear-gradient(135deg,#7C3AED,#E11D48);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:16px;">M</div>
+            <div>
+              <div style="font-size:14px;font-weight:800;color:#0F0F0F;">mahery</div>
+              <div style="font-size:11.5px;color:#6B7280;">newcollab.co/kit/mahery</div>
+            </div>
+            <div style="margin-left:auto;background:#D1FAE5;color:#065F46;font-size:10px;font-weight:700;padding:4px 10px;border-radius:20px;">Published</div>
+          </div>
+          <div style="display:flex;gap:10px;margin-bottom:14px;">
+            <div style="flex:1;background:#F9FAFB;border-radius:12px;padding:12px;text-align:center;">
+              <div style="font-size:20px;font-weight:900;color:#0F0F0F;">15.2K</div>
+              <div style="font-size:10px;color:#9CA3AF;margin-top:2px;">Followers</div>
+            </div>
+            <div style="flex:1;background:#F9FAFB;border-radius:12px;padding:12px;text-align:center;">
+              <div style="font-size:20px;font-weight:900;color:#059669;">4.8%</div>
+              <div style="font-size:10px;color:#9CA3AF;margin-top:2px;">Engagement</div>
+            </div>
+            <div style="flex:1;background:#F9FAFB;border-radius:12px;padding:12px;text-align:center;">
+              <div style="font-size:20px;font-weight:900;color:#7C3AED;">12</div>
+              <div style="font-size:10px;color:#9CA3AF;margin-top:2px;">Kit views</div>
+            </div>
+          </div>
+          <div style="background:linear-gradient(135deg,#F5F3FF,#FDF2F8);border:1px solid #DDD6FE;border-radius:10px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;">
+            <div>
+              <div style="font-size:12px;font-weight:700;color:#7C3AED;">Pro kit unlocks</div>
+              <div style="font-size:11px;color:#6B7280;">Audience demographics · PDF export · Custom theme</div>
+            </div>
+            <div style="font-size:18px;">🔒</div>
+          </div>
+        </div>
+
+        <div class="spacer"></div>
+        <div class="spacer"></div>
+
+        <div class="bottom-bar">
+          <div class="bottom-tab">
+            <div class="bottom-tab-icon">🔍</div>
+            Discover
+          </div>
+          <div class="bottom-tab">
+            <div class="bottom-tab-icon">🔖</div>
+            Saved
+            <div class="bottom-badge">16</div>
+          </div>
+          <div class="bottom-tab">
+            <div class="bottom-tab-icon">✨</div>
+            For You
+          </div>
+          <div class="bottom-tab active">
+            <div class="bottom-tab-icon">📄</div>
+            My Kit
+            <div class="bottom-new">NEW</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- SCREEN 3: Upgrade modal -->
+  <div>
+    <div class="annotation-wrap">
+      <div class="annotation-label">Screen 3 — Upgrade modal</div>
+      <p class="annotation-desc">Proof before the ask. Shows what they already missed, then reveals what Pro gives them.</p>
+    </div>
+
+    <div class="phone">
+      <div class="phone-notch"></div>
+      <div class="phone-screen upgrade-modal-bg" style="background:#FAFAF9;">
+
+        <!-- Blurred background -->
+        <div style="padding:16px;filter:blur(3px);pointer-events:none;">
+          <div style="background:#fff;border-radius:14px;padding:14px;margin-bottom:10px;opacity:0.6;">
+            <div style="height:12px;background:#E5E7EB;border-radius:6px;width:60%;margin-bottom:8px;"></div>
+            <div style="height:10px;background:#F3F4F6;border-radius:5px;width:80%;"></div>
+          </div>
+          <div style="background:#fff;border-radius:14px;padding:14px;opacity:0.4;">
+            <div style="height:12px;background:#E5E7EB;border-radius:6px;width:50%;margin-bottom:8px;"></div>
+            <div style="height:10px;background:#F3F4F6;border-radius:5px;width:70%;"></div>
+          </div>
+        </div>
+
+        <!-- Modal sheet -->
+        <div class="upgrade-modal" style="position:relative;z-index:10;margin-top:-20px;">
+          <div class="modal-handle"></div>
+          <div class="modal-eyebrow">Newcollab Pro</div>
+          <div class="modal-title">You're getting noticed. Don't miss it.</div>
+          <div class="modal-sub">3 brands viewed your kit this week. 12 brands match your profile. Pro lets you act on all of it.</div>
+
+          <div class="modal-proof">
+            <div class="modal-proof-item">
+              <div class="modal-proof-val">3</div>
+              <div class="modal-proof-lbl">Kit views<br>this week</div>
+            </div>
+            <div class="modal-proof-item">
+              <div class="modal-proof-val">12</div>
+              <div class="modal-proof-lbl">Matched brands<br>waiting</div>
+            </div>
+            <div class="modal-proof-item">
+              <div class="modal-proof-val" style="color:#E11D48;">∞</div>
+              <div class="modal-proof-lbl">Monthly<br>pitches</div>
+            </div>
+          </div>
+
+          <div class="modal-features">
+            <div class="modal-feat">
+              <div class="modal-feat-icon">👁</div>
+              <div class="modal-feat-text">
+                <div class="modal-feat-title">See who viewed your kit <span class="modal-feat-new">NEW</span></div>
+                <div class="modal-feat-sub">Reach out while you're top of mind</div>
+              </div>
+            </div>
+            <div class="modal-feat">
+              <div class="modal-feat-icon">✨</div>
+              <div class="modal-feat-text">
+                <div class="modal-feat-title">Unlock your 12 matched brands</div>
+                <div class="modal-feat-sub">Brands that reply to creators your size</div>
+              </div>
+            </div>
+            <div class="modal-feat">
+              <div class="modal-feat-icon">📧</div>
+              <div class="modal-feat-text">
+                <div class="modal-feat-title">Unlimited pitches per month</div>
+                <div class="modal-feat-sub">AI-drafted, personalized for each brand</div>
+              </div>
+            </div>
+            <div class="modal-feat">
+              <div class="modal-feat-icon">📊</div>
+              <div class="modal-feat-text">
+                <div class="modal-feat-title">Full media kit with audience data</div>
+                <div class="modal-feat-sub">Demographics, PDF export, custom theme</div>
+              </div>
+            </div>
+          </div>
+
+          <button class="modal-cta">Unlock Pro — $12/month</button>
+          <div class="modal-price">Cancel anytime. <strong>No commitment.</strong> First month gets you back your first brand deal.</div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Strategy note -->
+<div style="max-width:780px;margin:0 auto 60px;background:#fff;border-radius:20px;padding:28px 32px;box-shadow:0 2px 12px rgba(0,0,0,0.06);">
+  <div style="font-size:11px;font-weight:800;color:#E11D48;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px;">Conversion logic</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;">
+    <div>
+      <div style="font-size:13px;font-weight:800;color:#0F0F0F;margin-bottom:6px;">Old model</div>
+      <div style="font-size:12px;color:#6B7280;line-height:1.6;">You've used 3 pitches. Pay to send more.<br><br>Value not yet proven. Creator has no reason to pay.</div>
+    </div>
+    <div>
+      <div style="font-size:13px;font-weight:800;color:#0F0F0F;margin-bottom:6px;">New model</div>
+      <div style="font-size:12px;color:#6B7280;line-height:1.6;">You have 12 matched brands you can see but not pitch. 3 brands already viewed your kit. Unlock them.<br><br>Pull-based. Creator wants what's locked.</div>
+    </div>
+    <div>
+      <div style="font-size:13px;font-weight:800;color:#0F0F0F;margin-bottom:6px;">Key triggers</div>
+      <div style="font-size:12px;color:#6B7280;line-height:1.6;">1. Kit view notification (urgency)<br>2. Locked matched brands (curiosity)<br>3. Visible reply rates on locked cards (FOMO)<br>4. Modal shows proof before ask</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

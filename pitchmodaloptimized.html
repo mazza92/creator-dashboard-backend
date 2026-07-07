@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pitch Modal — Optimized</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #F0F0EE;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
+    padding: 40px 20px 60px;
+  }
+
+  .page-header { text-align: center; margin-bottom: 48px; }
+  .page-title { font-size: 22px; font-weight: 900; color: #111; margin-bottom: 6px; }
+  .page-sub { font-size: 14px; color: #6B7280; }
+
+  .row { display: flex; gap: 40px; justify-content: center; align-items: flex-start; flex-wrap: wrap; }
+
+  .col { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .col-label {
+    display: inline-block;
+    background: #0F0F0F; color: #fff;
+    font-size: 11px; font-weight: 700;
+    padding: 5px 14px; border-radius: 20px;
+  }
+  .col-desc { font-size: 12px; color: #6B7280; text-align: center; max-width: 360px; }
+
+  /* Phone shell */
+  .phone {
+    width: 390px;
+    background: #FAFAF9;
+    border-radius: 44px;
+    box-shadow: 0 32px 80px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.06);
+    overflow: hidden;
+  }
+  .notch {
+    background: #0F0F0F;
+    height: 44px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .notch::after {
+    content: '';
+    width: 120px; height: 28px;
+    background: #0F0F0F;
+    border-radius: 0 0 20px 20px;
+    border: 2px solid #2a2a2a; border-top: none;
+  }
+
+  /* Background content (blurred) */
+  .bg-content {
+    padding: 16px;
+    filter: blur(3px);
+    pointer-events: none;
+    background: #FAFAF9;
+  }
+  .bg-card {
+    background: #fff; border-radius: 16px; padding: 14px; margin-bottom: 10px;
+    height: 70px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .bg-logo { width: 40px; height: 40px; border-radius: 12px; background: #F3F4F6; flex-shrink: 0; }
+  .bg-lines { flex: 1; }
+  .bg-line { height: 10px; background: #E5E7EB; border-radius: 5px; margin-bottom: 7px; }
+  .bg-line:last-child { width: 60%; margin-bottom: 0; }
+
+  /* Modal sheet */
+  .modal {
+    background: #fff;
+    border-radius: 28px 28px 0 0;
+    position: relative;
+    z-index: 10;
+    margin-top: -16px;
+  }
+  .modal-handle {
+    width: 36px; height: 4px;
+    background: #E5E7EB;
+    border-radius: 2px;
+    margin: 12px auto 0;
+  }
+
+  /* Modal header */
+  .modal-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 18px 12px;
+    border-bottom: 1px solid #F3F4F6;
+  }
+  .brand-logo-wrap {
+    width: 44px; height: 44px;
+    border-radius: 13px;
+    background: linear-gradient(135deg, #5B21B6, #7C3AED);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 900; color: #fff; font-size: 14px;
+    flex-shrink: 0;
+  }
+  .modal-brand-info { flex: 1; }
+  .modal-brand-name { font-size: 15px; font-weight: 800; color: #0F0F0F; }
+  .modal-brand-meta { font-size: 11.5px; color: #6B7280; margin-top: 1px; display: flex; align-items: center; gap: 6px; }
+  .match-chip {
+    background: #D1FAE5; color: #065F46;
+    font-size: 10px; font-weight: 700;
+    padding: 2px 8px; border-radius: 10px;
+  }
+  .close-btn {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: #F3F4F6;
+    border: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; color: #6B7280;
+    flex-shrink: 0;
+  }
+
+  /* Tab switcher — email vs form */
+  .flow-tabs {
+    display: flex;
+    margin: 12px 18px;
+    background: #F3F4F6;
+    border-radius: 12px;
+    padding: 3px;
+    gap: 2px;
+  }
+  .flow-tab {
+    flex: 1;
+    padding: 8px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 700;
+    text-align: center;
+    cursor: pointer;
+    color: #6B7280;
+    border: none;
+    background: transparent;
+  }
+  .flow-tab.active {
+    background: #fff;
+    color: #0F0F0F;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  }
+
+  /* Email fields */
+  .email-fields {
+    margin: 0 18px;
+    border: 1.5px solid #E5E7EB;
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .email-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid #F3F4F6;
+  }
+  .email-field:last-child { border-bottom: none; }
+  .field-label {
+    font-size: 11.5px;
+    font-weight: 700;
+    color: #9CA3AF;
+    width: 52px;
+    flex-shrink: 0;
+  }
+  .field-value {
+    font-size: 12.5px;
+    color: #0F0F0F;
+    flex: 1;
+    font-weight: 500;
+  }
+  .field-value.subject { color: #374151; }
+  .edit-icon {
+    font-size: 12px;
+    color: #D1D5DB;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  /* Pitch body */
+  .pitch-body-wrap {
+    margin: 10px 18px 0;
+    border: 1.5px solid #E5E7EB;
+    border-radius: 14px;
+    overflow: hidden;
+    position: relative;
+  }
+  .pitch-body-label {
+    padding: 8px 12px 6px;
+    font-size: 10px;
+    font-weight: 700;
+    color: #9CA3AF;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    border-bottom: 1px solid #F9FAFB;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .edit-hint {
+    font-size: 10px;
+    font-weight: 600;
+    color: #C4B5FD;
+    background: #F5F3FF;
+    padding: 2px 8px;
+    border-radius: 6px;
+  }
+  .pitch-text {
+    padding: 10px 12px 12px;
+    font-size: 12.5px;
+    color: #374151;
+    line-height: 1.55;
+    max-height: 140px;
+    overflow-y: auto;
+  }
+  .pitch-text p { margin-bottom: 8px; }
+  .pitch-text p:last-child { margin-bottom: 0; }
+  .pitch-fade {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 32px;
+    background: linear-gradient(transparent, #fff);
+    pointer-events: none;
+  }
+
+  /* Personalization bar */
+  .pers-bar {
+    margin: 10px 18px 0;
+    background: #F0FDF4;
+    border: 1px solid #A7F3D0;
+    border-radius: 11px;
+    padding: 8px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .pers-label { font-size: 10px; font-weight: 700; color: #059669; white-space: nowrap; }
+  .pers-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+  .pers-tag {
+    font-size: 10.5px;
+    font-weight: 600;
+    color: #065F46;
+    background: #D1FAE5;
+    padding: 2px 8px;
+    border-radius: 8px;
+    display: flex; align-items: center; gap: 3px;
+  }
+
+  /* Regenerate row */
+  .regen-row {
+    margin: 8px 18px 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .quota-indicator {
+    font-size: 11px;
+    color: #9CA3AF;
+    font-weight: 500;
+  }
+  .quota-indicator strong { color: #374151; }
+  .regen-btn {
+    font-size: 11.5px;
+    font-weight: 700;
+    color: #7C3AED;
+    background: #F5F3FF;
+    border: none;
+    padding: 5px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex; align-items: center; gap: 5px;
+  }
+
+  /* Primary CTA */
+  .cta-wrap { padding: 12px 18px 6px; }
+  .cta-primary {
+    width: 100%;
+    background: #0F0F0F;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 800;
+    padding: 15px;
+    border-radius: 14px;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+  .cta-secondary-row {
+    display: flex;
+    gap: 8px;
+    padding: 6px 18px 0;
+  }
+  .cta-secondary {
+    flex: 1;
+    background: #F9FAFB;
+    color: #374151;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 10px;
+    border-radius: 11px;
+    border: 1.5px solid #E5E7EB;
+    cursor: pointer;
+    text-align: center;
+  }
+
+  /* Media kit nudge — post CTA */
+  .kit-nudge {
+    margin: 10px 18px 18px;
+    background: linear-gradient(135deg, #F5F3FF, #FDF2F8);
+    border: 1px solid #DDD6FE;
+    border-radius: 13px;
+    padding: 11px 13px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .kit-nudge-icon {
+    font-size: 20px;
+    flex-shrink: 0;
+  }
+  .kit-nudge-text { flex: 1; }
+  .kit-nudge-title { font-size: 12px; font-weight: 700; color: #0F0F0F; }
+  .kit-nudge-sub { font-size: 10.5px; color: #6B7280; margin-top: 1px; }
+  .kit-nudge-btn {
+    background: #7C3AED; color: #fff;
+    font-size: 11px; font-weight: 700;
+    padding: 6px 11px; border-radius: 8px;
+    border: none; cursor: pointer;
+    white-space: nowrap; flex-shrink: 0;
+  }
+
+  /* ─── SUCCESS STATE ─────────────────────────────────────── */
+  .success-modal {
+    background: #fff;
+    border-radius: 28px 28px 0 0;
+    position: relative;
+    z-index: 10;
+    margin-top: -16px;
+    padding-bottom: 32px;
+  }
+
+  .success-hero {
+    padding: 32px 20px 20px;
+    text-align: center;
+  }
+  .success-emoji { font-size: 52px; margin-bottom: 12px; display: block; }
+  .success-title { font-size: 20px; font-weight: 900; color: #0F0F0F; margin-bottom: 6px; }
+  .success-sub { font-size: 13px; color: #6B7280; line-height: 1.5; }
+
+  .success-pipeline-card {
+    margin: 0 18px 14px;
+    background: #F0FDF4;
+    border: 1.5px solid #A7F3D0;
+    border-radius: 16px;
+    padding: 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .pipeline-brand-logo {
+    width: 44px; height: 44px;
+    border-radius: 13px;
+    background: linear-gradient(135deg, #5B21B6, #7C3AED);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 900; color: #fff; font-size: 14px;
+    flex-shrink: 0;
+  }
+  .pipeline-info { flex: 1; }
+  .pipeline-brand { font-size: 13px; font-weight: 800; color: #0F0F0F; }
+  .pipeline-meta { font-size: 11.5px; color: #059669; margin-top: 2px; font-weight: 600; }
+  .pipeline-window {
+    background: #D1FAE5;
+    border-radius: 10px;
+    padding: 6px 10px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+  .window-days { font-size: 18px; font-weight: 900; color: #059669; }
+  .window-label { font-size: 9px; color: #065F46; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; margin-top: 1px; }
+
+  .success-tips {
+    margin: 0 18px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .tip-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    background: #F9FAFB;
+    border-radius: 12px;
+    padding: 11px 12px;
+  }
+  .tip-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+  .tip-text { font-size: 12px; color: #374151; line-height: 1.45; }
+  .tip-text strong { color: #0F0F0F; }
+
+  .success-kit-nudge {
+    margin: 0 18px 14px;
+    background: linear-gradient(135deg, #0F0F0F, #1F1F1F);
+    border-radius: 16px;
+    padding: 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .success-kit-text { flex: 1; }
+  .success-kit-title { font-size: 13px; font-weight: 800; color: #fff; margin-bottom: 3px; }
+  .success-kit-sub { font-size: 11px; color: #9CA3AF; }
+  .success-kit-btn {
+    background: #fff; color: #0F0F0F;
+    font-size: 12px; font-weight: 800;
+    padding: 9px 14px; border-radius: 10px;
+    border: none; cursor: pointer;
+    white-space: nowrap; flex-shrink: 0;
+  }
+
+  .success-next {
+    padding: 0 18px;
+  }
+  .next-btn {
+    width: 100%;
+    background: #0F0F0F; color: #fff;
+    font-size: 14px; font-weight: 800;
+    padding: 15px; border-radius: 14px;
+    border: none; cursor: pointer;
+    margin-bottom: 8px;
+  }
+  .next-secondary {
+    width: 100%;
+    background: transparent; color: #6B7280;
+    font-size: 12.5px; font-weight: 600;
+    padding: 10px;
+    border: none; cursor: pointer;
+    text-align: center;
+  }
+
+  /* ─── DIFF TABLE ────────────────────────────────────────── */
+  .diff-table {
+    max-width: 820px;
+    margin: 48px auto 0;
+    background: #fff;
+    border-radius: 20px;
+    overflow: hidden;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+  }
+  .diff-header {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    background: #0F0F0F;
+    padding: 14px 20px;
+  }
+  .diff-header div { font-size: 11px; font-weight: 800; color: rgba(255,255,255,0.6); text-transform: uppercase; letter-spacing: 0.4px; }
+  .diff-header div:first-child { color: rgba(255,255,255,0.4); }
+  .diff-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    padding: 12px 20px;
+    border-bottom: 1px solid #F3F4F6;
+    align-items: start;
+    gap: 12px;
+  }
+  .diff-row:last-child { border-bottom: none; }
+  .diff-element { font-size: 12px; font-weight: 700; color: #6B7280; }
+  .diff-before { font-size: 12px; color: #EF4444; line-height: 1.4; }
+  .diff-after { font-size: 12px; color: #059669; line-height: 1.4; }
+</style>
+</head>
+<body>
+
+<div class="page-header">
+  <div class="page-title">Pitch Modal — Optimized</div>
+  <div class="page-sub">Every friction point removed. From "AI-generated email" to "sent with confidence."</div>
+</div>
+
+<div class="row">
+
+  <!-- MODAL: Compose state -->
+  <div class="col">
+    <div class="col-label">Compose state</div>
+    <div class="col-desc">Correct niche, clear subject, editable fields, no anxiety triggers</div>
+
+    <div class="phone">
+      <div class="notch"></div>
+
+      <!-- Blurred bg -->
+      <div class="bg-content">
+        <div class="bg-card">
+          <div class="bg-logo"></div>
+          <div class="bg-lines"><div class="bg-line"></div><div class="bg-line"></div></div>
+        </div>
+        <div class="bg-card">
+          <div class="bg-logo"></div>
+          <div class="bg-lines"><div class="bg-line"></div><div class="bg-line"></div></div>
+        </div>
+      </div>
+
+      <!-- Modal -->
+      <div class="modal">
+        <div class="modal-handle"></div>
+
+        <div class="modal-header">
+          <div class="brand-logo-wrap">K</div>
+          <div class="modal-brand-info">
+            <div class="modal-brand-name">Kopari Beauty</div>
+            <div class="modal-brand-meta">
+              Skincare · US
+              <span class="match-chip">94% match</span>
+            </div>
+          </div>
+          <button class="close-btn">✕</button>
+        </div>
+
+        <!-- Email / Form switcher -->
+        <div class="flow-tabs">
+          <button class="flow-tab active">📧 Send email pitch</button>
+          <button class="flow-tab">📋 Application form</button>
+        </div>
+
+        <!-- Email fields -->
+        <div class="email-fields">
+          <div class="email-field">
+            <div class="field-label">To</div>
+            <div class="field-value">pr@koparibeauty.com</div>
+            <div class="edit-icon">✏</div>
+          </div>
+          <div class="email-field">
+            <div class="field-label">Subject</div>
+            <div class="field-value subject">Skincare Reel idea — 15.2K Wellness audience</div>
+            <div class="edit-icon">✏</div>
+          </div>
+        </div>
+
+        <!-- Pitch body -->
+        <div class="pitch-body-wrap">
+          <div class="pitch-body-label">
+            Your pitch
+            <span class="edit-hint">✏ Tap to edit</span>
+          </div>
+          <div class="pitch-text">
+            <p>Hi Kopari team,</p>
+            <p>I create wellness and fitness content for 15.2K Instagram followers — and skincare recovery content performs really well with my audience. Kopari's coconut body oil keeps coming up in my comments whenever I talk post-workout skin care routines.</p>
+            <p>I'm planning a skincare recovery series in July and would love to feature Kopari. Here's what I had in mind:</p>
+            <p>— A Reel showing my post-workout routine with your body oil<br>— I can send raw clips if your team wants to repurpose them</p>
+            <p>My profile: instagram.com/mahery</p>
+          </div>
+          <div class="pitch-fade"></div>
+        </div>
+
+        <!-- Personalization bar -->
+        <div class="pers-bar">
+          <div class="pers-label">✓ Written for your profile</div>
+          <div class="pers-tags">
+            <span class="pers-tag">📊 15.2K</span>
+            <span class="pers-tag">🎯 Wellness</span>
+            <span class="pers-tag">📱 Instagram</span>
+          </div>
+        </div>
+
+        <!-- Regen + quota row -->
+        <div class="regen-row">
+          <div class="quota-indicator">Contact <strong>2 of 3</strong> used</div>
+          <button class="regen-btn">↻ Rewrite pitch</button>
+        </div>
+
+        <!-- Primary CTA -->
+        <div class="cta-wrap">
+          <button class="cta-primary">📧 Open in email app · Use 1 contact</button>
+        </div>
+        <div class="cta-secondary-row">
+          <button class="cta-secondary">📋 Copy pitch</button>
+          <button class="cta-secondary">👁 Preview</button>
+        </div>
+
+        <!-- Kit nudge — subtle, below CTA -->
+        <div class="kit-nudge" style="margin-top:10px;">
+          <div class="kit-nudge-icon">📄</div>
+          <div class="kit-nudge-text">
+            <div class="kit-nudge-title">Attach your media kit</div>
+            <div class="kit-nudge-sub">Creators with media kits get 3× more replies</div>
+          </div>
+          <button class="kit-nudge-btn">Build kit</button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: Post-send success state -->
+  <div class="col">
+    <div class="col-label">Post-send state</div>
+    <div class="col-desc">Clear confirmation, pipeline context, media kit nudge at the right moment</div>
+
+    <div class="phone">
+      <div class="notch"></div>
+
+      <!-- Blurred bg -->
+      <div class="bg-content">
+        <div class="bg-card">
+          <div class="bg-logo"></div>
+          <div class="bg-lines"><div class="bg-line"></div><div class="bg-line"></div></div>
+        </div>
+      </div>
+
+      <!-- Success modal -->
+      <div class="success-modal">
+        <div class="modal-handle"></div>
+
+        <div class="success-hero">
+          <span class="success-emoji">🚀</span>
+          <div class="success-title">Pitch sent to Kopari!</div>
+          <div class="success-sub">Your pitch is in their inbox. Here's how to make the most of your response window.</div>
+        </div>
+
+        <!-- Pipeline card -->
+        <div class="success-pipeline-card">
+          <div class="pipeline-brand-logo">K</div>
+          <div class="pipeline-info">
+            <div class="pipeline-brand">Kopari Beauty</div>
+            <div class="pipeline-meta">✓ Added to your pipeline</div>
+          </div>
+          <div class="pipeline-window">
+            <div class="window-days">14</div>
+            <div class="window-label">day window</div>
+          </div>
+        </div>
+
+        <!-- Tips -->
+        <div class="success-tips">
+          <div class="tip-row">
+            <div class="tip-icon">📅</div>
+            <div class="tip-text"><strong>Follow-up reminder set.</strong> We'll remind you in 7 days if you haven't heard back — that's when reply rates peak.</div>
+          </div>
+          <div class="tip-row">
+            <div class="tip-icon">📊</div>
+            <div class="tip-text"><strong>Kopari replies to 61% of pitches.</strong> Creators who send a follow-up on day 7 are 2× more likely to get a response.</div>
+          </div>
+        </div>
+
+        <!-- Media kit nudge — best moment to show it -->
+        <div class="success-kit-nudge">
+          <div class="success-kit-text">
+            <div class="success-kit-title">Build your media kit before they reply</div>
+            <div class="success-kit-sub">Brands ask for it when they're interested. Be ready.</div>
+          </div>
+          <button class="success-kit-btn">Build kit →</button>
+        </div>
+
+        <!-- Next actions -->
+        <div class="success-next">
+          <button class="next-btn">✨ Pitch another brand</button>
+          <button class="next-secondary">View my pipeline →</button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Diff table -->
+<div class="diff-table">
+  <div class="diff-header">
+    <div>Element</div>
+    <div>Before</div>
+    <div>After</div>
+  </div>
+  <div class="diff-row">
+    <div class="diff-element">Pitch niche</div>
+    <div class="diff-before">Uses brand's niche ("I create baby content" for a fitness creator)</div>
+    <div class="diff-after">Uses creator's actual niche, bridges to brand use case</div>
+  </div>
+  <div class="diff-row">
+    <div class="diff-element">Subject line</div>
+    <div class="diff-before">"PR collab idea for 4moms" — generic, forgettable</div>
+    <div class="diff-after">"Skincare Reel idea — 15.2K Wellness audience" — specific signal</div>
+  </div>
+  <div class="diff-row">
+    <div class="diff-element">Email vs Form</div>
+    <div class="diff-before">Button says "Open Form" but modal shows an email — confusing</div>
+    <div class="diff-after">Tab switcher: creator chooses their flow before seeing the pitch</div>
+  </div>
+  <div class="diff-row">
+    <div class="diff-element">Quota counter</div>
+    <div class="diff-before">"2/3 contacts left" in the header — fear at the decision moment</div>
+    <div class="diff-after">Small "2 of 3 used" in the regen row — informational, not anxious</div>
+  </div>
+  <div class="diff-row">
+    <div class="diff-element">Regenerate</div>
+    <div class="diff-before">"Regenerate (3 left)" — double quota anxiety</div>
+    <div class="diff-after">"↻ Rewrite pitch" — no counter, feels generous</div>
+  </div>
+  <div class="diff-row">
+    <div class="diff-element">Edit pitch</div>
+    <div class="diff-before">No clear indication the body is editable</div>
+    <div class="diff-after">"✏ Tap to edit" label in the pitch header</div>
+  </div>
+  <div class="diff-row">
+    <div class="diff-element">Media kit nudge</div>
+    <div class="diff-before">Mid-modal, competing with two other tip banners</div>
+    <div class="diff-after">Once in compose (subtle), again post-send (high-intent moment)</div>
+  </div>
+  <div class="diff-row">
+    <div class="diff-element">Post-send state</div>
+    <div class="diff-before">Modal closes, user lands back on discover — no context</div>
+    <div class="diff-after">Success screen: pipeline confirmation, reply stats, 14-day window</div>
+  </div>
+  <div class="diff-row">
+    <div class="diff-element">Match score</div>
+    <div class="diff-before">Not shown — creator doesn't know why this brand was suggested</div>
+    <div class="diff-after">"94% match" chip in header — builds confidence before sending</div>
+  </div>
+</div>
+
+</body>
+</html>

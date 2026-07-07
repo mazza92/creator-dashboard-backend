@@ -1,0 +1,805 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Post an Opportunity — Newcollab for Brands</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --black: #0F0F0F;
+    --rose: #E11D48;
+    --violet: #7C3AED;
+    --green: #059669;
+    --bg: #F4F4F3;
+    --white: #ffffff;
+    --border: #e5e7eb;
+    --muted: #6b7280;
+    --text: #374151;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--black);
+    min-height: 100vh;
+  }
+
+  /* TOPBAR */
+  .topbar {
+    background: var(--black);
+    padding: 0 28px;
+    height: 52px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .topbar-logo {
+    font-size: 12px; font-weight: 900;
+    background: #fff; color: var(--black);
+    padding: 4px 8px; border-radius: 6px;
+    letter-spacing: .04em; text-transform: uppercase;
+  }
+  .topbar-label {
+    font-size: 12px; color: rgba(255,255,255,.5); font-weight: 500;
+  }
+  .topbar-link {
+    font-size: 12px; color: rgba(255,255,255,.5);
+    cursor: pointer; text-decoration: underline;
+  }
+
+  /* HERO */
+  .hero {
+    background: var(--black);
+    padding: 40px 28px 50px;
+    text-align: center;
+  }
+  .hero-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255,255,255,.08);
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 20px;
+    padding: 5px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    color: rgba(255,255,255,.7);
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    margin-bottom: 18px;
+  }
+  .hero-dot {
+    width: 6px; height: 6px; border-radius: 50%; background: #22c55e;
+    animation: pulse 1.5s infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(1.3)} }
+  .hero-title {
+    font-size: 32px; font-weight: 900;
+    color: #fff; letter-spacing: -.03em;
+    line-height: 1.15; margin-bottom: 14px;
+  }
+  .hero-title span { color: #a78bfa; }
+  .hero-sub {
+    font-size: 15px; color: rgba(255,255,255,.6);
+    line-height: 1.6; max-width: 480px; margin: 0 auto 28px;
+  }
+  .hero-stats {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 32px;
+  }
+  .hero-stat-val {
+    font-size: 22px; font-weight: 900; color: #fff; margin-bottom: 3px;
+  }
+  .hero-stat-lbl {
+    font-size: 11px; color: rgba(255,255,255,.5); font-weight: 500;
+  }
+  .hero-stat-divider {
+    width: 1px; height: 32px; background: rgba(255,255,255,.12);
+  }
+
+  /* FORM WRAPPER */
+  .form-wrapper {
+    max-width: 620px;
+    margin: -24px auto 0;
+    padding: 0 20px 60px;
+    position: relative;
+    z-index: 10;
+  }
+
+  /* PROGRESS */
+  .progress-card {
+    background: var(--white);
+    border-radius: 16px 16px 0 0;
+    padding: 18px 24px 0;
+    border: 1px solid var(--border);
+    border-bottom: none;
+  }
+  .progress-steps {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    margin-bottom: 0;
+  }
+  .progress-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+    flex: 1;
+    position: relative;
+  }
+  .progress-step:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    top: 13px;
+    left: calc(50% + 13px);
+    right: calc(-50% + 13px);
+    height: 2px;
+    background: var(--border);
+    z-index: 0;
+  }
+  .progress-step.done::after { background: var(--black); }
+  .step-num {
+    width: 26px; height: 26px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 800;
+    background: #f3f4f6; color: var(--muted);
+    border: 2px solid var(--border);
+    position: relative; z-index: 1;
+    transition: all .2s;
+  }
+  .progress-step.active .step-num {
+    background: var(--black); color: #fff; border-color: var(--black);
+  }
+  .progress-step.done .step-num {
+    background: var(--green); color: #fff; border-color: var(--green);
+  }
+  .step-label {
+    font-size: 10px; font-weight: 600; color: var(--muted);
+    text-align: center; white-space: nowrap;
+  }
+  .progress-step.active .step-label { color: var(--black); }
+  .progress-step.done .step-label { color: var(--green); }
+
+  /* FORM CARD */
+  .form-card {
+    background: var(--white);
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 16px 16px;
+    padding: 24px;
+  }
+
+  /* STEP DISPLAY/HIDE */
+  .step { display: none; }
+  .step.active { display: block; }
+
+  .step-title {
+    font-size: 17px; font-weight: 800;
+    color: var(--black); margin-bottom: 4px;
+  }
+  .step-sub {
+    font-size: 13px; color: var(--muted); margin-bottom: 22px; line-height: 1.5;
+  }
+
+  /* FIELDS */
+  .field { margin-bottom: 18px; }
+  .field-label {
+    display: block;
+    font-size: 12px; font-weight: 700;
+    color: var(--text); margin-bottom: 6px;
+  }
+  .field-label .optional {
+    font-weight: 500; color: var(--muted); margin-left: 4px;
+  }
+  input[type="text"],
+  input[type="email"],
+  input[type="url"],
+  input[type="number"],
+  select,
+  textarea {
+    width: 100%;
+    border: 1.5px solid var(--border);
+    border-radius: 10px;
+    padding: 11px 14px;
+    font-size: 14px;
+    font-family: inherit;
+    color: var(--black);
+    background: var(--white);
+    transition: border-color .15s;
+    outline: none;
+    appearance: none;
+  }
+  input:focus, select:focus, textarea:focus {
+    border-color: var(--black);
+  }
+  textarea { resize: none; line-height: 1.6; }
+  .field-hint {
+    font-size: 11px; color: var(--muted); margin-top: 5px;
+  }
+
+  /* SELECT GRID — for categories, platforms, regions */
+  .select-grid {
+    display: flex; flex-wrap: wrap; gap: 8px;
+  }
+  .select-option {
+    display: flex; align-items: center; gap: 6px;
+    border: 1.5px solid var(--border);
+    border-radius: 10px; padding: 8px 13px;
+    font-size: 13px; font-weight: 500;
+    color: var(--text); cursor: pointer;
+    transition: all .15s; user-select: none;
+    background: var(--white);
+  }
+  .select-option:hover { border-color: #9ca3af; }
+  .select-option.selected {
+    background: var(--black); color: #fff; border-color: var(--black);
+  }
+  .select-option input { display: none; }
+
+  /* VALUE DISPLAY */
+  .value-input-row {
+    display: flex; align-items: center;
+    border: 1.5px solid var(--border); border-radius: 10px; overflow: hidden;
+    background: var(--white); transition: border-color .15s;
+  }
+  .value-input-row:focus-within { border-color: var(--black); }
+  .value-prefix {
+    padding: 11px 12px; font-size: 14px; font-weight: 600;
+    background: #f9fafb; border-right: 1px solid var(--border); color: var(--muted);
+  }
+  .value-input-row input {
+    border: none; border-radius: 0; padding: 11px 14px;
+    flex: 1; font-size: 14px;
+  }
+  .value-input-row input:focus { border: none; }
+
+  /* RADIO CARDS — for creator count */
+  .radio-cards {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+  }
+  .radio-card {
+    border: 1.5px solid var(--border);
+    border-radius: 10px; padding: 12px;
+    text-align: center; cursor: pointer; transition: all .15s;
+    user-select: none;
+  }
+  .radio-card:hover { border-color: #9ca3af; }
+  .radio-card.selected { border-color: var(--black); background: #f9fafb; }
+  .radio-card input { display: none; }
+  .radio-card-val { font-size: 16px; font-weight: 800; color: var(--black); margin-bottom: 2px; }
+  .radio-card-lbl { font-size: 11px; color: var(--muted); }
+
+  /* FIELD ROW — two fields side by side */
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 500px) { .field-row { grid-template-columns: 1fr; } }
+
+  /* TRUST BAR */
+  .trust-bar {
+    display: flex; align-items: center; justify-content: center;
+    gap: 18px; padding: 14px 0;
+    border-top: 1px solid var(--border); margin-top: 4px;
+  }
+  .trust-item {
+    display: flex; align-items: center; gap: 5px;
+    font-size: 11px; color: var(--muted); font-weight: 500;
+  }
+  .trust-icon { font-size: 13px; }
+
+  /* NAV BUTTONS */
+  .form-nav {
+    display: flex; gap: 10px; margin-top: 22px;
+  }
+  .btn-back {
+    flex: 0 0 auto;
+    padding: 12px 18px;
+    border: 1.5px solid var(--border);
+    border-radius: 10px;
+    font-size: 14px; font-weight: 600;
+    color: var(--muted); background: var(--white);
+    cursor: pointer; transition: all .15s;
+  }
+  .btn-back:hover { border-color: var(--black); color: var(--black); }
+  .btn-next {
+    flex: 1;
+    padding: 13px;
+    background: var(--black); color: #fff;
+    border: none; border-radius: 10px;
+    font-size: 14px; font-weight: 700;
+    cursor: pointer; transition: opacity .15s;
+  }
+  .btn-next:hover { opacity: .85; }
+  .btn-submit {
+    flex: 1; padding: 13px;
+    background: var(--green); color: #fff;
+    border: none; border-radius: 10px;
+    font-size: 14px; font-weight: 700;
+    cursor: pointer; transition: opacity .15s;
+  }
+  .btn-submit:hover { opacity: .85; }
+
+  /* PREVIEW CARD — shows what their listing will look like */
+  .preview-block {
+    background: #f9fafb;
+    border: 1.5px dashed #d1d5db;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 18px;
+  }
+  .preview-label {
+    font-size: 10px; font-weight: 700; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .07em; margin-bottom: 10px;
+  }
+  .preview-brand-row {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+  }
+  .preview-logo {
+    width: 38px; height: 38px; border-radius: 10px;
+    background: #e0e7ff; display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 800; color: var(--violet); flex-shrink: 0;
+  }
+  .preview-brand-name { font-size: 14px; font-weight: 800; color: var(--black); }
+  .preview-brand-sub { font-size: 11px; color: var(--muted); }
+  .preview-desc { font-size: 12px; color: var(--text); line-height: 1.5; margin-bottom: 10px; }
+  .preview-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .preview-chip {
+    background: var(--white); border: 1px solid var(--border);
+    border-radius: 6px; padding: 3px 8px;
+    font-size: 10px; color: var(--text);
+  }
+
+  /* CONFIRMATION */
+  .confirm-screen { text-align: center; padding: 16px 0; }
+  .confirm-icon {
+    width: 60px; height: 60px; border-radius: 50%;
+    background: #d1fae5; display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 16px; font-size: 28px;
+  }
+  .confirm-title { font-size: 20px; font-weight: 900; margin-bottom: 6px; }
+  .confirm-sub { font-size: 14px; color: var(--muted); line-height: 1.6; margin-bottom: 22px; }
+  .confirm-steps { text-align: left; margin-bottom: 22px; }
+  .confirm-step {
+    display: flex; gap: 12px; padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .confirm-step:last-child { border-bottom: none; }
+  .confirm-step-num {
+    width: 24px; height: 24px; border-radius: 50%;
+    background: var(--black); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 800; flex-shrink: 0;
+  }
+  .confirm-step-text { flex: 1; }
+  .confirm-step-title { font-size: 13px; font-weight: 700; color: var(--black); margin-bottom: 2px; }
+  .confirm-step-sub { font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<!-- TOPBAR -->
+<div class="topbar">
+  <div class="topbar-logo">N Newcollab</div>
+  <div class="topbar-label">For brands</div>
+  <div class="topbar-link">Already have an account?</div>
+</div>
+
+<!-- HERO -->
+<div class="hero">
+  <div class="hero-eyebrow">
+    <div class="hero-dot"></div>
+    657 active creators on Newcollab
+  </div>
+  <div class="hero-title">
+    Get your product in front of<br>
+    <span>vetted micro-creators</span>
+  </div>
+  <div class="hero-sub">
+    Post your campaign for free. Creators apply with their media kit. You approve every creator before we share your shipping details.
+  </div>
+  <div class="hero-stats">
+    <div>
+      <div class="hero-stat-val">Free</div>
+      <div class="hero-stat-lbl">To post</div>
+    </div>
+    <div class="hero-stat-divider"></div>
+    <div>
+      <div class="hero-stat-val">24h</div>
+      <div class="hero-stat-lbl">Review time</div>
+    </div>
+    <div class="hero-stat-divider"></div>
+    <div>
+      <div class="hero-stat-val">40%+</div>
+      <div class="hero-stat-lbl">Avg creator reply rate</div>
+    </div>
+    <div class="hero-stat-divider"></div>
+    <div>
+      <div class="hero-stat-val">21 days</div>
+      <div class="hero-stat-lbl">Avg content delivery</div>
+    </div>
+  </div>
+</div>
+
+<!-- FORM -->
+<div class="form-wrapper">
+
+  <!-- PROGRESS -->
+  <div class="progress-card">
+    <div class="progress-steps">
+      <div class="progress-step active" id="ps-1">
+        <div class="step-num" id="sn-1">1</div>
+        <div class="step-label">Your brand</div>
+      </div>
+      <div class="progress-step" id="ps-2">
+        <div class="step-num" id="sn-2">2</div>
+        <div class="step-label">Campaign</div>
+      </div>
+      <div class="progress-step" id="ps-3">
+        <div class="step-num" id="sn-3">3</div>
+        <div class="step-label">Creators</div>
+      </div>
+      <div class="progress-step" id="ps-4">
+        <div class="step-num" id="sn-4">4</div>
+        <div class="step-label">Review</div>
+      </div>
+    </div>
+    <div style="height:18px;"></div>
+  </div>
+
+  <!-- FORM CARD -->
+  <div class="form-card">
+
+    <!-- STEP 1: YOUR BRAND -->
+    <div class="step active" id="step-1">
+      <div class="step-title">Tell us about your brand</div>
+      <div class="step-sub">We use this to match you with the right creators and verify your listing before it goes live.</div>
+
+      <div class="field">
+        <label class="field-label">Brand name</label>
+        <input type="text" placeholder="e.g. Aura Bora" id="brand-name" oninput="updatePreview()">
+      </div>
+
+      <div class="field">
+        <label class="field-label">Website</label>
+        <input type="url" placeholder="yourbrand.com" id="brand-website">
+        <div class="field-hint">We verify this to keep the platform trustworthy for creators.</div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">Your email</label>
+        <input type="email" placeholder="you@yourbrand.com" id="brand-email">
+        <div class="field-hint">For listing approval and creator applications. Not shown publicly.</div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">Category</label>
+        <div class="select-grid" id="category-grid">
+          <div class="select-option" onclick="selectOne(this,'category-grid')">Beauty</div>
+          <div class="select-option" onclick="selectOne(this,'category-grid')">Skincare</div>
+          <div class="select-option selected" onclick="selectOne(this,'category-grid')">Food &amp; Beverage</div>
+          <div class="select-option" onclick="selectOne(this,'category-grid')">Fitness</div>
+          <div class="select-option" onclick="selectOne(this,'category-grid')">Lifestyle</div>
+          <div class="select-option" onclick="selectOne(this,'category-grid')">Eco / Sustainable</div>
+          <div class="select-option" onclick="selectOne(this,'category-grid')">Tech</div>
+          <div class="select-option" onclick="selectOne(this,'category-grid')">Fashion</div>
+          <div class="select-option" onclick="selectOne(this,'category-grid')">Other</div>
+        </div>
+      </div>
+
+      <div class="trust-bar">
+        <div class="trust-item"><span class="trust-icon">🔒</span> Secure</div>
+        <div class="trust-item"><span class="trust-icon">✓</span> Reviewed within 24h</div>
+        <div class="trust-item"><span class="trust-icon">⭐</span> Free to post</div>
+      </div>
+
+      <div class="form-nav">
+        <button class="btn-next" onclick="goTo(2)">Continue &rsaquo;</button>
+      </div>
+    </div>
+
+    <!-- STEP 2: CAMPAIGN -->
+    <div class="step" id="step-2">
+      <div class="step-title">What are you sending?</div>
+      <div class="step-sub">Be specific. Creators decide whether to apply based on this description.</div>
+
+      <div class="field">
+        <label class="field-label">Product name</label>
+        <input type="text" placeholder="e.g. Cactus Rose Sparkling Water 12-pack" id="product-name" oninput="updatePreview()">
+      </div>
+
+      <div class="field">
+        <label class="field-label">What you want creators to do</label>
+        <textarea rows="4" placeholder="e.g. We're sending a 12-pack variety box ahead of our summer launch. We'd love an honest taste-test TikTok or Reel, no script, just your real reaction. Tag us and use #AuraBora." id="campaign-desc" oninput="updatePreview()"></textarea>
+        <div class="field-hint">2 to 4 sentences works best. Keep it conversational, not like a brief.</div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label class="field-label">Retail value of PR kit</label>
+          <div class="value-input-row">
+            <div class="value-prefix">$</div>
+            <input type="number" placeholder="48" id="pr-value" min="0">
+          </div>
+          <div class="field-hint">Approximate retail value of product you're sending.</div>
+        </div>
+        <div class="field">
+          <label class="field-label">Application deadline</label>
+          <input type="text" placeholder="e.g. June 20, 2026" id="deadline">
+          <div class="field-hint">When you want to stop receiving applications.</div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">How many creators are you looking for?</label>
+        <div class="radio-cards">
+          <div class="radio-card selected" onclick="selectRadio(this, 'count')">
+            <div class="radio-card-val">3 to 5</div>
+            <div class="radio-card-lbl">Small batch</div>
+          </div>
+          <div class="radio-card" onclick="selectRadio(this, 'count')">
+            <div class="radio-card-val">5 to 10</div>
+            <div class="radio-card-lbl">Standard</div>
+          </div>
+          <div class="radio-card" onclick="selectRadio(this, 'count')">
+            <div class="radio-card-val">10 to 20</div>
+            <div class="radio-card-lbl">Wide reach</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">Ships to</label>
+        <div class="select-grid" id="region-grid">
+          <div class="select-option selected" onclick="selectMulti(this)">🇺🇸 United States</div>
+          <div class="select-option" onclick="selectMulti(this)">🇬🇧 United Kingdom</div>
+          <div class="select-option" onclick="selectMulti(this)">🇦🇺 Australia</div>
+          <div class="select-option" onclick="selectMulti(this)">🇨🇦 Canada</div>
+          <div class="select-option" onclick="selectMulti(this)">🌍 Worldwide</div>
+        </div>
+      </div>
+
+      <div class="form-nav">
+        <button class="btn-back" onclick="goTo(1)">&lsaquo; Back</button>
+        <button class="btn-next" onclick="goTo(3)">Continue &rsaquo;</button>
+      </div>
+    </div>
+
+    <!-- STEP 3: CREATOR REQUIREMENTS -->
+    <div class="step" id="step-3">
+      <div class="step-title">Who are you looking for?</div>
+      <div class="step-sub">This helps us show your opportunity to the right creators. You still approve every applicant individually.</div>
+
+      <div class="field">
+        <label class="field-label">Follower range</label>
+        <div class="select-grid" id="followers-grid">
+          <div class="select-option" onclick="selectMulti(this)">Under 1K</div>
+          <div class="select-option selected" onclick="selectMulti(this)">1K to 10K</div>
+          <div class="select-option selected" onclick="selectMulti(this)">10K to 50K</div>
+          <div class="select-option" onclick="selectMulti(this)">50K to 100K</div>
+          <div class="select-option" onclick="selectMulti(this)">Any size</div>
+        </div>
+        <div class="field-hint">Select all that apply. Micro-creators (1K to 50K) tend to have higher engagement rates.</div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">Content type</label>
+        <div class="select-grid" id="content-grid">
+          <div class="select-option selected" onclick="selectMulti(this)">TikTok</div>
+          <div class="select-option selected" onclick="selectMulti(this)">Instagram Reel</div>
+          <div class="select-option" onclick="selectMulti(this)">YouTube</div>
+          <div class="select-option" onclick="selectMulti(this)">Instagram Stories</div>
+          <div class="select-option" onclick="selectMulti(this)">Blog post</div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">Creator niche <span class="optional">(optional, leave blank to match all)</span></label>
+        <div class="select-grid" id="niche-grid">
+          <div class="select-option" onclick="selectMulti(this)">Beauty</div>
+          <div class="select-option" onclick="selectMulti(this)">Skincare</div>
+          <div class="select-option selected" onclick="selectMulti(this)">Fitness</div>
+          <div class="select-option selected" onclick="selectMulti(this)">Wellness</div>
+          <div class="select-option" onclick="selectMulti(this)">Lifestyle</div>
+          <div class="select-option" onclick="selectMulti(this)">Food &amp; Drink</div>
+          <div class="select-option" onclick="selectMulti(this)">Fashion</div>
+          <div class="select-option" onclick="selectMulti(this)">Tech</div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">Anything else? <span class="optional">optional</span></label>
+        <textarea rows="2" placeholder="e.g. Creators based in NYC preferred. No dietary restrictions please. Must be 21+."></textarea>
+      </div>
+
+      <div class="form-nav">
+        <button class="btn-back" onclick="goTo(2)">&lsaquo; Back</button>
+        <button class="btn-next" onclick="goTo(4)">Review listing &rsaquo;</button>
+      </div>
+    </div>
+
+    <!-- STEP 4: REVIEW -->
+    <div class="step" id="step-4">
+      <div class="step-title">Review your listing</div>
+      <div class="step-sub">This is how creators will see your opportunity. Once submitted, our team reviews it within 24 hours before it goes live.</div>
+
+      <!-- LISTING PREVIEW -->
+      <div class="preview-block">
+        <div class="preview-label">Your listing preview</div>
+        <div class="preview-brand-row">
+          <div class="preview-logo" id="preview-logo">AB</div>
+          <div>
+            <div class="preview-brand-name" id="preview-name">Aura Bora</div>
+            <div class="preview-brand-sub">Food &amp; Beverage · Ships US</div>
+          </div>
+        </div>
+        <div class="preview-desc" id="preview-desc">
+          Seeding our new Cactus Rose sparkling water collection to micro-creators ahead of summer launch. Looking for honest taste-test content.
+        </div>
+        <div class="preview-chips">
+          <div class="preview-chip">1K to 30K followers</div>
+          <div class="preview-chip">TikTok or Reel</div>
+          <div class="preview-chip">US</div>
+          <div class="preview-chip">~$48 value</div>
+          <div class="preview-chip">5 to 10 creators</div>
+        </div>
+      </div>
+
+      <!-- SUMMARY -->
+      <div style="background:#f9fafb;border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:18px;">
+        <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px;">Summary</div>
+        <div style="display:flex;flex-direction:column;gap:7px;">
+          <div style="display:flex;justify-content:space-between;font-size:13px;">
+            <span style="color:var(--muted);">Brand</span>
+            <span style="font-weight:600;color:var(--black);" id="sum-brand">Aura Bora</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;">
+            <span style="color:var(--muted);">Product</span>
+            <span style="font-weight:600;color:var(--black);" id="sum-product">Cactus Rose 12-pack</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;">
+            <span style="color:var(--muted);">Creators</span>
+            <span style="font-weight:600;color:var(--black);">5 to 10</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;">
+            <span style="color:var(--muted);">PR value</span>
+            <span style="font-weight:600;color:var(--green);">~$48 per creator</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;">
+            <span style="color:var(--muted);">Cost to you</span>
+            <span style="font-weight:700;color:var(--black);">Free</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- WHAT HAPPENS NEXT -->
+      <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px;">What happens next</div>
+      <div style="display:flex;flex-direction:column;gap:0;border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:18px;">
+        <div style="display:flex;gap:12px;padding:12px 14px;border-bottom:1px solid var(--border);">
+          <div style="width:22px;height:22px;border-radius:50%;background:var(--black);color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;flex-shrink:0;">1</div>
+          <div><div style="font-size:13px;font-weight:700;margin-bottom:1px;">We review and publish within 24 hours</div><div style="font-size:12px;color:var(--muted);">We check the listing and notify you when it's live.</div></div>
+        </div>
+        <div style="display:flex;gap:12px;padding:12px 14px;border-bottom:1px solid var(--border);">
+          <div style="width:22px;height:22px;border-radius:50%;background:var(--black);color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;flex-shrink:0;">2</div>
+          <div><div style="font-size:13px;font-weight:700;margin-bottom:1px;">Creators apply with their media kit</div><div style="font-size:12px;color:var(--muted);">You receive each application by email and approve or decline.</div></div>
+        </div>
+        <div style="display:flex;gap:12px;padding:12px 14px;border-bottom:1px solid var(--border);">
+          <div style="width:22px;height:22px;border-radius:50%;background:var(--black);color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;flex-shrink:0;">3</div>
+          <div><div style="font-size:13px;font-weight:700;margin-bottom:1px;">We share shipping details with approved creators only</div><div style="font-size:12px;color:var(--muted);">Your address is never shared until you've approved the creator.</div></div>
+        </div>
+        <div style="display:flex;gap:12px;padding:12px 14px;">
+          <div style="width:22px;height:22px;border-radius:50%;background:var(--black);color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;flex-shrink:0;">4</div>
+          <div><div style="font-size:13px;font-weight:700;margin-bottom:1px;">Creators post content within the agreed window</div><div style="font-size:12px;color:var(--muted);">We track delivery and follow up on your behalf.</div></div>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:flex-start;gap:10px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:12px 14px;margin-bottom:18px;">
+        <span style="font-size:16px;flex-shrink:0;">🔒</span>
+        <div style="font-size:12px;color:#065f46;line-height:1.6;">Your shipping address and contact details are never shown publicly. Creators only receive them after you approve their application individually.</div>
+      </div>
+
+      <div class="form-nav">
+        <button class="btn-back" onclick="goTo(3)">&lsaquo; Back</button>
+        <button class="btn-submit" onclick="goTo(5)">Submit for review</button>
+      </div>
+    </div>
+
+    <!-- STEP 5: CONFIRMATION -->
+    <div class="step" id="step-5">
+      <div class="confirm-screen">
+        <div class="confirm-icon">✓</div>
+        <div class="confirm-title">Listing submitted</div>
+        <div class="confirm-sub">
+          We'll review your listing and send you a confirmation at your email within 24 hours. Once live, creators will be able to apply.
+        </div>
+
+        <div class="confirm-steps">
+          <div class="confirm-step">
+            <div class="confirm-step-num">1</div>
+            <div class="confirm-step-text">
+              <div class="confirm-step-title">Review (within 24 hours)</div>
+              <div class="confirm-step-sub">We verify your brand and listing details before publishing.</div>
+            </div>
+          </div>
+          <div class="confirm-step">
+            <div class="confirm-step-num">2</div>
+            <div class="confirm-step-text">
+              <div class="confirm-step-title">Goes live to 657 creators</div>
+              <div class="confirm-step-sub">Matched creators in your niche see your opportunity first.</div>
+            </div>
+          </div>
+          <div class="confirm-step">
+            <div class="confirm-step-num">3</div>
+            <div class="confirm-step-text">
+              <div class="confirm-step-title">Applications arrive in your inbox</div>
+              <div class="confirm-step-sub">Each one includes the creator's profile, follower count, and media kit.</div>
+            </div>
+          </div>
+        </div>
+
+        <div style="background:#f9fafb;border:1px solid var(--border);border-radius:10px;padding:14px;font-size:13px;color:var(--muted);line-height:1.6;text-align:left;">
+          Questions? Email us at <strong style="color:var(--black);">brands@newcollab.co</strong> and we'll get back to you within a few hours.
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /form-card -->
+</div><!-- /form-wrapper -->
+
+<script>
+  function goTo(step) {
+    // Hide all steps
+    document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+    document.getElementById('step-' + step).classList.add('active');
+
+    // Update progress indicators
+    for (let i = 1; i <= 4; i++) {
+      const ps = document.getElementById('ps-' + i);
+      const sn = document.getElementById('sn-' + i);
+      ps.classList.remove('active', 'done');
+      if (i < step) {
+        ps.classList.add('done');
+        sn.innerHTML = '✓';
+      } else if (i === step) {
+        ps.classList.add('active');
+        sn.innerHTML = i;
+      } else {
+        sn.innerHTML = i;
+      }
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function selectOne(el, gridId) {
+    document.querySelectorAll('#' + gridId + ' .select-option').forEach(o => o.classList.remove('selected'));
+    el.classList.add('selected');
+  }
+
+  function selectMulti(el) {
+    el.classList.toggle('selected');
+  }
+
+  function selectRadio(el, group) {
+    el.closest('.radio-cards').querySelectorAll('.radio-card').forEach(c => c.classList.remove('selected'));
+    el.classList.add('selected');
+  }
+
+  function updatePreview() {
+    const name = document.getElementById('brand-name').value || 'Your Brand';
+    const desc = document.getElementById('campaign-desc').value || 'Your product description will appear here.';
+    const initials = name.split(' ').map(w => w[0]).join('').toUpperCase().substring(0, 2) || 'B';
+
+    if (document.getElementById('preview-name')) {
+      document.getElementById('preview-name').textContent = name;
+      document.getElementById('preview-logo').textContent = initials;
+      document.getElementById('preview-desc').textContent = desc.substring(0, 100) + (desc.length > 100 ? '...' : '');
+      document.getElementById('sum-brand').textContent = name;
+    }
+    const product = document.getElementById('product-name');
+    if (product && document.getElementById('sum-product')) {
+      document.getElementById('sum-product').textContent = product.value || 'Your product';
+    }
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NewCollab — Signup</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --rose:   #E11D48;
+  --black:  #0F0F0F;
+  --violet: #7C3AED;
+  --green:  #059669;
+  --amber:  #D97706;
+  --border: #EBEBEB;
+  --text:   #0F0F0F;
+  --text2:  #5A5A5A;
+  --text3:  #A0A0A0;
+}
+
+html, body { min-height: 100%; }
+body {
+  font-family: 'Inter', sans-serif;
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  /* Warm lifestyle gradient — subtle, not garish */
+  background:
+    radial-gradient(ellipse at 15% 10%, rgba(225,29,72,.10) 0%, transparent 50%),
+    radial-gradient(ellipse at 85% 90%, rgba(124,58,237,.08) 0%, transparent 45%),
+    radial-gradient(ellipse at 75% 5%, rgba(251,146,60,.08) 0%, transparent 40%),
+    #FBF8F6;
+  min-height: 100vh;
+}
+
+/* ── SCREEN SWITCHER ──────────────────────────────────────── */
+.screen { display: none; min-height: 100vh; }
+.screen.active { display: flex; flex-direction: column; align-items: center; }
+
+/* ── TOP BAR ──────────────────────────────────────────────── */
+.topbar {
+  width: 100%;
+  padding: 18px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+.logo { display: flex; align-items: center; gap: 8px; text-decoration: none; }
+.logo-mark {
+  width: 28px; height: 28px;
+  background: var(--black); border-radius: 7px;
+  display: grid; place-items: center;
+  color: #fff; font-weight: 900; font-size: 13px;
+}
+.logo-word { font-size: 15px; font-weight: 800; color: var(--text); letter-spacing: -.3px; }
+.logo-word em { color: var(--rose); font-style: normal; }
+.topbar-link { font-size: 13px; color: var(--text2); font-weight: 500; }
+.topbar-link a { color: var(--rose); font-weight: 700; text-decoration: none; }
+
+/* ── CARD ─────────────────────────────────────────────────── */
+.card {
+  background: #fff;
+  border: 1px solid rgba(0,0,0,.07);
+  border-radius: 22px;
+  padding: 38px 36px;
+  width: 100%;
+  max-width: 420px;
+  margin: 0 auto 40px;
+  box-shadow:
+    0 1px 3px rgba(0,0,0,.04),
+    0 8px 32px rgba(0,0,0,.07);
+}
+@media (max-width: 480px) {
+  .card { padding: 28px 22px; border-radius: 18px; margin: 0 16px 32px; width: auto; }
+}
+
+/* ── COPY ─────────────────────────────────────────────────── */
+.eyebrow {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; font-weight: 700;
+  color: var(--rose); margin-bottom: 12px;
+  letter-spacing: .2px;
+}
+.eyebrow-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--rose);
+}
+
+.headline {
+  font-size: 26px; font-weight: 900;
+  letter-spacing: -.7px; line-height: 1.18;
+  margin-bottom: 10px;
+  color: var(--black);
+}
+.headline em {
+  font-style: normal;
+  color: var(--rose);
+}
+
+.subline {
+  font-size: 14px; color: var(--text2);
+  line-height: 1.6; margin-bottom: 22px;
+}
+
+/* ── BENEFIT PILLS ────────────────────────────────────────── */
+.benefits {
+  display: flex; flex-wrap: wrap; gap: 7px;
+  margin-bottom: 22px;
+}
+.benefit-pill {
+  display: flex; align-items: center; gap: 5px;
+  background: #F5F5F5; border-radius: 20px;
+  padding: 6px 11px;
+  font-size: 12px; font-weight: 600; color: var(--text2);
+}
+
+/* ── SOCIAL PROOF ─────────────────────────────────────────── */
+.proof-row {
+  display: flex; align-items: center; gap: 10px;
+  background: #F9F5FF;
+  border: 1px solid #E9D5FF;
+  border-radius: 12px;
+  padding: 11px 14px;
+  margin-bottom: 22px;
+}
+.proof-avatars { display: flex; }
+.proof-av {
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 2px solid #fff;
+  margin-right: -6px;
+  font-size: 8.5px; font-weight: 800;
+  display: grid; place-items: center; color: #fff;
+}
+.proof-text {
+  font-size: 12px; font-weight: 600;
+  color: #581C87; line-height: 1.35; margin-left: 9px;
+}
+.proof-text span { color: #7C3AED; font-weight: 700; }
+
+/* ── FORM ─────────────────────────────────────────────────── */
+.form-group { margin-bottom: 12px; }
+.form-label {
+  display: block; font-size: 12px;
+  font-weight: 700; margin-bottom: 5px;
+}
+.form-input {
+  width: 100%; padding: 12px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: 11px; font-size: 14px;
+  font-family: 'Inter', sans-serif; color: var(--text);
+  background: #fff; outline: none;
+  transition: border-color .15s, box-shadow .15s;
+  -webkit-appearance: none;
+}
+.form-input:focus {
+  border-color: var(--black);
+  box-shadow: 0 0 0 3px rgba(15,15,15,.06);
+}
+.form-input::placeholder { color: var(--text3); }
+.form-input.pl { padding-left: 38px; }
+
+.input-wrap { position: relative; }
+.input-pre {
+  position: absolute; left: 13px; top: 50%;
+  transform: translateY(-50%);
+  font-size: 14px; color: var(--text3);
+  pointer-events: none;
+}
+.input-suf {
+  position: absolute; right: 13px; top: 50%;
+  transform: translateY(-50%);
+  font-size: 12px; font-weight: 700;
+  color: var(--text3); cursor: pointer;
+}
+.input-suf:hover { color: var(--text); }
+
+.or-bar {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 12px; color: var(--text3); font-weight: 600;
+  margin: 13px 0;
+}
+.or-bar::before, .or-bar::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
+
+/* ── BUTTONS ──────────────────────────────────────────────── */
+.btn {
+  width: 100%; padding: 13px 16px;
+  border-radius: 12px; border: none;
+  font-size: 14px; font-weight: 700;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  transition: all .15s; font-family: 'Inter', sans-serif;
+}
+.btn:active { transform: scale(.98); }
+
+.btn-black { background: var(--black); color: #fff; margin-top: 8px; }
+.btn-black:hover { background: #1a1a1a; }
+
+.btn-google {
+  background: #fff; color: var(--text);
+  border: 1.5px solid var(--border);
+  font-size: 14px; font-weight: 600;
+}
+.btn-google:hover { background: #fafafa; }
+
+.btn-back {
+  background: transparent; color: var(--text2);
+  border: 1.5px solid var(--border);
+  font-size: 14px; padding: 12px 16px;
+  width: auto; flex-shrink: 0;
+}
+.btn-back:hover { background: #f5f5f5; }
+
+.btn-row { display: flex; gap: 9px; margin-top: 16px; }
+
+.terms {
+  font-size: 11.5px; color: var(--text3);
+  text-align: center; margin-top: 13px; line-height: 1.55;
+}
+.terms a { color: var(--text2); font-weight: 600; text-decoration: underline; }
+
+.alt-link {
+  font-size: 13px; color: var(--text2); font-weight: 500;
+  text-align: center; margin-top: 18px;
+}
+.alt-link a { color: var(--rose); font-weight: 700; text-decoration: none; }
+
+/* ── PROGRESS BAR ─────────────────────────────────────────── */
+.prog-wrap { margin-bottom: 26px; }
+.prog-top {
+  display: flex; justify-content: space-between;
+  font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .5px;
+  color: var(--text3); margin-bottom: 7px;
+}
+.prog-pct { color: var(--black); }
+.prog-track {
+  height: 3px; background: var(--border);
+  border-radius: 3px; overflow: hidden;
+}
+.prog-fill {
+  height: 100%; border-radius: 3px;
+  background: var(--black); transition: width .4s ease;
+}
+
+/* ── PLATFORM CHIPS ───────────────────────────────────────── */
+.platform-grid {
+  display: grid; grid-template-columns: repeat(3,1fr);
+  gap: 8px; margin-bottom: 14px;
+}
+.p-chip {
+  border: 1.5px solid var(--border); border-radius: 12px;
+  padding: 12px 8px; text-align: center;
+  cursor: pointer; transition: all .15s; background: #fff;
+  position: relative;
+}
+.p-chip:hover { border-color: #ccc; }
+.p-chip.on { border-color: var(--black); background: #F8F8F8; }
+.p-chip.on::after {
+  content: '✓'; position: absolute; top: 6px; right: 7px;
+  font-size: 9px; font-weight: 900; color: var(--black);
+}
+.p-icon { font-size: 19px; margin-bottom: 4px; }
+.p-name { font-size: 10.5px; font-weight: 700; color: var(--text2); }
+
+.follower-reveal {
+  display: none; align-items: center; gap: 10px;
+  padding: 11px 14px; background: #F9F9F9;
+  border: 1.5px solid var(--border); border-radius: 10px;
+  margin-bottom: 14px;
+}
+.follower-reveal.show { display: flex; }
+.fr-label { font-size: 13px; font-weight: 700; flex-shrink: 0; }
+.fr-input {
+  flex: 1; border: none; background: transparent;
+  font-size: 14px; font-family: 'Inter', sans-serif;
+  color: var(--text); outline: none;
+}
+.fr-input::placeholder { color: var(--text3); }
+
+/* ── NICHE CHIPS ──────────────────────────────────────────── */
+.niche-grid { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 18px; }
+.n-chip {
+  padding: 8px 13px; border: 1.5px solid var(--border);
+  border-radius: 20px; font-size: 12.5px; font-weight: 600;
+  cursor: pointer; transition: all .15s; background: #fff;
+  color: var(--text2); user-select: none;
+  display: flex; align-items: center; gap: 5px;
+}
+.n-chip:hover { border-color: #bbb; }
+.n-chip.on { background: var(--black); border-color: var(--black); color: #fff; }
+
+/* ── VALUE TEASER ─────────────────────────────────────────── */
+.teaser {
+  background: #FFF8F9; border: 1px solid #FECDD3;
+  border-radius: 12px; padding: 13px 15px;
+  margin-bottom: 18px;
+  font-size: 13px; color: var(--text2); line-height: 1.5;
+}
+.teaser strong { color: var(--rose); font-weight: 800; }
+
+/* ── SKIP ─────────────────────────────────────────────────── */
+.skip {
+  display: block; text-align: center;
+  font-size: 12.5px; font-weight: 600;
+  color: var(--text3); margin-top: 10px; cursor: pointer;
+}
+.skip:hover { color: var(--text2); }
+
+/* ── DASHBOARD (screen 4) ─────────────────────────────────── */
+.dash-wrap {
+  width: 100%; min-height: 100vh;
+  display: flex; flex-direction: column;
+  background:
+    radial-gradient(ellipse at 15% 10%, rgba(225,29,72,.10) 0%, transparent 50%),
+    radial-gradient(ellipse at 85% 90%, rgba(124,58,237,.08) 0%, transparent 45%),
+    #FBF8F6;
+}
+.dash-top {
+  background: rgba(255,255,255,.85); backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  height: 52px; display: flex; align-items: center;
+  padding: 0 24px; justify-content: space-between;
+  position: sticky; top: 0; z-index: 50;
+}
+.dash-body { max-width: 880px; margin: 0 auto; padding: 24px 20px 60px; width: 100%; }
+
+.welcome-card {
+  background: var(--black); border-radius: 18px;
+  padding: 24px 26px; margin-bottom: 16px;
+  position: relative; overflow: hidden;
+}
+.welcome-card::before {
+  content: ''; position: absolute;
+  top: -50px; right: -50px;
+  width: 200px; height: 200px;
+  background: radial-gradient(circle, rgba(225,29,72,.45) 0%, transparent 70%);
+  pointer-events: none;
+}
+.wc-grid { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: center; }
+@media (max-width: 520px) { .wc-grid { grid-template-columns: 1fr; } }
+.wc-tag { font-size: 11px; font-weight: 700; color: #FDA4AF; letter-spacing: .5px; text-transform: uppercase; margin-bottom: 5px; }
+.wc-title { font-size: 19px; font-weight: 900; color: #fff; letter-spacing: -.4px; margin-bottom: 5px; }
+.wc-sub { font-size: 13px; color: rgba(255,255,255,.55); line-height: 1.5; }
+.wc-sub strong { color: rgba(255,255,255,.85); }
+.wc-btn {
+  background: var(--rose); color: #fff; border: none;
+  border-radius: 11px; padding: 12px 20px;
+  font-size: 13px; font-weight: 700; cursor: pointer;
+  font-family: 'Inter', sans-serif; white-space: nowrap;
+  position: relative; z-index: 1;
+}
+
+/* profile completeness */
+.completeness {
+  background: #fff; border: 1px solid var(--border);
+  border-radius: 16px; padding: 18px 20px;
+  margin-bottom: 16px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.04);
+}
+.cc-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.cc-title { font-size: 13px; font-weight: 800; }
+.cc-pct { font-size: 13px; font-weight: 800; color: var(--amber); }
+.cc-track { height: 4px; background: var(--border); border-radius: 4px; overflow: hidden; margin-bottom: 14px; }
+.cc-fill { height: 100%; background: linear-gradient(90deg, var(--rose), var(--amber)); border-radius: 4px; width: 40%; transition: width .4s ease; }
+.cc-why { font-size: 12px; color: var(--text3); margin-bottom: 12px; line-height: 1.5; }
+.cc-why strong { color: var(--text2); font-weight: 700; }
+.cc-items { display: flex; gap: 7px; flex-wrap: wrap; }
+.cc-item {
+  display: flex; align-items: center; gap: 5px;
+  padding: 7px 12px; border-radius: 20px;
+  border: 1.5px solid var(--border);
+  font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: all .15s;
+  background: #fff; color: var(--text2);
+}
+.cc-item:hover { border-color: var(--black); color: var(--black); }
+.cc-item.done { background: #F0FDF4; border-color: #BBF7D0; color: var(--green); cursor: default; }
+
+.sec-label {
+  font-size: 11px; font-weight: 700; color: var(--text3);
+  text-transform: uppercase; letter-spacing: .5px;
+  margin-bottom: 11px; display: flex; align-items: center; gap: 8px;
+}
+.sec-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+.brand-grid {
+  display: grid; grid-template-columns: repeat(3,1fr);
+  gap: 11px; margin-bottom: 20px;
+}
+@media (max-width: 600px) { .brand-grid { grid-template-columns: 1fr 1fr; } }
+
+.brand-card {
+  background: #fff; border: 1px solid var(--border);
+  border-radius: 14px; padding: 15px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.04);
+}
+.bc-logo {
+  width: 40px; height: 40px; border-radius: 9px;
+  display: grid; place-items: center; font-size: 18px;
+  margin-bottom: 9px;
+}
+.bc-name { font-size: 13px; font-weight: 800; margin-bottom: 2px; }
+.bc-cat { font-size: 11px; color: var(--text3); margin-bottom: 9px; }
+.bc-foot { display: flex; align-items: center; justify-content: space-between; }
+.bc-rate { font-size: 11px; font-weight: 700; }
+.bc-rate.hi { color: var(--green); }
+.bc-rate.lo { color: var(--text3); }
+.bc-btn {
+  background: var(--black); color: #fff;
+  font-size: 11px; font-weight: 700;
+  padding: 5px 10px; border-radius: 7px;
+  border: none; cursor: pointer; font-family: 'Inter', sans-serif;
+}
+
+/* ── DEMO NAV ─────────────────────────────────────────────── */
+.demo-nav {
+  position: fixed; bottom: 18px; left: 50%;
+  transform: translateX(-50%);
+  background: var(--black); color: #fff;
+  border-radius: 20px; padding: 8px 15px;
+  display: flex; gap: 7px; align-items: center;
+  font-size: 12px; font-weight: 600;
+  box-shadow: 0 4px 24px rgba(0,0,0,.25);
+  z-index: 999; white-space: nowrap;
+}
+.dn-label { opacity: .4; font-size: 11px; }
+.dn-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: rgba(255,255,255,.3); cursor: pointer; transition: background .15s;
+}
+.dn-dot.on { background: #fff; }
+.dn-btn {
+  background: rgba(255,255,255,.12); border: none; color: #fff;
+  padding: 5px 11px; border-radius: 8px; font-size: 12px;
+  font-weight: 700; cursor: pointer; font-family: 'Inter', sans-serif;
+}
+.dn-btn:hover { background: rgba(255,255,255,.22); }
+.screen-tag {
+  position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+  background: var(--rose); color: #fff; font-size: 10px;
+  font-weight: 700; padding: 3px 11px; border-radius: 20px;
+  letter-spacing: .5px; text-transform: uppercase; z-index: 1000;
+  pointer-events: none;
+}
+</style>
+</head>
+<body>
+
+<!-- ══ SCREEN 1 — REGISTER ══════════════════════════════════ -->
+<div class="screen active" id="s1">
+<div class="screen-tag">Screen 1 — Register</div>
+
+<div class="topbar">
+  <a class="logo" href="#">
+    <div class="logo-mark">N</div>
+    <span class="logo-word">new<em>collab</em></span>
+  </a>
+  <span class="topbar-link">Already a member? <a href="#">Sign in</a></span>
+</div>
+
+<div class="card">
+
+  <div class="eyebrow"><div class="eyebrow-dot"></div> Free to start · No credit card</div>
+
+  <div class="headline">
+    The tool that gets<br>you <em>brand deals.</em>
+  </div>
+
+  <div class="subline">
+    You know how to create content. We handle everything else — finding brands, writing the perfect pitch, tracking your outreach, reminding you to follow up.
+  </div>
+
+  <div class="benefits">
+    <div class="benefit-pill">🔍 500+ brand contacts</div>
+    <div class="benefit-pill">✍️ AI pitch writer</div>
+    <div class="benefit-pill">📬 Track all outreach</div>
+    <div class="benefit-pill">🔔 New brand alerts</div>
+  </div>
+
+  <div class="proof-row">
+    <div class="proof-avatars">
+      <div class="proof-av" style="background:#E11D48">C</div>
+      <div class="proof-av" style="background:#7C3AED">M</div>
+      <div class="proof-av" style="background:#059669">Z</div>
+      <div class="proof-av" style="background:#D97706">A</div>
+    </div>
+    <div class="proof-text" style="margin-left:9px">
+      <span>carolstyle</span> landed Rhode Skin 3 days after joining.
+      <br>900+ creators are already pitching brands.
+    </div>
+  </div>
+
+  <button class="btn btn-google" onclick="goTo(2)">
+    <svg width="17" height="17" viewBox="0 0 48 48">
+      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.08 17.74 9.5 24 9.5z"/>
+      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.35-8.16 2.35-6.26 0-11.57-3.59-13.46-8.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+    </svg>
+    Continue with Google
+  </button>
+
+  <div class="or-bar">or</div>
+
+  <div class="form-group">
+    <label class="form-label">Email address</label>
+    <input class="form-input" type="email" placeholder="you@gmail.com" />
+  </div>
+
+  <div class="form-group">
+    <label class="form-label">Password</label>
+    <div class="input-wrap">
+      <input class="form-input" type="password" placeholder="Min. 8 characters" id="pw1" />
+      <span class="input-suf" onclick="togglePw('pw1',this)">Show</span>
+    </div>
+  </div>
+
+  <button class="btn btn-black" onclick="goTo(2)">Create my free account →</button>
+
+  <p class="terms">By signing up you agree to our <a href="#">Terms</a> and <a href="#">Privacy Policy</a>.</p>
+  <p class="alt-link">Already a member? <a href="#">Sign in</a></p>
+
+</div>
+</div>
+
+
+<!-- ══ SCREEN 2 — STEP 1: PLATFORM ══════════════════════════ -->
+<div class="screen" id="s2">
+<div class="screen-tag">Screen 2 — Step 1 of 2</div>
+
+<div class="topbar">
+  <a class="logo" href="#">
+    <div class="logo-mark">N</div>
+    <span class="logo-word">new<em>collab</em></span>
+  </a>
+</div>
+
+<div class="card">
+
+  <div class="prog-wrap">
+    <div class="prog-top">
+      <span>Step 1 of 2</span>
+      <span class="prog-pct">50%</span>
+    </div>
+    <div class="prog-track"><div class="prog-fill" style="width:50%"></div></div>
+  </div>
+
+  <div class="headline" style="font-size:22px;margin-bottom:8px;">Quick, where do you create?</div>
+  <div class="subline" style="margin-bottom:18px;">We'll match you with brands actively looking for creators on your platform.</div>
+
+  <div class="form-group">
+    <label class="form-label">Your creator handle</label>
+    <div class="input-wrap">
+      <span class="input-pre">@</span>
+      <input class="form-input pl" type="text" placeholder="yourcreatorname" />
+    </div>
+  </div>
+
+  <div class="form-group">
+    <label class="form-label">Main platform</label>
+    <div class="platform-grid">
+      <div class="p-chip" onclick="pickPlatform(this,'📸 Followers')">
+        <div class="p-icon">📸</div>
+        <div class="p-name">Instagram</div>
+      </div>
+      <div class="p-chip" onclick="pickPlatform(this,'🎵 Followers')">
+        <div class="p-icon">🎵</div>
+        <div class="p-name">TikTok</div>
+      </div>
+      <div class="p-chip" onclick="pickPlatform(this,'▶️ Subscribers')">
+        <div class="p-icon">▶️</div>
+        <div class="p-name">YouTube</div>
+      </div>
+      <div class="p-chip" onclick="pickPlatform(this,'📌 Monthly views')">
+        <div class="p-icon">📌</div>
+        <div class="p-name">Pinterest</div>
+      </div>
+      <div class="p-chip" onclick="pickPlatform(this,'𝕏 Followers')">
+        <div class="p-icon" style="font-size:17px;font-weight:900;">𝕏</div>
+        <div class="p-name">X / Twitter</div>
+      </div>
+      <div class="p-chip" onclick="pickPlatform(this,'✍️ Readers/mo')">
+        <div class="p-icon">✍️</div>
+        <div class="p-name">Blog</div>
+      </div>
+    </div>
+
+    <div class="follower-reveal" id="fr">
+      <span class="fr-label" id="fr-lbl">📸 Followers</span>
+      <input class="fr-input" type="number" placeholder="e.g. 12,500" id="fr-val" />
+    </div>
+  </div>
+
+  <div class="btn-row">
+    <button class="btn btn-back" onclick="goTo(1)">← Back</button>
+    <button class="btn btn-black" onclick="goTo(3)">Continue →</button>
+  </div>
+  <span class="skip" onclick="goTo(3)">Skip for now</span>
+
+</div>
+</div>
+
+
+<!-- ══ SCREEN 3 — STEP 2: NICHE ══════════════════════════════ -->
+<div class="screen" id="s3">
+<div class="screen-tag">Screen 3 — Step 2 of 2</div>
+
+<div class="topbar">
+  <a class="logo" href="#">
+    <div class="logo-mark">N</div>
+    <span class="logo-word">new<em>collab</em></span>
+  </a>
+</div>
+
+<div class="card">
+
+  <div class="prog-wrap">
+    <div class="prog-top">
+      <span>Step 2 of 2</span>
+      <span class="prog-pct">Almost done</span>
+    </div>
+    <div class="prog-track"><div class="prog-fill" style="width:90%"></div></div>
+  </div>
+
+  <div class="headline" style="font-size:22px;margin-bottom:8px;">What kind of content do you make?</div>
+  <div class="subline" style="margin-bottom:16px;">Pick your niches and we'll show you brands actively looking for your type of content.</div>
+
+  <div class="teaser">
+    Creators who select a niche see <strong>3× more relevant brands</strong> in their feed — and get replies faster.
+  </div>
+
+  <div class="niche-grid">
+    <div class="n-chip on"  onclick="toggleN(this)">💄 Beauty</div>
+    <div class="n-chip"     onclick="toggleN(this)">👗 Fashion</div>
+    <div class="n-chip"     onclick="toggleN(this)">🍽️ Food</div>
+    <div class="n-chip"     onclick="toggleN(this)">💪 Fitness</div>
+    <div class="n-chip"     onclick="toggleN(this)">✈️ Travel</div>
+    <div class="n-chip"     onclick="toggleN(this)">🏠 Lifestyle</div>
+    <div class="n-chip"     onclick="toggleN(this)">💻 Tech</div>
+    <div class="n-chip"     onclick="toggleN(this)">🌿 Wellness</div>
+    <div class="n-chip"     onclick="toggleN(this)">📚 Education</div>
+    <div class="n-chip"     onclick="toggleN(this)">🎮 Gaming</div>
+    <div class="n-chip"     onclick="toggleN(this)">🐾 Pets</div>
+    <div class="n-chip"     onclick="toggleN(this)">🍼 Parenting</div>
+  </div>
+
+  <div class="btn-row">
+    <button class="btn btn-back" onclick="goTo(2)">← Back</button>
+    <button class="btn btn-black" onclick="goTo(4)">Show my brand matches →</button>
+  </div>
+
+</div>
+</div>
+
+
+<!-- ══ SCREEN 4 — DASHBOARD (first login) ════════════════════ -->
+<div class="screen" id="s4">
+<div class="screen-tag">Screen 4 — First login</div>
+<div class="dash-wrap">
+
+  <div class="dash-top">
+    <div class="logo">
+      <div class="logo-mark">N</div>
+      <span class="logo-word">new<em>collab</em></span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <span style="font-size:12px;color:var(--text3)">@yourcreatorname</span>
+      <div style="width:28px;height:28px;border-radius:50%;background:var(--rose);color:#fff;display:grid;place-items:center;font-size:11px;font-weight:800;">Y</div>
+    </div>
+  </div>
+
+  <div class="dash-body">
+
+    <!-- Welcome -->
+    <div class="welcome-card">
+      <div class="wc-grid">
+        <div>
+          <div class="wc-tag">🎉 You're in — let's get your first deal</div>
+          <div class="wc-title">47 Beauty brands ready for your pitch</div>
+          <div class="wc-sub">
+            We've already found brands that match your niche.
+            <strong>Rhode Skin and Anua</strong> are responding fast this week — start there.
+          </div>
+        </div>
+        <button class="wc-btn">Browse brands →</button>
+      </div>
+    </div>
+
+    <!-- Progressive data collection — profile completeness -->
+    <div class="completeness">
+      <div class="cc-head">
+        <div class="cc-title">Complete your profile — brands check this</div>
+        <div class="cc-pct" id="cc-pct">40%</div>
+      </div>
+      <div class="cc-track"><div class="cc-fill" id="cc-fill"></div></div>
+      <div class="cc-why">
+        A complete profile makes your pitches <strong>2× more likely to get a reply.</strong>
+        Brands want to know who they're working with before they respond. Tap any item below to add it.
+      </div>
+      <div class="cc-items">
+        <div class="cc-item done">✓ Email</div>
+        <div class="cc-item done">✓ Username</div>
+        <div class="cc-item done">✓ Niche</div>
+        <div class="cc-item" onclick="completeItem(this,'📸 Profile photo')">📸 Add photo</div>
+        <div class="cc-item" onclick="completeItem(this,'✍️ Bio')">✍️ Write bio</div>
+        <div class="cc-item" onclick="completeItem(this,'👥 Audience age')">👥 Audience age</div>
+        <div class="cc-item" onclick="completeItem(this,'🌍 Regions')">🌍 Regions</div>
+      </div>
+    </div>
+
+    <!-- Brand matches -->
+    <div class="sec-label">Your top matches this week</div>
+    <div class="brand-grid">
+      <div class="brand-card">
+        <div class="bc-logo" style="background:#FFF1F3">🌸</div>
+        <div class="bc-name">Rhode Skin</div>
+        <div class="bc-cat">Skincare · 2–3 day reply</div>
+        <div class="bc-foot">
+          <div class="bc-rate hi">52% reply rate</div>
+          <button class="bc-btn">Pitch →</button>
+        </div>
+      </div>
+      <div class="brand-card">
+        <div class="bc-logo" style="background:#F0FDF4">🌿</div>
+        <div class="bc-name">Anua</div>
+        <div class="bc-cat">K-Beauty · 3–5 day reply</div>
+        <div class="bc-foot">
+          <div class="bc-rate hi">38% reply rate</div>
+          <button class="bc-btn">Pitch →</button>
+        </div>
+      </div>
+      <div class="brand-card">
+        <div class="bc-logo" style="background:#FFF7ED">✨</div>
+        <div class="bc-name">Oh Polly</div>
+        <div class="bc-cat">Fashion · 5–7 day reply</div>
+        <div class="bc-foot">
+          <div class="bc-rate lo">24% reply rate</div>
+          <button class="bc-btn">Pitch →</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</div>
+
+
+<!-- ── DEMO NAV ────────────────────────────────────────────── -->
+<div class="demo-nav">
+  <span class="dn-label">Screen</span>
+  <div class="dn-dot on" id="d1" onclick="goTo(1)"></div>
+  <div class="dn-dot" id="d2" onclick="goTo(2)"></div>
+  <div class="dn-dot" id="d3" onclick="goTo(3)"></div>
+  <div class="dn-dot" id="d4" onclick="goTo(4)"></div>
+  <button class="dn-btn" onclick="prev()">←</button>
+  <button class="dn-btn" onclick="next()">→</button>
+</div>
+
+<script>
+let cur = 1;
+
+function goTo(n) {
+  document.getElementById('s'+cur).classList.remove('active');
+  document.getElementById('d'+cur).classList.remove('on');
+  cur = n;
+  document.getElementById('s'+cur).classList.add('active');
+  document.getElementById('d'+cur).classList.add('on');
+  window.scrollTo(0, 0);
+}
+function next() { if (cur < 4) goTo(cur+1); }
+function prev() { if (cur > 1) goTo(cur-1); }
+
+function togglePw(id, btn) {
+  const el = document.getElementById(id);
+  el.type = el.type === 'password' ? 'text' : 'password';
+  btn.textContent = el.type === 'password' ? 'Show' : 'Hide';
+}
+
+function pickPlatform(el, label) {
+  document.querySelectorAll('.p-chip').forEach(c => c.classList.remove('on'));
+  el.classList.add('on');
+  const row = document.getElementById('fr');
+  row.classList.add('show');
+  document.getElementById('fr-lbl').textContent = label;
+  document.getElementById('fr-val').focus();
+}
+
+function toggleN(el) { el.classList.toggle('on'); }
+
+function completeItem(el, label) {
+  el.classList.add('done');
+  el.textContent = '✓ ' + label;
+  el.onclick = null;
+  // update progress bar
+  const done = document.querySelectorAll('.cc-item.done').length;
+  const total = document.querySelectorAll('.cc-item').length;
+  const pct = Math.round(done / total * 100);
+  document.getElementById('cc-fill').style.width = pct + '%';
+  document.getElementById('cc-pct').textContent = pct + '%';
+}
+</script>
+</body>
+</html>

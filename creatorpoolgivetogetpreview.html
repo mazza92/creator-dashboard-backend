@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Creator Pool — Give to Get — Preview</title>
+<style>
+  :root{
+    --rose:#E11D48; --black:#0F0F0F; --violet:#7C3AED; --green:#059669; --bg:#FAFAF9;
+  }
+  *{box-sizing:border-box;}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:#EDEDED; margin:0; padding:40px 24px; color:var(--black);
+  }
+  h1{font-size:22px; margin:0 0 4px;}
+  p.sub{color:#666; margin:0 0 32px; font-size:14px;}
+  .row{display:flex; gap:24px; flex-wrap:wrap; align-items:flex-start;}
+  .frame{
+    width:300px; background:#000; border-radius:38px; padding:10px;
+    box-shadow:0 12px 30px rgba(0,0,0,0.25);
+  }
+  .screen{
+    width:100%; height:620px; background:var(--bg); border-radius:30px; overflow:hidden;
+    position:relative; display:flex; flex-direction:column;
+  }
+  .caption{width:300px; text-align:center; margin-top:10px; font-size:12px; color:#555; font-weight:600;}
+  .step{font-size:10px; color:var(--rose); font-weight:700; letter-spacing:0.5px;}
+
+  .topbar{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:14px 16px 8px; background:#fff; border-bottom:1px solid #eee;
+  }
+  .topbar .logo{font-weight:800; font-size:14px;}
+  .nav{display:flex; gap:14px; padding:0 16px 10px; background:#fff; border-bottom:1px solid #eee; font-size:11px; color:#999;}
+  .nav .active{color:var(--black); font-weight:700; border-bottom:2px solid var(--rose); padding-bottom:6px;}
+  .nav .item{padding-bottom:6px;}
+
+  .content{flex:1; overflow-y:auto; padding:14px 16px;}
+
+  .credit-bar{
+    background:var(--black); color:#fff; border-radius:14px; padding:14px;
+    display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;
+  }
+  .credit-bar .num{font-size:22px; font-weight:800; color:var(--rose);}
+  .credit-bar .label{font-size:10px; color:#bbb;}
+
+  .progress-track{height:6px; background:#2a2a2a; border-radius:4px; margin-top:8px; overflow:hidden;}
+  .progress-fill{height:100%; background:var(--rose);}
+
+  .card{
+    background:#fff; border:1px solid #eee; border-radius:16px; padding:14px; margin-bottom:12px;
+  }
+  .card-top{display:flex; align-items:center; gap:10px;}
+  .avatar{width:40px; height:40px; border-radius:50%; background:#ddd; flex-shrink:0;}
+  .name{font-weight:700; font-size:13px;}
+  .meta{font-size:11px; color:#888;}
+  .tag{
+    display:inline-block; font-size:10px; background:#F3F0FF; color:var(--violet);
+    padding:2px 8px; border-radius:20px; margin-top:4px; font-weight:600;
+  }
+  .btn{
+    width:100%; padding:10px; border-radius:10px; border:none; font-weight:700;
+    font-size:12px; margin-top:10px; cursor:pointer;
+  }
+  .btn-primary{background:var(--black); color:#fff;}
+  .btn-done{background:#ECFDF5; color:var(--green); border:1px solid #A7F3D0;}
+  .btn-locked{background:#F3F4F6; color:#999;}
+  .btn-pro{background:var(--violet); color:#fff;}
+
+  .banner{
+    background:linear-gradient(135deg,#1a1a1a,#2d0a13); color:#fff; border-radius:14px;
+    padding:14px; margin-bottom:14px;
+  }
+  .banner .title{font-weight:800; font-size:13px; margin-bottom:4px;}
+  .banner .desc{font-size:11px; color:#ccc; line-height:1.4;}
+
+  .lock-overlay{
+    position:absolute; inset:0; background:rgba(255,255,255,0.85); backdrop-filter:blur(2px);
+    display:flex; align-items:center; justify-content:center; flex-direction:column; gap:8px;
+    border-radius:16px; text-align:center; padding:20px;
+  }
+  .lock-card-wrap{position:relative;}
+
+  .flag-row{
+    display:flex; justify-content:space-between; align-items:center; font-size:11px;
+    padding:8px 0; border-bottom:1px solid #f3f3f3;
+  }
+  .flag-btn{font-size:10px; color:#999; background:#f8f8f8; border:1px solid #eee; border-radius:8px; padding:4px 8px; cursor:pointer;}
+
+  .badge-verified{
+    display:inline-flex; align-items:center; gap:4px; background:#ECFDF5; color:var(--green);
+    font-size:10px; font-weight:700; padding:3px 8px; border-radius:20px;
+  }
+
+  .toast{
+    position:absolute; bottom:14px; left:14px; right:14px; background:var(--black); color:#fff;
+    padding:12px 14px; border-radius:12px; font-size:11px; display:flex; align-items:center; gap:8px;
+  }
+
+  section.group{margin-bottom:48px;}
+  section.group h2{font-size:16px; margin-bottom:14px;}
+</style>
+</head>
+<body>
+
+<h1>Creator Pool — "Give to Get" Mechanism</h1>
+<p class="sub">Visibility in the pool is earned by supporting others first — no follow verification needed, the algorithm enforces reciprocity structurally.</p>
+
+<section class="group">
+<h2>Flow 1 — First-time entry (replaces "write a pitch" as the new-user first action)</h2>
+<div class="row">
+
+  <!-- Screen 1: Intro -->
+  <div>
+    <div class="frame"><div class="screen">
+      <div class="topbar"><div class="logo">N newcollab</div><div style="font-size:11px;color:#999;">Skip →</div></div>
+      <div class="content" style="display:flex; flex-direction:column; justify-content:center; height:100%; text-align:center;">
+        <div style="font-size:40px; margin-bottom:10px;">🤝</div>
+        <div style="font-weight:800; font-size:17px; margin-bottom:8px;">Grow your following first</div>
+        <div style="font-size:12px; color:#666; line-height:1.5; margin-bottom:16px;">
+          Join the Creator Pool — support 3 creators today, and your profile gets shown to others looking to grow too.
+        </div>
+        <button class="btn btn-primary">Start supporting →</button>
+      </div>
+    </div></div>
+    <div class="caption"><span class="step">STEP 1</span><br>New user lands here instead of a pitch composer</div>
+  </div>
+
+  <!-- Screen 2: Pool feed -->
+  <div>
+    <div class="frame"><div class="screen">
+      <div class="topbar"><div class="logo">N newcollab</div></div>
+      <div class="nav">
+        <div class="item">For You</div>
+        <div class="active">Pool</div>
+        <div class="item">Inbox</div>
+        <div class="item">My Kit</div>
+      </div>
+      <div class="content">
+        <div class="credit-bar">
+          <div>
+            <div class="label">SUPPORT CREDITS LEFT TODAY</div>
+            <div class="num">3</div>
+          </div>
+          <div style="text-align:right;">
+            <div class="label">YOUR VISIBILITY</div>
+            <div style="font-size:12px; font-weight:700; color:#fff;">🔥 Active</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-top">
+            <div class="avatar"></div>
+            <div>
+              <div class="name">@merakibeauty</div>
+              <div class="meta">2.1K followers · Beauty</div>
+              <span class="tag">Matches your tier</span>
+            </div>
+          </div>
+          <button class="btn btn-primary">Follow on TikTok →</button>
+        </div>
+
+        <div class="card">
+          <div class="card-top">
+            <div class="avatar"></div>
+            <div>
+              <div class="name">@dailybyash</div>
+              <div class="meta">1.8K followers · Lifestyle</div>
+              <span class="tag">Matches your tier</span>
+            </div>
+          </div>
+          <button class="btn btn-primary">Follow on TikTok →</button>
+        </div>
+
+        <div class="card" style="opacity:0.5;">
+          <div class="card-top">
+            <div class="avatar"></div>
+            <div>
+              <div class="name">@thatfitgirlxo</div>
+              <div class="meta">3.4K followers · Fitness</div>
+            </div>
+          </div>
+          <button class="btn btn-locked" disabled>Out of credits today</button>
+        </div>
+      </div>
+    </div></div>
+    <div class="caption"><span class="step">STEP 2</span><br>Feed matched by niche/tier — 3 free supports/day</div>
+  </div>
+
+  <!-- Screen 3: After clicking follow -->
+  <div>
+    <div class="frame"><div class="screen">
+      <div class="topbar"><div class="logo">N newcollab</div></div>
+      <div class="nav">
+        <div class="item">For You</div>
+        <div class="active">Pool</div>
+        <div class="item">Inbox</div>
+        <div class="item">My Kit</div>
+      </div>
+      <div class="content">
+        <div class="card">
+          <div class="card-top">
+            <div class="avatar"></div>
+            <div>
+              <div class="name">@merakibeauty</div>
+              <div class="meta">2.1K followers · Beauty</div>
+            </div>
+          </div>
+          <button class="btn btn-done">✓ Marked as followed — +1 credit earned</button>
+        </div>
+        <div class="banner">
+          <div class="title">🎉 1 of 3 supports given today</div>
+          <div class="desc">Give 2 more to unlock full visibility in today's pool — creators with 0 credits don't get shown.</div>
+        </div>
+      </div>
+      <div class="toast">⚡ Earning credits boosts how often you appear in others' feeds</div>
+    </div></div>
+    <div class="caption"><span class="step">STEP 3</span><br>Immediate feedback — credit earned, visibility tied to giving</div>
+  </div>
+
+</div>
+</section>
+
+<section class="group">
+<h2>Flow 2 — Visibility is gated by giving (the enforcement mechanism)</h2>
+<div class="row">
+
+  <!-- Screen 4: Locked because 0 credits -->
+  <div>
+    <div class="frame"><div class="screen">
+      <div class="topbar"><div class="logo">N newcollab</div></div>
+      <div class="nav">
+        <div class="item">For You</div>
+        <div class="active">Pool</div>
+        <div class="item">Inbox</div>
+        <div class="item">My Kit</div>
+      </div>
+      <div class="content">
+        <div class="banner" style="background:linear-gradient(135deg,#3a0d18,#1a1a1a);">
+          <div class="title">⏸ You're not visible to others right now</div>
+          <div class="desc">You've used all 3 free supports today. Give more tomorrow, or upgrade to Pro for unlimited supports + priority placement.</div>
+        </div>
+        <div class="lock-card-wrap">
+          <div class="card" style="filter:blur(2px);">
+            <div class="card-top">
+              <div class="avatar"></div>
+              <div><div class="name">@petite.skin</div><div class="meta">4.2K followers · Skincare</div></div>
+            </div>
+            <button class="btn btn-primary">Follow on TikTok →</button>
+          </div>
+          <div class="lock-overlay">
+            <div style="font-size:24px;">🔒</div>
+            <div style="font-size:12px; font-weight:700;">Come back tomorrow</div>
+            <div style="font-size:10px; color:#777;">or go unlimited with Pro</div>
+            <button class="btn btn-pro" style="width:auto; padding:8px 18px;">Upgrade to Pro →</button>
+          </div>
+        </div>
+      </div>
+    </div></div>
+    <div class="caption"><span class="step">STEP 4</span><br>Out of credits = invisible to others. Pro removes the cap.</div>
+  </div>
+
+  <!-- Screen 5: Receiving side - who supported you -->
+  <div>
+    <div class="frame"><div class="screen">
+      <div class="topbar"><div class="logo">N newcollab</div></div>
+      <div class="nav">
+        <div class="item">For You</div>
+        <div class="item">Pool</div>
+        <div class="active">My Kit</div>
+        <div class="item">Inbox</div>
+      </div>
+      <div class="content">
+        <div style="font-weight:800; font-size:14px; margin-bottom:10px;">Who supported you this week</div>
+
+        <div class="flag-row">
+          <div><b>@sarah.wellness</b> followed you · 2h ago</div>
+        </div>
+        <div class="flag-row">
+          <div><b>@alex.fit</b> followed you · 1d ago</div>
+          <div class="flag-btn">Didn't follow back?</div>
+        </div>
+        <div class="flag-row">
+          <div><b>@dailybyash</b> followed you · 2d ago</div>
+        </div>
+
+        <div class="banner" style="margin-top:16px;">
+          <div class="title">+3 new followers this week from the Pool</div>
+          <div class="desc">Keep supporting daily to stay visible and keep growing.</div>
+        </div>
+      </div>
+    </div></div>
+    <div class="caption"><span class="step">STEP 5</span><br>Light self-report flag — no hard verification needed</div>
+  </div>
+
+  <!-- Screen 6: Pro upsell -->
+  <div>
+    <div class="frame"><div class="screen">
+      <div class="topbar"><div class="logo">N newcollab</div></div>
+      <div class="content" style="display:flex; flex-direction:column; justify-content:center; height:100%;">
+        <div style="text-align:center; margin-bottom:16px;">
+          <div style="font-size:32px;">🚀</div>
+          <div style="font-weight:800; font-size:16px; margin:6px 0;">Stop waiting in line</div>
+          <div style="font-size:12px; color:#666;">Pro members support unlimited creators/day and get shown first — even with 0 credits.</div>
+        </div>
+        <div class="card">
+          <div style="font-size:12px; font-weight:700; margin-bottom:6px;">Pro — $19/mo</div>
+          <div style="font-size:11px; color:#555; line-height:1.6;">
+            ✓ Unlimited daily supports<br>
+            ✓ Priority placement in the Pool<br>
+            ✓ Unlimited brand pitches<br>
+            ✓ See who viewed your kit
+          </div>
+          <button class="btn btn-pro">Upgrade to Pro →</button>
+        </div>
+      </div>
+    </div></div>
+    <div class="caption"><span class="step">STEP 6</span><br>Pro reframed: growth speed, not just pitch volume</div>
+  </div>
+
+</div>
+</section>
+
+<section class="group">
+<h2>Flow 3 — Weekly decay (keeps the pool active, not front-loaded)</h2>
+<div class="row">
+
+  <div>
+    <div class="frame"><div class="screen">
+      <div class="topbar"><div class="logo">N newcollab</div></div>
+      <div class="content" style="display:flex; flex-direction:column; justify-content:center; height:100%; text-align:center;">
+        <div style="font-size:32px;">🔄</div>
+        <div style="font-weight:800; font-size:15px; margin:8px 0;">Your support credits reset</div>
+        <div style="font-size:12px; color:#666; margin-bottom:14px;">Give 3 supports this week to stay visible in the Pool. Inactive creators stop showing up.</div>
+        <div class="progress-track" style="background:#eee;"><div class="progress-fill" style="width:0%;"></div></div>
+        <div style="font-size:10px; color:#999; margin-top:6px;">0 of 3 given this week</div>
+        <button class="btn btn-primary" style="margin-top:14px;">Go to Pool →</button>
+      </div>
+    </div></div>
+    <div class="caption"><span class="step">STEP 7</span><br>Push notification — Monday reset nudge</div>
+  </div>
+
+  <div>
+    <div class="frame"><div class="screen">
+      <div class="topbar"><div class="logo">N newcollab</div></div>
+      <div class="content" style="display:flex; flex-direction:column; justify-content:center; height:100%; text-align:center;">
+        <div class="badge-verified" style="margin:0 auto 14px; font-size:12px; padding:6px 12px;">✓ Active Pool Member</div>
+        <div style="font-weight:800; font-size:15px; margin-bottom:8px;">Your foundation is building</div>
+        <div style="font-size:12px; color:#666; line-height:1.5; margin-bottom:14px;">
+          +18 followers this month from the Pool.<br>You're ready to start pitching brands.
+        </div>
+        <button class="btn btn-primary">Pitch your first brand →</button>
+      </div>
+    </div></div>
+    <div class="caption"><span class="step">STEP 8</span><br>Pool graduates into brand pitching — foundation before outreach</div>
+  </div>
+
+</div>
+</section>
+
+</body>
+</html>

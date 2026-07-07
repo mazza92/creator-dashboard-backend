@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pitch generator with score — integrated</title>
+<style>
+  *{box-sizing:border-box;}
+  body{margin:0;background:#e9eaee;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#15161a;padding:24px 12px;}
+  .phone{max-width:420px;margin:0 auto;background:#fff;border-radius:26px;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.18);}
+
+  .status{padding:14px 22px 6px;font-size:13px;display:flex;justify-content:space-between;color:#15161a;}
+  .url{text-align:center;font-size:13px;color:#6b7280;padding-bottom:10px;}
+
+  .sheet{padding:16px 18px 24px;}
+
+  .brand-row{display:flex;align-items:center;gap:12px;margin-bottom:18px;}
+  .brand-logo{width:48px;height:48px;border-radius:10px;background:linear-gradient(135deg,#6f3bd6,#e8395f);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:18px;}
+  .brand-meta{flex:1;}
+  .brand-meta .name{font-size:20px;font-weight:800;line-height:1.1;}
+  .brand-meta .row{display:flex;align-items:center;gap:8px;margin-top:4px;}
+  .brand-meta .cat{font-size:12.5px;color:#8a8f98;}
+  .match{background:#d4f4e2;color:#0f7a44;font-size:11px;font-weight:800;padding:3px 8px;border-radius:10px;}
+  .close{width:30px;height:30px;border-radius:50%;background:#f1f2f4;display:flex;align-items:center;justify-content:center;color:#8a8f98;font-size:16px;}
+
+  .tabs{display:flex;background:#f4f4f6;border-radius:12px;padding:4px;margin-bottom:16px;}
+  .tab{flex:1;text-align:center;padding:9px 0;font-size:13.5px;font-weight:700;color:#8a8f98;border-radius:9px;}
+  .tab.active{background:#fff;color:#15161a;box-shadow:0 1px 3px rgba(0,0,0,.06);}
+
+  .field{border:1px solid #ececef;border-radius:12px;padding:12px 14px;margin-bottom:10px;}
+  .field-label{font-size:11px;font-weight:700;color:#8a8f98;letter-spacing:.03em;text-transform:uppercase;margin-bottom:4px;}
+  .field-value{font-size:13.5px;color:#15161a;}
+  .field-value .lock{font-size:11px;color:#8a8f98;margin-left:4px;}
+
+  .pitchbox{border:1px solid #ececef;border-radius:12px;padding:14px 16px;margin-bottom:14px;}
+  .pitchbox-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
+  .pitchbox-head .lbl{font-size:11px;font-weight:800;color:#8a8f98;letter-spacing:.04em;}
+  .pitchbox-head .edit{font-size:11px;font-weight:700;color:#6f3bd6;background:#f0e9fa;padding:4px 10px;border-radius:10px;}
+  .pitch-body{font-size:13.5px;line-height:1.5;color:#15161a;}
+  .pitch-body p{margin:0 0 10px;}
+  .pitch-body .fade{position:relative;}
+  .pitch-body .fade::after{content:"";position:absolute;left:0;right:0;bottom:0;height:36px;background:linear-gradient(to bottom,rgba(255,255,255,0),#fff);}
+
+  /* SCORE CARD — the new thing */
+  .score-card{border-radius:14px;background:linear-gradient(160deg,#fff7e8 0%,#fff 80%);border:1px solid #ffd58a;padding:16px;margin-bottom:14px;position:relative;overflow:hidden;}
+  .score-card.high{background:linear-gradient(160deg,#e6f9ee 0%,#fff 80%);border-color:#7ed9a4;}
+  .score-card.low{background:linear-gradient(160deg,#fde7eb 0%,#fff 80%);border-color:#f6a3b1;}
+  .score-head{display:flex;align-items:flex-end;gap:14px;margin-bottom:14px;}
+  .score-num{font-size:46px;font-weight:900;line-height:1;letter-spacing:-.02em;color:#c2640a;}
+  .score-card.high .score-num{color:#0f7a44;}
+  .score-card.low .score-num{color:#b8265f;}
+  .score-num small{font-size:18px;font-weight:700;color:#a3a7af;margin-left:2px;}
+  .score-label{flex:1;}
+  .score-label .title{font-size:14px;font-weight:800;margin-bottom:2px;}
+  .score-label .sub{font-size:11.5px;color:#6b7280;line-height:1.4;}
+  .score-bar{height:5px;background:#f1f2f4;border-radius:3px;overflow:hidden;margin-bottom:14px;}
+  .score-bar i{display:block;height:100%;width:64%;background:linear-gradient(90deg,#f59e0b,#e8395f);}
+  .score-card.high .score-bar i{background:linear-gradient(90deg,#10b981,#0f7a44);width:86%;}
+  .score-card.low .score-bar i{background:linear-gradient(90deg,#ff4d6d,#b8265f);width:32%;}
+
+  .criteria{display:flex;flex-direction:column;gap:8px;}
+  .crit{display:flex;align-items:flex-start;gap:10px;padding:9px 11px;border-radius:9px;background:#fff;border:1px solid #ececef;}
+  .crit .badge{width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;flex-shrink:0;}
+  .crit.good .badge{background:#d4f4e2;color:#0f7a44;}
+  .crit.warn .badge{background:#fde7b0;color:#8a5a00;}
+  .crit.bad .badge{background:#fde0e6;color:#b8265f;}
+  .crit .text{flex:1;}
+  .crit .text .lbl{font-size:12.5px;font-weight:700;line-height:1.3;}
+  .crit .text .why{font-size:11.5px;color:#6b7280;margin-top:2px;line-height:1.4;}
+
+  .rewrite-cta{margin-top:14px;display:flex;align-items:center;justify-content:space-between;background:#15161a;color:#fff;border-radius:11px;padding:12px 14px;}
+  .rewrite-cta .left{display:flex;align-items:center;gap:10px;}
+  .rewrite-cta .ico{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,#ff4d6d,#c026d3);display:flex;align-items:center;justify-content:center;font-size:14px;}
+  .rewrite-cta .lbl{font-size:13px;font-weight:700;line-height:1.2;}
+  .rewrite-cta .sub{font-size:11px;color:#a3a7af;margin-top:1px;}
+  .rewrite-cta .arrow{font-size:18px;}
+
+  .score-foot{display:flex;justify-content:space-between;align-items:center;margin-top:12px;font-size:11px;color:#8a8f98;}
+  .score-foot .quota{color:#c2640a;font-weight:700;}
+
+  .actions{margin-top:6px;}
+  .send-btn{width:100%;background:#15161a;color:#fff;border:none;border-radius:12px;padding:15px 0;font-size:14.5px;font-weight:800;letter-spacing:.01em;}
+  .send-foot{text-align:center;font-size:11.5px;color:#8a8f98;margin-top:6px;}
+
+  .sec-actions{display:flex;gap:10px;margin-top:12px;}
+  .sec-btn{flex:1;background:#f4f4f6;border:none;border-radius:11px;padding:12px 0;font-size:12.5px;font-weight:700;color:#15161a;}
+
+  .quotaline{text-align:center;font-size:11.5px;color:#8a8f98;margin-top:10px;}
+
+  .legend{margin-top:18px;font-size:11px;color:#6b7280;text-align:center;line-height:1.5;}
+  .legend b{color:#15161a;}
+</style>
+</head>
+<body>
+
+<div class="phone">
+
+  <div class="status"><span>19:51</span><span>5G · 13%</span></div>
+  <div class="url">app.newcollab.co</div>
+
+  <div class="sheet">
+
+    <!-- brand header -->
+    <div class="brand-row">
+      <div class="brand-logo">L</div>
+      <div class="brand-meta">
+        <div class="name">Logitech</div>
+        <div class="row">
+          <span class="cat">tech</span>
+          <span class="match">91% match</span>
+        </div>
+      </div>
+      <div class="close">×</div>
+    </div>
+
+    <!-- tabs -->
+    <div class="tabs">
+      <div class="tab active">Email pitch</div>
+      <div class="tab">Application form</div>
+    </div>
+
+    <!-- to / subject -->
+    <div class="field">
+      <div class="field-label">To</div>
+      <div class="field-value">l••••h@wellcom.fr <span class="lock">🔒</span></div>
+    </div>
+    <div class="field">
+      <div class="field-label">Subject</div>
+      <div class="field-value">MX Master 3S Mouse for my 322.2K TikTok te…</div>
+    </div>
+
+    <!-- pitch body -->
+    <div class="pitchbox">
+      <div class="pitchbox-head">
+        <span class="lbl">PITCH</span>
+        <span class="edit">TAP TO EDIT</span>
+      </div>
+      <div class="pitch-body">
+        <p>Hi,</p>
+        <p>The MX Master 3S Mouse has the quality my audience of 322.2K expects.</p>
+        <p>I create tech & gadgets content on TikTok (322.2K followers, 8.3% engagement).</p>
+        <div class="fade">
+          <p>I'd show it in my actual daily routine: how I use it, when I reach fo…</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- THE NEW THING — Pitch Score -->
+    <div class="score-card">
+      <div class="score-head">
+        <div class="score-num">64<small>/100</small></div>
+        <div class="score-label">
+          <div class="title">Decent pitch. 3 fixes would push it above 80.</div>
+          <div class="sub">Pitches at 80+ get 4.2× more replies than pitches under 60 in tech.</div>
+        </div>
+      </div>
+      <div class="score-bar"><i></i></div>
+
+      <div class="criteria">
+
+        <div class="crit good">
+          <div class="badge">✓</div>
+          <div class="text">
+            <div class="lbl">Hook is specific to the product</div>
+            <div class="why">You name the actual product (MX Master 3S), not just "your brand." Brands skim for this.</div>
+          </div>
+        </div>
+
+        <div class="crit good">
+          <div class="badge">✓</div>
+          <div class="text">
+            <div class="lbl">Credible audience claim</div>
+            <div class="why">At 322K + 8.3% engagement, your stats back up the pitch. No inflation.</div>
+          </div>
+        </div>
+
+        <div class="crit warn">
+          <div class="badge">!</div>
+          <div class="text">
+            <div class="lbl">No creative angle yet</div>
+            <div class="why">You say "I'd show it in my daily routine" — add 1 specific scenario (e.g. "editing my Sunday upload at 2am") and reply rate jumps ~30%.</div>
+          </div>
+        </div>
+
+        <div class="crit warn">
+          <div class="badge">!</div>
+          <div class="text">
+            <div class="lbl">No past collab name-drop</div>
+            <div class="why">If you've worked with any brand, even small, mention one. Tech brands disproportionately trust prior tech-adjacent collabs.</div>
+          </div>
+        </div>
+
+        <div class="crit bad">
+          <div class="badge">✕</div>
+          <div class="text">
+            <div class="lbl">Sending on Monday 9am</div>
+            <div class="why">Tech brand PR inboxes have 3.1× higher reply rate Tue–Thu, 2–5pm. Schedule the send.</div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- rewrite cta -->
+      <div class="rewrite-cta">
+        <div class="left">
+          <div class="ico">✨</div>
+          <div>
+            <div class="lbl">Rewrite stronger version</div>
+            <div class="sub">3 fixes applied, ~82/100 estimated</div>
+          </div>
+        </div>
+        <div class="arrow">→</div>
+      </div>
+
+      <div class="score-foot">
+        <span>Scored against 18,400+ pitches sent through Newcollab</span>
+        <span class="quota">1 of 1 free scores used · Pro</span>
+      </div>
+
+    </div>
+
+    <!-- send -->
+    <div class="actions">
+      <button class="send-btn">Send Pitch</button>
+      <div class="send-foot">via email</div>
+
+      <div class="sec-actions">
+        <button class="sec-btn">Copy pitch</button>
+        <button class="sec-btn">Rewrite pitch</button>
+      </div>
+
+      <div class="quotaline">Contact 3 of 3 used this month</div>
+    </div>
+
+  </div>
+</div>
+
+<div class="legend">
+  <b>Score card states:</b> green (80+) — ship it · amber (50–79, shown above) — fixable · red (&lt;50) — rewrite before sending.
+</div>
+
+</body>
+</html>

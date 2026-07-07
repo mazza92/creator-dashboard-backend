@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>How It Works — Newcollab</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #f3f4f6;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    padding: 40px 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 40px;
+  }
+
+  .section-label {
+    font-size: 11px;
+    font-weight: 700;
+    color: #9ca3af;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    align-self: flex-start;
+    max-width: 720px;
+    width: 100%;
+  }
+
+  /* ════════════════════════════
+     VARIANT A — Outcome-first
+  ════════════════════════════ */
+  .how-card {
+    width: 100%;
+    max-width: 720px;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 16px;
+    padding: 22px 24px 20px;
+  }
+
+  .how-header {
+    margin-bottom: 18px;
+  }
+
+  .how-eyebrow {
+    font-size: 11px;
+    font-weight: 700;
+    color: #E11D48;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    margin-bottom: 4px;
+  }
+
+  .how-title {
+    font-size: 17px;
+    font-weight: 800;
+    color: #0f0f0f;
+    line-height: 1.25;
+  }
+
+  .how-title span {
+    color: #059669;
+  }
+
+  .steps {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 0;
+    position: relative;
+  }
+
+  /* connector line between steps */
+  .steps::before {
+    content: '';
+    position: absolute;
+    top: 22px;
+    left: calc(16.6% + 12px);
+    right: calc(16.6% + 12px);
+    height: 2px;
+    background: linear-gradient(90deg, #E11D48 0%, #7c3aed 50%, #059669 100%);
+    opacity: .25;
+    z-index: 0;
+  }
+
+  .step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: 0 12px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .step-icon-wrap {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    margin-bottom: 10px;
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .step:nth-child(1) .step-icon-wrap { background: #fff0f3; border: 2px solid #fecdd3; }
+  .step:nth-child(2) .step-icon-wrap { background: #faf5ff; border: 2px solid #e9d5ff; }
+  .step:nth-child(3) .step-icon-wrap { background: #f0fdf4; border: 2px solid #bbf7d0; }
+
+  .step-num {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #0f0f0f;
+    color: #fff;
+    font-size: 9px;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .step-outcome {
+    font-size: 13.5px;
+    font-weight: 800;
+    color: #0f0f0f;
+    line-height: 1.25;
+    margin-bottom: 5px;
+  }
+
+  .step-detail {
+    font-size: 11.5px;
+    color: #6b7280;
+    line-height: 1.45;
+  }
+
+  .step-detail strong {
+    color: #374151;
+    font-weight: 600;
+  }
+
+  .step-time {
+    display: inline-block;
+    margin-top: 6px;
+    background: #f3f4f6;
+    border-radius: 20px;
+    padding: 2px 8px;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #6b7280;
+  }
+
+  .step:nth-child(3) .step-time {
+    background: #f0fdf4;
+    color: #059669;
+  }
+
+  /* ════════════════════════════
+     VARIANT B — Horizontal minimal
+  ════════════════════════════ */
+
+  .how-card-b {
+    width: 100%;
+    max-width: 720px;
+    background: linear-gradient(135deg, #0f0f0f 0%, #1f1135 100%);
+    border-radius: 16px;
+    padding: 22px 24px 20px;
+  }
+
+  .how-eyebrow-b {
+    font-size: 11px;
+    font-weight: 700;
+    color: #9ca3af;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    margin-bottom: 6px;
+  }
+
+  .how-title-b {
+    font-size: 17px;
+    font-weight: 800;
+    color: #fff;
+    margin-bottom: 20px;
+  }
+
+  .how-title-b span { color: #4ade80; }
+
+  .steps-b {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr auto 1fr;
+    align-items: start;
+    gap: 0;
+  }
+
+  .step-b {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .step-b-icon {
+    font-size: 22px;
+    margin-bottom: 2px;
+  }
+
+  .step-b-label {
+    font-size: 12.5px;
+    font-weight: 800;
+    color: #fff;
+    line-height: 1.2;
+  }
+
+  .step-b-sub {
+    font-size: 11px;
+    color: #9ca3af;
+    line-height: 1.4;
+  }
+
+  .arrow {
+    color: #374151;
+    font-size: 18px;
+    padding: 0 10px;
+    margin-top: 14px;
+    align-self: flex-start;
+  }
+
+  /* ════════════════════════════
+     VARIANT C — Single line punch
+  ════════════════════════════ */
+  .how-card-c {
+    width: 100%;
+    max-width: 720px;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 16px;
+    padding: 20px 24px;
+  }
+
+  .punch-header {
+    font-size: 15px;
+    font-weight: 800;
+    color: #0f0f0f;
+    margin-bottom: 14px;
+  }
+
+  .punch-header span { color: #E11D48; }
+
+  .steps-c {
+    display: flex;
+    gap: 0;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .step-c {
+    flex: 1;
+    padding: 14px 16px;
+    border-right: 1px solid #e5e7eb;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    transition: background .15s;
+    cursor: default;
+  }
+
+  .step-c:last-child { border-right: none; }
+  .step-c:hover { background: #fafafa; }
+
+  .step-c-top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .step-c-emoji { font-size: 18px; }
+
+  .step-c-num {
+    font-size: 10px;
+    font-weight: 800;
+    color: #d1d5db;
+  }
+
+  .step-c-label {
+    font-size: 13px;
+    font-weight: 800;
+    color: #0f0f0f;
+    line-height: 1.25;
+  }
+
+  .step-c-sub {
+    font-size: 11.5px;
+    color: #6b7280;
+    line-height: 1.4;
+  }
+
+  .step-c-pill {
+    display: inline-block;
+    margin-top: 6px;
+    padding: 2px 8px;
+    border-radius: 20px;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .pill-rose   { background: #fff0f3; color: #E11D48; }
+  .pill-violet { background: #faf5ff; color: #7c3aed; }
+  .pill-green  { background: #f0fdf4; color: #059669; }
+
+  .cta-nudge {
+    margin-top: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .cta-nudge-text {
+    font-size: 12px;
+    color: #6b7280;
+  }
+
+  .cta-btn {
+    background: #0f0f0f;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 9px 18px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: transform .1s, background .15s;
+  }
+
+  .cta-btn:hover { background: #E11D48; transform: scale(1.02); }
+
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════ -->
+<div class="section-label">Variant A — Outcome icons, light card (recommended)</div>
+
+<div class="how-card">
+  <div class="how-header">
+    <div class="how-eyebrow">How it works</div>
+    <div class="how-title">Pick a brand. We do the rest. <span>You get free PR.</span></div>
+  </div>
+
+  <div class="steps">
+
+    <div class="step">
+      <div class="step-icon-wrap">
+        ✍️
+        <div class="step-num">1</div>
+      </div>
+      <div class="step-outcome">Your pitch is ready to send</div>
+      <div class="step-detail">
+        We generate a <strong>personalised email</strong> to their PR inbox based on your niche, your audience and what gets brands to actually reply.
+      </div>
+      <span class="step-time">⏱ 30 seconds</span>
+    </div>
+
+    <div class="step">
+      <div class="step-icon-wrap">
+        📤
+        <div class="step-num">2</div>
+      </div>
+      <div class="step-outcome">Send it in one tap</div>
+      <div class="step-detail">
+        Review, edit if you want, then send <strong>direct from your inbox.</strong> It feels personal, custom and professional.
+      </div>
+      <span class="step-time">⏱ One tap</span>
+    </div>
+
+    <div class="step">
+      <div class="step-icon-wrap">
+        📦
+        <div class="step-num">3</div>
+      </div>
+      <div class="step-outcome">Brands reply. Packages arrive.</div>
+      <div class="step-detail">
+        We track every reply and notify you. Most creators hear back <strong>within 5 days.</strong>
+      </div>
+      <span class="step-time">🎉 Free products</span>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════ -->
+<div class="section-label">Variant B — Dark, bold (high-energy)</div>
+
+<div class="how-card-b">
+  <div class="how-eyebrow-b">How it works</div>
+  <div class="how-title-b">From zero to PR package. <span>Faster than you think.</span></div>
+
+  <div class="steps-b">
+
+    <div class="step-b">
+      <div class="step-b-icon">✍️</div>
+      <div class="step-b-label">AI writes your pitch</div>
+      <div class="step-b-sub">Personalised to the brand. Ready in 30 seconds.</div>
+    </div>
+
+    <div class="arrow">→</div>
+
+    <div class="step-b">
+      <div class="step-b-icon">📤</div>
+      <div class="step-b-label">Send from your inbox</div>
+      <div class="step-b-sub">One tap. Goes direct to their PR manager.</div>
+    </div>
+
+    <div class="arrow">→</div>
+
+    <div class="step-b">
+      <div class="step-b-icon">📦</div>
+      <div class="step-b-label">Package arrives</div>
+      <div class="step-b-sub">Brands reply within 5 days. You get the product.</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════ -->
+<div class="section-label">Variant C — 3-column card with inline CTA (highest conversion)</div>
+
+<div class="how-card-c">
+  <div class="punch-header">Your first PR package is <span>3 steps away.</span></div>
+
+  <div class="steps-c">
+
+    <div class="step-c">
+      <div class="step-c-top">
+        <div class="step-c-emoji">✍️</div>
+        <div class="step-c-num">STEP 1</div>
+      </div>
+      <div class="step-c-label">Pick a brand, we write the pitch</div>
+      <div class="step-c-sub">AI personalises it to your niche and their PR inbox. You just review.</div>
+      <span class="step-c-pill pill-rose">30 seconds</span>
+    </div>
+
+    <div class="step-c">
+      <div class="step-c-top">
+        <div class="step-c-emoji">📤</div>
+        <div class="step-c-num">STEP 2</div>
+      </div>
+      <div class="step-c-label">Send direct from your email</div>
+      <div class="step-c-sub">One tap. Lands in their inbox from you — feels personal, not automated.</div>
+      <span class="step-c-pill pill-violet">One tap</span>
+    </div>
+
+    <div class="step-c">
+      <div class="step-c-top">
+        <div class="step-c-emoji">📦</div>
+        <div class="step-c-num">STEP 3</div>
+      </div>
+      <div class="step-c-label">Brand replies. Package arrives.</div>
+      <div class="step-c-sub">We notify you the moment a brand replies. Most reply within 5 days.</div>
+      <span class="step-c-pill pill-green">Free products</span>
+    </div>
+
+  </div>
+
+  <div class="cta-nudge">
+    <div class="cta-nudge-text">5 free contacts included — no credit card needed</div>
+    <button class="cta-btn">Pitch your first brand →</button>
+  </div>
+
+</div>
+
+</body>
+</html>

@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Saved Tab — Newcollab Optimised</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #f3f4f6;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 32px 16px;
+    gap: 32px;
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  /* ── PHONE SHELL ── */
+  .phone {
+    width: 390px;
+    background: #fafaf9;
+    border-radius: 40px;
+    box-shadow: 0 24px 60px rgba(0,0,0,.14);
+    overflow: hidden;
+    padding-bottom: 80px;
+    position: relative;
+  }
+
+  /* ── NAV BAR ── */
+  .nav {
+    background: #fff;
+    padding: 16px 20px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid #f3f4f6;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+
+  .nav-logo {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 15px;
+    font-weight: 900;
+    color: #0f0f0f;
+  }
+
+  .nav-logo .n-box {
+    width: 28px; height: 28px;
+    background: #0f0f0f;
+    border-radius: 7px;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-size: 13px; font-weight: 900;
+  }
+
+  .nav-right { display: flex; align-items: center; gap: 12px; }
+
+  .avatar-sm {
+    width: 30px; height: 30px; border-radius: 50%;
+    background: linear-gradient(135deg,#E11D48,#7c3aed);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 800; color: #fff;
+  }
+
+  /* ── PAGE CONTENT ── */
+  .page { padding: 20px 16px 0; }
+
+  /* ── PAGE HEADER ── */
+  .page-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 16px;
+  }
+
+  .page-title { font-size: 22px; font-weight: 900; color: #0f0f0f; }
+  .page-sub { font-size: 12px; color: #6b7280; margin-top: 2px; }
+
+  /* ── PITCH QUOTA BANNER ── */
+  .quota-bar {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .quota-icon {
+    width: 36px; height: 36px; border-radius: 10px;
+    background: #f0fdf4;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; flex-shrink: 0;
+  }
+
+  .quota-text { flex: 1; }
+  .quota-title { font-size: 13px; font-weight: 700; color: #0f0f0f; }
+  .quota-sub { font-size: 11.5px; color: #6b7280; margin-top: 1px; }
+
+  .quota-pips {
+    display: flex; gap: 4px; align-items: center; flex-shrink: 0;
+  }
+
+  .pip {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: #e5e7eb;
+  }
+
+  .pip.used { background: #059669; }
+
+  /* ── SECTION LABEL ── */
+  .section-label {
+    font-size: 11px;
+    font-weight: 800;
+    color: #9ca3af;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .section-count {
+    background: #f3f4f6;
+    border-radius: 20px;
+    padding: 1px 7px;
+    font-size: 10.5px;
+    color: #6b7280;
+    font-weight: 700;
+  }
+
+  /* ── BRAND CARD ── */
+  .brand-card {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 14px;
+    padding: 14px;
+    margin-bottom: 10px;
+    transition: box-shadow .15s;
+  }
+
+  .brand-card:hover { box-shadow: 0 4px 14px rgba(0,0,0,.06); }
+
+  .brand-card-top {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .brand-logo {
+    width: 44px; height: 44px; border-radius: 10px;
+    background: #f3f4f6;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; flex-shrink: 0;
+    overflow: hidden; border: 1px solid #e5e7eb;
+  }
+
+  .brand-logo img { width: 100%; height: 100%; object-fit: cover; }
+
+  .brand-info { flex: 1; }
+
+  .brand-name { font-size: 15px; font-weight: 800; color: #0f0f0f; }
+  .brand-meta { font-size: 11.5px; color: #9ca3af; margin-top: 1px; }
+
+  .saved-chip {
+    background: #fafaf9;
+    border: 1px solid #e5e7eb;
+    border-radius: 20px;
+    padding: 3px 9px;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: #6b7280;
+    flex-shrink: 0;
+    display: flex; align-items: center; gap: 3px;
+  }
+
+  /* ── BRAND DESCRIPTION ── */
+  .brand-desc {
+    font-size: 12px;
+    color: #6b7280;
+    line-height: 1.4;
+    margin-bottom: 10px;
+  }
+
+  /* ── SIGNAL ROW ── */
+  .signal-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+  }
+
+  .response-chip {
+    display: flex; align-items: center; gap: 4px;
+    font-size: 12px; font-weight: 700;
+    padding: 3px 9px;
+    border-radius: 20px;
+  }
+
+  .response-high { background: #f0fdf4; color: #059669; }
+  .response-mid  { background: #fefce8; color: #ca8a04; }
+
+  .social-proof-line {
+    font-size: 11.5px;
+    color: #6b7280;
+    display: flex; align-items: center; gap: 4px;
+  }
+
+  .green-dot-sm {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #059669; flex-shrink: 0;
+  }
+
+  /* ── CTA BUTTON ── */
+  .cta-primary {
+    width: 100%;
+    background: #0f0f0f;
+    color: #fff;
+    border: none;
+    border-radius: 11px;
+    padding: 13px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 7px;
+    transition: background .15s, transform .1s;
+    letter-spacing: -.01em;
+  }
+
+  .cta-primary:hover { background: #E11D48; transform: scale(1.01); }
+
+  .cta-credit {
+    font-size: 11px;
+    font-weight: 500;
+    color: #6b7280;
+    text-align: center;
+    margin-top: 6px;
+  }
+
+  /* ── LOCKED UPGRADE CARD ── */
+  .locked-card {
+    background: linear-gradient(135deg, #1f1135 0%, #0f0f0f 100%);
+    border-radius: 14px;
+    padding: 16px 14px;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    cursor: pointer;
+    transition: transform .15s;
+  }
+
+  .locked-card:hover { transform: scale(1.01); }
+
+  .lock-icon-wrap {
+    width: 42px; height: 42px; border-radius: 10px;
+    background: rgba(124,58,237,.25);
+    border: 1px solid rgba(124,58,237,.4);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; flex-shrink: 0;
+  }
+
+  .locked-text { flex: 1; }
+
+  .locked-title {
+    font-size: 13.5px;
+    font-weight: 800;
+    color: #fff;
+    line-height: 1.25;
+  }
+
+  .locked-sub {
+    font-size: 11.5px;
+    color: #9ca3af;
+    margin-top: 3px;
+    line-height: 1.35;
+  }
+
+  .locked-cta {
+    background: linear-gradient(135deg, #7c3aed, #E11D48);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* ── PIPELINE (post-pitch state) ── */
+  .pipeline-row {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    margin-bottom: 16px;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .pipe-stage {
+    flex: 1;
+    padding: 10px 8px;
+    text-align: center;
+    border-right: 1px solid #f3f4f6;
+  }
+
+  .pipe-stage:last-child { border-right: none; }
+
+  .pipe-num {
+    font-size: 18px;
+    font-weight: 900;
+    color: #0f0f0f;
+  }
+
+  .pipe-num.green { color: #059669; }
+  .pipe-num.violet { color: #7c3aed; }
+
+  .pipe-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: #9ca3af;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    margin-top: 1px;
+  }
+
+  /* ── BOTTOM NAV ── */
+  .bottom-nav {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    background: #fff;
+    border-top: 1px solid #f3f4f6;
+    display: flex;
+    padding: 10px 0 16px;
+  }
+
+  .nav-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #9ca3af;
+    cursor: pointer;
+  }
+
+  .nav-item.active { color: #0f0f0f; }
+  .nav-item-icon { font-size: 18px; position: relative; }
+
+  .nav-badge {
+    position: absolute;
+    top: -3px; right: -6px;
+    background: #E11D48;
+    color: #fff;
+    border-radius: 10px;
+    font-size: 8px;
+    font-weight: 800;
+    padding: 1px 4px;
+    min-width: 14px;
+    text-align: center;
+  }
+
+  /* ── DIVIDER ── */
+  .divider {
+    height: 1px;
+    background: #f3f4f6;
+    margin: 6px 0 14px;
+  }
+
+  /* ── FILTER TABS ── */
+  .filter-tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 14px;
+  }
+
+  .filter-tab {
+    padding: 5px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid #e5e7eb;
+    background: #fff;
+    color: #6b7280;
+    transition: all .15s;
+  }
+
+  .filter-tab.active {
+    background: #0f0f0f;
+    color: #fff;
+    border-color: #0f0f0f;
+  }
+
+  /* ── PITCHED CARD (post-state) ── */
+  .pitched-banner {
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .pitched-icon { font-size: 20px; flex-shrink: 0; }
+
+  .pitched-text { flex: 1; }
+  .pitched-title { font-size: 13px; font-weight: 700; color: #059669; }
+  .pitched-sub { font-size: 11.5px; color: #6b7280; margin-top: 1px; }
+
+  .view-pipeline-btn {
+    background: #0f0f0f;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 7px 11px;
+    font-size: 11.5px;
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════
+     PHONE 1: Zero-pitch state (new user)
+══════════════════════════════════════════ -->
+<div class="phone">
+
+  <!-- Nav -->
+  <div class="nav">
+    <div class="nav-logo">
+      <div class="n-box">N</div>
+      newcollab
+    </div>
+    <div class="nav-right">
+      <span style="font-size:18px">🔔</span>
+      <div class="avatar-sm">M</div>
+    </div>
+  </div>
+
+  <div class="page">
+
+    <!-- Header -->
+    <div class="page-header">
+      <div>
+        <div class="page-title">My Pitches</div>
+        <div class="page-sub">2 brands ready to contact this month</div>
+      </div>
+    </div>
+
+    <!-- Pitch quota bar -->
+    <div class="quota-bar">
+      <div class="quota-icon">📨</div>
+      <div class="quota-text">
+        <div class="quota-title">5 free contacts this month</div>
+        <div class="quota-sub">0 used · resets Jul 1</div>
+      </div>
+      <div class="quota-pips">
+        <div class="pip"></div>
+        <div class="pip"></div>
+        <div class="pip"></div>
+      </div>
+    </div>
+
+    <!-- Filter tabs -->
+    <div class="filter-tabs">
+      <div class="filter-tab active">All (2)</div>
+      <div class="filter-tab">Waiting</div>
+      <div class="filter-tab">Replied</div>
+    </div>
+
+    <!-- Section label -->
+    <div class="section-label">
+      📌 Ready to contact
+      <span class="section-count">2</span>
+    </div>
+
+    <!-- Brand card 1 — Sweaty Betty -->
+    <div class="brand-card">
+      <div class="brand-card-top">
+        <div class="brand-logo">🏋️</div>
+        <div class="brand-info">
+          <div class="brand-name">Sweaty Betty</div>
+          <div class="brand-meta">fitness · Saved Jun 11</div>
+        </div>
+        <div class="saved-chip">📌 Saved</div>
+      </div>
+
+      <div class="brand-desc">
+        Sweaty Betty makes performance activewear for women who train hard. Known for their Power Leggings and studio-to-street collections.
+      </div>
+
+      <div class="signal-row">
+        <div class="response-chip response-mid">37% response rate</div>
+        <div class="social-proof-line">
+          <div class="green-dot-sm"></div>
+          1 fitness creator got a reply this month
+        </div>
+      </div>
+
+      <button class="cta-primary">
+        ✉️ Pitch Sweaty Betty · Use 1 credit
+      </button>
+      <div class="cta-credit">2 credits remaining after this pitch</div>
+    </div>
+
+    <!-- Brand card 2 — Aura Bora -->
+    <div class="brand-card">
+      <div class="brand-card-top">
+        <div class="brand-logo" style="background:#fef3c7">🥤</div>
+        <div class="brand-info">
+          <div class="brand-name">Aura Bora</div>
+          <div class="brand-meta">food & bev · Saved May 20</div>
+        </div>
+        <div class="saved-chip">📌 Saved</div>
+      </div>
+
+      <div class="brand-desc">
+        Aura Bora makes herb-infused sparkling water in flavors like lavender and lemongrass. No sweeteners, no calories.
+      </div>
+
+      <div class="signal-row">
+        <div class="response-chip response-high">🔥 54% response rate</div>
+        <div class="social-proof-line">
+          <div class="green-dot-sm"></div>
+          3 wellness creators got a reply this month
+        </div>
+      </div>
+
+      <button class="cta-primary">
+        ✉️ Pitch Aura Bora · Use 1 credit
+      </button>
+      <div class="cta-credit">2 credits remaining after this pitch</div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Locked upgrade card -->
+    <div class="section-label">
+      🔒 More saved brands
+      <span class="section-count">+4 locked</span>
+    </div>
+
+    <div class="locked-card">
+      <div class="lock-icon-wrap">🔒</div>
+      <div class="locked-text">
+        <div class="locked-title">4 more brands match your saved categories</div>
+        <div class="locked-sub">Pro removes the 3-pitch limit so you can contact all of them.</div>
+      </div>
+      <button class="locked-cta">$19/mo</button>
+    </div>
+
+  </div>
+
+  <!-- Bottom nav -->
+  <div class="bottom-nav">
+    <div class="nav-item">
+      <div class="nav-item-icon">✨</div>
+      For You
+    </div>
+    <div class="nav-item">
+      <div class="nav-item-icon">🔍</div>
+      Discover
+    </div>
+    <div class="nav-item active">
+      <div class="nav-item-icon">
+        🔖
+        <span class="nav-badge">2</span>
+      </div>
+      Saved
+    </div>
+    <div class="nav-item">
+      <div class="nav-item-icon">📋</div>
+      My Kit
+    </div>
+  </div>
+
+</div>
+
+
+<!-- ══════════════════════════════════════════
+     PHONE 2: Post-pitch state (1 pitch sent, waiting)
+══════════════════════════════════════════ -->
+<div class="phone">
+
+  <!-- Nav -->
+  <div class="nav">
+    <div class="nav-logo">
+      <div class="n-box">N</div>
+      newcollab
+    </div>
+    <div class="nav-right">
+      <span style="font-size:18px">🔔</span>
+      <div class="avatar-sm">M</div>
+    </div>
+  </div>
+
+  <div class="page">
+
+    <!-- Header -->
+    <div class="page-header">
+      <div>
+        <div class="page-title">My Pitches</div>
+        <div class="page-sub">1 pitch out · reply expected in ~5 days</div>
+      </div>
+    </div>
+
+    <!-- Pipeline row (shown after first pitch) -->
+    <div class="pipeline-row">
+      <div class="pipe-stage">
+        <div class="pipe-num green">1</div>
+        <div class="pipe-label">Contacted</div>
+      </div>
+      <div class="pipe-stage">
+        <div class="pipe-num violet">1</div>
+        <div class="pipe-label">Waiting</div>
+      </div>
+      <div class="pipe-stage">
+        <div class="pipe-num">0</div>
+        <div class="pipe-label">Won</div>
+      </div>
+    </div>
+
+    <!-- Pitch sent confirmation -->
+    <div class="pitched-banner">
+      <div class="pitched-icon">📬</div>
+      <div class="pitched-text">
+        <div class="pitched-title">Your pitch to Aura Bora is in their inbox</div>
+        <div class="pitched-sub">Avg reply time ~5 days · Most reply within the week</div>
+      </div>
+      <button class="view-pipeline-btn">Track →</button>
+    </div>
+
+    <!-- Quota bar — 1 used -->
+    <div class="quota-bar">
+      <div class="quota-icon">📨</div>
+      <div class="quota-text">
+        <div class="quota-title">4 free contacts left this month</div>
+        <div class="quota-sub">1 used · resets Jul 1</div>
+      </div>
+      <div class="quota-pips">
+        <div class="pip used"></div>
+        <div class="pip"></div>
+        <div class="pip"></div>
+      </div>
+    </div>
+
+    <!-- Filter tabs -->
+    <div class="filter-tabs">
+      <div class="filter-tab active">All (2)</div>
+      <div class="filter-tab">Waiting (1)</div>
+      <div class="filter-tab">Replied</div>
+    </div>
+
+    <!-- Section label -->
+    <div class="section-label">
+      📌 Ready to contact
+      <span class="section-count">1</span>
+    </div>
+
+    <!-- Brand card — Sweaty Betty (still unsent) -->
+    <div class="brand-card">
+      <div class="brand-card-top">
+        <div class="brand-logo">🏋️</div>
+        <div class="brand-info">
+          <div class="brand-name">Sweaty Betty</div>
+          <div class="brand-meta">fitness · Saved Jun 11</div>
+        </div>
+        <div class="saved-chip">📌 Saved</div>
+      </div>
+
+      <div class="brand-desc">
+        Sweaty Betty makes performance activewear for women who train hard. Known for their Power Leggings and studio-to-street collections.
+      </div>
+
+      <div class="signal-row">
+        <div class="response-chip response-mid">37% response rate</div>
+        <div class="social-proof-line">
+          <div class="green-dot-sm"></div>
+          1 fitness creator got a reply this month
+        </div>
+      </div>
+
+      <button class="cta-primary">
+        ✉️ Pitch Sweaty Betty · Use 1 credit
+      </button>
+      <div class="cta-credit">1 credit remaining after this pitch</div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Waiting section -->
+    <div class="section-label">
+      ⏳ Waiting for reply
+      <span class="section-count">1</span>
+    </div>
+
+    <!-- Aura Bora — waiting state -->
+    <div class="brand-card" style="opacity:.85">
+      <div class="brand-card-top">
+        <div class="brand-logo" style="background:#fef3c7">🥤</div>
+        <div class="brand-info">
+          <div class="brand-name">Aura Bora</div>
+          <div class="brand-meta">food & bev · Pitched today</div>
+        </div>
+        <div class="saved-chip" style="background:#f0fdf4;border-color:#bbf7d0;color:#059669">📬 Sent</div>
+      </div>
+
+      <div class="signal-row">
+        <div class="response-chip response-high">🔥 54% response rate</div>
+        <div class="social-proof-line">
+          <div class="green-dot-sm"></div>
+          Reply expected in ~5 days
+        </div>
+      </div>
+
+      <button class="cta-primary" style="background:#f3f4f6;color:#6b7280;cursor:default">
+        ⏳ Waiting for reply
+      </button>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Locked upgrade card -->
+    <div class="locked-card">
+      <div class="lock-icon-wrap">🔒</div>
+      <div class="locked-text">
+        <div class="locked-title">4 more brands match your saved categories</div>
+        <div class="locked-sub">Pro removes the 3-pitch limit so you can contact all of them.</div>
+      </div>
+      <button class="locked-cta">$19/mo</button>
+    </div>
+
+  </div>
+
+  <!-- Bottom nav -->
+  <div class="bottom-nav">
+    <div class="nav-item">
+      <div class="nav-item-icon">✨</div>
+      For You
+    </div>
+    <div class="nav-item">
+      <div class="nav-item-icon">🔍</div>
+      Discover
+    </div>
+    <div class="nav-item active">
+      <div class="nav-item-icon">
+        🔖
+        <span class="nav-badge">2</span>
+      </div>
+      Saved
+    </div>
+    <div class="nav-item">
+      <div class="nav-item-icon">📋</div>
+      My Kit
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

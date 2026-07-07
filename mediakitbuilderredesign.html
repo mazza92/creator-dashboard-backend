@@ -1,0 +1,1182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Newcollab — Media Kit Builder</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #EEECEA;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif;
+  padding: 48px 24px 80px;
+}
+
+/* ── PAGE ──────────────────────────────────────────────────── */
+.page-label { text-align: center; font-size: 11px; font-weight: 700; color: #9CA3AF; letter-spacing: 0.6px; text-transform: uppercase; margin-bottom: 8px; }
+.page-title { text-align: center; font-size: 26px; font-weight: 900; color: #0F0F0F; margin-bottom: 6px; }
+.page-sub { text-align: center; font-size: 14px; color: #6B7280; margin-bottom: 56px; }
+
+/* ── SECTION LABELS ─────────────────────────────────────────── */
+.section-row { display: flex; gap: 40px; justify-content: center; align-items: flex-start; flex-wrap: wrap; margin-bottom: 64px; }
+.section-col { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.section-chip { background: #0F0F0F; color: #fff; font-size: 11px; font-weight: 700; padding: 5px 14px; border-radius: 20px; }
+.section-note { font-size: 12px; color: #9CA3AF; text-align: center; max-width: 340px; line-height: 1.5; }
+
+/* ── PHONE SHELL ─────────────────────────────────────────────── */
+.phone {
+  width: 390px;
+  background: #fff;
+  border-radius: 48px;
+  box-shadow: 0 40px 100px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.06);
+  overflow: hidden;
+}
+.notch {
+  background: #0F0F0F;
+  height: 44px;
+  display: flex; align-items: center; justify-content: center;
+}
+.notch::after {
+  content: '';
+  width: 120px; height: 28px;
+  background: #0F0F0F;
+  border-radius: 0 0 20px 20px;
+  border: 2px solid #1a1a1a; border-top: none;
+}
+.screen { background: #FAFAF9; }
+
+/* ── NAV ──────────────────────────────────────────────────────── */
+.nav {
+  background: #fff;
+  padding: 10px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #F3F4F6;
+}
+.nav-back { font-size: 13px; font-weight: 600; color: #6B7280; display: flex; align-items: center; gap: 4px; }
+.nav-title { font-size: 14px; font-weight: 800; color: #0F0F0F; }
+.nav-action { font-size: 13px; font-weight: 700; color: #7C3AED; }
+
+/* ── PROGRESS BAR ──────────────────────────────────────────────── */
+.progress-wrap { padding: 14px 18px 0; }
+.progress-meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.progress-step { font-size: 11px; font-weight: 700; color: #9CA3AF; }
+.progress-label { font-size: 11px; font-weight: 700; color: #7C3AED; }
+.progress-bar { height: 3px; background: #F3F4F6; border-radius: 2px; overflow: hidden; }
+.progress-fill { height: 100%; border-radius: 2px; background: linear-gradient(90deg, #7C3AED, #E11D48); }
+
+/* ── STEP CONTENT ─────────────────────────────────────────────── */
+.step-content { padding: 28px 18px 20px; }
+.step-q { font-size: 20px; font-weight: 900; color: #0F0F0F; line-height: 1.2; margin-bottom: 6px; }
+.step-sub { font-size: 13px; color: #6B7280; margin-bottom: 24px; line-height: 1.4; }
+
+/* URL input */
+.url-input-wrap {
+  border: 2px solid #E5E7EB;
+  border-radius: 14px;
+  overflow: hidden;
+  transition: border-color 0.2s;
+}
+.url-input-wrap.active { border-color: #7C3AED; }
+.url-input-inner { display: flex; align-items: center; padding: 14px 14px; gap: 10px; }
+.url-icon { font-size: 18px; flex-shrink: 0; }
+.url-field { flex: 1; font-size: 14px; color: #0F0F0F; border: none; outline: none; background: transparent; font-family: inherit; }
+.url-field::placeholder { color: #D1D5DB; }
+.url-paste-btn {
+  background: #F3F4F6; color: #374151;
+  font-size: 12px; font-weight: 700;
+  padding: 6px 12px; border-radius: 8px;
+  border: none; cursor: pointer; flex-shrink: 0;
+}
+.url-detected {
+  padding: 8px 14px 10px;
+  background: #F0FDF4;
+  display: flex; align-items: center; gap: 8px;
+  border-top: 1px solid #A7F3D0;
+}
+.url-detected-dot { width: 8px; height: 8px; border-radius: 50%; background: #10B981; flex-shrink: 0; }
+.url-detected-text { font-size: 11.5px; font-weight: 600; color: #059669; }
+
+/* Platform chips */
+.platform-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 20px; }
+.platform-chip {
+  padding: 12px 14px;
+  border: 2px solid #E5E7EB;
+  border-radius: 14px;
+  display: flex; align-items: center; gap: 10px;
+  cursor: pointer; transition: all 0.15s;
+}
+.platform-chip.selected { border-color: #7C3AED; background: #F5F3FF; }
+.platform-chip-icon { font-size: 20px; }
+.platform-chip-label { font-size: 13px; font-weight: 700; color: #0F0F0F; }
+
+/* Collab type pills */
+.collab-pills { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.collab-pill {
+  padding: 9px 16px;
+  border: 2px solid #E5E7EB;
+  border-radius: 20px;
+  font-size: 13px; font-weight: 600;
+  color: #374151; cursor: pointer;
+  transition: all 0.15s;
+}
+.collab-pill.selected { border-color: #0F0F0F; background: #0F0F0F; color: #fff; }
+
+/* Brand input */
+.brand-input {
+  border: 2px solid #E5E7EB;
+  border-radius: 14px;
+  padding: 13px 14px;
+  font-size: 14px;
+  color: #0F0F0F;
+  width: 100%;
+  outline: none;
+  font-family: inherit;
+  margin-bottom: 12px;
+  transition: border-color 0.2s;
+}
+.brand-input:focus { border-color: #7C3AED; }
+.brand-input::placeholder { color: #D1D5DB; }
+
+/* Stat inputs */
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+.stat-input-wrap { background: #F9FAFB; border: 1.5px solid #E5E7EB; border-radius: 12px; padding: 11px 13px; }
+.stat-input-label { font-size: 10px; font-weight: 700; color: #9CA3AF; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 4px; }
+.stat-input-val { font-size: 16px; font-weight: 800; color: #0F0F0F; }
+.stat-input-val.placeholder { color: #D1D5DB; font-weight: 500; font-size: 14px; }
+
+/* Preview card (step 3) */
+.preview-card-wrap { margin-top: 16px; }
+.preview-card-label { font-size: 10px; font-weight: 700; color: #9CA3AF; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 8px; }
+.preview-card {
+  background: #fff;
+  border: 1.5px solid #E5E7EB;
+  border-radius: 16px;
+  overflow: hidden;
+}
+.preview-card-img {
+  height: 120px;
+  background: linear-gradient(135deg, #F9FAFB, #F3F4F6);
+  display: flex; align-items: center; justify-content: center;
+  position: relative;
+  overflow: hidden;
+}
+.preview-card-img-inner {
+  width: 100%; height: 100%;
+  background: linear-gradient(135deg, #FDF2F8 0%, #F5F3FF 50%, #EFF6FF 100%);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 32px;
+}
+.preview-card-badge {
+  position: absolute; top: 8px; left: 8px;
+  background: #0F0F0F; color: #fff;
+  font-size: 10px; font-weight: 700;
+  padding: 3px 9px; border-radius: 8px;
+}
+.preview-card-body { padding: 12px 13px 13px; }
+.preview-card-brand { font-size: 13px; font-weight: 800; color: #0F0F0F; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+.preview-card-collab { font-size: 10px; font-weight: 700; background: #D1FAE5; color: #065F46; padding: 2px 8px; border-radius: 8px; }
+.preview-card-stats { display: flex; gap: 12px; }
+.preview-card-stat { font-size: 11px; color: #6B7280; font-weight: 500; }
+.preview-card-stat strong { color: #0F0F0F; font-weight: 800; }
+
+/* Step CTA */
+.step-cta {
+  width: 100%;
+  background: #0F0F0F; color: #fff;
+  font-size: 14px; font-weight: 800;
+  padding: 15px; border-radius: 14px;
+  border: none; cursor: pointer;
+  margin-top: 16px;
+}
+.step-cta.violet { background: linear-gradient(135deg, #7C3AED, #E11D48); }
+
+/* ── GUIDE SCREEN ─────────────────────────────────────────────── */
+.guide-hero {
+  padding: 20px 18px 16px;
+  background: #0F0F0F;
+}
+.guide-eyebrow { font-size: 10px; font-weight: 700; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+.guide-title { font-size: 19px; font-weight: 900; color: #fff; line-height: 1.2; margin-bottom: 4px; }
+.guide-sub { font-size: 12px; color: rgba(255,255,255,0.6); }
+
+.guide-section { padding: 16px 18px 0; }
+.guide-section-label { font-size: 11px; font-weight: 800; color: #9CA3AF; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 10px; }
+
+/* Product suggestions */
+.product-scroll { display: flex; gap: 8px; overflow-x: auto; padding: 0 0 8px; -webkit-overflow-scrolling: touch; }
+.product-scroll::-webkit-scrollbar { display: none; }
+.product-card {
+  flex-shrink: 0;
+  width: 100px;
+  background: #fff;
+  border: 1.5px solid #E5E7EB;
+  border-radius: 14px;
+  padding: 12px 10px;
+  text-align: center;
+  cursor: pointer;
+}
+.product-card.selected { border-color: #E11D48; background: #FFF1F2; }
+.product-card-emoji { font-size: 26px; margin-bottom: 6px; }
+.product-card-name { font-size: 11px; font-weight: 700; color: #0F0F0F; line-height: 1.3; }
+.product-card-sub { font-size: 10px; color: #9CA3AF; margin-top: 2px; }
+
+/* Sequence steps */
+.sequence-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.sequence-item {
+  background: #fff;
+  border-radius: 12px;
+  padding: 12px 13px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1.5px solid #F3F4F6;
+}
+.seq-num {
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  background: #0F0F0F;
+  color: #fff;
+  font-size: 11px; font-weight: 800;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0; margin-top: 1px;
+}
+.seq-text { flex: 1; }
+.seq-title { font-size: 13px; font-weight: 700; color: #0F0F0F; }
+.seq-sub { font-size: 11.5px; color: #6B7280; margin-top: 2px; line-height: 1.4; }
+
+/* Script */
+.script-card {
+  background: #F5F3FF;
+  border: 1.5px solid #DDD6FE;
+  border-radius: 14px;
+  padding: 14px;
+  margin-bottom: 16px;
+}
+.script-label { font-size: 10px; font-weight: 800; color: #7C3AED; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 8px; }
+.script-text { font-size: 13px; color: #374151; line-height: 1.6; font-style: italic; }
+
+/* ── ─ ─ ─ ─ ─ ─ ─ PORTFOLIO BENTO ─ ─ ─ ─ ─ ─ ─ ── */
+
+.portfolio-section {
+  max-width: 900px;
+  margin: 0 auto 64px;
+}
+.portfolio-section-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: #0F0F0F; color: #fff;
+  font-size: 11px; font-weight: 700;
+  padding: 5px 14px; border-radius: 20px;
+  margin-bottom: 14px;
+}
+.portfolio-note { font-size: 12px; color: #9CA3AF; margin-bottom: 32px; }
+
+.kit-page {
+  background: #fff;
+  border-radius: 28px;
+  overflow: hidden;
+  box-shadow: 0 24px 80px rgba(0,0,0,0.1), 0 2px 8px rgba(0,0,0,0.04);
+}
+
+/* Kit header */
+.kit-header {
+  background: #0F0F0F;
+  padding: 40px 40px 32px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+.kit-creator { display: flex; align-items: center; gap: 18px; }
+.kit-avatar {
+  width: 72px; height: 72px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #7C3AED, #E11D48);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 28px; font-weight: 900; color: #fff;
+  flex-shrink: 0; border: 3px solid rgba(255,255,255,0.15);
+  overflow: hidden;
+}
+.kit-creator-info { }
+.kit-name { font-size: 24px; font-weight: 900; color: #fff; margin-bottom: 4px; }
+.kit-tagline { font-size: 14px; color: rgba(255,255,255,0.6); margin-bottom: 10px; line-height: 1.4; }
+.kit-niche-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+.kit-niche-tag {
+  background: rgba(255,255,255,0.1);
+  color: rgba(255,255,255,0.8);
+  font-size: 11px; font-weight: 600;
+  padding: 4px 11px; border-radius: 20px;
+  text-transform: capitalize;
+}
+.kit-header-right { text-align: right; flex-shrink: 0; }
+.kit-views {
+  background: rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+}
+.kit-views-val { font-size: 22px; font-weight: 900; color: #fff; }
+.kit-views-label { font-size: 10px; color: rgba(255,255,255,0.5); text-transform: uppercase; letter-spacing: 0.4px; margin-top: 2px; }
+.kit-share-btn {
+  background: #fff; color: #0F0F0F;
+  font-size: 12px; font-weight: 800;
+  padding: 9px 18px; border-radius: 10px;
+  border: none; cursor: pointer;
+}
+
+/* Kit stats strip */
+.kit-stats-strip {
+  display: flex;
+  border-bottom: 1px solid #F3F4F6;
+}
+.kit-stat-item {
+  flex: 1;
+  padding: 20px 24px;
+  border-right: 1px solid #F3F4F6;
+  text-align: center;
+}
+.kit-stat-item:last-child { border-right: none; }
+.kit-stat-val { font-size: 22px; font-weight: 900; color: #0F0F0F; }
+.kit-stat-sub { font-size: 11px; color: #9CA3AF; margin-top: 2px; font-weight: 500; }
+.kit-stat-platform {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; font-weight: 700;
+  color: #6B7280; margin-top: 3px;
+}
+
+/* Bento grid */
+.bento-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: auto;
+  gap: 2px;
+  background: #F3F4F6;
+  padding: 2px;
+}
+
+/* Individual bento cells */
+.bento-cell {
+  background: #fff;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Span variations */
+.bento-cell.span-2-col { grid-column: span 2; }
+.bento-cell.span-full { grid-column: span 3; }
+.bento-cell.tall { grid-row: span 2; }
+
+/* Post card */
+.post-cell { cursor: pointer; }
+.post-cell-img {
+  width: 100%; padding-top: 100%;
+  position: relative; overflow: hidden;
+}
+.post-cell-img-inner {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 40px;
+}
+.post-cell-overlay {
+  position: absolute; inset: 0;
+  background: linear-gradient(to top, rgba(0,0,0,0.7) 0%, transparent 50%);
+  opacity: 0;
+  transition: opacity 0.2s;
+  display: flex; align-items: flex-end;
+  padding: 12px;
+}
+.post-cell:hover .post-cell-overlay { opacity: 1; }
+.post-cell-stats { display: flex; gap: 10px; }
+.post-cell-stat { font-size: 12px; font-weight: 700; color: #fff; }
+.post-cell-badges {
+  position: absolute; top: 8px; left: 8px;
+  display: flex; gap: 4px;
+}
+.badge-platform {
+  font-size: 9px; font-weight: 800;
+  padding: 3px 7px; border-radius: 6px;
+  text-transform: uppercase; letter-spacing: 0.3px;
+}
+.badge-ig { background: #E11D48; color: #fff; }
+.badge-tt { background: #0F0F0F; color: #fff; }
+.badge-yt { background: #EF4444; color: #fff; }
+.badge-collab {
+  font-size: 9px; font-weight: 800;
+  padding: 3px 7px; border-radius: 6px;
+  background: rgba(255,255,255,0.9); color: #0F0F0F;
+}
+.post-cell-info { padding: 10px 12px 12px; }
+.post-cell-brand { font-size: 12px; font-weight: 800; color: #0F0F0F; margin-bottom: 3px; }
+.post-cell-meta { font-size: 11px; color: #9CA3AF; }
+
+/* Stats bento cell */
+.stats-cell { padding: 20px 22px; display: flex; flex-direction: column; justify-content: center; }
+.stats-cell-val { font-size: 32px; font-weight: 900; color: #0F0F0F; line-height: 1; }
+.stats-cell-unit { font-size: 16px; font-weight: 700; color: #9CA3AF; }
+.stats-cell-label { font-size: 12px; color: #6B7280; margin-top: 4px; }
+.stats-cell-sub { font-size: 11px; color: #10B981; font-weight: 600; margin-top: 2px; }
+
+/* Brands cell */
+.brands-cell { padding: 20px 22px; }
+.brands-cell-label { font-size: 11px; font-weight: 800; color: #9CA3AF; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 14px; }
+.brands-logos { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.brand-logo-pill {
+  background: #F9FAFB;
+  border: 1px solid #E5E7EB;
+  border-radius: 10px;
+  padding: 7px 13px;
+  font-size: 12px; font-weight: 800; color: #374151;
+}
+
+/* Content types cell */
+.content-types-cell { padding: 20px 22px; }
+.content-types-label { font-size: 11px; font-weight: 800; color: #9CA3AF; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 12px; }
+.content-type-bars { display: flex; flex-direction: column; gap: 8px; }
+.content-type-row { display: flex; align-items: center; gap: 10px; }
+.content-type-name { font-size: 12px; font-weight: 600; color: #374151; width: 80px; flex-shrink: 0; }
+.content-type-bar { flex: 1; height: 6px; background: #F3F4F6; border-radius: 3px; overflow: hidden; }
+.content-type-fill { height: 100%; border-radius: 3px; background: #0F0F0F; }
+.content-type-pct { font-size: 11px; font-weight: 700; color: #9CA3AF; width: 28px; text-align: right; flex-shrink: 0; }
+
+/* Rate card cell */
+.rate-cell { padding: 22px 24px; }
+.rate-cell-label { font-size: 11px; font-weight: 800; color: #9CA3AF; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 14px; }
+.rate-rows { display: flex; flex-direction: column; gap: 8px; }
+.rate-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 13px; background: #F9FAFB; border-radius: 11px; }
+.rate-row-label { font-size: 13px; font-weight: 600; color: #374151; }
+.rate-row-price { font-size: 14px; font-weight: 900; color: #0F0F0F; }
+.rate-open { background: #F0FDF4; }
+.rate-open .rate-row-price { color: #059669; }
+
+/* CTA cell */
+.cta-cell {
+  padding: 28px 32px;
+  background: #0F0F0F;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+.cta-cell-text { }
+.cta-cell-title { font-size: 18px; font-weight: 900; color: #fff; margin-bottom: 4px; }
+.cta-cell-sub { font-size: 13px; color: rgba(255,255,255,0.5); }
+.cta-cell-btn {
+  background: #fff; color: #0F0F0F;
+  font-size: 14px; font-weight: 800;
+  padding: 13px 24px; border-radius: 12px;
+  border: none; cursor: pointer;
+  white-space: nowrap; flex-shrink: 0;
+}
+
+/* Kit footer */
+.kit-footer {
+  padding: 14px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+  border-top: 1px solid #F3F4F6;
+}
+.kit-footer-left { font-size: 12px; color: #9CA3AF; }
+.kit-footer-left strong { color: #0F0F0F; }
+.kit-footer-right { font-size: 12px; font-weight: 700; color: #9CA3AF; }
+.kit-footer-brand { color: #E11D48; font-weight: 800; }
+
+/* Post image backgrounds */
+.img-pink { background: linear-gradient(135deg, #FDF2F8, #FCE7F3); }
+.img-purple { background: linear-gradient(135deg, #F5F3FF, #EDE9FE); }
+.img-green { background: linear-gradient(135deg, #ECFDF5, #D1FAE5); }
+.img-blue { background: linear-gradient(135deg, #EFF6FF, #DBEAFE); }
+.img-amber { background: linear-gradient(135deg, #FFFBEB, #FEF3C7); }
+.img-slate { background: linear-gradient(135deg, #F8FAFC, #F1F5F9); }
+
+/* ── TRACKING DASHBOARD ─────────────────────────────────────── */
+.tracker-wrap {
+  max-width: 900px;
+  margin: 0 auto;
+}
+.tracker-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 24px; }
+.tracker-card {
+  background: #fff;
+  border-radius: 18px;
+  padding: 20px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+}
+.tracker-card-val { font-size: 28px; font-weight: 900; color: #0F0F0F; }
+.tracker-card-label { font-size: 11px; color: #9CA3AF; margin-top: 3px; }
+.tracker-card-change { font-size: 11px; font-weight: 700; color: #10B981; margin-top: 4px; }
+
+.tracker-views {
+  background: #fff;
+  border-radius: 18px;
+  overflow: hidden;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+}
+.tracker-views-header {
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid #F3F4F6;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.tracker-views-title { font-size: 14px; font-weight: 800; color: #0F0F0F; }
+.tracker-views-sub { font-size: 12px; color: #9CA3AF; }
+.tracker-row {
+  padding: 13px 20px;
+  border-bottom: 1px solid #F9FAFB;
+  display: flex; align-items: center; gap: 12px;
+}
+.tracker-row:last-child { border-bottom: none; }
+.tracker-brand-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.tracker-info { flex: 1; }
+.tracker-brand-name { font-size: 13px; font-weight: 700; color: #0F0F0F; }
+.tracker-detail { font-size: 11px; color: #9CA3AF; margin-top: 1px; }
+.tracker-time { font-size: 11px; color: #9CA3AF; white-space: nowrap; }
+.tracker-actions-chip {
+  font-size: 10px; font-weight: 700;
+  padding: 3px 9px; border-radius: 8px;
+  background: #FEF3C7; color: #92400E;
+}
+.tracker-actions-chip.live { background: #D1FAE5; color: #065F46; }
+
+/* No content yet indicator */
+.empty-post {
+  border: 2px dashed #E5E7EB;
+  border-radius: 14px;
+  padding: 28px 20px;
+  text-align: center;
+  margin-bottom: 16px;
+}
+.empty-post-icon { font-size: 32px; margin-bottom: 10px; }
+.empty-post-title { font-size: 15px; font-weight: 800; color: #0F0F0F; margin-bottom: 4px; }
+.empty-post-sub { font-size: 12px; color: #6B7280; line-height: 1.5; margin-bottom: 16px; }
+.empty-post-btns { display: flex; gap: 8px; }
+.empty-btn-primary { flex: 1; background: #0F0F0F; color: #fff; font-size: 13px; font-weight: 700; padding: 11px; border-radius: 11px; border: none; cursor: pointer; }
+.empty-btn-secondary { flex: 1; background: #F3F4F6; color: #374151; font-size: 13px; font-weight: 600; padding: 11px; border-radius: 11px; border: none; cursor: pointer; }
+
+</style>
+</head>
+<body>
+
+<p class="page-label">Media Kit Builder — Redesign</p>
+<p class="page-title">From "I don't have anything to show" to "Here's my portfolio link"</p>
+<p class="page-sub">Two paths: paste a post URL, or build your first piece of content from scratch.</p>
+
+<!-- ── FLOW SCREENS ──────────────────────────────────────────── -->
+
+<div class="section-row">
+
+  <!-- PHONE 1: Step-by-step URL flow -->
+  <div class="section-col">
+    <div class="section-chip">Path 1 — I have content</div>
+    <div class="section-note">Paste a URL. Three clean steps. Card generated.</div>
+
+    <div class="phone">
+      <div class="notch"></div>
+      <div class="screen">
+        <div class="nav">
+          <div class="nav-back">← My Kit</div>
+          <div class="nav-title">Add content</div>
+          <div class="nav-action">Skip</div>
+        </div>
+
+        <div class="progress-wrap">
+          <div class="progress-meta">
+            <div class="progress-step">Step 1 of 3</div>
+            <div class="progress-label">Paste your post</div>
+          </div>
+          <div class="progress-bar"><div class="progress-fill" style="width:33%"></div></div>
+        </div>
+
+        <div class="step-content">
+          <div class="step-q">Where's the post?</div>
+          <div class="step-sub">Paste any Instagram, TikTok, or YouTube link. We pull the platform and post type automatically.</div>
+
+          <div class="url-input-wrap active">
+            <div class="url-input-inner">
+              <div class="url-icon">🔗</div>
+              <input class="url-field" value="instagram.com/p/Cx8mK2_..." readonly />
+              <button class="url-paste-btn">Paste</button>
+            </div>
+            <div class="url-detected">
+              <div class="url-detected-dot"></div>
+              <div class="url-detected-text">Instagram Reel detected</div>
+            </div>
+          </div>
+
+          <div style="margin-top:20px;">
+            <div class="step-q" style="font-size:16px;margin-bottom:14px;">What type of post?</div>
+            <div class="platform-grid">
+              <div class="platform-chip selected">
+                <div class="platform-chip-icon">🎬</div>
+                <div class="platform-chip-label">Reel</div>
+              </div>
+              <div class="platform-chip">
+                <div class="platform-chip-icon">🖼</div>
+                <div class="platform-chip-label">Photo post</div>
+              </div>
+              <div class="platform-chip">
+                <div class="platform-chip-icon">📖</div>
+                <div class="platform-chip-label">Story</div>
+              </div>
+              <div class="platform-chip">
+                <div class="platform-chip-icon">▶️</div>
+                <div class="platform-chip-label">TikTok</div>
+              </div>
+            </div>
+          </div>
+
+          <button class="step-cta">Next →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PHONE 2: Step 2 — brand + collab type -->
+  <div class="section-col">
+    <div class="section-chip">Step 2 — Brand + collab</div>
+    <div class="section-note">One question at a time. Feels fast.</div>
+
+    <div class="phone">
+      <div class="notch"></div>
+      <div class="screen">
+        <div class="nav">
+          <div class="nav-back">← Back</div>
+          <div class="nav-title">Add content</div>
+          <div class="nav-action">Skip</div>
+        </div>
+
+        <div class="progress-wrap">
+          <div class="progress-meta">
+            <div class="progress-step">Step 2 of 3</div>
+            <div class="progress-label">Brand info</div>
+          </div>
+          <div class="progress-bar"><div class="progress-fill" style="width:66%"></div></div>
+        </div>
+
+        <div class="step-content">
+          <div class="step-q">Which brand is this for?</div>
+          <div class="step-sub">If it was organic content you created yourself, select "My own content."</div>
+
+          <input class="brand-input" value="Kopari Beauty" readonly />
+
+          <div class="step-q" style="font-size:16px;margin-bottom:12px;">Collab type</div>
+          <div class="collab-pills">
+            <div class="collab-pill selected">Gifted</div>
+            <div class="collab-pill">Paid</div>
+            <div class="collab-pill">Organic</div>
+            <div class="collab-pill">My own</div>
+          </div>
+
+          <div class="step-q" style="font-size:16px;margin:16px 0 12px;">Engagement</div>
+          <div class="stat-grid">
+            <div class="stat-input-wrap">
+              <div class="stat-input-label">Views</div>
+              <div class="stat-input-val">48.2K</div>
+            </div>
+            <div class="stat-input-wrap">
+              <div class="stat-input-label">Likes</div>
+              <div class="stat-input-val">2,840</div>
+            </div>
+            <div class="stat-input-wrap">
+              <div class="stat-input-label">Comments</div>
+              <div class="stat-input-val">312</div>
+            </div>
+            <div class="stat-input-wrap">
+              <div class="stat-input-label">Shares</div>
+              <div class="stat-input-val placeholder">Optional</div>
+            </div>
+          </div>
+
+          <button class="step-cta">Next →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PHONE 3: Step 3 — preview + save -->
+  <div class="section-col">
+    <div class="section-chip">Step 3 — Preview + save</div>
+    <div class="section-note">See the card before it goes on the portfolio. Edit or confirm.</div>
+
+    <div class="phone">
+      <div class="notch"></div>
+      <div class="screen">
+        <div class="nav">
+          <div class="nav-back">← Back</div>
+          <div class="nav-title">Add content</div>
+          <div class="nav-action"></div>
+        </div>
+
+        <div class="progress-wrap">
+          <div class="progress-meta">
+            <div class="progress-step">Step 3 of 3</div>
+            <div class="progress-label">Preview</div>
+          </div>
+          <div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div>
+        </div>
+
+        <div class="step-content" style="padding-top:20px;">
+          <div class="step-q" style="font-size:17px;margin-bottom:4px;">Looks good?</div>
+          <div class="step-sub" style="margin-bottom:16px;">This is how brands will see this post in your portfolio.</div>
+
+          <div class="preview-card">
+            <div class="preview-card-img">
+              <div class="preview-card-img-inner">🧴</div>
+              <div class="preview-card-badge">Reel · Instagram</div>
+            </div>
+            <div class="preview-card-body">
+              <div class="preview-card-brand">
+                Kopari Beauty
+                <span class="preview-card-collab">Gifted</span>
+              </div>
+              <div class="preview-card-stats">
+                <div class="preview-card-stat"><strong>48.2K</strong> views</div>
+                <div class="preview-card-stat"><strong>2,840</strong> likes</div>
+                <div class="preview-card-stat"><strong>312</strong> comments</div>
+              </div>
+            </div>
+          </div>
+
+          <button class="step-cta violet" style="margin-top:14px;">Save to my portfolio</button>
+          <button class="step-cta" style="background:#F3F4F6;color:#374151;margin-top:8px;">Edit details</button>
+
+          <div style="margin-top:16px;">
+            <div style="font-size:11px;font-weight:700;color:#9CA3AF;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.4px;">Add more</div>
+            <div style="border:2px dashed #E5E7EB;border-radius:14px;padding:16px;text-align:center;cursor:pointer;">
+              <div style="font-size:22px;margin-bottom:4px;">+</div>
+              <div style="font-size:13px;font-weight:700;color:#374151;">Add another post</div>
+              <div style="font-size:11px;color:#9CA3AF;margin-top:2px;">The more you add, the stronger your kit</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── PATH 2: NO CONTENT YET ───────────────────────────────── -->
+
+<div class="section-row">
+  <div class="section-col">
+    <div class="section-chip">Path 2 — Starting from scratch</div>
+    <div class="section-note">Guides the creator to film their first piece of content, then loops back to Path 1.</div>
+
+    <div class="phone">
+      <div class="notch"></div>
+      <div class="screen">
+
+        <div class="guide-hero">
+          <div class="guide-eyebrow">No posts yet? No problem.</div>
+          <div class="guide-title">Create your first collab-worthy post today</div>
+          <div class="guide-sub">Based on your niche. Takes 20 minutes to film.</div>
+        </div>
+
+        <div class="guide-section" style="padding-top:18px;">
+          <div class="guide-section-label">Products you probably own</div>
+          <div class="product-scroll">
+            <div class="product-card selected">
+              <div class="product-card-emoji">🧴</div>
+              <div class="product-card-name">Moisturizer</div>
+              <div class="product-card-sub">Beauty</div>
+            </div>
+            <div class="product-card">
+              <div class="product-card-emoji">💆</div>
+              <div class="product-card-name">Face mask</div>
+              <div class="product-card-sub">Skincare</div>
+            </div>
+            <div class="product-card">
+              <div class="product-card-emoji">☀️</div>
+              <div class="product-card-name">SPF serum</div>
+              <div class="product-card-sub">Skincare</div>
+            </div>
+            <div class="product-card">
+              <div class="product-card-emoji">💄</div>
+              <div class="product-card-name">Lip gloss</div>
+              <div class="product-card-sub">Makeup</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="guide-section" style="padding-top:16px;">
+          <div class="guide-section-label">What to film — 3 sequences</div>
+          <div class="sequence-list">
+            <div class="sequence-item">
+              <div class="seq-num">1</div>
+              <div class="seq-text">
+                <div class="seq-title">The before</div>
+                <div class="seq-sub">Close-up of dry or dull skin. Natural light. No filter. 4 seconds.</div>
+              </div>
+            </div>
+            <div class="sequence-item">
+              <div class="seq-num">2</div>
+              <div class="seq-text">
+                <div class="seq-title">The application</div>
+                <div class="seq-sub">Show the product, then apply. Keep it real, not perfect. 8 seconds.</div>
+              </div>
+            </div>
+            <div class="sequence-item">
+              <div class="seq-num">3</div>
+              <div class="seq-text">
+                <div class="seq-title">The reaction</div>
+                <div class="seq-sub">Your genuine reaction. Talk to camera. Tell them one thing you noticed. 10 seconds.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="guide-section" style="padding-top:2px;padding-bottom:20px;">
+          <div class="guide-section-label">Script starter</div>
+          <div class="script-card">
+            <div class="script-label">Hook (first 2 seconds)</div>
+            <div class="script-text">"I've been using this every morning for two weeks and I finally have thoughts..."</div>
+          </div>
+          <button class="step-cta">I filmed it — add to my kit</button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- PHONE 4: Empty state in My Kit -->
+  <div class="section-col">
+    <div class="section-chip">My Kit — Empty state</div>
+    <div class="section-note">Before any content is added. Two clear paths, not a blank screen.</div>
+
+    <div class="phone">
+      <div class="notch"></div>
+      <div class="screen">
+        <div class="nav">
+          <div class="nav-back"></div>
+          <div class="nav-title">My Kit</div>
+          <div class="nav-action">Preview</div>
+        </div>
+
+        <div style="padding:20px 18px;">
+          <div style="margin-bottom:20px;">
+            <div style="font-size:20px;font-weight:900;color:#0F0F0F;margin-bottom:4px;">Build your portfolio</div>
+            <div style="font-size:13px;color:#6B7280;line-height:1.4;">Brands decide in seconds. Give them something worth looking at.</div>
+          </div>
+
+          <div class="empty-post">
+            <div class="empty-post-icon">📸</div>
+            <div class="empty-post-title">No content added yet</div>
+            <div class="empty-post-sub">Add posts you've created — branded or organic. Each one builds your case for a collab.</div>
+            <div class="empty-post-btns">
+              <button class="empty-btn-primary">Paste a post URL</button>
+              <button class="empty-btn-secondary">Start from scratch</button>
+            </div>
+          </div>
+
+          <!-- Preview of what a completed kit looks like -->
+          <div style="font-size:11px;font-weight:700;color:#9CA3AF;text-transform:uppercase;letter-spacing:0.4px;margin-bottom:12px;">What brands see when it's done</div>
+          <div style="border-radius:16px;overflow:hidden;border:1.5px solid #E5E7EB;">
+            <div style="background:#0F0F0F;padding:14px 16px;display:flex;align-items:center;gap:10px;">
+              <div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#7C3AED,#E11D48);display:flex;align-items:center;justify-content:center;font-weight:900;color:#fff;font-size:13px;">M</div>
+              <div>
+                <div style="font-size:13px;font-weight:800;color:#fff;">mahery</div>
+                <div style="font-size:11px;color:rgba(255,255,255,0.5);">Fitness · Wellness · 15.2K</div>
+              </div>
+              <div style="margin-left:auto;background:rgba(255,255,255,0.1);border-radius:8px;padding:4px 10px;font-size:10px;font-weight:700;color:#fff;">12 views</div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:#F3F4F6;">
+              <div style="padding-top:100%;background:#FDF2F8;position:relative;"><div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:24px;">🧴</div></div>
+              <div style="padding-top:100%;background:#F5F3FF;position:relative;"><div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:24px;">💪</div></div>
+              <div style="padding-top:100%;background:#ECFDF5;position:relative;"><div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:24px;">☀️</div></div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── BENTO PORTFOLIO (SHAREABLE URL) ────────────────────────── -->
+
+<div class="portfolio-section">
+  <div>
+    <div class="portfolio-section-label">The shareable portfolio — newcollab.co/kit/mahery</div>
+    <p class="portfolio-note">What a brand sees when they click your kit link. Tracked, live, always up to date.</p>
+  </div>
+
+  <div class="kit-page">
+
+    <!-- Header -->
+    <div class="kit-header">
+      <div class="kit-creator">
+        <div class="kit-avatar">M</div>
+        <div class="kit-creator-info">
+          <div class="kit-name">mahery</div>
+          <div class="kit-tagline">Fitness and wellness content that gets people to actually try things.<br>Based in New York.</div>
+          <div class="kit-niche-tags">
+            <span class="kit-niche-tag">Fitness</span>
+            <span class="kit-niche-tag">Wellness</span>
+            <span class="kit-niche-tag">Skincare</span>
+            <span class="kit-niche-tag">Instagram · TikTok</span>
+          </div>
+        </div>
+      </div>
+      <div class="kit-header-right">
+        <div class="kit-views">
+          <div class="kit-views-val">24</div>
+          <div class="kit-views-label">Kit views this week</div>
+        </div>
+        <button class="kit-share-btn">Share kit</button>
+      </div>
+    </div>
+
+    <!-- Stats strip -->
+    <div class="kit-stats-strip">
+      <div class="kit-stat-item">
+        <div class="kit-stat-val">15.2K</div>
+        <div class="kit-stat-sub">Instagram followers</div>
+        <div class="kit-stat-platform">4.8% engagement</div>
+      </div>
+      <div class="kit-stat-item">
+        <div class="kit-stat-val">8.4K</div>
+        <div class="kit-stat-sub">TikTok followers</div>
+        <div class="kit-stat-platform">6.2% engagement</div>
+      </div>
+      <div class="kit-stat-item">
+        <div class="kit-stat-val">72%</div>
+        <div class="kit-stat-sub">Female audience</div>
+        <div class="kit-stat-platform">Ages 18–34</div>
+      </div>
+      <div class="kit-stat-item">
+        <div class="kit-stat-val">US</div>
+        <div class="kit-stat-sub">Primary market</div>
+        <div class="kit-stat-platform">NY · LA · Chicago</div>
+      </div>
+    </div>
+
+    <!-- Bento grid -->
+    <div class="bento-grid">
+
+      <!-- Post 1 — large, gifted -->
+      <div class="bento-cell post-cell tall">
+        <div class="post-cell-img" style="padding-top:160%;">
+          <div class="post-cell-img-inner img-pink">🧴</div>
+          <div class="post-cell-badges">
+            <span class="badge-platform badge-ig">IG Reel</span>
+            <span class="badge-collab">Gifted</span>
+          </div>
+          <div class="post-cell-overlay">
+            <div class="post-cell-stats">
+              <div class="post-cell-stat">48.2K views</div>
+              <div class="post-cell-stat">2.8K likes</div>
+            </div>
+          </div>
+        </div>
+        <div class="post-cell-info">
+          <div class="post-cell-brand">Kopari Beauty</div>
+          <div class="post-cell-meta">Coconut body oil · Recovery routine</div>
+        </div>
+      </div>
+
+      <!-- Post 2 -->
+      <div class="bento-cell post-cell">
+        <div class="post-cell-img">
+          <div class="post-cell-img-inner img-purple">💪</div>
+          <div class="post-cell-badges">
+            <span class="badge-platform badge-tt">TikTok</span>
+            <span class="badge-collab">Paid</span>
+          </div>
+          <div class="post-cell-overlay">
+            <div class="post-cell-stats">
+              <div class="post-cell-stat">120K views</div>
+            </div>
+          </div>
+        </div>
+        <div class="post-cell-info">
+          <div class="post-cell-brand">Momentous</div>
+          <div class="post-cell-meta">Protein · Pre-workout</div>
+        </div>
+      </div>
+
+      <!-- Stats cell -->
+      <div class="bento-cell stats-cell">
+        <div class="stats-cell-val">48<span class="stats-cell-unit">K</span></div>
+        <div class="stats-cell-label">Avg Reel views</div>
+        <div class="stats-cell-sub">Top 8% in Wellness</div>
+      </div>
+
+      <!-- Post 3 -->
+      <div class="bento-cell post-cell">
+        <div class="post-cell-img">
+          <div class="post-cell-img-inner img-green">☀️</div>
+          <div class="post-cell-badges">
+            <span class="badge-platform badge-ig">IG Post</span>
+            <span class="badge-collab">Organic</span>
+          </div>
+          <div class="post-cell-overlay">
+            <div class="post-cell-stats">
+              <div class="post-cell-stat">3.2K likes</div>
+            </div>
+          </div>
+        </div>
+        <div class="post-cell-info">
+          <div class="post-cell-brand">My own content</div>
+          <div class="post-cell-meta">Morning SPF routine</div>
+        </div>
+      </div>
+
+      <!-- Stats cell 2 -->
+      <div class="bento-cell stats-cell" style="background:#F9FAFB;">
+        <div class="stats-cell-val" style="color:#059669;">61<span class="stats-cell-unit" style="color:#A7F3D0;">%</span></div>
+        <div class="stats-cell-label">Save rate on Reels</div>
+        <div class="stats-cell-sub">High purchase intent</div>
+      </div>
+
+      <!-- Brands worked with -->
+      <div class="bento-cell brands-cell span-2-col">
+        <div class="brands-cell-label">Brands worked with</div>
+        <div class="brands-logos">
+          <div class="brand-logo-pill">Kopari</div>
+          <div class="brand-logo-pill">Momentous</div>
+          <div class="brand-logo-pill">Gymshark</div>
+          <div class="brand-logo-pill">+ open to gifted</div>
+        </div>
+      </div>
+
+      <!-- Content types -->
+      <div class="bento-cell content-types-cell">
+        <div class="content-types-label">Content mix</div>
+        <div class="content-type-bars">
+          <div class="content-type-row">
+            <div class="content-type-name">Reels</div>
+            <div class="content-type-bar"><div class="content-type-fill" style="width:70%"></div></div>
+            <div class="content-type-pct">70%</div>
+          </div>
+          <div class="content-type-row">
+            <div class="content-type-name">TikTok</div>
+            <div class="content-type-bar"><div class="content-type-fill" style="width:20%"></div></div>
+            <div class="content-type-pct">20%</div>
+          </div>
+          <div class="content-type-row">
+            <div class="content-type-name">Photo</div>
+            <div class="content-type-bar"><div class="content-type-fill" style="width:10%"></div></div>
+            <div class="content-type-pct">10%</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Post 4 -->
+      <div class="bento-cell post-cell">
+        <div class="post-cell-img">
+          <div class="post-cell-img-inner img-amber">🏃</div>
+          <div class="post-cell-badges">
+            <span class="badge-platform badge-tt">TikTok</span>
+            <span class="badge-collab">Organic</span>
+          </div>
+          <div class="post-cell-overlay">
+            <div class="post-cell-stats">
+              <div class="post-cell-stat">88K views</div>
+            </div>
+          </div>
+        </div>
+        <div class="post-cell-info">
+          <div class="post-cell-brand">My own content</div>
+          <div class="post-cell-meta">Running gear haul</div>
+        </div>
+      </div>
+
+      <!-- Rate card -->
+      <div class="bento-cell rate-cell span-2-col">
+        <div class="rate-cell-label">Packages</div>
+        <div class="rate-rows">
+          <div class="rate-row">
+            <div class="rate-row-label">Instagram Reel + Story</div>
+            <div class="rate-row-price">from $250</div>
+          </div>
+          <div class="rate-row">
+            <div class="rate-row-label">TikTok video</div>
+            <div class="rate-row-price">from $350</div>
+          </div>
+          <div class="rate-row rate-open">
+            <div class="rate-row-label">Gifted collabs</div>
+            <div class="rate-row-price">Open</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CTA -->
+      <div class="bento-cell cta-cell span-full">
+        <div class="cta-cell-text">
+          <div class="cta-cell-title">Interested in working together?</div>
+          <div class="cta-cell-sub">Usually responds within 48 hours</div>
+        </div>
+        <button class="cta-cell-btn">Get in touch</button>
+      </div>
+
+    </div>
+
+    <div class="kit-footer">
+      <div class="kit-footer-left">newcollab.co/kit/<strong>mahery</strong></div>
+      <div class="kit-footer-right">Media kit by <span class="kit-footer-brand">Newcollab</span></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── TRACKING DASHBOARD ─────────────────────────────────────── -->
+
+<div class="tracker-wrap">
+  <p class="page-label" style="margin-bottom:8px;">Creator sees this</p>
+  <p class="page-sub" style="margin-bottom:28px;">Kit view tracker — who opened it, when, what they clicked</p>
+
+  <div class="tracker-grid">
+    <div class="tracker-card">
+      <div class="tracker-card-val">24</div>
+      <div class="tracker-card-label">Kit views this week</div>
+      <div class="tracker-card-change">+8 vs last week</div>
+    </div>
+    <div class="tracker-card">
+      <div class="tracker-card-val">6</div>
+      <div class="tracker-card-label">Brands identified</div>
+      <div class="tracker-card-change">3 in Beauty niche</div>
+    </div>
+    <div class="tracker-card">
+      <div class="tracker-card-val">38%</div>
+      <div class="tracker-card-label">CTA click rate</div>
+      <div class="tracker-card-change">High engagement</div>
+    </div>
+  </div>
+
+  <div class="tracker-views">
+    <div class="tracker-views-header">
+      <div class="tracker-views-title">Recent viewers</div>
+      <div class="tracker-views-sub">Upgrade to see brand names</div>
+    </div>
+    <div class="tracker-row">
+      <div class="tracker-brand-dot" style="background:#10B981;"></div>
+      <div class="tracker-info">
+        <div class="tracker-brand-name">Beauty brand · US</div>
+        <div class="tracker-detail">Viewed Kopari post · Clicked "Get in touch"</div>
+      </div>
+      <div class="tracker-time">2h ago</div>
+      <div class="tracker-actions-chip live">Active</div>
+    </div>
+    <div class="tracker-row">
+      <div class="tracker-brand-dot" style="background:#7C3AED;"></div>
+      <div class="tracker-info">
+        <div class="tracker-brand-name">Wellness brand · US</div>
+        <div class="tracker-detail">Viewed rate card · Spent 48s on kit</div>
+      </div>
+      <div class="tracker-time">Yesterday</div>
+      <div class="tracker-actions-chip">Follow up</div>
+    </div>
+    <div class="tracker-row">
+      <div class="tracker-brand-dot" style="background:#F59E0B;"></div>
+      <div class="tracker-info">
+        <div class="tracker-brand-name">Fitness brand · AU</div>
+        <div class="tracker-detail">Viewed portfolio · No CTA click</div>
+      </div>
+      <div class="tracker-time">3 days ago</div>
+      <div class="tracker-actions-chip">Pitch them</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

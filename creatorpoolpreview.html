@@ -1,0 +1,1153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Creator Pool — Full Flow Preview</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #e8e8e7;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  padding: 40px 16px 80px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 52px;
+}
+
+.flow-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: .09em;
+  align-self: flex-start;
+  max-width: 1100px;
+  width: 100%;
+  margin-bottom: -40px;
+}
+
+.flow-desc {
+  font-size: 12px;
+  color: #6b7280;
+  font-weight: 500;
+  margin-top: 6px;
+}
+
+.phones-row {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 1100px;
+  width: 100%;
+}
+
+/* ── Phone shell (matches screenshot dimensions) ── */
+.phone {
+  width: 300px;
+  background: #fff;
+  border-radius: 38px;
+  box-shadow: 0 0 0 9px #111, 0 28px 70px rgba(0,0,0,.35);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.phone-status {
+  background: #fff;
+  padding: 12px 20px 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.status-time { font-size: 12px; font-weight: 700; color: #0f0f0f; }
+.status-icons { font-size: 11px; color: #0f0f0f; display: flex; gap: 4px; align-items: center; }
+
+.phone-screen {
+  background: #f3f4f6;
+  min-height: 560px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.phone-home-bar {
+  background: #fff;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.home-pill {
+  width: 90px; height: 4px;
+  background: #111;
+  border-radius: 4px;
+}
+
+/* ── App top bar (matches screenshot) ── */
+.app-top {
+  background: #fff;
+  padding: 10px 16px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #f0f0ef;
+}
+
+.app-wordmark {
+  font-size: 12px;
+  font-weight: 900;
+  color: #0f0f0f;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.wordmark-n {
+  width: 22px; height: 22px;
+  background: #0f0f0f;
+  border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.top-icons { display: flex; align-items: center; gap: 10px; }
+.top-icon { font-size: 17px; }
+.top-avatar {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #E11D48, #7c3aed);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 800; color: #fff;
+}
+
+/* ── Bottom nav (matches screenshot) ── */
+.bottom-nav {
+  background: #fff;
+  border-top: 1px solid #e5e7eb;
+  display: flex;
+  padding: 8px 0 6px;
+  margin-top: auto;
+}
+
+.nav-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  position: relative;
+}
+.nav-item-icon { font-size: 19px; }
+.nav-item-label {
+  font-size: 9px;
+  font-weight: 600;
+  color: #9ca3af;
+}
+.nav-item.active .nav-item-label { color: #E11D48; font-weight: 700; }
+
+.nav-badge {
+  position: absolute;
+  top: -2px; right: 14px;
+  background: #E11D48;
+  color: #fff;
+  font-size: 8px;
+  font-weight: 800;
+  border-radius: 10px;
+  padding: 1px 5px;
+  min-width: 16px;
+  text-align: center;
+}
+
+/* ── Content area ── */
+.scroll-area {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Sub-tabs ── */
+.sub-tabs {
+  background: #fff;
+  display: flex;
+  padding: 0 16px;
+  border-bottom: 1px solid #e5e7eb;
+  gap: 0;
+}
+.sub-tab {
+  flex: 1;
+  text-align: center;
+  padding: 10px 0 9px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #9ca3af;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+.sub-tab.active {
+  color: #0f0f0f;
+  border-bottom-color: #E11D48;
+}
+
+/* ── Eyebrow style ── */
+.eyebrow {
+  font-size: 10px;
+  font-weight: 800;
+  color: #E11D48;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ── Cards ── */
+.card {
+  background: #fff;
+  border-radius: 14px;
+  padding: 14px;
+  margin: 8px 12px 0;
+}
+
+.card:last-child { margin-bottom: 8px; }
+
+/* ── Tier filter pills ── */
+.tier-filter {
+  display: flex;
+  gap: 6px;
+  padding: 10px 12px 0;
+  overflow-x: auto;
+}
+.tier-pill {
+  background: #fff;
+  border: 1.5px solid #e5e7eb;
+  border-radius: 20px;
+  padding: 5px 12px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #6b7280;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.tier-pill.active {
+  background: #0f0f0f;
+  border-color: #0f0f0f;
+  color: #fff;
+}
+
+/* ── Creator card in pool ── */
+.creator-card {
+  background: #fff;
+  border-radius: 14px;
+  padding: 12px;
+  margin: 6px 12px 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.creator-av {
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; font-weight: 900; color: #fff;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.av-ring {
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+}
+
+.creator-info { flex: 1; min-width: 0; }
+.creator-handle {
+  font-size: 12.5px;
+  font-weight: 800;
+  color: #0f0f0f;
+  line-height: 1.2;
+}
+.creator-meta {
+  font-size: 10px;
+  color: #9ca3af;
+  margin-top: 1px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.meta-dot { width: 3px; height: 3px; border-radius: 50%; background: #d1d5db; }
+
+.creator-stats {
+  display: flex;
+  gap: 8px;
+  margin-top: 5px;
+}
+.creator-stat {
+  font-size: 10px;
+  color: #6b7280;
+  background: #f3f4f6;
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-weight: 600;
+}
+
+.follow-btn {
+  border: 1.5px solid #0f0f0f;
+  background: #fff;
+  border-radius: 20px;
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #0f0f0f;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.follow-btn.following {
+  background: #f3f4f6;
+  border-color: #f3f4f6;
+  color: #9ca3af;
+}
+
+/* ── Milestone card ── */
+.milestone-card {
+  background: linear-gradient(135deg, #0f0f0f, #1e1035);
+  border-radius: 14px;
+  padding: 14px;
+  margin: 8px 12px 0;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.milestone-icon {
+  width: 38px; height: 38px;
+  background: rgba(255,255,255,.12);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+.milestone-title {
+  font-size: 12.5px;
+  font-weight: 800;
+  color: #fff;
+  line-height: 1.2;
+  margin-bottom: 2px;
+}
+.milestone-sub {
+  font-size: 10px;
+  color: rgba(255,255,255,.5);
+  line-height: 1.3;
+}
+
+/* ── Activity items (in inbox) ── */
+.inbox-item {
+  background: #fff;
+  padding: 12px 14px;
+  border-bottom: 1px solid #f3f4f6;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.inbox-item.unread { background: #fafaf9; }
+
+.inbox-av {
+  width: 38px; height: 38px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 800; color: #fff;
+  flex-shrink: 0;
+}
+
+.inbox-content { flex: 1; }
+.inbox-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f0f0f;
+  line-height: 1.3;
+  margin-bottom: 2px;
+}
+.inbox-sub {
+  font-size: 10.5px;
+  color: #6b7280;
+  line-height: 1.3;
+}
+.inbox-time {
+  font-size: 9.5px;
+  color: #9ca3af;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+
+.unread-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #E11D48;
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
+/* ── Bottom sheet (creator detail) ── */
+.bottom-sheet {
+  background: #fff;
+  border-radius: 20px 20px 0 0;
+  padding: 0;
+  overflow: hidden;
+}
+.sheet-handle-bar {
+  display: flex; justify-content: center;
+  padding: 10px 0 0;
+}
+.sheet-handle {
+  width: 36px; height: 4px;
+  background: #d1d5db;
+  border-radius: 4px;
+}
+.sheet-content { padding: 14px 16px 0; }
+
+.sheet-creator-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.sheet-av {
+  width: 54px; height: 54px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; font-weight: 900; color: #fff;
+  flex-shrink: 0;
+}
+.sheet-name {
+  font-size: 15px;
+  font-weight: 800;
+  color: #0f0f0f;
+  line-height: 1.2;
+}
+.sheet-handle-text {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.sheet-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.sheet-stat {
+  background: #f3f4f6;
+  border-radius: 10px;
+  padding: 10px 8px;
+  text-align: center;
+}
+.sheet-stat-num {
+  font-size: 15px;
+  font-weight: 900;
+  color: #0f0f0f;
+  line-height: 1;
+}
+.sheet-stat-label {
+  font-size: 9px;
+  color: #9ca3af;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin-top: 2px;
+}
+
+.sheet-niche-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.niche-pill {
+  background: #fff0f3;
+  color: #E11D48;
+  border-radius: 20px;
+  padding: 4px 10px;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.sheet-brands {
+  margin-bottom: 14px;
+}
+.sheet-brands-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  margin-bottom: 6px;
+}
+.saved-brand-chip {
+  display: inline-block;
+  background: #f3f4f6;
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #374151;
+  margin: 0 4px 4px 0;
+}
+
+.sheet-actions {
+  display: flex;
+  gap: 8px;
+  padding-bottom: 16px;
+}
+.btn-primary {
+  flex: 1;
+  background: #0f0f0f;
+  border: none;
+  border-radius: 10px;
+  padding: 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  cursor: pointer;
+  text-align: center;
+}
+.btn-secondary {
+  flex: 1;
+  background: #f3f4f6;
+  border: none;
+  border-radius: 10px;
+  padding: 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #374151;
+  cursor: pointer;
+  text-align: center;
+}
+
+/* ── Notification banner ── */
+.notif-banner {
+  background: #0f0f0f;
+  margin: 8px 12px 0;
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.notif-banner-icon { font-size: 20px; flex-shrink: 0; }
+.notif-banner-text {
+  flex: 1;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #fff;
+  line-height: 1.3;
+}
+.notif-banner-sub {
+  font-size: 10px;
+  color: rgba(255,255,255,.5);
+}
+.notif-x {
+  font-size: 14px;
+  color: rgba(255,255,255,.4);
+  cursor: pointer;
+}
+
+/* ── Pool header inside screen ── */
+.pool-header {
+  padding: 12px 12px 0;
+}
+.pool-heading {
+  font-size: 15px;
+  font-weight: 800;
+  color: #0f0f0f;
+  margin-top: 4px;
+  margin-bottom: 2px;
+}
+.pool-sub {
+  font-size: 11px;
+  color: #6b7280;
+}
+
+/* phone caption */
+.phone-caption {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #6b7280;
+  margin-top: 10px;
+  letter-spacing: .02em;
+}
+.phone-step {
+  text-align: center;
+  font-size: 10px;
+  color: #9ca3af;
+  margin-top: 2px;
+}
+
+/* section divider */
+.divider-bar {
+  width: 100%;
+  max-width: 1100px;
+  height: 1px;
+  background: #d1d5db;
+}
+
+.section-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: #374151;
+  align-self: flex-start;
+  max-width: 1100px;
+  width: 100%;
+  margin-bottom: -40px;
+}
+</style>
+</head>
+<body>
+
+<!-- ════════════════════════════
+  FLOW 1: ENTRY — Discover tab
+════════════════════════════ -->
+
+<div class="flow-label">Step 1 — Entry: Discover tab gains a "Creators" sub-tab<div class="flow-desc">No new nav item. Pool lives inside Discover alongside brands.</div></div>
+
+<div class="phones-row">
+
+<!-- Screen A: Current Discover with Brands active -->
+<div>
+<div class="phone">
+  <div class="phone-status"><div class="status-time">9:41</div><div class="status-icons">▲ ◉ ▮▮▮</div></div>
+  <div class="phone-screen">
+
+    <div class="app-top">
+      <div class="app-wordmark"><div class="wordmark-n">N</div> NEWCOLLAB</div>
+      <div class="top-icons">
+        <div class="top-icon">🔔</div>
+        <div class="top-avatar">M</div>
+      </div>
+    </div>
+
+    <div class="sub-tabs">
+      <div class="sub-tab active">Brands</div>
+      <div class="sub-tab" style="color:#9ca3af;">Creators ✦ New</div>
+    </div>
+
+    <div class="scroll-area">
+      <div class="pool-header">
+        <div class="eyebrow">🔍 Discover</div>
+        <div class="pool-heading">Browse all brands</div>
+        <div class="pool-sub">1,340 brands · filter by niche</div>
+      </div>
+
+      <!-- Showing brands normally -->
+      <div style="padding:8px 12px 0;display:flex;gap:6px;overflow-x:auto;">
+        <div style="background:#0f0f0f;border-radius:20px;padding:5px 12px;font-size:10.5px;font-weight:700;color:#fff;white-space:nowrap;">All</div>
+        <div style="background:#fff;border:1.5px solid #e5e7eb;border-radius:20px;padding:5px 12px;font-size:10.5px;font-weight:700;color:#6b7280;white-space:nowrap;">Beauty</div>
+        <div style="background:#fff;border:1.5px solid #e5e7eb;border-radius:20px;padding:5px 12px;font-size:10.5px;font-weight:700;color:#6b7280;white-space:nowrap;">Skincare</div>
+        <div style="background:#fff;border:1.5px solid #e5e7eb;border-radius:20px;padding:5px 12px;font-size:10.5px;font-weight:700;color:#6b7280;white-space:nowrap;">Fitness</div>
+      </div>
+
+      <div class="creator-card" style="margin-top:10px;">
+        <div class="creator-av" style="background:#E11D48;border-radius:12px;width:40px;height:40px;font-size:13px;">G</div>
+        <div class="creator-info">
+          <div class="creator-handle">Glossier</div>
+          <div class="creator-meta">Skincare <div class="meta-dot"></div> beauty</div>
+        </div>
+        <button class="follow-btn" style="background:#E11D48;border-color:#E11D48;color:#fff;font-size:10px;">Pitch →</button>
+      </div>
+
+      <div class="creator-card">
+        <div class="creator-av" style="background:#7c3aed;border-radius:12px;width:40px;height:40px;font-size:13px;">C</div>
+        <div class="creator-info">
+          <div class="creator-handle">Charlotte Tilbury</div>
+          <div class="creator-meta">Makeup <div class="meta-dot"></div> luxury beauty</div>
+        </div>
+        <button class="follow-btn" style="background:#E11D48;border-color:#E11D48;color:#fff;font-size:10px;">Pitch →</button>
+      </div>
+
+      <div class="creator-card">
+        <div class="creator-av" style="background:#059669;border-radius:12px;width:40px;height:40px;font-size:13px;">K</div>
+        <div class="creator-info">
+          <div class="creator-handle">Krave Beauty</div>
+          <div class="creator-meta">Skincare <div class="meta-dot"></div> clean beauty</div>
+        </div>
+        <button class="follow-btn" style="background:#E11D48;border-color:#E11D48;color:#fff;font-size:10px;">Pitch →</button>
+      </div>
+
+      <!-- Creator tab teaser -->
+      <div style="background:linear-gradient(135deg,#fdf2f8,#f0f9ff);border:1px solid #e5e7eb;border-radius:14px;padding:12px 14px;margin:8px 12px 8px;">
+        <div style="font-size:10px;font-weight:800;color:#7c3aed;text-transform:uppercase;letter-spacing:.07em;margin-bottom:3px;">✦ New · Creator Pool</div>
+        <div style="font-size:12px;font-weight:700;color:#0f0f0f;margin-bottom:4px;">Find creators in your niche</div>
+        <div style="font-size:10.5px;color:#6b7280;line-height:1.4;">Follow beauty creators at your level. Grow together.</div>
+      </div>
+    </div>
+
+    <div class="bottom-nav">
+      <div class="nav-item"><div class="nav-item-icon">✨</div><div class="nav-item-label">For You</div></div>
+      <div class="nav-item active"><div class="nav-item-icon">🔍</div><div class="nav-item-label">Discover</div></div>
+      <div class="nav-item"><div class="nav-item-icon">📩</div><div class="nav-item-label">Inbox</div><div class="nav-badge">8</div></div>
+      <div class="nav-item"><div class="nav-item-icon">📋</div><div class="nav-item-label">My Kit</div></div>
+    </div>
+
+  </div>
+  <div class="phone-home-bar"><div class="home-pill"></div></div>
+</div>
+<div class="phone-caption">Discover · Brands tab</div>
+<div class="phone-step">Existing tab — unchanged</div>
+</div>
+
+
+<!-- Screen B: Discover — Creators tab (Pool home) -->
+<div>
+<div class="phone">
+  <div class="phone-status"><div class="status-time">9:41</div><div class="status-icons">▲ ◉ ▮▮▮</div></div>
+  <div class="phone-screen">
+
+    <div class="app-top">
+      <div class="app-wordmark"><div class="wordmark-n">N</div> NEWCOLLAB</div>
+      <div class="top-icons">
+        <div class="top-icon">🔔</div>
+        <div class="top-avatar">M</div>
+      </div>
+    </div>
+
+    <div class="sub-tabs">
+      <div class="sub-tab">Brands</div>
+      <div class="sub-tab active">Creators</div>
+    </div>
+
+    <div class="scroll-area">
+
+      <div class="pool-header">
+        <div class="eyebrow">👥 Creator Pool</div>
+        <div class="pool-heading">Beauty creators like you</div>
+        <div class="pool-sub">Matched to your niche · TikTok</div>
+      </div>
+
+      <!-- Tier filter -->
+      <div class="tier-filter">
+        <div class="tier-pill active">All tiers</div>
+        <div class="tier-pill">🌱 Under 1k</div>
+        <div class="tier-pill">🌿 1k–10k</div>
+        <div class="tier-pill">🚀 10k+</div>
+      </div>
+
+      <!-- Notification -->
+      <div class="notif-banner">
+        <div class="notif-banner-icon">✨</div>
+        <div style="flex:1;">
+          <div class="notif-banner-text">5 new beauty creators joined</div>
+          <div class="notif-banner-sub">This week · your niche</div>
+        </div>
+        <div class="notif-x">✕</div>
+      </div>
+
+      <!-- Creator list -->
+      <div class="creator-card">
+        <div class="creator-av" style="background:#E11D48;">T</div>
+        <div class="creator-info">
+          <div class="creator-handle">@taylormadebeauty</div>
+          <div class="creator-meta">Beauty <div class="meta-dot"></div> TikTok</div>
+          <div class="creator-stats">
+            <span class="creator-stat">1.2K followers</span>
+            <span class="creator-stat">8.4% eng</span>
+          </div>
+        </div>
+        <button class="follow-btn">Follow</button>
+      </div>
+
+      <div class="creator-card">
+        <div class="creator-av" style="background:#7c3aed;">S</div>
+        <div class="creator-info">
+          <div class="creator-handle">@skinbysoph</div>
+          <div class="creator-meta">Skincare <div class="meta-dot"></div> TikTok</div>
+          <div class="creator-stats">
+            <span class="creator-stat">890 followers</span>
+            <span class="creator-stat">11.2% eng</span>
+          </div>
+        </div>
+        <button class="follow-btn">Follow</button>
+      </div>
+
+      <div class="creator-card">
+        <div class="creator-av" style="background:#059669;">M</div>
+        <div class="creator-info">
+          <div class="creator-handle">@merakibeauty</div>
+          <div class="creator-meta">Beauty <div class="meta-dot"></div> TikTok</div>
+          <div class="creator-stats">
+            <span class="creator-stat">2.1K followers</span>
+            <span class="creator-stat">6.8% eng</span>
+          </div>
+        </div>
+        <button class="follow-btn following">Following</button>
+      </div>
+
+      <div class="creator-card" style="margin-bottom:8px;">
+        <div class="creator-av" style="background:#d97706;">L</div>
+        <div class="creator-info">
+          <div class="creator-handle">@lucyglows</div>
+          <div class="creator-meta">Beauty <div class="meta-dot"></div> TikTok</div>
+          <div class="creator-stats">
+            <span class="creator-stat">760 followers</span>
+            <span class="creator-stat">9.1% eng</span>
+          </div>
+        </div>
+        <button class="follow-btn">Follow</button>
+      </div>
+
+    </div>
+
+    <div class="bottom-nav">
+      <div class="nav-item"><div class="nav-item-icon">✨</div><div class="nav-item-label">For You</div></div>
+      <div class="nav-item active"><div class="nav-item-icon">🔍</div><div class="nav-item-label">Discover</div></div>
+      <div class="nav-item"><div class="nav-item-icon">📩</div><div class="nav-item-label">Inbox</div><div class="nav-badge">8</div></div>
+      <div class="nav-item"><div class="nav-item-icon">📋</div><div class="nav-item-label">My Kit</div></div>
+    </div>
+
+  </div>
+  <div class="phone-home-bar"><div class="home-pill"></div></div>
+</div>
+<div class="phone-caption">Discover · Creators tab</div>
+<div class="phone-step">Pool home — niche-matched list</div>
+</div>
+
+
+<!-- Screen C: Creator detail bottom sheet -->
+<div>
+<div class="phone">
+  <div class="phone-status"><div class="status-time">9:41</div><div class="status-icons">▲ ◉ ▮▮▮</div></div>
+  <div class="phone-screen" style="position:relative;">
+
+    <!-- Dimmed background -->
+    <div style="position:absolute;inset:0;background:rgba(0,0,0,.35);z-index:1;"></div>
+
+    <div class="app-top" style="position:relative;z-index:0;">
+      <div class="app-wordmark"><div class="wordmark-n">N</div> NEWCOLLAB</div>
+    </div>
+
+    <div class="sub-tabs" style="position:relative;z-index:0;">
+      <div class="sub-tab">Brands</div>
+      <div class="sub-tab active">Creators</div>
+    </div>
+
+    <!-- Blurred card behind -->
+    <div style="padding:12px;position:relative;z-index:0;opacity:.3;">
+      <div class="creator-card">
+        <div class="creator-av" style="background:#E11D48;">T</div>
+        <div class="creator-info"><div class="creator-handle">@taylormadebeauty</div></div>
+        <button class="follow-btn">Follow</button>
+      </div>
+    </div>
+
+    <!-- Bottom sheet -->
+    <div class="bottom-sheet" style="position:absolute;bottom:0;left:0;right:0;z-index:2;">
+      <div class="sheet-handle-bar"><div class="sheet-handle"></div></div>
+      <div class="sheet-content">
+
+        <div class="sheet-creator-header">
+          <div class="sheet-av" style="background:#E11D48;">T</div>
+          <div>
+            <div class="sheet-name">Taylor</div>
+            <div class="sheet-handle-text">@taylormadebeauty · TikTok</div>
+          </div>
+        </div>
+
+        <div class="sheet-stats">
+          <div class="sheet-stat">
+            <div class="sheet-stat-num">1.2K</div>
+            <div class="sheet-stat-label">Followers</div>
+          </div>
+          <div class="sheet-stat">
+            <div class="sheet-stat-num">8.4%</div>
+            <div class="sheet-stat-label">Engagement</div>
+          </div>
+          <div class="sheet-stat">
+            <div class="sheet-stat-num">🌿</div>
+            <div class="sheet-stat-label">Growing</div>
+          </div>
+        </div>
+
+        <div class="sheet-niche-row">
+          <span class="niche-pill">Beauty</span>
+          <span class="niche-pill" style="background:#f0f9ff;color:#0284c7;">Skincare</span>
+          <span class="niche-pill" style="background:#f0fdf4;color:#059669;">Clean beauty</span>
+        </div>
+
+        <div class="sheet-brands">
+          <div class="sheet-brands-label">Also pitching</div>
+          <span class="saved-brand-chip">Glossier</span>
+          <span class="saved-brand-chip">Peach Slices</span>
+          <span class="saved-brand-chip">Aesop</span>
+        </div>
+
+        <div class="sheet-actions">
+          <button class="btn-primary">Follow on TikTok →</button>
+          <button class="btn-secondary">Send a wave 👋</button>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+  <div class="phone-home-bar"><div class="home-pill"></div></div>
+</div>
+<div class="phone-caption">Creator detail sheet</div>
+<div class="phone-step">Tap any creator to see & follow</div>
+</div>
+
+</div><!-- /phones-row -->
+
+
+<!-- ════════════════════════════
+  FLOW 2: ACTIVITY — Inbox + notifications
+════════════════════════════ -->
+
+<div class="flow-label" style="margin-top:8px;">Step 2 — Activity: Pool notifications live in Inbox<div class="flow-desc">Existing Inbox tab gets a "Pool" section. No new tab.</div></div>
+
+<div class="phones-row">
+
+<!-- Screen D: Inbox with pool activity -->
+<div>
+<div class="phone">
+  <div class="phone-status"><div class="status-time">9:44</div><div class="status-icons">▲ ◉ ▮▮▮</div></div>
+  <div class="phone-screen">
+
+    <div class="app-top">
+      <div class="app-wordmark"><div class="wordmark-n">N</div> NEWCOLLAB</div>
+      <div class="top-icons">
+        <div class="top-icon">🔔</div>
+        <div class="top-avatar">M</div>
+      </div>
+    </div>
+
+    <div class="sub-tabs">
+      <div class="sub-tab active">Replies</div>
+      <div class="sub-tab">Pool <span style="background:#E11D48;color:#fff;border-radius:10px;padding:1px 5px;font-size:9px;margin-left:3px;">3</span></div>
+    </div>
+
+    <!-- Brand replies section -->
+    <div style="padding:10px 12px 6px;font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.07em;">Brand replies</div>
+
+    <div class="inbox-item unread">
+      <div class="inbox-av" style="background:#E11D48;border-radius:10px;">G</div>
+      <div class="inbox-content">
+        <div class="inbox-title">Glossier replied to your pitch 🎉</div>
+        <div class="inbox-sub">Hi! We'd love to send you the Glossier You...</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+        <div class="inbox-time">2d ago</div>
+        <div class="unread-dot"></div>
+      </div>
+    </div>
+
+    <div class="inbox-item">
+      <div class="inbox-av" style="background:#9ca3af;border-radius:10px;">P</div>
+      <div class="inbox-content">
+        <div class="inbox-title">Peach Slices — no reply yet</div>
+        <div class="inbox-sub">Pitch sent 5 days ago · follow up?</div>
+      </div>
+      <div class="inbox-time" style="white-space:nowrap;font-size:9.5px;color:#9ca3af;">5d ago</div>
+    </div>
+
+    <!-- Pool activity section -->
+    <div style="padding:12px 12px 6px;font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.07em;border-top:6px solid #f3f4f6;margin-top:4px;">Creator pool</div>
+
+    <div class="inbox-item unread">
+      <div class="inbox-av" style="background:#7c3aed;">S</div>
+      <div class="inbox-content">
+        <div class="inbox-title">@skinbysoph hit 1k followers 🎉</div>
+        <div class="inbox-sub">Your beauty pool · She's growing!</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+        <div class="inbox-time">1h ago</div>
+        <div class="unread-dot"></div>
+      </div>
+    </div>
+
+    <div class="inbox-item unread">
+      <div class="inbox-av" style="background:#E11D48;">T</div>
+      <div class="inbox-content">
+        <div class="inbox-title">@taylormadebeauty followed you</div>
+        <div class="inbox-sub">From your beauty pool</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+        <div class="inbox-time">3h ago</div>
+        <div class="unread-dot"></div>
+      </div>
+    </div>
+
+    <div class="inbox-item">
+      <div class="inbox-av" style="background:#059669;">M</div>
+      <div class="inbox-content">
+        <div class="inbox-title">@merakibeauty got their first PR 🎁</div>
+        <div class="inbox-sub">They pitched Aesop — it worked!</div>
+      </div>
+      <div class="inbox-time">Yesterday</div>
+    </div>
+
+    <div class="bottom-nav" style="margin-top:auto;">
+      <div class="nav-item"><div class="nav-item-icon">✨</div><div class="nav-item-label">For You</div></div>
+      <div class="nav-item"><div class="nav-item-icon">🔍</div><div class="nav-item-label">Discover</div></div>
+      <div class="nav-item active"><div class="nav-item-icon">📩</div><div class="nav-item-label">Inbox</div><div class="nav-badge">3</div></div>
+      <div class="nav-item"><div class="nav-item-icon">📋</div><div class="nav-item-label">My Kit</div></div>
+    </div>
+
+  </div>
+  <div class="phone-home-bar"><div class="home-pill"></div></div>
+</div>
+<div class="phone-caption">Inbox · Pool sub-tab</div>
+<div class="phone-step">Brand replies + pool activity together</div>
+</div>
+
+
+<!-- Screen E: Pool sub-tab in Inbox -->
+<div>
+<div class="phone">
+  <div class="phone-status"><div class="status-time">9:44</div><div class="status-icons">▲ ◉ ▮▮▮</div></div>
+  <div class="phone-screen">
+
+    <div class="app-top">
+      <div class="app-wordmark"><div class="wordmark-n">N</div> NEWCOLLAB</div>
+      <div class="top-icons">
+        <div class="top-icon">🔔</div>
+        <div class="top-avatar">M</div>
+      </div>
+    </div>
+
+    <div class="sub-tabs">
+      <div class="sub-tab">Replies</div>
+      <div class="sub-tab active">Pool <span style="background:#E11D48;color:#fff;border-radius:10px;padding:1px 5px;font-size:9px;margin-left:3px;">3</span></div>
+    </div>
+
+    <div class="scroll-area">
+
+      <!-- Milestone moment -->
+      <div class="milestone-card">
+        <div class="milestone-icon">🎉</div>
+        <div>
+          <div class="milestone-title">@skinbysoph hit 1k!</div>
+          <div class="milestone-sub">Your beauty pool · She's now on the Growing tier</div>
+        </div>
+      </div>
+
+      <div style="padding:10px 12px 4px;font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:.07em;">This week</div>
+
+      <div class="inbox-item unread" style="border-radius:12px;margin:0 12px 0;border:1px solid #f0f0ef;">
+        <div class="inbox-av" style="background:#E11D48;">T</div>
+        <div class="inbox-content">
+          <div class="inbox-title">@taylormadebeauty followed you</div>
+          <div class="inbox-sub">Beauty pool · TikTok</div>
+        </div>
+        <div class="inbox-time">3h ago</div>
+      </div>
+
+      <div class="inbox-item" style="border-radius:12px;margin:4px 12px 0;border:1px solid #f0f0ef;">
+        <div class="inbox-av" style="background:#059669;">M</div>
+        <div class="inbox-content">
+          <div class="inbox-title">@merakibeauty got first PR 🎁</div>
+          <div class="inbox-sub">They pitched Aesop. It worked!</div>
+        </div>
+        <div class="inbox-time">Yesterday</div>
+      </div>
+
+      <div class="inbox-item" style="border-radius:12px;margin:4px 12px 0;border:1px solid #f0f0ef;">
+        <div class="inbox-av" style="background:#db2777;">R</div>
+        <div class="inbox-content">
+          <div class="inbox-title">@rosabeauty joined your pool</div>
+          <div class="inbox-sub">Beauty · 2.4K followers</div>
+        </div>
+        <div class="inbox-time">2d ago</div>
+      </div>
+
+      <!-- Motivational nudge -->
+      <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:14px;padding:12px 14px;margin:10px 12px 8px;">
+        <div style="font-size:11px;font-weight:800;color:#059669;margin-bottom:3px;">@merakibeauty's success</div>
+        <div style="font-size:10.5px;color:#374151;line-height:1.4;">They sent 3 pitches. Aesop replied. Your pitch is just as strong — keep going.</div>
+      </div>
+
+    </div>
+
+    <div class="bottom-nav">
+      <div class="nav-item"><div class="nav-item-icon">✨</div><div class="nav-item-label">For You</div></div>
+      <div class="nav-item"><div class="nav-item-icon">🔍</div><div class="nav-item-label">Discover</div></div>
+      <div class="nav-item active"><div class="nav-item-icon">📩</div><div class="nav-item-label">Inbox</div><div class="nav-badge">3</div></div>
+      <div class="nav-item"><div class="nav-item-icon">📋</div><div class="nav-item-label">My Kit</div></div>
+    </div>
+
+  </div>
+  <div class="phone-home-bar"><div class="home-pill"></div></div>
+</div>
+<div class="phone-caption">Inbox · Pool tab open</div>
+<div class="phone-step">Milestone moments + social proof</div>
+</div>
+
+
+<!-- Screen F: Push notification -->
+<div>
+<div class="phone">
+  <div class="phone-status"><div class="status-time">9:47</div><div class="status-icons">▲ ◉ ▮▮▮</div></div>
+  <div class="phone-screen" style="background:#1a1a1a;justify-content:flex-start;">
+
+    <!-- Lock screen notification style -->
+    <div style="padding:16px 14px 0;">
+
+      <!-- Time on lock screen -->
+      <div style="text-align:center;margin-bottom:20px;">
+        <div style="font-size:48px;font-weight:200;color:#fff;line-height:1;">9:47</div>
+        <div style="font-size:13px;color:rgba(255,255,255,.6);">Thursday, June 12</div>
+      </div>
+
+      <!-- Notification 1 - Pool milestone -->
+      <div style="background:rgba(255,255,255,.12);backdrop-filter:blur(20px);border-radius:16px;padding:12px 14px;margin-bottom:8px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+          <div style="width:22px;height:22px;background:#0f0f0f;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:900;color:#fff;">N</div>
+          <div style="font-size:10px;font-weight:700;color:rgba(255,255,255,.7);text-transform:uppercase;letter-spacing:.05em;">Newcollab</div>
+          <div style="margin-left:auto;font-size:10px;color:rgba(255,255,255,.4);">now</div>
+        </div>
+        <div style="font-size:12.5px;font-weight:700;color:#fff;line-height:1.3;margin-bottom:2px;">@skinbysoph just hit 1k 🎉</div>
+        <div style="font-size:11px;color:rgba(255,255,255,.5);line-height:1.3;">From your beauty pool — they're on their way to PR too.</div>
+      </div>
+
+      <!-- Notification 2 - Reply -->
+      <div style="background:rgba(255,255,255,.12);backdrop-filter:blur(20px);border-radius:16px;padding:12px 14px;margin-bottom:8px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+          <div style="width:22px;height:22px;background:#0f0f0f;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:900;color:#fff;">N</div>
+          <div style="font-size:10px;font-weight:700;color:rgba(255,255,255,.7);text-transform:uppercase;letter-spacing:.05em;">Newcollab</div>
+          <div style="margin-left:auto;font-size:10px;color:rgba(255,255,255,.4);">2d ago</div>
+        </div>
+        <div style="font-size:12.5px;font-weight:700;color:#4ade80;line-height:1.3;margin-bottom:2px;">Glossier replied to your pitch 🎁</div>
+        <div style="font-size:11px;color:rgba(255,255,255,.5);line-height:1.3;">Tap to see their message and next steps.</div>
+      </div>
+
+      <!-- Notification 3 - New pool member -->
+      <div style="background:rgba(255,255,255,.09);backdrop-filter:blur(20px);border-radius:16px;padding:12px 14px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+          <div style="width:22px;height:22px;background:#0f0f0f;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:900;color:#fff;">N</div>
+          <div style="font-size:10px;font-weight:700;color:rgba(255,255,255,.7);text-transform:uppercase;letter-spacing:.05em;">Newcollab</div>
+          <div style="margin-left:auto;font-size:10px;color:rgba(255,255,255,.4);">3h ago</div>
+        </div>
+        <div style="font-size:12.5px;font-weight:700;color:#fff;line-height:1.3;margin-bottom:2px;">3 new beauty creators joined</div>
+        <div style="font-size:11px;color:rgba(255,255,255,.4);">Your pool is growing — see who's in your niche.</div>
+      </div>
+
+    </div>
+
+  </div>
+  <div class="phone-home-bar" style="background:#1a1a1a;"><div class="home-pill" style="background:#fff;opacity:.3;"></div></div>
+</div>
+<div class="phone-caption">Push notifications</div>
+<div class="phone-step">Pool milestones alongside brand replies</div>
+</div>
+
+</div><!-- /phones-row -->
+
+</body>
+</html>

@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Social Proof Strip — Newcollab</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #f3f4f6;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 20px;
+    gap: 32px;
+  }
+
+  .label {
+    font-size: 11px;
+    font-weight: 700;
+    color: #9ca3af;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    align-self: flex-start;
+    max-width: 560px;
+    width: 100%;
+  }
+
+  /* ── STRIP CONTAINER ── */
+  .strip {
+    width: 100%;
+    max-width: 560px;
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 14px;
+    overflow: hidden;
+  }
+
+  /* ── HEADER ── */
+  .strip-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px 8px;
+    border-bottom: 1px solid #f3f4f6;
+  }
+
+  .live-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 800;
+    color: #059669;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+  }
+
+  .live-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #059669;
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: .4; transform: scale(.85); }
+  }
+
+  .week-count {
+    font-size: 11px;
+    color: #6b7280;
+    font-weight: 500;
+  }
+
+  .week-count strong {
+    color: #111827;
+    font-weight: 700;
+  }
+
+  /* ── FEED ── */
+  .feed {
+    padding: 4px 0;
+    max-height: 148px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* ── NOTIFICATION ROW ── */
+  .notif {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    transition: background .15s;
+    animation: slideIn .4s cubic-bezier(.22,1,.36,1) both;
+  }
+
+  .notif:hover { background: #f9fafb; }
+
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .new-flash {
+    animation: slideIn .4s cubic-bezier(.22,1,.36,1) both,
+               flashBg .9s ease-out both;
+  }
+
+  @keyframes flashBg {
+    0%   { background: #ecfdf5; }
+    100% { background: transparent; }
+  }
+
+  /* ── AVATAR ── */
+  .avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 800;
+    color: #fff;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
+  }
+
+  .platform-dot {
+    position: absolute;
+    bottom: -1px;
+    right: -1px;
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    border: 1.5px solid #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 7px;
+  }
+
+  /* ── TEXT ── */
+  .notif-body {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .notif-line {
+    font-size: 12.5px;
+    color: #374151;
+    line-height: 1.4;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .notif-line .handle {
+    font-weight: 700;
+    color: #111827;
+  }
+
+  .notif-line .brand {
+    font-weight: 700;
+    color: #059669;
+  }
+
+  .notif-meta {
+    font-size: 11px;
+    color: #9ca3af;
+    margin-top: 1px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .followers-chip {
+    background: #f3f4f6;
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #6b7280;
+  }
+
+  /* ── RIGHT BADGE ── */
+  .reply-badge {
+    flex-shrink: 0;
+    background: #ecfdf5;
+    border: 1px solid #bbf7d0;
+    border-radius: 20px;
+    padding: 3px 9px;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #059669;
+    white-space: nowrap;
+  }
+
+  .package-badge {
+    flex-shrink: 0;
+    background: #faf5ff;
+    border: 1px solid #e9d5ff;
+    border-radius: 20px;
+    padding: 3px 9px;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #7c3aed;
+    white-space: nowrap;
+  }
+
+  /* ── DIVIDER ── */
+  .notif-divider {
+    height: 1px;
+    background: #f9fafb;
+    margin: 0 14px;
+  }
+
+  /* ── FOOTER ── */
+  .strip-footer {
+    padding: 8px 14px;
+    border-top: 1px solid #f3f4f6;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .see-all {
+    font-size: 11.5px;
+    color: #6b7280;
+    font-weight: 500;
+    cursor: pointer;
+  }
+
+  .refresh-label {
+    font-size: 10.5px;
+    color: #d1d5db;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .refresh-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #059669;
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  /* ── VARIANT 2 — compact ticker ── */
+  .ticker-strip {
+    width: 100%;
+    max-width: 560px;
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    border-radius: 10px;
+    padding: 10px 14px;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .ticker-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: #059669;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 13px;
+    margin-top: 1px;
+  }
+
+  .ticker-content { flex: 1; }
+
+  .ticker-header {
+    font-size: 11px;
+    font-weight: 800;
+    color: #059669;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .ticker-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 5px;
+  }
+
+  .ticker-avatar {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    font-size: 9px;
+    font-weight: 800;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .ticker-text {
+    font-size: 12px;
+    color: #374151;
+    flex: 1;
+  }
+
+  .ticker-text b { color: #059669; font-weight: 700; }
+
+  .ticker-time {
+    font-size: 10.5px;
+    color: #9ca3af;
+    flex-shrink: 0;
+  }
+</style>
+</head>
+<body>
+
+<div class="label">Variant A — Notification feed (recommended)</div>
+
+<!-- VARIANT A: Notification feed -->
+<div class="strip" id="mainStrip">
+
+  <div class="strip-header">
+    <div class="live-badge">
+      <div class="live-dot"></div>
+      Live activity
+    </div>
+    <div class="week-count"><strong>63</strong> replies sent this week</div>
+  </div>
+
+  <div class="feed" id="feed">
+
+    <div class="notif new-flash" style="animation-delay:.05s">
+      <div class="avatar" style="background:#f97316">
+        S
+        <div class="platform-dot" style="background:#e1306c">▲</div>
+      </div>
+      <div class="notif-body">
+        <div class="notif-line">
+          <span class="handle">@sarah.wellness</span> got a reply from <span class="brand">Aura Bora</span>
+        </div>
+        <div class="notif-meta">
+          <span class="followers-chip">8.2K followers</span>
+          fitness &amp; wellness · just now
+        </div>
+      </div>
+      <div class="reply-badge">✓ Replied</div>
+    </div>
+
+    <div class="notif-divider"></div>
+
+    <div class="notif" style="animation-delay:.15s">
+      <div class="avatar" style="background:#7c3aed">
+        J
+        <div class="platform-dot" style="background:#000">T</div>
+      </div>
+      <div class="notif-body">
+        <div class="notif-line">
+          <span class="handle">@jadebeautyy</span> received a package from <span class="brand" style="color:#7c3aed">Cowshed</span>
+        </div>
+        <div class="notif-meta">
+          <span class="followers-chip">3.4K followers</span>
+          beauty · 14m ago
+        </div>
+      </div>
+      <div class="package-badge">📦 Package</div>
+    </div>
+
+    <div class="notif-divider"></div>
+
+    <div class="notif" style="animation-delay:.25s">
+      <div class="avatar" style="background:#059669">
+        M
+        <div class="platform-dot" style="background:#e1306c">▲</div>
+      </div>
+      <div class="notif-body">
+        <div class="notif-line">
+          <span class="handle">@maya.eats</span> got a reply from <span class="brand">Graza</span>
+        </div>
+        <div class="notif-meta">
+          <span class="followers-chip">6.1K followers</span>
+          food &amp; beverage · 1h ago
+        </div>
+      </div>
+      <div class="reply-badge">✓ Replied</div>
+    </div>
+
+  </div>
+
+  <div class="strip-footer">
+    <div class="see-all">See all activity →</div>
+    <div class="refresh-label">
+      <div class="refresh-dot"></div>
+      Updates in real time
+    </div>
+  </div>
+
+</div>
+
+<!-- ───────────────────── -->
+
+<div class="label">Variant B — Compact ticker (fits inside For You card)</div>
+
+<!-- VARIANT B: Compact ticker -->
+<div class="ticker-strip">
+  <div class="ticker-icon">🔔</div>
+  <div class="ticker-content">
+    <div class="ticker-header">
+      <div class="live-dot"></div>
+      This week on Newcollab
+    </div>
+
+    <div class="ticker-row">
+      <div class="ticker-avatar" style="background:#f97316">S</div>
+      <div class="ticker-text"><b>@sarah.wellness</b> (8.2K) got a reply from <b>Aura Bora</b></div>
+      <div class="ticker-time">just now</div>
+    </div>
+
+    <div class="ticker-row">
+      <div class="ticker-avatar" style="background:#7c3aed">J</div>
+      <div class="ticker-text"><b>@jadebeautyy</b> (3.4K) received a package from <b>Cowshed</b></div>
+      <div class="ticker-time">14m ago</div>
+    </div>
+
+    <div class="ticker-row">
+      <div class="ticker-avatar" style="background:#059669">M</div>
+      <div class="ticker-text"><b>@maya.eats</b> (6.1K) got a reply from <b>Graza</b></div>
+      <div class="ticker-time">1h ago</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ───────────────────── -->
+
+<script>
+// ── AVATAR POOL ── randomised creator identities
+const creators = [
+  { initials: 'S', color: '#f97316', handle: '@sarah.wellness', followers: '8.2K', niche: 'fitness & wellness', platform: 'ig' },
+  { initials: 'J', color: '#7c3aed', handle: '@jadebeautyy',    followers: '3.4K', niche: 'beauty',            platform: 'tt' },
+  { initials: 'M', color: '#059669', handle: '@maya.eats',      followers: '6.1K', niche: 'food & bev',        platform: 'ig' },
+  { initials: 'A', color: '#0ea5e9', handle: '@alex.fit',       followers: '12K',  niche: 'fitness',           platform: 'ig' },
+  { initials: 'P', color: '#e11d48', handle: '@petite.skin',    followers: '4.7K', niche: 'skincare',          platform: 'tt' },
+  { initials: 'L', color: '#d97706', handle: '@lena.wellness',  followers: '9.3K', niche: 'wellness',          platform: 'ig' },
+  { initials: 'R', color: '#6366f1', handle: '@runwithrose',    followers: '2.9K', niche: 'fitness',           platform: 'tt' },
+  { initials: 'C', color: '#14b8a6', handle: '@chloe.eats',     followers: '5.5K', niche: 'food & bev',        platform: 'ig' },
+];
+
+const brands = [
+  { name: 'Aura Bora',       event: 'reply'   },
+  { name: 'Cowshed',         event: 'package' },
+  { name: 'Graza',           event: 'reply'   },
+  { name: 'Peach Slices',    event: 'reply'   },
+  { name: 'Momentous',       event: 'package' },
+  { name: 'Splits59',        event: 'reply'   },
+  { name: 'Fly By Jing',     event: 'reply'   },
+  { name: 'Olly',            event: 'package' },
+  { name: 'JuneShine',       event: 'reply'   },
+  { name: 'Pela Case',       event: 'reply'   },
+];
+
+// Time labels that cycle to stay "fresh"
+const times = ['just now', '2m ago', '7m ago', '14m ago', '28m ago', '41m ago', '1h ago'];
+
+let timeIdx = 0;
+
+function buildNotif(creator, brand, timeLabel, isNew) {
+  const isPackage = brand.event === 'package';
+  const actionText = isPackage ? 'received a package from' : 'got a reply from';
+  const badgeClass = isPackage ? 'package-badge' : 'reply-badge';
+  const badgeText  = isPackage ? '📦 Package' : '✓ Replied';
+  const brandColor = isPackage ? '#7c3aed' : '#059669';
+
+  const div = document.createElement('div');
+  div.className = 'notif' + (isNew ? ' new-flash' : '');
+
+  div.innerHTML = `
+    <div class="avatar" style="background:${creator.color}">
+      ${creator.initials}
+      <div class="platform-dot" style="background:${creator.platform === 'ig' ? '#e1306c' : '#000'}">
+        ${creator.platform === 'ig' ? '▲' : 'T'}
+      </div>
+    </div>
+    <div class="notif-body">
+      <div class="notif-line">
+        <span class="handle">${creator.handle}</span> ${actionText}
+        <span class="brand" style="color:${brandColor}">${brand.name}</span>
+      </div>
+      <div class="notif-meta">
+        <span class="followers-chip">${creator.followers} followers</span>
+        ${creator.niche} · ${timeLabel}
+      </div>
+    </div>
+    <div class="${badgeClass}">${badgeText}</div>
+  `;
+  return div;
+}
+
+// ── LIVE INJECTION: add a new notification every ~6 seconds ──
+function injectNotif() {
+  const feed = document.getElementById('feed');
+  const usedCreators = [...feed.querySelectorAll('.handle')].map(el => el.textContent);
+  const available = creators.filter(c => !usedCreators.includes(c.handle));
+  if (!available.length) return;
+
+  const creator = available[Math.floor(Math.random() * available.length)];
+  const brand   = brands[Math.floor(Math.random() * brands.length)];
+  const timeLabel = 'just now';
+
+  // Age existing "just now" labels
+  feed.querySelectorAll('.notif-meta').forEach(meta => {
+    const text = meta.innerHTML;
+    if (text.includes('just now')) meta.innerHTML = text.replace('just now', '1m ago');
+    else if (text.includes('1m ago')) meta.innerHTML = text.replace('1m ago', '3m ago');
+    else if (text.includes('3m ago')) meta.innerHTML = text.replace('3m ago', '7m ago');
+  });
+
+  // Remove oldest if more than 3 rows
+  const rows = feed.querySelectorAll('.notif');
+  if (rows.length >= 3) {
+    const last = rows[rows.length - 1];
+    const prevDiv = last.previousSibling;
+    if (prevDiv && prevDiv.classList && prevDiv.classList.contains('notif-divider')) prevDiv.remove();
+    last.remove();
+  }
+
+  // Insert at top
+  const divider = document.createElement('div');
+  divider.className = 'notif-divider';
+  const newNotif = buildNotif(creator, brand, timeLabel, true);
+
+  feed.insertBefore(divider, feed.firstChild);
+  feed.insertBefore(newNotif, feed.firstChild);
+}
+
+setInterval(injectNotif, 5800);
+
+// ── ALSO update week count occasionally ──
+let weekCount = 63;
+setInterval(() => {
+  weekCount += Math.floor(Math.random() * 2);
+  const el = document.querySelector('.week-count');
+  if (el) el.innerHTML = `<strong>${weekCount}</strong> replies sent this week`;
+}, 12000);
+</script>
+</body>
+</html>

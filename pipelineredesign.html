@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pipeline Redesign — Newcollab</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0f0f0f;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      min-height: 100vh;
+      padding: 40px 20px;
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif;
+      gap: 48px;
+    }
+
+    /* ── Phone frame ───────────────────────────────────────── */
+    .phone {
+      width: 390px;
+      height: 844px;
+      background: #FAFAF9;
+      border-radius: 50px;
+      overflow: hidden;
+      box-shadow:
+        0 0 0 10px #1c1c1e,
+        0 0 0 12px #3a3a3c,
+        0 40px 120px rgba(0,0,0,0.7);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      flex-shrink: 0;
+    }
+
+    /* ── Status bar ────────────────────────────────────────── */
+    .status-bar {
+      background: #fff;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 28px 0;
+      font-size: 12px;
+      font-weight: 600;
+      color: #111;
+      flex-shrink: 0;
+    }
+    .status-bar .time { font-size: 15px; font-weight: 700; }
+    .status-icons { display: flex; gap: 5px; align-items: center; }
+    .dynamic-island {
+      width: 120px;
+      height: 34px;
+      background: #000;
+      border-radius: 20px;
+      margin: 6px auto 0;
+      flex-shrink: 0;
+    }
+
+    /* ── Header ────────────────────────────────────────────── */
+    .header {
+      background: #fff;
+      padding: 12px 20px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #F3F4F6;
+      flex-shrink: 0;
+    }
+    .header-left { display: flex; flex-direction: column; }
+    .header-title { font-size: 20px; font-weight: 700; color: #111; }
+    .header-sub { font-size: 12px; color: #9CA3AF; margin-top: 1px; }
+    .header-actions { display: flex; gap: 10px; align-items: center; }
+    .icon-btn {
+      width: 34px; height: 34px;
+      border-radius: 50%;
+      background: #F3F4F6;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 15px;
+      cursor: pointer;
+    }
+
+    /* ── Scrollable content ────────────────────────────────── */
+    .content {
+      flex: 1;
+      overflow-y: auto;
+      padding-bottom: 80px;
+      -webkit-overflow-scrolling: touch;
+    }
+    .content::-webkit-scrollbar { display: none; }
+
+    /* ── Live activity strip ───────────────────────────────── */
+    .live-strip {
+      background: #fff;
+      padding: 10px 0 10px 16px;
+      border-bottom: 1px solid #F3F4F6;
+      overflow-x: auto;
+      white-space: nowrap;
+      -webkit-overflow-scrolling: touch;
+    }
+    .live-strip::-webkit-scrollbar { display: none; }
+    .live-strip-inner { display: inline-flex; gap: 8px; padding-right: 16px; }
+    .live-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #F9FAFB;
+      border: 1px solid #E5E7EB;
+      border-radius: 20px;
+      padding: 5px 11px;
+      font-size: 11.5px;
+      color: #374151;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .live-pill .dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: #10B981;
+      animation: pulse-dot 2s infinite;
+      flex-shrink: 0;
+    }
+    .live-pill.amber .dot { background: #F59E0B; }
+    .live-pill.hot .dot { background: #EF4444; }
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.8); }
+    }
+    .live-label {
+      font-size: 10px;
+      font-weight: 700;
+      color: #10B981;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      margin-right: 4px;
+    }
+
+    /* ── Pipeline health card ──────────────────────────────── */
+    .health-card {
+      margin: 12px 16px;
+      background: #fff;
+      border-radius: 16px;
+      padding: 14px 16px;
+      border: 1px solid #E5E7EB;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .health-score-ring {
+      position: relative;
+      width: 52px;
+      height: 52px;
+      flex-shrink: 0;
+    }
+    .health-score-ring svg { transform: rotate(-90deg); }
+    .health-score-text {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 13px;
+      font-weight: 800;
+      color: #111;
+    }
+    .health-info { flex: 1; }
+    .health-label { font-size: 11px; font-weight: 700; color: #9CA3AF; text-transform: uppercase; letter-spacing: 0.4px; }
+    .health-title { font-size: 14px; font-weight: 700; color: #111; margin-top: 2px; }
+    .health-tip { font-size: 11.5px; color: #6B7280; margin-top: 3px; }
+    .health-tip strong { color: #7C3AED; }
+    .health-actions { display: flex; gap: 6px; margin-top: 8px; }
+    .health-action-pill {
+      background: #F5F3FF;
+      color: #7C3AED;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 9px;
+      border-radius: 20px;
+      border: 1px solid #DDD6FE;
+    }
+
+    /* ── Section header ────────────────────────────────────── */
+    .section-head {
+      padding: 14px 16px 6px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .section-head h3 { font-size: 13px; font-weight: 700; color: #111; }
+    .section-head span { font-size: 12px; color: #9CA3AF; }
+
+    /* ── Best move card ────────────────────────────────────── */
+    .best-move-card {
+      margin: 0 16px 4px;
+      background: linear-gradient(135deg, #FFF7ED, #FFFBEB);
+      border: 1.5px solid #FCD34D;
+      border-radius: 16px;
+      padding: 14px;
+      position: relative;
+      overflow: hidden;
+    }
+    .best-move-card::before {
+      content: '';
+      position: absolute;
+      top: 0; right: 0;
+      width: 80px; height: 80px;
+      background: radial-gradient(circle, rgba(251,191,36,0.15), transparent);
+      border-radius: 50%;
+    }
+    .best-move-label {
+      font-size: 10.5px;
+      font-weight: 700;
+      color: #D97706;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .best-move-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .brand-logo {
+      width: 40px; height: 40px;
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 800;
+      color: #fff;
+      flex-shrink: 0;
+      letter-spacing: -0.5px;
+    }
+    .brand-info { flex: 1; }
+    .brand-name { font-size: 15px; font-weight: 700; color: #111; }
+    .brand-meta { font-size: 12px; color: #6B7280; margin-top: 1px; }
+    .brand-pulse {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11.5px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .pulse-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      animation: pulse-dot 2s infinite;
+    }
+    .pulse-green { background: #10B981; }
+    .pulse-amber { background: #F59E0B; }
+    .pulse-red { background: #EF4444; }
+    .pulse-text-green { color: #059669; }
+    .pulse-text-amber { color: #D97706; }
+    .pulse-text-red { color: #DC2626; }
+
+    .countdown-bar {
+      background: #FEF3C7;
+      border-radius: 8px;
+      padding: 7px 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .countdown-left { font-size: 12px; font-weight: 600; color: #92400E; display: flex; align-items: center; gap: 5px; }
+    .countdown-sub { font-size: 11px; color: #B45309; }
+    .progress-track {
+      height: 4px;
+      background: #E5E7EB;
+      border-radius: 2px;
+      margin-bottom: 10px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.3s;
+    }
+
+    /* ── Buttons ───────────────────────────────────────────── */
+    .btn-primary {
+      width: 100%;
+      padding: 12px;
+      border-radius: 12px;
+      border: none;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      margin-bottom: 7px;
+    }
+    .btn-amber { background: #F59E0B; color: #fff; }
+    .btn-black { background: #111; color: #fff; }
+    .btn-green { background: #059669; color: #fff; }
+    .btn-pro {
+      background: linear-gradient(135deg, #7C3AED, #E11D48);
+      color: #fff;
+    }
+    .btn-secondary {
+      width: 100%;
+      padding: 10px;
+      border-radius: 10px;
+      border: 1.5px solid #E5E7EB;
+      background: #fff;
+      font-size: 13px;
+      font-weight: 600;
+      color: #6B7280;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    .btn-ghost-green {
+      border-color: #D1FAE5;
+      color: #059669;
+      background: #F0FDF4;
+    }
+
+    /* ── Pitch cards ───────────────────────────────────────── */
+    .pitch-card {
+      margin: 8px 16px;
+      background: #fff;
+      border-radius: 16px;
+      border: 1.5px solid #E5E7EB;
+      overflow: hidden;
+    }
+    .pitch-card.overdue { border-color: #FCD34D; }
+    .pitch-card.replied { border-color: #A7F3D0; background: #F0FDF4; }
+    .pitch-card.hot { border-color: #BFDBFE; }
+
+    .card-top { padding: 12px 12px 10px; }
+    .card-brand-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .card-brand-info { flex: 1; }
+    .card-brand-name { font-size: 14.5px; font-weight: 700; color: #111; }
+    .card-brand-meta { font-size: 11.5px; color: #9CA3AF; margin-top: 1px; }
+
+    .status-badge {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 9px;
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+    }
+    .badge-overdue { background: #FFFBEB; color: #92400E; border: 1px solid #FDE68A; }
+    .badge-waiting { background: #EFF6FF; color: #2563EB; border: 1px solid #BFDBFE; }
+    .badge-replied { background: #D1FAE5; color: #065F46; border: 1px solid #A7F3D0; }
+    .badge-hot { background: #FFF1F2; color: #BE123C; border: 1px solid #FECDD3; }
+
+    .reply-rate-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .reply-rate {
+      font-size: 12px;
+      font-weight: 700;
+      color: #059669;
+    }
+    .reply-rate.low { color: #D97706; }
+    .reply-rate-label { font-size: 11.5px; color: #9CA3AF; }
+    .pr-tag {
+      font-size: 11px;
+      color: #6B7280;
+      background: #F3F4F6;
+      padding: 2px 7px;
+      border-radius: 6px;
+      margin-left: auto;
+    }
+
+    .card-actions { padding: 0 12px 12px; }
+    .card-divider { height: 1px; background: #F3F4F6; margin: 0 -12px 10px; }
+
+    /* ── Replied card ──────────────────────────────────────── */
+    .replied-banner {
+      background: #D1FAE5;
+      border-radius: 10px;
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .replied-banner-text { font-size: 13px; font-weight: 700; color: #065F46; }
+    .replied-banner-sub { font-size: 11px; color: #059669; margin-top: 1px; }
+    .replied-time { font-size: 11px; color: #6B7280; }
+
+    /* ── Pro lock card ─────────────────────────────────────── */
+    .pro-nudge {
+      margin: 8px 16px;
+      background: linear-gradient(135deg, #FAF5FF, #FDF2F8);
+      border: 1.5px solid #DDD6FE;
+      border-radius: 16px;
+      padding: 14px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .pro-nudge-icon {
+      width: 40px; height: 40px;
+      background: linear-gradient(135deg, #7C3AED, #E11D48);
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+    .pro-nudge-text { flex: 1; }
+    .pro-nudge-title { font-size: 13px; font-weight: 700; color: #111; }
+    .pro-nudge-sub { font-size: 11.5px; color: #6B7280; margin-top: 2px; }
+    .pro-nudge-cta {
+      background: linear-gradient(135deg, #7C3AED, #E11D48);
+      color: #fff;
+      font-size: 11.5px;
+      font-weight: 700;
+      padding: 7px 12px;
+      border-radius: 10px;
+      border: none;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    /* ── Waiting card detail ───────────────────────────────── */
+    .waiting-detail {
+      background: #EFF6FF;
+      border-radius: 8px;
+      padding: 8px 10px;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .waiting-detail-left { font-size: 12px; color: #1E40AF; font-weight: 500; }
+    .waiting-detail-right { font-size: 11.5px; color: #3B82F6; font-weight: 600; }
+
+    /* ── Bottom nav ────────────────────────────────────────── */
+    .bottom-nav {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      height: 80px;
+      background: #fff;
+      border-top: 1px solid #F3F4F6;
+      display: flex;
+      align-items: flex-start;
+      padding-top: 10px;
+    }
+    .nav-item {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 3px;
+      cursor: pointer;
+    }
+    .nav-icon { font-size: 20px; position: relative; }
+    .nav-label { font-size: 10px; color: #9CA3AF; font-weight: 500; }
+    .nav-label.active { color: #111; font-weight: 700; }
+    .nav-badge {
+      position: absolute;
+      top: -4px; right: -8px;
+      background: #E11D48;
+      color: #fff;
+      font-size: 9px;
+      font-weight: 700;
+      padding: 1px 5px;
+      border-radius: 10px;
+    }
+    .nav-new {
+      position: absolute;
+      top: -5px; right: -12px;
+      background: #7C3AED;
+      color: #fff;
+      font-size: 8px;
+      font-weight: 700;
+      padding: 1px 4px;
+      border-radius: 4px;
+    }
+    .active-dot {
+      width: 4px; height: 4px;
+      border-radius: 50%;
+      background: #111;
+      margin-top: 1px;
+    }
+
+    /* ── Labels panel beside phone ─────────────────────────── */
+    .annotations {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      padding-top: 120px;
+      width: 240px;
+      flex-shrink: 0;
+    }
+    .annotation {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 12px 0;
+      border-bottom: 1px solid #222;
+    }
+    .annotation:last-child { border-bottom: none; }
+    .ann-number {
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      background: #E11D48;
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    .ann-text { color: #ccc; font-size: 12px; line-height: 1.5; }
+    .ann-text strong { color: #fff; display: block; margin-bottom: 2px; font-size: 12.5px; }
+    .ann-new {
+      display: inline-block;
+      background: #7C3AED;
+      color: #fff;
+      font-size: 9px;
+      font-weight: 700;
+      padding: 1px 5px;
+      border-radius: 4px;
+      margin-left: 4px;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── Phone ──────────────────────────────────────────────── -->
+  <div class="phone">
+
+    <!-- Status bar -->
+    <div class="status-bar">
+      <span class="time">9:41</span>
+      <div class="status-icons">
+        <span>●●●</span>
+        <span>WiFi</span>
+        <span>🔋</span>
+      </div>
+    </div>
+    <div class="dynamic-island"></div>
+
+    <!-- Header -->
+    <div class="header">
+      <div class="header-left">
+        <span class="header-title">My Pitches</span>
+        <span class="header-sub">3 active &middot; 2 need follow-up</span>
+      </div>
+      <div class="header-actions">
+        <div class="icon-btn">📊</div>
+        <div class="icon-btn">🔔</div>
+      </div>
+    </div>
+
+    <!-- NEW: Live activity strip -->
+    <div class="live-strip">
+      <div class="live-strip-inner">
+        <div class="live-pill">
+          <span class="live-label">Live</span>
+          <span class="dot"></span>
+          Creator in Skincare got a reply from Kopari Beauty · 2h ago
+        </div>
+        <div class="live-pill amber">
+          <span class="dot"></span>
+          Pela Case is responding fast this week · 55% rate
+        </div>
+        <div class="live-pill hot">
+          <span class="dot"></span>
+          4 packages landed in Beauty this week
+        </div>
+      </div>
+    </div>
+
+    <!-- Scrollable content -->
+    <div class="content">
+
+      <!-- NEW: Pipeline health -->
+      <div class="health-card">
+        <div class="health-score-ring">
+          <svg width="52" height="52" viewBox="0 0 52 52">
+            <circle cx="26" cy="26" r="21" fill="none" stroke="#F3F4F6" stroke-width="5"/>
+            <circle cx="26" cy="26" r="21" fill="none" stroke="#7C3AED" stroke-width="5"
+              stroke-dasharray="132"
+              stroke-dashoffset="76"
+              stroke-linecap="round"/>
+          </svg>
+          <div class="health-score-text">42</div>
+        </div>
+        <div class="health-info">
+          <div class="health-label">Pipeline Health</div>
+          <div class="health-title">Needs attention</div>
+          <div class="health-tip">Add <strong>2 more pitches</strong> to improve your chances this month</div>
+          <div class="health-actions">
+            <div class="health-action-pill">+Send follow-ups</div>
+            <div class="health-action-pill">+Add brands</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- NEW: Best move this week -->
+      <div class="section-head">
+        <h3>Best move this week</h3>
+      </div>
+
+      <div class="best-move-card">
+        <div class="best-move-label">🎯 Highest chance of reply right now</div>
+        <div class="best-move-brand">
+          <div class="brand-logo" style="background:#1a1a2e;">KO</div>
+          <div class="brand-info">
+            <div class="brand-name">Kopari Beauty</div>
+            <div class="brand-meta">Skincare &middot; Pitched May 19</div>
+          </div>
+          <div class="status-badge badge-overdue">⚠ Overdue</div>
+        </div>
+        <div class="brand-pulse">
+          <div class="pulse-dot pulse-green"></div>
+          <span class="pulse-text-green">Active this week &middot; 3 creator replies sent</span>
+        </div>
+        <div class="countdown-bar">
+          <div>
+            <div class="countdown-left">⏳ Follow-up window closes in 2 days</div>
+            <div class="countdown-sub">Reply chance drops 60% after day 14</div>
+          </div>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill" style="width: 86%; background: linear-gradient(90deg, #F59E0B, #EF4444);"></div>
+        </div>
+        <button class="btn-primary btn-amber">✉ Send Follow-up — Draft Ready</button>
+        <button class="btn-secondary btn-ghost-green">✓ They Replied</button>
+      </div>
+
+      <!-- Section: All pitches -->
+      <div class="section-head">
+        <h3>All pitches</h3>
+        <span>3 active</span>
+      </div>
+
+      <!-- Card 1: Summer Fridays — overdue, quiet -->
+      <div class="pitch-card overdue">
+        <div class="card-top">
+          <div class="card-brand-row">
+            <div class="brand-logo" style="background:#C2A07A; width:38px; height:38px; font-size:10px;">SF</div>
+            <div class="card-brand-info">
+              <div class="card-brand-name">Summer Fridays</div>
+              <div class="card-brand-meta">Beauty &middot; Pitched May 19</div>
+            </div>
+            <div class="status-badge badge-overdue">⚠ 12d</div>
+          </div>
+          <div class="brand-pulse" style="margin-bottom:6px;">
+            <div class="pulse-dot pulse-red"></div>
+            <span class="pulse-text-red">Quiet this week &middot; No recent replies</span>
+          </div>
+          <div class="reply-rate-row">
+            <span class="reply-rate low">20% reply rate</span>
+            <span class="reply-rate-label">this month</span>
+            <span class="pr-tag">Has PR form</span>
+          </div>
+          <div class="countdown-bar" style="margin-bottom:0;">
+            <div class="countdown-left">⏳ Window closes in 2 days</div>
+            <div class="countdown-sub">Low activity — still worth sending</div>
+          </div>
+        </div>
+        <div class="card-divider"></div>
+        <div class="card-actions">
+          <button class="btn-primary btn-amber" style="margin-bottom:6px;">✉ Send Follow-up</button>
+          <button class="btn-secondary">✓ They Replied</button>
+        </div>
+      </div>
+
+      <!-- Card 2: Pela Case — replied (celebration state) -->
+      <div class="pitch-card replied">
+        <div class="card-top">
+          <div class="card-brand-row">
+            <div class="brand-logo" style="background:#2D6A4F; width:38px; height:38px; font-size:10px;">PC</div>
+            <div class="card-brand-info">
+              <div class="card-brand-name">Pela Case</div>
+              <div class="card-brand-meta">Lifestyle &middot; Pitched May 20</div>
+            </div>
+            <div class="status-badge badge-replied">✓ Replied!</div>
+          </div>
+          <div class="replied-banner">
+            <div>
+              <div class="replied-banner-text">🎉 They replied to your pitch</div>
+              <div class="replied-banner-sub">Pela Case responded — check your email</div>
+            </div>
+            <div class="replied-time">Today</div>
+          </div>
+          <div class="reply-rate-row">
+            <span class="reply-rate">55% reply rate</span>
+            <span>🔥</span>
+            <span class="reply-rate-label">one of the best</span>
+          </div>
+        </div>
+        <div class="card-divider"></div>
+        <div class="card-actions">
+          <button class="btn-primary btn-green" style="margin-bottom:6px;">📦 Log package received</button>
+          <button class="btn-secondary btn-ghost-green">View email thread</button>
+        </div>
+      </div>
+
+      <!-- Card 3: Briogeo — waiting, hot -->
+      <div class="pitch-card hot">
+        <div class="card-top">
+          <div class="card-brand-row">
+            <div class="brand-logo" style="background:#6D28D9; width:38px; height:38px; font-size:10px;">BR</div>
+            <div class="card-brand-info">
+              <div class="card-brand-name">Briogeo</div>
+              <div class="card-brand-meta">Haircare &middot; Pitched May 25</div>
+            </div>
+            <div class="status-badge badge-waiting">⏳ Waiting</div>
+          </div>
+          <div class="brand-pulse" style="margin-bottom:6px;">
+            <div class="pulse-dot pulse-green"></div>
+            <span class="pulse-text-green">Active this week &middot; 2 recent replies</span>
+          </div>
+          <div class="reply-rate-row">
+            <span class="reply-rate">42% reply rate</span>
+            <span class="reply-rate-label">usually replies within 7 days</span>
+          </div>
+          <div class="waiting-detail">
+            <div class="waiting-detail-left">📅 Follow-up ready in 7 days</div>
+            <div class="waiting-detail-right">Draft prepared</div>
+          </div>
+        </div>
+        <div class="card-divider"></div>
+        <div class="card-actions">
+          <button class="btn-secondary btn-ghost-green">✓ They Replied</button>
+        </div>
+      </div>
+
+      <!-- NEW: Pro unlock nudge -->
+      <div class="pro-nudge">
+        <div class="pro-nudge-icon">🔒</div>
+        <div class="pro-nudge-text">
+          <div class="pro-nudge-title">Pitch 4 more brands this month</div>
+          <div class="pro-nudge-sub">You've used your 5 free contacts. Pro removes the limit.</div>
+        </div>
+        <button class="pro-nudge-cta">$12/mo</button>
+      </div>
+
+    </div><!-- end content -->
+
+    <!-- Bottom nav -->
+    <div class="bottom-nav">
+      <div class="nav-item">
+        <span class="nav-icon">🔍</span>
+        <span class="nav-label">Discover</span>
+      </div>
+      <div class="nav-item">
+        <span class="nav-icon" style="position:relative;">
+          🔖
+          <span class="nav-badge">17</span>
+        </span>
+        <span class="nav-label active">Saved</span>
+        <div class="active-dot"></div>
+      </div>
+      <div class="nav-item">
+        <span class="nav-icon">✨</span>
+        <span class="nav-label">For You</span>
+      </div>
+      <div class="nav-item">
+        <span class="nav-icon" style="position:relative;">
+          📄
+          <span class="nav-new">NEW</span>
+        </span>
+        <span class="nav-label">My Kit</span>
+      </div>
+    </div>
+
+  </div><!-- end phone -->
+
+  <!-- ── Annotations ─────────────────────────────────────────── -->
+  <div class="annotations">
+
+    <div class="annotation">
+      <div class="ann-number">1</div>
+      <div class="ann-text">
+        <strong>Live activity strip <span class="ann-new">NEW</span></strong>
+        Real-time signals from across the platform. Changes every visit. Gives creators a reason to open the app daily even when their pitches are just waiting.
+      </div>
+    </div>
+
+    <div class="annotation">
+      <div class="ann-number">2</div>
+      <div class="ann-text">
+        <strong>Pipeline health score <span class="ann-new">NEW</span></strong>
+        A score that improves when they take action. Creates a game mechanic without gamification. "Add 2 more brands" is a clearer CTA than "pitch more brands."
+      </div>
+    </div>
+
+    <div class="annotation">
+      <div class="ann-number">3</div>
+      <div class="ann-text">
+        <strong>Best move card <span class="ann-new">NEW</span></strong>
+        One clear recommendation at the top. No decision paralysis. Removes the "what should I do today?" question.
+      </div>
+    </div>
+
+    <div class="annotation">
+      <div class="ann-number">4</div>
+      <div class="ann-text">
+        <strong>Brand pulse signal <span class="ann-new">NEW</span></strong>
+        Green/red live status per brand. Replaces static "waiting" with dynamic signal. Creators check back to see if a quiet brand became active.
+      </div>
+    </div>
+
+    <div class="annotation">
+      <div class="ann-number">5</div>
+      <div class="ann-text">
+        <strong>Countdown vs age</strong>
+        "Window closes in 2 days" instead of "12 days ago." Same data, opposite emotion. One creates urgency, one creates guilt.
+      </div>
+    </div>
+
+    <div class="annotation">
+      <div class="ann-number">6</div>
+      <div class="ann-text">
+        <strong>Replied card celebration</strong>
+        Green card, 🎉 moment, clear next action. Right now the pipeline treats a reply the same as a waiting pitch. A win should feel like a win.
+      </div>
+    </div>
+
+    <div class="annotation">
+      <div class="ann-number">7</div>
+      <div class="ann-text">
+        <strong>Pro nudge in pipeline <span class="ann-new">NEW</span></strong>
+        Upgrade CTA appears naturally inside the pipeline, not just on the contact modal. They see the limit when they are most engaged with their pitches.
+      </div>
+    </div>
+
+  </div>
+
+</body>
+</html>

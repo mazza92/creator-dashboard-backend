@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>For You — Newcollab</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --rose: #E11D48;
+    --black: #0F0F0F;
+    --violet: #7C3AED;
+    --green: #059669;
+    --bg: #F4F4F3;
+    --white: #ffffff;
+    --border: #e5e7eb;
+    --muted: #6b7280;
+    --text: #374151;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--black);
+  }
+
+  /* NAV */
+  .nav {
+    background: var(--black);
+    padding: 0 28px;
+    height: 52px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .nav-logo {
+    font-size: 12px;
+    font-weight: 900;
+    color: #fff;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    background: #fff;
+    color: var(--black);
+    padding: 4px 8px;
+    border-radius: 6px;
+    margin-right: 10px;
+    flex-shrink: 0;
+  }
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 13px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 500;
+    color: rgba(255,255,255,0.6);
+    cursor: pointer;
+    border: none;
+    background: none;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+  .nav-item:hover { color: #fff; }
+  .nav-item.active {
+    background: #fff;
+    color: var(--black);
+    font-weight: 700;
+  }
+  .nav-badge {
+    background: var(--rose);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 10px;
+  }
+  .nav-right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .nav-avatar {
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #f9a8d4, #c084fc);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; color: #fff;
+  }
+
+  /* PAGE */
+  .page {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 28px 28px 60px;
+  }
+
+  /* HEADER ROW */
+  .header-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 18px;
+    gap: 16px;
+  }
+  .header-left {}
+  .page-eyebrow {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--rose);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 5px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .page-title {
+    font-size: 26px;
+    font-weight: 900;
+    color: var(--black);
+    letter-spacing: -0.03em;
+    margin-bottom: 4px;
+  }
+  .page-sub { font-size: 13px; color: var(--muted); }
+  .creator-chip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--white);
+    border: 1px solid var(--border);
+    border-radius: 24px;
+    padding: 8px 14px 8px 10px;
+    flex-shrink: 0;
+  }
+  .creator-chip-avatar {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #f9a8d4, #c084fc);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; color: #fff;
+  }
+  .creator-chip-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--black);
+  }
+  .creator-chip-followers {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .creator-chip-edit {
+    font-size: 12px;
+    color: var(--rose);
+    font-weight: 600;
+    cursor: pointer;
+    margin-left: 4px;
+  }
+
+  /* KIT VIEWS BANNER */
+  .kit-views-banner {
+    background: #eef2ff;
+    border: 1px solid #c7d2fe;
+    border-radius: 12px;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .kit-views-icon {
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    background: #818cf8;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .kit-views-text { flex: 1; font-size: 14px; color: #3730a3; }
+  .kit-views-text strong { font-weight: 700; }
+  .kit-views-close {
+    font-size: 16px;
+    color: #818cf8;
+    cursor: pointer;
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    line-height: 1;
+  }
+
+  /* REFRESH STATUS */
+  .refresh-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 20px;
+  }
+  .live-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--green);
+    flex-shrink: 0;
+  }
+
+  /* SUB-TABS — the new element, minimal footprint */
+  .sub-tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0;
+  }
+  .sub-tab {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 9px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    cursor: pointer;
+    border: none;
+    background: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: all 0.15s;
+    border-radius: 0;
+  }
+  .sub-tab:hover { color: var(--black); }
+  .sub-tab.active {
+    color: var(--black);
+    border-bottom-color: var(--black);
+  }
+  .sub-tab-count {
+    background: var(--rose);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 10px;
+  }
+
+  /* SECTION HEADER */
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 5px;
+  }
+  .section-title {
+    font-size: 16px;
+    font-weight: 800;
+    color: var(--black);
+  }
+  .section-sub {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 14px;
+  }
+  .pro-badge {
+    background: linear-gradient(135deg, #7C3AED, #a855f7);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 10px;
+  }
+
+  /* BRAND CARDS GRID — matches current 3-col layout */
+  .brand-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin-bottom: 20px;
+  }
+  @media (max-width: 700px) { .brand-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 960px) and (min-width: 701px) { .brand-grid { grid-template-columns: 1fr 1fr; } }
+
+  .brand-card {
+    background: var(--white);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 20px 16px 16px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    position: relative;
+  }
+  .match-chip {
+    position: absolute;
+    top: 14px; right: 14px;
+    background: var(--violet);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 9px;
+    border-radius: 10px;
+  }
+  .brand-img {
+    width: 72px; height: 56px;
+    border-radius: 10px;
+    background: #f3f4f6;
+    margin-bottom: 12px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; font-weight: 800; color: var(--muted);
+    overflow: hidden;
+  }
+  .brand-img img { width: 100%; height: 100%; object-fit: contain; }
+  .brand-name { font-size: 15px; font-weight: 700; margin-bottom: 5px; text-align: center; }
+  .brand-desc {
+    font-size: 12px; color: var(--muted); text-align: center;
+    line-height: 1.5; margin-bottom: 10px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .brand-tag {
+    background: #fff8e1; color: #92400e;
+    font-size: 10px; font-weight: 600;
+    padding: 3px 10px; border-radius: 10px; margin-bottom: 12px;
+  }
+  .brand-stats { display: flex; gap: 18px; justify-content: center; margin-bottom: 14px; }
+  .stat { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .stat-val { font-size: 15px; font-weight: 800; color: var(--green); }
+  .stat-lbl { font-size: 9px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .pitch-btn {
+    width: 100%; background: var(--black); color: #fff;
+    border: none; border-radius: 10px; padding: 11px;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 7px;
+  }
+  .pitch-btn:hover { opacity: 0.85; }
+
+  /* LOCKED PRO CARDS */
+  .locked-grid {
+    display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px;
+  }
+  .locked-card {
+    background: #fffbeb; border: 1px solid #fde68a;
+    border-radius: 12px; padding: 13px 16px;
+    display: flex; align-items: center; gap: 14px;
+  }
+  .locked-rate { display: flex; flex-direction: column; align-items: center; min-width: 50px; }
+  .locked-rate-val { font-size: 17px; font-weight: 900; color: #d97706; }
+  .locked-rate-lbl { font-size: 9px; font-weight: 600; color: #92400e; text-transform: uppercase; letter-spacing: .05em; }
+  .locked-info { flex: 1; }
+  .locked-mult { font-size: 12px; font-weight: 700; color: #92400e; margin-bottom: 2px; }
+  .locked-cat { font-size: 11px; color: var(--muted); }
+  .upgrade-banner {
+    background: linear-gradient(130deg, #7C3AED, #E11D48);
+    border-radius: 12px; padding: 14px 18px;
+    display: flex; align-items: center; gap: 14px; margin-bottom: 28px;
+  }
+  .upgrade-banner-text { flex: 1; }
+  .upgrade-banner-title { font-size: 13px; font-weight: 700; color: #fff; margin-bottom: 3px; }
+  .upgrade-banner-sub { font-size: 11px; color: rgba(255,255,255,.7); }
+  .upgrade-banner-btn {
+    background: #fff; color: var(--violet);
+    border: none; border-radius: 8px; padding: 8px 16px;
+    font-size: 12px; font-weight: 800; cursor: pointer; flex-shrink: 0;
+  }
+
+  /* ── OPPORTUNITIES TAB ── */
+  .opp-intro {
+    background: var(--white);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 16px 18px;
+    margin-bottom: 18px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .opp-intro-icon {
+    font-size: 28px; flex-shrink: 0;
+  }
+  .opp-intro-text { flex: 1; }
+  .opp-intro-title { font-size: 14px; font-weight: 700; color: var(--black); margin-bottom: 3px; }
+  .opp-intro-sub { font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+  /* CREDIT INDICATOR */
+  .credit-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--white);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 14px;
+    margin-bottom: 16px;
+  }
+  .credit-left { display: flex; align-items: center; gap: 8px; }
+  .credit-pips { display: flex; gap: 4px; }
+  .pip {
+    width: 8px; height: 8px; border-radius: 50%;
+  }
+  .pip.used { background: #d1d5db; }
+  .pip.available { background: var(--black); }
+  .credit-text { font-size: 12px; color: var(--muted); }
+  .credit-text strong { color: var(--black); font-weight: 700; }
+  .credit-upgrade {
+    font-size: 12px; font-weight: 700; color: var(--violet); cursor: pointer; background: none; border: none;
+  }
+
+  /* OPP SECTION LABEL */
+  .opp-label {
+    font-size: 11px; font-weight: 700;
+    color: var(--muted); text-transform: uppercase;
+    letter-spacing: .07em; margin-bottom: 10px;
+    display: flex; align-items: center; gap: 6px;
+  }
+
+  /* OPPORTUNITY CARD */
+  .opp-card {
+    background: var(--white);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px;
+    margin-bottom: 12px;
+    transition: box-shadow .15s;
+  }
+  .opp-card:hover { box-shadow: 0 4px 18px rgba(0,0,0,.07); }
+  .opp-card.locked { opacity: .72; }
+
+  .opp-top {
+    display: flex; align-items: flex-start; gap: 13px; margin-bottom: 12px;
+  }
+  .opp-logo {
+    width: 46px; height: 46px; border-radius: 12px;
+    background: #f3f4f6;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 800; color: var(--muted); flex-shrink: 0;
+  }
+  .opp-brand-block { flex: 1; }
+  .opp-brand-name {
+    font-size: 15px; font-weight: 800; color: var(--black);
+    display: flex; align-items: center; gap: 6px; margin-bottom: 2px;
+  }
+  .check-icon {
+    width: 15px; height: 15px; background: var(--violet);
+    border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .opp-brand-sub { font-size: 12px; color: var(--muted); }
+  .opp-badges { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; flex-shrink: 0; }
+
+  .badge {
+    font-size: 10px; font-weight: 700;
+    padding: 3px 8px; border-radius: 8px; white-space: nowrap;
+  }
+  .badge-open { background: #d1fae5; color: #065f46; display: flex; align-items: center; gap: 4px; }
+  .badge-urgent { background: #fee2e2; color: #991b1b; }
+  .badge-closing { background: #fef3c7; color: #92400e; }
+  .badge-pro { background: #ede9fe; color: var(--violet); }
+  .badge-new { background: var(--black); color: #fff; }
+
+  .opp-desc {
+    font-size: 13px; color: var(--text); line-height: 1.6; margin-bottom: 14px;
+  }
+
+  .opp-chips {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px;
+  }
+  .opp-chip {
+    display: flex; align-items: center; gap: 4px;
+    background: #f9fafb; border: 1px solid var(--border);
+    border-radius: 8px; padding: 4px 9px;
+    font-size: 11px; color: var(--text); font-weight: 500;
+  }
+
+  .opp-stats-row {
+    display: grid; grid-template-columns: 1fr 1fr 1fr;
+    background: #f9fafb; border: 1px solid var(--border);
+    border-radius: 10px; overflow: hidden; margin-bottom: 14px;
+  }
+  .opp-stat {
+    padding: 10px; text-align: center;
+    border-right: 1px solid var(--border);
+  }
+  .opp-stat:last-child { border-right: none; }
+  .opp-stat-val { font-size: 15px; font-weight: 800; margin-bottom: 2px; }
+  .opp-stat-lbl { font-size: 9px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+
+  .spots-row {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+  }
+  .spots-lbl { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+  .spots-track {
+    flex: 1; height: 5px; background: #e5e7eb; border-radius: 4px; overflow: hidden;
+  }
+  .spots-fill { height: 100%; border-radius: 4px; }
+  .spots-count { font-size: 11px; font-weight: 700; flex-shrink: 0; }
+
+  .opp-actions { display: flex; gap: 9px; }
+  .apply-btn {
+    flex: 1; background: var(--black); color: #fff;
+    border: none; border-radius: 10px; padding: 12px;
+    font-size: 13px; font-weight: 700; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 7px;
+  }
+  .apply-btn:hover { opacity: .85; }
+  .apply-btn.pro { background: linear-gradient(135deg, #7C3AED, #a855f7); }
+  .save-btn {
+    width: 44px; height: 44px; border-radius: 10px;
+    border: 1.5px solid var(--border); background: var(--white);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; font-size: 15px; flex-shrink: 0;
+  }
+  .apply-note {
+    font-size: 11px; color: var(--muted); text-align: center; margin-top: 7px;
+  }
+  .apply-note span { color: var(--violet); font-weight: 600; cursor: pointer; }
+
+  /* BRAND INVITE */
+  .brand-invite {
+    background: #f9fafb; border: 1.5px dashed #d1d5db;
+    border-radius: 14px; padding: 22px; text-align: center; margin-top: 6px;
+  }
+  .brand-invite-title { font-size: 14px; font-weight: 700; color: var(--black); margin-bottom: 5px; }
+  .brand-invite-sub { font-size: 12px; color: var(--muted); line-height: 1.6; margin-bottom: 14px; }
+  .brand-invite-btn {
+    background: var(--black); color: #fff;
+    border: none; border-radius: 10px; padding: 10px 22px;
+    font-size: 13px; font-weight: 700; cursor: pointer; display: inline-block;
+  }
+  .brand-invite-note { font-size: 11px; color: var(--muted); margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-logo">N</div>
+  <button class="nav-item active">✦ For You</button>
+  <button class="nav-item">Discover</button>
+  <button class="nav-item">Saved <span class="nav-badge">26</span></button>
+  <button class="nav-item">My Kit <span class="nav-badge">NEW</span></button>
+  <div class="nav-right">
+    <div class="nav-avatar">M</div>
+  </div>
+</nav>
+
+<div class="page">
+
+  <!-- HEADER -->
+  <div class="header-row">
+    <div class="header-left">
+      <div class="page-eyebrow">✦ Personalized for you</div>
+      <div class="page-title">Your Brand Matches</div>
+      <div class="page-sub">Curated daily based on your niche, following and pitch history</div>
+    </div>
+    <div class="creator-chip">
+      <div class="creator-chip-avatar">M</div>
+      <div>
+        <div class="creator-chip-label">Creator · Fitness &amp; Food &amp; Beverage</div>
+        <div class="creator-chip-followers">15K followers</div>
+      </div>
+      <div class="creator-chip-edit">Edit niches &rsaquo;</div>
+    </div>
+  </div>
+
+  <!-- KIT VIEWS BANNER -->
+  <div class="kit-views-banner">
+    <div class="kit-views-icon">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="white"><path d="M16 8s-3-5.5-8-5.5S0 8 0 8s3 5.5 8 5.5S16 8 16 8M1.173 8a13 13 0 0 1 1.66-2.043C4.12 4.668 5.88 3.5 8 3.5s3.879 1.168 5.168 2.457A13 13 0 0 1 14.828 8q-.086.13-.195.288c-.335.48-.83 1.12-1.465 1.755C11.879 11.332 10.119 12.5 8 12.5s-3.879-1.168-5.168-2.457A13 13 0 0 1 1.172 8z"/><path d="M8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5M4.5 8a3.5 3.5 0 1 1 7 0 3.5 3.5 0 0 1-7 0"/></svg>
+    </div>
+    <div class="kit-views-text"><strong>51 people</strong> viewed your kit this week</div>
+    <button class="kit-views-close">&times;</button>
+  </div>
+
+  <!-- REFRESH -->
+  <div class="refresh-row">
+    <div class="live-dot"></div>
+    Matches refresh every Monday &middot; Last updated today
+  </div>
+
+  <!-- SUB-TABS (new, minimal integration) -->
+  <div class="sub-tabs">
+    <button class="sub-tab" id="tab-matches" onclick="showTab('matches')">
+      🎯 Matches
+    </button>
+    <button class="sub-tab active" id="tab-opportunities" onclick="showTab('opportunities')">
+      ⚡ Opportunities
+      <span class="sub-tab-count">4</span>
+    </button>
+  </div>
+
+  <!-- ══════════════════════════════ -->
+  <!-- MATCHES TAB -->
+  <!-- ══════════════════════════════ -->
+  <div id="content-matches" style="display:none;">
+
+    <div class="section-header">
+      <div class="section-title">Matched for You</div>
+      <span class="pro-badge">↑ Pro</span>
+    </div>
+    <div class="section-sub">8 brands match your profile</div>
+
+    <!-- Social proof -->
+    <div style="display:flex;align-items:center;gap:9px;margin-bottom:14px;">
+      <div style="display:flex;">
+        <div style="width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,#fda4af,#f43f5e);border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#fff;">S</div>
+        <div style="width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,#86efac,#22c55e);border:2px solid #fff;margin-left:-7px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#fff;">A</div>
+        <div style="width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,#93c5fd,#3b82f6);border:2px solid #fff;margin-left:-7px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#fff;">J</div>
+      </div>
+      <span style="font-size:12px;color:var(--muted);"><strong style="color:var(--text);">Creators with under 10K followers</strong> got PR from brands like these this month</span>
+    </div>
+
+    <div class="brand-grid">
+      <div class="brand-card">
+        <span class="match-chip">99% match</span>
+        <div class="brand-img">JS</div>
+        <div class="brand-name">JuneShine</div>
+        <div class="brand-desc">Premium hard kombucha brand made with organic ingredients and real fruit adaptogens.</div>
+        <div class="brand-tag">Food &amp; Beverage</div>
+        <div class="brand-stats">
+          <div class="stat"><div class="stat-val">51%</div><div class="stat-lbl">Response</div></div>
+          <div style="width:1px;background:var(--border);"></div>
+          <div class="stat"><div class="stat-val">~5d</div><div class="stat-lbl">Avg Reply</div></div>
+        </div>
+        <button class="pitch-btn">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855l-.452.18a.5.5 0 0 0-.082.887l.41.26 4.995 3.178 3.178 4.995.26.41a.5.5 0 0 0 .886-.083zm-1.833 1.89L6.637 10.07l-.215-.338L1.999 6.927z"/></svg>
+          Pitch Now
+        </button>
+      </div>
+      <div class="brand-card">
+        <span class="match-chip">96% match</span>
+        <div class="brand-img">AB</div>
+        <div class="brand-name">Aura Bora</div>
+        <div class="brand-desc">Sparkling water made from real herbs, fruits and flowers. Zero calories, zero sugar.</div>
+        <div class="brand-tag">Food &amp; Beverage</div>
+        <div class="brand-stats">
+          <div class="stat"><div class="stat-val">54%</div><div class="stat-lbl">Response</div></div>
+          <div style="width:1px;background:var(--border);"></div>
+          <div class="stat"><div class="stat-val">~5d</div><div class="stat-lbl">Avg Reply</div></div>
+        </div>
+        <button class="pitch-btn">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855l-.452.18a.5.5 0 0 0-.082.887l.41.26 4.995 3.178 3.178 4.995.26.41a.5.5 0 0 0 .886-.083zm-1.833 1.89L6.637 10.07l-.215-.338L1.999 6.927z"/></svg>
+          Pitch Now
+        </button>
+      </div>
+      <div class="brand-card">
+        <span class="match-chip">93% match</span>
+        <div class="brand-img">LIV</div>
+        <div class="brand-name">Liquid I.V.</div>
+        <div class="brand-desc">Hydration multiplier with electrolytes for rapid absorption. Non-GMO, gluten free.</div>
+        <div class="brand-tag">Food &amp; Beverage</div>
+        <div class="brand-stats">
+          <div class="stat"><div class="stat-val">42%</div><div class="stat-lbl">Response</div></div>
+          <div style="width:1px;background:var(--border);"></div>
+          <div class="stat"><div class="stat-val">~5d</div><div class="stat-lbl">Avg Reply</div></div>
+        </div>
+        <button class="pitch-btn">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855l-.452.18a.5.5 0 0 0-.082.887l.41.26 4.995 3.178 3.178 4.995.26.41a.5.5 0 0 0 .886-.083zm-1.833 1.89L6.637 10.07l-.215-.338L1.999 6.927z"/></svg>
+          Pitch Now
+        </button>
+      </div>
+    </div>
+
+    <!-- Locked pro matches -->
+    <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;">🔒 Pro matches (5 brands)</div>
+    <div class="locked-grid">
+      <div class="locked-card">
+        <div class="locked-rate"><div class="locked-rate-val">45%</div><div class="locked-rate-lbl">Reply Rate</div></div>
+        <div class="locked-info"><div class="locked-mult">5x higher than average</div><div class="locked-cat">Fitness / Wellness</div></div>
+        <span style="font-size:16px;opacity:.4;">🔒</span>
+      </div>
+      <div class="locked-card">
+        <div class="locked-rate"><div class="locked-rate-val">41%</div><div class="locked-rate-lbl">Reply Rate</div></div>
+        <div class="locked-info"><div class="locked-mult">4x higher than average</div><div class="locked-cat">Food &amp; Beverage</div></div>
+        <span style="font-size:16px;opacity:.4;">🔒</span>
+      </div>
+      <div class="locked-card">
+        <div class="locked-rate"><div class="locked-rate-val">38%</div><div class="locked-rate-lbl">Reply Rate</div></div>
+        <div class="locked-info"><div class="locked-mult">4x higher than average</div><div class="locked-cat">Lifestyle</div></div>
+        <span style="font-size:16px;opacity:.4;">🔒</span>
+      </div>
+    </div>
+    <div style="text-align:center;font-size:12px;color:var(--muted);padding:6px 0 14px;">+ 2 more matched brands</div>
+
+    <div class="upgrade-banner">
+      <div class="upgrade-banner-text">
+        <div class="upgrade-banner-title">Your top locked match replies to 45% of pitches</div>
+        <div class="upgrade-banner-sub">That's 5x the industry average. Upgrade to reach them.</div>
+      </div>
+      <button class="upgrade-banner-btn">$19/mo</button>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════ -->
+  <!-- OPPORTUNITIES TAB -->
+  <!-- ══════════════════════════════ -->
+  <div id="content-opportunities">
+
+    <!-- What is this -->
+    <div class="opp-intro">
+      <div class="opp-intro-icon">📣</div>
+      <div class="opp-intro-text">
+        <div class="opp-intro-title">Brands posting here are actively looking for creators</div>
+        <div class="opp-intro-sub">Apply with your media kit. The brand reviews your profile and ships product if selected. Exclusive to Newcollab.</div>
+      </div>
+    </div>
+
+    <!-- Credit indicator -->
+    <div class="credit-row">
+      <div class="credit-left">
+        <div class="credit-pips">
+          <div class="pip available"></div>
+          <div class="pip available"></div>
+          <div class="pip used"></div>
+        </div>
+        <div class="credit-text"><strong>2 applications</strong> left this month</div>
+      </div>
+      <button class="credit-upgrade">Unlimited with Pro &rsaquo;</button>
+    </div>
+
+    <!-- Matched to your niche -->
+    <div class="opp-label">Matched to your niche</div>
+
+    <!-- OPP CARD 1 — Aura Bora (last spot) -->
+    <div class="opp-card">
+      <div class="opp-top">
+        <div class="opp-logo" style="background:#ecfdf5;color:#065f46;">AB</div>
+        <div class="opp-brand-block">
+          <div class="opp-brand-name">
+            Aura Bora
+            <div class="check-icon"><svg width="8" height="8" viewBox="0 0 10 10" fill="white"><path d="M2 5l2.5 2.5L8 3"/></svg></div>
+          </div>
+          <div class="opp-brand-sub">Sparkling water · Wellness · Ships US/UK/AU</div>
+        </div>
+        <div class="opp-badges">
+          <div class="badge badge-open"><div class="live-dot" style="width:5px;height:5px;"></div>Open</div>
+          <div class="badge badge-urgent">Last 2 spots</div>
+        </div>
+      </div>
+
+      <div class="opp-desc">
+        Seeding our new <strong>Cactus Rose</strong> sparkling water collection to micro-creators ahead of summer launch. Looking for honest taste-test content. We'll send a 12-pack variety box to your door.
+      </div>
+
+      <div class="opp-chips">
+        <div class="opp-chip">👥 1K – 30K followers</div>
+        <div class="opp-chip">🎨 Fitness / Wellness / Lifestyle</div>
+        <div class="opp-chip">📱 TikTok or Reel</div>
+        <div class="opp-chip">🌍 US · UK · AU</div>
+        <div class="opp-chip">📅 Post within 21 days</div>
+      </div>
+
+      <div class="opp-stats-row">
+        <div class="opp-stat">
+          <div class="opp-stat-val" style="color:var(--green);">~$48</div>
+          <div class="opp-stat-lbl">PR Value</div>
+        </div>
+        <div class="opp-stat">
+          <div class="opp-stat-val" style="color:#d97706;">3 days</div>
+          <div class="opp-stat-lbl">Closes in</div>
+        </div>
+        <div class="opp-stat">
+          <div class="opp-stat-val" style="color:var(--violet);">54%</div>
+          <div class="opp-stat-lbl">Avg reply</div>
+        </div>
+      </div>
+
+      <div class="spots-row">
+        <div class="spots-lbl">Spots</div>
+        <div class="spots-track"><div class="spots-fill" style="width:85%;background:var(--rose);"></div></div>
+        <div class="spots-count" style="color:var(--rose);">2 of 8 left</div>
+      </div>
+
+      <div class="opp-actions">
+        <button class="apply-btn">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855l-.452.18a.5.5 0 0 0-.082.887l.41.26 4.995 3.178 3.178 4.995.26.41a.5.5 0 0 0 .886-.083zm-1.833 1.89L6.637 10.07l-.215-.338L1.999 6.927z"/></svg>
+          Apply Now
+        </button>
+        <button class="save-btn">🔖</button>
+      </div>
+      <div class="apply-note">Uses 1 application credit &middot; <span>Go Pro for unlimited</span></div>
+    </div>
+
+    <!-- OPP CARD 2 — Momentous -->
+    <div class="opp-card">
+      <div class="opp-top">
+        <div class="opp-logo" style="background:#f0f9ff;color:#0369a1;">M</div>
+        <div class="opp-brand-block">
+          <div class="opp-brand-name">
+            Momentous
+            <div class="check-icon"><svg width="8" height="8" viewBox="0 0 10 10" fill="white"><path d="M2 5l2.5 2.5L8 3"/></svg></div>
+          </div>
+          <div class="opp-brand-sub">Sports nutrition · Fitness · Ships US/CA</div>
+        </div>
+        <div class="opp-badges">
+          <div class="badge badge-open"><div class="live-dot" style="width:5px;height:5px;"></div>Open</div>
+          <div class="badge badge-closing">Closes in 6 days</div>
+        </div>
+      </div>
+
+      <div class="opp-desc">
+        Looking for <strong>fitness and wellness creators</strong> to try our new Essential Protein. We want real workout content — pre or post. Send us your training style and we'll match you a flavour. Starter kit included.
+      </div>
+
+      <div class="opp-chips">
+        <div class="opp-chip">👥 500 – 25K followers</div>
+        <div class="opp-chip">🎨 Fitness / Health</div>
+        <div class="opp-chip">📱 TikTok · Reel · YouTube</div>
+        <div class="opp-chip">🌍 US · Canada</div>
+        <div class="opp-chip">📅 Post within 30 days</div>
+      </div>
+
+      <div class="opp-stats-row">
+        <div class="opp-stat">
+          <div class="opp-stat-val" style="color:var(--green);">~$60</div>
+          <div class="opp-stat-lbl">PR Value</div>
+        </div>
+        <div class="opp-stat">
+          <div class="opp-stat-val" style="color:#d97706;">6 days</div>
+          <div class="opp-stat-lbl">Closes in</div>
+        </div>
+        <div class="opp-stat">
+          <div class="opp-stat-val" style="color:var(--violet);">48%</div>
+          <div class="opp-stat-lbl">Avg reply</div>
+        </div>
+      </div>
+
+      <div class="spots-row">
+        <div class="spots-lbl">Spots</div>
+        <div class="spots-track"><div class="spots-fill" style="width:45%;background:#d97706;"></div></div>
+        <div class="spots-count" style="color:#d97706;">6 of 10 left</div>
+      </div>
+
+      <div class="opp-actions">
+        <button class="apply-btn">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M15.964.686a.5.5 0 0 0-.65-.65L.767 5.855l-.452.18a.5.5 0 0 0-.082.887l.41.26 4.995 3.178 3.178 4.995.26.41a.5.5 0 0 0 .886-.083zm-1.833 1.89L6.637 10.07l-.215-.338L1.999 6.927z"/></svg>
+          Apply Now
+        </button>
+        <button class="save-btn">🔖</button>
+      </div>
+    </div>
+
+    <!-- PRO-LOCKED CARDS -->
+    <div class="opp-label" style="margin-top:8px;">More opportunities</div>
+
+    <div class="opp-card locked">
+      <div class="opp-top">
+        <div class="opp-logo" style="background:#fef3c7;color:#92400e;">PC</div>
+        <div class="opp-brand-block">
+          <div class="opp-brand-name">Pela Case <div class="check-icon"><svg width="8" height="8" viewBox="0 0 10 10" fill="white"><path d="M2 5l2.5 2.5L8 3"/></svg></div></div>
+          <div class="opp-brand-sub">Eco lifestyle · Worldwide</div>
+        </div>
+        <div class="opp-badges">
+          <div class="badge badge-open"><div class="live-dot" style="width:5px;height:5px;"></div>Open</div>
+          <div class="badge badge-pro">Pro only</div>
+        </div>
+      </div>
+      <div class="opp-stats-row">
+        <div class="opp-stat"><div class="opp-stat-val" style="color:var(--green);">~$50</div><div class="opp-stat-lbl">PR Value</div></div>
+        <div class="opp-stat"><div class="opp-stat-val" style="color:var(--text);">10 days</div><div class="opp-stat-lbl">Closes in</div></div>
+        <div class="opp-stat"><div class="opp-stat-val" style="color:var(--violet);">55%</div><div class="opp-stat-lbl">Avg reply</div></div>
+      </div>
+      <div class="opp-actions">
+        <button class="apply-btn pro">🔒 Unlock with Pro &middot; $19/mo</button>
+      </div>
+    </div>
+
+    <div class="opp-card locked" style="margin-bottom:20px;">
+      <div class="opp-top">
+        <div class="opp-logo" style="background:#f0fdf4;color:#065f46;">BIO</div>
+        <div class="opp-brand-block">
+          <div class="opp-brand-name">Biossance <div class="check-icon"><svg width="8" height="8" viewBox="0 0 10 10" fill="white"><path d="M2 5l2.5 2.5L8 3"/></svg></div></div>
+          <div class="opp-brand-sub">Clean beauty · Ships US</div>
+        </div>
+        <div class="opp-badges">
+          <div class="badge badge-open"><div class="live-dot" style="width:5px;height:5px;"></div>Open</div>
+          <div class="badge badge-pro">Pro only</div>
+        </div>
+      </div>
+      <div class="opp-stats-row">
+        <div class="opp-stat"><div class="opp-stat-val" style="color:var(--green);">~$55</div><div class="opp-stat-lbl">PR Value</div></div>
+        <div class="opp-stat"><div class="opp-stat-val" style="color:var(--text);">14 days</div><div class="opp-stat-lbl">Closes in</div></div>
+        <div class="opp-stat"><div class="opp-stat-val" style="color:var(--violet);">51%</div><div class="opp-stat-lbl">Avg reply</div></div>
+      </div>
+      <div class="opp-actions">
+        <button class="apply-btn pro">🔒 Unlock with Pro &middot; $19/mo</button>
+      </div>
+    </div>
+
+    <!-- BRAND INVITE -->
+    <div class="brand-invite">
+      <div class="brand-invite-title">Are you a brand looking for creators?</div>
+      <div class="brand-invite-sub">Post your opportunity for free. Reach vetted micro-creators<br>actively pitching brands in your niche. You approve every creator before shipping.</div>
+      <button class="brand-invite-btn">Post an opportunity &rsaquo;</button>
+      <div class="brand-invite-note">Free to post · No platform fees · Reviewed within 24 hours</div>
+    </div>
+
+  </div>
+</div><!-- /page -->
+
+<script>
+  function showTab(tab) {
+    document.getElementById('content-matches').style.display = tab === 'matches' ? 'block' : 'none';
+    document.getElementById('content-opportunities').style.display = tab === 'opportunities' ? 'block' : 'none';
+    document.getElementById('tab-matches').classList.toggle('active', tab === 'matches');
+    document.getElementById('tab-opportunities').classList.toggle('active', tab === 'opportunities');
+  }
+</script>
+</body>
+</html>

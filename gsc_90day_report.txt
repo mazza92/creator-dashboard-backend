@@ -1,0 +1,167 @@
+================================================================================
+  GOOGLE SEARCH CONSOLE ANALYSIS - LAST 90 DAYS
+  Site: https://newcollab.co/
+================================================================================
+
+[OK] Connected to Search Console API
+
+  Date range: 2026-03-07 to 2026-06-05
+
+================================================================================
+  1. TOTALS (90 days)
+================================================================================
+  Total Clicks:      1,295
+  Total Impressions: 26,704
+  Average CTR:       4.85%
+  Average Position:  16.8
+
+  >>> Compare to GA4: Organic Search showed 60 sessions
+  >>> GSC shows 1295 clicks = 1235 clicks NOT tracked in GA4
+  >>> That's 95% of organic traffic being misattributed!
+
+================================================================================
+  2. TOP SEARCH QUERIES
+================================================================================
+  query                          | clicks                         | impressions                    | ctr                            | position                      
+  ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  pr forms for brands            | 184                            | 1220                           | 15.1%                          | 4.5                           
+  pr forms of brands             | 64                             | 441                            | 14.5%                          | 5.4                           
+  newcollab                      | 57                             | 98                             | 58.2%                          | 1.3                           
+  pr forms                       | 46                             | 642                            | 7.2%                           | 7.6                           
+  pr package forms               | 43                             | 400                            | 10.8%                          | 5.5                           
+  brand pr forms                 | 30                             | 173                            | 17.3%                          | 5.4                           
+  pr form of brands              | 28                             | 214                            | 13.1%                          | 6.1                           
+  pr package application form    | 21                             | 247                            | 8.5%                           | 10.5                          
+  brands pr forms                | 18                             | 97                             | 18.6%                          | 5.3                           
+  free pr from brands            | 17                             | 135                            | 12.6%                          | 8.5                           
+  pr forms of brands list        | 17                             | 80                             | 21.2%                          | 4.5                           
+  pr package application         | 10                             | 125                            | 8.0%                           | 15.0                          
+  new collab                     | 9                              | 412                            | 2.2%                           | 6.2                           
+  korean skincare pr form        | 8                              | 22                             | 36.4%                          | 4.0                           
+  pr list application form       | 8                              | 121                            | 6.6%                           | 11.0                          
+  pr collab forms                | 7                              | 46                             | 15.2%                          | 8.3                           
+  pr package forms for influencers | 6                              | 61                             | 9.8%                           | 6.9                           
+  list of companies that send pr packages | 4                              | 90                             | 4.4%                           | 11.2                          
+  pr brand forms                 | 4                              | 29                             | 13.8%                          | 5.9                           
+  pr list application            | 4                              | 233                            | 1.7%                           | 44.8                          
+  brand pr form                  | 3                              | 25                             | 12.0%                          | 5.8                           
+  pr emails for brands           | 3                              | 34                             | 8.8%                           | 25.9                          
+  pr list                        | 3                              | 142                            | 2.1%                           | 40.0                          
+  brand pr list application      | 2                              | 19                             | 10.5%                          | 6.7                           
+  clothing brands that send pr to small influencers | 2                              | 16                             | 12.5%                          | 15.5                          
+  forms for pr package           | 2                              | 24                             | 8.3%                           | 5.7                           
+  korean skincare pr             | 2                              | 42                             | 4.8%                           | 34.0                          
+  pr collaboration form          | 2                              | 20                             | 10.0%                          | 9.3                           
+  pr emails for brands list pdf  | 2                              | 46                             | 4.3%                           | 14.5                          
+  pr emails for clothing brands  | 2                              | 42                             | 4.8%                           | 8.9                           
+
+================================================================================
+  3. TOP LANDING PAGES (from search)
+================================================================================
+  page                           | clicks                         | impressions                    | ctr                            | position                      
+  ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  https://newcollab.co/blog/ultimate-2026-directory-brands-with-open-pr-application-forms | 364                            | 3887                           | 9.4%                           | 8.1                           
+  https://newcollab.co/blog/companies-with-open-pr-application-forms-influencers-2025 | 268                            | 2586                           | 10.4%                          | 20.2                          
+  https://newcollab.co/blog/k-beauty-korean-skincare-brands-pr-list-small-creators-2026 | 201                            | 3156                           | 6.4%                           | 8.8                           
+  https://newcollab.co/blog/pr-list-for-clothing-brands-micro-influencers-2025 | 147                            | 2366                           | 6.2%                           | 19.7                          
+  https://newcollab.co/          | 72                             | 718                            | 10.0%                          | 6.8                           
+  https://newcollab.co/blog/aussie-brands-pr-package-list-2026 | 44                             | 1143                           | 3.8%                           | 25.8                          
+  https://newcollab.co/blog/list-of-companies-that-send-pr-packages-2025 | 26                             | 1638                           | 1.6%                           | 29.3                          
+  https://newcollab.co/blog/gaming-tech-brands-that-sponsor-small-streamers-2026 | 25                             | 1443                           | 1.7%                           | 9.5                           
+  https://newcollab.co/blog/ultimate-list-of-gaming-tech-companies-that-sponsor-small-streamers | 15                             | 1254                           | 1.2%                           | 33.9                          
+  https://newcollab.co/blog/free-creator-pr-list-skincare-fashion-beauty-2026 | 13                             | 404                            | 3.2%                           | 18.9                          
+  https://newcollab.co/blog/the-2025-list-of-aussie-brands-that-send-pr-packages-for-australian-creators | 13                             | 285                            | 4.6%                           | 15.2                          
+  https://newcollab.co/blog/how-to-get-on-pr-lists-complete-application-guide-2026 | 12                             | 702                            | 1.7%                           | 40.3                          
+  https://newcollab.co/blog/how-to-get-pr-packages-under-1000-followers-2026 | 11                             | 353                            | 3.1%                           | 7.9                           
+  https://newcollab.co/directory | 10                             | 211                            | 4.7%                           | 70.2                          
+  https://newcollab.co/directory/k-beauty | 8                              | 45                             | 17.8%                          | 32.0                          
+  https://newcollab.co/blog/10-sustainable-eco-friendly-brands-looking-for-creator-partnerships | 6                              | 208                            | 2.9%                           | 13.0                          
+  https://newcollab.co/blog/fitness-brands-pr-micro-influencers-2026 | 6                              | 532                            | 1.1%                           | 7.5                           
+  https://newcollab.co/blog/us-brands-send-pr-micro-influencers-2026-list | 5                              | 583                            | 0.9%                           | 11.8                          
+  https://newcollab.co/blog/companies-with-open-pr-application-forms-influencers-2025#beauty-skincare-brands-with-application-forms | 4                              | 1062                           | 0.4%                           | 4.8                           
+  https://newcollab.co/blog/how-to-get-gaming-sponsorships-small-streamers-2026-guide | 4                              | 837                            | 0.5%                           | 45.5                          
+
+================================================================================
+  4. BY COUNTRY
+================================================================================
+  country                        | clicks                         | impressions                    | ctr                            | position                      
+  ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  ind                            | 688                            | 6612                           | 10.4%                          | 6.9                           
+  aus                            | 55                             | 889                            | 6.2%                           | 36.8                          
+  pak                            | 50                             | 508                            | 9.8%                           | 7.6                           
+  usa                            | 39                             | 6310                           | 0.6%                           | 36.7                          
+  fra                            | 32                             | 782                            | 4.1%                           | 6.3                           
+  ita                            | 30                             | 614                            | 4.9%                           | 7.0                           
+  phl                            | 29                             | 435                            | 6.7%                           | 11.7                          
+  zaf                            | 29                             | 446                            | 6.5%                           | 8.5                           
+  kor                            | 20                             | 851                            | 2.4%                           | 6.6                           
+  nga                            | 16                             | 335                            | 4.8%                           | 9.6                           
+  are                            | 14                             | 242                            | 5.8%                           | 7.8                           
+  pol                            | 14                             | 276                            | 5.1%                           | 7.6                           
+  prt                            | 14                             | 159                            | 8.8%                           | 7.4                           
+  grc                            | 13                             | 212                            | 6.1%                           | 8.1                           
+  nzl                            | 13                             | 225                            | 5.8%                           | 14.5                          
+
+================================================================================
+  5. BY DEVICE
+================================================================================
+  device                         | clicks                         | impressions                    | ctr                            | position                      
+  ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  MOBILE                         | 986                            | 10237                          | 9.6%                           | 8.8                           
+  DESKTOP                        | 291                            | 16184                          | 1.8%                           | 22.1                          
+  TABLET                         | 18                             | 283                            | 6.4%                           | 10.2                          
+
+================================================================================
+  6. WEEKLY TREND
+================================================================================
+  week                 | clicks    | impressions
+  --------------------------------------------------
+  2026-W09             | 41        | 852
+  2026-W10             | 130       | 3104
+  2026-W11             | 162       | 3007
+  2026-W12             | 166       | 3102
+  2026-W13             | 106       | 2428
+  2026-W14             | 80        | 2065
+  2026-W15             | 92        | 1878
+  2026-W16             | 75        | 1870
+  2026-W17             | 76        | 1633
+  2026-W18             | 67        | 1433
+  2026-W19             | 53        | 1586
+  2026-W20             | 82        | 1318
+  2026-W21             | 144       | 2012
+  2026-W22             | 21        | 416
+
+================================================================================
+  7. TOP QUERY + PAGE COMBINATIONS
+================================================================================
+  query                          | page                           | clicks                         | impressions                    | ctr                            | position                      
+  ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  pr forms for brands            | https://newcollab.co/blog/ultimate-2026-directory-brands-with-open-pr-application-forms | 93                             | 731                            | 12.7%                          | 5.2                           
+  pr forms for brands            | https://newcollab.co/blog/companies-with-open-pr-application-forms-influencers-2025 | 88                             | 523                            | 16.8%                          | 3.9                           
+  newcollab                      | https://newcollab.co/          | 54                             | 98                             | 55.1%                          | 1.3                           
+  pr forms of brands             | https://newcollab.co/blog/companies-with-open-pr-application-forms-influencers-2025 | 37                             | 168                            | 22.0%                          | 3.8                           
+  pr forms                       | https://newcollab.co/blog/ultimate-2026-directory-brands-with-open-pr-application-forms | 31                             | 484                            | 6.4%                           | 7.4                           
+  pr forms of brands             | https://newcollab.co/blog/ultimate-2026-directory-brands-with-open-pr-application-forms | 26                             | 279                            | 9.3%                           | 6.7                           
+  pr package forms               | https://newcollab.co/blog/ultimate-2026-directory-brands-with-open-pr-application-forms | 23                             | 230                            | 10.0%                          | 5.8                           
+  pr form of brands              | https://newcollab.co/blog/ultimate-2026-directory-brands-with-open-pr-application-forms | 22                             | 188                            | 11.7%                          | 6.4                           
+  brand pr forms                 | https://newcollab.co/blog/ultimate-2026-directory-brands-with-open-pr-application-forms | 20                             | 117                            | 17.1%                          | 6.0                           
+  pr package forms               | https://newcollab.co/blog/companies-with-open-pr-application-forms-influencers-2025 | 20                             | 174                            | 11.5%                          | 5.3                           
+  free pr from brands            | https://newcollab.co/blog/pr-list-for-clothing-brands-micro-influencers-2025 | 17                             | 134                            | 12.7%                          | 8.2                           
+  pr forms of brands list        | https://newcollab.co/blog/ultimate-2026-directory-brands-with-open-pr-application-forms | 16                             | 76                             | 21.1%                          | 4.6                           
+  pr forms                       | https://newcollab.co/blog/companies-with-open-pr-application-forms-influencers-2025 | 14                             | 166                            | 8.4%                           | 8.9                           
+  pr package application form    | https://newcollab.co/blog/companies-with-open-pr-application-forms-influencers-2025 | 11                             | 93                             | 11.8%                          | 12.8                          
+  brand pr forms                 | https://newcollab.co/blog/companies-with-open-pr-application-forms-influencers-2025 | 10                             | 57                             | 17.5%                          | 4.4                           
+  brands pr forms                | https://newcollab.co/blog/companies-with-open-pr-application-forms-influencers-2025 | 10                             | 31                             | 32.3%                          | 3.8                           
+  pr package application form    | https://newcollab.co/blog/ultimate-2026-directory-brands-with-open-pr-application-forms | 10                             | 168                            | 6.0%                           | 11.4                          
+  new collab                     | https://newcollab.co/          | 9                              | 410                            | 2.2%                           | 5.9                           
+  brands pr forms                | https://newcollab.co/blog/ultimate-2026-directory-brands-with-open-pr-application-forms | 8                              | 72                             | 11.1%                          | 6.3                           
+  korean skincare pr form        | https://newcollab.co/blog/k-beauty-korean-skincare-brands-pr-list-small-creators-2026 | 8                              | 22                             | 36.4%                          | 4.0                           
+  pr list application form       | https://newcollab.co/blog/ultimate-2026-directory-brands-with-open-pr-application-forms | 8                              | 109                            | 7.3%                           | 9.2                           
+  pr form of brands              | https://newcollab.co/blog/companies-with-open-pr-application-forms-influencers-2025 | 6                              | 25                             | 24.0%                          | 3.8                           
+  pr package forms for influencers | https://newcollab.co/blog/companies-with-open-pr-application-forms-influencers-2025 | 6                              | 50                             | 12.0%                          | 6.5                           
+  pr collab forms                | https://newcollab.co/blog/ultimate-2026-directory-brands-with-open-pr-application-forms | 5                              | 36                             | 13.9%                          | 8.5                           
+  pr package application         | https://newcollab.co/blog/companies-with-open-pr-application-forms-influencers-2025 | 5                              | 73                             | 6.8%                           | 18.1                          
+
+================================================================================
+  REPORT COMPLETE
+================================================================================
