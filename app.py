@@ -50,6 +50,7 @@ from pool_routes import pool_bp
 # from marketplace_routes import marketplace_bp  # Disabled - using inline endpoint instead (newer schema)
 from indexnow_routes import indexnow_bp
 from email_cron_routes import email_cron_bp
+from social_verification_routes import social_verification_bp
 from routes.admin_pr_hunter import admin_pr_hunter_bp
 from routes.admin_brands import admin_brands_bp
 from routes.admin_reports import admin_reports_bp
@@ -186,6 +187,15 @@ app.register_blueprint(pool_bp)
 # app.register_blueprint(marketplace_bp)  # Disabled - using inline endpoint instead (newer schema)
 app.register_blueprint(indexnow_bp)
 app.register_blueprint(email_cron_bp)
+app.register_blueprint(social_verification_bp)
+
+# Instagram webhook alias route (for Meta Developer Console - matches /api/instagram/webhook)
+from social_verification_routes import instagram_webhook, INSTAGRAM_WEBHOOK_VERIFY_TOKEN
+@app.route('/api/instagram/webhook', methods=['GET', 'POST'])
+def instagram_webhook_alias():
+    """Alias route for Instagram webhook at /api/instagram/webhook"""
+    return instagram_webhook()
+
 app.register_blueprint(admin_pr_hunter_bp)
 app.register_blueprint(admin_brands_bp)
 app.register_blueprint(admin_reports_bp)
@@ -1876,6 +1886,89 @@ def complete_profile():
 
 
 # ============================================================================
+# SOCIAL HANDLE VALIDATION
+# ============================================================================
+
+@app.route('/api/check-social-handle', methods=['POST', 'OPTIONS'])
+def check_social_handle():
+    """
+    Check if a social handle is already registered (prevent multi-account abuse).
+    Called during onboarding before step1 submission.
+    """
+    if request.method == 'OPTIONS':
+        response = jsonify({'success': True})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 200
+
+    try:
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({'error': 'Not authenticated'}), 401
+
+        data = request.get_json() or {}
+        handle = data.get('handle', '').strip().lower()
+        platform = data.get('platform', '').lower()
+
+        if not handle or not platform:
+            return jsonify({'exists': False})
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Check using the new unified social_handle column (from social verification migration)
+        # Also check legacy platform-specific columns as fallback
+        try:
+            # First try the new generic social_handle column
+            cursor.execute('''
+                SELECT c.id, c.user_id
+                FROM creators c
+                WHERE LOWER(social_handle) = %s
+                  AND (social_platform = %s OR social_platform IS NULL)
+                  AND c.user_id != %s
+            ''', (handle, platform, user_id))
+            existing = cursor.fetchone()
+
+            # If not found, also check legacy columns if they exist
+            if not existing:
+                platform_columns = {
+                    'instagram': 'instagram_handle',
+                    'tiktok': 'tiktok_handle',
+                    'youtube': 'youtube_url',
+                    'pinterest': 'pinterest_handle',
+                    'twitter': 'twitter_handle',
+                    'blog': 'blog_url',
+                }
+                column = platform_columns.get(platform)
+                if column:
+                    try:
+                        cursor.execute(f'''
+                            SELECT c.id, c.user_id
+                            FROM creators c
+                            WHERE LOWER({column}) = %s AND c.user_id != %s
+                        ''', (handle, user_id))
+                        existing = cursor.fetchone()
+                    except Exception:
+                        # Column doesn't exist, that's fine
+                        pass
+
+        except Exception as e:
+            app.logger.warning(f"Social handle check error (non-fatal): {e}")
+            existing = None
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({'exists': existing is not None})
+
+    except Exception as e:
+        app.logger.error(f"Error checking social handle: {e}")
+        return jsonify({'exists': False})
+
+
+# ============================================================================
 # V4 ONBOARDING - Streamlined 2-step flow (replaces old 3-step)
 # ============================================================================
 
@@ -1927,6 +2020,14 @@ def onboarding_step1():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Verify user exists (prevents FK constraint violation if session has stale user_id)
+        cursor.execute("SELECT id FROM users WHERE id = %s", (user_id,))
+        if not cursor.fetchone():
+            conn.close()
+            # Clear invalid session
+            session.clear()
+            return jsonify({'error': 'User not found. Please log in again.'}), 401
+
         # Check username uniqueness
         cursor.execute("SELECT id FROM creators WHERE username = %s AND user_id != %s", (username, user_id))
         if cursor.fetchone():
@@ -1948,26 +2049,49 @@ def onboarding_step1():
         cursor.execute("SELECT id FROM creators WHERE user_id = %s", (user_id,))
         creator = cursor.fetchone()
 
+        # Check if we have verification result from social verification step
+        verification_result = session.get('social_verification_result')
+        social_verified = False
+        social_platform = None
+        social_handle = None
+        social_follower_count = None
+
+        if verification_result and verification_result.get('verified'):
+            social_verified = True
+            social_platform = verification_result.get('platform')
+            profile = verification_result.get('profile', {})
+            social_handle = profile.get('username', username)
+            social_follower_count = profile.get('follower_count', followers)
+            # Use verified follower count
+            followers = social_follower_count
+
         if creator:
             # Update existing
             cursor.execute(
                 '''
                 UPDATE creators
-                SET username = %s, followers_count = %s, platforms = %s, social_links = %s
+                SET username = %s, followers_count = %s, platforms = %s, social_links = %s,
+                    social_platform = COALESCE(%s, social_platform),
+                    social_handle = COALESCE(%s, social_handle),
+                    social_follower_count = COALESCE(%s, social_follower_count),
+                    social_verified = COALESCE(%s, social_verified)
                 WHERE user_id = %s
                 RETURNING id
                 ''',
-                (username, followers, json.dumps(platforms_list), json.dumps(social_links), user_id)
+                (username, followers, json.dumps(platforms_list), json.dumps(social_links),
+                 social_platform, social_handle, social_follower_count, social_verified, user_id)
             )
         else:
             # Insert new creator record
             cursor.execute(
                 '''
-                INSERT INTO creators (user_id, username, followers_count, platforms, social_links)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO creators (user_id, username, followers_count, platforms, social_links,
+                                      social_platform, social_handle, social_follower_count, social_verified)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 ''',
-                (user_id, username, followers, json.dumps(platforms_list), json.dumps(social_links))
+                (user_id, username, followers, json.dumps(platforms_list), json.dumps(social_links),
+                 social_platform, social_handle, social_follower_count, social_verified)
             )
 
         creator_id = cursor.fetchone()['id']
@@ -1975,6 +2099,8 @@ def onboarding_step1():
 
         # Update session with creator_id
         session['creator_id'] = creator_id
+        # Clear verification result from session (consumed)
+        session.pop('social_verification_result', None)
         session.modified = True
 
         conn.close()
