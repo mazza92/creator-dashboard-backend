@@ -130,6 +130,23 @@ def get_user_country_from_session():
     return None
 
 
+def detect_country_from_ip():
+    """Detect country from current request IP - standalone function for callbacks"""
+    try:
+        client_ip = request.headers.get('X-Forwarded-For', request.headers.get('X-Real-IP', request.remote_addr))
+        if client_ip:
+            client_ip = client_ip.split(',')[0].strip()
+            # Skip localhost/private IPs
+            if client_ip in ['127.0.0.1', 'localhost', '::1'] or client_ip.startswith(('192.168.', '10.', '172.')):
+                return None
+            geo_response = requests.get(f'http://ip-api.com/json/{client_ip}?fields=countryCode', timeout=3)
+            if geo_response.status_code == 200:
+                return geo_response.json().get('countryCode')
+    except Exception as e:
+        print(f"⚠️ detect_country_from_ip error: {e}")
+    return None
+
+
 def encrypt_token(token):
     """Encrypt OAuth token for storage"""
     if not token:
@@ -657,8 +674,29 @@ def callback_instagram():
         api_response = profile_data_raw
         print(f"✅ Instagram account found: @{profile_data['username']} - {profile_data['follower_count']} followers, {profile_data['media_count']} posts")
 
-        # Get user country
-        user_country = get_user_country_from_session() or ''
+        # Get user country - try fresh IP detection in callback
+        user_country = get_user_country_from_session()
+
+        # If no country detected, try fresh IP geolocation (callback is from user's browser)
+        if not user_country:
+            user_country = detect_country_from_ip()
+            if user_country:
+                print(f"🌍 Fresh IP detection in callback: {user_country}")
+                # Store in database for future reference
+                if user_id:
+                    try:
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute('UPDATE users SET country = %s WHERE id = %s AND country IS NULL',
+                                      (user_country, user_id))
+                        conn.commit()
+                        cursor.close()
+                        conn.close()
+                    except Exception as e:
+                        print(f"⚠️ Failed to store country in DB: {e}")
+
+        user_country = user_country or ''
+        print(f"🌍 Final country for verification: '{user_country}' (restricted: {user_country.upper() in RESTRICTED_REGIONS if user_country else 'unknown'})")
 
         # Run 5-gate verification
         result = validate_social_gates(profile_data, 'instagram', user_country)
@@ -855,8 +893,29 @@ def callback_tiktok():
             'is_private': False,  # TikTok API v2 - assume public for now
         }
 
-        # Get user country
-        user_country = get_user_country_from_session() or ''
+        # Get user country - try fresh IP detection in callback
+        user_country = get_user_country_from_session()
+
+        # If no country detected, try fresh IP geolocation (callback is from user's browser)
+        if not user_country:
+            user_country = detect_country_from_ip()
+            if user_country:
+                print(f"🌍 Fresh IP detection in TikTok callback: {user_country}")
+                # Store in database for future reference
+                if user_id:
+                    try:
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute('UPDATE users SET country = %s WHERE id = %s AND country IS NULL',
+                                      (user_country, user_id))
+                        conn.commit()
+                        cursor.close()
+                        conn.close()
+                    except Exception as e:
+                        print(f"⚠️ Failed to store country in DB: {e}")
+
+        user_country = user_country or ''
+        print(f"🌍 Final country for TikTok verification: '{user_country}' (restricted: {user_country.upper() in RESTRICTED_REGIONS if user_country else 'unknown'})")
 
         # Run 5-gate verification
         result = validate_social_gates(profile_data, 'tiktok', user_country)
