@@ -126,70 +126,42 @@ def check_media_kit_complete(creator_id):
     Check if creator has a complete and published media kit.
     Returns (is_complete, error_message)
 
-    Required fields:
-    - display_name
-    - tagline
-    - niches (at least 1)
-    - content_types (at least 1)
-    - total_followers > 0
-    - is_published = true
+    Simple requirements:
+    - 3 portfolio posts minimum
+    - kit_published = true
     """
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Check if kit is published
         cursor.execute('''
-            SELECT
-                mk.display_name,
-                mk.tagline,
-                mk.niches,
-                mk.content_types,
-                mk.total_followers,
-                mk.is_published
-            FROM media_kits mk
-            WHERE mk.creator_id = %s
+            SELECT kit_published FROM creators WHERE id = %s
         ''', (creator_id,))
+        creator = cursor.fetchone()
 
-        kit = cursor.fetchone()
+        if not creator:
+            cursor.close()
+            conn.close()
+            return False, 'Creator profile not found. Please complete your profile before pitching brands.'
+
+        # Count portfolio posts
+        cursor.execute('''
+            SELECT COUNT(*) as post_count FROM portfolio_posts WHERE creator_id = %s
+        ''', (creator_id,))
+        post_result = cursor.fetchone()
+        post_count = post_result.get('post_count', 0) if post_result else 0
+
         cursor.close()
         conn.close()
 
-        if not kit:
-            return False, 'No media kit found. Please create and publish your media kit before pitching brands.'
+        # Check requirements
+        if post_count < 3:
+            posts_needed = 3 - post_count
+            return False, f'Add {posts_needed} more portfolio post{"s" if posts_needed > 1 else ""} to your media kit before pitching brands ({post_count}/3 added).'
 
-        if not kit.get('is_published'):
+        if not creator.get('kit_published'):
             return False, 'Your media kit is not published. Please publish your media kit so brands can see your portfolio.'
-
-        # Check required fields
-        missing = []
-        if not kit.get('display_name') or not str(kit.get('display_name', '')).strip():
-            missing.append('display name')
-        if not kit.get('tagline') or not str(kit.get('tagline', '')).strip():
-            missing.append('tagline')
-
-        niches = kit.get('niches')
-        if isinstance(niches, str):
-            try:
-                niches = json.loads(niches)
-            except:
-                niches = []
-        if not niches or len(niches) == 0:
-            missing.append('niche')
-
-        content_types = kit.get('content_types')
-        if isinstance(content_types, str):
-            try:
-                content_types = json.loads(content_types)
-            except:
-                content_types = []
-        if not content_types or len(content_types) == 0:
-            missing.append('content types')
-
-        if not kit.get('total_followers') or kit.get('total_followers', 0) <= 0:
-            missing.append('follower count')
-
-        if missing:
-            return False, f'Your media kit is missing: {", ".join(missing)}. Please complete your media kit before pitching brands.'
 
         return True, None
 
