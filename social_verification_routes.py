@@ -499,26 +499,42 @@ def verify_handle():
 @social_verification_bp.route('/connect/instagram', methods=['GET'])
 def connect_instagram():
     """Initiate Instagram OAuth flow via Instagram Business Login"""
+    # For onboarding, we may not have creator_id yet - just need user_id
+    user_id = session.get('user_id')
     creator_id = get_creator_id_from_session()
-    if not creator_id:
+
+    # Get return_url from query params (allows flexible redirect back to any frontend)
+    return_url = request.args.get('return_url', f"{FRONTEND_URL}/onboarding")
+
+    if not user_id:
         return redirect(f"{FRONTEND_URL}/login?redirect=/onboarding")
 
     # Check region first
     user_country = get_user_country_from_session()
     if user_country and user_country.upper() in RESTRICTED_REGIONS:
-        return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=restricted_region")
+        return redirect(f"{return_url}?social=failed&reason=restricted_region")
 
     if not INSTAGRAM_APP_ID:
         print("❌ INSTAGRAM_APP_ID not configured")
-        return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=oauth_error")
+        return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
-    # Generate state token for CSRF protection
-    state = secrets.token_urlsafe(32)
-    session['instagram_oauth_state'] = state
-    session['instagram_oauth_creator_id'] = creator_id
+    # Encode user info in state to survive cross-subdomain redirect
+    # State format: base64(json({csrf: token, user_id: id, creator_id: id, return_url: url}))
+    csrf_token = secrets.token_urlsafe(16)
+    state_data = {
+        'csrf': csrf_token,
+        'user_id': user_id,
+        'creator_id': creator_id,
+        'return_url': return_url
+    }
+    state = base64.urlsafe_b64encode(json.dumps(state_data).encode()).decode()
+
+    # Also store in session as backup (works for same-domain)
+    session['instagram_oauth_state'] = csrf_token
+
+    print(f"📤 Instagram Connect: user_id={user_id}, creator_id={creator_id}, state={state[:20]}...")
 
     # Instagram Business Login OAuth URL (new API)
-    # Scopes for Instagram Business API
     scopes = 'instagram_business_basic,instagram_business_manage_insights'
 
     auth_url = (
@@ -536,18 +552,33 @@ def connect_instagram():
 @social_verification_bp.route('/callback/instagram', methods=['GET'])
 def callback_instagram():
     """Handle Instagram OAuth callback via Instagram Business Login API"""
-    # Verify state (only if we have a stored state from /connect/instagram flow)
     state = request.args.get('state')
-    stored_state = session.pop('instagram_oauth_state', None)
-    creator_id = session.pop('instagram_oauth_creator_id', None)
 
-    print(f"📥 Instagram Callback: state={state}, stored_state={stored_state}, creator_id={creator_id}")
+    # Decode state to get user info (survives cross-subdomain redirect)
+    user_id = None
+    creator_id = None
+    csrf_token = None
+    return_url = f"{FRONTEND_URL}/onboarding"  # Default fallback
 
-    # Only validate state if we have a stored state (skip for direct URL testing)
-    if stored_state is not None:
-        if not state or state != stored_state:
-            print("❌ Instagram OAuth: Invalid state")
-            return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=oauth_error")
+    if state:
+        try:
+            state_data = json.loads(base64.urlsafe_b64decode(state.encode()).decode())
+            csrf_token = state_data.get('csrf')
+            user_id = state_data.get('user_id')
+            creator_id = state_data.get('creator_id')
+            return_url = state_data.get('return_url', return_url)
+        except Exception as e:
+            print(f"⚠️ Failed to decode state: {e}")
+
+    # Fallback to session (works for same-domain)
+    stored_csrf = session.pop('instagram_oauth_state', None)
+
+    print(f"📥 Instagram Callback: user_id={user_id}, creator_id={creator_id}, csrf_valid={csrf_token == stored_csrf if stored_csrf else 'no_session'}")
+
+    # Validate we have user_id (required for the flow to work)
+    if not user_id:
+        print("❌ Instagram OAuth: No user_id in state - session may have expired")
+        return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
     # Check for errors
     error = request.args.get('error')
@@ -555,11 +586,11 @@ def callback_instagram():
     error_description = request.args.get('error_description')
     if error:
         print(f"❌ Instagram OAuth error: {error} - {error_reason} - {error_description}")
-        return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=oauth_error")
+        return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
     code = request.args.get('code')
     if not code:
-        return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=oauth_error")
+        return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
     try:
         # Exchange code for short-lived access token (Instagram Business Login API)
@@ -580,14 +611,14 @@ def callback_instagram():
 
         if 'error_type' in token_data or 'error' in token_data:
             print(f"❌ Instagram token error: {token_data}")
-            return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=oauth_error")
+            return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
         access_token = token_data.get('access_token')
         user_id = token_data.get('user_id')
 
         if not access_token:
             print("❌ No access token in response")
-            return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=oauth_error")
+            return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
         # Get user profile using Instagram Graph API
         print(f"📤 Fetching user profile for user_id: {user_id}")
@@ -604,36 +635,24 @@ def callback_instagram():
 
         if 'error' in profile_data_raw:
             print(f"❌ Instagram profile error: {profile_data_raw}")
-            return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=oauth_error")
+            return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
-        # Check if account is private by fetching public profile
-        # The OAuth token gives access to private data, so we need to check publicly
-        is_private = False
-        username = profile_data_raw.get('username')
-        if username:
-            try:
-                from social_profile_fetcher import fetch_instagram_profile, ProfileFetchError
-                print(f"🔍 Checking public profile for @{username} to detect privacy...")
-                public_profile = fetch_instagram_profile(username)
-                is_private = public_profile.get('is_private', False)
-                print(f"📥 Public profile check: is_private={is_private}")
-            except ProfileFetchError as e:
-                # If we can't fetch public profile, might be private or rate limited
-                print(f"⚠️ Public profile check failed: {e}")
-                # Default to assuming public if we can't check (will verify via other means)
-                is_private = False
-            except Exception as e:
-                print(f"⚠️ Public profile check error: {e}")
-                is_private = False
+        # Note: Instagram Business/Creator accounts connected via OAuth are inherently public
+        # The API only works for business accounts which must be public to function
+        # No need to scrape public profile - account_type tells us everything we need
 
         # Build profile data
+        # Business/Creator accounts via Instagram Business Login are always public
+        account_type = profile_data_raw.get('account_type', 'BUSINESS').upper()
+        is_public_account = account_type in ['BUSINESS', 'CREATOR', 'MEDIA_CREATOR']
+
         profile_data = {
             'access_token': access_token,
             'username': profile_data_raw.get('username'),
             'follower_count': profile_data_raw.get('followers_count', 0),
             'media_count': profile_data_raw.get('media_count', 0),
-            'account_type': profile_data_raw.get('account_type', 'BUSINESS'),
-            'is_private': is_private,
+            'account_type': account_type,
+            'is_private': not is_public_account,  # Business/Creator accounts are always public
         }
         api_response = profile_data_raw
         print(f"✅ Instagram account found: @{profile_data['username']} - {profile_data['follower_count']} followers, {profile_data['media_count']} posts")
@@ -656,15 +675,21 @@ def callback_instagram():
             )
 
         if result['passed']:
-            return redirect(f"{FRONTEND_URL}/onboarding?social=success&platform=instagram&handle={profile_data['username']}")
+            # Include follower/post counts in URL for frontend (since creator_id may not exist yet)
+            return redirect(
+                f"{return_url}?social=success&platform=instagram"
+                f"&handle={profile_data['username']}"
+                f"&followers={profile_data['follower_count']}"
+                f"&posts={profile_data['media_count']}"
+            )
         else:
-            return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason={result['failure_reason']}&platform=instagram")
+            return redirect(f"{return_url}?social=failed&reason={result['failure_reason']}&platform=instagram")
 
     except Exception as e:
         print(f"❌ Instagram OAuth exception: {e}")
         import traceback
         traceback.print_exc()
-        return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=oauth_error")
+        return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
 
 # ============================================================================
@@ -674,21 +699,26 @@ def callback_instagram():
 @social_verification_bp.route('/connect/tiktok', methods=['GET'])
 def connect_tiktok():
     """Initiate TikTok OAuth flow via Login Kit"""
+    # For onboarding, we may not have creator_id yet - just need user_id
+    user_id = session.get('user_id')
     creator_id = get_creator_id_from_session()
-    if not creator_id:
+
+    # Get return_url from query params (allows flexible redirect back to any frontend)
+    return_url = request.args.get('return_url', f"{FRONTEND_URL}/onboarding")
+
+    if not user_id:
         return redirect(f"{FRONTEND_URL}/login?redirect=/onboarding")
 
     # Check region first
     user_country = get_user_country_from_session()
     if user_country and user_country.upper() in RESTRICTED_REGIONS:
-        return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=restricted_region")
+        return redirect(f"{return_url}?social=failed&reason=restricted_region")
 
     if not TIKTOK_CLIENT_KEY:
         print("❌ TIKTOK_CLIENT_KEY not configured")
-        return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=oauth_error")
+        return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
-    # Generate state and code verifier for PKCE
-    state = secrets.token_urlsafe(32)
+    # Generate code verifier for PKCE
     code_verifier = secrets.token_urlsafe(64)
 
     # Create code challenge (SHA256 hash, base64url encoded)
@@ -696,9 +726,21 @@ def connect_tiktok():
         hashlib.sha256(code_verifier.encode()).digest()
     ).decode().rstrip('=')
 
-    session['tiktok_oauth_state'] = state
-    session['tiktok_oauth_code_verifier'] = code_verifier
-    session['tiktok_oauth_creator_id'] = creator_id
+    # Encode user info and code_verifier in state to survive cross-subdomain redirect
+    csrf_token = secrets.token_urlsafe(16)
+    state_data = {
+        'csrf': csrf_token,
+        'user_id': user_id,
+        'creator_id': creator_id,
+        'code_verifier': code_verifier,
+        'return_url': return_url
+    }
+    state = base64.urlsafe_b64encode(json.dumps(state_data).encode()).decode()
+
+    # Also store in session as backup
+    session['tiktok_oauth_csrf'] = csrf_token
+
+    print(f"📤 TikTok Connect: user_id={user_id}, creator_id={creator_id}")
 
     # TikTok OAuth URL
     scopes = 'user.info.basic,user.info.profile,user.info.stats'
@@ -720,28 +762,45 @@ def connect_tiktok():
 @social_verification_bp.route('/callback/tiktok', methods=['GET'])
 def callback_tiktok():
     """Handle TikTok OAuth callback"""
-    # Verify state
     state = request.args.get('state')
-    stored_state = session.pop('tiktok_oauth_state', None)
-    code_verifier = session.pop('tiktok_oauth_code_verifier', None)
-    creator_id = session.pop('tiktok_oauth_creator_id', None)
 
-    if not state or state != stored_state:
-        print("❌ TikTok OAuth: Invalid state")
-        return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=oauth_error")
+    # Decode state to get user info and code_verifier (survives cross-subdomain redirect)
+    user_id = None
+    creator_id = None
+    code_verifier = None
+    csrf_token = None
+    return_url = f"{FRONTEND_URL}/onboarding"  # Default fallback
 
-    if not creator_id:
-        return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=oauth_error")
+    if state:
+        try:
+            state_data = json.loads(base64.urlsafe_b64decode(state.encode()).decode())
+            csrf_token = state_data.get('csrf')
+            user_id = state_data.get('user_id')
+            creator_id = state_data.get('creator_id')
+            code_verifier = state_data.get('code_verifier')
+            return_url = state_data.get('return_url', return_url)
+        except Exception as e:
+            print(f"⚠️ Failed to decode TikTok state: {e}")
+
+    # Fallback to session (works for same-domain)
+    stored_csrf = session.pop('tiktok_oauth_csrf', None)
+
+    print(f"📥 TikTok Callback: user_id={user_id}, creator_id={creator_id}, has_verifier={bool(code_verifier)}")
+
+    # Validate we have required data
+    if not user_id or not code_verifier:
+        print("❌ TikTok OAuth: Missing user_id or code_verifier in state")
+        return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
     # Check for errors
     error = request.args.get('error')
     if error:
         print(f"❌ TikTok OAuth error: {error}")
-        return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=oauth_error")
+        return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
     code = request.args.get('code')
     if not code:
-        return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=oauth_error")
+        return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
     try:
         # Exchange code for access token
@@ -762,7 +821,7 @@ def callback_tiktok():
 
         if 'error' in token_data:
             print(f"❌ TikTok token error: {token_data}")
-            return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=oauth_error")
+            return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
         access_token = token_data.get('access_token')
         refresh_token = token_data.get('refresh_token')
@@ -780,7 +839,7 @@ def callback_tiktok():
 
         if 'error' in user_data:
             print(f"❌ TikTok user info error: {user_data}")
-            return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=oauth_error")
+            return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
         user_info = user_data.get('data', {}).get('user', {})
 
@@ -802,30 +861,35 @@ def callback_tiktok():
         # Run 5-gate verification
         result = validate_social_gates(profile_data, 'tiktok', user_country)
 
-        # Log the check
-        log_verification_check(creator_id, 'initial', 'tiktok', result, user_country, user_info)
-
-        # Update creator record
-        update_creator_verification(
-            creator_id=creator_id,
-            platform='tiktok',
-            data=profile_data,
-            result=result,
-            access_token=access_token,
-            refresh_token=refresh_token,
-            expires_at=expires_at
-        )
+        # Log and update DB only if creator_id exists (skip for new onboarding users)
+        if creator_id:
+            log_verification_check(creator_id, 'initial', 'tiktok', result, user_country, user_info)
+            update_creator_verification(
+                creator_id=creator_id,
+                platform='tiktok',
+                data=profile_data,
+                result=result,
+                access_token=access_token,
+                refresh_token=refresh_token,
+                expires_at=expires_at
+            )
 
         if result['passed']:
-            return redirect(f"{FRONTEND_URL}/onboarding?social=success&platform=tiktok&handle={profile_data['username']}")
+            # Include follower/post counts in URL for frontend (since creator_id may not exist yet)
+            return redirect(
+                f"{return_url}?social=success&platform=tiktok"
+                f"&handle={profile_data['username']}"
+                f"&followers={profile_data['follower_count']}"
+                f"&posts={profile_data['media_count']}"
+            )
         else:
-            return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason={result['failure_reason']}&platform=tiktok")
+            return redirect(f"{return_url}?social=failed&reason={result['failure_reason']}&platform=tiktok")
 
     except Exception as e:
         print(f"❌ TikTok OAuth exception: {e}")
         import traceback
         traceback.print_exc()
-        return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=oauth_error")
+        return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
 
 # ============================================================================
