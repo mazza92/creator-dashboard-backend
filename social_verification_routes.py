@@ -594,7 +594,7 @@ def callback_instagram():
         profile_response = requests.get(
             f'https://graph.instagram.com/v22.0/me',
             params={
-                'fields': 'user_id,username,account_type,followers_count,media_count',
+                'fields': 'user_id,username,account_type,followers_count,media_count,profile_picture_url',
                 'access_token': access_token
             },
             timeout=10
@@ -606,6 +606,26 @@ def callback_instagram():
             print(f"❌ Instagram profile error: {profile_data_raw}")
             return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=oauth_error")
 
+        # Check if account is private by fetching public profile
+        # The OAuth token gives access to private data, so we need to check publicly
+        is_private = False
+        username = profile_data_raw.get('username')
+        if username:
+            try:
+                from social_profile_fetcher import fetch_instagram_profile, ProfileFetchError
+                print(f"🔍 Checking public profile for @{username} to detect privacy...")
+                public_profile = fetch_instagram_profile(username)
+                is_private = public_profile.get('is_private', False)
+                print(f"📥 Public profile check: is_private={is_private}")
+            except ProfileFetchError as e:
+                # If we can't fetch public profile, might be private or rate limited
+                print(f"⚠️ Public profile check failed: {e}")
+                # Default to assuming public if we can't check (will verify via other means)
+                is_private = False
+            except Exception as e:
+                print(f"⚠️ Public profile check error: {e}")
+                is_private = False
+
         # Build profile data
         profile_data = {
             'access_token': access_token,
@@ -613,6 +633,7 @@ def callback_instagram():
             'follower_count': profile_data_raw.get('followers_count', 0),
             'media_count': profile_data_raw.get('media_count', 0),
             'account_type': profile_data_raw.get('account_type', 'BUSINESS'),
+            'is_private': is_private,
         }
         api_response = profile_data_raw
         print(f"✅ Instagram account found: @{profile_data['username']} - {profile_data['follower_count']} followers, {profile_data['media_count']} posts")
