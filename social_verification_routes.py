@@ -536,15 +536,18 @@ def connect_instagram():
 @social_verification_bp.route('/callback/instagram', methods=['GET'])
 def callback_instagram():
     """Handle Instagram OAuth callback via Instagram Business Login API"""
-    # Verify state
+    # Verify state (only if we have a stored state from /connect/instagram flow)
     state = request.args.get('state')
     stored_state = session.pop('instagram_oauth_state', None)
     creator_id = session.pop('instagram_oauth_creator_id', None)
 
-    # For testing without session (direct URL test), allow missing state
-    if stored_state and (not state or state != stored_state):
-        print("❌ Instagram OAuth: Invalid state")
-        return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=oauth_error")
+    print(f"📥 Instagram Callback: state={state}, stored_state={stored_state}, creator_id={creator_id}")
+
+    # Only validate state if we have a stored state (skip for direct URL testing)
+    if stored_state is not None:
+        if not state or state != stored_state:
+            print("❌ Instagram OAuth: Invalid state")
+            return redirect(f"{FRONTEND_URL}/onboarding?social=failed&reason=oauth_error")
 
     # Check for errors
     error = request.args.get('error')
