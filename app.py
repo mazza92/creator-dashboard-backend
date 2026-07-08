@@ -851,14 +851,17 @@ def google_signup():
             user_id = cursor.fetchone()['id']
             app.logger.info(f"Created new user with ID: {user_id}")
 
-            # Create creator profile (minimal - they'll complete in onboarding)
+            # Generate a temporary username from email (before @)
+            temp_username = email.split('@')[0][:50]
+
+            # Create creator profile (minimal - they'll update in onboarding)
             cursor.execute(
                 '''
-                INSERT INTO creators (user_id)
-                VALUES (%s)
+                INSERT INTO creators (user_id, username)
+                VALUES (%s, %s)
                 RETURNING id
                 ''',
-                (user_id,)
+                (user_id, temp_username)
             )
             creator_id = cursor.fetchone()['id']
             app.logger.info(f"Created new creator with ID: {creator_id}")
