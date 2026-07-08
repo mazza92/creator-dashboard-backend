@@ -2373,6 +2373,16 @@ def generate_pr_package():
                     kit_token = generate_kit_token(creator_id, brand_id)
                     cached_media_kit_url = f"https://newcollab.co/kit/{cached_creator['username']}?ref={kit_token}"
 
+                    # IMPORTANT: Store kit_token in pipeline for view tracking (cached path)
+                    cursor.execute('''
+                        UPDATE creator_pipeline
+                        SET kit_token = COALESCE(kit_token, %s),
+                            updated_at = NOW()
+                        WHERE creator_id = %s AND brand_id = %s
+                    ''', (kit_token, creator_id, brand_id))
+                    conn.commit()
+                    print(f"[generate-pr-package CACHED] Stored kit_token: {kit_token} for pipeline creator={creator_id}, brand={brand_id}")
+
                 # Return cached package
                 package_data = _format_pr_package_response(dict(existing), dict(brand))
                 return jsonify({
