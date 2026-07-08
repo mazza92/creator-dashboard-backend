@@ -2304,6 +2304,15 @@ def generate_pr_package():
     if not creator_id:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
+    # Check media kit completeness - must have complete & published kit to unlock packages
+    kit_complete, kit_error = check_media_kit_complete(creator_id)
+    if not kit_complete:
+        return jsonify({
+            'success': False,
+            'error': kit_error,
+            'media_kit_required': True
+        }), 403
+
     data = request.get_json() or {}
     brand_id = data.get('brand_id')
     slug = data.get('slug')
