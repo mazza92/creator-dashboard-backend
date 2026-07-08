@@ -47,6 +47,21 @@ def get_creator_id_from_session():
     return None
 
 
+def parse_json_array(val):
+    """Helper to parse JSON array fields that may be stored as strings in the database"""
+    if not val:
+        return []
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str):
+        try:
+            parsed = json.loads(val)
+            return parsed if isinstance(parsed, list) else []
+        except:
+            return []
+    return []
+
+
 # ============================================
 # MEDIA KIT CRUD ENDPOINTS
 # ============================================
@@ -104,11 +119,11 @@ def get_my_media_kit():
                 'location': result['location'],
                 'total_followers': result['total_followers'],
                 'engagement_rate': float(result['engagement_rate']) if result['engagement_rate'] else None,
-                'platforms': result['platforms'] or [],
-                'niches': result['niches'] or [],
-                'content_types': result['content_types'] or [],
-                'collaborations': result['collaborations'] or [],
-                'rates': result['rates'] or [],
+                'platforms': parse_json_array(result['platforms']),
+                'niches': parse_json_array(result['niches']),
+                'content_types': parse_json_array(result['content_types']),
+                'collaborations': parse_json_array(result['collaborations']),
+                'rates': parse_json_array(result['rates']),
                 'currency': result['currency'],
                 'accepts_gifted': result['accepts_gifted'],
                 'accepts_paid': result['accepts_paid'],
@@ -698,11 +713,11 @@ def get_public_media_kit(username):
                 'location': media_kit['location'],
                 'total_followers': media_kit['total_followers'],
                 'engagement_rate': float(media_kit['engagement_rate']) if media_kit['engagement_rate'] else None,
-                'platforms': media_kit['platforms'] or [],
-                'niches': media_kit['niches'] or [],
-                'content_types': media_kit['content_types'] or [],
-                'collaborations': media_kit['collaborations'] or [],
-                'rates': media_kit['rates'] or [],
+                'platforms': parse_json_array(media_kit['platforms']),
+                'niches': parse_json_array(media_kit['niches']),
+                'content_types': parse_json_array(media_kit['content_types']),
+                'collaborations': parse_json_array(media_kit['collaborations']),
+                'rates': parse_json_array(media_kit['rates']),
                 'currency': media_kit['currency'],
                 'accepts_gifted': media_kit['accepts_gifted'],
                 'accepts_paid': media_kit['accepts_paid'],
