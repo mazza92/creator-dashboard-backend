@@ -2432,6 +2432,15 @@ def generate_pr_package():
             kit_token = generate_kit_token(creator_id, brand_id)
             media_kit_url = f"https://newcollab.co/kit/{username}?ref={kit_token}"
 
+            # IMPORTANT: Store kit_token in pipeline NOW for view tracking
+            cursor.execute('''
+                UPDATE creator_pipeline
+                SET kit_token = COALESCE(kit_token, %s),
+                    updated_at = NOW()
+                WHERE creator_id = %s AND brand_id = %s
+            ''', (kit_token, creator_id, brand_id))
+            print(f"[generate-pr-package] Stored kit_token: {kit_token} for pipeline creator={creator_id}, brand={brand_id}")
+
             # Replace placeholder in each pitch tone
             for tone in ['pitch_short', 'pitch_growing', 'pitch_founder']:
                 if package.get(f'{tone}_body_plain'):
