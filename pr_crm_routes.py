@@ -1374,16 +1374,18 @@ def get_pipeline():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Build query
+        # Build query - check both has_pr_package flag AND pr_packages table for existing packages
         if stage:
             query = '''
                 SELECT
                     cp.*,
                     pb.brand_name, pb.website, pb.logo_url, pb.cover_image_url, pb.category,
                     pb.instagram_handle, pb.contact_email, pb.application_form_url,
-                    pb.has_application_form, pb.description
+                    pb.has_application_form, pb.description,
+                    COALESCE(cp.has_pr_package, FALSE) OR (pp.id IS NOT NULL) as has_pr_package
                 FROM creator_pipeline cp
                 JOIN pr_brands pb ON cp.brand_id = pb.id
+                LEFT JOIN pr_packages pp ON pp.creator_id = cp.creator_id AND pp.brand_id = cp.brand_id
                 WHERE cp.creator_id = %s AND cp.stage = %s
                 ORDER BY cp.updated_at DESC
             '''
@@ -1394,9 +1396,11 @@ def get_pipeline():
                     cp.*,
                     pb.brand_name, pb.website, pb.logo_url, pb.cover_image_url, pb.category,
                     pb.instagram_handle, pb.contact_email, pb.application_form_url,
-                    pb.has_application_form, pb.description
+                    pb.has_application_form, pb.description,
+                    COALESCE(cp.has_pr_package, FALSE) OR (pp.id IS NOT NULL) as has_pr_package
                 FROM creator_pipeline cp
                 JOIN pr_brands pb ON cp.brand_id = pb.id
+                LEFT JOIN pr_packages pp ON pp.creator_id = cp.creator_id AND pp.brand_id = cp.brand_id
                 WHERE cp.creator_id = %s
                 ORDER BY cp.updated_at DESC
             '''
@@ -2271,6 +2275,339 @@ def generate_pitch():
         print(f"Error in generate_pitch: {str(e)}")
         import traceback
         traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============================================
+# PR PACKAGE GENERATION (NEW PIVOT)
+# Complete PR Package: 3 pitches + timing + content ideas + follow-ups + prediction
+# ============================================
+
+@pr_crm.route('/generate-pr-package', methods=['POST'])
+def generate_pr_package():
+    """
+    Generate or retrieve a complete PR Package for a brand.
+
+    PR Package includes:
+    1. Verified PR contact (existing)
+    2. 3 pitch tones (Short, Growing, Founder)
+    3. Optimal send timing (deterministic)
+    4. Content Playbook: 5 ideas (Pro)
+    5. Follow-up sequence: Day 3, 8, 14 (Pro)
+    6. Reply prediction (deterministic)
+
+    Packages are cached: same creator+brand returns cached version instantly.
+    """
+    from services.pr_package_generator import get_pr_package_generator
+
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    data = request.get_json() or {}
+    brand_id = data.get('brand_id')
+    slug = data.get('slug')
+    regenerate = data.get('regenerate', False)
+
+    if not brand_id and not slug:
+        return jsonify({'success': False, 'error': 'brand_id or slug required'}), 400
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Resolve brand
+        if brand_id:
+            cursor.execute('SELECT * FROM pr_brands WHERE id = %s', (brand_id,))
+        else:
+            cursor.execute('SELECT * FROM pr_brands WHERE slug = %s', (slug,))
+
+        brand = cursor.fetchone()
+        if not brand:
+            return jsonify({'success': False, 'error': 'Brand not found'}), 404
+
+        brand_id = brand['id']
+
+        # Check if package already exists (and regenerate not requested)
+        if not regenerate:
+            cursor.execute('''
+                SELECT * FROM pr_packages
+                WHERE creator_id = %s AND brand_id = %s
+            ''', (creator_id, brand_id))
+            existing = cursor.fetchone()
+
+            if existing:
+                # Return cached package
+                package_data = _format_pr_package_response(dict(existing), dict(brand))
+                return jsonify({
+                    'success': True,
+                    'package': package_data,
+                    'cached': True,
+                    'brand_email': brand.get('contact_email'),
+                    'application_form_url': brand.get('application_form_url'),
+                })
+
+        # Run unlock logic (same as generate-pitch)
+        unlock_result = attempt_unlock(creator_id, brand_id, conn)
+        if unlock_result.get('status') == 'paywall':
+            conn.close()
+            return jsonify({
+                'success': False,
+                'error': 'No PR Packages remaining this month',
+                'paywall': True,
+                'remaining': 0,
+            }), 402
+
+        # Get creator data
+        cursor.execute('''
+            SELECT c.*, u.first_name, u.last_name, u.email
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE c.id = %s
+        ''', (creator_id,))
+        creator = cursor.fetchone()
+
+        if not creator:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Creator not found'}), 404
+
+        # Generate PR Package
+        generator = get_pr_package_generator()
+        result = generator.generate(
+            creator=dict(creator),
+            brand=dict(brand),
+            cursor=cursor,
+            max_attempts=2
+        )
+
+        if not result.success:
+            conn.close()
+            return jsonify({'success': False, 'error': result.error or 'Generation failed'}), 500
+
+        package = result.package
+
+        # Store in database (upsert)
+        cursor.execute('''
+            INSERT INTO pr_packages (
+                creator_id, brand_id,
+                pitch_short_subject, pitch_short_body_html, pitch_short_body_plain,
+                pitch_growing_subject, pitch_growing_body_html, pitch_growing_body_plain,
+                pitch_founder_subject, pitch_founder_body_html, pitch_founder_body_plain,
+                optimal_send_day, optimal_send_time_range, timing_sample_size, timing_uplift_multiplier,
+                content_ideas,
+                followup_day3_subject, followup_day3_body,
+                followup_day8_subject, followup_day8_body,
+                followup_day14_subject, followup_day14_body,
+                reply_rate_brand_avg, reply_rate_personalized, reply_rate_confidence,
+                generated_by, generation_reasoning, scrub_failures_count
+            ) VALUES (
+                %s, %s,
+                %s, %s, %s,
+                %s, %s, %s,
+                %s, %s, %s,
+                %s, %s, %s, %s,
+                %s,
+                %s, %s,
+                %s, %s,
+                %s, %s,
+                %s, %s, %s,
+                %s, %s, %s
+            )
+            ON CONFLICT (creator_id, brand_id) DO UPDATE SET
+                pitch_short_subject = EXCLUDED.pitch_short_subject,
+                pitch_short_body_html = EXCLUDED.pitch_short_body_html,
+                pitch_short_body_plain = EXCLUDED.pitch_short_body_plain,
+                pitch_growing_subject = EXCLUDED.pitch_growing_subject,
+                pitch_growing_body_html = EXCLUDED.pitch_growing_body_html,
+                pitch_growing_body_plain = EXCLUDED.pitch_growing_body_plain,
+                pitch_founder_subject = EXCLUDED.pitch_founder_subject,
+                pitch_founder_body_html = EXCLUDED.pitch_founder_body_html,
+                pitch_founder_body_plain = EXCLUDED.pitch_founder_body_plain,
+                optimal_send_day = EXCLUDED.optimal_send_day,
+                optimal_send_time_range = EXCLUDED.optimal_send_time_range,
+                timing_sample_size = EXCLUDED.timing_sample_size,
+                timing_uplift_multiplier = EXCLUDED.timing_uplift_multiplier,
+                content_ideas = EXCLUDED.content_ideas,
+                followup_day3_subject = EXCLUDED.followup_day3_subject,
+                followup_day3_body = EXCLUDED.followup_day3_body,
+                followup_day8_subject = EXCLUDED.followup_day8_subject,
+                followup_day8_body = EXCLUDED.followup_day8_body,
+                followup_day14_subject = EXCLUDED.followup_day14_subject,
+                followup_day14_body = EXCLUDED.followup_day14_body,
+                reply_rate_brand_avg = EXCLUDED.reply_rate_brand_avg,
+                reply_rate_personalized = EXCLUDED.reply_rate_personalized,
+                reply_rate_confidence = EXCLUDED.reply_rate_confidence,
+                generated_by = EXCLUDED.generated_by,
+                generation_reasoning = EXCLUDED.generation_reasoning,
+                scrub_failures_count = EXCLUDED.scrub_failures_count,
+                regenerated_count = pr_packages.regenerated_count + 1,
+                generated_at = NOW()
+            RETURNING id
+        ''', (
+            creator_id, brand_id,
+            package.get('pitch_short_subject'), package.get('pitch_short_body_html'), package.get('pitch_short_body_plain'),
+            package.get('pitch_growing_subject'), package.get('pitch_growing_body_html'), package.get('pitch_growing_body_plain'),
+            package.get('pitch_founder_subject'), package.get('pitch_founder_body_html'), package.get('pitch_founder_body_plain'),
+            package.get('optimal_send_day'), package.get('optimal_send_time_range'), package.get('timing_sample_size'), package.get('timing_uplift_multiplier'),
+            json.dumps(package.get('content_ideas', [])),
+            package.get('followup_day3_subject'), package.get('followup_day3_body'),
+            package.get('followup_day8_subject'), package.get('followup_day8_body'),
+            package.get('followup_day14_subject'), package.get('followup_day14_body'),
+            package.get('reply_rate_brand_avg'), package.get('reply_rate_personalized'), package.get('reply_rate_confidence'),
+            result.source, package.get('generation_reasoning'), result.scrub_failures
+        ))
+
+        conn.commit()
+
+        # Update creator_pipeline to mark has_pr_package
+        cursor.execute('''
+            UPDATE creator_pipeline
+            SET has_pr_package = TRUE
+            WHERE creator_id = %s AND brand_id = %s
+        ''', (creator_id, brand_id))
+        conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        # Format response
+        package_data = _format_pr_package_response(package, dict(brand))
+
+        return jsonify({
+            'success': True,
+            'package': package_data,
+            'cached': False,
+            'brand_email': brand.get('contact_email'),
+            'application_form_url': brand.get('application_form_url'),
+            'brand_unlocked': unlock_result.get('brand_unlocked', False),
+            'already_unlocked': unlock_result.get('already_unlocked', False),
+            'credits_remaining': unlock_result.get('credits_remaining'),
+        })
+
+    except Exception as e:
+        if conn:
+            conn.close()
+        print(f"Error in generate_pr_package: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+def _format_pr_package_response(package: dict, brand: dict) -> dict:
+    """Format PR Package for frontend response."""
+    # Parse content_ideas if it's a string
+    content_ideas = package.get('content_ideas', [])
+    if isinstance(content_ideas, str):
+        try:
+            content_ideas = json.loads(content_ideas)
+        except:
+            content_ideas = []
+
+    return {
+        'brand': {
+            'id': brand.get('id'),
+            'name': brand.get('brand_name') or brand.get('name'),
+            'category': brand.get('category'),
+            'logo_url': brand.get('logo_url'),
+        },
+        'pitches': {
+            'short': {
+                'subject': package.get('pitch_short_subject', ''),
+                'body_html': package.get('pitch_short_body_html', ''),
+                'body_plain': package.get('pitch_short_body_plain', ''),
+            },
+            'growing': {
+                'subject': package.get('pitch_growing_subject', ''),
+                'body_html': package.get('pitch_growing_body_html', ''),
+                'body_plain': package.get('pitch_growing_body_plain', ''),
+            },
+            'founder': {
+                'subject': package.get('pitch_founder_subject', ''),
+                'body_html': package.get('pitch_founder_body_html', ''),
+                'body_plain': package.get('pitch_founder_body_plain', ''),
+            },
+        },
+        'timing': {
+            'day': package.get('optimal_send_day', 'Tuesday'),
+            'time_range': package.get('optimal_send_time_range', '2-5pm ET'),
+            'sample_size': package.get('timing_sample_size', 0),
+            'uplift_multiplier': float(package.get('timing_uplift_multiplier', 1.0) or 1.0),
+        },
+        'content_ideas': content_ideas,
+        'follow_ups': {
+            'day3': {
+                'subject': package.get('followup_day3_subject', ''),
+                'body': package.get('followup_day3_body', ''),
+            },
+            'day8': {
+                'subject': package.get('followup_day8_subject', ''),
+                'body': package.get('followup_day8_body', ''),
+            },
+            'day14': {
+                'subject': package.get('followup_day14_subject', ''),
+                'body': package.get('followup_day14_body', ''),
+            },
+        },
+        'prediction': {
+            'brand_avg': float(package.get('reply_rate_brand_avg', 25) or 25),
+            'personalized': float(package.get('reply_rate_personalized', 30) or 30),
+            'confidence': package.get('reply_rate_confidence', 'low'),
+        },
+        'meta': {
+            'generated_by': package.get('generated_by', 'gemini'),
+            'generated_at': str(package.get('generated_at', '')),
+        },
+    }
+
+
+@pr_crm.route('/pr-package/<int:brand_id>', methods=['GET'])
+def get_pr_package(brand_id):
+    """
+    Get existing PR Package for a brand (if unlocked).
+    Returns cached package without generating new one.
+    """
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get brand
+        cursor.execute('SELECT * FROM pr_brands WHERE id = %s', (brand_id,))
+        brand = cursor.fetchone()
+        if not brand:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Brand not found'}), 404
+
+        # Get package
+        cursor.execute('''
+            SELECT * FROM pr_packages
+            WHERE creator_id = %s AND brand_id = %s
+        ''', (creator_id, brand_id))
+        package = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        if not package:
+            return jsonify({'success': False, 'error': 'No PR Package found for this brand'}), 404
+
+        package_data = _format_pr_package_response(dict(package), dict(brand))
+
+        return jsonify({
+            'success': True,
+            'package': package_data,
+            'brand_email': brand.get('contact_email'),
+            'application_form_url': brand.get('application_form_url'),
+        })
+
+    except Exception as e:
+        if conn:
+            conn.close()
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -3751,6 +4088,8 @@ def get_pipeline_full():
                 pb.logo_url, pb.website AS domain, pb.response_rate,
                 pb.contact_email AS pr_email, pb.instagram_handle, pb.has_application_form,
                 pb.application_form_url, pb.description,
+                -- Check if PR package exists for this brand
+                COALESCE(cp.has_pr_package, FALSE) OR (pp.id IS NOT NULL) AS has_pr_package,
                 -- days since pitched (for nudge logic in frontend)
                 CASE
                     WHEN cp.pitched_at IS NOT NULL
@@ -3765,6 +4104,7 @@ def get_pipeline_full():
                 END AS days_since_followup
             FROM creator_pipeline cp
             JOIN pr_brands pb ON pb.id = cp.brand_id
+            LEFT JOIN pr_packages pp ON pp.creator_id = cp.creator_id AND pp.brand_id = cp.brand_id
             WHERE cp.creator_id = %s
               AND cp.stage != 'archived'
             ORDER BY

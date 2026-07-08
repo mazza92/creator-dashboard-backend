@@ -33,8 +33,9 @@ except ImportError:
 # CONFIGURATION
 # ============================================================================
 
-# Restricted regions - India and Pakistan blocked
-RESTRICTED_REGIONS = ['IN', 'PK']
+# Restricted regions - South Asian subcontinent blocked due to high fraud/spam rates
+# IN: India, PK: Pakistan, BD: Bangladesh, NP: Nepal, LK: Sri Lanka, MM: Myanmar, BT: Bhutan
+RESTRICTED_REGIONS = ['IN', 'PK', 'BD', 'NP', 'LK', 'MM', 'BT']
 
 # Minimum thresholds
 MIN_FOLLOWERS = 500

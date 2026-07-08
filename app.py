@@ -50,7 +50,7 @@ from pool_routes import pool_bp
 # from marketplace_routes import marketplace_bp  # Disabled - using inline endpoint instead (newer schema)
 from indexnow_routes import indexnow_bp
 from email_cron_routes import email_cron_bp
-from social_verification_routes import social_verification_bp
+from social_verification_routes import social_verification_bp, detect_country_from_ip, RESTRICTED_REGIONS
 from routes.admin_pr_hunter import admin_pr_hunter_bp
 from routes.admin_brands import admin_brands_bp
 from routes.admin_reports import admin_reports_bp
@@ -739,6 +739,12 @@ def google_signup():
         return response, 200
 
     try:
+        # Region check FIRST - block restricted regions before any processing
+        user_country = detect_country_from_ip()
+        if user_country and user_country.upper() in RESTRICTED_REGIONS:
+            app.logger.warning(f"🚫 Google signup blocked - restricted region: {user_country}")
+            return jsonify({'error': 'Service not available in your region'}), 403
+
         data = request.get_json()
         if not data or 'idToken' not in data:
             app.logger.error("Missing idToken in request")
@@ -5443,6 +5449,12 @@ def register_creator_account():
         return response, 200
 
     try:
+        # Region check FIRST - block restricted regions before any processing
+        user_country = detect_country_from_ip()
+        if user_country and user_country.upper() in RESTRICTED_REGIONS:
+            app.logger.warning(f"🚫 Creator signup blocked - restricted region: {user_country}")
+            return jsonify({'error': 'Service not available in your region'}), 403
+
         # Handle both JSON and form data
         if request.is_json:
             data = request.get_json()
