@@ -124,12 +124,23 @@ def get_creator_id_from_session():
 def check_media_kit_complete(creator_id):
     """
     Check if creator has a complete and published media kit.
-    Returns (is_complete, error_message)
+    Returns (is_complete, error_message, kit_status)
+
+    kit_status contains:
+    - post_count: number of portfolio posts
+    - is_published: whether kit is published
+    - has_kit: whether creator has a kit at all
 
     Simple requirements:
     - 3 portfolio posts minimum
     - kit_published = true
     """
+    kit_status = {
+        'post_count': 0,
+        'is_published': False,
+        'has_kit': False
+    }
+
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -143,7 +154,10 @@ def check_media_kit_complete(creator_id):
         if not creator:
             cursor.close()
             conn.close()
-            return False, 'Creator profile not found. Please complete your profile before pitching brands.'
+            return False, 'Creator profile not found. Please complete your profile before pitching brands.', kit_status
+
+        kit_status['has_kit'] = True
+        kit_status['is_published'] = bool(creator.get('kit_published'))
 
         # Count portfolio posts
         cursor.execute('''
@@ -151,6 +165,7 @@ def check_media_kit_complete(creator_id):
         ''', (creator_id,))
         post_result = cursor.fetchone()
         post_count = post_result.get('post_count', 0) if post_result else 0
+        kit_status['post_count'] = post_count
 
         cursor.close()
         conn.close()
@@ -158,16 +173,16 @@ def check_media_kit_complete(creator_id):
         # Check requirements
         if post_count < 3:
             posts_needed = 3 - post_count
-            return False, f'Add {posts_needed} more portfolio post{"s" if posts_needed > 1 else ""} to your media kit before pitching brands ({post_count}/3 added).'
+            return False, f'Add {posts_needed} more portfolio post{"s" if posts_needed > 1 else ""} to your media kit before pitching brands ({post_count}/3 added).', kit_status
 
         if not creator.get('kit_published'):
-            return False, 'Your media kit is not published. Please publish your media kit so brands can see your portfolio.'
+            return False, 'Your media kit is not published. Please publish your media kit so brands can see your portfolio.', kit_status
 
-        return True, None
+        return True, None, kit_status
 
     except Exception as e:
         print(f"Error checking media kit: {e}")
-        return False, 'Unable to verify media kit. Please try again.'
+        return False, 'Unable to verify media kit. Please try again.', kit_status
 
 
 # ============================================
@@ -1896,12 +1911,13 @@ def track_pitch():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     # Check media kit completeness - must have complete & published kit to pitch
-    kit_complete, kit_error = check_media_kit_complete(creator_id)
+    kit_complete, kit_error, kit_status = check_media_kit_complete(creator_id)
     if not kit_complete:
         return jsonify({
             'success': False,
             'error': kit_error,
-            'media_kit_required': True
+            'media_kit_required': True,
+            'kit_status': kit_status
         }), 403
 
     try:
@@ -2058,12 +2074,13 @@ def generate_pitch():
 
         # Check media kit completeness for initial pitches (not follow-ups)
         if not is_followup:
-            kit_complete, kit_error = check_media_kit_complete(creator_id)
+            kit_complete, kit_error, kit_status = check_media_kit_complete(creator_id)
             if not kit_complete:
                 return jsonify({
                     'success': False,
                     'error': kit_error,
-                    'media_kit_required': True
+                    'media_kit_required': True,
+                    'kit_status': kit_status
                 }), 403
 
         if not brand_id and not brand_slug:
@@ -2305,12 +2322,13 @@ def generate_pr_package():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     # Check media kit completeness - must have complete & published kit to unlock packages
-    kit_complete, kit_error = check_media_kit_complete(creator_id)
+    kit_complete, kit_error, kit_status = check_media_kit_complete(creator_id)
     if not kit_complete:
         return jsonify({
             'success': False,
             'error': kit_error,
-            'media_kit_required': True
+            'media_kit_required': True,
+            'kit_status': kit_status
         }), 403
 
     data = request.get_json() or {}
@@ -2347,6 +2365,14 @@ def generate_pr_package():
             existing = cursor.fetchone()
 
             if existing:
+                # Get creator for media kit URL
+                cursor.execute('SELECT username, kit_published FROM creators WHERE id = %s', (creator_id,))
+                cached_creator = cursor.fetchone()
+                cached_media_kit_url = None
+                if cached_creator and cached_creator.get('kit_published') and cached_creator.get('username'):
+                    kit_token = generate_kit_token(creator_id, brand_id)
+                    cached_media_kit_url = f"https://newcollab.co/kit/{cached_creator['username']}?ref={kit_token}"
+
                 # Return cached package
                 package_data = _format_pr_package_response(dict(existing), dict(brand))
                 return jsonify({
@@ -2355,6 +2381,7 @@ def generate_pr_package():
                     'cached': True,
                     'brand_email': brand.get('contact_email'),
                     'application_form_url': brand.get('application_form_url'),
+                    'media_kit_url': cached_media_kit_url,
                 })
 
         # Run unlock logic (same as generate-pitch)
@@ -2395,6 +2422,34 @@ def generate_pr_package():
             return jsonify({'success': False, 'error': result.error or 'Generation failed'}), 500
 
         package = result.package
+
+        # Replace {{PORTFOLIO_LINK}} placeholder with actual media kit URL
+        username = creator.get('username')
+        kit_published = creator.get('kit_published')
+        media_kit_url = None
+
+        if kit_published and username:
+            kit_token = generate_kit_token(creator_id, brand_id)
+            media_kit_url = f"https://newcollab.co/kit/{username}?ref={kit_token}"
+
+            # Replace placeholder in each pitch tone
+            for tone in ['pitch_short', 'pitch_growing', 'pitch_founder']:
+                if package.get(f'{tone}_body_plain'):
+                    package[f'{tone}_body_plain'] = package[f'{tone}_body_plain'].replace('{{PORTFOLIO_LINK}}', media_kit_url)
+                if package.get(f'{tone}_body_html'):
+                    package[f'{tone}_body_html'] = package[f'{tone}_body_html'].replace(
+                        '{{PORTFOLIO_LINK}}',
+                        f'<a href="{media_kit_url}">{media_kit_url}</a>'
+                    )
+        else:
+            # Remove placeholder if no kit URL available
+            for tone in ['pitch_short', 'pitch_growing', 'pitch_founder']:
+                if package.get(f'{tone}_body_plain'):
+                    # Remove the entire portfolio line if no URL
+                    package[f'{tone}_body_plain'] = package[f'{tone}_body_plain'].replace('You can see my recent work here: {{PORTFOLIO_LINK}}\n\n', '')
+                    package[f'{tone}_body_plain'] = package[f'{tone}_body_plain'].replace('You can see my recent work here: {{PORTFOLIO_LINK}}', '')
+                if package.get(f'{tone}_body_html'):
+                    package[f'{tone}_body_html'] = package[f'{tone}_body_html'].replace('You can see my recent work here: {{PORTFOLIO_LINK}}', '')
 
         # Store in database (upsert)
         cursor.execute('''
@@ -2492,6 +2547,7 @@ def generate_pr_package():
             'brand_unlocked': unlock_result.get('brand_unlocked', False),
             'already_unlocked': unlock_result.get('already_unlocked', False),
             'credits_remaining': unlock_result.get('credits_remaining'),
+            'media_kit_url': media_kit_url,
         })
 
     except Exception as e:

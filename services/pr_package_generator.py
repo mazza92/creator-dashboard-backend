@@ -341,10 +341,17 @@ VOICE + STRUCTURE FOR EACH SECTION
 
 CRITICAL RULES FOR ALL PITCHES:
 
-1. OPENER RULE: The FIRST sentence must reference something specific about
-   the BRAND (a product, aesthetic, recent launch). NOT a self-intro.
-   Bad: "Hi, I'm Sarah and I create beauty content..."
-   Good: "Your new matte lip collection has been all over my feed..."
+1. GREETING + OPENER RULE: Every pitch MUST start with a greeting line, then
+   the first content sentence must reference the BRAND (product, aesthetic, launch).
+
+   REQUIRED FORMAT:
+   Hi [Brand] team,
+
+   [First sentence about the brand, NOT self-intro]
+
+   Bad: "Your Gloss Bomb is amazing..." (missing greeting)
+   Bad: "Hi, I'm Sarah and I create beauty content..." (self-intro first)
+   Good: "Hi Fenty team,\n\nYour Gloss Bomb has been all over my feed..."
 
 2. ASK RULE: The ask must request a SPECIFIC product or deliverable.
    Bad: "Would you be open to a collaboration?"
@@ -360,27 +367,48 @@ CRITICAL RULES FOR ALL PITCHES:
 
 PITCHES: 3-tone spectrum:
 
-- SHORT: 60-90 words. Confident, direct, minimal. Feels like it was tapped
+IMPORTANT - PORTFOLIO & WHITELISTING LINES:
+Every pitch MUST include these two lines (IN THIS ORDER) right BEFORE the final ask:
+1. Portfolio line: "You can see my recent work here: {{PORTFOLIO_LINK}}"
+2. Whitelisting line: "Happy for you to use any content in your paid ads, no extra cost."
+
+These lines go BEFORE the ask, NOT at the very end.
+
+- SHORT: 70-100 words. Confident, direct, minimal. Feels like it was tapped
   out from a phone. Great for creators who want speed. Structure:
+  * Greeting line: "Hi [Brand] team," (REQUIRED, own line)
   * Opener (1 sentence, brand-specific observation, NOT self-intro)
   * Compressed self-intro (1 sentence)
+  * Portfolio line: "You can see my recent work here: {{PORTFOLIO_LINK}}"
+  * Whitelisting offer: "Happy for you to use any content in your paid ads, no extra cost."
   * Specific ask (request a specific product, NOT "collaboration")
   * Sign-off with creator first name
 
-- GROWING: 100-140 words. Balanced. Includes creator's stats/context,
+- GROWING: 110-150 words. Balanced. Includes creator's stats/context,
   a creative angle for this brand, a clear ask. Default for most creators.
   Structure:
+  * Greeting line: "Hi [Brand] team," (REQUIRED, own line)
   * Brand-specific opener (1-2 sentences, reference something observable)
   * Self-intro compressed (1 sentence with niche + platform + audience size)
   * Creative angle for THIS brand (2-3 sentences with specific content idea)
+  * Portfolio line: "You can see my recent work here: {{PORTFOLIO_LINK}}"
+  * Whitelisting offer: "Happy for you to use any content in your paid ads, no extra cost."
   * Specific ask (name a product category or item)
   * Warm sign-off (1 line + creator first name, REQUIRED)
 
-- FOUNDER-TONE: 130-180 words. Warmer, more personal, treats the reader as
+- FOUNDER-TONE: 140-190 words. Warmer, more personal, treats the reader as
   another founder/human. References a specific product or aesthetic detail.
   Includes a small vulnerability or specific memory (the "believable moment").
   This is for creators who want the pitch to feel like it came from their
-  own hand at 11pm. MUST end with creator first name.
+  own hand at 11pm. Structure:
+  * Greeting line: "Hi [Brand] team," (REQUIRED, own line)
+  * Personal observation about brand/product
+  * Self-intro with authentic voice
+  * Believable moment / specific memory
+  * Portfolio line: "You can see my recent work here: {{PORTFOLIO_LINK}}"
+  * Whitelisting offer: "Happy for you to use any content in your paid ads, no extra cost."
+  * Warm ask for specific product
+  * Sign-off with creator first name (REQUIRED)
 
 CONTENT IDEAS: 5 specific hooks:
 
@@ -1002,18 +1030,22 @@ class PRPackageGenerator:
         followers = creator.get('followers_count', 0) or 0
         category = brand.get('category', niche).lower()
 
-        # SHORT tone: 60-90 words, direct, brand-first opener
+        # SHORT tone: 70-100 words, direct, brand-first opener
         short_subject = f"quick {category} collab idea"
         short_body = f"""Hi {brand_name} team,
 
 Been seeing your products pop up in my feed lately. I create {niche} content for {followers:,} followers.
+
+You can see my recent work here: {{{{PORTFOLIO_LINK}}}}
+
+Happy for you to use any content in your paid ads, no extra cost.
 
 Would you be open to sending one of your bestsellers for me to feature in an upcoming post?
 
 Best,
 {creator_name}"""
 
-        # GROWING tone: 100-140 words, balanced, brand-first opener with specific ask
+        # GROWING tone: 110-150 words, balanced, brand-first opener with specific ask
         growing_subject = f"{niche} creator, {followers:,} followers"
         growing_body = f"""Hi {brand_name} team,
 
@@ -1021,12 +1053,16 @@ Your recent launches caught my attention. The aesthetic fits really well with th
 
 I'm thinking a product review or styling post could work well. My audience tends to engage most with honest takes on products I actually use.
 
-Would you be open to sending one of your hero products for me to try? I can share more about my content style and engagement if that helps.
+You can see my recent work here: {{{{PORTFOLIO_LINK}}}}
+
+Happy for you to use any content in your paid ads, no extra cost.
+
+Would you be open to sending one of your hero products for me to try?
 
 Best,
 {creator_name}"""
 
-        # FOUNDER tone: 130-180 words, warmer, more personal with believable moment
+        # FOUNDER tone: 140-190 words, warmer, more personal with believable moment
         founder_subject = f"been meaning to reach out"
         founder_body = f"""Hi there,
 
@@ -1034,9 +1070,11 @@ I keep coming back to {brand_name}'s stuff. Actually tried one of your products 
 
 I'm {creator_name}. I create {niche} content for around {followers:,} people, and I think there's something here. Your products fit the vibe my audience responds to, genuine stuff that actually works.
 
-I'm reaching out because I'd genuinely use your products regardless. But if you're open to it, I'd put together something real for my audience.
+You can see my recent work here: {{{{PORTFOLIO_LINK}}}}
 
-Happy to send over some of my recent posts if you want a better sense of the content. Either way, keep making good stuff.
+Happy for you to use any content in your paid ads, no extra cost.
+
+If you're open to it, I'd put together something real for my audience. Either way, keep making good stuff.
 
 Warmly,
 {creator_name}"""
