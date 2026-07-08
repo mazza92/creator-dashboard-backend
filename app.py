@@ -835,14 +835,18 @@ def google_signup():
             first_name = name_parts[0] if name_parts else ''
             last_name = name_parts[1] if len(name_parts) > 1 else ''
 
-            # Create user (no password for Google-only accounts, already verified)
+            # Generate unusable password for Google-only accounts (DB requires non-null)
+            import uuid
+            google_placeholder_password = f"GOOGLE_AUTH_{uuid.uuid4().hex}"
+
+            # Create user (already verified via Google)
             cursor.execute(
                 '''
                 INSERT INTO users (first_name, last_name, email, password, role, is_verified, verification_token)
-                VALUES (%s, %s, %s, NULL, 'creator', TRUE, NULL)
+                VALUES (%s, %s, %s, %s, 'creator', TRUE, NULL)
                 RETURNING id
                 ''',
-                (first_name or None, last_name or None, email)
+                (first_name or None, last_name or None, email, google_placeholder_password)
             )
             user_id = cursor.fetchone()['id']
             app.logger.info(f"Created new user with ID: {user_id}")
