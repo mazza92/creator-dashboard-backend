@@ -827,10 +827,55 @@ def google_signup():
                 'redirect_url': redirect_url
             }), 200
         else:
-            # New user: Reject and prompt registration
-            app.logger.info(f"No account found for email: {email}. User must register.")
+            # New user: Create account via Google signup
+            app.logger.info(f"Creating new account for Google user: {email}")
+
+            # Parse name from Google (may be "First Last" or just "First")
+            name_parts = (name or '').strip().split(' ', 1)
+            first_name = name_parts[0] if name_parts else ''
+            last_name = name_parts[1] if len(name_parts) > 1 else ''
+
+            # Create user (no password for Google-only accounts, already verified)
+            cursor.execute(
+                '''
+                INSERT INTO users (first_name, last_name, email, password, role, is_verified, verification_token)
+                VALUES (%s, %s, %s, NULL, 'creator', TRUE, NULL)
+                RETURNING id
+                ''',
+                (first_name or None, last_name or None, email)
+            )
+            user_id = cursor.fetchone()['id']
+            app.logger.info(f"Created new user with ID: {user_id}")
+
+            # Create creator profile (minimal - they'll complete in onboarding)
+            cursor.execute(
+                '''
+                INSERT INTO creators (user_id)
+                VALUES (%s)
+                RETURNING id
+                ''',
+                (user_id,)
+            )
+            creator_id = cursor.fetchone()['id']
+            app.logger.info(f"Created new creator with ID: {creator_id}")
+
+            conn.commit()
+
+            # Set session for new user
+            session['user_id'] = user_id
+            session['user_role'] = 'creator'
+            session['creator_id'] = creator_id
+
             conn.close()
-            return jsonify({'error': 'No account found. Please register first.'}), 404
+
+            return jsonify({
+                'user_id': user_id,
+                'user_role': 'creator',
+                'creator_id': creator_id,
+                'onboarding_complete': False,
+                'needs_onboarding': True,
+                'redirect_url': '/onboarding'
+            }), 201
 
     except ValueError as e:
         app.logger.error(f"Token verification failed: {str(e)}")
