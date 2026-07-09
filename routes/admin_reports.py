@@ -148,17 +148,18 @@ def get_overview():
                 c.daily_unlocks_used,
                 c.last_unlock_date,
                 c.brands_saved_count,
-                c.pitches_sent_total,
                 COALESCE(c.subscription_tier, 'free') as tier,
-                COUNT(cp.id) as total_saves,
+                COUNT(DISTINCT cp.id) as total_saves,
                 COUNT(CASE WHEN cp.created_at >= NOW() - INTERVAL '7 days' THEN 1 END) as saves_7d,
-                MAX(cp.created_at) as last_activity
+                MAX(cp.created_at) as last_activity,
+                COUNT(DISTINCT bu.id) as unlocks_count
             FROM creators c
             JOIN users u ON c.user_id = u.id
             LEFT JOIN creator_pipeline cp ON cp.creator_id = c.id
+            LEFT JOIN brand_unlocks bu ON bu.creator_id = c.id
             GROUP BY c.id, u.email, c.username, c.bio, c.followers_count, c.engagement_rate,
                      c.niche, c.platforms, c.total_posts, c.total_views, c.daily_unlocks_used,
-                     c.last_unlock_date, c.brands_saved_count, c.pitches_sent_total, c.subscription_tier
+                     c.last_unlock_date, c.brands_saved_count, c.subscription_tier
             ORDER BY saves_7d DESC, total_saves DESC, c.followers_count DESC NULLS LAST
             LIMIT 20
         """)
@@ -178,7 +179,7 @@ def get_overview():
                 'daily_unlocks_used': row['daily_unlocks_used'],
                 'last_unlock_date': str(row['last_unlock_date']) if row['last_unlock_date'] else None,
                 'brands_saved_count': row['brands_saved_count'],
-                'pitches_sent_total': row['pitches_sent_total'],
+                'unlocks_count': row['unlocks_count'],
                 'tier': row['tier'],
                 'total_saves': row['total_saves'],
                 'saves_7d': row['saves_7d'],

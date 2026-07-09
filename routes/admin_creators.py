@@ -151,7 +151,8 @@ def _resolve_sort():
     sort = request.args.get('sort', 'signup').strip().lower()
     order = request.args.get('order', 'desc').strip().lower()
 
-    if sort not in ('signup', 'pitches', 'followers'):
+    # Support both 'pitches' (legacy) and 'unlocks' for sorting
+    if sort not in ('signup', 'pitches', 'unlocks', 'followers'):
         sort = 'signup'
     if order not in ('asc', 'desc'):
         order = 'desc'
@@ -159,25 +160,26 @@ def _resolve_sort():
     direction = 'ASC' if order == 'asc' else 'DESC'
     nulls = 'NULLS LAST' if order == 'desc' else 'NULLS FIRST'
 
-    if sort == 'pitches':
-        return f"pitches_total {direction} {nulls}, u.created_at DESC"
+    if sort in ('pitches', 'unlocks'):
+        return f"unlocks_count {direction} {nulls}, u.created_at DESC"
     if sort == 'followers':
         return f"c.followers_count {direction} {nulls}, u.created_at DESC"
     return f"u.created_at {direction} {nulls}"
 
 
-PITCH_STATS_SQL = """
+# Count from brand_unlocks table instead of creator_pipeline.pitched_at
+UNLOCK_STATS_SQL = """
     (
         SELECT COUNT(*)::int
-        FROM creator_pipeline cp
-        WHERE cp.creator_id = c.id AND cp.pitched_at IS NOT NULL
-    ) AS pitches_total,
+        FROM brand_unlocks bu
+        WHERE bu.creator_id = c.id
+    ) AS unlocks_count,
     (
         SELECT COUNT(*)::int
-        FROM creator_pipeline cp
-        WHERE cp.creator_id = c.id
-          AND cp.pitched_at >= DATE_TRUNC('week', NOW())
-    ) AS pitches_this_week
+        FROM brand_unlocks bu
+        WHERE bu.creator_id = c.id
+          AND bu.unlocked_at >= DATE_TRUNC('week', NOW())
+    ) AS unlocks_this_week
 """
 
 
@@ -210,10 +212,10 @@ def list_creators():
                 COUNT(DISTINCT c.id) FILTER (WHERE COALESCE(c.has_media_kit, false)) AS with_kit,
                 COUNT(DISTINCT c.id) FILTER (
                     WHERE EXISTS (
-                        SELECT 1 FROM creator_pipeline cp
-                        WHERE cp.creator_id = c.id AND cp.pitched_at IS NOT NULL
+                        SELECT 1 FROM brand_unlocks bu
+                        WHERE bu.creator_id = c.id
                     )
-                ) AS pitched
+                ) AS unlocked
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE {where_sql}
@@ -234,7 +236,7 @@ def list_creators():
                 c.niche,
                 c.regions,
                 COALESCE(c.subscription_tier, 'free') AS tier,
-                {PITCH_STATS_SQL},
+                {UNLOCK_STATS_SQL},
                 COALESCE(c.brands_saved_count, 0) AS brands_saved,
                 COALESCE(c.has_media_kit, false) AS has_media_kit,
                 COALESCE(c.kit_published, false) AS kit_published,
@@ -313,7 +315,7 @@ def get_creator_details(creator_id):
                 c.primary_age_range,
                 c.top_locations,
                 COALESCE(c.subscription_tier, 'free') AS tier,
-                {PITCH_STATS_SQL},
+                {UNLOCK_STATS_SQL},
                 COALESCE(c.brands_saved_count, 0) AS brands_saved,
                 COALESCE(c.has_media_kit, false) AS has_media_kit,
                 COALESCE(c.kit_published, false) AS kit_published,
@@ -333,9 +335,9 @@ def get_creator_details(creator_id):
                     WHERE cp.creator_id = c.id
                 ) AS pipeline_saves,
                 (
-                    SELECT MAX(cp.pitched_at) FROM creator_pipeline cp
-                    WHERE cp.creator_id = c.id AND cp.pitched_at IS NOT NULL
-                ) AS last_pitched_at
+                    SELECT MAX(bu.unlocked_at) FROM brand_unlocks bu
+                    WHERE bu.creator_id = c.id
+                ) AS last_unlocked_at
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.id = %s
