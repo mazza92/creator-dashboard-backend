@@ -2354,6 +2354,36 @@ def generate_pr_package():
 
                 # Return cached package
                 package_data = _format_pr_package_response(dict(existing), dict(brand))
+
+                # Inject portfolio link into cached pitch bodies if kit is now published
+                # (Package may have been generated before kit was published)
+                if cached_media_kit_url:
+                    portfolio_line_plain = f"\n\nYou can see my recent work here: {cached_media_kit_url}"
+                    portfolio_line_html = f'<p>You can see my recent work here: <a href="{cached_media_kit_url}">{cached_media_kit_url}</a></p>'
+
+                    for pitch_type in ['short', 'growing', 'founder']:
+                        pitch = package_data.get('pitches', {}).get(pitch_type, {})
+                        body_plain = pitch.get('body_plain', '')
+                        body_html = pitch.get('body_html', '')
+
+                        # Only inject if portfolio link not already present
+                        if body_plain and cached_media_kit_url not in body_plain and 'newcollab.co/kit/' not in body_plain:
+                            # Insert before signature (look for common sign-offs)
+                            for sign_off in ['Best,', 'Looking forward,', 'Cheers,', 'Thanks,', 'Thank you,', 'Warm regards,', 'Best regards,']:
+                                if sign_off in body_plain:
+                                    pitch['body_plain'] = body_plain.replace(sign_off, f"{portfolio_line_plain.strip()}\n\n{sign_off}")
+                                    break
+                            else:
+                                # No sign-off found, append to end
+                                pitch['body_plain'] = body_plain.rstrip() + portfolio_line_plain
+
+                        if body_html and cached_media_kit_url not in body_html and 'newcollab.co/kit/' not in body_html:
+                            # Insert before closing </body> or append
+                            if '</body>' in body_html:
+                                pitch['body_html'] = body_html.replace('</body>', f'{portfolio_line_html}</body>')
+                            else:
+                                pitch['body_html'] = body_html.rstrip() + portfolio_line_html
+
                 return jsonify({
                     'success': True,
                     'package': package_data,
