@@ -1910,16 +1910,6 @@ def track_pitch():
     if not creator_id:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
-    # Check media kit completeness - must have complete & published kit to pitch
-    kit_complete, kit_error, kit_status = check_media_kit_complete(creator_id)
-    if not kit_complete:
-        return jsonify({
-            'success': False,
-            'error': kit_error,
-            'media_kit_required': True,
-            'kit_status': kit_status
-        }), 403
-
     try:
         data = request.get_json()
         brand_id = data.get('brand_id')
@@ -2071,17 +2061,6 @@ def generate_pitch():
         brand_id = data.get('brand_id')
         brand_slug = data.get('slug')
         is_followup = data.get('is_followup', False)
-
-        # Check media kit completeness for initial pitches (not follow-ups)
-        if not is_followup:
-            kit_complete, kit_error, kit_status = check_media_kit_complete(creator_id)
-            if not kit_complete:
-                return jsonify({
-                    'success': False,
-                    'error': kit_error,
-                    'media_kit_required': True,
-                    'kit_status': kit_status
-                }), 403
 
         if not brand_id and not brand_slug:
             return jsonify({'success': False, 'error': 'brand_id or slug required'}), 400
@@ -2320,16 +2299,6 @@ def generate_pr_package():
     creator_id = get_creator_id_from_session()
     if not creator_id:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
-
-    # Check media kit completeness - must have complete & published kit to unlock packages
-    kit_complete, kit_error, kit_status = check_media_kit_complete(creator_id)
-    if not kit_complete:
-        return jsonify({
-            'success': False,
-            'error': kit_error,
-            'media_kit_required': True,
-            'kit_status': kit_status
-        }), 403
 
     data = request.get_json() or {}
     brand_id = data.get('brand_id')
