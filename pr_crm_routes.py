@@ -2361,6 +2361,7 @@ def generate_pr_package():
                     'brand_email': brand.get('contact_email'),
                     'application_form_url': brand.get('application_form_url'),
                     'media_kit_url': cached_media_kit_url,
+                    'kit_published': cached_creator.get('kit_published', False) if cached_creator else False,
                 })
 
         # Run unlock logic (same as generate-pitch)
@@ -2536,6 +2537,7 @@ def generate_pr_package():
             'already_unlocked': unlock_result.get('already_unlocked', False),
             'credits_remaining': unlock_result.get('credits_remaining'),
             'media_kit_url': media_kit_url,
+            'kit_published': kit_published or False,
         })
 
     except Exception as e:
