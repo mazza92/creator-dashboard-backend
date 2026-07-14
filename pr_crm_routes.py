@@ -3804,12 +3804,16 @@ def generate_pr_package():
 
         # Fallback if AI Depth failed or timed out
         if not fit_result:
+            # Use 'almost' as safe default - still encourages pitching
             fit_result = {
                 'tier': 'high',
+                'status': 'almost',  # Default to Good Match when AI unavailable
                 'reasons': [],
                 'quick_wins': [],
                 'verdict': None,
-                'used_ai_depth': False
+                'used_ai_depth': False,
+                'is_coaching': False,
+                'fit_score': None  # No breakdown available
             }
 
         # Store AI coaching data in pr_packages for consistency on revisit
