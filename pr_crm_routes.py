@@ -3841,7 +3841,9 @@ def generate_pr_package():
                 fit_result.get('is_low_follower', False),
                 json.dumps(convert_decimals(fit_result.get('ugc_guide'))) if fit_result.get('ugc_guide') else None,
                 fit_result.get('tier', 'high'),
-                fit_result.get('used_ai_depth', False)
+                fit_result.get('used_ai_depth', False),
+                creator_id,
+                brand_id
             ))
             conn.commit()
             print(f"[PR Package] Stored AI coaching data for creator={creator_id}, brand={brand_id}")
