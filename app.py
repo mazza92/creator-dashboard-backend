@@ -2172,6 +2172,143 @@ def onboarding_step1():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/user/onboarding/scrape', methods=['POST', 'OPTIONS'])
+def onboarding_scrape():
+    """
+    Onboarding profile scrape - fetches profile data from social media.
+    Detects private profiles and returns error.
+    """
+    if request.method == 'OPTIONS':
+        response = jsonify({'success': True})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response, 200
+
+    try:
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+        data = request.get_json() or {}
+        handle = data.get('handle', '').strip().lstrip('@')
+        platform = data.get('platform', 'instagram').lower()
+
+        if not handle:
+            return jsonify({'success': False, 'error': 'Handle is required'}), 400
+
+        if platform not in ['instagram', 'tiktok']:
+            return jsonify({'success': False, 'error': 'Platform must be instagram or tiktok'}), 400
+
+        app.logger.info(f"📱 Onboarding scrape starting for @{handle} on {platform}")
+
+        # Import scraper
+        from services.creator_profile_scraper import scrape_and_enrich_creator
+
+        # Run the scrape (this calls Apify + Gemini analysis)
+        # skip_minimums=True allows new creators with <500 followers during onboarding
+        profile, vision_data = scrape_and_enrich_creator(user_id, handle, platform, skip_minimums=True)
+
+        if not profile:
+            app.logger.warning(f"⚠️ Scrape returned no data for @{handle}")
+            return jsonify({
+                'success': False,
+                'error': 'Could not fetch profile. Please check your username is correct and your profile is public.'
+            }), 400
+
+        # Check for private profile (processed profile uses 'is_public')
+        is_public = profile.get('is_public', True)
+        if not is_public:
+            app.logger.warning(f"🔒 Private profile detected: @{handle}")
+            return jsonify({
+                'success': False,
+                'error': 'Your profile appears to be private. Please make your profile public to continue.',
+                'is_private': True
+            }), 400
+
+        # Get processed fields (normalized by scraper)
+        follower_count = profile.get('follower_count', 0)
+        post_count = profile.get('post_count', 0)
+        latest_post_days_ago = profile.get('latest_post_days_ago', 999)
+
+        # Check if we got meaningful data (private profiles often return 0 posts)
+        if post_count == 0 and follower_count == 0:
+            app.logger.warning(f"⚠️ No data returned for @{handle} - likely private")
+            return jsonify({
+                'success': False,
+                'error': 'Could not access your profile data. Please ensure your profile is public.',
+                'is_private': True
+            }), 400
+
+        # Check for stale data (posts older than 1 year indicates private/inactive account)
+        # This catches cases where Apify returns cached data for now-private profiles
+        if latest_post_days_ago > 365:
+            app.logger.warning(f"⚠️ Stale profile data for @{handle} - latest post is {latest_post_days_ago} days old")
+            return jsonify({
+                'success': False,
+                'error': 'Your profile appears inactive or private. Please ensure your profile is public with recent posts.',
+                'is_private': True
+            }), 400
+
+        # Build summary for frontend
+        # Format follower count for display
+        if follower_count >= 1000000:
+            follower_display = f"{follower_count / 1000000:.1f}M"
+        elif follower_count >= 1000:
+            follower_display = f"{follower_count / 1000:.1f}K"
+        else:
+            follower_display = str(follower_count)
+
+        # Get niche from vision_data or profile
+        analysis = vision_data or {}
+        niche = (analysis.get('primary_niche') or
+                 profile.get('primary_niche') or
+                 'creator')
+        aesthetic_descriptors = (analysis.get('aesthetic_descriptors') or
+                                 profile.get('aesthetic_descriptors') or
+                                 [])
+
+        summary = {
+            'follower_count': follower_count,
+            'follower_display': follower_display,
+            'post_count': post_count,
+            'engagement_rate': profile.get('engagement_rate', 0),
+            'niche': niche,
+            'aesthetic_descriptors': aesthetic_descriptors,
+            'latest_post_days_ago': latest_post_days_ago
+        }
+
+        app.logger.info(f"✅ Scrape successful for @{handle}: {follower_count} followers")
+
+        return jsonify({
+            'success': True,
+            'profile': profile,
+            'summary': summary
+        })
+
+    except ValueError as e:
+        # ValueError is raised for private accounts, missing data, etc.
+        error_msg = str(e)
+        app.logger.warning(f"⚠️ Validation error in onboarding scrape: {error_msg}")
+
+        # Check if it's a private account error
+        is_private = 'private' in error_msg.lower()
+
+        return jsonify({
+            'success': False,
+            'error': error_msg if is_private else 'Could not analyze profile. Please check your username and try again.',
+            'is_private': is_private
+        }), 400
+
+    except Exception as e:
+        app.logger.error(f"🔥 Error in onboarding scrape: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': 'Failed to analyze profile. Please try again.'
+        }), 500
+
+
 @app.route('/api/user/onboarding/step2', methods=['POST', 'OPTIONS'])
 def onboarding_step2():
     """

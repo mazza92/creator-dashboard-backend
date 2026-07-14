@@ -357,6 +357,7 @@ def get_public_brands():
         activity = request.args.get('activity')  # 'new', 'active', 'responsive'
         contact_type = request.args.get('contact_type')  # 'application', 'email'
         region = request.args.get('region')  # 'Australia', 'US', 'UK', 'Canada', etc.
+        slug = request.args.get('slug')  # Exact slug match for fetching specific brand
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -398,6 +399,11 @@ def get_public_brands():
             WHERE (COALESCE(b.status, 'published') = 'published')
         """
         params = []
+
+        # Exact slug match (for fetching specific brand via ?slug=xxx)
+        if slug:
+            query += " AND b.slug = %s"
+            params.append(slug)
 
         if category:
             canon_category = normalize_category(category)

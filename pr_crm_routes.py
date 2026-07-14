@@ -3,7 +3,7 @@ PR CRM Routes for Creator Dashboard
 Mobile-first API endpoints for brand discovery and pipeline management
 """
 
-from flask import Blueprint, request, jsonify, session
+from flask import Blueprint, request, jsonify, session, Response, stream_with_context
 from flask_jwt_extended import jwt_required, get_jwt_identity
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -12,7 +12,21 @@ import json
 import re
 import requests
 from datetime import datetime
+from decimal import Decimal
 from urllib.parse import urlparse, urljoin
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+def convert_decimals(obj):
+    """Convert Decimal types to JSON-serializable float/int for database values."""
+    if isinstance(obj, Decimal):
+        # Convert to int if it's a whole number, otherwise float
+        return int(obj) if obj == obj.to_integral_value() else float(obj)
+    elif isinstance(obj, dict):
+        return {k: convert_decimals(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_decimals(item) for item in obj]
+    return obj
 
 # Gemini Pitch Generator (LLM-based pitch generation)
 try:
@@ -29,6 +43,17 @@ try:
 except ImportError:
     HAS_BS4 = False
     print("⚠️ BeautifulSoup not installed - Tier 2 web scraping will be limited")
+
+# AI Depth Generator for brand-specific analysis
+try:
+    from services.ai_depth_generator import get_ai_depth_generator
+    from services.creator_profile_scraper import CreatorProfileScraper
+    from services.brand_context_enricher import BrandContextEnricher
+    from services.fit_score_calculator import calculate_fit_score
+    HAS_AI_DEPTH = True
+except ImportError as e:
+    HAS_AI_DEPTH = False
+    print(f"⚠️ AI Depth generator not available: {e}")
 
 pr_crm = Blueprint('pr_crm', __name__, url_prefix='/api/pr-crm')
 
@@ -119,6 +144,974 @@ def get_creator_id_from_session():
         pass
 
     return None
+
+
+# ============================================
+# UNLOCK V2: A/B TEST + FIT TIER HELPERS
+# ============================================
+
+def assign_hero_variant(user_id):
+    """
+    Deterministically assign a hero variant (A or B) based on user_id.
+    Uses SHA256 hash for consistent 50/50 split.
+
+    Variant A: Control (old copy)
+    Variant B: Auditor's pick, expected winner (new verdict copy)
+    """
+    import hashlib
+    hash_val = hashlib.sha256(f"hero_test_{user_id}".encode()).hexdigest()
+    if int(hash_val[:8], 16) % 100 < 50:
+        return 'A'
+    return 'B'
+
+
+def compute_fit_tier(creator, brand, cursor):
+    """
+    Compute fit tier (high/medium/low) based on creator profile vs brand requirements.
+
+    Returns dict with:
+    - tier: 'high' | 'medium' | 'low'
+    - reasons: list of {dot: 'good'|'warn', text: str}
+    - quick_wins: list of recommendations
+    """
+    reasons = []
+    quick_wins = []
+    score = 0
+    max_score = 0
+
+    # Get creator niche/category
+    creator_niche = creator.get('niche') or creator.get('primary_niche') or ''
+    brand_category = brand.get('category') or ''
+
+    # 1. Category/niche alignment
+    max_score += 1
+    if creator_niche and brand_category:
+        creator_niches = [n.strip().lower() for n in creator_niche.split(',')]
+        if brand_category.lower() in creator_niches or any(brand_category.lower() in n for n in creator_niches):
+            reasons.append({'dot': 'good', 'text': f'{brand_category.title()} creator'})
+            score += 1
+        else:
+            # Check for adjacent categories
+            adjacent = {
+                'beauty': ['skincare', 'makeup', 'haircare', 'wellness'],
+                'skincare': ['beauty', 'wellness', 'makeup'],
+                'haircare': ['beauty', 'wellness'],
+                'fashion': ['lifestyle', 'beauty'],
+                'lifestyle': ['fashion', 'wellness', 'home'],
+                'fitness': ['wellness', 'health', 'lifestyle'],
+                'food': ['lifestyle', 'wellness', 'cooking'],
+            }
+            brand_adjacent = adjacent.get(brand_category.lower(), [])
+            if any(n in brand_adjacent for n in creator_niches):
+                reasons.append({'dot': 'good', 'text': f'Adjacent niche match'})
+                score += 0.5
+            else:
+                quick_wins.append({
+                    'emoji': '🎯',
+                    'action_title': f'Add {brand_category.lower()} to your content',
+                    'note': f'Brands look for creators in their category first.',
+                    'gain_pill': '🟢 Better chance of reply'
+                })
+
+    # 2. Engagement rate check
+    max_score += 1
+    engagement_rate = creator.get('engagement_rate') or 0
+    if engagement_rate >= 3.0:
+        reasons.append({'dot': 'good', 'text': f'Active audience ({engagement_rate:.1f}%)'})
+        score += 1
+    elif engagement_rate >= 1.5:
+        reasons.append({'dot': 'good', 'text': f'Good engagement ({engagement_rate:.1f}%)'})
+        score += 0.7
+    else:
+        quick_wins.append({
+            'emoji': '💬',
+            'action_title': 'Reply to more comments on your posts',
+            'note': 'Engagement rate is a key metric brands check.',
+            'gain_pill': '🟢 Better chance of reply'
+        })
+
+    # 3. Recent posting activity
+    max_score += 1
+    last_post_date = creator.get('last_post_date')
+    if last_post_date:
+        from datetime import datetime, timedelta
+        try:
+            if isinstance(last_post_date, str):
+                last_post = datetime.fromisoformat(last_post_date.replace('Z', '+00:00'))
+            else:
+                last_post = last_post_date
+            days_since = (datetime.now(last_post.tzinfo) - last_post).days if last_post.tzinfo else (datetime.now() - last_post).days
+
+            if days_since <= 7:
+                reasons.append({'dot': 'good', 'text': 'Recent posting'})
+                score += 1
+            elif days_since <= 14:
+                reasons.append({'dot': 'good', 'text': 'Active posting'})
+                score += 0.7
+            else:
+                quick_wins.append({
+                    'emoji': '📹',
+                    'action_title': 'Post a new Reel this week',
+                    'note': f'Your last post was {days_since} days ago. Brands check your latest first.',
+                    'gain_pill': '🟢 Better chance of reply'
+                })
+        except:
+            pass
+
+    # 4. Follower count (basic check)
+    max_score += 1
+    followers = creator.get('follower_count') or creator.get('followers') or 0
+    if followers >= 10000:
+        score += 1
+        if followers >= 50000:
+            reasons.append({'dot': 'good', 'text': f'{followers//1000}K+ followers'})
+    elif followers >= 5000:
+        score += 0.7
+    elif followers >= 1000:
+        score += 0.5
+
+    # Ensure we have at least 3 reasons (pad with generic if needed)
+    if len(reasons) < 3:
+        if creator.get('kit_published'):
+            reasons.append({'dot': 'good', 'text': 'Portfolio ready'})
+        if creator.get('email') or creator.get('business_email'):
+            reasons.append({'dot': 'good', 'text': 'Contact info complete'})
+        if creator.get('bio'):
+            reasons.append({'dot': 'good', 'text': 'Bio optimized'})
+
+    # Limit to 3 reasons
+    reasons = reasons[:3]
+
+    # Ensure at least 1 quick win
+    if not quick_wins:
+        quick_wins.append({
+            'emoji': '📌',
+            'action_title': 'Pin your best brand collaboration',
+            'note': 'Showcasing past work builds trust with new brands.',
+            'gain_pill': '🟢 Better chance of reply'
+        })
+
+    # Calculate tier
+    ratio = score / max_score if max_score > 0 else 0
+    if ratio >= 0.7:
+        tier = 'high'
+    elif ratio >= 0.4:
+        tier = 'medium'
+    else:
+        tier = 'low'
+
+    return {
+        'tier': tier,
+        'reasons': reasons,
+        'quick_wins': quick_wins,
+        'score_ratio': ratio
+    }
+
+
+def get_verdict_for_tier(tier, brand_name):
+    """
+    Get the verdict copy for a given fit tier.
+    Returns dict with emoji, headline, subline, pill text, pill color.
+    """
+    if tier == 'high':
+        return {
+            'emoji': '🎯',
+            'headline': f'You can pitch {brand_name} today.',
+            'subline_bold': 'your profile',
+            'verdict_pill': 'Ready for outreach',
+            'pill_color': 'green'
+        }
+    elif tier == 'medium':
+        return {
+            'emoji': '🤔',
+            'headline': f'Worth trying {brand_name}.',
+            'subline_bold': 'your profile',
+            'verdict_pill': 'Worth reaching out',
+            'pill_color': 'amber'
+        }
+    else:  # low
+        return {
+            'emoji': '⏳',
+            'headline': 'Not the best fit yet.',
+            'subline_bold': 'your profile',
+            'verdict_pill': 'Come back after your next mission',
+            'pill_color': 'red-amber'
+        }
+
+
+def _get_low_follower_ugc_response(brand_name, follower_count):
+    """
+    Return special UGC coaching response for creators with <400 followers.
+    Guides them to build audience via UGC and creator pool.
+    """
+    follower_text = f"{follower_count:,}" if follower_count > 0 else "very few"
+
+    return {
+        'tier': 'low',
+        'reasons': [],
+        'quick_wins': [],
+        'verdict': {
+            'emoji': '🔴',
+            'headline': f"You can't pitch a major brand with {follower_text} followers. Build your audience first.",
+            'subline_bold': 'your profile',
+            'verdict_pill': 'Build First',
+            'pill_color': 'red',
+            'status': 'build_first'
+        },
+        'ai_analysis': {
+            'verdict': {
+                'status': 'build_first',
+                'confidence': 'high'
+            },
+            'missing_proof': {
+                'observation': f"I looked at your profile. You have {follower_text} followers. Brands typically work with creators who have established audiences.",
+                'why_it_matters': f"{brand_name} needs to see proof you can reach people before they invest in a partnership."
+            },
+            'next_move': {
+                'action': "Start creating UGC content and join our Creator Pool",
+                'reasoning': "UGC lets you earn while building your audience. Brands in our Pool hire creators for content, not followers.",
+                'then_what': "Build your portfolio, then pitch"
+            },
+            'coach_note': "Focus on UGC first. Followers will come from great content."
+        },
+        'used_ai_depth': True,
+        'is_coaching': True,
+        'is_low_follower': True,
+        'coaching': {
+            'status': 'build_first',
+            'confidence': 'high',
+            'coach_note': "Focus on UGC first. Followers will come from great content.",
+            'observation': f"I looked at your profile. You have {follower_text} followers. Brands typically work with creators who have established audiences.",
+            'why_it_matters': f"{brand_name} needs to see proof you can reach people before they invest in a partnership.",
+            'action': "Start creating UGC content and join our Creator Pool",
+            'reasoning': "UGC lets you earn while building your audience. Brands in our Pool hire creators for content, not followers.",
+            'then_what': "Build your portfolio, then pitch"
+        },
+        # UGC guidance for novice creators
+        'ugc_guide': {
+            'title': 'How to Create UGC Content',
+            'intro': "UGC (User-Generated Content) is content you create for brands without needing followers. Here's how to start:",
+            'steps': [
+                {
+                    'step': 1,
+                    'title': 'Pick a product you already own',
+                    'description': 'Start with products you use daily - skincare, tech, food, etc.'
+                },
+                {
+                    'step': 2,
+                    'title': 'Film a simple video',
+                    'description': 'Show yourself using the product naturally. Good lighting + steady hands = 80% of the work.'
+                },
+                {
+                    'step': 3,
+                    'title': 'Keep it authentic',
+                    'description': "Talk like you're showing a friend. No scripts needed - just be real."
+                },
+                {
+                    'step': 4,
+                    'title': 'Join our Creator Pool',
+                    'description': 'Get paid for your content skills, not your follower count. Brands hire directly.'
+                }
+            ],
+            'pool_cta': {
+                'text': 'Join Creator Pool',
+                'url': '/creator/dashboard/pool',
+                'description': 'Get hired by brands for UGC - no followers required'
+            }
+        }
+    }
+
+
+def get_better_brand_matches(creator, current_brand_id, cursor, limit=3):
+    """
+    Get better brand alternatives when current brand is a poor fit.
+
+    Returns brands where creator is more likely to succeed based on:
+    - Creator's niche matching brand category
+    - Follower count within brand's typical range
+    - Not already unlocked by this creator
+
+    Args:
+        creator: Creator dict with niche, follower_count, social_links
+        current_brand_id: Brand to exclude
+        cursor: DB cursor
+        limit: Max brands to return
+
+    Returns:
+        List of brand dicts with estimated fit status
+    """
+    # Parse creator's niche
+    creator_niche = creator.get('niche') or ''
+    if isinstance(creator_niche, list):
+        creator_niche = creator_niche[0] if creator_niche else ''
+    creator_niche = creator_niche.lower().strip()
+
+    # Get follower count from social_links
+    social_links_raw = creator.get('social_links') or []
+    if isinstance(social_links_raw, str):
+        try:
+            social_links_raw = json.loads(social_links_raw)
+        except:
+            social_links_raw = []
+
+    follower_count = 0
+    for link in social_links_raw:
+        link_followers = int(link.get('followersCount') or link.get('followers_count') or 0)
+        if link_followers > follower_count:
+            follower_count = link_followers
+
+    if follower_count == 0:
+        follower_count = creator.get('follower_count') or creator.get('followers_count') or 0
+
+    # Map niches to brand categories
+    niche_to_categories = {
+        'beauty': ['beauty', 'skincare', 'haircare', 'cosmetics'],
+        'skincare': ['skincare', 'beauty', 'wellness'],
+        'haircare': ['haircare', 'beauty'],
+        'fashion': ['fashion', 'apparel', 'clothing', 'accessories'],
+        'fitness': ['fitness', 'activewear', 'sports', 'wellness', 'health'],
+        'wellness': ['wellness', 'health', 'fitness', 'skincare'],
+        'food': ['food', 'beverage', 'restaurant', 'snacks'],
+        'tech': ['tech', 'electronics', 'gaming', 'software', 'saas'],
+        'gaming': ['gaming', 'tech', 'electronics'],
+        'lifestyle': ['lifestyle', 'home', 'wellness'],
+        'travel': ['travel', 'hospitality', 'luggage'],
+        'pet': ['pet', 'animals'],
+        'home': ['home', 'furniture', 'decor', 'lifestyle'],
+        # Creator/business niches
+        'social_media_marketing': ['tech', 'software', 'saas', 'marketing', 'business'],
+        'video_production': ['tech', 'software', 'electronics', 'marketing'],
+        'creator': ['tech', 'software', 'electronics', 'creator tools'],
+        'business': ['business', 'software', 'saas', 'finance'],
+        'marketing': ['marketing', 'software', 'tech', 'business'],
+        'other': [],  # Will use fallback query
+    }
+
+    matching_categories = niche_to_categories.get(creator_niche, [creator_niche]) if creator_niche else []
+
+    print(f"[BetterMatches] Creator niche: '{creator_niche}', matching categories: {matching_categories}, followers: {follower_count}")
+
+    try:
+        # Get creator_id for excluding already unlocked brands
+        creator_id = creator.get('id')
+
+        # Query for matching brands - ONLY from published pr_brands
+        if matching_categories:
+            # Use category matching
+            placeholders = ','.join(['%s'] * len(matching_categories))
+            query = f'''
+                SELECT b.id, b.brand_name, b.slug, b.category,
+                       b.logo_url, b.website, b.contact_email, b.application_form_url
+                FROM pr_brands b
+                WHERE b.id != %s
+                AND COALESCE(b.status, 'published') = 'published'
+                AND LOWER(b.category) IN ({placeholders})
+                AND b.contact_email IS NOT NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM pr_packages pp
+                    WHERE pp.brand_id = b.id AND pp.creator_id = %s
+                )
+                ORDER BY RANDOM()
+                LIMIT %s
+            '''
+            params = [current_brand_id] + matching_categories + [creator_id, limit * 2]
+        else:
+            # Fallback: get any popular brands - ONLY from published pr_brands
+            query = '''
+                SELECT b.id, b.brand_name, b.slug, b.category,
+                       b.logo_url, b.website, b.contact_email, b.application_form_url
+                FROM pr_brands b
+                WHERE b.id != %s
+                AND COALESCE(b.status, 'published') = 'published'
+                AND b.contact_email IS NOT NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM pr_packages pp
+                    WHERE pp.brand_id = b.id AND pp.creator_id = %s
+                )
+                ORDER BY RANDOM()
+                LIMIT %s
+            '''
+            params = [current_brand_id, creator_id, limit * 2]
+
+        cursor.execute(query, params)
+        brands = cursor.fetchall()
+
+        # Estimate fit for each brand
+        alternatives = []
+        for brand in brands:
+            brand_dict = dict(brand)
+            brand_category = (brand_dict.get('category') or '').lower()
+
+            # Simple fit estimation based on niche match and follower count
+            # Labels are consistent with colors: green=Strong, yellow=Good, orange=Building
+            if creator_niche and brand_category in matching_categories[:2]:
+                # Strong niche match
+                if follower_count >= 5000:
+                    fit_status = 'ready'
+                    fit_emoji = '🟢'
+                    fit_label = 'Strong fit'
+                elif follower_count >= 1000:
+                    fit_status = 'almost'
+                    fit_emoji = '🟡'
+                    fit_label = 'Good fit'
+                else:
+                    fit_status = 'not_yet'
+                    fit_emoji = '🟠'
+                    fit_label = 'Building'
+            elif creator_niche and brand_category in matching_categories:
+                # Moderate niche match
+                if follower_count >= 10000:
+                    fit_status = 'ready'
+                    fit_emoji = '🟢'
+                    fit_label = 'Strong fit'
+                elif follower_count >= 3000:
+                    fit_status = 'almost'
+                    fit_emoji = '🟡'
+                    fit_label = 'Good fit'
+                else:
+                    fit_status = 'not_yet'
+                    fit_emoji = '🟠'
+                    fit_label = 'Building'
+            else:
+                # No strong niche match but could work
+                fit_status = 'almost'
+                fit_emoji = '🟡'
+                fit_label = 'Worth trying'
+
+            # Generate logo URL with Clearbit fallback
+            logo_url = brand_dict.get('logo_url')
+            if not logo_url and brand_dict.get('website'):
+                try:
+                    from urllib.parse import urlparse
+                    website = brand_dict['website']
+                    if not website.startswith('http'):
+                        website = f'https://{website}'
+                    domain = urlparse(website).hostname
+                    if domain:
+                        domain = domain.replace('www.', '')
+                        logo_url = f'https://logo.clearbit.com/{domain}'
+                except:
+                    pass
+
+            alternatives.append({
+                'id': brand_dict['id'],
+                'brand_name': brand_dict['brand_name'],
+                'slug': brand_dict['slug'],
+                'logo': logo_url,
+                'category': brand_dict.get('category'),
+                'fit_status': fit_status,
+                'fit_emoji': fit_emoji,
+                'fit_label': fit_label
+            })
+
+        # Sort by fit (ready first, then almost, then not_yet)
+        fit_order = {'ready': 0, 'almost': 1, 'not_yet': 2}
+        alternatives.sort(key=lambda x: fit_order.get(x['fit_status'], 3))
+
+        return alternatives[:limit]
+
+    except Exception as e:
+        print(f"[BetterMatches] Error getting alternatives: {e}")
+        return []
+
+
+def compute_fit_with_ai_depth(creator, brand, user_id, cursor, conn, is_for_you_match=False):
+    """
+    Compute fit tier using AI Depth when available, fallback to basic fit tier.
+
+    This is the upgraded version that uses:
+    - Creator profile data from scraper + vision analysis
+    - Brand context from enrichment pipeline
+    - AI Depth generator for brand-specific analysis
+
+    Args:
+        is_for_you_match: If True, ensures minimum "almost" status (brand from For You page)
+
+    Returns dict with:
+    - tier: 'high' | 'medium' | 'low'
+    - reasons: list of {chip_text, detail, dot}
+    - quick_wins: list of quick win actions
+    - verdict: verdict dict for hero
+    - ai_analysis: full AI analysis dict (if AI Depth used)
+    - used_ai_depth: bool
+    """
+    brand_id = brand.get('id')
+    brand_name = brand.get('brand_name') or brand.get('name', '')
+
+    # Check if AI Depth is available and enabled
+    if not HAS_AI_DEPTH:
+        # Fallback to basic fit tier
+        basic_result = compute_fit_tier(creator, brand, cursor)
+        return {
+            **basic_result,
+            'verdict': get_verdict_for_tier(basic_result['tier'], brand_name),
+            'ai_analysis': None,
+            'used_ai_depth': False
+        }
+
+    try:
+        # Check for creator profile data
+        # Note: creator_profile_data uses user_id as key, but we may not have enriched data yet
+        scraper = CreatorProfileScraper(conn)
+        creator_profile = None
+
+        try:
+            creator_profile = scraper.get_creator_profile(user_id)
+        except Exception as profile_err:
+            # User may not have enriched profile yet (new feature)
+            print(f"[AIDepth] No enriched profile for user {user_id}: {profile_err}")
+
+        # If no pre-scraped profile, build minimal profile from creator data
+        if not creator_profile or not creator_profile.get('primary_niche'):
+            print(f"[AIDepth] Building minimal profile from creator data")
+
+            # Parse social_links to get REAL follower count and handle
+            social_links_raw = creator.get('social_links') or []
+            if isinstance(social_links_raw, str):
+                try:
+                    social_links_raw = json.loads(social_links_raw)
+                except:
+                    social_links_raw = []
+
+            # Get the primary platform's handle and follower count from social_links
+            handle = ''
+            follower_count = 0
+            primary_platform = 'instagram'
+            for link in social_links_raw:
+                platform = link.get('platform', '').lower()
+                # Check various handle field names
+                link_handle = (link.get('handle') or link.get('username') or
+                               link.get('user_name') or link.get('name') or '')
+
+                # If no direct handle field, extract from URL
+                # e.g., https://www.tiktok.com/@socialcontentking -> socialcontentking
+                if not link_handle and link.get('url'):
+                    url = link.get('url', '')
+                    # Extract handle from URL patterns like /@username or /username
+                    url_match = re.search(r'/@?([a-zA-Z0-9_\.]+)/?$', url)
+                    if url_match:
+                        link_handle = url_match.group(1)
+
+                link_followers = int(link.get('followersCount') or link.get('followers_count') or
+                                    link.get('followers') or 0)
+
+                # Use the highest follower count from any platform
+                if link_followers > follower_count:
+                    follower_count = link_followers
+
+                # Prefer Instagram handle, fallback to TikTok
+                if platform == 'instagram' and link_handle:
+                    handle = link_handle
+                    primary_platform = 'instagram'
+                elif platform == 'tiktok' and link_handle and not handle:
+                    handle = link_handle
+                    primary_platform = 'tiktok'
+
+            # Fallback to legacy fields if social_links is empty
+            if not handle:
+                handle = creator.get('instagram_handle') or creator.get('tiktok_handle') or creator.get('handle') or ''
+            if follower_count == 0:
+                follower_count = creator.get('follower_count') or creator.get('followers') or creator.get('followers_count') or 0
+
+            # Debug: log if we couldn't find a handle
+            if not handle:
+                print(f"[AIDepth] WARNING: No handle found. social_links={social_links_raw[:2] if social_links_raw else 'empty'}")
+
+            print(f"[AIDepth] Parsed from social_links: handle=@{handle}, followers={follower_count}, platform={primary_platform}")
+
+            # ========================================
+            # PROFILE DATA: Check cache first, then live scrape if needed
+            # ========================================
+            scraped_profile = None
+            vision_data = None
+            used_cache = False
+
+            if handle and primary_platform:
+                # First, check if we have cached profile data from onboarding
+                try:
+                    cached_profile = scraper.get_creator_profile(user_id)
+                    if cached_profile:
+                        # Check if cache is fresh (scraped within last 7 days)
+                        scraped_at = cached_profile.get('scraped_at')
+                        if scraped_at:
+                            from datetime import timezone
+                            now = datetime.now(timezone.utc)
+                            # Make scraped_at timezone-aware if needed
+                            if scraped_at.tzinfo is None:
+                                scraped_at = scraped_at.replace(tzinfo=timezone.utc)
+                            cache_age_days = (now - scraped_at).days
+
+                            if cache_age_days <= 7:
+                                # Use cached data
+                                scraped_profile = cached_profile
+                                used_cache = True
+                                print(f"[AIDepth] Using cached profile from {cache_age_days} day(s) ago: followers={cached_profile.get('follower_count')}, niche={cached_profile.get('primary_niche')}")
+
+                                # Extract vision data from cached profile
+                                vision_data = {
+                                    'primary_niche': cached_profile.get('primary_niche'),
+                                    'primary_niche_confidence': cached_profile.get('primary_niche_confidence'),
+                                    'secondary_niches': cached_profile.get('secondary_niches', []),
+                                    'content_themes': cached_profile.get('content_themes', []),
+                                    'aesthetic': cached_profile.get('aesthetic', {}),
+                                    'content_format_breakdown': cached_profile.get('content_format_breakdown', {}),
+                                    'brand_readiness_signals': cached_profile.get('brand_readiness_signals', {}),
+                                    'content_gaps': cached_profile.get('content_gaps', []),
+                                }
+                            else:
+                                print(f"[AIDepth] Cache is stale ({cache_age_days} days old), will refresh")
+                except Exception as cache_err:
+                    print(f"[AIDepth] Cache check failed: {cache_err}")
+
+                # Only do live scrape if no cache or cache is stale
+                if not used_cache:
+                    try:
+                        print(f"[AIDepth] Attempting live scrape of @{handle} on {primary_platform}")
+
+                        if primary_platform == 'tiktok':
+                            raw_scrape = scraper.scrape_tiktok_profile(handle)
+                        else:
+                            raw_scrape = scraper.scrape_instagram_profile(handle)
+
+                        if raw_scrape:
+                            # Process the scraped data
+                            scraped_profile = scraper.process_scrape(raw_scrape, primary_platform)
+                            print(f"[AIDepth] Live scrape success: followers={scraped_profile.get('follower_count')}, bio={scraped_profile.get('raw_bio', '')[:50]}...")
+
+                            # Run text analysis on scraped captions
+                            try:
+                                vision_data = scraper.run_text_analysis(
+                                    bio=scraped_profile.get('raw_bio', ''),
+                                    captions=scraped_profile.get('recent_captions', []),
+                                    handle=handle,
+                                    followers=scraped_profile.get('follower_count', 0)
+                                )
+                                print(f"[AIDepth] Text analysis: niche={vision_data.get('primary_niche')}, confidence={vision_data.get('primary_niche_confidence')}")
+                            except Exception as vision_err:
+                                print(f"[AIDepth] Text analysis failed: {vision_err}")
+
+                            # Save to database for future use
+                            try:
+                                scraper.save_creator_profile(user_id, scraped_profile, vision_data)
+                                print(f"[AIDepth] Saved profile to creator_profile_data")
+                            except Exception as save_err:
+                                print(f"[AIDepth] Failed to save profile: {save_err}")
+                                try:
+                                    conn.rollback()
+                                except:
+                                    pass
+
+                    except Exception as scrape_err:
+                        print(f"[AIDepth] Live scrape failed for @{handle}: {scrape_err}")
+                        try:
+                            conn.rollback()
+                        except:
+                            pass
+
+            # Use scraped data if available, otherwise fall back to social_links data
+            if scraped_profile:
+                follower_count = scraped_profile.get('follower_count', follower_count)
+                bio = scraped_profile.get('raw_bio', '')
+
+                # Use vision analysis results if available
+                if vision_data:
+                    niche = vision_data.get('primary_niche', '')
+                    niche_confidence = vision_data.get('primary_niche_confidence', 50)
+                    secondary_niches = vision_data.get('secondary_niches', [])
+                    content_themes = vision_data.get('content_themes', [])
+                    aesthetic = vision_data.get('aesthetic', {})
+                    content_format = vision_data.get('content_format_breakdown', {})
+                    brand_readiness = vision_data.get('brand_readiness_signals', {})
+                    content_gaps = vision_data.get('content_gaps', [])
+                else:
+                    niche = creator.get('niche') or creator.get('category') or ''
+                    niche_confidence = 50
+                    secondary_niches = []
+                    content_themes = []
+                    aesthetic = {}
+                    content_format = {}
+                    brand_readiness = {}
+                    content_gaps = []
+            else:
+                niche = creator.get('niche') or creator.get('category') or ''
+                bio = creator.get('bio') or ''
+                niche_confidence = 50
+                secondary_niches = []
+                content_themes = []
+                aesthetic = {}
+                content_format = {}
+                brand_readiness = {}
+                content_gaps = []
+
+            brand_category = brand.get('category', '').lower()
+
+            # LOW FOLLOWER CHECK: Under 400 followers = UGC coaching mode
+            if follower_count < 400:
+                print(f"[AIDepth] Low follower count ({follower_count}), returning UGC coaching")
+                return _get_low_follower_ugc_response(brand_name, follower_count)
+
+            # Infer niche from brand category if creator niche is empty
+            if not niche and brand_category:
+                # Map brand categories to creator niches
+                category_to_niche = {
+                    'beauty': 'beauty',
+                    'skincare': 'skincare',
+                    'haircare': 'haircare',
+                    'fashion': 'fashion',
+                    'activewear': 'fitness',
+                    'wellness': 'wellness',
+                    'food': 'food',
+                    'fitness': 'fitness',
+                }
+                niche = category_to_niche.get(brand_category, 'lifestyle')
+
+            # Build profile for AI Depth (using scraped data if available)
+            creator_profile = {
+                'primary_platform': primary_platform,
+                'handle': handle.replace('@', '') if handle else 'creator',
+                'follower_count': follower_count,
+                'engagement_rate': scraped_profile.get('engagement_rate') if scraped_profile else (creator.get('engagement_rate') or 2.5),
+                'posting_cadence_per_week': scraped_profile.get('posting_cadence_per_week', 3) if scraped_profile else 3,
+                'latest_post_days_ago': scraped_profile.get('latest_post_days_ago', 3) if scraped_profile else 3,
+                'raw_bio': bio,
+                'has_collab_email': bool(bio and '@' in bio),
+                'primary_niche': niche.lower() if niche else 'lifestyle',
+                'primary_niche_confidence': niche_confidence,
+                'secondary_niches': secondary_niches,
+                'content_themes': content_themes if content_themes else ([niche, f'{niche} tips'] if niche else ['lifestyle content']),
+                'aesthetic': aesthetic if aesthetic else {
+                    'color_palette': 'warm',
+                    'composition_style': 'casual_authentic',
+                    'specific_colors': [],
+                    'aesthetic_consistency_score': 70,
+                    'aesthetic_descriptors': ['authentic', 'relatable']
+                },
+                'content_format_breakdown': content_format if content_format else {
+                    'product_close_ups': 2,
+                    'grwm_routine': 2,
+                    'before_after': 1,
+                    'lifestyle_context': 3,
+                    'selfies_face_focus': 1
+                },
+                'brand_readiness_signals': brand_readiness if brand_readiness else {
+                    'shows_products_in_use': True,
+                    'already_features_brands': False,
+                    'brands_already_tagged': []
+                },
+                'content_gaps': content_gaps,
+                'brands_already_tagged': brand_readiness.get('brands_already_tagged', []) if brand_readiness else [],
+                'recent_post_thumbnails': scraped_profile.get('recent_post_thumbnails', []) if scraped_profile else [],
+                'recent_captions': scraped_profile.get('recent_captions', []) if scraped_profile else []
+            }
+
+        # Check for brand context (may not exist yet)
+        brand_context = {}
+        try:
+            enricher = BrandContextEnricher(conn)
+            brand_context = enricher.get_brand_context(brand_id) or {}
+        except Exception as ctx_err:
+            print(f"[AIDepth] No brand context for brand {brand_id}: {ctx_err}")
+            # Rollback to clear failed transaction state so subsequent queries work
+            try:
+                conn.rollback()
+            except:
+                pass
+
+        # Generate AI Depth analysis
+        generator = get_ai_depth_generator(conn)
+        ai_analysis = generator.generate(
+            creator_id=creator.get('id'),
+            creator_profile=creator_profile,
+            brand=brand,
+            brand_context=brand_context
+        )
+
+        # Detect schema type (new coaching vs legacy)
+        is_coaching_schema = 'missing_proof' in ai_analysis or 'next_move' in ai_analysis
+
+        if is_coaching_schema:
+            # NEW COACHING SCHEMA
+            status = ai_analysis.get('verdict', {}).get('status', 'almost')
+            tier = ai_analysis.get('verdict', {}).get('fit_tier', 'medium')
+
+            # FOR YOU CONSISTENCY: Brands from For You page must show at least "almost" status
+            # This ensures recommendation algorithm matches unlock results
+            if is_for_you_match and status in ['not_yet', 'poor_fit']:
+                print(f"[AIDepth] Upgrading status from {status} to 'almost' (For You brand)")
+                status = 'almost'
+                # Also update the ai_analysis for consistency
+                if 'verdict' in ai_analysis:
+                    ai_analysis['verdict']['status'] = 'almost'
+                    ai_analysis['verdict']['status_upgraded_for_you'] = True
+
+            # Map status to tier for backwards compatibility
+            status_to_tier = {
+                'ready': 'high',
+                'almost': 'medium',
+                'not_yet': 'low',
+                'poor_fit': 'low'
+            }
+            tier = status_to_tier.get(status, 'medium')
+
+            # Convert coaching to reasons format for frontend
+            missing_proof = ai_analysis.get('missing_proof', {})
+            reasons = [{
+                'dot': 'info' if status in ['almost', 'not_yet'] else ('good' if status == 'ready' else 'warn'),
+                'text': missing_proof.get('observation', ''),
+                'detail': missing_proof.get('why_it_matters', ''),
+                'chip_text': 'Missing' if status != 'ready' else 'Ready'
+            }]
+
+            # Convert next_move to quick_win format
+            next_move = ai_analysis.get('next_move', {})
+            quick_wins = [{
+                'emoji': '🎯' if status == 'ready' else '📍',
+                'action_title': next_move.get('action', ''),
+                'note': next_move.get('reasoning', ''),
+                'then_what': next_move.get('then_what', ''),
+                'gain_pill': 'Pitch Now' if status == 'ready' else 'Then Pitch'
+            }]
+
+            # Add coach note
+            coach_note = ai_analysis.get('coach_note', '')
+
+            # Build verdict with new status-based display
+            status_display = {
+                'ready': {'emoji': '🟢', 'pill': 'Ready to Pitch', 'color': 'green'},
+                'almost': {'emoji': '🟡', 'pill': 'Almost Ready', 'color': 'amber'},
+                'not_yet': {'emoji': '🟠', 'pill': 'Build First', 'color': 'orange'},
+                'poor_fit': {'emoji': '🔴', 'pill': 'Skip This Brand', 'color': 'red'}
+            }
+            display = status_display.get(status, status_display['almost'])
+
+            verdict = {
+                'emoji': display['emoji'],
+                'headline': ai_analysis.get('verdict', {}).get('hero_headline', f'For {brand_name}'),
+                'subline_bold': coach_note or 'your profile',
+                'verdict_pill': display['pill'],
+                'pill_color': display['color'],
+                'status': status
+            }
+
+        else:
+            # LEGACY SCHEMA
+            tier = ai_analysis.get('verdict', {}).get('fit_tier', 'medium')
+
+            # Convert reasons to frontend format
+            reasons = []
+            for reason in ai_analysis.get('reasons_you_fit', []):
+                reasons.append({
+                    'dot': 'good' if tier == 'high' else 'info',
+                    'text': reason.get('chip_text', ''),
+                    'detail': reason.get('detail', ''),
+                    'chip_text': reason.get('chip_text', '')
+                })
+
+            # Get quick win
+            quick_win = ai_analysis.get('quick_win', {})
+            quick_wins = [{
+                'emoji': quick_win.get('emoji', '📸'),
+                'action_title': quick_win.get('action_title', ''),
+                'note': quick_win.get('note', ''),
+                'gain_pill': quick_win.get('gain_pill', 'Better chance of reply')
+            }] if quick_win else []
+
+            # Build verdict
+            verdict = {
+                'emoji': ai_analysis.get('verdict', {}).get('hero_emoji', '🤔'),
+                'headline': ai_analysis.get('verdict', {}).get('hero_headline', f'Worth trying {brand_name}'),
+                'subline_bold': 'your profile',
+                'verdict_pill': ai_analysis.get('verdict', {}).get('verdict_pill', 'Good Potential'),
+                'pill_color': 'green' if tier == 'high' else ('amber' if tier == 'medium' else 'red-amber')
+            }
+
+        # Build coaching object for frontend if using new schema
+        coaching_data = None
+        if is_coaching_schema:
+            missing_proof = ai_analysis.get('missing_proof', {})
+            next_move = ai_analysis.get('next_move', {})
+            coaching_data = {
+                'status': status,
+                'confidence': ai_analysis.get('verdict', {}).get('confidence', 'medium'),
+                'coach_note': ai_analysis.get('coach_note', ''),
+                'observation': missing_proof.get('observation', ''),
+                'why_it_matters': missing_proof.get('why_it_matters', ''),
+                'action': next_move.get('action', ''),
+                'reasoning': next_move.get('reasoning', ''),
+                'then_what': next_move.get('then_what', ''),
+            }
+
+        # ALWAYS get better brand alternatives - this drives unlock momentum
+        # Users should always see more brands to unlock (monetization critical)
+        better_matches = []
+        creator_for_matching = dict(creator)
+        if creator_profile.get('primary_niche'):
+            creator_for_matching['niche'] = creator_profile.get('primary_niche')
+        if creator_profile.get('follower_count'):
+            creator_for_matching['follower_count'] = creator_profile.get('follower_count')
+
+        better_matches = get_better_brand_matches(creator_for_matching, brand_id, cursor, limit=3)
+        print(f"[AIDepth] Status is {status}, niche={creator_for_matching.get('niche')}, found {len(better_matches)} better matches")
+
+        # Build profile snapshot for UI (shows user what data we analyzed)
+        # Combine primary + secondary niches for display
+        all_niches = []
+        if creator_profile.get('primary_niche'):
+            all_niches.append(creator_profile.get('primary_niche'))
+        if creator_profile.get('secondary_niches'):
+            all_niches.extend(creator_profile.get('secondary_niches', []))
+
+        profile_snapshot = {
+            'platform': creator_profile.get('primary_platform', 'instagram'),
+            'handle': creator_profile.get('handle', ''),
+            'follower_count': creator_profile.get('follower_count', 0),
+            'bio': (creator_profile.get('raw_bio') or '')[:150],
+            'is_public': creator_profile.get('is_public', True),
+            'niche': creator_profile.get('primary_niche', ''),
+            'niches': all_niches[:3],  # Up to 3 niches for display
+            'engagement_rate': creator_profile.get('engagement_rate', 0),
+            'recent_thumbnails': (creator_profile.get('recent_post_thumbnails') or [])[:3],
+            'content_themes': (creator_profile.get('content_themes') or [])[:3],
+        }
+
+        return {
+            'tier': tier,
+            'reasons': reasons,
+            'quick_wins': quick_wins,
+            'verdict': verdict,
+            'ai_analysis': ai_analysis,
+            'used_ai_depth': not ai_analysis.get('used_fallback', False),
+            'is_coaching': is_coaching_schema,
+            'coaching': coaching_data,
+            'better_matches': better_matches if better_matches else None,
+            'show_alternatives': len(better_matches) > 0,  # Always show to drive unlock momentum
+            'profile_snapshot': profile_snapshot
+        }
+
+    except Exception as e:
+        print(f"[AIDepth] Error generating analysis: {e}")
+        import traceback
+        traceback.print_exc()
+
+        # Fallback to basic fit tier
+        basic_result = compute_fit_tier(creator, brand, cursor)
+        return {
+            **basic_result,
+            'verdict': get_verdict_for_tier(basic_result['tier'], brand_name),
+            'ai_analysis': None,
+            'used_ai_depth': False
+        }
+
+
+def get_user_for_creator(creator_id, cursor):
+    """Get user record for a creator, including unlock count and variant."""
+    cursor.execute('''
+        SELECT u.id, u.total_unlocks, u.hero_variant, u.fast_mode_enabled
+        FROM users u
+        JOIN creators c ON c.user_id = u.id
+        WHERE c.id = %s
+    ''', (creator_id,))
+    return cursor.fetchone()
 
 
 def check_media_kit_complete(creator_id):
@@ -391,6 +1384,61 @@ def get_brand_details(brand_id):
                 SELECT stage FROM creator_pipeline
                 WHERE creator_id = %s AND brand_id = %s
             ''', (creator_id, brand_id))
+            pipeline = cursor.fetchone()
+            if pipeline:
+                is_saved = True
+                pipeline_stage = pipeline['stage']
+
+        from brand_stats_synthesis import resolve_brand_stats
+
+        rate, days = resolve_brand_stats(
+            brand.get('slug') or str(brand['id']),
+            brand.get('category'),
+            brand.get('response_rate'),
+            brand.get('avg_response_time_days'),
+        )
+        brand['response_rate'] = rate
+        brand['avg_response_time_days'] = days
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'brand': brand,
+            'is_saved': is_saved,
+            'pipeline_stage': pipeline_stage
+        })
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@pr_crm.route('/brand/<slug>', methods=['GET'])
+def get_brand_by_slug(slug):
+    """Get full details for a specific brand by slug"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute('SELECT * FROM pr_brands WHERE slug = %s', (slug,))
+        brand = cursor.fetchone()
+
+        if not brand:
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Brand not found'}), 404
+
+        # Check if user has saved this brand
+        creator_id = get_creator_id_from_session()
+        is_saved = False
+        pipeline_stage = None
+
+        if creator_id:
+            cursor.execute('''
+                SELECT stage FROM creator_pipeline
+                WHERE creator_id = %s AND brand_id = %s
+            ''', (creator_id, brand['id']))
             pipeline = cursor.fetchone()
             if pipeline:
                 is_saved = True
@@ -2304,6 +3352,7 @@ def generate_pr_package():
     brand_id = data.get('brand_id')
     slug = data.get('slug')
     regenerate = data.get('regenerate', False)
+    is_for_you_match = data.get('is_for_you_match', False)  # Ensures min "almost" status
 
     if not brand_id and not slug:
         return jsonify({'success': False, 'error': 'brand_id or slug required'}), 400
@@ -2384,15 +3433,179 @@ def generate_pr_package():
                             else:
                                 pitch['body_html'] = body_html.rstrip() + portfolio_line_html
 
-                return jsonify({
-                    'success': True,
-                    'package': package_data,
-                    'cached': True,
-                    'brand_email': brand.get('contact_email'),
-                    'application_form_url': brand.get('application_form_url'),
-                    'media_kit_url': cached_media_kit_url,
-                    'kit_published': cached_creator.get('kit_published', False) if cached_creator else False,
-                })
+                # Use stored AI coaching data from pr_packages (for consistency on revisit)
+                brand_name = brand.get('brand_name') or brand.get('name', 'Brand')
+
+                # Check if we have stored AI coaching data
+                has_stored_ai = existing.get('ai_status') or existing.get('is_coaching')
+
+                if has_stored_ai:
+                    # Use stored AI coaching data (exact same content as initial unlock)
+                    stored_verdict = existing.get('ai_verdict')
+                    if isinstance(stored_verdict, str):
+                        stored_verdict = json.loads(stored_verdict) if stored_verdict else None
+
+                    stored_coaching = existing.get('ai_coaching')
+                    if isinstance(stored_coaching, str):
+                        stored_coaching = json.loads(stored_coaching) if stored_coaching else None
+
+                    stored_reasons = existing.get('ai_reasons')
+                    if isinstance(stored_reasons, str):
+                        stored_reasons = json.loads(stored_reasons) if stored_reasons else []
+
+                    stored_quick_wins = existing.get('ai_quick_wins')
+                    if isinstance(stored_quick_wins, str):
+                        stored_quick_wins = json.loads(stored_quick_wins) if stored_quick_wins else []
+
+                    stored_better_matches = existing.get('ai_better_matches')
+                    if isinstance(stored_better_matches, str):
+                        stored_better_matches = json.loads(stored_better_matches) if stored_better_matches else None
+
+                    stored_profile_snapshot = existing.get('ai_profile_snapshot')
+                    if isinstance(stored_profile_snapshot, str):
+                        stored_profile_snapshot = json.loads(stored_profile_snapshot) if stored_profile_snapshot else None
+
+                    stored_ugc_guide = existing.get('ugc_guide')
+                    if isinstance(stored_ugc_guide, str):
+                        stored_ugc_guide = json.loads(stored_ugc_guide) if stored_ugc_guide else None
+
+                    # Map stored status to mentor_verdict for UI
+                    # Must match copyDictionary.js MENTOR_VERDICTS
+                    MENTOR_VERDICTS_MAP = {
+                        'ready': {'confidence': 'top', 'confidenceLabel': 'Top Match', 'confidenceStars': 5, 'pill': 'Pitch Today', 'pillColor': 'green'},
+                        'almost': {'confidence': 'good', 'confidenceLabel': 'Good Match', 'confidenceStars': 4, 'pill': 'Pitch Today', 'pillColor': 'green'},
+                        'not_yet': {'confidence': 'growth', 'confidenceLabel': 'Growth Match', 'confidenceStars': 3, 'pill': 'Worth Improving First', 'pillColor': 'amber'},
+                        'poor_fit': {'confidence': 'stretch', 'confidenceLabel': 'Stretch Match', 'confidenceStars': 2, 'pill': 'Lower Priority', 'pillColor': 'amber'},
+                        'build_first': {'confidence': 'low', 'confidenceLabel': 'Low Priority', 'confidenceStars': 1, 'pill': 'Better Matches Available', 'pillColor': 'amber'},
+                    }
+                    status = existing.get('ai_status', 'almost')
+                    mentor_verdict = MENTOR_VERDICTS_MAP.get(status, MENTOR_VERDICTS_MAP['almost'])
+
+                    return jsonify({
+                        'success': True,
+                        'package': package_data,
+                        'cached': True,
+                        'brand_email': brand.get('contact_email'),
+                        'application_form_url': brand.get('application_form_url'),
+                        'media_kit_url': cached_media_kit_url,
+                        'kit_published': cached_creator.get('kit_published', False) if cached_creator else False,
+                        # Stored AI Depth fields (exact same as initial unlock)
+                        'fit_tier': existing.get('fit_tier', 'high'),
+                        'status': status,
+                        'verdict': stored_verdict or {
+                            'emoji': '🎯',
+                            'headline': f'You can pitch {brand_name} today.',
+                            'subline_bold': 'your profile',
+                            'verdict_pill': 'Ready for outreach',
+                            'pill_color': 'green'
+                        },
+                        'mentor_verdict': mentor_verdict,
+                        'reasons': stored_reasons or [],
+                        'quick_win': stored_quick_wins[0] if stored_quick_wins else None,
+                        'quick_wins_count': len(stored_quick_wins or []),
+                        'used_ai_depth': existing.get('used_ai_depth', False),
+                        # Coaching fields
+                        'is_coaching': existing.get('is_coaching', False),
+                        'coaching': stored_coaching,
+                        # Low follower UGC guide
+                        'is_low_follower': existing.get('is_low_follower', False),
+                        'ugc_guide': stored_ugc_guide,
+                        # Better matches
+                        'better_matches': stored_better_matches,
+                        'show_alternatives': bool(stored_better_matches),
+                        # Profile snapshot
+                        'profile_snapshot': stored_profile_snapshot,
+                        'total_unlocks': 1,
+                        'fast_mode': False,
+                    })
+
+                else:
+                    # No stored AI data (legacy unlock) - regenerate for this session
+                    cursor.execute('''
+                        SELECT c.*, u.id as user_id FROM creators c
+                        JOIN users u ON c.user_id = u.id
+                        WHERE c.id = %s
+                    ''', (creator_id,))
+                    creator_for_fit = cursor.fetchone()
+
+                    fit_result = {}
+                    if creator_for_fit:
+                        user_id = creator_for_fit.get('user_id')
+                        fit_result = compute_fit_with_ai_depth(dict(creator_for_fit), dict(brand), user_id, cursor, conn, is_for_you_match)
+
+                        # Store the generated AI data for future consistency
+                        try:
+                            cursor.execute('''
+                                UPDATE pr_packages SET
+                                    ai_status = %s,
+                                    ai_coaching = %s,
+                                    ai_verdict = %s,
+                                    ai_reasons = %s,
+                                    ai_quick_wins = %s,
+                                    ai_better_matches = %s,
+                                    ai_profile_snapshot = %s,
+                                    is_coaching = %s,
+                                    is_low_follower = %s,
+                                    ugc_guide = %s,
+                                    fit_tier = %s,
+                                    used_ai_depth = %s
+                                WHERE creator_id = %s AND brand_id = %s
+                            ''', (
+                                fit_result.get('status', 'almost'),
+                                json.dumps(convert_decimals(fit_result.get('coaching'))) if fit_result.get('coaching') else None,
+                                json.dumps(convert_decimals(fit_result.get('verdict'))) if fit_result.get('verdict') else None,
+                                json.dumps(convert_decimals(fit_result.get('reasons', []))),
+                                json.dumps(convert_decimals(fit_result.get('quick_wins', []))),
+                                json.dumps(convert_decimals(fit_result.get('better_matches'))) if fit_result.get('better_matches') else None,
+                                json.dumps(convert_decimals(fit_result.get('profile_snapshot'))) if fit_result.get('profile_snapshot') else None,
+                                fit_result.get('is_coaching', False),
+                                fit_result.get('is_low_follower', False),
+                                json.dumps(convert_decimals(fit_result.get('ugc_guide'))) if fit_result.get('ugc_guide') else None,
+                                fit_result.get('tier', 'high'),
+                                fit_result.get('used_ai_depth', False)
+                            ))
+                            conn.commit()
+                            print(f"[PR Package] Backfilled AI coaching data for legacy unlock creator={creator_id}, brand={brand_id}")
+                        except Exception as ai_store_err:
+                            print(f"[PR Package] Warning: Failed to backfill AI coaching: {ai_store_err}")
+
+                    return jsonify({
+                        'success': True,
+                        'package': package_data,
+                        'cached': True,
+                        'brand_email': brand.get('contact_email'),
+                        'application_form_url': brand.get('application_form_url'),
+                        'media_kit_url': cached_media_kit_url,
+                        'kit_published': cached_creator.get('kit_published', False) if cached_creator else False,
+                        # AI Depth fields
+                        'fit_tier': fit_result.get('tier', 'high'),
+                        'status': fit_result.get('status', 'almost'),
+                        'verdict': fit_result.get('verdict', {
+                            'emoji': '🎯',
+                            'headline': f'You can pitch {brand_name} today.',
+                            'subline_bold': 'your profile',
+                            'verdict_pill': 'Ready for outreach',
+                            'pill_color': 'green'
+                        }),
+                        'mentor_verdict': fit_result.get('mentor_verdict'),
+                        'reasons': fit_result.get('reasons', []),
+                        'quick_win': fit_result['quick_wins'][0] if fit_result.get('quick_wins') else None,
+                        'quick_wins_count': len(fit_result.get('quick_wins', [])),
+                        'used_ai_depth': fit_result.get('used_ai_depth', False),
+                        # Coaching fields
+                        'is_coaching': fit_result.get('is_coaching', False),
+                        'coaching': fit_result.get('coaching'),
+                        # Low follower UGC guide
+                        'is_low_follower': fit_result.get('is_low_follower', False),
+                        'ugc_guide': fit_result.get('ugc_guide'),
+                        # Better matches
+                        'better_matches': fit_result.get('better_matches'),
+                        'show_alternatives': fit_result.get('show_alternatives', False),
+                        # Profile snapshot
+                        'profile_snapshot': fit_result.get('profile_snapshot'),
+                        'total_unlocks': 1,
+                        'fast_mode': False,
+                    })
 
         # Run unlock logic (same as generate-pitch)
         unlock_result = attempt_unlock(creator_id, brand_id, conn)
@@ -2418,11 +3631,40 @@ def generate_pr_package():
             conn.close()
             return jsonify({'success': False, 'error': 'Creator not found'}), 404
 
-        # Generate PR Package
+        # ============================================
+        # PARALLEL EXECUTION: Run pitch gen + AI Depth concurrently
+        # This reduces total time from ~21s to ~11s
+        # ============================================
+        user_id = creator.get('user_id')
+        creator_dict = dict(creator)
+        brand_dict = dict(brand)
+
+        # Start AI Depth in background thread (with its own DB connection)
+        # Capture is_for_you_match in closure
+        for_you_match = is_for_you_match
+
+        def run_ai_depth_async():
+            """Run AI Depth analysis in separate thread with own connection."""
+            try:
+                depth_conn = get_db_connection()
+                depth_cursor = depth_conn.cursor(cursor_factory=RealDictCursor)
+                result = compute_fit_with_ai_depth(creator_dict, brand_dict, user_id, depth_cursor, depth_conn, for_you_match)
+                depth_cursor.close()
+                depth_conn.close()
+                return result
+            except Exception as e:
+                print(f"[AIDepth Async] Error: {e}")
+                return None
+
+        # Submit AI Depth task to run in parallel
+        executor = ThreadPoolExecutor(max_workers=1)
+        ai_depth_future = executor.submit(run_ai_depth_async)
+
+        # Generate PR Package (runs concurrently with AI Depth)
         generator = get_pr_package_generator()
         result = generator.generate(
-            creator=dict(creator),
-            brand=dict(brand),
+            creator=creator_dict,
+            brand=brand_dict,
             cursor=cursor,
             max_attempts=2
         )
@@ -2551,11 +3793,79 @@ def generate_pr_package():
         ''', (creator_id, brand_id))
         conn.commit()
 
+        # Wait for AI Depth result (already running in parallel)
+        try:
+            fit_result = ai_depth_future.result(timeout=30)  # Max 30s wait
+        except (TimeoutError, Exception) as timeout_err:
+            print(f"[PR Package] AI Depth timeout/error, using fallback: {timeout_err}")
+            fit_result = None
+        finally:
+            executor.shutdown(wait=False)
+
+        # Fallback if AI Depth failed or timed out
+        if not fit_result:
+            fit_result = {
+                'tier': 'high',
+                'reasons': [],
+                'quick_wins': [],
+                'verdict': None,
+                'used_ai_depth': False
+            }
+
+        # Store AI coaching data in pr_packages for consistency on revisit
+        try:
+            cursor.execute('''
+                UPDATE pr_packages SET
+                    ai_status = %s,
+                    ai_coaching = %s,
+                    ai_verdict = %s,
+                    ai_reasons = %s,
+                    ai_quick_wins = %s,
+                    ai_better_matches = %s,
+                    ai_profile_snapshot = %s,
+                    is_coaching = %s,
+                    is_low_follower = %s,
+                    ugc_guide = %s,
+                    fit_tier = %s,
+                    used_ai_depth = %s
+                WHERE creator_id = %s AND brand_id = %s
+            ''', (
+                fit_result.get('status', 'almost'),
+                json.dumps(convert_decimals(fit_result.get('coaching'))) if fit_result.get('coaching') else None,
+                json.dumps(convert_decimals(fit_result.get('verdict'))) if fit_result.get('verdict') else None,
+                json.dumps(convert_decimals(fit_result.get('reasons', []))),
+                json.dumps(convert_decimals(fit_result.get('quick_wins', []))),
+                json.dumps(convert_decimals(fit_result.get('better_matches'))) if fit_result.get('better_matches') else None,
+                json.dumps(convert_decimals(fit_result.get('profile_snapshot'))) if fit_result.get('profile_snapshot') else None,
+                fit_result.get('is_coaching', False),
+                fit_result.get('is_low_follower', False),
+                json.dumps(convert_decimals(fit_result.get('ugc_guide'))) if fit_result.get('ugc_guide') else None,
+                fit_result.get('tier', 'high'),
+                fit_result.get('used_ai_depth', False)
+            ))
+            conn.commit()
+            print(f"[PR Package] Stored AI coaching data for creator={creator_id}, brand={brand_id}")
+        except Exception as ai_store_err:
+            print(f"[PR Package] Warning: Failed to store AI coaching data: {ai_store_err}")
+            # Continue anyway - this is non-critical
+
         cursor.close()
         conn.close()
 
         # Format response
         package_data = _format_pr_package_response(package, dict(brand))
+        brand_name = brand.get('brand_name') or brand.get('name', 'Brand')
+
+        # Build mentor_verdict for new package (same format as cached)
+        MENTOR_VERDICTS_MAP = {
+            'ready': {'confidence': 'top', 'confidenceLabel': 'Top Match', 'confidenceStars': 5, 'pill': 'Pitch Today', 'pillColor': 'green'},
+            'almost': {'confidence': 'good', 'confidenceLabel': 'Good Match', 'confidenceStars': 4, 'pill': 'Pitch Today', 'pillColor': 'green'},
+            'not_yet': {'confidence': 'growth', 'confidenceLabel': 'Growth Match', 'confidenceStars': 3, 'pill': 'Worth Improving First', 'pillColor': 'amber'},
+            'poor_fit': {'confidence': 'stretch', 'confidenceLabel': 'Stretch Match', 'confidenceStars': 2, 'pill': 'Lower Priority', 'pillColor': 'amber'},
+            'build_first': {'confidence': 'low', 'confidenceLabel': 'Low Priority', 'confidenceStars': 1, 'pill': 'Better Matches Available', 'pillColor': 'amber'},
+        }
+        status = fit_result.get('status', 'almost')
+        mentor_verdict = MENTOR_VERDICTS_MAP.get(status, MENTOR_VERDICTS_MAP['almost'])
 
         return jsonify({
             'success': True,
@@ -2568,6 +3878,36 @@ def generate_pr_package():
             'credits_remaining': unlock_result.get('credits_remaining'),
             'media_kit_url': media_kit_url,
             'kit_published': kit_published or False,
+            # AI Depth fields
+            'fit_tier': fit_result.get('tier', 'high'),
+            'status': status,
+            'verdict': fit_result.get('verdict', {
+                'emoji': '🎯',
+                'headline': f'You can pitch {brand_name} today.',
+                'subline_bold': 'your profile',
+                'verdict_pill': 'Ready for outreach',
+                'pill_color': 'green'
+            }),
+            'mentor_verdict': mentor_verdict,
+            'reasons': fit_result.get('reasons', []),
+            'quick_win': fit_result['quick_wins'][0] if fit_result.get('quick_wins') else None,
+            'quick_wins_count': len(fit_result.get('quick_wins', [])),
+            'used_ai_depth': fit_result.get('used_ai_depth', False),
+            # Deterministic fit score breakdown (sub-scores)
+            'fit_score': fit_result.get('fit_score'),
+            # Coaching fields for mentor-first UI
+            'is_coaching': fit_result.get('is_coaching', False),
+            'coaching': fit_result.get('coaching'),
+            # Low follower UGC guide fields
+            'is_low_follower': fit_result.get('is_low_follower', False),
+            'ugc_guide': fit_result.get('ugc_guide'),
+            # Better brand alternatives for poor_fit/not_yet
+            'better_matches': fit_result.get('better_matches'),
+            'show_alternatives': fit_result.get('show_alternatives', False),
+            # Profile snapshot for UI transparency
+            'profile_snapshot': fit_result.get('profile_snapshot'),
+            'total_unlocks': 1,
+            'fast_mode': False,
         })
 
     except Exception as e:
@@ -2577,6 +3917,619 @@ def generate_pr_package():
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============================================
+# PR PACKAGE V2 - SSE STREAMING FOR REAL-TIME LOADING
+# Cards appear as actual backend steps complete
+# ============================================
+
+@pr_crm.route('/generate-pr-package-v2', methods=['POST'])
+def generate_pr_package_v2():
+    """
+    V2 PR Package generation with Server-Sent Events (SSE).
+
+    Streams progress events as each step completes:
+    1. inbox_found - contact resolved from DB
+    2. pitch_written - Gemini response
+    3. strategy_built - timing + prediction computed
+    4. ready - all assembled
+
+    Final event contains the complete package with verdict-based payload.
+    """
+    from services.pr_package_generator import get_pr_package_generator
+    import time
+
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    data = request.get_json() or {}
+    brand_id = data.get('brand_id')
+    slug = data.get('slug')
+    regenerate = data.get('regenerate', False)
+
+    if not brand_id and not slug:
+        return jsonify({'success': False, 'error': 'brand_id or slug required'}), 400
+
+    def generate_events():
+        """Generator function for SSE events."""
+        conn = None
+        start_time = time.time()
+
+        def send_event(event_type, data_dict):
+            """Format and yield an SSE event."""
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            data_dict['elapsed_ms'] = elapsed_ms
+            return f"event: {event_type}\ndata: {json.dumps(data_dict)}\n\n"
+
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+            # Resolve brand
+            if brand_id:
+                cursor.execute('SELECT * FROM pr_brands WHERE id = %s', (brand_id,))
+            else:
+                cursor.execute('SELECT * FROM pr_brands WHERE slug = %s', (slug,))
+
+            brand = cursor.fetchone()
+            if not brand:
+                yield send_event('error', {'error': 'Brand not found'})
+                return
+
+            resolved_brand_id = brand['id']
+            brand_name = brand.get('brand_name') or brand.get('name')
+
+            # Get creator data with user info
+            cursor.execute('''
+                SELECT c.*, u.id as user_id, u.total_unlocks, u.hero_variant, u.fast_mode_enabled,
+                       u.first_name, u.last_name, u.email
+                FROM creators c
+                JOIN users u ON c.user_id = u.id
+                WHERE c.id = %s
+            ''', (creator_id,))
+            creator = cursor.fetchone()
+
+            if not creator:
+                yield send_event('error', {'error': 'Creator not found'})
+                return
+
+            user_id = creator['user_id']
+            total_unlocks = creator.get('total_unlocks') or 0
+            hero_variant = creator.get('hero_variant')
+            fast_mode = creator.get('fast_mode_enabled') or False
+
+            # Assign hero variant if not set
+            if not hero_variant:
+                hero_variant = assign_hero_variant(user_id)
+                cursor.execute(
+                    'UPDATE users SET hero_variant = %s WHERE id = %s',
+                    (hero_variant, user_id)
+                )
+                conn.commit()
+
+            # ========================================
+            # STEP 1: INBOX FOUND (contact resolution)
+            # ========================================
+            contact_email = brand.get('contact_email')
+            yield send_event('inbox_found', {
+                'email': contact_email,
+                'email_display': f"{contact_email[:12]}..." if contact_email and len(contact_email) > 15 else contact_email,
+                'verified': bool(contact_email)
+            })
+
+            # Check for cached package
+            if not regenerate:
+                cursor.execute('''
+                    SELECT * FROM pr_packages
+                    WHERE creator_id = %s AND brand_id = %s
+                ''', (creator_id, resolved_brand_id))
+                existing = cursor.fetchone()
+
+                if existing:
+                    # Cached package exists - fast path
+                    # Still send all events but quickly
+
+                    # Step 2: Pitch Written (cached)
+                    yield send_event('pitch_written', {'cached': True, 'tone': 'growing'})
+
+                    # Check if we have stored AI coaching data
+                    has_stored_ai = existing.get('ai_status') or existing.get('is_coaching')
+
+                    if has_stored_ai:
+                        # Use stored AI coaching data (exact same as initial unlock)
+                        stored_verdict = existing.get('ai_verdict')
+                        if isinstance(stored_verdict, str):
+                            stored_verdict = json.loads(stored_verdict) if stored_verdict else None
+
+                        stored_coaching = existing.get('ai_coaching')
+                        if isinstance(stored_coaching, str):
+                            stored_coaching = json.loads(stored_coaching) if stored_coaching else None
+
+                        stored_reasons = existing.get('ai_reasons')
+                        if isinstance(stored_reasons, str):
+                            stored_reasons = json.loads(stored_reasons) if stored_reasons else []
+
+                        stored_quick_wins = existing.get('ai_quick_wins')
+                        if isinstance(stored_quick_wins, str):
+                            stored_quick_wins = json.loads(stored_quick_wins) if stored_quick_wins else []
+
+                        stored_better_matches = existing.get('ai_better_matches')
+                        if isinstance(stored_better_matches, str):
+                            stored_better_matches = json.loads(stored_better_matches) if stored_better_matches else None
+
+                        stored_profile_snapshot = existing.get('ai_profile_snapshot')
+                        if isinstance(stored_profile_snapshot, str):
+                            stored_profile_snapshot = json.loads(stored_profile_snapshot) if stored_profile_snapshot else None
+
+                        stored_ugc_guide = existing.get('ugc_guide')
+                        if isinstance(stored_ugc_guide, str):
+                            stored_ugc_guide = json.loads(stored_ugc_guide) if stored_ugc_guide else None
+
+                        # Build fit_result from stored data
+                        fit_result = {
+                            'tier': existing.get('fit_tier', 'high'),
+                            'status': existing.get('ai_status', 'almost'),
+                            'verdict': stored_verdict,
+                            'reasons': stored_reasons or [],
+                            'quick_wins': stored_quick_wins or [],
+                            'coaching': stored_coaching,
+                            'is_coaching': existing.get('is_coaching', False),
+                            'is_low_follower': existing.get('is_low_follower', False),
+                            'ugc_guide': stored_ugc_guide,
+                            'better_matches': stored_better_matches,
+                            'show_alternatives': bool(stored_better_matches),
+                            'profile_snapshot': stored_profile_snapshot,
+                            'used_ai_depth': existing.get('used_ai_depth', False),
+                        }
+                    else:
+                        # No stored AI data (legacy unlock) - regenerate and backfill
+                        fit_result = compute_fit_with_ai_depth(dict(creator), dict(brand), user_id, cursor, conn)
+
+                        # Backfill stored AI data for future consistency
+                        try:
+                            cursor.execute('''
+                                UPDATE pr_packages SET
+                                    ai_status = %s,
+                                    ai_coaching = %s,
+                                    ai_verdict = %s,
+                                    ai_reasons = %s,
+                                    ai_quick_wins = %s,
+                                    ai_better_matches = %s,
+                                    ai_profile_snapshot = %s,
+                                    is_coaching = %s,
+                                    is_low_follower = %s,
+                                    ugc_guide = %s,
+                                    fit_tier = %s,
+                                    used_ai_depth = %s
+                                WHERE creator_id = %s AND brand_id = %s
+                            ''', (
+                                fit_result.get('status', 'almost'),
+                                json.dumps(convert_decimals(fit_result.get('coaching'))) if fit_result.get('coaching') else None,
+                                json.dumps(convert_decimals(fit_result.get('verdict'))) if fit_result.get('verdict') else None,
+                                json.dumps(convert_decimals(fit_result.get('reasons', []))),
+                                json.dumps(convert_decimals(fit_result.get('quick_wins', []))),
+                                json.dumps(convert_decimals(fit_result.get('better_matches'))) if fit_result.get('better_matches') else None,
+                                json.dumps(convert_decimals(fit_result.get('profile_snapshot'))) if fit_result.get('profile_snapshot') else None,
+                                fit_result.get('is_coaching', False),
+                                fit_result.get('is_low_follower', False),
+                                json.dumps(convert_decimals(fit_result.get('ugc_guide'))) if fit_result.get('ugc_guide') else None,
+                                fit_result.get('tier', 'high'),
+                                fit_result.get('used_ai_depth', False)
+                            ))
+                            conn.commit()
+                            print(f"[PR Package V2] Backfilled AI coaching for legacy unlock creator={creator_id}, brand={resolved_brand_id}")
+                        except Exception as e:
+                            print(f"[PR Package V2] Warning: Failed to backfill AI coaching: {e}")
+
+                    # Step 3: Strategy Built (cached)
+                    yield send_event('strategy_built', {
+                        'cached': True,
+                        'fit_tier': fit_result['tier'],
+                        'used_ai_depth': fit_result.get('used_ai_depth', False)
+                    })
+
+                    # Get verdict based on tier and variant
+                    if hero_variant == 'A':
+                        # Control variant
+                        verdict = {
+                            'emoji': '🎉',
+                            'headline': f'Ready to pitch {brand_name}',
+                            'subline_bold': None,
+                            'verdict_pill': 'Strong Match',
+                            'pill_color': 'green'
+                        }
+                    elif fit_result.get('used_ai_depth') and fit_result.get('verdict'):
+                        # Use AI Depth verdict (brand-specific)
+                        verdict = fit_result['verdict']
+                    else:
+                        # Variant B - use fit tier verdict
+                        verdict = get_verdict_for_tier(fit_result['tier'], brand_name)
+
+                    # Get media kit URL
+                    username = creator.get('username')
+                    kit_published = creator.get('kit_published')
+                    media_kit_url = None
+                    if kit_published and username:
+                        kit_token = generate_kit_token(creator_id, resolved_brand_id)
+                        media_kit_url = f"https://newcollab.co/kit/{username}?ref={kit_token}"
+
+                    # Format package data
+                    package_data = _format_pr_package_response(dict(existing), dict(brand))
+
+                    # Inject portfolio link if needed
+                    if media_kit_url:
+                        _inject_portfolio_link(package_data, media_kit_url)
+
+                    # Build mentor_verdict for consistency
+                    MENTOR_VERDICTS_MAP = {
+                        'ready': {'confidence': 'top', 'confidenceLabel': 'Top Match', 'confidenceStars': 5, 'pill': 'Pitch Today', 'pillColor': 'green'},
+                        'almost': {'confidence': 'good', 'confidenceLabel': 'Good Match', 'confidenceStars': 4, 'pill': 'Pitch Today', 'pillColor': 'green'},
+                        'not_yet': {'confidence': 'growth', 'confidenceLabel': 'Growth Match', 'confidenceStars': 3, 'pill': 'Worth Improving First', 'pillColor': 'amber'},
+                        'poor_fit': {'confidence': 'stretch', 'confidenceLabel': 'Stretch Match', 'confidenceStars': 2, 'pill': 'Lower Priority', 'pillColor': 'amber'},
+                        'build_first': {'confidence': 'low', 'confidenceLabel': 'Low Priority', 'confidenceStars': 1, 'pill': 'Better Matches Available', 'pillColor': 'amber'},
+                    }
+                    status = fit_result.get('status', 'almost')
+                    mentor_verdict = MENTOR_VERDICTS_MAP.get(status, MENTOR_VERDICTS_MAP['almost'])
+
+                    # Step 4: Ready - send complete package
+                    yield send_event('ready', {
+                        'success': True,
+                        'cached': True,
+                        'fit_tier': fit_result['tier'],
+                        'status': status,
+                        'verdict': verdict,
+                        'mentor_verdict': mentor_verdict,
+                        'reasons': fit_result.get('reasons', []),
+                        'quick_win': fit_result.get('quick_wins', [])[0] if fit_result.get('quick_wins') else None,
+                        'quick_wins_count': len(fit_result.get('quick_wins', [])),
+                        'package': package_data,
+                        'contact': {
+                            'verified': bool(contact_email),
+                            'email': contact_email,
+                            'email_display': f"{contact_email[:12]}..." if contact_email and len(contact_email) > 15 else contact_email
+                        },
+                        'best_time': {
+                            'day': package_data['timing']['day'],
+                            'time_range': package_data['timing']['time_range'],
+                            'sample_size': package_data['timing']['sample_size'],
+                            'emoji_flame': True
+                        },
+                        'brand': package_data['brand'],
+                        'brand_email': contact_email,
+                        'application_form_url': brand.get('application_form_url'),
+                        'media_kit_url': media_kit_url,
+                        'kit_published': kit_published or False,
+                        'hero_variant': hero_variant,
+                        'total_unlocks': total_unlocks,
+                        'fast_mode': fast_mode,
+                        'used_ai_depth': fit_result.get('used_ai_depth', False),
+                        # Coaching fields for mentor-first UI
+                        'is_coaching': fit_result.get('is_coaching', False),
+                        'coaching': fit_result.get('coaching'),
+                        # Low follower UGC guide fields
+                        'is_low_follower': fit_result.get('is_low_follower', False),
+                        'ugc_guide': fit_result.get('ugc_guide'),
+                        # Better brand alternatives for poor_fit/not_yet
+                        'better_matches': fit_result.get('better_matches'),
+                        'show_alternatives': fit_result.get('show_alternatives', False),
+                        # Profile snapshot for UI transparency
+                        'profile_snapshot': fit_result.get('profile_snapshot')
+                    })
+                    return
+
+            # Not cached - run unlock logic
+            unlock_result = attempt_unlock(creator_id, resolved_brand_id, conn)
+            if unlock_result.get('status') == 'paywall':
+                yield send_event('paywall', {
+                    'error': 'No PR Packages remaining this month',
+                    'remaining': 0
+                })
+                return
+
+            # ========================================
+            # STEP 2: PITCH WRITTEN (Gemini generation)
+            # ========================================
+            generator = get_pr_package_generator()
+            result = generator.generate(
+                creator=dict(creator),
+                brand=dict(brand),
+                cursor=cursor,
+                max_attempts=2
+            )
+
+            if not result.success:
+                yield send_event('error', {'error': result.error or 'Generation failed'})
+                return
+
+            package = result.package
+
+            yield send_event('pitch_written', {
+                'cached': False,
+                'tone': 'growing',
+                'source': result.source
+            })
+
+            # ========================================
+            # STEP 3: STRATEGY BUILT (timing + fit)
+            # ========================================
+            # Process portfolio link
+            username = creator.get('username')
+            kit_published = creator.get('kit_published')
+            media_kit_url = None
+
+            if kit_published and username:
+                kit_token = generate_kit_token(creator_id, resolved_brand_id)
+                media_kit_url = f"https://newcollab.co/kit/{username}?ref={kit_token}"
+
+                cursor.execute('''
+                    UPDATE creator_pipeline
+                    SET kit_token = COALESCE(kit_token, %s), updated_at = NOW()
+                    WHERE creator_id = %s AND brand_id = %s
+                ''', (kit_token, creator_id, resolved_brand_id))
+
+                # Replace placeholder in pitches
+                for tone in ['pitch_short', 'pitch_growing', 'pitch_founder']:
+                    if package.get(f'{tone}_body_plain'):
+                        package[f'{tone}_body_plain'] = package[f'{tone}_body_plain'].replace('{{PORTFOLIO_LINK}}', media_kit_url)
+                    if package.get(f'{tone}_body_html'):
+                        package[f'{tone}_body_html'] = package[f'{tone}_body_html'].replace(
+                            '{{PORTFOLIO_LINK}}',
+                            f'<a href="{media_kit_url}">{media_kit_url}</a>'
+                        )
+            else:
+                # Remove placeholder if no kit
+                for tone in ['pitch_short', 'pitch_growing', 'pitch_founder']:
+                    if package.get(f'{tone}_body_plain'):
+                        package[f'{tone}_body_plain'] = package[f'{tone}_body_plain'].replace('You can see my recent work here: {{PORTFOLIO_LINK}}\n\n', '')
+                        package[f'{tone}_body_plain'] = package[f'{tone}_body_plain'].replace('You can see my recent work here: {{PORTFOLIO_LINK}}', '')
+                    if package.get(f'{tone}_body_html'):
+                        package[f'{tone}_body_html'] = package[f'{tone}_body_html'].replace('You can see my recent work here: {{PORTFOLIO_LINK}}', '')
+
+            # Compute fit tier with AI Depth when available
+            fit_result = compute_fit_with_ai_depth(dict(creator), dict(brand), user_id, cursor, conn)
+
+            yield send_event('strategy_built', {
+                'fit_tier': fit_result['tier'],
+                'timing_day': package.get('optimal_send_day', 'Tuesday'),
+                'timing_range': package.get('optimal_send_time_range', '2-5pm ET'),
+                'used_ai_depth': fit_result.get('used_ai_depth', False)
+            })
+
+            # ========================================
+            # STEP 4: READY (store and send complete)
+            # ========================================
+            # Store in database
+            cursor.execute('''
+                INSERT INTO pr_packages (
+                    creator_id, brand_id,
+                    pitch_short_subject, pitch_short_body_html, pitch_short_body_plain,
+                    pitch_growing_subject, pitch_growing_body_html, pitch_growing_body_plain,
+                    pitch_founder_subject, pitch_founder_body_html, pitch_founder_body_plain,
+                    optimal_send_day, optimal_send_time_range, timing_sample_size, timing_uplift_multiplier,
+                    content_ideas,
+                    followup_day3_subject, followup_day3_body,
+                    followup_day8_subject, followup_day8_body,
+                    followup_day14_subject, followup_day14_body,
+                    reply_rate_brand_avg, reply_rate_personalized, reply_rate_confidence,
+                    generated_by, generation_reasoning, scrub_failures_count
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                ON CONFLICT (creator_id, brand_id) DO UPDATE SET
+                    pitch_short_subject = EXCLUDED.pitch_short_subject,
+                    pitch_short_body_html = EXCLUDED.pitch_short_body_html,
+                    pitch_short_body_plain = EXCLUDED.pitch_short_body_plain,
+                    pitch_growing_subject = EXCLUDED.pitch_growing_subject,
+                    pitch_growing_body_html = EXCLUDED.pitch_growing_body_html,
+                    pitch_growing_body_plain = EXCLUDED.pitch_growing_body_plain,
+                    pitch_founder_subject = EXCLUDED.pitch_founder_subject,
+                    pitch_founder_body_html = EXCLUDED.pitch_founder_body_html,
+                    pitch_founder_body_plain = EXCLUDED.pitch_founder_body_plain,
+                    optimal_send_day = EXCLUDED.optimal_send_day,
+                    optimal_send_time_range = EXCLUDED.optimal_send_time_range,
+                    timing_sample_size = EXCLUDED.timing_sample_size,
+                    timing_uplift_multiplier = EXCLUDED.timing_uplift_multiplier,
+                    content_ideas = EXCLUDED.content_ideas,
+                    followup_day3_subject = EXCLUDED.followup_day3_subject,
+                    followup_day3_body = EXCLUDED.followup_day3_body,
+                    followup_day8_subject = EXCLUDED.followup_day8_subject,
+                    followup_day8_body = EXCLUDED.followup_day8_body,
+                    followup_day14_subject = EXCLUDED.followup_day14_subject,
+                    followup_day14_body = EXCLUDED.followup_day14_body,
+                    reply_rate_brand_avg = EXCLUDED.reply_rate_brand_avg,
+                    reply_rate_personalized = EXCLUDED.reply_rate_personalized,
+                    reply_rate_confidence = EXCLUDED.reply_rate_confidence,
+                    generated_by = EXCLUDED.generated_by,
+                    generation_reasoning = EXCLUDED.generation_reasoning,
+                    scrub_failures_count = EXCLUDED.scrub_failures_count,
+                    regenerated_count = pr_packages.regenerated_count + 1,
+                    generated_at = NOW()
+            ''', (
+                creator_id, resolved_brand_id,
+                package.get('pitch_short_subject'), package.get('pitch_short_body_html'), package.get('pitch_short_body_plain'),
+                package.get('pitch_growing_subject'), package.get('pitch_growing_body_html'), package.get('pitch_growing_body_plain'),
+                package.get('pitch_founder_subject'), package.get('pitch_founder_body_html'), package.get('pitch_founder_body_plain'),
+                package.get('optimal_send_day'), package.get('optimal_send_time_range'), package.get('timing_sample_size'), package.get('timing_uplift_multiplier'),
+                json.dumps(package.get('content_ideas', [])),
+                package.get('followup_day3_subject'), package.get('followup_day3_body'),
+                package.get('followup_day8_subject'), package.get('followup_day8_body'),
+                package.get('followup_day14_subject'), package.get('followup_day14_body'),
+                package.get('reply_rate_brand_avg'), package.get('reply_rate_personalized'), package.get('reply_rate_confidence'),
+                result.source, package.get('generation_reasoning'), result.scrub_failures
+            ))
+
+            conn.commit()
+
+            # Update pipeline
+            cursor.execute('''
+                UPDATE creator_pipeline
+                SET has_pr_package = TRUE
+                WHERE creator_id = %s AND brand_id = %s
+            ''', (creator_id, resolved_brand_id))
+            conn.commit()
+
+            # Store AI coaching data for consistency on revisit
+            try:
+                cursor.execute('''
+                    UPDATE pr_packages SET
+                        ai_status = %s,
+                        ai_coaching = %s,
+                        ai_verdict = %s,
+                        ai_reasons = %s,
+                        ai_quick_wins = %s,
+                        ai_better_matches = %s,
+                        ai_profile_snapshot = %s,
+                        is_coaching = %s,
+                        is_low_follower = %s,
+                        ugc_guide = %s,
+                        fit_tier = %s,
+                        used_ai_depth = %s
+                    WHERE creator_id = %s AND brand_id = %s
+                ''', (
+                    fit_result.get('status', 'almost'),
+                    json.dumps(convert_decimals(fit_result.get('coaching'))) if fit_result.get('coaching') else None,
+                    json.dumps(convert_decimals(fit_result.get('verdict'))) if fit_result.get('verdict') else None,
+                    json.dumps(convert_decimals(fit_result.get('reasons', []))),
+                    json.dumps(convert_decimals(fit_result.get('quick_wins', []))),
+                    json.dumps(convert_decimals(fit_result.get('better_matches'))) if fit_result.get('better_matches') else None,
+                    json.dumps(convert_decimals(fit_result.get('profile_snapshot'))) if fit_result.get('profile_snapshot') else None,
+                    fit_result.get('is_coaching', False),
+                    fit_result.get('is_low_follower', False),
+                    json.dumps(convert_decimals(fit_result.get('ugc_guide'))) if fit_result.get('ugc_guide') else None,
+                    fit_result.get('tier', 'high'),
+                    fit_result.get('used_ai_depth', False)
+                ))
+                conn.commit()
+                print(f"[PR Package V2] Stored AI coaching for creator={creator_id}, brand={resolved_brand_id}")
+            except Exception as ai_store_err:
+                print(f"[PR Package V2] Warning: Failed to store AI coaching: {ai_store_err}")
+
+            # Format final response
+            package_data = _format_pr_package_response(package, dict(brand))
+
+            # Get verdict based on variant and AI Depth
+            if hero_variant == 'A':
+                verdict = {
+                    'emoji': '🎉',
+                    'headline': f'Ready to pitch {brand_name}',
+                    'subline_bold': None,
+                    'verdict_pill': 'Strong Match',
+                    'pill_color': 'green'
+                }
+            elif fit_result.get('used_ai_depth') and fit_result.get('verdict'):
+                # Use AI Depth verdict (brand-specific)
+                verdict = fit_result['verdict']
+            else:
+                # Fallback to basic verdict
+                verdict = get_verdict_for_tier(fit_result['tier'], brand_name)
+
+            # Build mentor_verdict for consistency with cached response
+            MENTOR_VERDICTS_MAP = {
+                'ready': {'confidence': 'top', 'confidenceLabel': 'Top Match', 'confidenceStars': 5, 'pill': 'Pitch Today', 'pillColor': 'green'},
+                'almost': {'confidence': 'good', 'confidenceLabel': 'Good Match', 'confidenceStars': 4, 'pill': 'Pitch Today', 'pillColor': 'green'},
+                'not_yet': {'confidence': 'growth', 'confidenceLabel': 'Growth Match', 'confidenceStars': 3, 'pill': 'Worth Improving First', 'pillColor': 'amber'},
+                'poor_fit': {'confidence': 'stretch', 'confidenceLabel': 'Stretch Match', 'confidenceStars': 2, 'pill': 'Lower Priority', 'pillColor': 'amber'},
+                'build_first': {'confidence': 'low', 'confidenceLabel': 'Low Priority', 'confidenceStars': 1, 'pill': 'Better Matches Available', 'pillColor': 'amber'},
+            }
+            status = fit_result.get('status', 'almost')
+            mentor_verdict = MENTOR_VERDICTS_MAP.get(status, MENTOR_VERDICTS_MAP['almost'])
+
+            yield send_event('ready', {
+                'success': True,
+                'cached': False,
+                'fit_tier': fit_result['tier'],
+                'status': status,
+                'verdict': verdict,
+                'mentor_verdict': mentor_verdict,
+                'reasons': fit_result['reasons'],
+                'quick_win': fit_result['quick_wins'][0] if fit_result['quick_wins'] else None,
+                'quick_wins_count': len(fit_result['quick_wins']),
+                'package': package_data,
+                'contact': {
+                    'verified': bool(contact_email),
+                    'email': contact_email,
+                    'email_display': f"{contact_email[:12]}..." if contact_email and len(contact_email) > 15 else contact_email
+                },
+                'best_time': {
+                    'day': package_data['timing']['day'],
+                    'time_range': package_data['timing']['time_range'],
+                    'sample_size': package_data['timing']['sample_size'],
+                    'emoji_flame': True
+                },
+                'brand': package_data['brand'],
+                'brand_email': contact_email,
+                'application_form_url': brand.get('application_form_url'),
+                'media_kit_url': media_kit_url,
+                'kit_published': kit_published or False,
+                'hero_variant': hero_variant,
+                'total_unlocks': total_unlocks + 1,  # Incremented after this unlock
+                'fast_mode': fast_mode,
+                'brand_unlocked': unlock_result.get('brand_unlocked', False),
+                'already_unlocked': unlock_result.get('already_unlocked', False),
+                'credits_remaining': unlock_result.get('credits_remaining'),
+                'used_ai_depth': fit_result.get('used_ai_depth', False),
+                # Coaching fields for mentor-first UI
+                'is_coaching': fit_result.get('is_coaching', False),
+                'coaching': fit_result.get('coaching'),
+                # Low follower UGC guide fields
+                'is_low_follower': fit_result.get('is_low_follower', False),
+                'ugc_guide': fit_result.get('ugc_guide'),
+                # Better brand alternatives for poor_fit/not_yet
+                'better_matches': fit_result.get('better_matches'),
+                'show_alternatives': fit_result.get('show_alternatives', False),
+                # Profile snapshot for UI transparency
+                'profile_snapshot': fit_result.get('profile_snapshot')
+            })
+
+        except Exception as e:
+            print(f"Error in generate_pr_package_v2: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            yield send_event('error', {'error': str(e)})
+
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except:
+                    pass
+
+    return Response(
+        stream_with_context(generate_events()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no'  # Disable nginx buffering
+        }
+    )
+
+
+def _inject_portfolio_link(package_data, media_kit_url):
+    """Inject portfolio link into cached pitch bodies."""
+    portfolio_line_plain = f"\n\nYou can see my recent work here: {media_kit_url}"
+    portfolio_line_html = f'<p>You can see my recent work here: <a href="{media_kit_url}">{media_kit_url}</a></p>'
+
+    for pitch_type in ['short', 'growing', 'founder']:
+        pitch = package_data.get('pitches', {}).get(pitch_type, {})
+        body_plain = pitch.get('body_plain', '')
+        body_html = pitch.get('body_html', '')
+
+        if body_plain and media_kit_url not in body_plain and 'newcollab.co/kit/' not in body_plain:
+            for sign_off in ['Best,', 'Looking forward,', 'Cheers,', 'Thanks,', 'Thank you,', 'Warm regards,', 'Best regards,']:
+                if sign_off in body_plain:
+                    pitch['body_plain'] = body_plain.replace(sign_off, f"{portfolio_line_plain.strip()}\n\n{sign_off}")
+                    break
+            else:
+                pitch['body_plain'] = body_plain.rstrip() + portfolio_line_plain
+
+        if body_html and media_kit_url not in body_html and 'newcollab.co/kit/' not in body_html:
+            if '</body>' in body_html:
+                pitch['body_html'] = body_html.replace('</body>', f'{portfolio_line_html}</body>')
+            else:
+                pitch['body_html'] = body_html.rstrip() + portfolio_line_html
 
 
 def _format_pr_package_response(package: dict, brand: dict) -> dict:
@@ -5523,13 +7476,68 @@ def get_for_you():
         cursor.execute(newest_query, (exclude_ids, newest_follower_cap, *sensitive_params))
         newest = cursor.fetchall()
 
+        # ── Filter matched brands by deterministic fit score ──
+        # Only show brands where creator would get 55%+ (Good Match or better)
+        # This prevents the welcome flow from showing irrelevant brands
+        filtered_matched = []
+
+        if HAS_AI_DEPTH and matched:
+            try:
+                # Get creator's scraped profile for fit scoring
+                cursor.execute("""
+                    SELECT
+                        csp.primary_niche, csp.secondary_niches, csp.content_themes,
+                        csp.aesthetic_descriptors, csp.brand_readiness_signals,
+                        csp.engagement_rate, csp.posting_cadence_per_week,
+                        csp.has_collab_email
+                    FROM creator_social_profiles csp
+                    WHERE csp.creator_id = %s
+                    ORDER BY csp.created_at DESC
+                    LIMIT 1
+                """, (creator_id,))
+                creator_profile = cursor.fetchone()
+
+                if creator_profile:
+                    creator_profile_dict = dict(creator_profile)
+
+                    for brand_row in matched:
+                        brand = dict(brand_row)
+                        brand_category = brand.get('category', '')
+
+                        # Calculate deterministic fit score
+                        fit_result = calculate_fit_score(creator_profile_dict, brand_category)
+                        fit_score_val = fit_result.get('overall_score', 50)
+
+                        # Only include brands with 55%+ (Good Match threshold)
+                        if fit_score_val >= 55:
+                            # Update match_score to reflect actual fit
+                            brand['match_score'] = fit_score_val
+                            brand['fit_tier'] = fit_result.get('tier', 'good_match')
+                            filtered_matched.append(brand)
+                        else:
+                            print(f"[ForYou] Filtered out {brand.get('name')} - fit score {fit_score_val}% ({fit_result.get('tier')})")
+                else:
+                    # No scraped profile yet - use original matched list
+                    filtered_matched = [dict(r) for r in matched]
+            except Exception as fit_err:
+                print(f"[ForYou] Fit score filtering error: {fit_err}")
+                # Fallback to original list on error
+                filtered_matched = [dict(r) for r in matched]
+        else:
+            filtered_matched = [dict(r) for r in matched]
+
+        # Log filtering results for debugging
+        # Do NOT backfill with poor matches - better to show fewer good brands
+        # than misleading ones. This ensures welcome flow only shows relevant brands.
+        print(f"[ForYou] Filtered brands: {len(filtered_matched)} good matches out of {len(matched)} total")
+
         cursor.close()
         conn.close()
 
         return jsonify({
             'success': True,
             'hot': [dict(r) for r in hot],
-            'matched': [dict(r) for r in matched],
+            'matched': filtered_matched,
             'seasonal': [dict(r) for r in seasonal],
             'seasonal_reason': seasonal_reasons.get(month, ''),
             'seasonal_month': datetime.now().strftime('%B'),
@@ -6013,3 +8021,233 @@ def get_social_proof_brands():
     except Exception as e:
         print(f"Error in get_social_proof_brands: {str(e)}")
         return jsonify({'success': False, 'error': str(e), 'brands': []}), 500
+
+
+# ============================================================================
+# AI DEPTH UPGRADE - Creator Profile Scraping & Enrichment
+# ============================================================================
+
+@pr_crm.route('/creator/scrape', methods=['POST'])
+def scrape_creator_profile():
+    """
+    Scrape and enrich creator profile from social media.
+
+    Called during onboarding when user enters their social handle.
+    Triggers Apify scrape + Gemini Vision analysis.
+
+    Request body:
+    {
+        "handle": "@username",
+        "platform": "instagram" | "tiktok"
+    }
+
+    Returns:
+    {
+        "success": true,
+        "profile": { ... scraped data ... },
+        "summary": { follower_count, niche, engagement_rate }
+    }
+    """
+    from services.creator_profile_scraper import scrape_and_enrich_creator
+
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    data = request.get_json() or {}
+    handle = data.get('handle', '').strip()
+    platform = data.get('platform', 'instagram').lower()
+
+    if not handle:
+        return jsonify({'success': False, 'error': 'handle is required'}), 400
+
+    if platform not in ['instagram', 'tiktok']:
+        return jsonify({'success': False, 'error': 'platform must be instagram or tiktok'}), 400
+
+    # Clean handle
+    handle = handle.lstrip('@')
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get user_id from creator
+        cursor.execute('SELECT user_id FROM creators WHERE id = %s', (creator_id,))
+        creator = cursor.fetchone()
+        if not creator:
+            return jsonify({'success': False, 'error': 'Creator not found'}), 404
+
+        user_id = creator['user_id']
+
+        # Run scrape and enrichment
+        profile_data, vision_data = scrape_and_enrich_creator(
+            user_id=str(user_id),
+            handle=handle,
+            platform=platform,
+            db_conn=conn
+        )
+
+        # Build summary for UI
+        summary = {
+            'follower_count': profile_data.get('follower_count', 0),
+            'follower_display': format_follower_count(profile_data.get('follower_count', 0)),
+            'niche': vision_data.get('primary_niche') if vision_data else None,
+            'engagement_rate': profile_data.get('engagement_rate', 0),
+            'latest_post_days_ago': profile_data.get('latest_post_days_ago', 0),
+            'aesthetic_descriptors': vision_data.get('aesthetic', {}).get('aesthetic_descriptors', []) if vision_data else [],
+            'handle': handle,
+        }
+
+        return jsonify({
+            'success': True,
+            'profile': profile_data,
+            'summary': summary
+        })
+
+    except ValueError as e:
+        # Known errors (private account, not found, etc.)
+        return jsonify({'success': False, 'error': str(e)}), 400
+    except TimeoutError:
+        return jsonify({
+            'success': False,
+            'error': 'Scrape timeout. We\'ll finish this in the background.',
+            'background': True
+        }), 202
+    except Exception as e:
+        print(f"Error in scrape_creator_profile: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': 'Failed to scrape profile'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@pr_crm.route('/brand/enrich', methods=['POST'])
+def enrich_brand_context():
+    """
+    Enrich brand context with aesthetic analysis and historical data.
+
+    Admin endpoint to pre-populate brand_context table.
+
+    Request body:
+    {
+        "brand_id": "uuid",
+        "instagram_handle": "@brandhandle" (optional)
+    }
+    """
+    from services.brand_context_enricher import enrich_and_save_brand
+
+    # This is an admin endpoint - check for admin auth
+    # For now, just require creator session
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    data = request.get_json() or {}
+    brand_id = data.get('brand_id')
+    ig_handle = data.get('instagram_handle')
+
+    if not brand_id:
+        return jsonify({'success': False, 'error': 'brand_id is required'}), 400
+
+    conn = None
+    try:
+        conn = get_db_connection()
+
+        context = enrich_and_save_brand(brand_id, conn, ig_handle)
+
+        return jsonify({
+            'success': True,
+            'context': {
+                'aesthetic_color_palette': context.get('aesthetic_color_palette'),
+                'aesthetic_style': context.get('aesthetic_style'),
+                'hero_products': context.get('hero_products', []),
+                'target_audience_desc': context.get('target_audience_desc'),
+                'data_sources': context.get('data_sources', {}),
+            }
+        })
+
+    except Exception as e:
+        print(f"Error in enrich_brand_context: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@pr_crm.route('/brand/enrich-batch', methods=['POST'])
+def enrich_brands_batch():
+    """
+    Batch enrich multiple brands.
+
+    Request body:
+    {
+        "brand_ids": ["uuid1", "uuid2", ...],
+        "limit": 30  (optional, defaults to 30)
+    }
+    """
+    from services.brand_context_enricher import BrandContextEnricher
+
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    data = request.get_json() or {}
+    brand_ids = data.get('brand_ids', [])
+    limit = min(data.get('limit', 30), 50)  # Cap at 50
+
+    if not brand_ids:
+        return jsonify({'success': False, 'error': 'brand_ids is required'}), 400
+
+    conn = None
+    results = []
+
+    try:
+        conn = get_db_connection()
+        enricher = BrandContextEnricher(conn)
+
+        for brand_id in brand_ids[:limit]:
+            try:
+                context = enricher.enrich_brand(brand_id)
+                enricher.save_brand_context(context)
+                results.append({
+                    'brand_id': brand_id,
+                    'success': True
+                })
+            except Exception as e:
+                results.append({
+                    'brand_id': brand_id,
+                    'success': False,
+                    'error': str(e)
+                })
+
+        success_count = sum(1 for r in results if r['success'])
+
+        return jsonify({
+            'success': True,
+            'enriched': success_count,
+            'total': len(results),
+            'results': results
+        })
+
+    except Exception as e:
+        print(f"Error in enrich_brands_batch: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+def format_follower_count(count):
+    """Format follower count for display."""
+    if not count:
+        return "0"
+    if count >= 1000000:
+        return f"{count/1000000:.1f}M"
+    if count >= 1000:
+        return f"{count/1000:.1f}K"
+    return str(count)
