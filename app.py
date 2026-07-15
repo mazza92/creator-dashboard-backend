@@ -5680,7 +5680,7 @@ def register_creator_account():
         session.permanent = True
         session.modified = True
 
-        access_token = create_access_token(identity=user_id)
+        access_token = create_access_token(identity=str(user_id))  # PyJWT requires string subject
         base_url = get_base_url()
 
         message = 'Registration successful, please verify your email'
