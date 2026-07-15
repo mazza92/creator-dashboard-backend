@@ -4,6 +4,7 @@ Handles Stripe subscription checkout and management
 """
 
 from flask import Blueprint, request, jsonify, session
+from flask_jwt_extended import get_jwt_identity
 import stripe
 import os
 import requests
@@ -63,8 +64,29 @@ def get_db_connection():
     )
 
 def get_creator_id_from_session():
-    """Get creator ID from session"""
-    return session.get('creator_id') or session.get('user_id')
+    """Get creator ID from session or JWT"""
+    # Try session first
+    creator_id = session.get('creator_id')
+    if creator_id:
+        return creator_id
+
+    # Try JWT if session doesn't have it
+    try:
+        user_id = get_jwt_identity()
+        if user_id:
+            # Fetch creator_id from user_id
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute('SELECT id FROM creators WHERE user_id = %s', (user_id,))
+            creator = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            if creator:
+                return creator['id']
+    except:
+        pass
+
+    return None
 
 def check_subscription_limits(creator_id, action_type):
     """
