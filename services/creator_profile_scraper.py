@@ -414,8 +414,9 @@ Analyze and return JSON only.'''
                     ]
                 }],
                 'generationConfig': {
-                    'temperature': 0.2,
+                    'temperature': 0.1,  # Lower temp for more consistent JSON
                     'maxOutputTokens': 2048,
+                    'responseMimeType': 'application/json',  # Force JSON output
                 }
             }
 
@@ -436,13 +437,8 @@ Analyze and return JSON only.'''
                 print(f"[TextAnalysis] Empty text in response")
                 return self._get_fallback_vision_result()
 
-            # Parse JSON from response
-            if '```json' in text:
-                text = text.split('```json')[1].split('```')[0].strip()
-            elif '```' in text:
-                text = text.split('```')[1].split('```')[0].strip()
-
-            analysis_result = json.loads(text)
+            # Parse JSON from response with robust extraction
+            analysis_result = self._extract_json_safely(text)
 
             # Add fields expected by downstream code
             if 'content_format_breakdown' not in analysis_result:
@@ -509,6 +505,137 @@ Analyze and return JSON only.'''
         """
         # Use text analysis instead of vision (cheaper, faster, no blocking)
         return self.run_text_analysis(bio, captions, handle, followers)
+
+    def _extract_json_safely(self, text: str) -> Dict[str, Any]:
+        """
+        Robustly extract and parse JSON from LLM response.
+        Handles code blocks, malformed JSON, and common errors.
+        """
+        if not text:
+            raise json.JSONDecodeError("Empty text", "", 0)
+
+        original_text = text
+
+        # Step 1: Remove markdown code blocks
+        if '```json' in text:
+            text = text.split('```json')[1].split('```')[0].strip()
+        elif '```' in text:
+            parts = text.split('```')
+            if len(parts) >= 3:
+                text = parts[1].strip()
+
+        # Step 2: Find JSON object boundaries
+        start_idx = text.find('{')
+        if start_idx == -1:
+            raise json.JSONDecodeError("No JSON object found", text, 0)
+
+        # Find matching closing brace
+        brace_count = 0
+        end_idx = -1
+        in_string = False
+        escape_next = False
+
+        for i, char in enumerate(text[start_idx:], start_idx):
+            if escape_next:
+                escape_next = False
+                continue
+            if char == '\\':
+                escape_next = True
+                continue
+            if char == '"' and not escape_next:
+                in_string = not in_string
+                continue
+            if not in_string:
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        end_idx = i
+                        break
+
+        if end_idx == -1:
+            # Try to fix unterminated JSON by adding closing braces
+            text = text[start_idx:]
+            # Count unclosed braces and brackets
+            open_braces = text.count('{') - text.count('}')
+            open_brackets = text.count('[') - text.count(']')
+
+            # Fix unterminated strings - find the last unclosed quote
+            quote_count = 0
+            for i, char in enumerate(text):
+                if char == '"' and (i == 0 or text[i-1] != '\\'):
+                    quote_count += 1
+            if quote_count % 2 == 1:
+                text = text + '"'
+
+            # Add missing closing brackets/braces
+            text = text + (']' * max(0, open_brackets)) + ('}' * max(0, open_braces))
+        else:
+            text = text[start_idx:end_idx + 1]
+
+        # Step 3: Clean common JSON issues
+        # Remove trailing commas before ] or }
+        text = re.sub(r',\s*}', '}', text)
+        text = re.sub(r',\s*]', ']', text)
+
+        # Fix single quotes to double quotes (common LLM error)
+        # Only replace if not inside a string already
+        text = re.sub(r"(?<![a-zA-Z])'([^']*)'(?=\s*[,}\]])", r'"\1"', text)
+
+        # Step 4: Try to parse
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            print(f"[TextAnalysis] JSON repair failed: {e}")
+            # Last resort: try to extract key fields manually
+            return self._extract_fields_manually(original_text)
+
+    def _extract_fields_manually(self, text: str) -> Dict[str, Any]:
+        """
+        Extract key fields using regex when JSON parsing completely fails.
+        Returns a valid structure with whatever we can extract.
+        """
+        result = self._get_fallback_vision_result()
+
+        # Try to extract primary_niche
+        niche_patterns = [
+            r'"primary_niche"\s*:\s*"([^"]+)"',
+            r"primary_niche['\"]?\s*:\s*['\"]?(\w+)",
+        ]
+        for pattern in niche_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                result['primary_niche'] = match.group(1).lower()
+                break
+
+        # Try to extract confidence
+        conf_match = re.search(r'"primary_niche_confidence"\s*:\s*(\d+)', text)
+        if conf_match:
+            result['primary_niche_confidence'] = int(conf_match.group(1))
+
+        # Extract brands_already_tagged
+        brands_match = re.search(r'"brands_already_tagged"\s*:\s*\[(.*?)\]', text, re.DOTALL)
+        if brands_match:
+            brands_str = brands_match.group(1)
+            brands = re.findall(r'"([^"]+)"', brands_str)
+            result['brand_readiness_signals']['brands_already_tagged'] = brands
+
+        # Extract content_themes
+        themes_match = re.search(r'"content_themes"\s*:\s*\[(.*?)\]', text, re.DOTALL)
+        if themes_match:
+            themes_str = themes_match.group(1)
+            themes = re.findall(r'"([^"]+)"', themes_str)
+            result['content_themes'] = themes
+
+        # Check for shows_products_in_use
+        products_match = re.search(r'"shows_products_in_use"\s*:\s*(true|false)', text, re.IGNORECASE)
+        if products_match:
+            result['brand_readiness_signals']['shows_products_in_use'] = products_match.group(1).lower() == 'true'
+
+        result['_extracted_manually'] = True
+        print(f"[TextAnalysis] Extracted manually: niche={result['primary_niche']}")
+        return result
 
     def _get_fallback_vision_result(self) -> Dict[str, Any]:
         """Return a minimal valid vision result when analysis fails."""
