@@ -7484,34 +7484,21 @@ def get_for_you():
         if HAS_AI_DEPTH and matched:
             try:
                 # Get creator's scraped profile for fit scoring
-                # Join creators table to get user_id, then query creator_profile_data
-                cursor.execute("""
-                    SELECT
-                        cpd.primary_niche,
-                        cpd.secondary_niches,
-                        cpd.content_themes,
-                        cpd.aesthetic->'aesthetic_descriptors' AS aesthetic_descriptors,
-                        cpd.brand_readiness_signals,
-                        cpd.engagement_rate,
-                        cpd.posting_cadence_per_week,
-                        cpd.has_collab_email
-                    FROM creators c
-                    JOIN creator_profile_data cpd ON cpd.user_id = c.user_id
-                    WHERE c.id = %s
-                """, (creator_id,))
-                creator_profile = cursor.fetchone()
+                # Use same approach as AI generator: get user_id from session, then use scraper
+                user_id = session.get('user_id')
+                if not user_id:
+                    # Fallback: get user_id from creators table
+                    cursor.execute("SELECT user_id FROM creators WHERE id = %s", (creator_id,))
+                    creator_row = cursor.fetchone()
+                    user_id = creator_row['user_id'] if creator_row else None
 
-                if creator_profile:
-                    creator_profile_dict = dict(creator_profile)
+                creator_profile_dict = None
+                if user_id:
+                    scraper = CreatorProfileScraper(conn)
+                    creator_profile_dict = scraper.get_creator_profile(user_id)
+
+                if creator_profile_dict and creator_profile_dict.get('primary_niche'):
                     print(f"[ForYou] Using scraped profile: niche={creator_profile_dict.get('primary_niche')}, engagement={creator_profile_dict.get('engagement_rate')}")
-
-                    # Parse JSON fields if they're strings (shouldn't be with RealDictCursor but just in case)
-                    for json_field in ['secondary_niches', 'content_themes', 'aesthetic_descriptors', 'brand_readiness_signals']:
-                        if json_field in creator_profile_dict and isinstance(creator_profile_dict[json_field], str):
-                            try:
-                                creator_profile_dict[json_field] = json.loads(creator_profile_dict[json_field])
-                            except:
-                                pass
 
                     for brand_row in matched:
                         brand = dict(brand_row)
@@ -7531,7 +7518,7 @@ def get_for_you():
                             print(f"[ForYou] Filtered out {brand.get('name')} - fit score {fit_score_val}% ({fit_result.get('tier')})")
                 else:
                     # No scraped profile yet - use original matched list with SQL scores
-                    print(f"[ForYou] No scraped profile for creator {creator_id}, using SQL match scores")
+                    print(f"[ForYou] No scraped profile for user {user_id}, using SQL match scores")
                     filtered_matched = [dict(r) for r in matched]
             except Exception as fit_err:
                 import traceback
