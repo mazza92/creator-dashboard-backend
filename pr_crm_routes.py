@@ -934,15 +934,9 @@ def compute_fit_with_ai_depth(creator, brand, user_id, cursor, conn, is_for_you_
             status = ai_analysis.get('verdict', {}).get('status', 'almost')
             tier = ai_analysis.get('verdict', {}).get('fit_tier', 'medium')
 
-            # FOR YOU CONSISTENCY: Brands from For You page must show at least "almost" status
-            # This ensures recommendation algorithm matches unlock results
-            if is_for_you_match and status in ['not_yet', 'poor_fit']:
-                print(f"[AIDepth] Upgrading status from {status} to 'almost' (For You brand)")
-                status = 'almost'
-                # Also update the ai_analysis for consistency
-                if 'verdict' in ai_analysis:
-                    ai_analysis['verdict']['status'] = 'almost'
-                    ai_analysis['verdict']['status_upgraded_for_you'] = True
+            # NOTE: Status upgrade hack removed - For You now uses same scraped profile data
+            # as AI Mentor (creator_profile_data table), ensuring consistent scoring.
+            # If a brand shows in For You, it should already have 55%+ fit score.
 
             # Map status to tier for backwards compatibility
             status_to_tier = {
@@ -7490,16 +7484,17 @@ def get_for_you():
         if HAS_AI_DEPTH and matched:
             try:
                 # Get creator's scraped profile for fit scoring
+                # Join creators table to get user_id, then query creator_profile_data
                 cursor.execute("""
                     SELECT
-                        csp.primary_niche, csp.secondary_niches, csp.content_themes,
-                        csp.aesthetic_descriptors, csp.brand_readiness_signals,
-                        csp.engagement_rate, csp.posting_cadence_per_week,
-                        csp.has_collab_email
-                    FROM creator_social_profiles csp
-                    WHERE csp.creator_id = %s
-                    ORDER BY csp.created_at DESC
-                    LIMIT 1
+                        cpd.primary_niche, cpd.secondary_niches, cpd.content_themes,
+                        cpd.aesthetic->>'aesthetic_descriptors' AS aesthetic_descriptors,
+                        cpd.brand_readiness_signals,
+                        cpd.engagement_rate, cpd.posting_cadence_per_week,
+                        cpd.has_collab_email
+                    FROM creators c
+                    JOIN creator_profile_data cpd ON cpd.user_id = c.user_id
+                    WHERE c.id = %s
                 """, (creator_id,))
                 creator_profile = cursor.fetchone()
 
