@@ -14,7 +14,7 @@ google-analytics-data==0.18.3
 flask-session==0.5.0
 Werkzeug==2.2.3
 bcrypt==4.1.2
-supabase==1.0.3
+supabase>=2.30.0
 Jinja2==3.1.2
 MarkupSafe==2.1.2
 Flask-JWT-Extended==4.6.0
