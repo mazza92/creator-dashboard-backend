@@ -2206,9 +2206,19 @@ def onboarding_scrape():
         # Import scraper
         from services.creator_profile_scraper import scrape_and_enrich_creator
 
+        # Get database connection for saving profile data
+        conn = get_db_connection()
+
         # Run the scrape (this calls Apify + Gemini analysis)
         # skip_minimums=True allows new creators with <500 followers during onboarding
-        profile, vision_data = scrape_and_enrich_creator(user_id, handle, platform, skip_minimums=True)
+        # Pass db_conn to save profile to creator_profile_data for For You matching
+        profile, vision_data = scrape_and_enrich_creator(user_id, handle, platform, db_conn=conn, skip_minimums=True)
+
+        # Close connection after scrape completes
+        try:
+            conn.close()
+        except:
+            pass
 
         if not profile:
             app.logger.warning(f"⚠️ Scrape returned no data for @{handle}")

@@ -7500,6 +7500,9 @@ def get_for_you():
                 if creator_profile_dict and creator_profile_dict.get('primary_niche'):
                     print(f"[ForYou] Using scraped profile: niche={creator_profile_dict.get('primary_niche')}, engagement={creator_profile_dict.get('engagement_rate')}")
 
+                    # Score ALL brands using real scrape data, then take best 8
+                    # This ensures we always have enough matches while prioritizing best fits
+                    scored_brands = []
                     for brand_row in matched:
                         brand = dict(brand_row)
                         brand_category = brand.get('category', '')
@@ -7508,14 +7511,18 @@ def get_for_you():
                         fit_result = calculate_fit_score(creator_profile_dict, brand_category)
                         fit_score_val = fit_result.get('overall_score', 50)
 
-                        # Only include brands with 55%+ (Good Match threshold)
-                        if fit_score_val >= 55:
-                            # Update match_score to reflect actual fit
-                            brand['match_score'] = fit_score_val
-                            brand['fit_tier'] = fit_result.get('tier', 'good_match')
-                            filtered_matched.append(brand)
-                        else:
-                            print(f"[ForYou] Filtered out {brand.get('name')} - fit score {fit_score_val}% ({fit_result.get('tier')})")
+                        # Update match_score to reflect actual fit
+                        brand['match_score'] = fit_score_val
+                        brand['fit_tier'] = fit_result.get('tier', 'growth_match')
+                        scored_brands.append(brand)
+
+                    # Sort by fit score descending and take top 8
+                    scored_brands.sort(key=lambda x: x.get('match_score', 0), reverse=True)
+                    filtered_matched = scored_brands[:8]
+
+                    # Log the results
+                    for brand in filtered_matched:
+                        print(f"[ForYou] Including {brand.get('name')} - fit score {brand.get('match_score')}% ({brand.get('fit_tier')})")
                 else:
                     # No scraped profile yet - use original matched list with SQL scores
                     print(f"[ForYou] No scraped profile for user {user_id}, using SQL match scores")
@@ -7529,10 +7536,11 @@ def get_for_you():
         else:
             filtered_matched = [dict(r) for r in matched]
 
-        # Log filtering results for debugging
-        # Do NOT backfill with poor matches - better to show fewer good brands
-        # than misleading ones. This ensures welcome flow only shows relevant brands.
-        print(f"[ForYou] Filtered brands: {len(filtered_matched)} good matches out of {len(matched)} total")
+        # Log results - we now show top 8 best matches sorted by fit score
+        if filtered_matched:
+            top_score = filtered_matched[0].get('match_score', 0) if filtered_matched else 0
+            bottom_score = filtered_matched[-1].get('match_score', 0) if filtered_matched else 0
+            print(f"[ForYou] Showing {len(filtered_matched)} brands (scores: {top_score}% to {bottom_score}%)")
 
         cursor.close()
         conn.close()
