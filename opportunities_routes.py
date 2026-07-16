@@ -724,6 +724,192 @@ def admin_get_applications(opp_id):
 
 
 # ============================================
+# ADMIN: Ingest sourced gigs (scanner → review queue)
+# ============================================
+
+@opportunities_bp.route('/admin/ingest', methods=['POST'])
+@admin_required
+def admin_ingest():
+    """
+    Bulk-ingest sourced creator gigs into the Opportunities admin queue.
+
+    Used by the brand-manager creator_gig_scanner after classification.
+    Creates status='pending' rows for Mazza to approve/publish.
+    Does NOT email brands (scraped listings often have no real brand inbox).
+
+    Body: { "gigs": [ { title, buyer_name, apply_url, source_platform,
+            source_post_id, deliverable_summary, category, compensation_*,
+            niche_required, min_followers, geo_required, deadline, ... } ] }
+    """
+    try:
+        data = request.get_json() or {}
+        gigs = data.get('gigs') or []
+        if not isinstance(gigs, list) or not gigs:
+            return jsonify({'success': False, 'error': 'gigs[] required'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        created = []
+        skipped = []
+        errors = []
+
+        for raw in gigs[:100]:
+            try:
+                title = (raw.get('title') or '').strip()
+                buyer = (raw.get('buyer_name') or raw.get('brand_name') or 'Unknown brand').strip()
+                apply_url = (raw.get('apply_url') or raw.get('source_url') or '').strip()
+                source_platform = (raw.get('source_platform') or 'scanner').strip()
+                source_post_id = (raw.get('source_post_id') or '').strip()
+                deliverable = (raw.get('deliverable_summary') or raw.get('campaign_description') or '').strip()
+
+                if not title or not apply_url:
+                    errors.append({'title': title, 'error': 'title and apply_url required'})
+                    continue
+
+                # Dedup fingerprint stored in additional_notes
+                fingerprint = f"[scanner:{source_platform}:{source_post_id or apply_url}]"
+                cursor.execute(
+                    "SELECT id FROM opportunities WHERE additional_notes LIKE %s LIMIT 1",
+                    (f'%{fingerprint}%',)
+                )
+                existing = cursor.fetchone()
+                if existing:
+                    skipped.append({'id': existing['id'], 'fingerprint': fingerprint})
+                    continue
+
+                # Build creator-facing description with external apply link
+                comp_bits = []
+                if raw.get('compensation_display'):
+                    comp_bits.append(str(raw['compensation_display']))
+                elif raw.get('compensation_min_usd') or raw.get('compensation_max_usd'):
+                    lo = raw.get('compensation_min_usd')
+                    hi = raw.get('compensation_max_usd')
+                    if lo and hi:
+                        comp_bits.append(f"${lo}–${hi}")
+                    elif lo:
+                        comp_bits.append(f"from ${lo}")
+                    elif hi:
+                        comp_bits.append(f"up to ${hi}")
+                if raw.get('compensation_type'):
+                    comp_bits.append(str(raw['compensation_type']))
+
+                desc_parts = [deliverable] if deliverable else [title]
+                if comp_bits:
+                    desc_parts.append("Pay: " + " · ".join(comp_bits))
+                desc_parts.append(f"Apply here: {apply_url}")
+                if raw.get('other_requirements'):
+                    desc_parts.append(f"Requirements: {raw['other_requirements']}")
+                campaign_description = "\n\n".join(p for p in desc_parts if p)
+
+                notes_bits = [fingerprint, f"source={source_platform}"]
+                if raw.get('legitimacy_score') is not None:
+                    notes_bits.append(f"score={raw['legitimacy_score']}")
+                if raw.get('apply_email'):
+                    notes_bits.append(f"email={raw['apply_email']}")
+                additional_notes = " | ".join(notes_bits)
+
+                niches = []
+                if raw.get('niche_required'):
+                    niches = [raw['niche_required']] if isinstance(raw['niche_required'], str) else list(raw['niche_required'])
+                elif raw.get('creator_niches'):
+                    niches = list(raw['creator_niches'])
+
+                follower_ranges = []
+                min_f = raw.get('min_followers')
+                if min_f:
+                    try:
+                        n = int(min_f)
+                        if n >= 50000:
+                            follower_ranges = ['50K+']
+                        elif n >= 10000:
+                            follower_ranges = ['10K-50K']
+                        else:
+                            follower_ranges = ['1K-10K']
+                    except (TypeError, ValueError):
+                        follower_ranges = ['1K-10K']
+
+                shipping = []
+                if raw.get('geo_required'):
+                    geo = str(raw['geo_required']).upper()
+                    for code in ('US', 'UK', 'AU', 'CA'):
+                        if code in geo:
+                            shipping.append(code)
+                if not shipping:
+                    shipping = ['US']
+
+                pr_value = raw.get('pr_value_usd') or raw.get('compensation_max_usd') or raw.get('compensation_min_usd')
+                try:
+                    pr_value = int(pr_value) if pr_value is not None else None
+                except (TypeError, ValueError):
+                    pr_value = None
+
+                deadline = raw.get('deadline') or raw.get('application_deadline') or None
+
+                # Placeholder email — scanner listings are not brand-submitted
+                brand_email = (raw.get('brand_email') or raw.get('apply_email') or 'sourced@newcollab.co').strip()
+                brand_website = apply_url[:500]
+
+                cursor.execute('''
+                    INSERT INTO opportunities (
+                        brand_name, brand_email, brand_website, brand_category,
+                        product_name, campaign_description, pr_value_usd,
+                        creator_count_range, shipping_regions, follower_ranges,
+                        content_types, creator_niches, additional_notes,
+                        application_deadline, spots_total, status
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending'
+                    ) RETURNING id
+                ''', (
+                    buyer[:255],
+                    brand_email[:255],
+                    brand_website,
+                    (raw.get('category') or raw.get('brand_category') or None),
+                    title[:255],
+                    campaign_description,
+                    pr_value,
+                    raw.get('creator_count_range', '5-10'),
+                    shipping,
+                    follower_ranges,
+                    raw.get('content_types') or ['TikTok', 'Reel', 'UGC'],
+                    niches,
+                    additional_notes,
+                    deadline,
+                    int(raw.get('spots_total') or 10),
+                ))
+                row = cursor.fetchone()
+                created.append({'id': row['id'], 'title': title, 'fingerprint': fingerprint})
+            except Exception as item_err:
+                errors.append({'title': raw.get('title'), 'error': str(item_err)})
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        if created:
+            send_email_notification(
+                'mahery@newcollab.co',
+                f'{len(created)} sourced gigs ready to review',
+                f'{len(created)} new listings from the gig scanner are in Admin → Opportunities.\n\n'
+                f'Review: https://app.newcollab.co/admin/opportunities\n\n'
+                f'Skipped duplicates: {len(skipped)}'
+            )
+
+        return jsonify({
+            'success': True,
+            'created': created,
+            'skipped': skipped,
+            'errors': errors,
+            'created_count': len(created),
+            'skipped_count': len(skipped),
+        }), 201
+
+    except Exception as e:
+        print(f"Error in admin_ingest: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============================================
 # ADMIN: Close/Pause opportunity
 # ============================================
 
