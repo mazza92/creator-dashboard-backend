@@ -1160,11 +1160,27 @@ def admin_edit(opp_id):
 
         updates = []
         values = []
+        int_fields = {'pr_value_usd', 'spots_total'}
 
         for field in allowed_fields:
-            if field in data:
-                updates.append(f'{field} = %s')
-                values.append(data[field])
+            if field not in data:
+                continue
+            value = data[field]
+            if field in int_fields:
+                if value is None or value == '':
+                    value = None
+                else:
+                    try:
+                        value = int(value)
+                    except (TypeError, ValueError):
+                        return jsonify({
+                            'success': False,
+                            'error': f'{field} must be an integer or empty'
+                        }), 400
+                    if field == 'spots_total' and value is not None and value < 1:
+                        value = 1
+            updates.append(f'{field} = %s')
+            values.append(value)
 
         if not updates:
             return jsonify({'success': False, 'error': 'No updates provided'}), 400
