@@ -10,6 +10,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import os
 from datetime import datetime, timedelta, date
+import re
 import requests
 
 opportunities_bp = Blueprint('opportunities', __name__, url_prefix='/api/opportunities')
@@ -236,9 +237,11 @@ def list_opportunities():
         # Get all live opportunities
         cursor.execute('''
             SELECT
-                id, brand_name, brand_category, brand_logo_url, product_name, campaign_description,
+                id, brand_name, brand_category, brand_logo_url, brand_website,
+                product_name, campaign_description,
                 pr_value_usd, creator_count_range, shipping_regions, follower_ranges,
-                content_types, creator_niches, spots_total, spots_filled, closes_at,
+                content_types, creator_niches, additional_notes,
+                spots_total, spots_filled, closes_at,
                 created_at
             FROM opportunities
             WHERE status = 'live'
@@ -273,13 +276,27 @@ def list_opportunities():
                 delta = (opp['closes_at'] - datetime.utcnow()).days
                 days_left = max(0, delta)
 
+            # Sourced gigs: external apply URL (LinkedIn/Reddit/Upwork/etc.)
+            notes = opp.get('additional_notes') or ''
+            external_apply_url = None
+            source_platform = None
+            if '[scanner:' in notes:
+                m_url = re.search(r'apply_url=(\S+)', notes)
+                external_apply_url = (m_url.group(1) if m_url else None) or opp.get('brand_website')
+                m_src = re.search(r'\[scanner:([^:\]]+):', notes)
+                source_platform = m_src.group(1) if m_src else None
+
+            desc = opp['campaign_description'] or ''
+            if external_apply_url:
+                desc = re.sub(r'\n*Apply here:\s*\S+', '', desc, flags=re.I).strip()
+
             serialized = {
                 'id': opp['id'],
                 'brand_name': opp['brand_name'],
                 'brand_category': opp['brand_category'],
                 'brand_logo_url': opp.get('brand_logo_url'),
                 'product_name': opp['product_name'],
-                'campaign_description': opp['campaign_description'],
+                'campaign_description': desc,
                 'pr_value_usd': opp['pr_value_usd'],
                 'creator_count_range': opp['creator_count_range'],
                 'shipping_regions': opp['shipping_regions'] or [],
@@ -289,7 +306,10 @@ def list_opportunities():
                 'spots_left': spots_left,
                 'days_left': days_left,
                 'is_matched': is_match,
-                'already_applied': opp['id'] in applied_ids
+                'already_applied': opp['id'] in applied_ids,
+                'external_apply_url': external_apply_url,
+                'source_platform': source_platform,
+                'apply_mode': 'external' if external_apply_url else 'kit',
             }
 
             if is_match:
@@ -802,7 +822,11 @@ def admin_ingest():
                     desc_parts.append(f"Requirements: {raw['other_requirements']}")
                 campaign_description = "\n\n".join(p for p in desc_parts if p)
 
-                notes_bits = [fingerprint, f"source={source_platform}"]
+                notes_bits = [
+                    fingerprint,
+                    f"source={source_platform}",
+                    f"apply_url={apply_url}",
+                ]
                 if raw.get('legitimacy_score') is not None:
                     notes_bits.append(f"score={raw['legitimacy_score']}")
                 if raw.get('apply_email'):
