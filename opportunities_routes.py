@@ -16,6 +16,47 @@ import requests
 opportunities_bp = Blueprint('opportunities', __name__, url_prefix='/api/opportunities')
 
 
+def _infer_short_niche(text: str) -> str | None:
+    t = (text or '').lower()
+    if any(w in t for w in ('parent', 'mom', 'dad', 'kids', 'family')):
+        return 'Parenting'
+    if any(w in t for w in ('beauty', 'skincare', 'makeup')):
+        return 'Beauty'
+    if any(w in t for w in ('fitness', 'gym', 'workout')):
+        return 'Fitness'
+    if any(w in t for w in ('food', 'recipe', 'cook')):
+        return 'Food'
+    if any(w in t for w in ('fashion', 'outfit', 'style')):
+        return 'Fashion'
+    return None
+
+
+def _short_pay_label(pr_value_usd, campaign_description: str) -> str | None:
+    """Compact pay signal for cards — avoid dumping long compensation blurbs."""
+    if pr_value_usd:
+        return f"${pr_value_usd}"
+
+    m_pay = re.search(r'Pay:\s*(.+)', campaign_description or '', re.I)
+    raw = m_pay.group(1).strip().split('\n')[0] if m_pay else ''
+    if not raw:
+        return None
+
+    m_dollar = re.search(r'\$[\d,]+(?:\s*[-–]\s*\$?[\d,]+)?(?:\s*/\s*\w+)?', raw)
+    if m_dollar:
+        return m_dollar.group(0)
+    if re.search(r'\bgift(ed)?\b|\bfree\s*product\b|\bproduct\s*only\b|\bpr\s*package\b', raw, re.I):
+        return 'Gifted product'
+    if re.search(r'\bunpaid\b|\bno\s*pay\b', raw, re.I):
+        return 'Unpaid'
+    if re.search(r'\bperformance\b|\bbonus|\bvolume\b|\bper\s*video\b|\bvideos?\s*per\b', raw, re.I):
+        return 'Paid · volume + bonuses'
+    if re.search(r'\bpaid\b|\bugc\b|\brate\b|\bcompensation\b', raw, re.I):
+        return 'Paid'
+    if len(raw) <= 32:
+        return raw
+    return 'Paid opportunity'
+
+
 def admin_required(f):
     """
     Decorator to require admin authentication.
@@ -319,12 +360,13 @@ def list_opportunities():
             elif opp.get('brand_category'):
                 display_niche = str(opp['brand_category']).replace('_', ' ').title()
 
-            pay_label = None
-            if opp.get('pr_value_usd'):
-                pay_label = f"${opp['pr_value_usd']}"
-            m_pay = re.search(r'Pay:\s*(.+)', opp.get('campaign_description') or '', re.I)
-            if m_pay:
-                pay_label = m_pay.group(1).strip().split('\n')[0][:60]
+            pay_label = _short_pay_label(opp.get('pr_value_usd'), opp.get('campaign_description') or '')
+            # Keep niche line short — scanner sometimes stores long role blurbs
+            if display_niche and len(display_niche) > 28:
+                inferred = _infer_short_niche(
+                    f"{opp.get('product_name') or ''} {opp.get('campaign_description') or ''}"
+                )
+                display_niche = inferred or display_niche.split(',')[0].split('(')[0].strip()[:28]
 
             serialized = {
                 'id': opp['id'],
