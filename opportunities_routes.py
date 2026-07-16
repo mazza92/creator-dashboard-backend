@@ -276,28 +276,67 @@ def list_opportunities():
                 delta = (opp['closes_at'] - datetime.utcnow()).days
                 days_left = max(0, delta)
 
-            # Sourced gigs: external apply URL (LinkedIn/Reddit/Upwork/etc.)
+            # Sourced gigs: external apply URL / email (LinkedIn/Reddit/Upwork/etc.)
             notes = opp.get('additional_notes') or ''
             external_apply_url = None
+            apply_email = None
             source_platform = None
-            if '[scanner:' in notes:
+            is_sourced = '[scanner:' in notes
+            if is_sourced:
                 m_url = re.search(r'apply_url=(\S+)', notes)
                 external_apply_url = (m_url.group(1) if m_url else None) or opp.get('brand_website')
                 m_src = re.search(r'\[scanner:([^:\]]+):', notes)
                 source_platform = m_src.group(1) if m_src else None
+                m_email = re.search(r'email=(\S+)', notes)
+                if m_email:
+                    apply_email = m_email.group(1).strip()
+                # Prefer real brand apply email over placeholder
+                be = (opp.get('brand_email') or '').strip().lower()
+                if be and be not in ('sourced@newcollab.co', 'mahery@newcollab.co'):
+                    apply_email = apply_email or opp.get('brand_email')
+
+            # Mailto wins when we only have email (no useful URL), else URL
+            apply_mode = 'kit'
+            if is_sourced:
+                if external_apply_url and not str(external_apply_url).startswith('mailto:'):
+                    apply_mode = 'url'
+                elif apply_email:
+                    apply_mode = 'email'
+                    external_apply_url = None
+                elif external_apply_url:
+                    apply_mode = 'url'
 
             desc = opp['campaign_description'] or ''
-            if external_apply_url:
+            if is_sourced:
                 desc = re.sub(r'\n*Apply here:\s*\S+', '', desc, flags=re.I).strip()
+                desc = re.sub(r'\n*Pay:\s*', '\n', desc).strip()
+
+            niches = opp_niches if isinstance(opp_niches, list) else []
+            # Prefer creator niche targets over coarse brand_category (often stuck on "tech")
+            display_niche = None
+            if niches:
+                display_niche = ', '.join(str(n) for n in niches if n)[:80]
+            elif opp.get('brand_category'):
+                display_niche = str(opp['brand_category']).replace('_', ' ').title()
+
+            pay_label = None
+            if opp.get('pr_value_usd'):
+                pay_label = f"${opp['pr_value_usd']}"
+            m_pay = re.search(r'Pay:\s*(.+)', opp.get('campaign_description') or '', re.I)
+            if m_pay:
+                pay_label = m_pay.group(1).strip().split('\n')[0][:60]
 
             serialized = {
                 'id': opp['id'],
                 'brand_name': opp['brand_name'],
                 'brand_category': opp['brand_category'],
+                'display_niche': display_niche,
+                'creator_niches': niches,
                 'brand_logo_url': opp.get('brand_logo_url'),
                 'product_name': opp['product_name'],
                 'campaign_description': desc,
                 'pr_value_usd': opp['pr_value_usd'],
+                'pay_label': pay_label,
                 'creator_count_range': opp['creator_count_range'],
                 'shipping_regions': opp['shipping_regions'] or [],
                 'follower_ranges': opp['follower_ranges'] or [],
@@ -308,8 +347,10 @@ def list_opportunities():
                 'is_matched': is_match,
                 'already_applied': opp['id'] in applied_ids,
                 'external_apply_url': external_apply_url,
+                'apply_email': apply_email,
                 'source_platform': source_platform,
-                'apply_mode': 'external' if external_apply_url else 'kit',
+                'apply_mode': apply_mode,
+                'is_sourced': is_sourced,
             }
 
             if is_match:
@@ -346,7 +387,8 @@ def apply_opportunity(opp_id):
 
         # Get opportunity
         cursor.execute('''
-            SELECT id, brand_name, brand_email, product_name, status, spots_total, spots_filled
+            SELECT id, brand_name, brand_email, brand_website, product_name, status,
+                   spots_total, spots_filled, additional_notes
             FROM opportunities
             WHERE id = %s
         ''', (opp_id,))
@@ -362,7 +404,11 @@ def apply_opportunity(opp_id):
             conn.close()
             return jsonify({'success': False, 'error': 'This opportunity is no longer active'}), 400
 
-        if opp['spots_filled'] >= opp['spots_total']:
+        notes = opp.get('additional_notes') or ''
+        is_sourced = '[scanner:' in notes
+
+        # Spots capacity only for brand-submitted PR campaigns (not sourced gigs)
+        if not is_sourced and opp['spots_filled'] >= opp['spots_total']:
             cursor.close()
             conn.close()
             return jsonify({'success': False, 'error': 'No spots remaining'}), 400
@@ -379,7 +425,7 @@ def apply_opportunity(opp_id):
             conn.close()
             return jsonify({'success': False, 'error': 'You have already applied'}), 409
 
-        # Check pitch/application limits (same pool as pitches)
+        # Check pitch/application limits (same pool as pitches) — free = 3/month
         cursor.execute('''
             SELECT subscription_tier, pitches_sent_this_week, last_pitch_reset
             FROM creators
@@ -401,6 +447,11 @@ def apply_opportunity(opp_id):
         month_start = today.replace(day=1)
         if last_reset is None or (isinstance(last_reset, date) and last_reset < month_start):
             pitches_used = 0
+            cursor.execute('''
+                UPDATE creators
+                SET pitches_sent_this_week = 0, last_pitch_reset = %s
+                WHERE id = %s
+            ''', (month_start, creator_id))
 
         FREE_MONTHLY_LIMIT = 3
         is_pro = tier in ['pro', 'elite']
@@ -411,8 +462,30 @@ def apply_opportunity(opp_id):
             return jsonify({
                 'success': False,
                 'error': 'limit_reached',
+                'limit': FREE_MONTHLY_LIMIT,
+                'used': pitches_used,
                 'message': 'You have used all your free applications this month'
             }), 403
+
+        # Resolve apply path for sourced gigs
+        external_apply_url = None
+        apply_email = None
+        apply_mode = 'kit'
+        if is_sourced:
+            m_url = re.search(r'apply_url=(\S+)', notes)
+            external_apply_url = (m_url.group(1) if m_url else None) or opp.get('brand_website')
+            m_email = re.search(r'email=(\S+)', notes)
+            if m_email:
+                apply_email = m_email.group(1).strip()
+            be = (opp.get('brand_email') or '').strip().lower()
+            if be and be not in ('sourced@newcollab.co', 'mahery@newcollab.co'):
+                apply_email = apply_email or opp.get('brand_email')
+            if external_apply_url and not str(external_apply_url).startswith('mailto:'):
+                apply_mode = 'url'
+            elif apply_email:
+                apply_mode = 'email'
+            elif external_apply_url:
+                apply_mode = 'url'
 
         # Create application
         cursor.execute('''
@@ -421,14 +494,15 @@ def apply_opportunity(opp_id):
             RETURNING id
         ''', (opp_id, creator_id))
 
-        # Increment spots filled
-        cursor.execute('''
-            UPDATE opportunities
-            SET spots_filled = spots_filled + 1
-            WHERE id = %s
-        ''', (opp_id,))
+        # Increment spots filled only for brand PR campaigns
+        if not is_sourced:
+            cursor.execute('''
+                UPDATE opportunities
+                SET spots_filled = spots_filled + 1
+                WHERE id = %s
+            ''', (opp_id,))
 
-        # Increment pitch count (uses same pool)
+        # Increment application/pitch count (uses same pool) — always deduct quota
         cursor.execute('''
             UPDATE creators
             SET pitches_sent_this_week = COALESCE(pitches_sent_this_week, 0) + 1,
@@ -449,8 +523,9 @@ def apply_opportunity(opp_id):
         cursor.close()
         conn.close()
 
-        # Notify brand
-        if creator_info:
+        # Notify brand only for real brand-submitted campaigns (not sourced placeholder inbox)
+        brand_email = (opp.get('brand_email') or '').strip().lower()
+        if creator_info and brand_email and brand_email not in ('sourced@newcollab.co',):
             niche_str = creator_info['niche'] or 'Creator'
             slug = creator_info['kit_slug'] or creator_info['username']
             send_email_notification(
@@ -462,7 +537,14 @@ def apply_opportunity(opp_id):
                 f'Reply to this email to approve or decline.'
             )
 
-        return jsonify({'success': True}), 201
+        return jsonify({
+            'success': True,
+            'apply_mode': apply_mode,
+            'external_apply_url': external_apply_url,
+            'apply_email': apply_email,
+            'used': pitches_used + 1,
+            'limit': FREE_MONTHLY_LIMIT if not is_pro else None,
+        }), 201
 
     except Exception as e:
         print(f"Error in apply_opportunity: {str(e)}")
@@ -838,6 +920,18 @@ def admin_ingest():
                     niches = [raw['niche_required']] if isinstance(raw['niche_required'], str) else list(raw['niche_required'])
                 elif raw.get('creator_niches'):
                     niches = list(raw['creator_niches'])
+                # Infer niche from title when classifier left it empty
+                if not niches:
+                    title_l = title.lower()
+                    if any(w in title_l for w in ('parent', 'mom', 'dad', 'kids', 'family')):
+                        niches = ['Parenting']
+                    elif any(w in title_l for w in ('beauty', 'skincare', 'makeup')):
+                        niches = ['Beauty']
+                    elif any(w in title_l for w in ('fitness', 'gym', 'workout')):
+                        niches = ['Fitness']
+                    elif any(w in title_l for w in ('food', 'recipe', 'cook')):
+                        niches = ['Food']
+                niches = [str(n).strip().title() for n in niches if n]
 
                 follower_ranges = []
                 min_f = raw.get('min_followers')
@@ -888,7 +982,8 @@ def admin_ingest():
                     buyer[:255],
                     brand_email[:255],
                     brand_website,
-                    (raw.get('category') or raw.get('brand_category') or None),
+                    # Prefer niche label over coarse category when we have one
+                    (niches[0] if niches else (raw.get('category') or raw.get('brand_category') or None)),
                     title[:255],
                     campaign_description,
                     pr_value,
