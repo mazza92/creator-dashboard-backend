@@ -447,20 +447,28 @@ def list_opportunities():
                 desc = re.sub(r'\n*Pay:\s*', '\n', desc).strip()
 
             niches = opp_niches if isinstance(opp_niches, list) else []
-            # Prefer creator niche targets over coarse brand_category (often stuck on "tech")
+            # Card label: admin brand_category wins (editable in /admin/opportunities).
+            # Fall back to first creator niche, then text inference.
             display_niche = None
-            if niches:
-                display_niche = ', '.join(str(n) for n in niches if n)[:80]
-            elif opp.get('brand_category'):
-                display_niche = str(opp['brand_category']).replace('_', ' ').title()
+            bc = (opp.get('brand_category') or '').strip()
+            if bc and bc.lower() not in ('other', 'unknown', 'n/a', 'none'):
+                display_niche = bc.replace('_', ' ').strip()
+                if display_niche.islower() or '_' in bc:
+                    display_niche = display_niche.title()
+            elif niches:
+                first = str(next((n for n in niches if n), '')).strip()
+                if first:
+                    display_niche = first.split(',')[0].split('(')[0].strip()[:28] or None
 
             pay_label = _short_pay_label(opp.get('pr_value_usd'), opp.get('campaign_description') or '')
-            # Keep niche line short — scanner sometimes stores long role blurbs
-            if display_niche and len(display_niche) > 28:
+            if not display_niche or len(display_niche) > 28:
                 inferred = _infer_short_niche(
                     f"{opp.get('product_name') or ''} {opp.get('campaign_description') or ''}"
                 )
-                display_niche = inferred or display_niche.split(',')[0].split('(')[0].strip()[:28]
+                if inferred:
+                    display_niche = inferred
+                elif display_niche and len(display_niche) > 28:
+                    display_niche = display_niche.split(',')[0].split('(')[0].strip()[:28]
 
             serialized = {
                 'id': opp['id'],
