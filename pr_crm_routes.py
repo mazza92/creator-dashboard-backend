@@ -3139,9 +3139,8 @@ def get_pitch_limits():
         if last_reset is None or last_reset < month_start:
             pitches_used = 0
 
-        # DEPRECATED: Use /api/pr-crm/unlocks/balance instead
-        # FREE users get 5 contacts per MONTH (new credit unlock system)
-        FREE_MONTHLY_LIMIT = 5
+        # Applications/pitches: free users get 3 per month
+        FREE_MONTHLY_LIMIT = 3
         is_pro = tier in ['pro', 'elite']
 
         return jsonify({
@@ -3213,9 +3212,8 @@ def track_pitch():
         if last_reset is None or last_reset < month_start:
             pitches_used = 0
 
-        # DEPRECATED: Use new credit unlock system (attempt_unlock) instead
-        # Free users get 5 contacts per MONTH
-        FREE_MONTHLY_LIMIT = 5
+        # Applications/pitches: free users get 3 per month
+        FREE_MONTHLY_LIMIT = 3
         is_pro = tier in ['pro', 'elite']
 
         if not is_pro and pitches_used >= FREE_MONTHLY_LIMIT:
@@ -3223,7 +3221,7 @@ def track_pitch():
             conn.close()
             return jsonify({
                 'success': False,
-                'error': 'Monthly contact limit reached. Upgrade to Pro for unlimited contacts!',
+                'error': 'Monthly application limit reached. Upgrade to Pro for unlimited applications!',
                 'upgrade_required': True,
                 'used': pitches_used,
                 'limit': FREE_MONTHLY_LIMIT
@@ -3353,7 +3351,7 @@ def generate_pitch():
                     'paywall': True,
                     'remaining': 0,
                     'reset_at': unlock_result.get('reset_at'),
-                    'message': "You've used all 5 contacts this month."
+                    'message': "You've used all 3 unlocks this month."
                 }), 402  # Payment Required
 
             if unlock_result['status'] == 'error':
@@ -5906,6 +5904,9 @@ def get_subscription_status(creator_id):
 # CREDIT UNLOCK SYSTEM
 # ============================================
 
+FREE_UNLOCK_LIMIT = 3  # Free users get 3 brand unlocks per month
+
+
 def attempt_unlock(creator_id, brand_id, conn=None):
     """
     Core unlock gate function. Call this before generating a pitch.
@@ -5968,15 +5969,21 @@ def attempt_unlock(creator_id, brand_id, conn=None):
 
         if unlocks_reset_at and datetime.now() > unlocks_reset_at:
             # Reset the monthly credits
-            unlocks_remaining = 5
+            unlocks_remaining = FREE_UNLOCK_LIMIT
             cursor.execute('''
                 UPDATE creators
-                SET unlocks_remaining = 5,
+                SET unlocks_remaining = %s,
                     unlocks_reset_at = NOW() + INTERVAL '30 days'
                 WHERE id = %s
-            ''', (creator_id,))
+            ''', (FREE_UNLOCK_LIMIT, creator_id))
             cursor.execute('SELECT unlocks_reset_at FROM creators WHERE id = %s', (creator_id,))
             unlocks_reset_at = cursor.fetchone().get('unlocks_reset_at')
+        elif unlocks_remaining > FREE_UNLOCK_LIMIT:
+            # Cap leftover credits from the previous 5/month limit
+            unlocks_remaining = FREE_UNLOCK_LIMIT
+            cursor.execute('''
+                UPDATE creators SET unlocks_remaining = %s WHERE id = %s
+            ''', (FREE_UNLOCK_LIMIT, creator_id))
 
         # Check if user has credits
         if unlocks_remaining <= 0:
@@ -6077,7 +6084,9 @@ def can_unlock(creator_id, brand_id, conn=None):
 
         # Check if reset needed (but don't actually reset here)
         if unlocks_reset_at and datetime.now() > unlocks_reset_at:
-            unlocks_remaining = 5  # Would be reset on next attempt_unlock
+            unlocks_remaining = FREE_UNLOCK_LIMIT  # Would be reset on next attempt_unlock
+        elif unlocks_remaining > FREE_UNLOCK_LIMIT:
+            unlocks_remaining = FREE_UNLOCK_LIMIT
 
         if unlocks_remaining <= 0:
             return {
@@ -6137,16 +6146,18 @@ def get_creator_unlock_balance(creator_id, conn=None):
         FROM creators WHERE id = %s
     ''', (creator_id,))
     creator = cursor.fetchone()
-    cursor.close()
-
-    if close_conn:
-        conn.close()
 
     if not creator:
+        cursor.close()
+        if close_conn:
+            conn.close()
         return None
 
     # Pro/Elite = unlimited
     if creator.get('unlocks_tier') == 'pro' or creator.get('subscription_tier') in ('pro', 'elite'):
+        cursor.close()
+        if close_conn:
+            conn.close()
         return {
             "tier": "pro",
             "remaining": None,  # unlimited
@@ -6159,17 +6170,26 @@ def get_creator_unlock_balance(creator_id, conn=None):
     unlocks_reset_at = creator.get('unlocks_reset_at')
 
     if unlocks_reset_at and datetime.now() > unlocks_reset_at:
-        unlocks_remaining = 5  # Would reset on next attempt_unlock
+        unlocks_remaining = FREE_UNLOCK_LIMIT  # Would reset on next attempt_unlock
+    elif unlocks_remaining > FREE_UNLOCK_LIMIT:
+        unlocks_remaining = FREE_UNLOCK_LIMIT
+        cursor.execute('''
+            UPDATE creators SET unlocks_remaining = %s WHERE id = %s
+        ''', (FREE_UNLOCK_LIMIT, creator_id))
+        conn.commit()
 
-    # Calculate used for Hunter.io style display: "X remaining (Y used of 5)"
-    FREE_LIMIT = 5
-    used = FREE_LIMIT - unlocks_remaining
+    cursor.close()
+    if close_conn:
+        conn.close()
+
+    # Calculate used for Hunter.io style display: "X remaining (Y used of N)"
+    used = max(0, FREE_UNLOCK_LIMIT - unlocks_remaining)
 
     return {
         "tier": "free",
         "remaining": unlocks_remaining,
         "used": used,
-        "limit": FREE_LIMIT,
+        "limit": FREE_UNLOCK_LIMIT,
         "reset_at": unlocks_reset_at.isoformat() if unlocks_reset_at else None,
         "is_unlimited": False
     }

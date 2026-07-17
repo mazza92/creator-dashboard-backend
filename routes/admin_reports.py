@@ -713,7 +713,7 @@ def get_quota_hits():
 
         today = datetime.now().date()
 
-        # Users at daily limit (5 unlocks for free tier)
+        # Users at unlock limit (3 unlocks for free tier)
         cursor.execute("""
             SELECT COUNT(*) as count
             FROM creators
@@ -2403,11 +2403,11 @@ def send_nudge_email():
         if first_brand:
             subject = f"{first_brand} hasn't replied yet — here's what to do"
         else:
-            subject = f"{display_name}, your 5 free contacts are out — here's what's next"
+            subject = f"{display_name}, your 3 free unlocks are out — here's what's next"
 
         email_context = {
             'subject': subject,
-            'preheader': f"You've used your 5 free contacts. Here's the status of each one.",
+            'preheader': f"You've used your 3 free unlocks. Here's the status of each one.",
             'message': message_html,
             'action_url': f'{frontend_url}/creator/dashboard/settings?upgrade=pro&ref=quota_email&utm_source=email&utm_medium=trigger&utm_campaign=quota_hit',
             'action_text': 'Unlock Pro — $19/month →',

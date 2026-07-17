@@ -111,9 +111,8 @@ def check_subscription_limits(creator_id, action_type):
 
     tier = creator['subscription_tier'] or 'free'
 
-    # DEPRECATED: Use new credit unlock system in pr_crm_routes.py instead
-    # Free users now get 5 contacts per MONTH (not week)
-    FREE_MONTHLY_LIMIT = 5
+    # Free users get 3 unlocks/contacts per MONTH (not week)
+    FREE_MONTHLY_LIMIT = 3
     # Pro/Elite: unlimited
 
     if tier == 'free':
@@ -125,7 +124,7 @@ def check_subscription_limits(creator_id, action_type):
         if action_type == 'send_pitch':
             count = creator['pitches_sent_this_week'] or 0
             if count >= FREE_MONTHLY_LIMIT:
-                return False, f"You've used all your free contacts this month. Upgrade to Pro for unlimited contacts!", count, FREE_MONTHLY_LIMIT
+                return False, f"You've used all your free applications this month. Upgrade to Pro for unlimited!", count, FREE_MONTHLY_LIMIT
             return True, "", count, FREE_MONTHLY_LIMIT
 
     # Pro and Elite: unlimited everything

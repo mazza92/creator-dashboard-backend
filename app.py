@@ -3769,27 +3769,23 @@ NOTIFICATION_TEMPLATES = {
             'subject': lambda data: f"Welcome to Newcollab, {data.get('first_name', '')}!",
             'message': lambda data: (
                 f"<p>Hi {data.get('first_name', 'there')},</p>"
-                f"<p>Welcome to Newcollab — your account is ready.</p>"
-                f"<p>You now have access to <strong>500+ brands</strong> with PR application forms and direct contact details. "
-                f"Browse by niche, filter by PR form or email, and start applying today.</p>"
+                f"<p>Welcome to Newcollab — you're in.</p>"
+                f"<p>Browse <strong>500+ brands</strong> that accept PR applications, see which ones fit your niche, "
+                f"and unlock contacts when you're ready to reach out.</p>"
                 f"<p><strong>Your free plan includes:</strong></p>"
                 f"<ul style='margin:0 0 16px;padding-left:20px;line-height:1.7;'>"
-                f"<li>5 brand contacts per month</li>"
-                f"<li>Direct PR application form links</li>"
-                f"<li>Response rate insights per brand</li>"
+                f"<li>3 brand unlocks per month (strategy + contacts)</li>"
+                f"<li>3 free applications to open opportunities</li>"
+                f"<li>Match scores and reply-rate insights</li>"
                 f"</ul>"
-                f"<p>Most creators land their first PR package within 2 weeks when they apply consistently.</p>"
-                + (
-                    f"<p style='margin-top:16px;'><a href=\"{data.get('public_profile_url')}\" "
-                    f"style='color:#1d1d1f;font-weight:600;text-decoration:underline;'>View your public profile →</a></p>"
-                    if data.get('public_profile_url') else ""
-                )
+                f"<p>Creators who apply consistently usually land their first PR package within 2 weeks. "
+                f"Start with one brand that fits — we'll handle the rest.</p>"
             ),
-            'preheader': lambda data: 'Browse 500+ PR forms for brands with direct application links',
+            'preheader': lambda data: '3 free unlocks + 500+ PR brands waiting for you',
             'action_url': lambda data: f"{get_base_url()}/creator/dashboard/pr-brands",
-            'action_text': lambda data: "Browse PR brands",
-            'secondary_action_url': lambda data: data.get('public_profile_url'),
-            'secondary_action_text': lambda data: "View Your Profile" if data.get('public_profile_url') else None
+            'action_text': lambda data: "Browse brands",
+            'secondary_action_url': lambda data: None,
+            'secondary_action_text': lambda data: None
         },
         'brand': {
             'subject': lambda data: f"Welcome to Newcollab, {data.get('first_name', '')}!",

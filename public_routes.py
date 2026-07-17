@@ -778,8 +778,8 @@ def unlock_brand_access(slug):
             last_unlock = creator.get('last_unlock_date')
             monthly_unlocks = creator.get('daily_unlocks_used', 0)  # Reusing column for monthly tracking
 
-            app.logger.info(f"🔍 Free user quota check - Current: {monthly_unlocks}/5, Last unlock: {last_unlock}, Month start: {month_start}")
-            print(f"🔍 Free user quota check - Current: {monthly_unlocks}/5, Last unlock: {last_unlock}, Month start: {month_start}")
+            app.logger.info(f"🔍 Free user quota check - Current: {monthly_unlocks}/3, Last unlock: {last_unlock}, Month start: {month_start}")
+            print(f"🔍 Free user quota check - Current: {monthly_unlocks}/3, Last unlock: {last_unlock}, Month start: {month_start}")
 
             # Reset if it's a new month
             if last_unlock is None or last_unlock < month_start:
@@ -787,8 +787,8 @@ def unlock_brand_access(slug):
                 app.logger.info(f"🔄 Resetting monthly counter (new month or first unlock)")
                 print(f"🔄 Resetting monthly counter (new month or first unlock)")
 
-            # Check if limit reached - 5 unlocks per MONTH
-            MONTHLY_LIMIT = 5
+            # Check if limit reached - 3 unlocks per MONTH
+            MONTHLY_LIMIT = 3
             if monthly_unlocks >= MONTHLY_LIMIT:
                 app.logger.warning(f"🚫 Monthly quota limit reached for creator {creator_id}")
                 print(f"🚫 Monthly quota limit reached for creator {creator_id}")
