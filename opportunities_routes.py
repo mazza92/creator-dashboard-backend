@@ -57,6 +57,123 @@ def _short_pay_label(pr_value_usd, campaign_description: str) -> str | None:
     return 'Paid opportunity'
 
 
+_PLACEHOLDER_EMAILS = frozenset({
+    'sourced@newcollab.co',
+    'mahery@newcollab.co',
+})
+
+
+def _is_real_apply_email(email) -> bool:
+    e = (email or '').strip().lower()
+    return bool(e) and '@' in e and '.' in e.split('@')[-1] and e not in _PLACEHOLDER_EMAILS
+
+
+def _notes_get(notes: str, key: str):
+    m = re.search(rf'(?:^|\|\s*){re.escape(key)}=(\S+)', notes or '', re.I)
+    if not m:
+        return None
+    return m.group(1).strip().rstrip('|')
+
+
+def _notes_set(notes: str, key: str, value) -> str:
+    """Set or remove a key=value token in additional_notes (pipe-delimited)."""
+    notes = (notes or '').strip()
+    pattern = rf'(?:^|\|\s*){re.escape(key)}=\S+'
+    notes = re.sub(pattern, '', notes, flags=re.I)
+    notes = re.sub(r'\s*\|\s*', ' | ', notes).strip(' |')
+    if value is None or value == '':
+        return notes
+    token = f'{key}={value}'
+    return f'{notes} | {token}' if notes else token
+
+
+def _resolve_apply_path(opp) -> dict:
+    """
+    Decide how a creator applies:
+      - url: open external application URL
+      - email: open creator mail app to Brand Email (mailto only)
+      - kit: classic media-kit application email
+    """
+    notes = opp.get('additional_notes') or ''
+    is_sourced = '[scanner:' in notes
+
+    source_platform = None
+    m_src = re.search(r'\[scanner:([^:\]]+):', notes)
+    if m_src:
+        source_platform = m_src.group(1)
+
+    brand_email = (opp.get('brand_email') or '').strip()
+    notes_email = _notes_get(notes, 'email')
+    apply_email = brand_email if _is_real_apply_email(brand_email) else None
+    if not apply_email and _is_real_apply_email(notes_email):
+        apply_email = notes_email.strip()
+
+    # Real application link from scanner/admin notes (not a generic homepage)
+    notes_apply_url = _notes_get(notes, 'apply_url')
+    website = (opp.get('brand_website') or '').strip()
+
+    def _as_http_url(value):
+        if not value:
+            return None
+        v = str(value).strip()
+        if v.lower().startswith('mailto:'):
+            return v  # handled below
+        if v.lower().startswith(('http://', 'https://')):
+            return v
+        return None
+
+    external_apply_url = _as_http_url(notes_apply_url)
+    website_url = _as_http_url(website)
+
+    # mailto: stored as apply_url → email path
+    for candidate in (external_apply_url, website_url):
+        if candidate and str(candidate).lower().startswith('mailto:'):
+            mail = candidate.split(':', 1)[1].split('?')[0].strip()
+            if _is_real_apply_email(mail):
+                apply_email = apply_email or mail
+            if external_apply_url == candidate:
+                external_apply_url = None
+            if website_url == candidate:
+                website_url = None
+
+    explicit = (_notes_get(notes, 'apply_mode') or '').lower()
+    if explicit not in ('url', 'email', 'kit', 'auto'):
+        explicit = 'auto'
+
+    # URL used when forcing url mode: prefer notes apply_url, else website
+    url_for_mode = external_apply_url or website_url
+
+    if explicit == 'email' and apply_email:
+        mode = 'email'
+    elif explicit == 'url' and url_for_mode:
+        mode = 'url'
+        external_apply_url = url_for_mode
+    elif explicit == 'kit':
+        mode = 'kit'
+    elif is_sourced:
+        # Auto: dedicated apply_url → URL; else real Brand Email → mailto;
+        # brand website alone is not enough to prefer URL over email.
+        if external_apply_url:
+            mode = 'url'
+        elif apply_email:
+            mode = 'email'
+        elif website_url:
+            mode = 'url'
+            external_apply_url = website_url
+        else:
+            mode = 'kit'
+    else:
+        mode = 'kit'
+
+    return {
+        'apply_mode': mode,
+        'external_apply_url': external_apply_url if mode == 'url' else None,
+        'apply_email': apply_email,
+        'source_platform': source_platform,
+        'is_sourced': is_sourced,
+    }
+
+
 def admin_required(f):
     """
     Decorator to require admin authentication.
@@ -317,35 +434,12 @@ def list_opportunities():
                 delta = (opp['closes_at'] - datetime.utcnow()).days
                 days_left = max(0, delta)
 
-            # Sourced gigs: external apply URL / email (LinkedIn/Reddit/Upwork/etc.)
-            notes = opp.get('additional_notes') or ''
-            external_apply_url = None
-            apply_email = None
-            source_platform = None
-            is_sourced = '[scanner:' in notes
-            if is_sourced:
-                m_url = re.search(r'apply_url=(\S+)', notes)
-                external_apply_url = (m_url.group(1) if m_url else None) or opp.get('brand_website')
-                m_src = re.search(r'\[scanner:([^:\]]+):', notes)
-                source_platform = m_src.group(1) if m_src else None
-                m_email = re.search(r'email=(\S+)', notes)
-                if m_email:
-                    apply_email = m_email.group(1).strip()
-                # Prefer real brand apply email over placeholder
-                be = (opp.get('brand_email') or '').strip().lower()
-                if be and be not in ('sourced@newcollab.co', 'mahery@newcollab.co'):
-                    apply_email = apply_email or opp.get('brand_email')
-
-            # Mailto wins when we only have email (no useful URL), else URL
-            apply_mode = 'kit'
-            if is_sourced:
-                if external_apply_url and not str(external_apply_url).startswith('mailto:'):
-                    apply_mode = 'url'
-                elif apply_email:
-                    apply_mode = 'email'
-                    external_apply_url = None
-                elif external_apply_url:
-                    apply_mode = 'url'
+            path = _resolve_apply_path(opp)
+            is_sourced = path['is_sourced']
+            apply_mode = path['apply_mode']
+            external_apply_url = path['external_apply_url']
+            apply_email = path['apply_email']
+            source_platform = path['source_platform']
 
             desc = opp['campaign_description'] or ''
             if is_sourced:
@@ -446,8 +540,27 @@ def apply_opportunity(opp_id):
             conn.close()
             return jsonify({'success': False, 'error': 'This opportunity is no longer active'}), 400
 
-        notes = opp.get('additional_notes') or ''
-        is_sourced = '[scanner:' in notes
+        path = _resolve_apply_path(opp)
+        is_sourced = path['is_sourced']
+        apply_mode = path['apply_mode']
+        external_apply_url = path['external_apply_url']
+        apply_email = path['apply_email']
+
+        if apply_mode == 'email' and not apply_email:
+            cursor.close()
+            conn.close()
+            return jsonify({
+                'success': False,
+                'error': 'This opportunity has no brand email set for applications'
+            }), 400
+
+        if apply_mode == 'url' and not external_apply_url:
+            cursor.close()
+            conn.close()
+            return jsonify({
+                'success': False,
+                'error': 'This opportunity has no application URL'
+            }), 400
 
         # Spots capacity only for brand-submitted PR campaigns (not sourced gigs)
         if not is_sourced and opp['spots_filled'] >= opp['spots_total']:
@@ -509,26 +622,6 @@ def apply_opportunity(opp_id):
                 'message': 'You have used all your free applications this month'
             }), 403
 
-        # Resolve apply path for sourced gigs
-        external_apply_url = None
-        apply_email = None
-        apply_mode = 'kit'
-        if is_sourced:
-            m_url = re.search(r'apply_url=(\S+)', notes)
-            external_apply_url = (m_url.group(1) if m_url else None) or opp.get('brand_website')
-            m_email = re.search(r'email=(\S+)', notes)
-            if m_email:
-                apply_email = m_email.group(1).strip()
-            be = (opp.get('brand_email') or '').strip().lower()
-            if be and be not in ('sourced@newcollab.co', 'mahery@newcollab.co'):
-                apply_email = apply_email or opp.get('brand_email')
-            if external_apply_url and not str(external_apply_url).startswith('mailto:'):
-                apply_mode = 'url'
-            elif apply_email:
-                apply_mode = 'email'
-            elif external_apply_url:
-                apply_mode = 'url'
-
         # Create application
         cursor.execute('''
             INSERT INTO opportunity_applications (opportunity_id, creator_id)
@@ -565,19 +658,25 @@ def apply_opportunity(opp_id):
         cursor.close()
         conn.close()
 
-        # Notify brand only for real brand-submitted campaigns (not sourced placeholder inbox)
-        brand_email = (opp.get('brand_email') or '').strip().lower()
-        if creator_info and brand_email and brand_email not in ('sourced@newcollab.co',):
-            niche_str = creator_info['niche'] or 'Creator'
-            slug = creator_info['kit_slug'] or creator_info['username']
-            send_email_notification(
-                opp['brand_email'],
-                f'New application from {creator_info["username"]} for {opp["product_name"]}',
-                f'{creator_info["username"]} ({creator_info["followers_count"]} followers, {niche_str}) '
-                f'applied to your opportunity.\n\n'
-                f'View their media kit: https://app.newcollab.co/kit/{slug}\n\n'
-                f'Reply to this email to approve or decline.'
-            )
+        # Classic kit applies: platform emails the brand. Email-mode applies only open
+        # the creator's mail app (mailto) on the client — no SendGrid send.
+        if apply_mode == 'kit' and creator_info:
+            notify_to = None
+            if apply_email and _is_real_apply_email(apply_email):
+                notify_to = apply_email
+            elif _is_real_apply_email(opp.get('brand_email')):
+                notify_to = opp.get('brand_email')
+            if notify_to:
+                niche_str = creator_info['niche'] or 'Creator'
+                slug = creator_info['kit_slug'] or creator_info['username']
+                send_email_notification(
+                    notify_to,
+                    f'New application from {creator_info["username"]} for {opp["product_name"]}',
+                    f'{creator_info["username"]} ({creator_info["followers_count"]} followers, {niche_str}) '
+                    f'applied to your opportunity.\n\n'
+                    f'View their media kit: https://app.newcollab.co/kit/{slug}\n\n'
+                    f'Reply to this email to approve or decline.'
+                )
 
         return jsonify({
             'success': True,
@@ -625,6 +724,7 @@ def admin_list():
         # Convert datetime objects to strings
         opportunities = []
         for opp in opps:
+            path = _resolve_apply_path(opp)
             opportunities.append({
                 'id': opp['id'],
                 'brand_name': opp['brand_name'],
@@ -641,6 +741,12 @@ def admin_list():
                 'content_types': opp['content_types'] or [],
                 'creator_niches': opp['creator_niches'] or [],
                 'additional_notes': opp['additional_notes'],
+                'apply_mode': path['apply_mode'],
+                'apply_via': _notes_get(opp.get('additional_notes') or '', 'apply_mode') or 'auto',
+                'external_apply_url': path['external_apply_url'] or _notes_get(opp.get('additional_notes') or '', 'apply_url'),
+                'apply_email': path['apply_email'],
+                'is_sourced': path['is_sourced'],
+                'source_platform': path['source_platform'],
                 'application_deadline': opp['application_deadline'].isoformat() if opp['application_deadline'] else None,
                 'spots_total': opp['spots_total'],
                 'spots_filled': opp['spots_filled'],
@@ -1149,6 +1255,16 @@ def admin_edit(opp_id):
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         data = request.get_json() or {}
 
+        cursor.execute(
+            'SELECT additional_notes, brand_email FROM opportunities WHERE id = %s',
+            (opp_id,)
+        )
+        existing = cursor.fetchone()
+        if not existing:
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'Opportunity not found'}), 404
+
         # Build update query dynamically for allowed fields
         allowed_fields = [
             'brand_name', 'brand_website', 'brand_email', 'brand_category',
@@ -1181,6 +1297,51 @@ def admin_edit(opp_id):
                         value = 1
             updates.append(f'{field} = %s')
             values.append(value)
+
+        # Apply path controls (stored in additional_notes)
+        notes = data.get('additional_notes', existing.get('additional_notes') or '')
+        notes_dirty = False
+
+        if 'apply_url' in data:
+            url = (data.get('apply_url') or '').strip()
+            notes = _notes_set(notes, 'apply_url', url or None)
+            notes_dirty = True
+            if url and 'brand_website' not in data:
+                updates.append('brand_website = %s')
+                values.append(url[:500])
+
+        if 'apply_via' in data or 'apply_mode' in data:
+            via = (data.get('apply_via') or data.get('apply_mode') or 'auto').strip().lower()
+            if via not in ('auto', 'url', 'email', 'kit'):
+                cursor.close()
+                conn.close()
+                return jsonify({'success': False, 'error': 'apply_via must be auto, url, email, or kit'}), 400
+            if via == 'email':
+                email_check = (data.get('brand_email') if 'brand_email' in data else existing.get('brand_email')) or ''
+                if not _is_real_apply_email(email_check):
+                    cursor.close()
+                    conn.close()
+                    return jsonify({
+                        'success': False,
+                        'error': 'Set a real Brand Email before using Apply via Email'
+                    }), 400
+            notes = _notes_set(notes, 'apply_mode', None if via == 'auto' else via)
+            notes_dirty = True
+
+        if 'brand_email' in data and _is_real_apply_email(data.get('brand_email')):
+            notes = _notes_set(notes, 'email', data.get('brand_email').strip())
+            notes_dirty = True
+
+        if notes_dirty:
+            replaced = False
+            for i, u in enumerate(updates):
+                if u.startswith('additional_notes'):
+                    values[i] = notes
+                    replaced = True
+                    break
+            if not replaced:
+                updates.append('additional_notes = %s')
+                values.append(notes)
 
         if not updates:
             return jsonify({'success': False, 'error': 'No updates provided'}), 400
