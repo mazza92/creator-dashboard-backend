@@ -637,8 +637,8 @@ def generate_unlock_analysis(creator_id: str, creator_profile: Dict,
     previous_issues = []
 
     # STEP 1: Calculate deterministic fit score BEFORE calling Gemini
-    # This is the key architectural change - LLM doesn't decide the score
-    fit_score = calculate_fit_score(creator_profile, brand_category)
+    # Pass full brand so luxury-labeled-as-lifestyle (etc.) is caught like For You
+    fit_score = calculate_fit_score(creator_profile, brand_category, brand=brand)
     score_context = get_score_context_for_llm(fit_score, brand_name)
 
     print(f"[AIDepth] Deterministic score for {brand_name}: {fit_score['overall_score']}% "

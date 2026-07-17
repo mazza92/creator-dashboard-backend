@@ -54,6 +54,13 @@ try:
 except ImportError as e:
     HAS_AI_DEPTH = False
     print(f"⚠️ AI Depth generator not available: {e}")
+    # Fit calculator can still power For You mentor-gate without full AI depth
+    try:
+        from services.fit_score_calculator import calculate_fit_score
+        from services.creator_profile_scraper import CreatorProfileScraper
+    except ImportError:
+        calculate_fit_score = None
+        CreatorProfileScraper = None
 
 pr_crm = Blueprint('pr_crm', __name__, url_prefix='/api/pr-crm')
 
@@ -90,13 +97,219 @@ def normalize_niche(niche_str):
     result = [niche_lower]  # Always include the original
 
     # Split by common separators
-    for sep in [' & ', ' and ', '/', ', ']:
+    for sep in [' & ', ' and ', '/', ', ', '+']:
         if sep in niche_lower:
             parts = [p.strip() for p in niche_lower.split(sep) if p.strip()]
             result.extend(parts)
             break
 
     return list(set(result))  # Dedupe
+
+
+# Shared related-niche map for For You + matched count.
+# Keep relationships tight — lifestyle must NOT auto-pull luxury fashion.
+FOR_YOU_RELATED_NICHES = {
+    'beauty': ['skincare', 'makeup', 'haircare', 'wellness'],
+    'skincare': ['beauty', 'makeup', 'wellness'],
+    'makeup': ['beauty', 'skincare'],
+    'haircare': ['beauty', 'skincare'],
+    # Fashion stays within style/apparel — not parenting/lifestyle mom finds
+    'fashion': ['accessories', 'activewear', 'athleisure'],
+    'luxury': ['fashion', 'accessories'],
+    # Lifestyle/parenting: adjacent product finds — NOT specialty baby carriers by default
+    'lifestyle': ['home', 'food', 'wellness', 'beauty', 'skincare'],
+    'parenting': ['family', 'home', 'lifestyle', 'beauty', 'skincare', 'wellness', 'food'],
+    'baby': ['parenting', 'kids', 'family', 'home', 'lifestyle'],
+    'kids': ['parenting', 'baby', 'family', 'home', 'lifestyle'],
+    'family': ['parenting', 'home', 'lifestyle', 'food', 'beauty'],
+    'mom': ['parenting', 'family', 'home', 'lifestyle', 'beauty', 'skincare'],
+    'fitness': ['athleisure', 'activewear', 'sports', 'wellness'],
+    'activewear': ['fitness', 'athleisure', 'sports', 'wellness'],
+    'athleisure': ['fitness', 'activewear', 'sports'],
+    'sports': ['fitness', 'activewear', 'athleisure'],
+    'wellness': ['fitness', 'supplements', 'self-care', 'beauty', 'skincare'],
+    'supplements': ['wellness', 'fitness'],
+    'food': ['lifestyle', 'kitchen', 'beverages', 'food & beverage', 'home'],
+    'food & beverage': ['food', 'beverages', 'lifestyle', 'kitchen'],
+    'beverages': ['food', 'food & beverage', 'lifestyle'],
+    'tech': ['gaming', 'gadgets', 'electronics'],
+    'gadgets': ['tech', 'gaming', 'electronics'],
+    'gaming': ['tech', 'entertainment'],
+    'home': ['lifestyle', 'decor', 'kitchen', 'food'],
+}
+
+
+# Mentor tiers for For You:
+# - Keep Good Match + Growth Match (unlock still useful: Pitch + tips)
+# - Drop Stretch / Not Recommended (Theory EU-style mismatches)
+FOR_YOU_MIN_FIT_SCORE = 35  # growth_match floor
+FOR_YOU_EXCLUDE_TIERS = frozenset({'stretch_match', 'not_recommended'})
+# Hard-block categories that are never right for parenting/mom-finds creators
+FOR_YOU_PARENTING_BLOCKED_CATEGORIES = frozenset({
+    'fashion', 'luxury', 'apparel', 'clothing', 'streetwear',
+})
+
+
+def _creator_is_parenting_focused(niches, profile=None) -> bool:
+    tokens = set()
+    for n in (niches or []):
+        tokens.update(normalize_niche(n))
+    if profile:
+        for key in ('primary_niche',):
+            val = profile.get(key)
+            if val:
+                tokens.update(normalize_niche(str(val)))
+        for n in (profile.get('secondary_niches') or []):
+            tokens.update(normalize_niche(str(n)))
+    parenting_markers = {
+        'parenting', 'baby', 'kids', 'family', 'mom', 'mum', 'dad', 'maternity', 'toddler',
+    }
+    return bool(tokens & parenting_markers)
+
+
+def _minimal_fit_profile_from_niches(niches, followers=0):
+    """Build a calculator-compatible profile when scrape data is missing."""
+    niche_list = []
+    for n in (niches or []):
+        niche_list.extend(normalize_niche(n))
+    # Prefer a concrete primary (parenting over compound blobs)
+    preferred = ['parenting', 'baby', 'family', 'beauty', 'lifestyle', 'food', 'home']
+    primary = next((p for p in preferred if p in niche_list), None)
+    if not primary:
+        primary = niche_list[0] if niche_list else 'lifestyle'
+    secondary = [n for n in niche_list if n != primary]
+    return {
+        'primary_niche': primary,
+        'secondary_niches': secondary,
+        'content_themes': niche_list + ['finds', 'product', 'routine'],
+        'engagement_rate': 2.5,
+        'posting_cadence_per_week': 3,
+        'latest_post_days_ago': 7,
+        'follower_count': followers or 0,
+        'has_collab_email': False,
+        'aesthetic_descriptors': [],
+    }
+
+
+def _prepare_for_you_profile(creator_profile_dict, niches=None, followers=0):
+    """
+    Scoring profile = scraped social data ONLY.
+    User onboarding/dashboard niches are interests — passed separately to the
+    matchmaker as soft preference, never merged into secondary_niches.
+    """
+    if creator_profile_dict and creator_profile_dict.get('primary_niche'):
+        return dict(creator_profile_dict)
+    # No scrape yet — temporary fallback from interests until scrape lands
+    return _minimal_fit_profile_from_niches(niches, followers)
+
+
+def _build_for_you_category_pool(scrape_profile, interest_niches):
+    """
+    Candidate SQL categories:
+    - Core: scraped primary niche + adjacency (source of truth)
+    - Soft: user interest niches (may add a few off-lane brands; calculator still gates)
+    """
+    related = FOR_YOU_RELATED_NICHES
+    core = set()
+    soft = set()
+
+    if scrape_profile and scrape_profile.get('primary_niche'):
+        primary = str(scrape_profile.get('primary_niche')).lower().strip()
+        for part in normalize_niche(primary):
+            core.add(part)
+            core.update(related.get(part, []))
+        for s in (scrape_profile.get('secondary_niches') or []):
+            for part in normalize_niche(str(s)):
+                core.add(part)
+                core.update(related.get(part, []))
+
+    for n in (interest_niches or []):
+        for part in normalize_niche(n):
+            soft.add(part)
+            soft.update(related.get(part, []))
+
+    # Prefer scrape core; keep soft extras that aren't already included
+    if core:
+        return list(core | soft)
+    return list(soft)
+
+
+def _apply_mentor_fit_to_for_you(matched_rows, creator_profile_dict, niches=None, followers=0):
+    """
+    Calculator-only fallback when mentor LLM is unavailable.
+    Uses brand-aware calculate_fit_score (same as unlock).
+    """
+    if not matched_rows:
+        return []
+    if calculate_fit_score is None:
+        print("[ForYou] calculate_fit_score unavailable — skipping mentor gate")
+        return [dict(r) for r in matched_rows][:8]
+
+    profile = _prepare_for_you_profile(creator_profile_dict, niches, followers)
+    # Fashion block uses scrape + interests only as a safety net for parenting creators
+    block_fashion = _creator_is_parenting_focused(niches, profile)
+
+    scored = []
+    for brand_row in matched_rows:
+        brand = dict(brand_row)
+        brand_category = (brand.get('category') or '').lower().strip()
+        fit_result = calculate_fit_score(profile, brand_category, brand=brand)
+        fit_score_val = fit_result.get('overall_score', 0)
+        tier = fit_result.get('tier', 'growth_match')
+        status = fit_result.get('status', 'not_yet')
+
+        brand['match_score'] = fit_score_val
+        brand['fit_tier'] = tier
+        brand['fit_status'] = status
+        brand['fit_label'] = fit_result.get('label')
+        brand['match_source'] = 'calculator_fallback'
+
+        if block_fashion and brand_category in FOR_YOU_PARENTING_BLOCKED_CATEGORIES:
+            continue
+
+        if fit_score_val < FOR_YOU_MIN_FIT_SCORE or tier in FOR_YOU_EXCLUDE_TIERS:
+            continue
+        scored.append(brand)
+
+    scored.sort(
+        key=lambda x: (
+            0 if x.get('fit_status') in ('ready', 'almost') else 1,
+            -((x.get('match_score') or 0) * (1.0 + min(float(x.get('price_point') or 0), 200) / 100.0)),
+        ),
+    )
+    return scored[:8]
+
+
+def _rank_for_you_with_mentor(matched_rows, creator_profile_dict, niches=None, followers=0, creator_id=None):
+    """
+    Mentor LLM ranks; scrape profile scores (same as unlock).
+    `niches` = user interests only (soft preference).
+    """
+    if not matched_rows:
+        return []
+
+    profile = _prepare_for_you_profile(creator_profile_dict, niches, followers)
+
+    try:
+        from services.mentor_matchmaker import rank_matches_with_mentor
+        ranked = rank_matches_with_mentor(
+            creator_profile=profile,
+            candidate_brands=[dict(r) for r in matched_rows],
+            niches=list(niches or []),
+            creator_id=creator_id,
+        )
+        if ranked:
+            for brand in ranked:
+                print(
+                    f"[ForYou] Mentor LLM: {brand.get('name')} — "
+                    f"{brand.get('match_score')}% ({brand.get('fit_status')}) "
+                    f"src={brand.get('match_source')}"
+                )
+            return ranked
+    except Exception as e:
+        print(f"[ForYou] Mentor LLM rank failed: {e}")
+
+    return _apply_mentor_fit_to_for_you(matched_rows, profile, niches=niches, followers=followers)
 
 
 def generate_kit_token(creator_id, brand_id):
@@ -3031,7 +3244,7 @@ def track_pitch():
         if new_pitch_count == 3 and tier == 'free':
             cursor.execute('''
                 UPDATE creators
-                SET quota_email_send_at = NOW() + INTERVAL '7 days'
+                SET quota_email_send_at = NOW() + INTERVAL '1 hour'
                 WHERE id = %s
                   AND quota_email_send_at IS NULL
             ''', (creator_id,))
@@ -6986,7 +7199,9 @@ def get_for_you():
                     parsed_signup_niches = [n.strip().lower() for n in signup_niche.split(',') if n.strip()]
 
         # Combine niches, preferring For You selection, falling back to signup
-        niches = foryou_niches if foryou_niches else parsed_signup_niches
+        # These are USER INTERESTS — soft preference only, not scoring truth
+        interest_niches = foryou_niches if foryou_niches else parsed_signup_niches
+        niches = interest_niches  # keep var name for downstream UI/profile payload
 
         # Use For You followers if set, else media_kit total_followers, else signup followers_count
         followers = 0
@@ -6997,6 +7212,27 @@ def get_for_you():
                 creator.get('followers_count') or
                 0
             )
+
+        # Load scrape early — candidate pool + scoring source of truth
+        scrape_profile = None
+        try:
+            user_id = session.get('user_id')
+            if not user_id:
+                cursor.execute("SELECT user_id FROM creators WHERE id = %s", (creator_id,))
+                creator_row = cursor.fetchone()
+                user_id = creator_row['user_id'] if creator_row else None
+            if HAS_AI_DEPTH and user_id and CreatorProfileScraper:
+                scrape_profile = CreatorProfileScraper(conn).get_creator_profile(user_id)
+                if scrape_profile and scrape_profile.get('primary_niche'):
+                    print(
+                        f"[ForYou] Scrape truth: niche={scrape_profile.get('primary_niche')}; "
+                        f"interests={interest_niches}"
+                    )
+                else:
+                    scrape_profile = None
+        except Exception as scrape_err:
+            print(f"[ForYou] Scrape load skipped: {scrape_err}")
+            scrape_profile = None
 
         # Calculate max brand min_followers requirement based on creator size
         # Prevents showing brands with high requirements to micro-creators
@@ -7220,42 +7456,11 @@ def get_for_you():
             hot = list(hot) + list(fallback)
 
         # ── Section 2: Matched for You ───────────────────────────
-        # Real matching algorithm with meaningful differentiation
-        # Score breakdown: Niche (0-40) + Followers (0-25) + Response (0-20) + Bonus (0-15) = 100 max
+        # Candidate pool: scrape lane (truth) + user interests (soft expansion)
+        related_niches = FOR_YOU_RELATED_NICHES
+        creator_related = set(_build_for_you_category_pool(scrape_profile, interest_niches))
 
-        # Build related niches map for scoring
-        # Keep relationships tight - only truly related categories
-        related_niches = {
-            'beauty': ['skincare', 'makeup', 'haircare'],
-            'skincare': ['beauty', 'makeup'],
-            'makeup': ['beauty', 'skincare'],
-            'fashion': ['lifestyle', 'accessories', 'activewear'],
-            'lifestyle': ['fashion', 'home', 'food'],
-            'fitness': ['athleisure', 'activewear', 'sports', 'wellness'],
-            'activewear': ['fitness', 'athleisure', 'sports', 'wellness', 'fashion'],
-            'athleisure': ['fitness', 'activewear', 'sports', 'fashion'],
-            'sports': ['fitness', 'activewear', 'athleisure'],
-            'wellness': ['fitness', 'supplements', 'self-care'],
-            'supplements': ['wellness', 'fitness'],
-            'food': ['lifestyle', 'kitchen', 'beverages', 'food & beverage'],
-            'food & beverage': ['food', 'beverages', 'lifestyle'],
-            'tech': ['gaming', 'gadgets', 'electronics'],
-            'gadgets': ['tech', 'gaming', 'electronics'],
-            'gaming': ['tech', 'entertainment'],
-            'home': ['lifestyle', 'decor'],
-        }
-
-        # Get related categories for the creator's niches
-        # Normalize compound niches like "tech & gadgets" into ["tech", "gadgets"]
-        creator_related = set()
-        for n in (niches or []):
-            # Normalize compound niches first
-            normalized = normalize_niche(n)
-            for niche_part in normalized:
-                creator_related.add(niche_part)
-                creator_related.update(related_niches.get(niche_part, []))
-
-        if niches or followers:
+        if niches or followers or scrape_profile:
             # Build the scoring SQL with real differentiation
             # Filter by brand Instagram followers to avoid showing mega-brands to micro-creators
             brand_filter_sql = ""
@@ -7339,7 +7544,7 @@ def get_for_you():
                   AND b.id != ALL(%s)
                   {brand_filter_sql}
                 {order_clause}
-                LIMIT 8
+                LIMIT 60
             """, tuple(query_params))
             matched = cursor.fetchall()
         else:
@@ -7476,71 +7681,77 @@ def get_for_you():
         cursor.execute(newest_query, (exclude_ids, newest_follower_cap, *sensitive_params))
         newest = cursor.fetchall()
 
-        # ── Filter matched brands by deterministic fit score ──
-        # Only show brands where creator would get 55%+ (Good Match or better)
-        # This prevents the welcome flow from showing irrelevant brands
+        # ── Mentor LLM ranks; scrape calculator is unlock-parity gate ────
         filtered_matched = []
 
-        if HAS_AI_DEPTH and matched:
+        if matched:
             try:
-                # Get creator's scraped profile for fit scoring
-                # Use same approach as AI generator: get user_id from session, then use scraper
-                user_id = session.get('user_id')
-                if not user_id:
-                    # Fallback: get user_id from creators table
-                    cursor.execute("SELECT user_id FROM creators WHERE id = %s", (creator_id,))
-                    creator_row = cursor.fetchone()
-                    user_id = creator_row['user_id'] if creator_row else None
-
-                creator_profile_dict = None
-                if user_id:
-                    scraper = CreatorProfileScraper(conn)
-                    creator_profile_dict = scraper.get_creator_profile(user_id)
-
+                creator_profile_dict = scrape_profile
                 if creator_profile_dict and creator_profile_dict.get('primary_niche'):
-                    print(f"[ForYou] Using scraped profile: niche={creator_profile_dict.get('primary_niche')}, engagement={creator_profile_dict.get('engagement_rate')}")
-
-                    # Score ALL brands using real scrape data, then take best 8
-                    # This ensures we always have enough matches while prioritizing best fits
-                    scored_brands = []
-                    for brand_row in matched:
-                        brand = dict(brand_row)
-                        brand_category = brand.get('category', '')
-
-                        # Calculate deterministic fit score
-                        fit_result = calculate_fit_score(creator_profile_dict, brand_category)
-                        fit_score_val = fit_result.get('overall_score', 50)
-
-                        # Update match_score to reflect actual fit
-                        brand['match_score'] = fit_score_val
-                        brand['fit_tier'] = fit_result.get('tier', 'growth_match')
-                        scored_brands.append(brand)
-
-                    # Sort by fit score descending and take top 8
-                    scored_brands.sort(key=lambda x: x.get('match_score', 0), reverse=True)
-                    filtered_matched = scored_brands[:8]
-
-                    # Log the results
-                    for brand in filtered_matched:
-                        print(f"[ForYou] Including {brand.get('name')} - fit score {brand.get('match_score')}% ({brand.get('fit_tier')})")
+                    print(
+                        f"[ForYou] Mentor ranking with scrape truth: "
+                        f"niche={creator_profile_dict.get('primary_niche')}, "
+                        f"interests={interest_niches}"
+                    )
                 else:
-                    # No scraped profile yet - use original matched list with SQL scores
-                    print(f"[ForYou] No scraped profile for user {user_id}, using SQL match scores")
-                    filtered_matched = [dict(r) for r in matched]
+                    print("[ForYou] No scrape — interests used as temporary profile only")
+
+                filtered_matched = _rank_for_you_with_mentor(
+                    matched,
+                    creator_profile_dict,
+                    niches=interest_niches,
+                    followers=followers or 0,
+                    creator_id=creator_id,
+                )
+
+                # If empty, retry with scrape-core categories only
+                if not filtered_matched:
+                    related_list = _build_for_you_category_pool(creator_profile_dict, interest_niches)
+                    if related_list:
+                        cursor.execute("""
+                            SELECT
+                                b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
+                                b.description, b.category, b.response_rate, b.price_point,
+                                b.min_followers, b.max_followers, b.website, b.application_form_url,
+                                b.niches AS brand_niches,
+                                60 AS match_score
+                            FROM pr_brands b
+                            WHERE b.slug IS NOT NULL
+                              AND COALESCE(b.status, 'published') = 'published'
+                              AND LOWER(b.category) = ANY(%s)
+                            ORDER BY b.response_rate DESC NULLS LAST
+                            LIMIT 60
+                        """, (related_list,))
+                        retry_rows = cursor.fetchall()
+                        filtered_matched = _rank_for_you_with_mentor(
+                            retry_rows,
+                            creator_profile_dict,
+                            niches=interest_niches,
+                            followers=followers or 0,
+                            creator_id=creator_id,
+                        )
+                        print(f"[ForYou] Category-pool retry kept {len(filtered_matched)} brands")
             except Exception as fit_err:
                 import traceback
-                print(f"[ForYou] Fit score filtering error: {fit_err}")
+                print(f"[ForYou] Mentor matchmaking error: {fit_err}")
                 traceback.print_exc()
-                # Fallback to original list on error
-                filtered_matched = [dict(r) for r in matched]
-        else:
-            filtered_matched = [dict(r) for r in matched]
+                try:
+                    filtered_matched = _apply_mentor_fit_to_for_you(
+                        matched, scrape_profile, niches=interest_niches, followers=followers or 0
+                    )
+                except Exception:
+                    filtered_matched = []
 
-        # Log results - we now show top 8 best matches sorted by fit score
         if filtered_matched:
-            top_score = filtered_matched[0].get('match_score', 0) if filtered_matched else 0
-            bottom_score = filtered_matched[-1].get('match_score', 0) if filtered_matched else 0
-            print(f"[ForYou] Showing {len(filtered_matched)} brands (scores: {top_score}% to {bottom_score}%)")
+            top_score = filtered_matched[0].get('match_score', 0)
+            bottom_score = filtered_matched[-1].get('match_score', 0)
+            src = filtered_matched[0].get('match_source', '?')
+            print(
+                f"[ForYou] Showing {len(filtered_matched)} mentor-ranked brands "
+                f"(scores: {top_score}% to {bottom_score}%, source={src})"
+            )
+        else:
+            print("[ForYou] No mentor-ranked matches")
 
         cursor.close()
         conn.close()
@@ -7634,26 +7845,8 @@ def get_matched_brands_count():
             )
         min_follower_cap = get_min_follower_cap(followers)
 
-        # Related niches — keep in sync with the matched section in /for-you
-        related_niches = {
-            'beauty': ['skincare', 'makeup', 'haircare'],
-            'skincare': ['beauty', 'makeup'],
-            'makeup': ['beauty', 'skincare'],
-            'fashion': ['lifestyle', 'accessories', 'activewear'],
-            'lifestyle': ['fashion', 'home', 'food'],
-            'fitness': ['athleisure', 'activewear', 'sports', 'wellness'],
-            'activewear': ['fitness', 'athleisure', 'sports', 'wellness', 'fashion'],
-            'athleisure': ['fitness', 'activewear', 'sports', 'fashion'],
-            'sports': ['fitness', 'activewear', 'athleisure'],
-            'wellness': ['fitness', 'supplements', 'self-care'],
-            'supplements': ['wellness', 'fitness'],
-            'food': ['lifestyle', 'kitchen', 'beverages', 'food & beverage'],
-            'food & beverage': ['food', 'beverages', 'lifestyle'],
-            'tech': ['gaming', 'gadgets', 'electronics'],
-            'gadgets': ['tech', 'gaming', 'electronics'],
-            'gaming': ['tech', 'entertainment'],
-            'home': ['lifestyle', 'decor'],
-        }
+        # Related niches — keep in sync with FOR_YOU_RELATED_NICHES / matched section
+        related_niches = FOR_YOU_RELATED_NICHES
         creator_related = set()
         for n in (niches or []):
             # Normalize compound niches like "tech & gadgets" into ["tech", "gadgets"]

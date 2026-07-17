@@ -344,7 +344,7 @@ def get_public_brands():
     - search: search brand names
     - activity: filter by brand activity ('new', 'active', 'responsive')
     - contact_type: filter by contact availability ('application', 'email')
-    - region: filter by region/country (e.g., 'Australia', 'US', 'UK', 'Canada')
+    - prefer_niches: comma-separated user niches — soft-sort matching categories first (Discover)
     """
     try:
         page = int(request.args.get('page', 1))
@@ -358,6 +358,38 @@ def get_public_brands():
         contact_type = request.args.get('contact_type')  # 'application', 'email'
         region = request.args.get('region')  # 'Australia', 'US', 'UK', 'Canada', etc.
         slug = request.args.get('slug')  # Exact slug match for fetching specific brand
+        # Soft sort only (Discover): user-selected niches first — does not filter the feed
+        prefer_niches = []
+        prefer_expand = {
+            'parenting': ['baby'],
+            'mom': ['baby'],
+            'kids': ['baby'],
+            'family': ['baby', 'lifestyle'],
+            'makeup': ['beauty'],
+            'skincare': ['skincare', 'beauty'],
+            'haircare': ['haircare', 'beauty'],
+            'beauty': ['beauty', 'skincare', 'haircare'],
+        }
+        for part in (request.args.get('prefer_niches') or '').split(','):
+            part = part.strip().lower()
+            if not part:
+                continue
+            try:
+                canon = normalize_category(part)
+            except Exception:
+                canon = None
+            base = (canon or part).lower()
+            if base == 'other':
+                base = part  # keep raw token like parenting
+            prefer_niches.append(base)
+            prefer_niches.extend(prefer_expand.get(base, []))
+            prefer_niches.extend(prefer_expand.get(part, []))
+        if prefer_niches:
+            seen = set()
+            prefer_niches = [
+                n for n in prefer_niches
+                if n and n != 'other' and not (n in seen or seen.add(n))
+            ]
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -443,25 +475,47 @@ def get_public_brands():
             query += " AND b.regions @> %s::jsonb"
             params.append(f'["{region}"]')
 
-        # Order: depends on activity filter
+        # Order: prefer user niches (Discover soft sort), then featured / recency
         if activity == 'new':
             # "Added recently" - sort by newest first, ignore featured
-            query += """
-                ORDER BY
-                    b.created_at DESC NULLS LAST,
-                    b.brand_name ASC
-                LIMIT %s OFFSET %s
-            """
+            if prefer_niches:
+                query += """
+                    ORDER BY
+                        CASE WHEN LOWER(b.category) = ANY(%s) THEN 0 ELSE 1 END,
+                        b.created_at DESC NULLS LAST,
+                        b.brand_name ASC
+                    LIMIT %s OFFSET %s
+                """
+                params.extend([prefer_niches, limit, offset])
+            else:
+                query += """
+                    ORDER BY
+                        b.created_at DESC NULLS LAST,
+                        b.brand_name ASC
+                    LIMIT %s OFFSET %s
+                """
+                params.extend([limit, offset])
         else:
-            # Default: Featured first, then most recently added
-            query += """
-                ORDER BY
-                    b.is_featured DESC,
-                    b.created_at DESC NULLS LAST,
-                    b.brand_name ASC
-                LIMIT %s OFFSET %s
-            """
-        params.extend([limit, offset])
+            if prefer_niches:
+                query += """
+                    ORDER BY
+                        CASE WHEN LOWER(b.category) = ANY(%s) THEN 0 ELSE 1 END,
+                        b.is_featured DESC,
+                        b.created_at DESC NULLS LAST,
+                        b.brand_name ASC
+                    LIMIT %s OFFSET %s
+                """
+                params.extend([prefer_niches, limit, offset])
+            else:
+                # Default: Featured first, then most recently added
+                query += """
+                    ORDER BY
+                        b.is_featured DESC,
+                        b.created_at DESC NULLS LAST,
+                        b.brand_name ASC
+                    LIMIT %s OFFSET %s
+                """
+                params.extend([limit, offset])
 
         cursor.execute(query, params)
         brands = cursor.fetchall()

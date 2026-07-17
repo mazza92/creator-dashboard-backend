@@ -1,17 +1,10 @@
 """
 Deterministic Fit Score Calculator
 
-This module calculates brand-creator fit scores BEFORE passing to LLM.
-The LLM only explains - it never decides the score.
-
-Architecture:
-1. Brand DNA profiles define what each brand/category needs
-2. Creator profile vectors are extracted from scraped data
-3. Weighted scoring compares creator vs brand requirements
-4. Score is passed to Gemini for explanation only
-
-Key insight: LLMs hate binary decisions and converge to middle.
-Don't let them decide. Calculate deterministically, then explain.
+Unlock coaching uses this BEFORE Gemini explains (LLM never decides unlock score).
+For You uses mentor_matchmaker (Gemini ranks with scraped social data); this
+calculator prefilters candidates and serves as fallback + brand-context gates
+(e.g. lifestyle-labeled luxury handbags vs affordable mom finds).
 """
 
 from typing import Dict, List, Tuple, Optional
@@ -44,9 +37,23 @@ CATEGORY_DNA = {
             'engagement': 0.15,
             'consistency': 0.15,
         },
-        'niche_keywords': ['home', 'kitchen', 'cooking', 'food', 'recipe', 'interior', 'decor', 'organization'],
-        'content_keywords': ['kitchen', 'cook', 'recipe', 'home', 'house', 'meal', 'prep', 'organize'],
+        'niche_keywords': ['home', 'kitchen', 'cooking', 'food', 'recipe', 'interior', 'decor',
+                           'organization', 'parenting', 'mom', 'family', 'lifestyle'],
+        'content_keywords': ['kitchen', 'cook', 'recipe', 'home', 'house', 'meal', 'prep', 'organize', 'finds'],
         'deal_breaker': 'no_home_content',
+    },
+    'food': {
+        'required_signals': ['food', 'cooking', 'recipe', 'kitchen', 'beverage'],
+        'weights': {
+            'niche_match': 0.35,
+            'content_proof': 0.30,
+            'engagement': 0.20,
+            'consistency': 0.15,
+        },
+        'niche_keywords': ['food', 'cooking', 'recipe', 'kitchen', 'beverage', 'coffee',
+                           'parenting', 'mom', 'family', 'lifestyle', 'home'],
+        'content_keywords': ['recipe', 'cook', 'food', 'meal', 'eat', 'taste', 'kitchen', 'coffee'],
+        'deal_breaker': None,
     },
     'beauty': {
         'required_signals': ['beauty', 'skincare', 'makeup', 'cosmetics', 'routine'],
@@ -56,8 +63,10 @@ CATEGORY_DNA = {
             'engagement': 0.20,
             'consistency': 0.20,
         },
-        'niche_keywords': ['beauty', 'skincare', 'makeup', 'cosmetics', 'skin', 'face', 'glow'],
-        'content_keywords': ['skincare', 'makeup', 'routine', 'product', 'beauty', 'skin', 'glow', 'serum'],
+        # parenting/lifestyle moms often do product finds — adjacent, not stretch
+        'niche_keywords': ['beauty', 'skincare', 'makeup', 'cosmetics', 'skin', 'face', 'glow',
+                          'parenting', 'mom', 'family', 'baby', 'lifestyle'],
+        'content_keywords': ['skincare', 'makeup', 'routine', 'product', 'beauty', 'skin', 'glow', 'serum', 'finds'],
         'deal_breaker': None,  # Beauty is broad, less strict
     },
     'haircare': {
@@ -68,7 +77,7 @@ CATEGORY_DNA = {
             'engagement': 0.15,
             'consistency': 0.15,
         },
-        'niche_keywords': ['hair', 'haircare', 'styling', 'beauty'],
+        'niche_keywords': ['hair', 'haircare', 'styling', 'beauty', 'parenting', 'mom', 'lifestyle'],
         'content_keywords': ['hair', 'wash', 'style', 'color', 'treatment', 'shine', 'curl', 'straight'],
         'deal_breaker': 'no_hair_content',
     },
@@ -80,7 +89,8 @@ CATEGORY_DNA = {
             'engagement': 0.25,
             'consistency': 0.20,
         },
-        'niche_keywords': ['wellness', 'health', 'fitness', 'nutrition', 'mindful', 'lifestyle'],
+        'niche_keywords': ['wellness', 'health', 'fitness', 'nutrition', 'mindful', 'lifestyle',
+                           'parenting', 'mom', 'family'],
         'content_keywords': ['health', 'workout', 'nutrition', 'wellness', 'mindful', 'routine', 'morning'],
         'deal_breaker': None,
     },
@@ -99,13 +109,14 @@ CATEGORY_DNA = {
     'fashion': {
         'required_signals': ['fashion', 'style', 'outfit', 'clothing', 'accessories'],
         'weights': {
-            'niche_match': 0.30,
-            'content_proof': 0.30,
-            'engagement': 0.20,
-            'consistency': 0.20,
+            'niche_match': 0.35,
+            'content_proof': 0.35,
+            'engagement': 0.15,
+            'consistency': 0.15,
         },
-        'niche_keywords': ['fashion', 'style', 'outfit', 'clothing', 'ootd'],
-        'content_keywords': ['outfit', 'style', 'fashion', 'wear', 'look', 'fit', 'haul'],
+        # Strict — do NOT include parenting/lifestyle (avoids Theory EU for mom-finds creators)
+        'niche_keywords': ['fashion', 'style', 'outfit', 'clothing', 'ootd', 'luxury', 'runway'],
+        'content_keywords': ['outfit', 'style', 'fashion', 'wear', 'look', 'ootd', 'wardrobe', 'tailored'],
         'deal_breaker': None,
     },
     'lifestyle': {
@@ -116,9 +127,25 @@ CATEGORY_DNA = {
             'engagement': 0.25,
             'consistency': 0.25,
         },
-        'niche_keywords': ['lifestyle', 'daily', 'life', 'routine', 'day'],
-        'content_keywords': ['day', 'life', 'routine', 'lifestyle', 'vlog'],
+        'niche_keywords': ['lifestyle', 'daily', 'life', 'routine', 'day', 'parenting', 'mom', 'family', 'baby'],
+        'content_keywords': ['day', 'life', 'routine', 'lifestyle', 'vlog', 'finds', 'mom'],
         'deal_breaker': None,  # Lifestyle is very broad
+    },
+    # Dedicated baby DNA — signup "parenting" niche alone is NOT enough without baby content
+    'baby': {
+        'required_signals': ['baby', 'parenting', 'newborn', 'toddler', 'babywear'],
+        'weights': {
+            'niche_match': 0.30,
+            'content_proof': 0.45,
+            'engagement': 0.15,
+            'consistency': 0.10,
+        },
+        'niche_keywords': ['baby', 'parenting', 'mom', 'mum', 'family', 'kids', 'maternity', 'toddler'],
+        'content_keywords': [
+            'baby', 'newborn', 'toddler', 'carrier', 'babywear', 'diaper', 'nursery',
+            'stroller', 'parenting', 'breastfeed', 'postpartum', 'kids',
+        ],
+        'deal_breaker': 'no_baby_content',
     },
 }
 
@@ -153,7 +180,29 @@ SCORE_TIERS = {
 def get_brand_dna(category: str) -> Dict:
     """Get brand DNA profile for a category."""
     category_lower = (category or '').lower().strip()
-    return CATEGORY_DNA.get(category_lower, DEFAULT_DNA)
+    # Map lookalike labels onto DNA we actually score (avoids soft DEFAULT 50/50)
+    aliases = {
+        'luxury': 'fashion',
+        'apparel': 'fashion',
+        'clothing': 'fashion',
+        'streetwear': 'fashion',
+        'activewear': 'fitness',
+        'athleisure': 'fitness',
+        'makeup': 'beauty',
+        'skincare': 'beauty',
+        'haircare': 'beauty',
+        'beverage': 'food',
+        'beverages': 'food',
+        'food & beverage': 'food',
+        # Parenting/family soft → lifestyle; baby specialty keeps strict baby DNA
+        'parenting': 'lifestyle',
+        'family': 'lifestyle',
+        'kids': 'baby',
+        'maternity': 'baby',
+        'babywearing': 'baby',
+    }
+    mapped = aliases.get(category_lower, category_lower)
+    return CATEGORY_DNA.get(mapped, CATEGORY_DNA.get(category_lower, DEFAULT_DNA))
 
 
 def calculate_niche_score(creator_profile: Dict, brand_dna: Dict) -> float:
@@ -212,6 +261,17 @@ def calculate_content_proof_score(creator_profile: Dict, brand_dna: Dict) -> flo
             aesthetic_descriptors = json.loads(aesthetic_descriptors)
         except:
             aesthetic_descriptors = []
+    # Scraper nests descriptors under aesthetic.aesthetic_descriptors
+    if not aesthetic_descriptors:
+        aesthetic = creator_profile.get('aesthetic') or {}
+        if isinstance(aesthetic, dict):
+            nested = aesthetic.get('aesthetic_descriptors', []) or []
+            if isinstance(nested, str):
+                try:
+                    nested = json.loads(nested)
+                except:
+                    nested = []
+            aesthetic_descriptors = nested
 
     # Check brand readiness signals
     brand_readiness = creator_profile.get('brand_readiness_signals', {})
@@ -222,7 +282,11 @@ def calculate_content_proof_score(creator_profile: Dict, brand_dna: Dict) -> flo
             brand_readiness = {}
 
     content_keywords = brand_dna.get('content_keywords', [])
-    all_content = ' '.join(content_themes + aesthetic_descriptors).lower()
+    all_content = ' '.join(
+        [str(t) for t in content_themes]
+        + [str(a) for a in aesthetic_descriptors]
+        + [creator_profile.get('raw_bio') or '']
+    ).lower()
 
     if not content_keywords:
         return 50
@@ -318,7 +382,11 @@ def check_deal_breaker(creator_profile: Dict, brand_dna: Dict, category: str) ->
         except:
             aesthetic_descriptors = []
 
-    all_content = ' '.join(content_themes + aesthetic_descriptors).lower()
+    all_content = ' '.join(
+        [str(t) for t in content_themes]
+        + [str(a) for a in aesthetic_descriptors]
+        + [creator_profile.get('raw_bio') or '']
+    ).lower()
     content_keywords = brand_dna.get('content_keywords', [])
 
     # Check if ANY content keywords appear
@@ -333,28 +401,185 @@ def check_deal_breaker(creator_profile: Dict, brand_dna: Dict, category: str) ->
             return True, "No tech or gaming content found"
         elif category == 'haircare':
             return True, "No hair-focused content found"
+        elif category == 'baby':
+            return True, "No baby/parenting content found in posts"
         else:
             return True, f"No {category} content found"
 
     return False, ''
 
 
-def calculate_fit_score(creator_profile: Dict, brand_category: str) -> Dict:
+# Brand-level signals the category label alone cannot see (e.g. lifestyle → luxury handbags)
+LUXURY_BRAND_SIGNALS = (
+    'luxury', 'designer', 'haute', 'couture', 'aspirational', 'high-end', 'high end',
+    'affluent', 'luxe', 'handbag', 'handbags', 'exclusive', 'atelier',
+    'fine jewelry', 'bespoke', 'contemporary luxury',
+)
+AFFORDABLE_CREATOR_SIGNALS = (
+    'amazon', 'walmart', 'tiktok shop', 'budget', 'affordable', 'finds', 'dupe',
+    'deals', 'worth buying', 'busy mom', 'busy mum', 'mom finds', 'mum finds',
+    'under $', 'cheap', 'haul',
+)
+PARENTING_CREATOR_SIGNALS = (
+    'parenting', 'baby', 'mom', 'mum', 'dad', 'family', 'toddler', 'maternity', 'kids',
+)
+
+
+def _flatten_text(*parts) -> str:
+    bits = []
+    for p in parts:
+        if p is None:
+            continue
+        if isinstance(p, (list, tuple)):
+            bits.extend(str(x) for x in p if x)
+        elif isinstance(p, dict):
+            bits.append(json.dumps(p, default=str))
+        else:
+            bits.append(str(p))
+    return ' '.join(bits).lower()
+
+
+def check_brand_context_mismatch(creator_profile: Dict, brand: Optional[Dict]) -> Tuple[bool, str]:
+    """
+    Catch brand-specific mismatches category DNA misses
+    (e.g. BY FAR labeled lifestyle but sells luxury handbags).
+    Note: brand.price_point is PR package value, not product luxury — do not use it here.
+    """
+    if not brand:
+        return False, ''
+
+    brand_blob = _flatten_text(
+        brand.get('name'),
+        brand.get('brand_name'),
+        brand.get('description'),
+        brand.get('category'),
+    )
+
+    aesthetic = creator_profile.get('aesthetic') or {}
+    if isinstance(aesthetic, str):
+        try:
+            aesthetic = json.loads(aesthetic)
+        except Exception:
+            aesthetic = {}
+    creator_blob = _flatten_text(
+        creator_profile.get('raw_bio'),
+        creator_profile.get('primary_niche'),
+        creator_profile.get('secondary_niches'),
+        creator_profile.get('content_themes'),
+        (aesthetic or {}).get('aesthetic_descriptors') if isinstance(aesthetic, dict) else None,
+        creator_profile.get('aesthetic_descriptors'),
+    )
+
+    is_luxury_brand = any(s in brand_blob for s in LUXURY_BRAND_SIGNALS)
+    is_affordable_creator = any(s in creator_blob for s in AFFORDABLE_CREATOR_SIGNALS)
+    is_parenting_creator = any(s in creator_blob for s in PARENTING_CREATOR_SIGNALS)
+
+    if is_luxury_brand and (is_affordable_creator or is_parenting_creator):
+        return True, (
+            "Brand signals luxury/designer positioning that conflicts with this "
+            "creator's affordable / parenting content"
+        )
+
+    category = (brand.get('category') or '').lower().strip()
+    if category in ('fashion', 'luxury', 'apparel', 'clothing', 'streetwear') and (
+        is_affordable_creator or is_parenting_creator
+    ):
+        return True, "Fashion/luxury category does not fit affordable parenting content"
+
+    return False, ''
+
+
+# Scraped primary niche adjacency — off-lane brands need content proof or they Stretch
+PRIMARY_NICHE_ADJACENCY = {
+    'beauty': {'beauty', 'skincare', 'makeup', 'haircare', 'wellness', 'cosmetics'},
+    'skincare': {'beauty', 'skincare', 'makeup', 'haircare', 'wellness'},
+    'makeup': {'beauty', 'skincare', 'makeup', 'haircare'},
+    'haircare': {'beauty', 'skincare', 'makeup', 'haircare'},
+    'wellness': {'wellness', 'beauty', 'skincare', 'fitness', 'supplements'},
+    'fitness': {'fitness', 'activewear', 'athleisure', 'sports', 'wellness'},
+    'fashion': {'fashion', 'accessories', 'activewear', 'athleisure', 'luxury'},
+    'lifestyle': {'lifestyle', 'home', 'food', 'wellness', 'beauty'},
+    'food': {'food', 'beverage', 'beverages', 'home', 'lifestyle', 'kitchen'},
+    'home': {'home', 'lifestyle', 'food', 'kitchen', 'decor'},
+    'tech': {'tech', 'gaming', 'gadgets', 'electronics'},
+    'gaming': {'gaming', 'tech', 'entertainment'},
+    'pet': {'pet'},
+    'baby': {'baby', 'parenting', 'kids', 'family', 'maternity'},
+    'parenting': {'parenting', 'baby', 'kids', 'family', 'lifestyle', 'home'},
+}
+
+
+def _mapped_category(category: str) -> str:
+    category_lower = (category or '').lower().strip()
+    aliases = {
+        'luxury': 'fashion', 'apparel': 'fashion', 'clothing': 'fashion',
+        'streetwear': 'fashion', 'activewear': 'fitness', 'athleisure': 'fitness',
+        'makeup': 'beauty', 'skincare': 'beauty', 'haircare': 'beauty',
+        'cosmetics': 'beauty', 'beverage': 'food', 'beverages': 'food',
+        'food & beverage': 'food', 'parenting': 'lifestyle', 'family': 'lifestyle',
+        'kids': 'baby', 'maternity': 'baby', 'babywearing': 'baby',
+    }
+    return aliases.get(category_lower, category_lower)
+
+
+def check_primary_niche_mismatch(
+    creator_profile: Dict,
+    brand_category: str,
+    content_score: float,
+) -> Tuple[bool, str]:
+    """
+    Scraped primary niche is source of truth.
+    Off-adjacency brands without real content proof → Stretch (not user-selected niches).
+    """
+    primary = (creator_profile.get('primary_niche') or '').lower().strip()
+    if not primary:
+        return False, ''
+
+    mapped_primary = _mapped_category(primary)
+    mapped_brand = _mapped_category(brand_category)
+    adjacent = PRIMARY_NICHE_ADJACENCY.get(mapped_primary, {mapped_primary})
+
+    # Scrape secondary niches can widen adjacency (not dashboard checkbox niches)
+    secondary = creator_profile.get('secondary_niches') or []
+    if isinstance(secondary, str):
+        try:
+            secondary = json.loads(secondary)
+        except Exception:
+            secondary = []
+    for s in secondary:
+        s_mapped = _mapped_category(str(s))
+        adjacent = adjacent | PRIMARY_NICHE_ADJACENCY.get(s_mapped, {s_mapped})
+        adjacent.add(s_mapped)
+
+    if mapped_brand in adjacent:
+        return False, ''
+
+    # Off-lane without content proof = stretch
+    if content_score < 40:
+        return True, (
+            f"Brand category '{brand_category}' is outside scraped niche "
+            f"'{primary}' without supporting content"
+        )
+    return False, ''
+
+
+def calculate_fit_score(
+    creator_profile: Dict,
+    brand_category: str,
+    brand: Optional[Dict] = None,
+) -> Dict:
     """
     Calculate deterministic fit score for creator vs brand category.
 
-    Returns:
-        Dict with:
-        - overall_score: 0-100
-        - sub_scores: {niche, content, engagement, consistency}
-        - tier: top_match/good_match/growth_match/stretch_match/not_recommended
-        - status: ready/almost/not_yet/poor_fit/build_first
-        - stars: 1-5
-        - label: human-readable tier name
-        - deal_breaker: optional reason why score is capped
-        - missing: list of what's missing
+    Optional `brand` dict (name/description/price_point) applies brand-level
+    deal-breakers so lifestyle-labeled luxury brands score as Stretch.
+
+    Scoring uses scraped social profile only — do not pass user checkbox niches
+    into secondary_niches or they will inflate off-lane matches.
     """
     category = (brand_category or '').lower().strip()
+    if brand and not category:
+        category = (brand.get('category') or '').lower().strip()
     brand_dna = get_brand_dna(category)
     weights = brand_dna['weights']
 
@@ -364,8 +589,18 @@ def calculate_fit_score(creator_profile: Dict, brand_category: str) -> Dict:
     engagement_score = calculate_engagement_score(creator_profile)
     consistency_score = calculate_consistency_score(creator_profile)
 
-    # Check for deal breakers
+    # Check for deal breakers (category DNA + brand-specific context + primary lane)
     has_deal_breaker, deal_breaker_reason = check_deal_breaker(creator_profile, brand_dna, category)
+    brand_mismatch, brand_mismatch_reason = check_brand_context_mismatch(creator_profile, brand)
+    if brand_mismatch:
+        has_deal_breaker = True
+        deal_breaker_reason = brand_mismatch_reason
+    primary_mismatch, primary_mismatch_reason = check_primary_niche_mismatch(
+        creator_profile, category, content_score
+    )
+    if primary_mismatch:
+        has_deal_breaker = True
+        deal_breaker_reason = primary_mismatch_reason
 
     # Calculate weighted score
     overall_score = (

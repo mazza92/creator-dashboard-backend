@@ -9,6 +9,7 @@ from functools import wraps
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import os
+import json
 from datetime import datetime, timedelta, date
 import re
 import requests
@@ -16,9 +17,22 @@ import requests
 opportunities_bp = Blueprint('opportunities', __name__, url_prefix='/api/opportunities')
 
 
+# Synonym clusters so "Baby & Parenting" matches parenting gigs, not tequila.
+_NICHE_CLUSTERS = {
+    'parenting': {'parent', 'parenting', 'mom', 'mum', 'dad', 'kids', 'kid', 'family', 'baby', 'toddler', 'maternity', 'mama'},
+    'lifestyle': {'lifestyle', 'life', 'daily', 'home', 'living'},
+    'beauty': {'beauty', 'skincare', 'skin', 'makeup', 'cosmetic', 'hair', 'haircare'},
+    'fashion': {'fashion', 'outfit', 'style', 'apparel', 'clothing', 'wear'},
+    'fitness': {'fitness', 'gym', 'workout', 'health', 'wellness', 'active'},
+    'food': {'food', 'recipe', 'cook', 'kitchen', 'beverage', 'drink', 'coffee', 'tea'},
+    'tech': {'tech', 'gadget', 'app', 'software', 'ai', 'gaming'},
+    'travel': {'travel', 'trip', 'vacation'},
+}
+
+
 def _infer_short_niche(text: str) -> str | None:
     t = (text or '').lower()
-    if any(w in t for w in ('parent', 'mom', 'dad', 'kids', 'family')):
+    if any(w in t for w in ('parent', 'mom', 'dad', 'kids', 'family', 'baby', 'toddler')):
         return 'Parenting'
     if any(w in t for w in ('beauty', 'skincare', 'makeup')):
         return 'Beauty'
@@ -28,7 +42,198 @@ def _infer_short_niche(text: str) -> str | None:
         return 'Food'
     if any(w in t for w in ('fashion', 'outfit', 'style')):
         return 'Fashion'
+    if any(w in t for w in ('tequila', 'wine', 'beer', 'alcohol', 'liquor', 'vodka')):
+        return 'Beverage'
+    if any(w in t for w in ('tech', 'app', 'software', 'ai ')):
+        return 'Tech'
     return None
+
+
+def _tokenize_niche_blob(value) -> set:
+    """Normalize niche strings/arrays/JSON into lowercase tokens."""
+    tokens = set()
+    if value is None:
+        return tokens
+
+    raw_items = []
+    if isinstance(value, (list, tuple)):
+        raw_items = list(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return tokens
+        if text.startswith('['):
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    raw_items = parsed
+                else:
+                    raw_items = [text]
+            except Exception:
+                raw_items = [text]
+        else:
+            raw_items = re.split(r'[,|/&+]|\band\b', text, flags=re.I)
+    else:
+        raw_items = [str(value)]
+
+    for item in raw_items:
+        chunk = str(item or '').strip().lower()
+        if not chunk:
+            continue
+        chunk = chunk.replace('_', ' ').replace('-', ' ')
+        tokens.add(chunk)
+        for part in re.split(r'\s+', chunk):
+            if len(part) >= 3:
+                tokens.add(part)
+    return tokens
+
+
+def _expand_niche_tokens(tokens: set) -> set:
+    expanded = set(tokens)
+    for token in list(tokens):
+        for cluster_tokens in _NICHE_CLUSTERS.values():
+            if token in cluster_tokens or any(token in c or c in token for c in cluster_tokens):
+                expanded |= cluster_tokens
+    return expanded
+
+
+def _score_opportunity_fit(creator_tokens: set, opp) -> tuple:
+    """
+    Returns (score 0-100, is_matched bool, fit_label).
+    Empty gig niches no longer auto-match everyone — we infer from text.
+    """
+    opp_niches = opp.get('creator_niches') or []
+    if not isinstance(opp_niches, list):
+        opp_niches = []
+
+    text_blob = ' '.join([
+        str(opp.get('brand_category') or ''),
+        str(opp.get('product_name') or ''),
+        str(opp.get('campaign_description') or '')[:400],
+        ' '.join(str(n) for n in opp_niches),
+    ]).lower()
+
+    opp_tokens = _tokenize_niche_blob(opp_niches)
+    inferred = _infer_short_niche(text_blob)
+    if inferred:
+        opp_tokens |= _tokenize_niche_blob(inferred)
+    # Pull keywords from title/desc into tokens
+    for word in re.findall(r'[a-z]{3,}', text_blob):
+        if word in {t for cluster in _NICHE_CLUSTERS.values() for t in cluster}:
+            opp_tokens.add(word)
+
+    creator_exp = _expand_niche_tokens(creator_tokens)
+    opp_exp = _expand_niche_tokens(opp_tokens)
+
+    if not creator_exp:
+        # No niche on creator — keep newest unrestricted gigs in "open", not "matched"
+        return (35 if not opp_niches else 20, False, 'open')
+
+    overlap = creator_exp & opp_exp
+    score = 0
+    if overlap:
+        score = min(100, 45 + (18 * len(overlap)))
+
+    # Soft boosts / penalties
+    if any(w in text_blob for w in ('parent', 'mom', 'family', 'baby', 'kid')) and (
+        creator_exp & _NICHE_CLUSTERS['parenting']
+    ):
+        score = max(score, 82)
+    if any(w in text_blob for w in ('tequila', 'vodka', 'wine', 'beer', 'alcohol', 'liquor', 'whiskey')):
+        if not (creator_exp & {'beverage', 'drink', 'food', 'cook', 'recipe'}):
+            score = min(score, 18)
+    if any(w in text_blob for w in ('spanish-speaking', 'spanish speaking', 'latam')):
+        score = min(score, max(score, 25))
+
+    # Explicit niche list miss with no text overlap → low
+    if opp_niches and not overlap:
+        score = min(score, 22)
+
+    is_matched = score >= 55
+    if score >= 75:
+        fit_label = 'strong'
+    elif score >= 55:
+        fit_label = 'good'
+    elif score >= 35:
+        fit_label = 'low'
+    else:
+        fit_label = 'poor'
+    return (score, is_matched, fit_label)
+
+
+def _maybe_send_limit_hit_email(creator_id: int, used: int, limit: int = 3):
+    """One recovery email per creator per calendar month when free credits hit 0."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute('''
+            SELECT c.username, c.niche, c.creator_niches, u.email, u.id AS user_id,
+                   c.last_pitch_reset
+            FROM creators c
+            JOIN users u ON u.id = c.user_id
+            WHERE c.id = %s
+        ''', (creator_id,))
+        row = cursor.fetchone()
+        if not row or not row.get('email'):
+            cursor.close()
+            conn.close()
+            return
+
+        # Dedupe via notifications table when available
+        month_key = date.today().strftime('%Y-%m')
+        try:
+            cursor.execute('''
+                SELECT id FROM notifications
+                WHERE user_id = %s AND event_type = %s
+                  AND created_at >= date_trunc('month', CURRENT_TIMESTAMP)
+                LIMIT 1
+            ''', (row['user_id'], f'limit_hit_{month_key}'))
+            if cursor.fetchone():
+                cursor.close()
+                conn.close()
+                return
+        except Exception:
+            conn.rollback()
+
+        niche = row.get('niche') or 'your niche'
+        if isinstance(niche, str) and niche.startswith('['):
+            try:
+                parsed = json.loads(niche)
+                if isinstance(parsed, list) and parsed:
+                    niche = ', '.join(str(x) for x in parsed[:3])
+            except Exception:
+                pass
+
+        subject = 'Open gigs are waiting — keep applying with Pro'
+        body = (
+            f"Hey {row.get('username') or 'there'},\n\n"
+            f"You've used all {limit} free application credits this month.\n\n"
+            f"Pro ($19/mo) unlocks unlimited applications + your AI talent manager "
+            f"so you can keep applying to {niche} brands that are hiring now.\n\n"
+            f"Upgrade: https://app.newcollab.co/creator/dashboard/for-you\n\n"
+            f"— NewCollab"
+        )
+        sent = send_email_notification(row['email'], subject, body)
+
+        if sent:
+            try:
+                cursor.execute('''
+                    INSERT INTO notifications (user_id, user_role, event_type, data, created_at)
+                    VALUES (%s, 'creator', %s, %s, NOW())
+                ''', (
+                    row['user_id'],
+                    f'limit_hit_{month_key}',
+                    json.dumps({'used': used, 'limit': limit}),
+                ))
+                conn.commit()
+            except Exception as notify_err:
+                print(f"[limit_hit] notification insert skipped: {notify_err}")
+                conn.rollback()
+
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(f"[limit_hit] email error: {e}")
 
 
 def _short_pay_label(pr_value_usd, campaign_description: str) -> str | None:
@@ -377,19 +582,32 @@ def list_opportunities():
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         # Get creator's niche and subscription tier
-        cursor.execute('''
-            SELECT niche, subscription_tier
-            FROM creators
-            WHERE id = %s
-        ''', (creator_id,))
-        creator = cursor.fetchone()
+        try:
+            cursor.execute('''
+                SELECT niche, creator_niches, subscription_tier
+                FROM creators
+                WHERE id = %s
+            ''', (creator_id,))
+            creator = cursor.fetchone()
+        except Exception:
+            conn.rollback()
+            cursor.execute('''
+                SELECT niche, subscription_tier
+                FROM creators
+                WHERE id = %s
+            ''', (creator_id,))
+            creator = cursor.fetchone()
+            if creator is not None:
+                creator = dict(creator)
+                creator['creator_niches'] = None
 
         if not creator:
             cursor.close()
             conn.close()
             return jsonify({'success': False, 'error': 'Creator not found'}), 404
 
-        creator_niche = creator.get('niche') or ''
+        creator_tokens = _tokenize_niche_blob(creator.get('creator_niches'))
+        creator_tokens |= _tokenize_niche_blob(creator.get('niche'))
         is_pro = creator.get('subscription_tier') in ['pro', 'elite']
 
         # Get all live opportunities
@@ -419,14 +637,13 @@ def list_opportunities():
         cursor.close()
         conn.close()
 
-        # Split into matched and others
+        # Split into matched and others — niche-scored, not "empty niches = match everyone"
         matched = []
         others = []
 
         for opp in all_opps:
             opp_niches = opp.get('creator_niches') or []
-            # Match if opportunity has no niche restriction, or creator's niche is in the list
-            is_match = not opp_niches or (creator_niche and creator_niche.lower() in [n.lower() for n in opp_niches])
+            fit_score, is_match, fit_label = _score_opportunity_fit(creator_tokens, opp)
 
             spots_left = opp['spots_total'] - opp['spots_filled']
             days_left = None
@@ -489,6 +706,8 @@ def list_opportunities():
                 'spots_left': spots_left,
                 'days_left': days_left,
                 'is_matched': is_match,
+                'fit_score': fit_score,
+                'fit_label': fit_label,
                 'already_applied': opp['id'] in applied_ids,
                 'external_apply_url': external_apply_url,
                 'apply_email': apply_email,
@@ -501,6 +720,14 @@ def list_opportunities():
                 matched.append(serialized)
             else:
                 others.append(serialized)
+
+        # Best niche fits first, then higher pay, then newest
+        def _rank_key(item):
+            created = 0
+            return (-(item.get('fit_score') or 0), -(item.get('pr_value_usd') or 0), created)
+
+        matched.sort(key=_rank_key)
+        others.sort(key=_rank_key)
 
         return jsonify({
             'success': True,
@@ -622,6 +849,11 @@ def apply_opportunity(opp_id):
         if not is_pro and pitches_used >= FREE_MONTHLY_LIMIT:
             cursor.close()
             conn.close()
+            # Fire-and-forget recovery email (deduped monthly)
+            try:
+                _maybe_send_limit_hit_email(creator_id, pitches_used, FREE_MONTHLY_LIMIT)
+            except Exception as email_err:
+                print(f"[apply] limit_hit email: {email_err}")
             return jsonify({
                 'success': False,
                 'error': 'limit_reached',
@@ -686,12 +918,19 @@ def apply_opportunity(opp_id):
                     f'Reply to this email to approve or decline.'
                 )
 
+        new_used = pitches_used + 1
+        if not is_pro and new_used >= FREE_MONTHLY_LIMIT:
+            try:
+                _maybe_send_limit_hit_email(creator_id, new_used, FREE_MONTHLY_LIMIT)
+            except Exception as email_err:
+                print(f"[apply] limit_hit email after use: {email_err}")
+
         return jsonify({
             'success': True,
             'apply_mode': apply_mode,
             'external_apply_url': external_apply_url,
             'apply_email': apply_email,
-            'used': pitches_used + 1,
+            'used': new_used,
             'limit': FREE_MONTHLY_LIMIT if not is_pro else None,
         }), 201
 
