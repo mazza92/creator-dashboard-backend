@@ -7607,6 +7607,8 @@ def get_for_you():
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate, b.price_point,
                     b.min_followers, b.max_followers, b.website, b.application_form_url,
+                    b.has_application_form,
+                    (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
                     b.niches AS brand_niches,
                     -- Match score scaled to 58-91%% range with natural variance
                     LEAST(91, GREATEST(58, (
@@ -7662,6 +7664,8 @@ def get_for_you():
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate, b.price_point,
                     b.min_followers, b.max_followers, b.website, b.application_form_url,
+                    b.has_application_form,
+                    (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
                     -- Match score scaled to 55-82%% range (lower since no profile match)
                     LEAST(82, GREATEST(55, (
                         55 + (
@@ -7699,6 +7703,8 @@ def get_for_you():
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate, b.price_point,
                     b.min_followers, b.website, b.application_form_url,
+                    b.has_application_form,
+                    (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
                     65 AS match_score
                 FROM pr_brands b
                 WHERE b.slug IS NOT NULL
@@ -7831,6 +7837,8 @@ def get_for_you():
                                 b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                                 b.description, b.category, b.response_rate, b.price_point,
                                 b.min_followers, b.max_followers, b.website, b.application_form_url,
+                                b.has_application_form,
+                                (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
                                 b.niches AS brand_niches,
                                 60 AS match_score
                             FROM pr_brands b
