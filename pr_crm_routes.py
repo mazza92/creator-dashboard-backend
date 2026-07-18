@@ -167,13 +167,25 @@ def _creator_is_parenting_focused(niches, profile=None) -> bool:
     return bool(tokens & parenting_markers)
 
 
+# Scrape labels that are too vague to drive For You lane matching
+WEAK_SCRAPE_NICHES = frozenset({
+    'other', 'unknown', 'general', 'misc', 'miscellaneous', 'n/a', 'na', 'none', '',
+})
+
+# Prefer concrete creator niches when inferring from interests/themes
+_INFER_PRIMARY_PREFERRED = [
+    'haircare', 'skincare', 'beauty', 'makeup', 'fitness', 'activewear',
+    'wellness', 'fashion', 'food', 'parenting', 'baby', 'home', 'lifestyle',
+]
+
+
 def _minimal_fit_profile_from_niches(niches, followers=0):
     """Build a calculator-compatible profile when scrape data is missing."""
     niche_list = []
     for n in (niches or []):
         niche_list.extend(normalize_niche(n))
     # Prefer a concrete primary (parenting over compound blobs)
-    preferred = ['parenting', 'baby', 'family', 'beauty', 'lifestyle', 'food', 'home']
+    preferred = _INFER_PRIMARY_PREFERRED + ['family', 'food', 'home']
     primary = next((p for p in preferred if p in niche_list), None)
     if not primary:
         primary = niche_list[0] if niche_list else 'lifestyle'
@@ -191,16 +203,86 @@ def _minimal_fit_profile_from_niches(niches, followers=0):
     }
 
 
+def _infer_primary_from_signals(profile, niches=None):
+    """
+    When scrape primary is 'other'/weak, infer a usable primary from
+    interests + scrape secondary niches + content themes (not inventing niches).
+    """
+    tokens = []
+    for n in (niches or []):
+        tokens.extend(normalize_niche(n))
+    for s in (profile.get('secondary_niches') or []):
+        tokens.extend(normalize_niche(str(s)))
+    themes = profile.get('content_themes') or []
+    if isinstance(themes, str):
+        try:
+            import json as _json
+            themes = _json.loads(themes)
+        except Exception:
+            themes = [themes]
+    for t in themes:
+        tokens.extend(normalize_niche(str(t)))
+
+    token_set = {t.lower().strip() for t in tokens if t}
+    if not token_set:
+        return None
+
+    # Prefer interest/theme that also appears in scrape secondary/themes
+    for pref in _INFER_PRIMARY_PREFERRED:
+        if pref in token_set:
+            return pref
+    return next(iter(token_set), None)
+
+
 def _prepare_for_you_profile(creator_profile_dict, niches=None, followers=0):
     """
-    Scoring profile = scraped social data ONLY.
-    User onboarding/dashboard niches are interests — passed separately to the
-    matchmaker as soft preference, never merged into secondary_niches.
+    Scoring profile = scraped social data when niche is usable.
+    Weak scrape primaries ('other') are repaired from interests + scrape themes
+    so For You can still return a full match set. Interests are never blindly
+    merged as secondary_niches when scrape primary is strong.
     """
-    if creator_profile_dict and creator_profile_dict.get('primary_niche'):
-        return dict(creator_profile_dict)
-    # No scrape yet — temporary fallback from interests until scrape lands
-    return _minimal_fit_profile_from_niches(niches, followers)
+    if not creator_profile_dict or not creator_profile_dict.get('primary_niche'):
+        return _minimal_fit_profile_from_niches(niches, followers)
+
+    profile = dict(creator_profile_dict)
+    primary = str(profile.get('primary_niche') or '').lower().strip()
+    confidence = int(profile.get('primary_niche_confidence') or 0)
+
+    if primary in WEAK_SCRAPE_NICHES or confidence < 40:
+        inferred = _infer_primary_from_signals(profile, niches)
+        if inferred:
+            print(
+                f"[ForYou] Weak scrape niche={primary!r} (conf={confidence}) "
+                f"-> inferred primary={inferred!r} from interests/themes"
+            )
+            secondary = []
+            for n in (niches or []):
+                for part in normalize_niche(n):
+                    if part != inferred and part not in secondary:
+                        secondary.append(part)
+            for s in (profile.get('secondary_niches') or []):
+                for part in normalize_niche(str(s)):
+                    if part != inferred and part not in secondary:
+                        secondary.append(part)
+            profile['primary_niche'] = inferred
+            profile['secondary_niches'] = secondary
+            # Keep themes; ensure inferred signal is present for content scoring
+            themes = list(profile.get('content_themes') or [])
+            if inferred not in [str(t).lower() for t in themes]:
+                themes = [inferred] + themes
+            profile['content_themes'] = themes
+        else:
+            # Last resort: interests-only minimal profile, keep follower/engagement
+            fallback = _minimal_fit_profile_from_niches(niches, followers or profile.get('follower_count') or 0)
+            for key in ('follower_count', 'engagement_rate', 'posting_cadence_per_week',
+                        'raw_bio', 'handle', 'aesthetic'):
+                if profile.get(key) is not None:
+                    fallback[key] = profile.get(key)
+            return fallback
+
+    if followers and not profile.get('follower_count'):
+        profile['follower_count'] = followers
+    return profile
 
 
 def _build_for_you_category_pool(scrape_profile, interest_niches):
@@ -208,6 +290,7 @@ def _build_for_you_category_pool(scrape_profile, interest_niches):
     Candidate SQL categories:
     - Core: scraped primary niche + adjacency (source of truth)
     - Soft: user interest niches (may add a few off-lane brands; calculator still gates)
+    Weak scrape primaries ('other') do not constrain the pool — interests drive it.
     """
     related = FOR_YOU_RELATED_NICHES
     core = set()
@@ -215,11 +298,14 @@ def _build_for_you_category_pool(scrape_profile, interest_niches):
 
     if scrape_profile and scrape_profile.get('primary_niche'):
         primary = str(scrape_profile.get('primary_niche')).lower().strip()
-        for part in normalize_niche(primary):
-            core.add(part)
-            core.update(related.get(part, []))
+        if primary not in WEAK_SCRAPE_NICHES:
+            for part in normalize_niche(primary):
+                core.add(part)
+                core.update(related.get(part, []))
         for s in (scrape_profile.get('secondary_niches') or []):
             for part in normalize_niche(str(s)):
+                if part in WEAK_SCRAPE_NICHES:
+                    continue
                 core.add(part)
                 core.update(related.get(part, []))
 
@@ -7716,6 +7802,14 @@ def get_for_you():
                 else:
                     print("[ForYou] No scrape — interests used as temporary profile only")
 
+                prep = _prepare_for_you_profile(
+                    creator_profile_dict, interest_niches, followers or 0
+                )
+                print(
+                    f"[ForYou] Effective scoring primary={prep.get('primary_niche')} "
+                    f"secondary={prep.get('secondary_niches')}"
+                )
+
                 filtered_matched = _rank_for_you_with_mentor(
                     matched,
                     creator_profile_dict,
@@ -7724,9 +7818,13 @@ def get_for_you():
                     creator_id=creator_id,
                 )
 
-                # If empty, retry with scrape-core categories only
-                if not filtered_matched:
-                    related_list = _build_for_you_category_pool(creator_profile_dict, interest_niches)
+                # If thin (<6), expand SQL pool from effective primary + interests and retry
+                if len(filtered_matched) < 6:
+                    related_list = _build_for_you_category_pool(prep, interest_niches)
+                    print(
+                        f"[ForYou] Thin match set ({len(filtered_matched)}) — "
+                        f"retrying with pool={related_list[:12]}"
+                    )
                     if related_list:
                         cursor.execute("""
                             SELECT
@@ -7740,16 +7838,32 @@ def get_for_you():
                               AND COALESCE(b.status, 'published') = 'published'
                               AND LOWER(b.category) = ANY(%s)
                             ORDER BY b.response_rate DESC NULLS LAST
-                            LIMIT 60
+                            LIMIT 80
                         """, (related_list,))
                         retry_rows = cursor.fetchall()
-                        filtered_matched = _rank_for_you_with_mentor(
-                            retry_rows,
-                            creator_profile_dict,
-                            niches=interest_niches,
-                            followers=followers or 0,
-                            creator_id=creator_id,
-                        )
+                        # Rank with prepared profile so inferred primary is used
+                        try:
+                            from services.mentor_matchmaker import (
+                                rank_matches_with_mentor,
+                                invalidate_mentor_matches,
+                            )
+                            invalidate_mentor_matches(creator_id)
+                            retry_ranked = rank_matches_with_mentor(
+                                creator_profile=prep,
+                                candidate_brands=[dict(r) for r in retry_rows],
+                                niches=list(interest_niches or []),
+                                creator_id=creator_id,
+                                force_refresh=True,
+                            )
+                            if len(retry_ranked) > len(filtered_matched):
+                                filtered_matched = retry_ranked
+                        except Exception as retry_err:
+                            print(f"[ForYou] Thin-set retry failed: {retry_err}")
+                            alt = _apply_mentor_fit_to_for_you(
+                                retry_rows, prep, niches=interest_niches, followers=followers or 0
+                            )
+                            if len(alt) > len(filtered_matched):
+                                filtered_matched = alt
                         print(f"[ForYou] Category-pool retry kept {len(filtered_matched)} brands")
             except Exception as fit_err:
                 import traceback

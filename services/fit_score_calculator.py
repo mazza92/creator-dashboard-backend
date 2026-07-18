@@ -518,6 +518,9 @@ def _mapped_category(category: str) -> str:
         'cosmetics': 'beauty', 'beverage': 'food', 'beverages': 'food',
         'food & beverage': 'food', 'parenting': 'lifestyle', 'family': 'lifestyle',
         'kids': 'baby', 'maternity': 'baby', 'babywearing': 'baby',
+        # Vague scrape labels — treat as lifestyle so adjacency isn't empty
+        'other': 'lifestyle', 'unknown': 'lifestyle', 'general': 'lifestyle',
+        'misc': 'lifestyle', 'miscellaneous': 'lifestyle',
     }
     return aliases.get(category_lower, category_lower)
 
