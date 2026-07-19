@@ -23,10 +23,14 @@ media_proxy = Blueprint("media_proxy", __name__)
 _ALLOWED_HOST_SUFFIXES = (
     "cdninstagram.com",
     "fbcdn.net",
+    "fbsbx.com",
     "imginn.com",
     "tiktokcdn.com",
     "tiktokcdn-us.com",
     "tiktokcdn-eu.com",
+    "tiktokcdn-i18n.com",
+    "ttlivecdn.com",
+    "ibyteimg.com",
     "muscdn.com",
     "byteoversea.com",
     "ibytedtos.com",
@@ -61,22 +65,39 @@ def get_public_api_base() -> str:
     if env and "localhost" not in env:
         return env
     if has_request_context():
-        return (request.url_root or "").rstrip("/")
-    return env or ""
+        root = (request.url_root or "").rstrip("/")
+        # Prefer api.* host when request somehow comes via app frontend proxy
+        if root and "app.newcollab.co" in root:
+            return "https://api.newcollab.co"
+        if root:
+            return root
+    # Production default — never emit relative /api/media-proxy for cross-origin <img>
+    if (os.getenv("FLASK_ENV") or "").lower() == "production" or os.getenv("RENDER") or os.getenv("RAILWAY_ENVIRONMENT"):
+        return "https://api.newcollab.co"
+    return env or "https://api.newcollab.co"
 
 
 def to_proxied_media_url(url: Optional[str], api_base: Optional[str] = None) -> str:
-    """Rewrite a social CDN URL to /api/media-proxy?url=... (passthrough otherwise)."""
+    """Rewrite a social CDN URL to absolute /api/media-proxy?url=..."""
     if not url or not isinstance(url, str):
         return url or ""
     raw = url.strip()
     if not raw:
         return raw
+    base = (api_base if api_base is not None else get_public_api_base()).rstrip("/")
     if "/api/media-proxy" in raw:
+        # Re-pin relative or wrong-host proxy URLs onto the public API origin
+        try:
+            if raw.startswith("/"):
+                return f"{base}{raw}"
+            parsed = urlparse(raw)
+            if "media-proxy" in (parsed.path or ""):
+                return f"{base}{parsed.path}?{parsed.query}" if parsed.query else f"{base}{parsed.path}"
+        except Exception:
+            pass
         return raw
     if not is_social_cdn_url(raw):
         return raw
-    base = (api_base if api_base is not None else get_public_api_base()).rstrip("/")
     path = f"/api/media-proxy?url={quote(raw, safe='')}"
     return f"{base}{path}" if base else path
 
@@ -117,10 +138,21 @@ def proxy_media():
 
     try:
         parsed = urlparse(url)
+        host = (parsed.netloc or "").lower()
         referer = "https://www.instagram.com/"
-        if "imginn.com" in parsed.netloc:
+        if "imginn.com" in host:
             referer = "https://imginn.com/"
-        elif "tiktok" in parsed.netloc or "byteoversea" in parsed.netloc or "muscdn" in parsed.netloc:
+        elif any(
+            s in host
+            for s in (
+                "tiktok",
+                "byteoversea",
+                "muscdn",
+                "ibyteimg",
+                "ttlivecdn",
+                "ibytedtos",
+            )
+        ):
             referer = "https://www.tiktok.com/"
 
         resp = requests.get(

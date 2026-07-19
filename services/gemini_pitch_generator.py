@@ -71,8 +71,11 @@ You output STRICT JSON matching this schema:
               RULES below - follow them exactly",
   "body_html": "string - valid HTML email body, 4 short paragraphs in <p> tags,
                 <br> only for in-paragraph breaks, links as <a href='...'>",
-  "body_plain": "string - plain-text version of the same body, paragraphs separated
-                 by \\n\\n",
+  "body_plain": "string - plain-text version of the same body. REQUIRED: separate
+                 paragraphs with a blank line (real newline characters, i.e. \n\n).
+                 NEVER return body_plain as a single unbroken line — brand outreach
+                 must be scannable with greeting, opener, intro, angle, ask, and sign-off
+                 each in their own paragraph",
   "reasoning": "string - 1 sentence explaining the creative angle you chose and why
                 it fits this creator and this brand (for internal debugging, never
                 shown to the user)"
@@ -590,6 +593,67 @@ def _line_has_portfolio(line: str) -> bool:
     return any(kw in low for kw in _PORTFOLIO_KEYWORDS)
 
 
+def ensure_pitch_paragraphs(pitch: Optional[Dict]) -> Optional[Dict]:
+    """
+    Guarantee body_plain has real paragraph breaks for mailto / copy / UI.
+
+    Gemini sometimes returns one long line, or literal '\\n\\n' characters, even when
+    body_html is correctly split into <p> tags. Prefer rebuilding from HTML.
+    """
+    if not pitch or not isinstance(pitch, dict):
+        return pitch
+
+    from html import unescape
+
+    plain = pitch.get("body_plain") or ""
+    html = pitch.get("body_html") or ""
+
+    # Literal backslash-n sequences → real newlines
+    if "\\n" in plain:
+        plain = plain.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
+
+    plain = plain.replace("\r\n", "\n").replace("\r", "\n")
+    plain = re.sub(r"[ \t]+\n", "\n", plain)
+    plain = re.sub(r"\n{3,}", "\n\n", plain).strip()
+
+    def _from_html(src: str) -> str:
+        parts = re.findall(r"<p[^>]*>(.*?)</p>", src or "", flags=re.I | re.S)
+        cleaned = []
+        for part in parts:
+            text = re.sub(r"<br\s*/?>", "\n", part, flags=re.I)
+            text = re.sub(r"<[^>]+>", "", text)
+            text = unescape(text)
+            text = re.sub(r"[ \t]+\n", "\n", text)
+            text = re.sub(r"[ \t]{2,}", " ", text).strip()
+            if text:
+                cleaned.append(text)
+        return "\n\n".join(cleaned).strip()
+
+    if "\n\n" not in plain and html and re.search(r"<p[\s>]", html, re.I):
+        rebuilt = _from_html(html)
+        if rebuilt:
+            plain = rebuilt
+
+    # Last resort: split greeting onto its own line for scannability
+    if plain and "\n\n" not in plain:
+        m = re.match(r"^(Hi [^,\n]{1,80},)\s+(.+)$", plain, flags=re.S)
+        if m:
+            rest = m.group(2).strip()
+            # Break before common CTA / sign-off phrases when possible
+            rest = re.sub(
+                r"\s+(Would you be open|If you're open|Happy to|Thanks(?: either way)?,"
+                r"|Best,|Warmly,|Cheers,)\b",
+                r"\n\n\1",
+                rest,
+                count=1,
+                flags=re.I,
+            )
+            plain = f"{m.group(1)}\n\n{rest}".strip()
+
+    pitch["body_plain"] = plain
+    return pitch
+
+
 def _strip_portfolio_lines(pitch: Dict) -> Dict:
     """
     Remove portfolio/URL lines the LLM added despite the prompt rule.
@@ -816,7 +880,9 @@ class GeminiPitchGenerator:
 
             if response and response.text:
                 parsed = _extract_json(response.text)
-                return _strip_portfolio_lines(parsed) if parsed else None
+                if not parsed:
+                    return None
+                return ensure_pitch_paragraphs(_strip_portfolio_lines(parsed))
         else:
             # Deprecated google-generativeai SDK
             generation_config = {
@@ -833,7 +899,9 @@ class GeminiPitchGenerator:
 
             if response and response.text:
                 parsed = _extract_json(response.text)
-                return _strip_portfolio_lines(parsed) if parsed else None
+                if not parsed:
+                    return None
+                return ensure_pitch_paragraphs(_strip_portfolio_lines(parsed))
 
         return None
 

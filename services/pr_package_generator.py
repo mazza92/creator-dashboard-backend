@@ -240,8 +240,9 @@ def final_clean(text: str) -> str:
 
     for pattern, replacement in AI_REPLACEMENTS:
         text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
-    # Normalize multiple spaces
-    text = re.sub(r" {2,}", " ", text)
+    # Normalize multiple spaces within lines only — keep paragraph breaks
+    text = re.sub(r"[^\S\n]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
@@ -298,7 +299,7 @@ You return a single JSON object with these fields:
   "pitch_short": {
     "subject": "string, 4-7 words, lowercase, no punctuation",
     "body_html": "string, valid HTML with <p> tags, ~3 short paragraphs, 60-90 words total",
-    "body_plain": "same content, plain text, paragraphs separated by \\n\\n"
+    "body_plain": "same content as body_html in plain text. REQUIRED blank line between paragraphs (real \\n\\n). Never one unbroken block"
   },
   "pitch_growing": {
     "subject": "string, 4-7 words, lowercase",
@@ -975,10 +976,16 @@ class PRPackageGenerator:
         package = {}
 
         # Pitches (apply final_clean to all text)
+        try:
+            from services.gemini_pitch_generator import ensure_pitch_paragraphs
+        except ImportError:
+            ensure_pitch_paragraphs = lambda p: p  # noqa: E731
+
         for tone in ['pitch_short', 'pitch_growing', 'pitch_founder']:
-            pitch = gemini_result.get(tone, {})
+            pitch = ensure_pitch_paragraphs(dict(gemini_result.get(tone, {}) or {})) or {}
             package[f'{tone}_subject'] = final_clean(pitch.get('subject', ''))
             package[f'{tone}_body_html'] = pitch.get('body_html', '')
+            # Preserve paragraph breaks — final_clean must not collapse newlines
             package[f'{tone}_body_plain'] = final_clean(pitch.get('body_plain', ''))
 
         # Timing (deterministic)

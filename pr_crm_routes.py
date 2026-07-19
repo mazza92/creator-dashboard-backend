@@ -4853,6 +4853,24 @@ def _format_pr_package_response(package: dict, brand: dict) -> dict:
         except:
             content_ideas = []
 
+    # Normalize paragraph breaks for cached pitches (mailto + UI)
+    try:
+        from services.gemini_pitch_generator import ensure_pitch_paragraphs
+    except ImportError:
+        ensure_pitch_paragraphs = lambda p: p  # noqa: E731
+
+    def _pitch(tone_prefix: str) -> dict:
+        normalized = ensure_pitch_paragraphs({
+            'subject': package.get(f'{tone_prefix}_subject', '') or '',
+            'body_html': package.get(f'{tone_prefix}_body_html', '') or '',
+            'body_plain': package.get(f'{tone_prefix}_body_plain', '') or '',
+        }) or {}
+        return {
+            'subject': normalized.get('subject', ''),
+            'body_html': normalized.get('body_html', ''),
+            'body_plain': normalized.get('body_plain', ''),
+        }
+
     return {
         'brand': {
             'id': brand.get('id'),
@@ -4861,21 +4879,9 @@ def _format_pr_package_response(package: dict, brand: dict) -> dict:
             'logo_url': brand.get('logo_url'),
         },
         'pitches': {
-            'short': {
-                'subject': package.get('pitch_short_subject', ''),
-                'body_html': package.get('pitch_short_body_html', ''),
-                'body_plain': package.get('pitch_short_body_plain', ''),
-            },
-            'growing': {
-                'subject': package.get('pitch_growing_subject', ''),
-                'body_html': package.get('pitch_growing_body_html', ''),
-                'body_plain': package.get('pitch_growing_body_plain', ''),
-            },
-            'founder': {
-                'subject': package.get('pitch_founder_subject', ''),
-                'body_html': package.get('pitch_founder_body_html', ''),
-                'body_plain': package.get('pitch_founder_body_plain', ''),
-            },
+            'short': _pitch('pitch_short'),
+            'growing': _pitch('pitch_growing'),
+            'founder': _pitch('pitch_founder'),
         },
         'timing': {
             'day': package.get('optimal_send_day', 'Tuesday'),
