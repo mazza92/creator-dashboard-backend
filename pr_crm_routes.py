@@ -16,6 +16,15 @@ from decimal import Decimal
 from urllib.parse import urlparse, urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+try:
+    from media_proxy_routes import proxy_media_urls, proxy_profile_snapshot_thumbnails
+except ImportError:
+    def proxy_media_urls(urls, api_base=None):
+        return list(urls or [])
+
+    def proxy_profile_snapshot_thumbnails(snapshot):
+        return snapshot
+
 
 def convert_decimals(obj):
     """Convert Decimal types to JSON-serializable float/int for database values."""
@@ -1363,7 +1372,10 @@ def compute_fit_with_ai_depth(creator, brand, user_id, cursor, conn, is_for_you_
             'niche': creator_profile.get('primary_niche', ''),
             'niches': all_niches[:3],  # Up to 3 niches for display
             'engagement_rate': creator_profile.get('engagement_rate', 0),
-            'recent_thumbnails': (creator_profile.get('recent_post_thumbnails') or [])[:3],
+            # Proxy social CDN URLs — browsers block direct Instagram/imginn embeds (CORP)
+            'recent_thumbnails': proxy_media_urls(
+                (creator_profile.get('recent_post_thumbnails') or [])[:3]
+            ),
             'content_themes': (creator_profile.get('content_themes') or [])[:3],
         }
 
@@ -3755,6 +3767,7 @@ def generate_pr_package():
                     stored_profile_snapshot = existing.get('ai_profile_snapshot')
                     if isinstance(stored_profile_snapshot, str):
                         stored_profile_snapshot = json.loads(stored_profile_snapshot) if stored_profile_snapshot else None
+                    stored_profile_snapshot = proxy_profile_snapshot_thumbnails(stored_profile_snapshot)
 
                     stored_ugc_guide = existing.get('ugc_guide')
                     if isinstance(stored_ugc_guide, str):
@@ -4359,6 +4372,7 @@ def generate_pr_package_v2():
                         stored_profile_snapshot = existing.get('ai_profile_snapshot')
                         if isinstance(stored_profile_snapshot, str):
                             stored_profile_snapshot = json.loads(stored_profile_snapshot) if stored_profile_snapshot else None
+                        stored_profile_snapshot = proxy_profile_snapshot_thumbnails(stored_profile_snapshot)
 
                         stored_ugc_guide = existing.get('ugc_guide')
                         if isinstance(stored_ugc_guide, str):
@@ -8379,7 +8393,7 @@ def scrape_creator_profile():
     Scrape and enrich creator profile from social media.
 
     Called during onboarding when user enters their social handle.
-    Triggers Apify scrape + Gemini Vision analysis.
+    Triggers in-house scrape + Gemini Vision analysis.
 
     Request body:
     {

@@ -1,0 +1,38 @@
+{
+  "source": {
+    "data": {
+      "/embed/@gabcoderre": {
+        "userInfo": {
+          "uniqueId": "gabcoderre",
+          "nickname": "Gab",
+          "signature": "PR tips + birthday brand emails\nhello@example.com",
+          "followerCount": 33000,
+          "followingCount": 200,
+          "heartCount": 500000,
+          "verified": false,
+          "privateAccount": false,
+          "avatarThumbUrl": "https://cdn.example.com/tt/avatar.jpg"
+        },
+        "videoList": [
+          {
+            "id": "7534205892707831045",
+            "desc": "Emailing brands for my birthday.",
+            "coverUrl": "https://cdn.example.com/tt/cover1.jpg",
+            "originCoverUrl": "https://cdn.example.com/tt/cover1o.jpg",
+            "playCount": 12000,
+            "privateItem": false,
+            "authorUniqueId": "gabcoderre"
+          },
+          {
+            "id": "7534205892707831046",
+            "desc": "PR month reset",
+            "coverUrl": "https://cdn.example.com/tt/cover2.jpg",
+            "playCount": 8000,
+            "authorUniqueId": "gabcoderre"
+          }
+        ]
+      },
+      "strategy": {}
+    }
+  }
+}

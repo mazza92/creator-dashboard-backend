@@ -2,7 +2,7 @@
 Creator Profile Scraper Service
 
 Handles:
-1. Apify integration for Instagram/TikTok profile scraping
+1. In-house Instagram/TikTok scraping
 2. Post-scrape processing (derived metrics)
 3. Gemini Vision analysis for thumbnails
 4. Storage in creator_profile_data table
@@ -15,10 +15,11 @@ import requests
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple
 
-# Apify configuration
-APIFY_API_TOKEN = os.getenv('APIFY_API_TOKEN')
-APIFY_INSTAGRAM_ACTOR = 'apify~instagram-scraper'
-APIFY_TIKTOK_ACTOR = 'clockworks~free-tiktok-scraper'
+from services.inhouse_social_scraper import (
+    scrape_instagram as diy_scrape_instagram,
+    scrape_tiktok as diy_scrape_tiktok,
+    diy_scrape_is_acceptable,
+)
 
 # Gemini configuration
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
@@ -30,132 +31,39 @@ class CreatorProfileScraper:
 
     def __init__(self, db_conn=None):
         self.db_conn = db_conn
-        self.apify_token = APIFY_API_TOKEN
 
     def scrape_instagram_profile(self, handle: str) -> Dict[str, Any]:
-        """
-        Scrape Instagram profile using Apify.
-
-        Returns raw profile data or raises exception on failure.
-        """
-        # Clean handle (remove @ if present)
+        """Scrape Instagram profile via in-house scraper only."""
         handle = handle.lstrip('@').strip()
-
-        if not self.apify_token:
-            raise ValueError("APIFY_API_TOKEN not configured")
-
-        url = f"https://api.apify.com/v2/acts/{APIFY_INSTAGRAM_ACTOR}/run-sync-get-dataset-items"
-
-        headers = {
-            'Authorization': f'Bearer {self.apify_token}',
-            'Content-Type': 'application/json'
-        }
-
-        payload = {
-            'directUrls': [f'https://www.instagram.com/{handle}/'],
-            'resultsType': 'details',
-            'resultsLimit': 200,  # Get profile details with recent posts
-            'addParentData': True,
-        }
-
         try:
-            response = requests.post(
-                url,
-                headers=headers,
-                json=payload,
-                timeout=120  # 2 minute timeout for Apify scraping
-            )
-            response.raise_for_status()
-
-            data = response.json()
-            if not data or len(data) == 0:
-                raise ValueError(f"No data returned for handle @{handle}")
-
-            return data[0]  # First profile result
-
-        except requests.Timeout:
-            raise TimeoutError(f"Scrape timeout for @{handle}")
-        except requests.HTTPError as e:
-            if e.response.status_code == 404:
-                raise ValueError(f"Handle @{handle} not found")
-            raise
+            profile = diy_scrape_instagram(handle, results_limit=12)
+            if diy_scrape_is_acceptable(profile, 'instagram'):
+                print(f"[Scrape] ig @{handle} via diy")
+                return profile
+            raise ValueError(f"In-house Instagram scrape thin for @{handle}")
+        except Exception as e:
+            print(f"[Scrape] ig @{handle} diy failed: {e}")
+            raise ValueError(f"Instagram scrape failed for @{handle}: {e}") from e
 
     def scrape_tiktok_profile(self, handle: str) -> Dict[str, Any]:
-        """
-        Scrape TikTok profile using Apify (clockworks free-tiktok-scraper).
-
-        Returns raw profile data or raises exception on failure.
-        The scraper returns posts with authorMeta containing profile info.
-        """
-        # Clean handle
+        """Scrape TikTok profile via in-house scraper only."""
         handle = handle.lstrip('@').strip()
-
-        if not self.apify_token:
-            raise ValueError("APIFY_API_TOKEN not configured")
-
-        url = f"https://api.apify.com/v2/acts/{APIFY_TIKTOK_ACTOR}/run-sync-get-dataset-items"
-
-        headers = {
-            'Authorization': f'Bearer {self.apify_token}',
-            'Content-Type': 'application/json'
-        }
-
-        # clockworks actor expects just the username in profiles array
-        payload = {
-            'profiles': [handle],
-            'resultsPerPage': 12,
-        }
-
         try:
-            response = requests.post(
-                url,
-                headers=headers,
-                json=payload,
-                timeout=120  # 2 minute timeout for Apify scraping
-            )
-            response.raise_for_status()
-
-            data = response.json()
-            if not data or len(data) == 0:
-                raise ValueError(f"No data returned for handle @{handle}")
-
-            # The scraper returns posts, so we need to extract profile from authorMeta
-            # and attach the posts for processing
-            first_post = data[0]
-            author_meta = first_post.get('authorMeta', {})
-
-            # Build a profile-like structure compatible with process_scrape
-            profile = {
-                'uniqueId': author_meta.get('name', handle),
-                'nickname': author_meta.get('nickName', ''),
-                'signature': author_meta.get('signature', ''),
-                'followerCount': author_meta.get('fans', 0),
-                'followingCount': author_meta.get('following', 0),
-                'videoCount': author_meta.get('video', 0),
-                'heartCount': author_meta.get('heart', 0),
-                'verified': author_meta.get('verified', False),
-                'privateAccount': author_meta.get('privateAccount', False),
-                'avatarUrl': author_meta.get('avatar', ''),
-                'bioLink': author_meta.get('bioLink', ''),
-                # Attach all posts for processing
-                'latestVideos': data,
-            }
-
-            return profile
-
-        except requests.Timeout:
-            raise TimeoutError(f"Scrape timeout for @{handle}")
-        except requests.HTTPError as e:
-            if e.response.status_code == 404:
-                raise ValueError(f"Handle @{handle} not found")
-            raise
+            profile = diy_scrape_tiktok(handle, results_limit=12)
+            if diy_scrape_is_acceptable(profile, 'tiktok'):
+                print(f"[Scrape] tt @{handle} via diy")
+                return profile
+            raise ValueError(f"In-house TikTok scrape thin for @{handle}")
+        except Exception as e:
+            print(f"[Scrape] tt @{handle} diy failed: {e}")
+            raise ValueError(f"TikTok scrape failed for @{handle}: {e}") from e
 
     def process_scrape(self, raw_scrape: Dict, platform: str) -> Dict[str, Any]:
         """
         Compute derived fields from raw scrape data.
 
         Args:
-            raw_scrape: Raw data from Apify
+            raw_scrape: Raw data from in-house Instagram/TikTok scraper
             platform: 'instagram' or 'tiktok'
 
         Returns:
@@ -187,7 +95,10 @@ class CreatorProfileScraper:
                 total_engagement += (p.get('diggCount', 0) + p.get('commentCount', 0) + p.get('shareCount', 0))
 
         avg_engagement_per_post = total_engagement / max(len(posts), 1)
-        engagement_rate = (avg_engagement_per_post / max(followers, 1)) * 100
+        # Without follower stats (common for DIY Instagram), don't invent a rate
+        engagement_rate = (
+            (avg_engagement_per_post / followers) * 100 if followers and followers > 0 else 0.0
+        )
 
         # Post cadence (posts per week over last 30 days)
         # Use UTC to match timezone-aware post dates from Instagram
@@ -204,10 +115,9 @@ class CreatorProfileScraper:
                     recent_posts.append(p)
         cadence = len(recent_posts) / 4.3  # per week
 
-        # Recency - use non-pinned posts to get actual latest post date
+        # Recency - scan all non-pinned posts (feeds often put pinned/older first)
         latest_post_days_ago = 999
         if non_pinned_posts:
-            # Find the most recent non-pinned post
             for post in non_pinned_posts:
                 post_date = self._parse_post_date(post, platform)
                 if post_date:
@@ -217,7 +127,6 @@ class CreatorProfileScraper:
                     days_ago = (now - post_date).days
                     if days_ago < latest_post_days_ago:
                         latest_post_days_ago = days_ago
-                    break  # First non-pinned post is usually the latest
 
         # Bio signal extraction
         has_collab_email = bool(re.search(r'[\w.-]+@[\w.-]+\.\w+', bio))
@@ -302,7 +211,8 @@ class CreatorProfileScraper:
             else:  # tiktok
                 create_time = post.get('createTime')
                 if create_time:
-                    return datetime.fromtimestamp(create_time)
+                    from datetime import timezone as _tz
+                    return datetime.fromtimestamp(int(create_time), tz=_tz.utc)
         except:
             pass
         return None

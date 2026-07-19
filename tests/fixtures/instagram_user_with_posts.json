@@ -1,0 +1,52 @@
+{
+  "username": "humansofny",
+  "full_name": "Humans of New York",
+  "biography": "New York City, one story at a time. collab@example.com",
+  "external_url": "https://www.humansofnewyork.com",
+  "is_private": false,
+  "is_verified": true,
+  "is_business_account": true,
+  "business_category_name": "Publisher",
+  "edge_followed_by": { "count": 12500000 },
+  "edge_follow": { "count": 420 },
+  "edge_owner_to_timeline_media": {
+    "count": 5400,
+    "edges": [
+      {
+        "node": {
+          "display_url": "https://cdn.example.com/ig/post1.jpg",
+          "taken_at_timestamp": 1710000000,
+          "edge_liked_by": { "count": 120000 },
+          "edge_media_to_comment": { "count": 3400 },
+          "edge_media_to_caption": {
+            "edges": [{ "node": { "text": "A story from the subway." } }]
+          },
+          "isPinnedItem": false
+        }
+      },
+      {
+        "node": {
+          "display_url": "https://cdn.example.com/ig/post2.jpg",
+          "taken_at_timestamp": 1709900000,
+          "edge_liked_by": { "count": 98000 },
+          "edge_media_to_comment": { "count": 2100 },
+          "edge_media_to_caption": {
+            "edges": [{ "node": { "text": "Park bench conversations." } }]
+          }
+        }
+      },
+      {
+        "node": {
+          "display_url": "https://cdn.example.com/ig/post3.jpg",
+          "taken_at_timestamp": 1709800000,
+          "edge_liked_by": { "count": 150000 },
+          "edge_media_to_comment": { "count": 5000 },
+          "edge_media_to_caption": {
+            "edges": [{ "node": { "text": "Sunday morning light." } }]
+          },
+          "pinned_for_users": [{ "id": "1" }]
+        }
+      }
+    ]
+  }
+}

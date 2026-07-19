@@ -1,0 +1,58 @@
+{
+  "__DEFAULT_SCOPE__": {
+    "webapp.user-detail": {
+      "userInfo": {
+        "user": {
+          "uniqueId": "nikkichavvez",
+          "nickname": "Nikki",
+          "signature": "Miami just a girl building her dream life",
+          "verified": false,
+          "privateAccount": false,
+          "avatarLarger": "https://cdn.example.com/tt/avatar.jpg",
+          "secUid": "MS4wLjABAAAA_test_sec_uid",
+          "bioLink": { "link": "https://linktr.ee/nikki" }
+        },
+        "stats": {
+          "followerCount": 7709,
+          "followingCount": 312,
+          "videoCount": 84,
+          "heartCount": 120000
+        }
+      }
+    },
+    "webapp.user-post": {
+      "itemList": [
+        {
+          "id": "730001",
+          "desc": "REBUILDING out loud?",
+          "createTime": 1710001000,
+          "stats": { "diggCount": 4200, "commentCount": 120, "shareCount": 40 },
+          "video": {
+            "cover": "https://cdn.example.com/tt/cover1.jpg",
+            "originCover": "https://cdn.example.com/tt/cover1o.jpg"
+          },
+          "isPinnedItem": false
+        },
+        {
+          "id": "730002",
+          "desc": "your sign to start",
+          "createTime": 1709901000,
+          "stats": { "diggCount": 3100, "commentCount": 88, "shareCount": 22 },
+          "video": {
+            "cover": "https://cdn.example.com/tt/cover2.jpg"
+          }
+        },
+        {
+          "id": "730003",
+          "desc": "weekend reset",
+          "createTime": 1709801000,
+          "stats": { "diggCount": 2900, "commentCount": 70, "shareCount": 18 },
+          "video": {
+            "cover": "https://cdn.example.com/tt/cover3.jpg"
+          },
+          "isPinnedItem": true
+        }
+      ]
+    }
+  }
+}

@@ -202,6 +202,9 @@ app.register_blueprint(admin_reports_bp)
 app.register_blueprint(admin_email_bp)
 app.register_blueprint(admin_creators_bp)
 
+from media_proxy_routes import media_proxy
+app.register_blueprint(media_proxy)
+
 _CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://localhost:3001",
@@ -2209,7 +2212,7 @@ def onboarding_scrape():
         # Get database connection for saving profile data
         conn = get_db_connection()
 
-        # Run the scrape (this calls Apify + Gemini analysis)
+        # Run the scrape (in-house social scrape + Gemini analysis)
         # skip_minimums=True allows new creators with <500 followers during onboarding
         # Pass db_conn to save profile to creator_profile_data for For You matching
         profile, vision_data = scrape_and_enrich_creator(user_id, handle, platform, db_conn=conn, skip_minimums=True)
@@ -2252,7 +2255,7 @@ def onboarding_scrape():
             }), 400
 
         # Check for stale data (posts older than 1 year indicates private/inactive account)
-        # This catches cases where Apify returns cached data for now-private profiles
+        # This catches inactive / effectively-private profiles with no recent posts
         if latest_post_days_ago > 365:
             app.logger.warning(f"⚠️ Stale profile data for @{handle} - latest post is {latest_post_days_ago} days old")
             return jsonify({

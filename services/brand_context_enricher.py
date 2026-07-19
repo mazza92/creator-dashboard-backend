@@ -2,7 +2,7 @@
 Brand Context Enrichment Service
 
 Handles:
-1. Scraping brand's own Instagram for aesthetic analysis
+1. Scraping brand's own Instagram for aesthetic analysis (in-house only)
 2. Aggregating historical accepted creator patterns
 3. Storing enriched brand context for AI matching
 """
@@ -14,9 +14,10 @@ import requests
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 
-# Apify configuration
-APIFY_API_TOKEN = os.getenv('APIFY_API_TOKEN')
-APIFY_INSTAGRAM_ACTOR = 'apify/instagram-profile-scraper'
+from services.inhouse_social_scraper import (
+    scrape_instagram as diy_scrape_instagram,
+    diy_scrape_is_acceptable,
+)
 
 # Gemini configuration
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
@@ -28,54 +29,26 @@ class BrandContextEnricher:
 
     def __init__(self, db_conn=None):
         self.db_conn = db_conn
-        self.apify_token = APIFY_API_TOKEN
 
     def scrape_brand_instagram(self, handle: str) -> Dict[str, Any]:
         """
-        Scrape brand's Instagram profile for aesthetic analysis.
-
-        Args:
-            handle: Brand's Instagram handle
+        Scrape brand's Instagram profile for aesthetic analysis (in-house only).
 
         Returns:
-            Raw profile data
+            Raw profile data (biography, fullName, latestPosts[])
         """
         handle = handle.lstrip('@').strip()
-
-        if not self.apify_token:
-            raise ValueError("APIFY_API_TOKEN not configured")
-
-        url = f"https://api.apify.com/v2/acts/{APIFY_INSTAGRAM_ACTOR}/run-sync-get-dataset-items"
-
-        headers = {
-            'Authorization': f'Bearer {self.apify_token}',
-            'Content-Type': 'application/json'
-        }
-
-        payload = {
-            'usernames': [handle],
-            'resultsLimit': 12,
-        }
-
         try:
-            response = requests.post(
-                url,
-                headers=headers,
-                json=payload,
-                timeout=30
-            )
-            response.raise_for_status()
-
-            data = response.json()
-            if not data or len(data) == 0:
-                raise ValueError(f"No data returned for brand @{handle}")
-
-            return data[0]
-
-        except requests.Timeout:
-            raise TimeoutError(f"Scrape timeout for brand @{handle}")
-        except requests.HTTPError as e:
-            raise ValueError(f"Failed to scrape brand @{handle}: {e}")
+            profile = diy_scrape_instagram(handle, results_limit=12)
+            if diy_scrape_is_acceptable(profile, 'instagram'):
+                posts = profile.get('latestPosts') or []
+                if profile.get('isPrivate') or posts or int(profile.get('postsCount') or 0) == 0:
+                    print(f"[Scrape] brand-ig @{handle} via diy")
+                    return profile
+            raise ValueError(f"In-house brand IG scrape thin for @{handle}")
+        except Exception as e:
+            print(f"[Scrape] brand-ig @{handle} diy failed: {e}")
+            raise ValueError(f"Brand IG scrape failed for @{handle}: {e}") from e
 
     def analyze_brand_aesthetic(self, raw_scrape: Dict) -> Dict[str, Any]:
         """
