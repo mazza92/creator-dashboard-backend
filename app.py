@@ -14,6 +14,7 @@ from flask_session import Session
 import requests
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import HTTPException
 from urllib.parse import urlparse
 import time
 from datetime import timedelta, timezone
@@ -525,12 +526,18 @@ def release_db_connection(conn):
 # Global error handler
 @app.errorhandler(Exception)
 def handle_error(error):
+    # Let Flask/Werkzeug HTTP errors (404/403/400/…) keep their real status codes.
+    # Without this, abort(404) from media-proxy becomes a logged 500.
+    if isinstance(error, HTTPException):
+        return error
+
     app.logger.error(f"🔥 Unhandled error: {str(error)}", exc_info=True)
     response = jsonify({"error": "An unexpected error occurred. Please try again later."})
     origin = request.headers.get('Origin')
     allowed_origins = [
         'http://localhost:3000',
         'http://localhost:3001',
+        'https://app.newcollab.co',
         'https://newcollab.co',
         'https://www.newcollab.co',
         'https://api.newcollab.co'
@@ -1279,7 +1286,22 @@ def login():
         cursor.execute("SELECT id, password, role FROM users WHERE email = %s", (email,))
         user = cursor.fetchone()
         app.logger.info(f"🟢 User Query Result: {user.get('id') if user else None}")
-        if not user or not bcrypt.checkpw(password.encode('utf-8'), user['password'].encode('utf-8')):
+
+        password_ok = False
+        if user and user.get('password'):
+            try:
+                stored = user['password']
+                if isinstance(stored, str):
+                    stored = stored.encode('utf-8')
+                password_ok = bcrypt.checkpw(password.encode('utf-8'), stored)
+            except (ValueError, TypeError) as e:
+                # Corrupt/legacy non-bcrypt hash — treat as bad credentials, not 500
+                app.logger.warning(
+                    f"Login rejected: invalid password hash for user_id={user.get('id')}: {e}"
+                )
+                password_ok = False
+
+        if not user or not password_ok:
             app.logger.error("🔥 Invalid email or password")
             response = jsonify({'error': 'Invalid email or password'})
             response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')

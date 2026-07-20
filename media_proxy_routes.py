@@ -166,6 +166,8 @@ def proxy_media():
             stream=True,
         )
         if resp.status_code != 200:
+            # Expired/signed CDN URLs are common — quiet 404, not a server fault
+            print(f"[media-proxy] upstream {resp.status_code} for {url[:120]}")
             abort(404, description="Media not found")
 
         content_type = resp.headers.get("Content-Type") or "image/jpeg"
@@ -197,4 +199,4 @@ def proxy_media():
         abort(404, description="Failed to fetch media")
     except Exception as e:
         print(f"[media-proxy] error: {e}")
-        abort(500, description="Internal error")
+        abort(502, description="Failed to proxy media")
