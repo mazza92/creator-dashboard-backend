@@ -111,7 +111,7 @@ def indexnow_submit_creator():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/indexnow/submit-key-pages', methods=['POST'])
+@app.route('/api/indexnow/submit-key-pages', methods=['GET', 'POST'])
 def indexnow_submit_key_pages():
     """
     Endpoint to submit key pages to IndexNow

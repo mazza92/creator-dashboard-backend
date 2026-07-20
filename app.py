@@ -139,6 +139,51 @@ def handle_session_errors(response):
     return response
 
 
+def _maybe_restore_user_session_from_redis():
+    """
+    Best-effort restore when Flask session has no user_id but Redis still has JSON.
+    Flask-Session often stores pickle (\\x80...); that is normal — do not error-log it.
+    """
+    try:
+        redis_client = app.config.get('SESSION_REDIS')
+        if not redis_client:
+            return
+
+        session_id = getattr(session, 'sid', None) or request.cookies.get('session', 'unknown')
+        session_key = f"session:{session_id}"
+        redis_data = redis_client.get(session_key)
+        app.logger.debug(f"🟢 Redis session data for {session_key}: {redis_data}")
+
+        if not redis_data or session.get('user_id'):
+            return
+
+        # Pickle payload from Flask-Session — expected; leave it alone
+        if isinstance(redis_data, (bytes, bytearray)) and redis_data[:1] == b'\x80':
+            app.logger.debug("Redis session is pickle (Flask-Session); skipping JSON restore")
+            return
+
+        try:
+            raw = redis_data.decode('utf-8') if isinstance(redis_data, (bytes, bytearray)) else redis_data
+            session_data = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError, TypeError, AttributeError) as e:
+            # Non-JSON / corrupt shell without a logged-in user — clear quietly
+            app.logger.info(f"Clearing non-JSON Redis session shell for {session_key}: {e}")
+            try:
+                redis_client.delete(session_key)
+            except Exception:
+                pass
+            return
+
+        app.logger.debug(f"🟢 Parsed session data: {session_data}")
+        if isinstance(session_data, dict) and 'user_id' in session_data:
+            for key, value in session_data.items():
+                session[key] = value
+            session.modified = True
+            app.logger.info(f"🟢 Session restored from Redis: {session_data}")
+    except Exception as e:
+        app.logger.warning(f"Failed to check Redis session: {e}")
+
+
 @app.errorhandler(Exception)
 def handle_redis_errors(error):
     """Catch Redis ResponseError for rate limits"""
@@ -1367,27 +1412,7 @@ def get_profile():
     app.logger.info(f"🔍 Cookies received: {request.cookies}")
     app.logger.info(f"🔍 Session contents: {session}")
 
-    # Debug Redis session
-    try:
-        redis_client = app.config['SESSION_REDIS']
-        session_id = session.sid if 'sid' in session else request.cookies.get('session', 'unknown')
-        session_key = f"session:{session_id}"
-        redis_data = redis_client.get(session_key)
-        app.logger.debug(f"🟢 Redis session data for {session_key}: {redis_data}")
-        if redis_data and not session.get('user_id'):
-            try:
-                session_data = json.loads(redis_data.decode('utf-8'))
-                app.logger.debug(f"🟢 Parsed session data: {session_data}")
-                if 'user_id' in session_data:
-                    for key, value in session_data.items():
-                        session[key] = value
-                    session.modified = True
-                    app.logger.info(f"🟢 Session restored from Redis: {session_data}")
-            except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                app.logger.error(f"🔥 Invalid session data in Redis: {redis_data}, Error: {str(e)}")
-                redis_client.delete(session_key)
-    except Exception as e:
-        app.logger.error(f"🔥 Failed to check Redis session: {str(e)}")
+    _maybe_restore_user_session_from_redis()
 
     user_id = session.get('user_id')
     user_role = session.get('user_role', 'creator')
@@ -11871,27 +11896,7 @@ def confirm_stripe_account():
     app.logger.info(f"🔍 Cookies received: {request.cookies}")
     app.logger.info(f"🔍 Session contents: {session}")
 
-    try:
-        redis_client = app.config.get('SESSION_REDIS')
-        if redis_client:
-            session_id = session.sid if 'sid' in session else request.cookies.get('session', 'unknown')
-            session_key = f"session:{session_id}"
-            redis_data = redis_client.get(session_key)
-            app.logger.debug(f"🟢 Redis session data for {session_key}: {redis_data}")
-            if redis_data and not session.get('user_id'):
-                try:
-                    session_data = json.loads(redis_data.decode('utf-8'))
-                    app.logger.debug(f"🟢 Parsed session data: {session_data}")
-                    if 'user_id' in session_data:
-                        for key, value in session_data.items():
-                            session[key] = value
-                        session.modified = True
-                        app.logger.info(f"🟢 Session restored from Redis: {session_data}")
-                except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                    app.logger.error(f"🔥 Invalid session data in Redis: {redis_data}, Error: {str(e)}")
-                    redis_client.delete(session_key)
-    except Exception as e:
-        app.logger.error(f"🔥 Failed to check Redis session: {str(e)}")
+    _maybe_restore_user_session_from_redis()
 
     creator_id = session.get('creator_id')
     if not creator_id:

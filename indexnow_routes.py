@@ -114,10 +114,12 @@ def indexnow_submit_creator():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@indexnow_bp.route('/submit-key-pages', methods=['POST'])
+@indexnow_bp.route('/submit-key-pages', methods=['GET', 'POST'])
 def indexnow_submit_key_pages():
     """
-    Endpoint to submit key pages to IndexNow
+    Submit key pages to Bing IndexNow.
+    GET is allowed so uptime/cron/monitors (and Bing-style GET pings) work —
+    the route previously only accepted POST and logged unmatched 404s.
     """
     try:
         key_pages = [
