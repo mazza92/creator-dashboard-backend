@@ -52,16 +52,69 @@ _IG_SESSION_COOKIE = (
     (os.getenv("INSTAGRAM_SESSIONID") or os.getenv("IG_SESSIONID") or "").strip()
 )
 
-# Residential / rotating proxy for production when Instagram 429s the server IP.
-# Examples: http://user:pass@host:port  OR  socks5://host:port
-_IG_PROXY = (
-    (os.getenv("IG_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or "")
-    .strip()
-)
+# Residential / rotating proxy when Instagram 429s the server IP.
+# Set IG_PROXY to a REAL provider URL, e.g.:
+#   http://USERNAME:PASSWORD@brd.superproxy.io:22225
+# Do NOT paste the documentation placeholder (user:pass@residential-proxy:port).
+_IG_PROXY_RAW = (os.getenv("IG_PROXY") or "").strip().strip('"').strip("'")
 
 
 class InHouseScrapeError(Exception):
     """Raised when in-house scrape cannot produce usable profile data."""
+
+
+def _normalize_proxy_url(raw: str) -> Optional[str]:
+    """Validate proxy URL; ignore docs placeholders so scrapes don't all fail."""
+    raw = (raw or "").strip().strip('"').strip("'")
+    if not raw:
+        return None
+    lowered = raw.lower()
+    # Common copy-paste placeholders from docs / env templates
+    if any(
+        token in lowered
+        for token in (
+            "residential-proxy",
+            "user:pass@",
+            "username:password@",
+            "your-proxy",
+            "proxy-host",
+            "example.com",
+            "host:port",
+            "://user:",
+        )
+    ):
+        print(
+            "[InHouse/IG] IG_PROXY looks like a placeholder "
+            "(e.g. user:pass@residential-proxy:port) — ignoring. "
+            "Set a real residential proxy URL from your provider."
+        )
+        return None
+    if "://" not in raw:
+        raw = "http://" + raw
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(raw)
+        if parsed.scheme not in ("http", "https", "socks5", "socks5h", "socks4"):
+            print(f"[InHouse/IG] unsupported proxy scheme={parsed.scheme!r} — ignoring")
+            return None
+        if not parsed.hostname:
+            print("[InHouse/IG] IG_PROXY missing hostname — ignoring")
+            return None
+        if parsed.hostname in ("residential-proxy", "host", "example", "localhost"):
+            print(f"[InHouse/IG] placeholder proxy host={parsed.hostname} — ignoring")
+            return None
+        # "port" as the port number means someone left the template literal
+        if parsed.port is None and raw.rstrip("/").endswith(":port"):
+            print("[InHouse/IG] IG_PROXY has literal ':port' — ignoring")
+            return None
+        return raw
+    except Exception as e:
+        print(f"[InHouse/IG] IG_PROXY parse failed: {e} — ignoring")
+        return None
+
+
+_IG_PROXY = _normalize_proxy_url(_IG_PROXY_RAW)
 
 
 def _proxies() -> Optional[Dict[str, str]]:
@@ -82,8 +135,17 @@ def _session() -> requests.Session:
     if proxies:
         s.proxies.update(proxies)
         # Log host only — never credentials
-        host = _IG_PROXY.split("@")[-1] if "@" in _IG_PROXY else _IG_PROXY
-        print(f"[InHouse/IG] proxy enabled host={host}")
+        try:
+            from urllib.parse import urlparse
+
+            host = urlparse(_IG_PROXY).hostname or "unknown"
+            port = urlparse(_IG_PROXY).port
+            print(f"[InHouse/IG] proxy enabled host={host}:{port or 'default'}")
+        except Exception:
+            print("[InHouse/IG] proxy enabled")
+    elif _IG_PROXY_RAW:
+        # Invalid proxy was set — continue without it (better than total failure)
+        print("[InHouse/IG] continuing without proxy")
     return s
 
 
