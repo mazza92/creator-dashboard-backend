@@ -52,9 +52,22 @@ _IG_SESSION_COOKIE = (
     (os.getenv("INSTAGRAM_SESSIONID") or os.getenv("IG_SESSIONID") or "").strip()
 )
 
+# Residential / rotating proxy for production when Instagram 429s the server IP.
+# Examples: http://user:pass@host:port  OR  socks5://host:port
+_IG_PROXY = (
+    (os.getenv("IG_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or "")
+    .strip()
+)
+
 
 class InHouseScrapeError(Exception):
     """Raised when in-house scrape cannot produce usable profile data."""
+
+
+def _proxies() -> Optional[Dict[str, str]]:
+    if not _IG_PROXY:
+        return None
+    return {"http": _IG_PROXY, "https": _IG_PROXY}
 
 
 def _session() -> requests.Session:
@@ -65,7 +78,21 @@ def _session() -> requests.Session:
         "Accept-Encoding": "gzip, deflate",
         "Connection": "keep-alive",
     })
+    proxies = _proxies()
+    if proxies:
+        s.proxies.update(proxies)
+        # Log host only — never credentials
+        host = _IG_PROXY.split("@")[-1] if "@" in _IG_PROXY else _IG_PROXY
+        print(f"[InHouse/IG] proxy enabled host={host}")
     return s
+
+
+def _http_get(url: str, **kwargs):
+    """requests.get with optional IG_PROXY (for non-session calls)."""
+    proxies = _proxies()
+    if proxies and "proxies" not in kwargs:
+        kwargs["proxies"] = proxies
+    return requests.get(url, **kwargs)
 
 
 def _jitter(lo: float = 0.3, hi: float = 1.0) -> None:
@@ -81,11 +108,14 @@ def _diy_bio_ok(bio: str) -> bool:
     return bool(text) and text not in ("undefined", "null", "none")
 
 
-def diy_scrape_is_acceptable(profile: Dict[str, Any], platform: str) -> bool:
+def diy_scrape_is_acceptable(
+    profile: Dict[str, Any], platform: str, *, allow_partial: bool = False
+) -> bool:
     """
     Same required bar for TikTok + Instagram DIY:
       public  → followers + bio + at least one latest post
       private → followers + bio (posts may be hidden)
+      allow_partial → followers + bio only (IG IP wall / onboarding rescue)
     """
     if not profile:
         return False
@@ -107,7 +137,7 @@ def diy_scrape_is_acceptable(profile: Dict[str, Any], platform: str) -> bool:
         return False
     if followers <= 0 or not _diy_bio_ok(bio):
         return False
-    if is_private:
+    if is_private or allow_partial or profile.get("_partial_scrape"):
         return True
     return len(latest) > 0
 
@@ -139,13 +169,14 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
     session = _session()
     limit = max(1, min(int(results_limit or 12), 50))
     _ig_warm_session(session, handle)
+    ig_walled = {"hit": False}  # mutable so helpers can mark 429 walls
 
     source = "none"
-    user = _ig_web_profile_info(session, handle)
+    user = _ig_web_profile_info(session, handle, ig_walled=ig_walled)
     if user:
         source = "web_api"
     if not user:
-        user = _ig_mobile_profile_info(session, handle)
+        user = _ig_mobile_profile_info(session, handle, ig_walled=ig_walled)
         if user:
             source = "mobile_api"
     if not user:
@@ -153,12 +184,12 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
         if user:
             source = "graphql"
     if not user:
-        user = _ig_from_html(session, handle)
+        user = _ig_from_html(session, handle, ig_walled=ig_walled)
         if user:
             source = "html_meta"
 
     if not user or _ig_user_is_thin(user) or not str((user or {}).get("pk") or "").isdigit():
-        crawler_user = _ig_from_crawler_html(handle)
+        crawler_user = _ig_from_crawler_html(handle, ig_walled=ig_walled)
         if crawler_user:
             if not user:
                 user = crawler_user
@@ -251,12 +282,37 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
                 source = f"{source}+search"
 
     if not user:
+        if ig_walled.get("hit"):
+            raise InHouseScrapeError(
+                f"Instagram is rate-limiting this server (HTTP 429) — no profile data for @{handle}. "
+                "Set IG_PROXY (residential proxy) or INSTAGRAM_SESSIONID on the API host, then retry."
+            )
         raise InHouseScrapeError(f"No Instagram data for @{handle}")
 
     profile = _ig_to_profile_shape(user, posts, handle)
+
+    # When Instagram 429-walls the server IP we often get followers from search
+    # but no bio/posts. Soft-fill so onboarding doesn't lose the user; PR-Ready
+    # / kit can refresh later when the wall lifts or a proxy is configured.
     if not diy_scrape_is_acceptable(profile, "instagram"):
+        followers = int(profile.get("followersCount") or 0)
+        if followers > 0 and (ig_walled.get("hit") or source.startswith("search") or "search" in source):
+            if not _diy_bio_ok(profile.get("biography") or ""):
+                name = (profile.get("fullName") or user.get("full_name") or "").strip()
+                profile["biography"] = name or f"UGC creator @{handle}"
+                profile["fullName"] = profile.get("fullName") or name or handle
+            profile["_partial_scrape"] = True
+            profile["_ig_walled"] = bool(ig_walled.get("hit"))
+            if diy_scrape_is_acceptable(profile, "instagram", allow_partial=True):
+                print(
+                    f"[InHouse/IG] @{handle} PARTIAL via {source} "
+                    f"(posts={len(posts)}, ig_walled={ig_walled.get('hit')}) — "
+                    "set IG_PROXY or INSTAGRAM_SESSIONID for full scrapes"
+                )
+                return profile
+
         missing = []
-        if int(profile.get("followersCount") or 0) <= 0:
+        if followers <= 0:
             missing.append("followers")
         if not _diy_bio_ok(profile.get("biography") or ""):
             missing.append("bio")
@@ -311,7 +367,14 @@ def _ig_warm_session(session: requests.Session, handle: str) -> None:
         pass
 
 
-def _ig_web_profile_info(session: requests.Session, handle: str) -> Optional[Dict[str, Any]]:
+def _ig_mark_walled(ig_walled: Optional[Dict], status: int) -> None:
+    if ig_walled is not None and status in (429, 401, 403):
+        ig_walled["hit"] = True
+
+
+def _ig_web_profile_info(
+    session: requests.Session, handle: str, ig_walled: Optional[Dict] = None
+) -> Optional[Dict[str, Any]]:
     url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={handle}"
     csrf = session.cookies.get("csrftoken") or ""
     headers = {
@@ -328,6 +391,7 @@ def _ig_web_profile_info(session: requests.Session, handle: str) -> Optional[Dic
     try:
         resp = session.get(url, headers=headers, timeout=12)
         print(f"[InHouse/IG] web_profile_info status={resp.status_code}")
+        _ig_mark_walled(ig_walled, resp.status_code)
         if resp.status_code == 404:
             raise InHouseScrapeError(f"Instagram account @{handle} not found")
         if resp.status_code != 200:
@@ -342,7 +406,9 @@ def _ig_web_profile_info(session: requests.Session, handle: str) -> Optional[Dic
         return None
 
 
-def _ig_mobile_profile_info(session: requests.Session, handle: str) -> Optional[Dict[str, Any]]:
+def _ig_mobile_profile_info(
+    session: requests.Session, handle: str, ig_walled: Optional[Dict] = None
+) -> Optional[Dict[str, Any]]:
     url = f"https://i.instagram.com/api/v1/users/web_profile_info/?username={handle}"
     headers = {
         "User-Agent": "Instagram 275.0.0.27.98 Android (33/13; 420dpi; 1080x2400; samsung; SM-G991B; o1s; exynos2100; en_US; 458229258)",
@@ -352,6 +418,7 @@ def _ig_mobile_profile_info(session: requests.Session, handle: str) -> Optional[
     try:
         resp = session.get(url, headers=headers, timeout=12)
         print(f"[InHouse/IG] mobile_profile_info status={resp.status_code}")
+        _ig_mark_walled(ig_walled, resp.status_code)
         if resp.status_code != 200:
             return None
         data = resp.json()
@@ -387,7 +454,9 @@ def _ig_graphql_a1(session: requests.Session, handle: str) -> Optional[Dict[str,
         return None
 
 
-def _ig_from_html(session: requests.Session, handle: str) -> Optional[Dict[str, Any]]:
+def _ig_from_html(
+    session: requests.Session, handle: str, ig_walled: Optional[Dict] = None
+) -> Optional[Dict[str, Any]]:
     try:
         resp = session.get(
             f"https://www.instagram.com/{handle}/",
@@ -398,6 +467,7 @@ def _ig_from_html(session: requests.Session, handle: str) -> Optional[Dict[str, 
             timeout=12,
         )
         print(f"[InHouse/IG] profile html status={resp.status_code}")
+        _ig_mark_walled(ig_walled, resp.status_code)
         if resp.status_code == 404:
             raise InHouseScrapeError(f"Instagram account @{handle} not found")
         if resp.status_code != 200:
@@ -458,22 +528,24 @@ def _ig_from_html(session: requests.Session, handle: str) -> Optional[Dict[str, 
 
 def _ig_from_search_snippets(handle: str) -> Optional[Dict[str, Any]]:
     """
-    Fallback: Startpage / DuckDuckGo snippets mirror IG og:description
+    Fallback: Startpage / DuckDuckGo / Bing snippets mirror IG og:description
     (followers + bio) when Instagram login-walls the profile page.
     """
     queries = [
         f'"{handle}" Instagram',
         f"site:instagram.com/{handle}",
+        f"@{handle} Instagram followers",
     ]
-    urls: List[str] = []
+    urls: List[Tuple[str, str]] = []
     for q in queries:
-        urls.append(f"https://www.startpage.com/sp/search?query={quote_plus(q)}")
-        urls.append(f"https://html.duckduckgo.com/html/?q={quote_plus(q)}")
+        urls.append(("startpage", f"https://www.startpage.com/sp/search?query={quote_plus(q)}"))
+        urls.append(("ddg", f"https://html.duckduckgo.com/html/?q={quote_plus(q)}"))
+        urls.append(("bing", f"https://www.bing.com/search?q={quote_plus(q)}&setlang=en"))
 
     best: Optional[Dict[str, Any]] = None
-    for url in urls:
+    for engine, url in urls:
         try:
-            resp = requests.get(
+            resp = _http_get(
                 url,
                 headers={
                     "User-Agent": random.choice(_UA_POOL),
@@ -482,7 +554,6 @@ def _ig_from_search_snippets(handle: str) -> Optional[Dict[str, Any]]:
                 },
                 timeout=15,
             )
-            engine = "startpage" if "startpage" in url else "ddg"
             print(f"[InHouse/IG] search snippets status={resp.status_code} via={engine}")
             if resp.status_code != 200 or not resp.text:
                 continue
@@ -549,6 +620,27 @@ def _ig_parse_search_snippet_html(html: str, handle: str) -> Optional[Dict[str, 
     if followers <= 0:
         for fm in re.finditer(
             rf"{re.escape(handle)}.{{0,220}}?([\d,.]+[KMBkmb]?)\s*[Ff]ollowers",
+            text,
+            re.I | re.S,
+        ):
+            followers = _parse_compact_count(fm.group(1))
+            if followers > 0:
+                break
+    if followers <= 0:
+        # Looser: "1.2K Followers" anywhere near the handle / instagram.com/handle
+        for fm in re.finditer(
+            rf"(?:instagram\.com/{re.escape(handle)}|{re.escape(handle)}).{{0,400}}?"
+            rf"([\d,.]+[KMBkmb]?)\s*[Ff]ollowers",
+            text,
+            re.I | re.S,
+        ):
+            followers = _parse_compact_count(fm.group(1))
+            if followers > 0:
+                break
+    if followers <= 0:
+        # Bing/Google sometimes invert order: "1,234 Followers · @handle"
+        for fm in re.finditer(
+            rf"([\d,.]+[KMBkmb]?)\s*[Ff]ollowers.{{0,160}}?@?{re.escape(handle)}\b",
             text,
             re.I | re.S,
         ):
@@ -779,7 +871,9 @@ def _ig_parse_post_embed_owner(html: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def _ig_from_crawler_html(handle: str) -> Optional[Dict[str, Any]]:
+def _ig_from_crawler_html(
+    handle: str, ig_walled: Optional[Dict] = None
+) -> Optional[Dict[str, Any]]:
     """
     Fetch profile HTML with crawler UAs. Instagram still exposes og/description
     meta (followers + bio) to Googlebot/facebookexternalhit when browser HTML is walled.
@@ -787,7 +881,7 @@ def _ig_from_crawler_html(handle: str) -> Optional[Dict[str, Any]]:
     best: Optional[Dict[str, Any]] = None
     for ua in _IG_CRAWLER_UAS:
         try:
-            resp = requests.get(
+            resp = _http_get(
                 f"https://www.instagram.com/{handle}/",
                 headers={
                     "User-Agent": ua,
@@ -797,6 +891,7 @@ def _ig_from_crawler_html(handle: str) -> Optional[Dict[str, Any]]:
                 timeout=12,
             )
             print(f"[InHouse/IG] crawler html status={resp.status_code} ua={ua.split('/')[0]}")
+            _ig_mark_walled(ig_walled, resp.status_code)
             if resp.status_code == 404:
                 raise InHouseScrapeError(f"Instagram account @{handle} not found")
             if resp.status_code != 200 or not resp.text:
@@ -915,7 +1010,7 @@ def _ig_lookup_user_id(handle: str) -> str:
         return ""
     for ua in _IG_CRAWLER_UAS:
         try:
-            resp = requests.get(
+            resp = _http_get(
                 f"https://www.instagram.com/{handle}/",
                 headers={
                     "User-Agent": ua,

@@ -49,6 +49,7 @@ from portfolio_routes import portfolio_bp
 from public_routes import public_bp
 from pool_routes import pool_bp
 # from marketplace_routes import marketplace_bp  # Disabled - using inline endpoint instead (newer schema)
+from pr_ready_routes import pr_ready_bp
 from indexnow_routes import indexnow_bp
 from email_cron_routes import email_cron_bp
 from social_verification_routes import social_verification_bp, detect_country_from_ip, RESTRICTED_REGIONS
@@ -104,14 +105,21 @@ app.config['JWT_COOKIE_CSRF_PROTECT'] = True
 @retry((ConnectionError, AuthenticationError), tries=3, delay=5, backoff=2)
 def init_redis():
     redis_url = os.getenv('REDIS_URL')
-    app.logger.info(f"🟢 REDIS_URL: {redis_url}")
+    # Never log full URL (contains password)
+    app.logger.info(f"🟢 REDIS_URL host: {(redis_url or '').split('@')[-1] if redis_url else 'MISSING'}")
     if not redis_url:
         raise ValueError("REDIS_URL not set in environment")
     try:
+        # health_check_interval: Upstash/serverless closes idle sockets; ping before reuse
         redis_client = redis.Redis.from_url(
             redis_url,
             decode_responses=False,
-            ssl_cert_reqs=None
+            ssl_cert_reqs=None,
+            socket_connect_timeout=5,
+            socket_timeout=5,
+            socket_keepalive=True,
+            health_check_interval=30,
+            retry_on_timeout=True,
         )
         redis_client.ping()
         app.logger.info("🟢 Redis connection established")
@@ -185,18 +193,46 @@ def _maybe_restore_user_session_from_redis():
         app.logger.warning(f"Failed to check Redis session: {e}")
 
 
+def _redis_unavailable_response():
+    from flask import jsonify
+    return jsonify({
+        'error': 'Session service temporarily unavailable. Please refresh and try again.',
+        'code': 'REDIS_UNAVAILABLE',
+    }), 503
+
+
+@app.errorhandler(ConnectionError)
+def handle_redis_connection_error(error):
+    """Upstash often closes idle connections — don't 500 the whole request."""
+    app.logger.warning(f"⚠️ Redis connection error (will retry on next request): {error}")
+    try:
+        # Drop dead pooled sockets so the next request reconnects cleanly
+        client = app.config.get('SESSION_REDIS')
+        if client is not None:
+            client.connection_pool.disconnect()
+    except Exception:
+        pass
+    return _redis_unavailable_response()
+
+
 @app.errorhandler(Exception)
 def handle_redis_errors(error):
-    """Catch Redis ResponseError for rate limits"""
+    """Catch Redis ResponseError for rate limits + session NoneType fallout."""
     error_str = str(error)
     if 'max requests limit exceeded' in error_str.lower():
         app.logger.error(f"⚠️ Redis rate limit exceeded: {error_str}")
-        # Return a graceful error instead of crashing
         from flask import jsonify
         return jsonify({
             'error': 'Service temporarily unavailable. Please try again shortly.',
             'code': 'RATE_LIMIT'
         }), 503
+    # Flask-Session: open_session failed → session is None → save_session AttributeError
+    if isinstance(error, AttributeError) and 'modified' in error_str:
+        app.logger.warning(f"⚠️ Session missing after Redis blip: {error}")
+        return _redis_unavailable_response()
+    if 'Connection closed by server' in error_str or 'Connection reset' in error_str:
+        app.logger.warning(f"⚠️ Redis transport error: {error}")
+        return _redis_unavailable_response()
     raise error
 
 
@@ -231,6 +267,7 @@ app.register_blueprint(portfolio_bp)
 app.register_blueprint(public_bp)
 app.register_blueprint(pool_bp)
 # app.register_blueprint(marketplace_bp)  # Disabled - using inline endpoint instead (newer schema)
+app.register_blueprint(pr_ready_bp)
 app.register_blueprint(indexnow_bp)
 app.register_blueprint(email_cron_bp)
 app.register_blueprint(social_verification_bp)
@@ -2301,9 +2338,11 @@ def onboarding_scrape():
                 'is_private': True
             }), 400
 
+        partial_scrape = bool(profile.get('partial_scrape'))
+
         # Check for stale data (posts older than 1 year indicates private/inactive account)
-        # This catches inactive / effectively-private profiles with no recent posts
-        if latest_post_days_ago > 365:
+        # Skip when Instagram IP-walled us and we only recovered a partial profile.
+        if latest_post_days_ago > 365 and not partial_scrape:
             app.logger.warning(f"⚠️ Stale profile data for @{handle} - latest post is {latest_post_days_ago} days old")
             return jsonify({
                 'success': False,
@@ -2336,15 +2375,23 @@ def onboarding_scrape():
             'engagement_rate': profile.get('engagement_rate', 0),
             'niche': niche,
             'aesthetic_descriptors': aesthetic_descriptors,
-            'latest_post_days_ago': latest_post_days_ago
+            'latest_post_days_ago': latest_post_days_ago,
+            'partial_scrape': partial_scrape,
         }
 
-        app.logger.info(f"✅ Scrape successful for @{handle}: {follower_count} followers")
+        if partial_scrape:
+            app.logger.warning(
+                f"⚠️ Partial scrape for @{handle}: {follower_count} followers "
+                "(Instagram wall — set IG_PROXY / INSTAGRAM_SESSIONID for full data)"
+            )
+        else:
+            app.logger.info(f"✅ Scrape successful for @{handle}: {follower_count} followers")
 
         return jsonify({
             'success': True,
             'profile': profile,
-            'summary': summary
+            'summary': summary,
+            'partial_scrape': partial_scrape,
         })
 
     except ValueError as e:

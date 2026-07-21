@@ -37,8 +37,10 @@ class CreatorProfileScraper:
         handle = handle.lstrip('@').strip()
         try:
             profile = diy_scrape_instagram(handle, results_limit=12)
-            if diy_scrape_is_acceptable(profile, 'instagram'):
-                print(f"[Scrape] ig @{handle} via diy")
+            allow_partial = bool(profile.get('_partial_scrape'))
+            if diy_scrape_is_acceptable(profile, 'instagram', allow_partial=allow_partial):
+                tag = "diy-partial" if allow_partial else "diy"
+                print(f"[Scrape] ig @{handle} via {tag}")
                 return profile
             raise ValueError(f"In-house Instagram scrape thin for @{handle}")
         except Exception as e:
@@ -241,6 +243,10 @@ class CreatorProfileScraper:
             # Freshness
             'scraped_at': datetime.now(),
             'next_refresh_at': datetime.now() + timedelta(days=7),
+
+            # Soft scrape when Instagram IP-walls posts/bio (onboarding rescue)
+            'partial_scrape': bool(raw_scrape.get('_partial_scrape')),
+            'ig_walled': bool(raw_scrape.get('_ig_walled')),
         }
 
         return result
