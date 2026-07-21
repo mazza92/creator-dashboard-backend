@@ -418,6 +418,230 @@ def generate_kit_token(creator_id, brand_id):
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
+def resolve_creator_social(creator: dict) -> dict:
+    """
+    Resolve platform + handle for pitch proof when no media kit is published.
+    Same source of truth as AIDepth: creators.social_links (platform/url/followersCount),
+    with optional social_handle/social_platform if present.
+    """
+    handle = (creator.get('social_handle') or '').strip().lstrip('@')
+    platform = (creator.get('social_platform') or '').strip().lower()
+    profile_url = None
+
+    social_links_raw = creator.get('social_links') or []
+    if isinstance(social_links_raw, str):
+        try:
+            social_links_raw = json.loads(social_links_raw)
+        except Exception:
+            social_links_raw = []
+    if not isinstance(social_links_raw, list):
+        social_links_raw = []
+
+    # Prefer Instagram, then TikTok, then YouTube — same priority as AIDepth pitch context
+    if not handle:
+        ig = tt = yt = other = None
+        for link in social_links_raw:
+            if not isinstance(link, dict):
+                continue
+            p = (link.get('platform') or '').lower()
+            link_handle = (
+                link.get('handle') or link.get('username') or
+                link.get('user_name') or link.get('name') or ''
+            )
+            link_handle = str(link_handle).strip().lstrip('@')
+            url = (link.get('url') or '').strip()
+
+            # Extract handle from URL when missing (e.g. tiktok.com/@user, youtube.com/@user)
+            if not link_handle and url:
+                url_match = re.search(r'/@([A-Za-z0-9._]+)', url)
+                if not url_match:
+                    url_match = re.search(r'/(?:in|c|channel)/([A-Za-z0-9._-]+)/?$', url)
+                if not url_match:
+                    url_match = re.search(r'/([A-Za-z0-9._]+)/?$', url)
+                if url_match:
+                    link_handle = url_match.group(1)
+
+            if not link_handle and not url:
+                continue
+
+            entry = {
+                'platform': p,
+                'handle': link_handle,
+                'url': url or None,
+            }
+            if p == 'instagram' and not ig:
+                ig = entry
+            elif p == 'tiktok' and not tt:
+                tt = entry
+            elif p == 'youtube' and not yt:
+                yt = entry
+            elif not other and p not in ('linkedin',):
+                other = entry
+
+        chosen = ig or tt or yt or other
+        if chosen:
+            handle = (chosen.get('handle') or '').strip().lstrip('@')
+            platform = (chosen.get('platform') or platform or 'instagram').lower()
+            profile_url = chosen.get('url')
+
+    if not handle:
+        return {}
+
+    if platform in ('tt', 'tik tok'):
+        platform = 'tiktok'
+    if platform in ('ig', 'insta'):
+        platform = 'instagram'
+    platform = platform or 'instagram'
+
+    label = {
+        'tiktok': 'TikTok',
+        'instagram': 'Instagram',
+        'youtube': 'YouTube',
+    }.get(platform, platform.capitalize())
+
+    if not profile_url:
+        if platform == 'tiktok':
+            profile_url = f"https://www.tiktok.com/@{handle}"
+        elif platform == 'youtube':
+            profile_url = f"https://www.youtube.com/@{handle}"
+        else:
+            profile_url = f"https://www.instagram.com/{handle}/"
+
+    return {
+        'handle': handle,
+        'platform': platform,
+        'platform_label': label,
+        'url': profile_url,
+        'at_handle': f"@{handle}",
+    }
+
+
+def build_pitch_proof(creator: dict, *, creator_id=None, brand_id=None) -> dict:
+    """
+    Proof line for pitches: published media kit URL, else social profile URL/handle.
+    Always prefer something brands can click — never silently drop proof.
+    """
+    username = creator.get('username')
+    kit_published = bool(creator.get('kit_published'))
+    cid = creator_id or creator.get('id') or creator.get('creator_id')
+    bid = brand_id or creator.get('_pitch_brand_id')
+
+    if kit_published and username:
+        if cid and bid:
+            kit_token = generate_kit_token(cid, bid)
+            url = f"https://newcollab.co/kit/{username}?ref={kit_token}"
+        else:
+            url = f"https://newcollab.co/kit/{username}"
+        plain = f"You can see my recent work here: {url}"
+        html = f'You can see my recent work here: <a href="{url}">{url}</a>'
+        return {
+            'kind': 'kit',
+            'url': url,
+            'plain_line': plain,
+            'html_line': html,
+            'kit_token': kit_token if cid and bid else None,
+        }
+
+    social = resolve_creator_social(creator)
+    if social:
+        plain = f"You can find me on {social['platform_label']}: {social['url']}"
+        html = (
+            f"You can find me on {social['platform_label']}: "
+            f"<a href=\"{social['url']}\">{social['at_handle']}</a>"
+        )
+        return {
+            'kind': 'social',
+            'url': social['url'],
+            'plain_line': plain,
+            'html_line': html,
+            'handle': social['handle'],
+            'at_handle': social['at_handle'],
+            'platform_label': social['platform_label'],
+            'kit_token': None,
+        }
+
+    return {'kind': None, 'url': None, 'plain_line': None, 'html_line': None, 'kit_token': None}
+
+
+def apply_portfolio_placeholder(body: str, proof: dict, *, html: bool = False) -> str:
+    """Replace {{PORTFOLIO_LINK}} with kit or social proof; never leave a blank hole."""
+    if not body:
+        return body
+
+    placeholder = '{{PORTFOLIO_LINK}}'
+    full_kit_plain = f"You can see my recent work here: {placeholder}"
+    replacement_line = proof.get('html_line') if html else proof.get('plain_line')
+    replacement_url = proof.get('url') or ''
+
+    if proof.get('kind') and replacement_line:
+        # Prefer swapping the whole standard portfolio sentence so social wording is correct
+        if full_kit_plain in body:
+            body = body.replace(full_kit_plain, replacement_line)
+        elif placeholder in body:
+            body = body.replace(placeholder, replacement_url if not html else (
+                f'<a href="{replacement_url}">{replacement_url}</a>' if proof.get('kind') == 'kit'
+                else f'<a href="{replacement_url}">{proof.get("at_handle") or replacement_url}</a>'
+            ))
+            # If LLM used kit wording but we only have social, rewrite the lead-in
+            if proof.get('kind') == 'social':
+                body = body.replace(
+                    f"You can see my recent work here: {replacement_url}",
+                    replacement_line,
+                )
+                body = body.replace(
+                    f'You can see my recent work here: <a href="{replacement_url}">{replacement_url}</a>',
+                    replacement_line,
+                )
+        return body
+
+    # No proof available — strip empty portfolio placeholder lines
+    body = body.replace(f"{full_kit_plain}\n\n", '')
+    body = body.replace(full_kit_plain, '')
+    body = body.replace(placeholder, '')
+    return body
+
+
+def ensure_pitch_has_social_handle(body: str, creator: dict, *, html: bool = False) -> str:
+    """
+    If no media kit, guarantee the social @handle appears somewhere in the pitch.
+    Safety net when the model omits it from the self-intro.
+    """
+    if not body or creator.get('kit_published'):
+        return body
+    social = resolve_creator_social(creator)
+    if not social:
+        return body
+    at = social['at_handle']
+    handle = social['handle']
+    # Already present (with or without @)
+    if at.lower() in body.lower() or f"/{handle}" in body or f"@{handle}".lower() in body.lower():
+        return body
+
+    proof = build_pitch_proof(creator)
+    line = proof.get('html_line') if html else proof.get('plain_line')
+    if not line:
+        return body
+
+    if html:
+        # Insert before last <p> if it looks like a sign-off
+        import re as _re
+        parts = _re.findall(r'<p>.*?</p>', body, flags=_re.I | _re.S)
+        if len(parts) >= 2:
+            last = parts[-1]
+            insert = f"<p>{line}</p>"
+            if last in body:
+                return body.replace(last, f"{insert}{last}", 1)
+        return body.rstrip() + f"<p>{line}</p>"
+
+    for sign_off in (
+        'Talk soon,', 'Best,', 'Looking forward,', 'Cheers,', 'Thanks,',
+        'Thank you,', 'Warm regards,', 'Best regards,', 'Warmly,',
+    ):
+        if sign_off in body:
+            return body.replace(sign_off, f"{line}\n\n{sign_off}", 1)
+    return body.rstrip() + f"\n\n{line}"
+
+
 def get_db_connection():
     """Get database connection"""
     return psycopg2.connect(
@@ -3537,23 +3761,21 @@ def generate_pitch():
                     ]
                     pitch_body = _re.sub(r'\n{3,}', '\n\n', '\n'.join(_clean_lines)).strip()
 
-                    # Inject portfolio link before the sign-off in the sending layer.
+                    # Inject portfolio kit link OR social handle/profile when no kit.
                     # The sign-off is the last \n\n-separated paragraph (e.g. "Best,\nMahery").
-                    # We insert the portfolio line between the body and the sign-off so the
-                    # final order is: ...body...\n\nPlease find my portfolio here: {url}\n\nSign-off
-                    if creator.get('kit_published'):
-                        username = creator.get('username', creator.get('id', 'creator'))
-                        creator_id_for_kit = creator.get('id') or creator.get('creator_id')
-                        brand_id_for_kit = brand.get('id') or brand.get('brand_id')
-                        if creator_id_for_kit and brand_id_for_kit:
-                            kit_token = generate_kit_token(creator_id_for_kit, brand_id_for_kit)
-                            media_kit_url = f"https://newcollab.co/kit/{username}?ref={kit_token}"
-                        else:
-                            media_kit_url = f"https://newcollab.co/kit/{username}"
+                    proof = build_pitch_proof(creator, creator_id=creator.get('id'), brand_id=brand.get('id'))
+                    if proof.get('kind') == 'kit' and proof.get('kit_token'):
+                        try:
+                            cursor.execute('''
+                                UPDATE creator_pipeline
+                                SET kit_token = COALESCE(kit_token, %s), updated_at = NOW()
+                                WHERE creator_id = %s AND brand_id = %s
+                            ''', (proof['kit_token'], creator.get('id'), brand.get('id')))
+                        except Exception as kit_err:
+                            print(f"[generate_pitch] kit_token store skipped: {kit_err}")
 
-                        portfolio_line = f"Please find my portfolio here: {media_kit_url}"
-
-                        # Detect sign-off: last paragraph that is short (≤3 lines, ≤40 chars/line)
+                    if proof.get('plain_line'):
+                        portfolio_line = proof['plain_line']
                         _paragraphs = pitch_body.split('\n\n')
                         _last = _paragraphs[-1] if _paragraphs else ''
                         _last_lines = [l for l in _last.split('\n') if l.strip()]
@@ -3562,11 +3784,17 @@ def generate_pitch():
                             and all(len(l) <= 40 for l in _last_lines)
                             and len(_paragraphs) > 1
                         )
-                        if _is_signoff:
-                            # Insert portfolio before the sign-off paragraph
-                            pitch_body = '\n\n'.join(_paragraphs[:-1]) + f"\n\n{portfolio_line}\n\n" + _last
-                        else:
-                            pitch_body += f"\n\n{portfolio_line}"
+                        already = (
+                            (proof.get('url') and proof['url'] in pitch_body)
+                            or (proof.get('at_handle') and proof['at_handle'] in pitch_body)
+                            or 'newcollab.co/kit/' in pitch_body
+                        )
+                        if not already:
+                            if _is_signoff:
+                                pitch_body = '\n\n'.join(_paragraphs[:-1]) + f"\n\n{portfolio_line}\n\n" + _last
+                            else:
+                                pitch_body += f"\n\n{portfolio_line}"
+                    pitch_body = ensure_pitch_has_social_handle(pitch_body, creator, html=False)
                 else:
                     # Gemini failed completely - use template
                     print(f"[generate_pitch] Gemini failed: {result.error}")
@@ -3686,55 +3914,34 @@ def generate_pr_package():
             existing = cursor.fetchone()
 
             if existing:
-                # Get creator for media kit URL
-                cursor.execute('SELECT username, kit_published FROM creators WHERE id = %s', (creator_id,))
-                cached_creator = cursor.fetchone()
-                cached_media_kit_url = None
-                if cached_creator and cached_creator.get('kit_published') and cached_creator.get('username'):
-                    kit_token = generate_kit_token(creator_id, brand_id)
-                    cached_media_kit_url = f"https://newcollab.co/kit/{cached_creator['username']}?ref={kit_token}"
+                # Get creator for media kit / social proof
+                cursor.execute(
+                    '''
+                    SELECT username, kit_published, social_links
+                    FROM creators WHERE id = %s
+                    ''',
+                    (creator_id,),
+                )
+                cached_creator = cursor.fetchone() or {}
+                proof = build_pitch_proof(cached_creator, creator_id=creator_id, brand_id=brand_id)
+                cached_media_kit_url = proof.get('url') if proof.get('kind') == 'kit' else None
 
-                    # IMPORTANT: Store kit_token in pipeline for view tracking (cached path)
+                if proof.get('kind') == 'kit' and proof.get('kit_token'):
                     cursor.execute('''
                         UPDATE creator_pipeline
                         SET kit_token = COALESCE(kit_token, %s),
                             updated_at = NOW()
                         WHERE creator_id = %s AND brand_id = %s
-                    ''', (kit_token, creator_id, brand_id))
+                    ''', (proof['kit_token'], creator_id, brand_id))
                     conn.commit()
-                    print(f"[generate-pr-package CACHED] Stored kit_token: {kit_token} for pipeline creator={creator_id}, brand={brand_id}")
+                    print(f"[generate-pr-package CACHED] Stored kit_token: {proof['kit_token']} for pipeline creator={creator_id}, brand={brand_id}")
 
                 # Return cached package
                 package_data = _format_pr_package_response(dict(existing), dict(brand))
 
-                # Inject portfolio link into cached pitch bodies if kit is now published
-                # (Package may have been generated before kit was published)
-                if cached_media_kit_url:
-                    portfolio_line_plain = f"\n\nYou can see my recent work here: {cached_media_kit_url}"
-                    portfolio_line_html = f'<p>You can see my recent work here: <a href="{cached_media_kit_url}">{cached_media_kit_url}</a></p>'
-
-                    for pitch_type in ['short', 'growing', 'founder']:
-                        pitch = package_data.get('pitches', {}).get(pitch_type, {})
-                        body_plain = pitch.get('body_plain', '')
-                        body_html = pitch.get('body_html', '')
-
-                        # Only inject if portfolio link not already present
-                        if body_plain and cached_media_kit_url not in body_plain and 'newcollab.co/kit/' not in body_plain:
-                            # Insert before signature (look for common sign-offs)
-                            for sign_off in ['Best,', 'Looking forward,', 'Cheers,', 'Thanks,', 'Thank you,', 'Warm regards,', 'Best regards,']:
-                                if sign_off in body_plain:
-                                    pitch['body_plain'] = body_plain.replace(sign_off, f"{portfolio_line_plain.strip()}\n\n{sign_off}")
-                                    break
-                            else:
-                                # No sign-off found, append to end
-                                pitch['body_plain'] = body_plain.rstrip() + portfolio_line_plain
-
-                        if body_html and cached_media_kit_url not in body_html and 'newcollab.co/kit/' not in body_html:
-                            # Insert before closing </body> or append
-                            if '</body>' in body_html:
-                                pitch['body_html'] = body_html.replace('</body>', f'{portfolio_line_html}</body>')
-                            else:
-                                pitch['body_html'] = body_html.rstrip() + portfolio_line_html
+                # Inject kit or social proof into cached pitch bodies when missing
+                if proof.get('kind') and proof.get('plain_line'):
+                    _inject_pitch_proof(package_data, proof)
 
                 # Use stored AI coaching data from pr_packages (for consistency on revisit)
                 brand_name = brand.get('brand_name') or brand.get('name', 'Brand')
@@ -3979,42 +4186,34 @@ def generate_pr_package():
 
         package = result.package
 
-        # Replace {{PORTFOLIO_LINK}} placeholder with actual media kit URL
-        username = creator.get('username')
-        kit_published = creator.get('kit_published')
-        media_kit_url = None
+        # Replace {{PORTFOLIO_LINK}} with media kit URL, or social handle/profile when no kit
+        proof = build_pitch_proof(creator, creator_id=creator_id, brand_id=brand_id)
+        media_kit_url = proof.get('url') if proof.get('kind') == 'kit' else None
 
-        if kit_published and username:
-            kit_token = generate_kit_token(creator_id, brand_id)
-            media_kit_url = f"https://newcollab.co/kit/{username}?ref={kit_token}"
-
-            # IMPORTANT: Store kit_token in pipeline NOW for view tracking
+        if proof.get('kind') == 'kit' and proof.get('kit_token'):
             cursor.execute('''
                 UPDATE creator_pipeline
                 SET kit_token = COALESCE(kit_token, %s),
                     updated_at = NOW()
                 WHERE creator_id = %s AND brand_id = %s
-            ''', (kit_token, creator_id, brand_id))
-            print(f"[generate-pr-package] Stored kit_token: {kit_token} for pipeline creator={creator_id}, brand={brand_id}")
+            ''', (proof['kit_token'], creator_id, brand_id))
+            print(f"[generate-pr-package] Stored kit_token: {proof['kit_token']} for pipeline creator={creator_id}, brand={brand_id}")
 
-            # Replace placeholder in each pitch tone
-            for tone in ['pitch_short', 'pitch_growing', 'pitch_founder']:
-                if package.get(f'{tone}_body_plain'):
-                    package[f'{tone}_body_plain'] = package[f'{tone}_body_plain'].replace('{{PORTFOLIO_LINK}}', media_kit_url)
-                if package.get(f'{tone}_body_html'):
-                    package[f'{tone}_body_html'] = package[f'{tone}_body_html'].replace(
-                        '{{PORTFOLIO_LINK}}',
-                        f'<a href="{media_kit_url}">{media_kit_url}</a>'
-                    )
-        else:
-            # Remove placeholder if no kit URL available
-            for tone in ['pitch_short', 'pitch_growing', 'pitch_founder']:
-                if package.get(f'{tone}_body_plain'):
-                    # Remove the entire portfolio line if no URL
-                    package[f'{tone}_body_plain'] = package[f'{tone}_body_plain'].replace('You can see my recent work here: {{PORTFOLIO_LINK}}\n\n', '')
-                    package[f'{tone}_body_plain'] = package[f'{tone}_body_plain'].replace('You can see my recent work here: {{PORTFOLIO_LINK}}', '')
-                if package.get(f'{tone}_body_html'):
-                    package[f'{tone}_body_html'] = package[f'{tone}_body_html'].replace('You can see my recent work here: {{PORTFOLIO_LINK}}', '')
+        for tone in ['pitch_short', 'pitch_growing', 'pitch_founder']:
+            if package.get(f'{tone}_body_plain'):
+                package[f'{tone}_body_plain'] = apply_portfolio_placeholder(
+                    package[f'{tone}_body_plain'], proof, html=False
+                )
+                package[f'{tone}_body_plain'] = ensure_pitch_has_social_handle(
+                    package[f'{tone}_body_plain'], creator, html=False
+                )
+            if package.get(f'{tone}_body_html'):
+                package[f'{tone}_body_html'] = apply_portfolio_placeholder(
+                    package[f'{tone}_body_html'], proof, html=True
+                )
+                package[f'{tone}_body_html'] = ensure_pitch_has_social_handle(
+                    package[f'{tone}_body_html'], creator, html=True
+                )
 
         # Store in database (upsert)
         cursor.execute('''
@@ -4565,38 +4764,32 @@ def generate_pr_package_v2():
             # ========================================
             # STEP 3: STRATEGY BUILT (timing + fit)
             # ========================================
-            # Process portfolio link
-            username = creator.get('username')
-            kit_published = creator.get('kit_published')
-            media_kit_url = None
+            # Process portfolio / social proof link
+            proof = build_pitch_proof(creator, creator_id=creator_id, brand_id=resolved_brand_id)
+            media_kit_url = proof.get('url') if proof.get('kind') == 'kit' else None
 
-            if kit_published and username:
-                kit_token = generate_kit_token(creator_id, resolved_brand_id)
-                media_kit_url = f"https://newcollab.co/kit/{username}?ref={kit_token}"
-
+            if proof.get('kind') == 'kit' and proof.get('kit_token'):
                 cursor.execute('''
                     UPDATE creator_pipeline
                     SET kit_token = COALESCE(kit_token, %s), updated_at = NOW()
                     WHERE creator_id = %s AND brand_id = %s
-                ''', (kit_token, creator_id, resolved_brand_id))
+                ''', (proof['kit_token'], creator_id, resolved_brand_id))
 
-                # Replace placeholder in pitches
-                for tone in ['pitch_short', 'pitch_growing', 'pitch_founder']:
-                    if package.get(f'{tone}_body_plain'):
-                        package[f'{tone}_body_plain'] = package[f'{tone}_body_plain'].replace('{{PORTFOLIO_LINK}}', media_kit_url)
-                    if package.get(f'{tone}_body_html'):
-                        package[f'{tone}_body_html'] = package[f'{tone}_body_html'].replace(
-                            '{{PORTFOLIO_LINK}}',
-                            f'<a href="{media_kit_url}">{media_kit_url}</a>'
-                        )
-            else:
-                # Remove placeholder if no kit
-                for tone in ['pitch_short', 'pitch_growing', 'pitch_founder']:
-                    if package.get(f'{tone}_body_plain'):
-                        package[f'{tone}_body_plain'] = package[f'{tone}_body_plain'].replace('You can see my recent work here: {{PORTFOLIO_LINK}}\n\n', '')
-                        package[f'{tone}_body_plain'] = package[f'{tone}_body_plain'].replace('You can see my recent work here: {{PORTFOLIO_LINK}}', '')
-                    if package.get(f'{tone}_body_html'):
-                        package[f'{tone}_body_html'] = package[f'{tone}_body_html'].replace('You can see my recent work here: {{PORTFOLIO_LINK}}', '')
+            for tone in ['pitch_short', 'pitch_growing', 'pitch_founder']:
+                if package.get(f'{tone}_body_plain'):
+                    package[f'{tone}_body_plain'] = apply_portfolio_placeholder(
+                        package[f'{tone}_body_plain'], proof, html=False
+                    )
+                    package[f'{tone}_body_plain'] = ensure_pitch_has_social_handle(
+                        package[f'{tone}_body_plain'], creator, html=False
+                    )
+                if package.get(f'{tone}_body_html'):
+                    package[f'{tone}_body_html'] = apply_portfolio_placeholder(
+                        package[f'{tone}_body_html'], proof, html=True
+                    )
+                    package[f'{tone}_body_html'] = ensure_pitch_has_social_handle(
+                        package[f'{tone}_body_html'], creator, html=True
+                    )
 
             # Compute fit tier with AI Depth when available
             fit_result = compute_fit_with_ai_depth(dict(creator), dict(brand), user_id, cursor, conn)
@@ -4818,29 +5011,66 @@ def generate_pr_package_v2():
     )
 
 
-def _inject_portfolio_link(package_data, media_kit_url):
-    """Inject portfolio link into cached pitch bodies."""
-    portfolio_line_plain = f"\n\nYou can see my recent work here: {media_kit_url}"
-    portfolio_line_html = f'<p>You can see my recent work here: <a href="{media_kit_url}">{media_kit_url}</a></p>'
+def _inject_pitch_proof(package_data, proof):
+    """Inject kit or social proof into cached pitch bodies when missing."""
+    if not proof or not proof.get('plain_line'):
+        return
+
+    url = proof.get('url') or ''
+    portfolio_line_plain = f"\n\n{proof['plain_line']}"
+    portfolio_line_html = f"<p>{proof['html_line']}</p>"
+    markers = (
+        'newcollab.co/kit/',
+        'tiktok.com/@',
+        'instagram.com/',
+        'youtube.com/@',
+        'You can find me on',
+        'You can see my recent work here:',
+    )
 
     for pitch_type in ['short', 'growing', 'founder']:
         pitch = package_data.get('pitches', {}).get(pitch_type, {})
         body_plain = pitch.get('body_plain', '')
         body_html = pitch.get('body_html', '')
 
-        if body_plain and media_kit_url not in body_plain and 'newcollab.co/kit/' not in body_plain:
-            for sign_off in ['Best,', 'Looking forward,', 'Cheers,', 'Thanks,', 'Thank you,', 'Warm regards,', 'Best regards,']:
+        already_plain = body_plain and (
+            (url and url in body_plain)
+            or any(m in body_plain for m in markers)
+            or (proof.get('at_handle') and proof['at_handle'] in body_plain)
+        )
+        if body_plain and not already_plain:
+            for sign_off in [
+                'Talk soon,', 'Best,', 'Looking forward,', 'Cheers,', 'Thanks,',
+                'Thank you,', 'Warm regards,', 'Best regards,', 'Warmly,',
+            ]:
                 if sign_off in body_plain:
-                    pitch['body_plain'] = body_plain.replace(sign_off, f"{portfolio_line_plain.strip()}\n\n{sign_off}")
+                    pitch['body_plain'] = body_plain.replace(
+                        sign_off, f"{portfolio_line_plain.strip()}\n\n{sign_off}"
+                    )
                     break
             else:
                 pitch['body_plain'] = body_plain.rstrip() + portfolio_line_plain
 
-        if body_html and media_kit_url not in body_html and 'newcollab.co/kit/' not in body_html:
+        already_html = body_html and (
+            (url and url in body_html)
+            or any(m in body_html for m in markers)
+            or (proof.get('at_handle') and proof['at_handle'] in body_html)
+        )
+        if body_html and not already_html:
             if '</body>' in body_html:
                 pitch['body_html'] = body_html.replace('</body>', f'{portfolio_line_html}</body>')
             else:
                 pitch['body_html'] = body_html.rstrip() + portfolio_line_html
+
+
+def _inject_portfolio_link(package_data, media_kit_url):
+    """Back-compat wrapper — prefer _inject_pitch_proof with build_pitch_proof()."""
+    _inject_pitch_proof(package_data, {
+        'kind': 'kit',
+        'url': media_kit_url,
+        'plain_line': f"You can see my recent work here: {media_kit_url}",
+        'html_line': f'You can see my recent work here: <a href="{media_kit_url}">{media_kit_url}</a>',
+    })
 
 
 def _format_pr_package_response(package: dict, brand: dict) -> dict:

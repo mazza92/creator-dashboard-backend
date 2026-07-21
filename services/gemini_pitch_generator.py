@@ -96,8 +96,10 @@ STRUCTURE - every pitch follows this exact skeleton in order:
 2. Self-intro (1 sentence): creator's niche + platform + audience size, delivered
    compressed and NATURALLY. Do not dump metrics like a media kit. Weave the
    engagement rate into a sentence rather than stating it clinically.
-   GOOD: "I make skincare content on Instagram for 15,200 followers, where posts
-   average around 6% engagement."
+   If `creator.social_handle` is provided, include it as @{handle} in this sentence
+   so the brand can find them (critical when they have no media kit).
+   GOOD: "I make skincare content on Instagram (@priya.skin) for 15,200 followers,
+   where posts average around 6% engagement."
    BAD: "I have 15,200 followers with an average engagement rate of 6.0%."
 
 3. Creative angle (2-3 sentences): a SPECIFIC content idea for THIS brand. If a
@@ -495,6 +497,41 @@ def build_pitch_input(brand: Dict, creator: Dict) -> Dict:
         "platform": platform,
         "follower_count": followers,
     }
+
+    # Social handle from social_links (same source as AIDepth / onboarding)
+    social_handle = (creator.get('social_handle') or '').strip().lstrip('@')
+    social_platform = (creator.get('social_platform') or creator.get('primary_platform') or '').strip()
+    if not social_handle:
+        links = creator.get('social_links') or []
+        if isinstance(links, str):
+            try:
+                links = json.loads(links)
+            except Exception:
+                links = []
+        if isinstance(links, list):
+            for pref in ('instagram', 'tiktok', 'youtube'):
+                for link in links:
+                    if not isinstance(link, dict):
+                        continue
+                    if (link.get('platform') or '').lower() != pref:
+                        continue
+                    h = (link.get('handle') or link.get('username') or '').strip().lstrip('@')
+                    if not h and link.get('url'):
+                        m = re.search(r'/@([A-Za-z0-9._]+)', str(link.get('url')))
+                        if not m:
+                            m = re.search(r'/([A-Za-z0-9._]+)/?$', str(link.get('url')))
+                        if m:
+                            h = m.group(1)
+                    if h:
+                        social_handle = h
+                        social_platform = pref
+                        break
+                if social_handle:
+                    break
+    if social_handle:
+        creator_input["social_handle"] = social_handle
+        if not creator.get('kit_published'):
+            creator_input["include_handle_in_intro"] = True
 
     # Optional creator fields
     engagement_rate = creator.get("engagement_rate")

@@ -368,19 +368,27 @@ CRITICAL RULES FOR ALL PITCHES:
 
 PITCHES: 3-tone spectrum:
 
-IMPORTANT - PORTFOLIO & WHITELISTING LINES:
+IMPORTANT - PROOF & WHITELISTING LINES:
 Every pitch MUST include these two lines (IN THIS ORDER) right BEFORE the final ask:
-1. Portfolio line: "You can see my recent work here: {{PORTFOLIO_LINK}}"
+1. Proof line: "You can see my recent work here: {{PORTFOLIO_LINK}}"
+   ({{PORTFOLIO_LINK}} is replaced after generation with either the creator's
+   published media kit URL OR their social profile URL / @handle. NEVER omit this
+   line and NEVER invent a URL — always use the exact {{PORTFOLIO_LINK}} token.)
 2. Whitelisting line: "Happy for you to use any content in your paid ads, no extra cost."
 
 These lines go BEFORE the ask, NOT at the very end.
+
+SELF-INTRO HANDLE RULE:
+In the self-intro sentence, include the creator's social @handle when provided in
+CREATOR CONTEXT (e.g. "I'm Mimis (@mimis.skincare) on TikTok..."). Brands must be
+able to find the creator even without a media kit.
 
 - SHORT: 70-100 words. Confident, direct, minimal. Feels like it was tapped
   out from a phone. Great for creators who want speed. Structure:
   * Greeting line: "Hi [Brand] team," (REQUIRED, own line)
   * Opener (1 sentence, brand-specific observation, NOT self-intro)
-  * Compressed self-intro (1 sentence)
-  * Portfolio line: "You can see my recent work here: {{PORTFOLIO_LINK}}"
+  * Compressed self-intro (1 sentence, include @handle when provided)
+  * Proof line: "You can see my recent work here: {{PORTFOLIO_LINK}}"
   * Whitelisting offer: "Happy for you to use any content in your paid ads, no extra cost."
   * Specific ask (request a specific product, NOT "collaboration")
   * Sign-off with creator first name
@@ -390,9 +398,9 @@ These lines go BEFORE the ask, NOT at the very end.
   Structure:
   * Greeting line: "Hi [Brand] team," (REQUIRED, own line)
   * Brand-specific opener (1-2 sentences, reference something observable)
-  * Self-intro compressed (1 sentence with niche + platform + audience size)
+  * Self-intro compressed (1 sentence with niche + platform + @handle + audience size)
   * Creative angle for THIS brand (2-3 sentences with specific content idea)
-  * Portfolio line: "You can see my recent work here: {{PORTFOLIO_LINK}}"
+  * Proof line: "You can see my recent work here: {{PORTFOLIO_LINK}}"
   * Whitelisting offer: "Happy for you to use any content in your paid ads, no extra cost."
   * Specific ask (name a product category or item)
   * Warm sign-off (1 line + creator first name, REQUIRED)
@@ -404,9 +412,9 @@ These lines go BEFORE the ask, NOT at the very end.
   own hand at 11pm. Structure:
   * Greeting line: "Hi [Brand] team," (REQUIRED, own line)
   * Personal observation about brand/product
-  * Self-intro with authentic voice
+  * Self-intro with authentic voice (include @handle)
   * Believable moment / specific memory
-  * Portfolio line: "You can see my recent work here: {{PORTFOLIO_LINK}}"
+  * Proof line: "You can see my recent work here: {{PORTFOLIO_LINK}}"
   * Whitelisting offer: "Happy for you to use any content in your paid ads, no extra cost."
   * Warm ask for specific product
   * Sign-off with creator first name (REQUIRED)
@@ -525,10 +533,55 @@ def build_user_prompt(creator: Dict, brand: Dict) -> str:
     # Parse niche properly
     niche = _parse_niche(creator.get('niche'))
 
+    # Social handle from social_links JSON (not legacy *_handle columns)
+    social_handle = (creator.get('social_handle') or '').strip().lstrip('@')
+    social_platform = (creator.get('social_platform') or creator.get('primary_platform') or '').strip()
+    if not social_handle:
+        links = creator.get('social_links') or []
+        if isinstance(links, str):
+            try:
+                links = json.loads(links)
+            except Exception:
+                links = []
+        if isinstance(links, list):
+            for pref in ('instagram', 'tiktok', 'youtube'):
+                for link in links:
+                    if not isinstance(link, dict):
+                        continue
+                    if (link.get('platform') or '').lower() != pref:
+                        continue
+                    h = (link.get('handle') or link.get('username') or '').strip().lstrip('@')
+                    url = link.get('url') or ''
+                    if not h and url:
+                        m = re.search(r'/@([A-Za-z0-9._]+)', url)
+                        if not m:
+                            m = re.search(r'/([A-Za-z0-9._]+)/?$', url)
+                        if m:
+                            h = m.group(1)
+                    if h:
+                        social_handle = h
+                        social_platform = pref
+                        break
+                if social_handle:
+                    break
+    handle_line = (
+        f"- Social handle: @{social_handle} on {social_platform or 'primary platform'} "
+        f"(MUST appear in the self-intro, e.g. '@{social_handle}')"
+        if social_handle else
+        "- Social handle: not on file"
+    )
+    kit_line = (
+        "- Media kit: published ({{PORTFOLIO_LINK}} will be the kit URL)"
+        if creator.get('kit_published')
+        else "- Media kit: NOT published ({{PORTFOLIO_LINK}} will become their social profile URL — still include the proof line)"
+    )
+
     prompt = f"""CREATOR CONTEXT
 - Name: {creator.get('first_name') or creator.get('username', 'Creator')}
 - Niche: {niche}
 - Platform: {creator.get('primary_platform') or creator.get('platforms', 'TikTok/Instagram')}
+{handle_line}
+{kit_line}
 - Followers: {followers:,}
 - Engagement rate: {engagement_str}
 - Tier: {tier}
