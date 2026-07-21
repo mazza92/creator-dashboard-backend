@@ -287,9 +287,9 @@ class TestMobileFeedHelpers(unittest.TestCase):
         self.assertEqual(post["shortCode"], "")
 
 
-class TestInhouseScraperOnly(unittest.TestCase):
+class TestInhouseScraperWithApifyFallback(unittest.TestCase):
     @patch("services.creator_profile_scraper.diy_scrape_instagram")
-    def test_instagram_uses_inhouse_scraper(self, mock_diy):
+    def test_instagram_uses_inhouse_scraper_when_ok(self, mock_diy):
         mock_diy.return_value = {
             "username": "okuser",
             "followersCount": 5000,
@@ -299,13 +299,35 @@ class TestInhouseScraperOnly(unittest.TestCase):
             "latestPosts": [{"likesCount": 1, "displayUrl": "https://x", "caption": "hi"}],
         }
         scraper = CreatorProfileScraper()
-        self.assertFalse(hasattr(scraper, "_apify_scrape_instagram"))
-        result = scraper.scrape_instagram_profile("okuser")
-        self.assertEqual(result["username"], "okuser")
-        mock_diy.assert_called_once()
+        with patch.object(scraper, "_apify_scrape_instagram") as mock_apify:
+            result = scraper.scrape_instagram_profile("okuser")
+            self.assertEqual(result["username"], "okuser")
+            mock_diy.assert_called_once()
+            mock_apify.assert_not_called()
+
+    @patch("services.creator_profile_scraper.diy_scrape_instagram")
+    def test_instagram_falls_back_to_apify(self, mock_diy):
+        mock_diy.side_effect = RuntimeError("No Instagram data")
+        scraper = CreatorProfileScraper()
+        with patch.object(
+            scraper,
+            "_apify_scrape_instagram",
+            return_value={
+                "username": "okuser",
+                "followersCount": 5000,
+                "postsCount": 20,
+                "isPrivate": False,
+                "biography": "creator bio",
+                "latestPosts": [{"likesCount": 1, "displayUrl": "https://x", "caption": "hi"}],
+            },
+        ) as mock_apify:
+            result = scraper.scrape_instagram_profile("okuser")
+            self.assertEqual(result["username"], "okuser")
+            self.assertEqual(result["_scrape_source"], "apify")
+            mock_apify.assert_called_once_with("okuser")
 
     @patch("services.creator_profile_scraper.diy_scrape_tiktok")
-    def test_tiktok_uses_inhouse_scraper(self, mock_diy):
+    def test_tiktok_uses_inhouse_scraper_when_ok(self, mock_diy):
         mock_diy.return_value = {
             "uniqueId": "ttuser",
             "followerCount": 1000,
@@ -315,10 +337,11 @@ class TestInhouseScraperOnly(unittest.TestCase):
             "latestVideos": [{"text": "hi", "createTime": 1784400000, "diggCount": 1}],
         }
         scraper = CreatorProfileScraper()
-        self.assertFalse(hasattr(scraper, "_apify_scrape_tiktok"))
-        result = scraper.scrape_tiktok_profile("ttuser")
-        self.assertEqual(result["uniqueId"], "ttuser")
-        mock_diy.assert_called_once()
+        with patch.object(scraper, "_apify_scrape_tiktok") as mock_apify:
+            result = scraper.scrape_tiktok_profile("ttuser")
+            self.assertEqual(result["uniqueId"], "ttuser")
+            mock_diy.assert_called_once()
+            mock_apify.assert_not_called()
 
 
 if __name__ == "__main__":

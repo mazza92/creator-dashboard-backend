@@ -2,10 +2,11 @@
 Creator Profile Scraper Service
 
 Handles:
-1. In-house Instagram/TikTok scraping
-2. Post-scrape processing (derived metrics)
-3. Gemini Vision analysis for thumbnails
-4. Storage in creator_profile_data table
+1. In-house Instagram/TikTok scraping (primary)
+2. Apify fallback when in-house is rate-limited / thin
+3. Post-scrape processing (derived metrics)
+4. Gemini Vision analysis for thumbnails
+5. Storage in creator_profile_data table
 """
 
 import os
@@ -21,6 +22,11 @@ from services.inhouse_social_scraper import (
     diy_scrape_is_acceptable,
 )
 
+# Apify fallback (used when DIY Instagram/TikTok scrapes fail)
+APIFY_API_TOKEN = os.getenv('APIFY_API_TOKEN')
+APIFY_INSTAGRAM_ACTOR = os.getenv('APIFY_INSTAGRAM_ACTOR', 'apify~instagram-scraper')
+APIFY_TIKTOK_ACTOR = os.getenv('APIFY_TIKTOK_ACTOR', 'clockworks~free-tiktok-scraper')
+
 # Gemini configuration
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 GEMINI_VISION_MODEL = 'gemini-2.5-flash'
@@ -31,10 +37,12 @@ class CreatorProfileScraper:
 
     def __init__(self, db_conn=None):
         self.db_conn = db_conn
+        self.apify_token = APIFY_API_TOKEN
 
     def scrape_instagram_profile(self, handle: str) -> Dict[str, Any]:
-        """Scrape Instagram profile via in-house scraper only."""
+        """Scrape Instagram: in-house first, Apify fallback."""
         handle = handle.lstrip('@').strip()
+        diy_error = None
         try:
             profile = diy_scrape_instagram(handle, results_limit=12)
             allow_partial = bool(profile.get('_partial_scrape'))
@@ -42,23 +50,136 @@ class CreatorProfileScraper:
                 tag = "diy-partial" if allow_partial else "diy"
                 print(f"[Scrape] ig @{handle} via {tag}")
                 return profile
-            raise ValueError(f"In-house Instagram scrape thin for @{handle}")
+            diy_error = ValueError(f"In-house Instagram scrape thin for @{handle}")
+            print(f"[Scrape] ig @{handle} diy thin — trying Apify")
         except Exception as e:
-            print(f"[Scrape] ig @{handle} diy failed: {e}")
-            raise ValueError(f"Instagram scrape failed for @{handle}: {e}") from e
+            diy_error = e
+            print(f"[Scrape] ig @{handle} diy failed: {e} — trying Apify")
+
+        try:
+            profile = self._apify_scrape_instagram(handle)
+            if diy_scrape_is_acceptable(profile, 'instagram'):
+                print(f"[Scrape] ig @{handle} via apify")
+                profile['_scrape_source'] = 'apify'
+                return profile
+            raise ValueError(f"Apify Instagram scrape thin for @{handle}")
+        except Exception as apify_err:
+            print(f"[Scrape] ig @{handle} apify failed: {apify_err}")
+            raise ValueError(
+                f"Instagram scrape failed for @{handle}: diy={diy_error}; apify={apify_err}"
+            ) from apify_err
 
     def scrape_tiktok_profile(self, handle: str) -> Dict[str, Any]:
-        """Scrape TikTok profile via in-house scraper only."""
+        """Scrape TikTok: in-house first, Apify fallback."""
         handle = handle.lstrip('@').strip()
+        diy_error = None
         try:
             profile = diy_scrape_tiktok(handle, results_limit=12)
             if diy_scrape_is_acceptable(profile, 'tiktok'):
                 print(f"[Scrape] tt @{handle} via diy")
                 return profile
-            raise ValueError(f"In-house TikTok scrape thin for @{handle}")
+            diy_error = ValueError(f"In-house TikTok scrape thin for @{handle}")
+            print(f"[Scrape] tt @{handle} diy thin — trying Apify")
         except Exception as e:
-            print(f"[Scrape] tt @{handle} diy failed: {e}")
-            raise ValueError(f"TikTok scrape failed for @{handle}: {e}") from e
+            diy_error = e
+            print(f"[Scrape] tt @{handle} diy failed: {e} — trying Apify")
+
+        try:
+            profile = self._apify_scrape_tiktok(handle)
+            if diy_scrape_is_acceptable(profile, 'tiktok'):
+                print(f"[Scrape] tt @{handle} via apify")
+                profile['_scrape_source'] = 'apify'
+                return profile
+            raise ValueError(f"Apify TikTok scrape thin for @{handle}")
+        except Exception as apify_err:
+            print(f"[Scrape] tt @{handle} apify failed: {apify_err}")
+            raise ValueError(
+                f"TikTok scrape failed for @{handle}: diy={diy_error}; apify={apify_err}"
+            ) from apify_err
+
+    def _apify_scrape_instagram(self, handle: str) -> Dict[str, Any]:
+        """Scrape Instagram profile via Apify instagram-scraper actor."""
+        if not self.apify_token:
+            raise ValueError("APIFY_API_TOKEN not configured")
+
+        url = (
+            f"https://api.apify.com/v2/acts/{APIFY_INSTAGRAM_ACTOR}"
+            f"/run-sync-get-dataset-items"
+        )
+        headers = {
+            'Authorization': f'Bearer {self.apify_token}',
+            'Content-Type': 'application/json',
+        }
+        payload = {
+            'directUrls': [f'https://www.instagram.com/{handle}/'],
+            'resultsType': 'details',
+            'resultsLimit': 12,
+            'addParentData': True,
+        }
+
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=120)
+            response.raise_for_status()
+            data = response.json()
+            if not data:
+                raise ValueError(f"No data returned for handle @{handle}")
+            return data[0]
+        except requests.Timeout as e:
+            raise TimeoutError(f"Apify scrape timeout for @{handle}") from e
+        except requests.HTTPError as e:
+            status = getattr(e.response, 'status_code', None)
+            if status == 404:
+                raise ValueError(f"Handle @{handle} not found") from e
+            raise
+
+    def _apify_scrape_tiktok(self, handle: str) -> Dict[str, Any]:
+        """Scrape TikTok profile via Apify clockworks free-tiktok-scraper."""
+        if not self.apify_token:
+            raise ValueError("APIFY_API_TOKEN not configured")
+
+        url = (
+            f"https://api.apify.com/v2/acts/{APIFY_TIKTOK_ACTOR}"
+            f"/run-sync-get-dataset-items"
+        )
+        headers = {
+            'Authorization': f'Bearer {self.apify_token}',
+            'Content-Type': 'application/json',
+        }
+        payload = {
+            'profiles': [handle],
+            'resultsPerPage': 12,
+        }
+
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=120)
+            response.raise_for_status()
+            data = response.json()
+            if not data:
+                raise ValueError(f"No data returned for handle @{handle}")
+
+            first_post = data[0]
+            author_meta = first_post.get('authorMeta', {}) or {}
+            return {
+                'uniqueId': author_meta.get('name', handle),
+                'nickname': author_meta.get('nickName', ''),
+                'signature': author_meta.get('signature', ''),
+                'followerCount': author_meta.get('fans', 0),
+                'followingCount': author_meta.get('following', 0),
+                'videoCount': author_meta.get('video', 0),
+                'heartCount': author_meta.get('heart', 0),
+                'verified': author_meta.get('verified', False),
+                'privateAccount': author_meta.get('privateAccount', False),
+                'avatarUrl': author_meta.get('avatar', ''),
+                'bioLink': author_meta.get('bioLink', ''),
+                'latestVideos': data,
+            }
+        except requests.Timeout as e:
+            raise TimeoutError(f"Apify scrape timeout for @{handle}") from e
+        except requests.HTTPError as e:
+            status = getattr(e.response, 'status_code', None)
+            if status == 404:
+                raise ValueError(f"Handle @{handle} not found") from e
+            raise
 
     def process_scrape(self, raw_scrape: Dict, platform: str) -> Dict[str, Any]:
         """
