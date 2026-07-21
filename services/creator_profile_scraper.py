@@ -163,6 +163,49 @@ class CreatorProfileScraper:
             if url:
                 thumbnail_urls.append(url)
 
+        # Kit / PR-Ready need per-post engagement + shortcodes (not thumbs alone)
+        recent_posts_payload = []
+        for p in posts_for_thumbnails:
+            if not isinstance(p, dict):
+                continue
+            if platform == 'instagram':
+                thumb = p.get('displayUrl') or ''
+                code = (p.get('shortCode') or p.get('shortcode') or '').strip()
+                post_url = f"https://www.instagram.com/p/{code}/" if code else None
+                likes = int(p.get('likesCount') or 0)
+                comments = int(p.get('commentsCount') or 0)
+                views = int(p.get('videoViewCount') or p.get('viewsCount') or p.get('views') or 0)
+                caption = (p.get('caption') or '')[:500]
+            else:
+                video_meta = p.get('videoMeta') or {}
+                thumb = (
+                    video_meta.get('coverUrl')
+                    or video_meta.get('originalCoverUrl')
+                    or ((p.get('covers') or [''])[0] if p.get('covers') else '')
+                    or ''
+                )
+                vid = str(p.get('id') or p.get('videoId') or '').strip()
+                post_url = f"https://www.tiktok.com/@{raw_scrape.get('uniqueId') or ''}/video/{vid}" if vid else None
+                likes = int(p.get('diggCount') or p.get('likesCount') or 0)
+                comments = int(p.get('commentCount') or p.get('commentsCount') or 0)
+                views = int(p.get('playCount') or p.get('videoViewCount') or 0)
+                caption = (p.get('text') or p.get('caption') or '')[:500]
+                code = vid
+            if not thumb and not code:
+                continue
+            recent_posts_payload.append({
+                'thumbnail_url': thumb,
+                'post_url': post_url,
+                'shortCode': code,
+                'likes': likes,
+                'comments': comments,
+                'views': views,
+                'shares': int(p.get('shareCount') or 0),
+                'saves': int(p.get('collectCount') or 0),
+                'caption': caption,
+                'timestamp': p.get('timestamp') or p.get('createTime') or '',
+            })
+
         # Build result
         result = {
             # Platform metadata
@@ -192,6 +235,7 @@ class CreatorProfileScraper:
 
             # Content archive
             'recent_post_thumbnails': thumbnail_urls,
+            'recent_posts': recent_posts_payload,
             'recent_captions': recent_captions,
 
             # Freshness
@@ -616,6 +660,20 @@ Analyze and return JSON only.'''
             vision_status = 'success'
 
         try:
+            # Kit engagement lives in recent_posts (added after initial schema)
+            try:
+                cursor.execute(
+                    "ALTER TABLE creator_profile_data "
+                    "ADD COLUMN IF NOT EXISTS recent_posts JSONB DEFAULT '[]'::jsonb"
+                )
+            except Exception as col_err:
+                print(f"[Scrape] recent_posts column ensure: {col_err}")
+                try:
+                    self.db_conn.rollback()
+                except Exception:
+                    pass
+                cursor = self.db_conn.cursor()
+
             # Upsert creator profile data
             cursor.execute('''
                 INSERT INTO creator_profile_data (
@@ -627,7 +685,7 @@ Analyze and return JSON only.'''
                     primary_niche, primary_niche_confidence, secondary_niches,
                     content_format_breakdown, aesthetic, content_themes,
                     brand_readiness_signals, content_gaps, brands_already_tagged,
-                    recent_post_thumbnails, recent_captions,
+                    recent_post_thumbnails, recent_posts, recent_captions,
                     data_confidence, vision_analysis_status,
                     scraped_at, last_refresh_at, next_refresh_at
                 ) VALUES (
@@ -639,7 +697,7 @@ Analyze and return JSON only.'''
                     %s, %s, %s,
                     %s, %s, %s,
                     %s, %s, %s,
-                    %s, %s,
+                    %s, %s::jsonb, %s,
                     %s, %s,
                     %s, %s, %s
                 )
@@ -671,6 +729,7 @@ Analyze and return JSON only.'''
                     content_gaps = EXCLUDED.content_gaps,
                     brands_already_tagged = EXCLUDED.brands_already_tagged,
                     recent_post_thumbnails = EXCLUDED.recent_post_thumbnails,
+                    recent_posts = EXCLUDED.recent_posts,
                     recent_captions = EXCLUDED.recent_captions,
                     data_confidence = EXCLUDED.data_confidence,
                     vision_analysis_status = EXCLUDED.vision_analysis_status,
@@ -706,6 +765,7 @@ Analyze and return JSON only.'''
                 profile_data.get('content_gaps', []),
                 profile_data.get('brands_already_tagged', []),
                 profile_data.get('recent_post_thumbnails', []),
+                json.dumps(profile_data.get('recent_posts') or []),
                 profile_data.get('recent_captions', []),
                 'scraped',
                 vision_status,

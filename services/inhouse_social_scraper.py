@@ -6,7 +6,7 @@ and BrandContextEnricher.
 
 TikTok: profile SSR (followers + bio) + /embed/@user (latest videos).
 Instagram (same required fields):
-  APIs/crawler/search (followers + bio) + imginn / shortcode GraphQL (latest posts).
+  APIs/crawler/search (followers + bio) + imginn / mobile user feed / shortcode GraphQL (latest posts).
   When profile is login-walled: post embed (bot UA) + Startpage snippets fill followers/bio.
 
 Required fields (public): followers, bio, latest post.
@@ -124,10 +124,11 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
 
     Cascade:
       1) web_profile_info / mobile API / GraphQL / HTML
-      2) Crawler HTML meta (followers + bio)
+      2) Crawler HTML meta (followers + bio + numeric user id)
       3) Search snippets / Startpage (followers + bio when IG is walled)
       4) imginn.com (latest posts — TikTok-embed equivalent)
-      5) shortcode GraphQL + post embed (followers/name from a recent post)
+      5) Mobile user feed by pk (posts when imginn is 403)
+      6) shortcode GraphQL + post embed (followers/name from a recent post)
     """
     handle = _clean_handle(handle).lower()
     if not handle:
@@ -156,7 +157,7 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
         if user:
             source = "html_meta"
 
-    if not user or _ig_user_is_thin(user):
+    if not user or _ig_user_is_thin(user) or not str((user or {}).get("pk") or "").isdigit():
         crawler_user = _ig_from_crawler_html(handle)
         if crawler_user:
             if not user:
@@ -164,6 +165,9 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
                 source = "crawler_meta"
             else:
                 _ig_fill_user_gaps(user, crawler_user)
+                if crawler_user.get("pk"):
+                    user["pk"] = crawler_user["pk"]
+                    user["id"] = crawler_user["pk"]
                 if "crawler" not in source:
                     source = f"{source}+crawler"
 
@@ -201,6 +205,21 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
             else:
                 _ig_fill_user_gaps(user, mirror_user)
 
+    # Mobile user feed — real posts when imginn 403s (needs numeric pk from crawler HTML)
+    if not posts and not (user or {}).get("is_private"):
+        pk = str((user or {}).get("pk") or (user or {}).get("id") or "").strip()
+        if not pk.isdigit():
+            pk = _ig_lookup_user_id(handle)
+            if pk and user:
+                user["pk"] = pk
+                user["id"] = pk
+        if pk.isdigit():
+            feed_posts = _ig_posts_from_user_feed(session, pk, handle, limit)
+            if feed_posts:
+                posts = feed_posts
+                if "user_feed" not in source:
+                    source = f"{source}+user_feed" if source != "none" else "user_feed"
+
     # Followers/name from a concrete post when profile endpoints are walled
     if posts and (not user or _ig_user_is_thin(user)):
         shortcode = next((p.get("shortCode") for p in posts if p.get("shortCode")), "")
@@ -214,6 +233,14 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
                     _ig_fill_user_gaps(user, owner)
                     if "shortcode" not in source:
                         source = f"{source}+shortcode"
+
+    # Niche-rich display names unlock bio when classic meta omits on Instagram: "…"
+    # Do this before the final search pass so we don't live-hammer Startpage/DDG.
+    if user and not _diy_bio_ok(user.get("biography") or ""):
+        name = (user.get("full_name") or "").strip()
+        if name and ("|" in name or re.search(r"\b(ugc|skincare|beauty|makeup|lifestyle|creator)\b", name, re.I)):
+            user["biography"] = name
+            print(f"[InHouse/IG] bio from display name len={len(name)}")
 
     # Last pass for bio/followers via search if shortcode filled stats but not bio
     if user and _ig_user_is_thin(user):
@@ -639,6 +666,63 @@ def _ig_owner_from_shortcode_graphql(
         return None
 
 
+def _ig_fetch_embed_post_meta(
+    session: requests.Session, shortcode: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Pull likes/comments/views + display URL for one post via shortcode GraphQL.
+    Used by PR-Ready auto-kit enrichment when scrape rows lack engagement.
+    """
+    shortcode = (shortcode or "").strip()
+    if not shortcode or not re.match(r"^[A-Za-z0-9_-]{5,}$", shortcode):
+        return None
+    if re.match(r"^[a-z]{2}_[A-Z]{2}$", shortcode):
+        return None
+    try:
+        resp = session.get(
+            "https://www.instagram.com/graphql/query",
+            params={
+                "doc_id": "10015901848480474",
+                "variables": json.dumps({"shortcode": shortcode}),
+            },
+            headers={
+                "X-IG-App-ID": _IG_APP_ID,
+                "X-Requested-With": "XMLHttpRequest",
+                "Accept": "*/*",
+                "Referer": f"https://www.instagram.com/p/{shortcode}/",
+            },
+            timeout=15,
+        )
+        if resp.status_code != 200 or not resp.text:
+            return None
+        media = ((resp.json().get("data") or {}).get("xdt_shortcode_media") or {})
+        if not media:
+            return None
+        likes = (
+            (media.get("edge_media_preview_like") or {}).get("count")
+            or (media.get("edge_liked_by") or {}).get("count")
+            or media.get("like_count")
+            or 0
+        )
+        comments = (
+            (media.get("edge_media_to_parent_comment") or {}).get("count")
+            or (media.get("edge_media_to_comment") or {}).get("count")
+            or media.get("comment_count")
+            or 0
+        )
+        views = media.get("video_view_count") or media.get("video_play_count") or 0
+        display = media.get("display_url") or media.get("thumbnail_src") or ""
+        return {
+            "likesCount": int(likes or 0),
+            "commentsCount": int(comments or 0),
+            "videoViewCount": int(views or 0),
+            "displayUrl": display or "",
+        }
+    except Exception as e:
+        print(f"[InHouse/IG] embed/shortcode meta error: {e}")
+        return None
+
+
 def _ig_owner_from_post_embed(shortcode: str) -> Optional[Dict[str, Any]]:
     """facebookexternalhit embed HTML exposes '136 posts · 554 followers'."""
     try:
@@ -776,14 +860,17 @@ def _ig_user_from_og_meta(html: str, handle: str) -> Optional[Dict[str, Any]]:
     if not bio_m:
         bio_m = re.search(r'on Instagram:\s*["“](.+?)["”]', desc, re.I | re.S)
     if bio_m:
-        bio = unescape(bio_m.group(1)).strip()
+        bio = unescape(bio_m.group(1)).replace("\\n", "\n").strip()
+        # Keep readable multi-line bios as single-spaced lines for storage/UI
+        bio = "\n".join(ln.strip() for ln in bio.splitlines() if ln.strip())
     if bio.lower() in ("undefined", "null", "none"):
         bio = ""
 
     avatar = _ig_meta_content(html, "og:image") or ""
+    pk = _ig_extract_pk_from_html(html)
 
-    print(f"[InHouse/IG] meta followers={followers} posts={media} bio_len={len(bio)}")
-    return {
+    print(f"[InHouse/IG] meta followers={followers} posts={media} bio_len={len(bio)} pk={pk or '-'}")
+    out: Dict[str, Any] = {
         "username": handle,
         "full_name": full_name,
         "biography": bio,
@@ -797,6 +884,105 @@ def _ig_user_from_og_meta(html: str, handle: str) -> Optional[Dict[str, Any]]:
         "is_business_account": False,
         "business_category_name": "",
     }
+    if pk:
+        out["pk"] = pk
+        out["id"] = pk
+    return out
+
+
+def _ig_extract_pk_from_html(html: str) -> str:
+    """Pull numeric Instagram user id from crawler/browser HTML (profilePage_{id})."""
+    if not html:
+        return ""
+    for pat in (
+        r"profilePage_(\d{5,})",
+        r'"profilePage_(\d{5,})"',
+        r'"user_id"\s*:\s*"?(\d{5,})"?',
+        r'"profile_id"\s*:\s*"?(\d{5,})"?',
+        r'"owner_id"\s*:\s*"?(\d{5,})"?',
+        r'"pk"\s*:\s*"?(\d{5,})"?',
+    ):
+        m = re.search(pat, html)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def _ig_lookup_user_id(handle: str) -> str:
+    """Resolve numeric pk via crawler HTML when profile APIs are walled."""
+    handle = _clean_handle(handle).lower()
+    if not handle:
+        return ""
+    for ua in _IG_CRAWLER_UAS:
+        try:
+            resp = requests.get(
+                f"https://www.instagram.com/{handle}/",
+                headers={
+                    "User-Agent": ua,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+                timeout=12,
+            )
+            if resp.status_code != 200 or not resp.text:
+                continue
+            pk = _ig_extract_pk_from_html(resp.text)
+            if pk:
+                print(f"[InHouse/IG] resolved pk={pk} via={ua.split('/')[0]}")
+                return pk
+        except Exception as e:
+            print(f"[InHouse/IG] pk lookup error: {e}")
+    return ""
+
+
+def _ig_posts_from_user_feed(
+    session: requests.Session, pk: str, handle: str, limit: int
+) -> List[Dict[str, Any]]:
+    """
+    Mobile feed endpoint — returns real timeline items when imginn is blocked.
+    Call at most once per scrape; over-probing burns the IP with 401s.
+    """
+    pk = str(pk or "").strip()
+    if not pk.isdigit():
+        return []
+    count = max(1, min(int(limit or 12), 12))
+    url = f"https://i.instagram.com/api/v1/feed/user/{pk}/?count={count}"
+    headers = {
+        # iPhone web-app UA historically succeeds with X-IG-App-ID (web) when Android UA 401s
+        "User-Agent": (
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 "
+            "Instagram 192.168.0.5.117"
+        ),
+        "Accept": "*/*",
+        "X-IG-App-ID": _IG_APP_ID,
+        "X-ASBD-ID": "129477",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": f"https://www.instagram.com/{handle}/",
+        "Origin": "https://www.instagram.com",
+    }
+    try:
+        _jitter(0.25, 0.6)
+        resp = session.get(url, headers=headers, timeout=15)
+        print(f"[InHouse/IG] user_feed status={resp.status_code} pk={pk}")
+        if resp.status_code != 200 or not (resp.text or "").strip():
+            return []
+        data = resp.json()
+        items = data.get("items") or []
+        posts: List[Dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            post = _ig_node_to_post(item)
+            if post.get("displayUrl") or post.get("caption") or post.get("shortCode"):
+                posts.append(post)
+            if len(posts) >= count:
+                break
+        print(f"[InHouse/IG] user_feed posts={len(posts)}")
+        return posts
+    except Exception as e:
+        print(f"[InHouse/IG] user_feed error: {e}")
+        return []
 
 
 def _ig_html_head(html: str) -> str:
@@ -809,21 +995,21 @@ def _ig_meta_content(html: str, prop: str) -> str:
     """
     Extract a meta content value from <head>.
 
-    Do NOT use DOTALL — (.*?) + re.S can span tags and grab an earlier
-    content="..." before name="description". Without DOTALL, `.` won't cross
-    newlines/tags. Allow apostrophes inside double-quoted content (Naina's).
+    IG bios often put newlines inside content="...". Use [\\s\\S] so those match,
+    but still stop at the closing quote so we never span into the next tag.
     Inner bio quotes on IG are entity-encoded (&quot;).
     """
     head = _ig_html_head(html)
-    # ((?:(?!\1).)*) = any chars except the opening quote delimiter (no DOTALL)
+    # ((?:(?!\1)[\s\S])*) = any char except the opening quote delimiter (incl. newlines)
     patterns = [
-        rf'(?:property|name)=["\']{re.escape(prop)}["\'][^>]*?content=(["\'])((?:(?!\1).)*)\1',
-        rf'content=(["\'])((?:(?!\1).)*)\1[^>]*?(?:property|name)=["\']{re.escape(prop)}["\']',
+        rf'(?:property|name)=["\']{re.escape(prop)}["\'][^>]*?content=(["\'])((?:(?!\1)[\s\S])*)\1',
+        rf'content=(["\'])((?:(?!\1)[\s\S])*)\1[^>]*?(?:property|name)=["\']{re.escape(prop)}["\']',
     ]
     for pat in patterns:
         m = re.search(pat, head, re.I)
         if m:
-            return unescape(m.group(2).replace("&#064;", "@"))
+            raw = m.group(2).replace("&#064;", "@").replace("&#x40;", "@").replace("&#X40;", "@")
+            return unescape(raw)
     return ""
 
 
@@ -1119,13 +1305,33 @@ def _ig_node_to_post(node: Dict[str, Any]) -> Dict[str, Any]:
         or node.get("commentsCount")
         or 0
     )
+    views = (
+        node.get("play_count")
+        or node.get("ig_play_count")
+        or node.get("video_view_count")
+        or node.get("videoViewCount")
+        or node.get("view_count")
+        or node.get("viewsCount")
+        or 0
+    )
     display = (
         node.get("display_url")
         or node.get("displayUrl")
         or node.get("thumbnail_src")
         or node.get("thumbnail_url")
+        or node.get("display_uri")
         or ""
     )
+    if not display:
+        candidates = ((node.get("image_versions2") or {}).get("candidates") or [])
+        if candidates and isinstance(candidates[0], dict):
+            display = candidates[0].get("url") or ""
+    if not display:
+        carousel = node.get("carousel_media") or []
+        if carousel and isinstance(carousel[0], dict):
+            cands = ((carousel[0].get("image_versions2") or {}).get("candidates") or [])
+            if cands and isinstance(cands[0], dict):
+                display = cands[0].get("url") or ""
     ts = node.get("taken_at_timestamp") or node.get("taken_at") or node.get("timestamp")
     timestamp = ""
     if isinstance(ts, (int, float)):
@@ -1133,13 +1339,26 @@ def _ig_node_to_post(node: Dict[str, Any]) -> Dict[str, Any]:
     elif isinstance(ts, str) and ts:
         timestamp = ts
 
+    shortcode = (
+        node.get("shortcode")
+        or node.get("shortCode")
+        or node.get("code")
+        or ""
+    )
+    # Reject locale junk that sometimes appears in HTML scrapes (e.g. en_US)
+    sc = str(shortcode or "")
+    if not re.match(r"^[A-Za-z0-9_-]{5,}$", sc) or re.match(r"^[a-z]{2}_[A-Z]{2}$", sc):
+        sc = ""
+
     return {
         "likesCount": int(likes or 0),
         "commentsCount": int(comments or 0),
+        "videoViewCount": int(views or 0),
         "caption": caption or "",
         "displayUrl": display or "",
         "timestamp": timestamp,
         "isPinnedItem": bool(node.get("pinned_for_users") or node.get("isPinnedItem") or False),
+        "shortCode": sc,
     }
 
 

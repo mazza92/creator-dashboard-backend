@@ -20,6 +20,8 @@ from services.inhouse_social_scraper import (
     parse_tiktok_embed_frontity,
     parse_tiktok_embed_frontity_bundle,
     diy_scrape_is_acceptable,
+    _ig_extract_pk_from_html,
+    _ig_node_to_post,
 )
 from services.creator_profile_scraper import CreatorProfileScraper
 
@@ -252,6 +254,37 @@ class TestAcceptable(unittest.TestCase):
         self.assertFalse(diy_scrape_is_acceptable(no_bio, "instagram"))
         no_posts = dict(base, latestPosts=[])
         self.assertFalse(diy_scrape_is_acceptable(no_posts, "instagram"))
+
+
+class TestMobileFeedHelpers(unittest.TestCase):
+    def test_extract_pk_from_profile_page_marker(self):
+        html = '<script>window._sharedData={"entry_data":{"ProfilePage":[{"logging_page_id":"profilePage_75919202554"}]}}</script>'
+        self.assertEqual(_ig_extract_pk_from_html(html), "75919202554")
+
+    def test_mobile_feed_item_maps_thumb_and_code(self):
+        item = {
+            "code": "DXMxOe7CAg1",
+            "like_count": 42,
+            "comment_count": 3,
+            "play_count": 1200,
+            "taken_at": 1710000000,
+            "caption": {"text": "Soft launch"},
+            "image_versions2": {
+                "candidates": [{"url": "https://scontent.cdninstagram.com/v/t51/real.jpg"}]
+            },
+        }
+        post = _ig_node_to_post(item)
+        self.assertEqual(post["shortCode"], "DXMxOe7CAg1")
+        self.assertEqual(post["likesCount"], 42)
+        self.assertEqual(post["commentsCount"], 3)
+        self.assertEqual(post["videoViewCount"], 1200)
+        self.assertEqual(post["caption"], "Soft launch")
+        self.assertIn("scontent.cdninstagram.com", post["displayUrl"])
+        self.assertTrue(post["timestamp"])
+
+    def test_rejects_locale_junk_shortcode(self):
+        post = _ig_node_to_post({"code": "en_US", "caption": "x"})
+        self.assertEqual(post["shortCode"], "")
 
 
 class TestInhouseScraperOnly(unittest.TestCase):
