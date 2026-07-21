@@ -49,7 +49,6 @@ from portfolio_routes import portfolio_bp
 from public_routes import public_bp
 from pool_routes import pool_bp
 # from marketplace_routes import marketplace_bp  # Disabled - using inline endpoint instead (newer schema)
-from pr_ready_routes import pr_ready_bp
 from indexnow_routes import indexnow_bp
 from email_cron_routes import email_cron_bp
 from social_verification_routes import social_verification_bp, detect_country_from_ip, RESTRICTED_REGIONS
@@ -267,7 +266,6 @@ app.register_blueprint(portfolio_bp)
 app.register_blueprint(public_bp)
 app.register_blueprint(pool_bp)
 # app.register_blueprint(marketplace_bp)  # Disabled - using inline endpoint instead (newer schema)
-app.register_blueprint(pr_ready_bp)
 app.register_blueprint(indexnow_bp)
 app.register_blueprint(email_cron_bp)
 app.register_blueprint(social_verification_bp)
