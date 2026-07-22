@@ -170,6 +170,25 @@ def _diy_bio_ok(bio: str) -> bool:
     return bool(text) and text not in ("undefined", "null", "none")
 
 
+# Hard ceiling: no personal IG account has ≥1B followers; SERP pages often quote
+# Instagram's "2 billion users" marketing and our parsers used to save that.
+_IG_MAX_PLAUSIBLE_FOLLOWERS = 750_000_000
+# Search snippets are noisier — keep UGC-range; celebrities go through Apify/API.
+_IG_SEARCH_MAX_FOLLOWERS = 50_000_000
+
+
+def _ig_plausible_followers(n: int, *, search_context: bool = False) -> bool:
+    """Reject platform-marketing / garbage follower counts (e.g. 2_000_000_000)."""
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        return False
+    if n <= 0:
+        return False
+    cap = _IG_SEARCH_MAX_FOLLOWERS if search_context else _IG_MAX_PLAUSIBLE_FOLLOWERS
+    return n <= cap
+
+
 def diy_scrape_is_acceptable(
     profile: Dict[str, Any], platform: str, *, allow_partial: bool = False
 ) -> bool:
@@ -188,6 +207,11 @@ def diy_scrape_is_acceptable(
         is_private = bool(profile.get("isPrivate"))
         latest = profile.get("latestPosts") or []
         bio = profile.get("biography") or ""
+        if not _ig_plausible_followers(followers):
+            return False
+        # Synthetic onboarding bios must never count as real profile data
+        if re.match(rf"^UGC creator @{re.escape(str(handle))}$", (bio or "").strip(), re.I):
+            return False
     else:
         handle = profile.get("uniqueId") or ""
         followers = int(profile.get("followerCount") or 0)
@@ -353,30 +377,31 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
 
     profile = _ig_to_profile_shape(user, posts, handle)
 
-    # When Instagram 429-walls the server IP we often get followers from search
-    # but no bio/posts. Soft-fill so onboarding doesn't lose the user; PR-Ready
-    # / kit can refresh later when the wall lifts or a proxy is configured.
+    # When Instagram 429-walls the server IP we sometimes recover followers from
+    # search but no posts. Only soft-accept when we have a *real* bio — never
+    # invent one (that previously wrote garbage like 2B followers into the DB).
     if not diy_scrape_is_acceptable(profile, "instagram"):
         followers = int(profile.get("followersCount") or 0)
-        if followers > 0 and (ig_walled.get("hit") or source.startswith("search") or "search" in source):
-            if not _diy_bio_ok(profile.get("biography") or ""):
-                name = (profile.get("fullName") or user.get("full_name") or "").strip()
-                profile["biography"] = name or f"UGC creator @{handle}"
-                profile["fullName"] = profile.get("fullName") or name or handle
+        bio = profile.get("biography") or ""
+        if (
+            _ig_plausible_followers(followers)
+            and _diy_bio_ok(bio)
+            and (ig_walled.get("hit") or source.startswith("search") or "search" in source)
+        ):
             profile["_partial_scrape"] = True
             profile["_ig_walled"] = bool(ig_walled.get("hit"))
             if diy_scrape_is_acceptable(profile, "instagram", allow_partial=True):
                 print(
                     f"[InHouse/IG] @{handle} PARTIAL via {source} "
-                    f"(posts={len(posts)}, ig_walled={ig_walled.get('hit')}) — "
-                    "set IG_PROXY or INSTAGRAM_SESSIONID for full scrapes"
+                    f"(posts={len(posts)}, followers={followers}, ig_walled={ig_walled.get('hit')}) — "
+                    "prefer Apify / IG_PROXY for full scrapes"
                 )
                 return profile
 
         missing = []
-        if followers <= 0:
+        if not _ig_plausible_followers(followers):
             missing.append("followers")
-        if not _diy_bio_ok(profile.get("biography") or ""):
+        if not _diy_bio_ok(bio):
             missing.append("bio")
         if not profile.get("isPrivate") and not (profile.get("latestPosts") or []):
             missing.append("latest_post")
@@ -605,6 +630,7 @@ def _ig_from_search_snippets(handle: str) -> Optional[Dict[str, Any]]:
         urls.append(("bing", f"https://www.bing.com/search?q={quote_plus(q)}&setlang=en"))
 
     best: Optional[Dict[str, Any]] = None
+    best_score = -1
     for engine, url in urls:
         try:
             resp = _http_get(
@@ -622,12 +648,44 @@ def _ig_from_search_snippets(handle: str) -> Optional[Dict[str, Any]]:
             parsed = _ig_parse_search_snippet_html(resp.text, handle)
             if not parsed:
                 continue
+            score = _ig_search_candidate_score(parsed)
+            if score < 0:
+                continue
             if not _ig_user_is_thin(parsed):
                 return parsed
-            best = parsed
+            if score > best_score:
+                best = parsed
+                best_score = score
         except Exception as e:
             print(f"[InHouse/IG] search snippets error: {e}")
     return best
+
+
+def _ig_search_candidate_score(user: Dict[str, Any]) -> int:
+    """Rank SERP candidates. Implausible follower counts score -1 (reject)."""
+    followers = int((user.get("edge_followed_by") or {}).get("count") or 0)
+    following = int((user.get("edge_follow") or {}).get("count") or 0)
+    media = int((user.get("edge_owner_to_timeline_media") or {}).get("count") or 0)
+    bio = (user.get("biography") or "").strip()
+    if followers > 0 and not _ig_plausible_followers(followers, search_context=True):
+        return -1
+    score = 0
+    if followers > 0:
+        score += 2
+    if _diy_bio_ok(bio):
+        score += 4
+    if following > 0 and media > 0 and followers > 0:
+        score += 3  # classic IG meta trio — high confidence
+    return score
+
+
+def _ig_sanitize_search_followers(followers: int) -> int:
+    """Zero out SERP junk (Instagram '2B users' marketing, etc.)."""
+    if _ig_plausible_followers(followers, search_context=True):
+        return followers
+    if followers > 0:
+        print(f"[InHouse/IG] rejecting implausible search followers={followers}")
+    return 0
 
 
 def _ig_parse_search_snippet_html(html: str, handle: str) -> Optional[Dict[str, Any]]:
@@ -645,7 +703,7 @@ def _ig_parse_search_snippet_html(html: str, handle: str) -> Optional[Dict[str, 
         re.I,
     )
     if m:
-        followers = _parse_compact_count(m.group(1))
+        followers = _ig_sanitize_search_followers(_parse_compact_count(m.group(1)))
         following = _parse_compact_count(m.group(2))
         media = _parse_compact_count(m.group(3))
     # Startpage / modern SERP: "552 followers · 51 following · 135 posts · @handle: “bio…"
@@ -659,12 +717,14 @@ def _ig_parse_search_snippet_html(html: str, handle: str) -> Optional[Dict[str, 
             re.I | re.S,
         )
         if m:
-            followers = _parse_compact_count(m.group(1))
+            followers = _ig_sanitize_search_followers(_parse_compact_count(m.group(1)))
             following = _parse_compact_count(m.group(2))
             media = _parse_compact_count(m.group(3))
             bio = re.sub(r"\s+", " ", m.group(4)).strip()
             bio = re.sub(r"</?b>", "", bio).strip(" .…")
             print(f"[InHouse/IG] search followers={followers} bio_len={len(bio)}")
+            if followers <= 0 and not bio:
+                return None
             return {
                 "username": handle,
                 "full_name": "",
@@ -685,7 +745,7 @@ def _ig_parse_search_snippet_html(html: str, handle: str) -> Optional[Dict[str, 
             text,
             re.I | re.S,
         ):
-            followers = _parse_compact_count(fm.group(1))
+            followers = _ig_sanitize_search_followers(_parse_compact_count(fm.group(1)))
             if followers > 0:
                 break
     if followers <= 0:
@@ -696,7 +756,7 @@ def _ig_parse_search_snippet_html(html: str, handle: str) -> Optional[Dict[str, 
             text,
             re.I | re.S,
         ):
-            followers = _parse_compact_count(fm.group(1))
+            followers = _ig_sanitize_search_followers(_parse_compact_count(fm.group(1)))
             if followers > 0:
                 break
     if followers <= 0:
@@ -706,7 +766,7 @@ def _ig_parse_search_snippet_html(html: str, handle: str) -> Optional[Dict[str, 
             text,
             re.I | re.S,
         ):
-            followers = _parse_compact_count(fm.group(1))
+            followers = _ig_sanitize_search_followers(_parse_compact_count(fm.group(1)))
             if followers > 0:
                 break
 
@@ -1347,6 +1407,8 @@ def _ig_fill_user_gaps(user: Dict[str, Any], patch: Dict[str, Any]) -> None:
     ):
         cur = int(((user.get(edge_key) or {}).get("count") or 0))
         nxt = int(((patch.get(patch_key) or {}).get("count") or 0))
+        if edge_key == "edge_followed_by" and nxt > 0 and not _ig_plausible_followers(nxt):
+            continue
         if cur <= 0 and nxt > 0:
             edges = (user.get(edge_key) or {}).get("edges") or []
             user[edge_key] = {"count": nxt, "edges": edges}

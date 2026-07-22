@@ -127,6 +127,29 @@ class TestInstagramParse(unittest.TestCase):
         self.assertEqual(profile["postsCount"], 135)
         self.assertIn("Soft Girly Beauty Creator", profile["biography"])
 
+    def test_search_snippets_reject_instagram_2b_marketing(self):
+        """SERP pages quote Instagram's '2 billion users' — must not become follower_count."""
+        from services.inhouse_social_scraper import InHouseScrapeError
+
+        html = (
+            'Instagram has 2,000,000,000 followers worldwide. '
+            'See @pl3th0ranina profile photos.'
+        )
+        html2 = '@pl3th0ranina 2000000000 Followers on Instagram'
+        with self.assertRaises(InHouseScrapeError):
+            parse_instagram_search_snippets(html, handle="pl3th0ranina")
+        with self.assertRaises(InHouseScrapeError):
+            parse_instagram_search_snippets(html2, handle="pl3th0ranina")
+
+        # Plausible nearby count still wins when both appear
+        mixed = (
+            '@pl3th0ranina 41 Followers. Instagram has 2,000,000,000 users. '
+            'Also @pl3th0ranina 2000000000 Followers spam.'
+        )
+        # First plausible match near handle should be 41
+        profile = parse_instagram_search_snippets(mixed, handle="pl3th0ranina")
+        self.assertEqual(profile["followersCount"], 41)
+
     def test_post_embed_owner_followers(self):
         html = (
             '<div class="HoverCardUserName"><span class="Username">nainadiary.jpg</span></div>'
@@ -255,6 +278,21 @@ class TestAcceptable(unittest.TestCase):
         no_posts = dict(base, latestPosts=[])
         self.assertFalse(diy_scrape_is_acceptable(no_posts, "instagram"))
 
+    def test_rejects_implausible_follower_counts(self):
+        profile = {
+            "username": "pl3th0ranina",
+            "followersCount": 2_000_000_000,
+            "isPrivate": False,
+            "biography": "UGC creator @pl3th0ranina",
+            "latestPosts": [],
+            "_partial_scrape": True,
+        }
+        self.assertFalse(diy_scrape_is_acceptable(profile, "instagram", allow_partial=True))
+        profile["followersCount"] = 41
+        self.assertFalse(diy_scrape_is_acceptable(profile, "instagram", allow_partial=True))
+        profile["biography"] = "Skincare UGC"
+        self.assertTrue(diy_scrape_is_acceptable(profile, "instagram", allow_partial=True))
+
 
 class TestMobileFeedHelpers(unittest.TestCase):
     def test_extract_pk_from_profile_page_marker(self):
@@ -325,6 +363,35 @@ class TestInhouseScraperWithApifyFallback(unittest.TestCase):
             self.assertEqual(result["username"], "okuser")
             self.assertEqual(result["_scrape_source"], "apify")
             mock_apify.assert_called_once_with("okuser")
+
+    @patch("services.creator_profile_scraper.diy_scrape_instagram")
+    def test_instagram_partial_prefers_apify(self, mock_diy):
+        mock_diy.return_value = {
+            "username": "pl3th0ranina",
+            "followersCount": 41,
+            "isPrivate": False,
+            "biography": "Skincare UGC",
+            "latestPosts": [],
+            "_partial_scrape": True,
+        }
+        scraper = CreatorProfileScraper()
+        scraper.apify_token = "test-token"
+        with patch.object(
+            scraper,
+            "_apify_scrape_instagram",
+            return_value={
+                "username": "pl3th0ranina",
+                "followersCount": 41,
+                "postsCount": 5,
+                "isPrivate": False,
+                "biography": "Skincare UGC · Canada",
+                "latestPosts": [{"likesCount": 1, "displayUrl": "https://x", "caption": "hi"}],
+            },
+        ) as mock_apify:
+            result = scraper.scrape_instagram_profile("pl3th0ranina")
+            self.assertEqual(result["_scrape_source"], "apify")
+            self.assertEqual(len(result["latestPosts"]), 1)
+            mock_apify.assert_called_once()
 
     @patch("services.creator_profile_scraper.diy_scrape_tiktok")
     def test_tiktok_uses_inhouse_scraper_when_ok(self, mock_diy):
