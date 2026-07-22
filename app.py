@@ -58,6 +58,12 @@ from routes.admin_reports import admin_reports_bp
 from routes.admin_email import admin_email_bp
 from routes.admin_creators import admin_creators_bp
 
+# PR-Ready: optional local/feature flag — never crash prod if modules aren't deployed
+try:
+    from pr_ready_routes import pr_ready_bp
+except ImportError:
+    pr_ready_bp = None
+
 # Initialize Flask app
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 app = Flask(__name__)
@@ -269,6 +275,8 @@ app.register_blueprint(pool_bp)
 app.register_blueprint(indexnow_bp)
 app.register_blueprint(email_cron_bp)
 app.register_blueprint(social_verification_bp)
+if pr_ready_bp is not None:
+    app.register_blueprint(pr_ready_bp)
 
 # Instagram webhook alias route (for Meta Developer Console - matches /api/instagram/webhook)
 from social_verification_routes import instagram_webhook, INSTAGRAM_WEBHOOK_VERIFY_TOKEN
@@ -716,9 +724,9 @@ def normalize_social_handle(handle, platform=None):
     # Remove any remaining non-ASCII characters (emojis that slipped through)
     handle = handle.encode('ascii', 'ignore').decode('ascii')
 
-    # Clean up multiple dots or underscores
+    # Collapse consecutive periods only (Instagram forbids ..). Keep consecutive
+    # underscores — real handles like jerricalee__ are valid.
     handle = re.sub(r'\.{2,}', '.', handle)
-    handle = re.sub(r'_{2,}', '_', handle)
 
     # Strip leading/trailing special chars
     handle = handle.strip('._-')
