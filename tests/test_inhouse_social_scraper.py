@@ -16,6 +16,7 @@ from services.inhouse_social_scraper import (
     parse_instagram_crawler_html,
     parse_instagram_search_snippets,
     parse_instagram_post_embed_owner,
+    parse_instagram_profile_embed_html,
     parse_tiktok_rehydration,
     parse_tiktok_embed_frontity,
     parse_tiktok_embed_frontity_bundle,
@@ -126,6 +127,20 @@ class TestInstagramParse(unittest.TestCase):
         self.assertEqual(profile["followsCount"], 51)
         self.assertEqual(profile["postsCount"], 135)
         self.assertIn("Soft Girly Beauty Creator", profile["biography"])
+
+    def test_profile_embed_followers_and_posts(self):
+        html = (FIXTURES / "instagram_profile_embed.html").read_text(encoding="utf-8")
+        profile = parse_instagram_profile_embed_html(html, handle="nainadiary.jpg", results_limit=6)
+        self.assertEqual(profile["username"], "nainadiary.jpg")
+        self.assertEqual(profile["followersCount"], 561)
+        self.assertGreaterEqual(profile["postsCount"], 6)
+        posts = profile["latestPosts"]
+        self.assertGreaterEqual(len(posts), 3)
+        self.assertTrue(all(p.get("shortCode") for p in posts[:3]))
+        # Embed payload includes thumbs and/or captions for kit fill
+        self.assertTrue(
+            any(p.get("displayUrl") for p in posts) or any(p.get("caption") for p in posts)
+        )
 
     def test_search_snippets_reject_instagram_2b_marketing(self):
         """SERP pages quote Instagram's '2 billion users' — must not become follower_count."""
@@ -365,7 +380,7 @@ class TestInhouseScraperWithApifyFallback(unittest.TestCase):
             mock_apify.assert_called_once_with("okuser")
 
     @patch("services.creator_profile_scraper.diy_scrape_instagram")
-    def test_instagram_partial_prefers_apify(self, mock_diy):
+    def test_instagram_rejects_partial_and_uses_apify(self, mock_diy):
         mock_diy.return_value = {
             "username": "pl3th0ranina",
             "followersCount": 41,

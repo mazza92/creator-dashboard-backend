@@ -40,26 +40,19 @@ class CreatorProfileScraper:
         self.apify_token = APIFY_API_TOKEN
 
     def scrape_instagram_profile(self, handle: str) -> Dict[str, Any]:
-        """Scrape Instagram: in-house first, Apify fallback."""
+        """Scrape Instagram: in-house first (full only), Apify fallback."""
         handle = handle.lstrip('@').strip()
         diy_error = None
-        diy_partial = None
         try:
             profile = diy_scrape_instagram(handle, results_limit=12)
-            allow_partial = bool(profile.get('_partial_scrape'))
-            if diy_scrape_is_acceptable(profile, 'instagram', allow_partial=allow_partial):
-                # Never persist DIY partials when Apify can do a real scrape —
-                # search-snippet partials previously wrote garbage follower counts.
-                if allow_partial and self.apify_token:
-                    diy_partial = profile
-                    print(f"[Scrape] ig @{handle} diy-partial held — trying Apify")
-                else:
-                    tag = "diy-partial" if allow_partial else "diy"
-                    print(f"[Scrape] ig @{handle} via {tag}")
-                    return profile
-            else:
-                diy_error = ValueError(f"In-house Instagram scrape thin for @{handle}")
-                print(f"[Scrape] ig @{handle} diy thin — trying Apify")
+            # Reject any leftover partial flags — DIY must be full TikTok-parity data
+            if profile.get('_partial_scrape'):
+                raise ValueError(f"In-house Instagram scrape incomplete for @{handle}")
+            if diy_scrape_is_acceptable(profile, 'instagram'):
+                print(f"[Scrape] ig @{handle} via diy")
+                return profile
+            diy_error = ValueError(f"In-house Instagram scrape thin for @{handle}")
+            print(f"[Scrape] ig @{handle} diy thin — trying Apify")
         except Exception as e:
             diy_error = e
             print(f"[Scrape] ig @{handle} diy failed: {e} — trying Apify")
@@ -73,12 +66,6 @@ class CreatorProfileScraper:
             raise ValueError(f"Apify Instagram scrape thin for @{handle}")
         except Exception as apify_err:
             print(f"[Scrape] ig @{handle} apify failed: {apify_err}")
-            # Last resort: a *plausible* DIY partial with a real bio (no synthetic)
-            if diy_partial and diy_scrape_is_acceptable(
-                diy_partial, 'instagram', allow_partial=True
-            ):
-                print(f"[Scrape] ig @{handle} via diy-partial (Apify unavailable)")
-                return diy_partial
             raise ValueError(
                 f"Instagram scrape failed for @{handle}: diy={diy_error}; apify={apify_err}"
             ) from apify_err
