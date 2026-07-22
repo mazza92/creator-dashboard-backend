@@ -4189,6 +4189,7 @@ def generate_pr_package():
         # Replace {{PORTFOLIO_LINK}} with media kit URL, or social handle/profile when no kit
         proof = build_pitch_proof(creator, creator_id=creator_id, brand_id=brand_id)
         media_kit_url = proof.get('url') if proof.get('kind') == 'kit' else None
+        kit_published = bool(creator.get('kit_published'))
 
         if proof.get('kind') == 'kit' and proof.get('kit_token'):
             cursor.execute('''
@@ -4767,6 +4768,7 @@ def generate_pr_package_v2():
             # Process portfolio / social proof link
             proof = build_pitch_proof(creator, creator_id=creator_id, brand_id=resolved_brand_id)
             media_kit_url = proof.get('url') if proof.get('kind') == 'kit' else None
+            kit_published = bool(creator.get('kit_published'))
 
             if proof.get('kind') == 'kit' and proof.get('kit_token'):
                 cursor.execute('''
