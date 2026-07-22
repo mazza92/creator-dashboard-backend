@@ -71,8 +71,78 @@ def get_creator_id_from_session():
     return None
 
 
+from media_proxy_routes import to_proxied_media_url
+
+FREE_POST_LIMIT = 3
+
+
+def _is_pro_tier(tier) -> bool:
+    return (tier or "free").lower() in ("pro", "elite")
+
+
+def enforce_free_kit_limits(cursor, creator_id: int, *, commit_conn=None) -> dict:
+    """
+    Free kits: max 3 posts (keep highest engagement).
+    Does NOT gate publish — My Kit publish stays free; Pro is kit views / more posts / PR-Ready artifacts.
+    """
+    cursor.execute(
+        "SELECT subscription_tier FROM creators WHERE id = %s",
+        (creator_id,),
+    )
+    creator = cursor.fetchone() or {}
+    if _is_pro_tier(creator.get("subscription_tier")):
+        return {"trimmed": 0, "unpublished": False}
+
+    changed = False
+    trimmed = 0
+
+    cursor.execute(
+        """
+        SELECT id,
+               COALESCE(views,0) AS views, COALESCE(likes,0) AS likes,
+               COALESCE(comments,0) AS comments, COALESCE(shares,0) AS shares,
+               COALESCE(saves,0) AS saves
+        FROM portfolio_posts WHERE creator_id = %s
+        """,
+        (creator_id,),
+    )
+    rows = list(cursor.fetchall())
+    if len(rows) > FREE_POST_LIMIT:
+        ranked = sorted(
+            rows,
+            key=lambda r: (
+                int(r["views"] or 0)
+                + int(r["likes"] or 0)
+                + int(r["comments"] or 0) * 5
+                + int(r["shares"] or 0) * 3
+                + int(r["saves"] or 0) * 3
+            ),
+            reverse=True,
+        )
+        keep_ids = {r["id"] for r in ranked[:FREE_POST_LIMIT]}
+        drop_ids = [r["id"] for r in ranked if r["id"] not in keep_ids]
+        if drop_ids:
+            cursor.execute(
+                "DELETE FROM portfolio_posts WHERE creator_id = %s AND id = ANY(%s)",
+                (creator_id, drop_ids),
+            )
+            trimmed = len(drop_ids)
+            changed = True
+            for order, rid in enumerate(r["id"] for r in ranked[:FREE_POST_LIMIT]):
+                cursor.execute(
+                    "UPDATE portfolio_posts SET display_order = %s, is_featured = %s WHERE id = %s",
+                    (order, order < 3, rid),
+                )
+
+    if changed and commit_conn is not None:
+        commit_conn.commit()
+
+    return {"trimmed": trimmed, "unpublished": False}
+
+
 def serialize_post(post):
     """Serialize a portfolio post for JSON response"""
+    thumb = post.get("thumbnail_url")
     return {
         'id': post['id'],
         'post_url': post['post_url'],
@@ -85,7 +155,7 @@ def serialize_post(post):
         'comments': post['comments'],
         'shares': post['shares'],
         'saves': post.get('saves', 0),
-        'thumbnail_url': post['thumbnail_url'],
+        'thumbnail_url': to_proxied_media_url(thumb) if thumb else None,
         'display_order': post['display_order'],
         'is_featured': post['is_featured'],
         'created_at': post['created_at'].isoformat() if post['created_at'] else None,
@@ -110,6 +180,9 @@ def get_portfolio_posts():
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Correct legacy free kits that auto-filled past the 3-post / publish rules
+        enforce_free_kit_limits(cursor, creator_id, commit_conn=conn)
 
         cursor.execute('''
             SELECT * FROM portfolio_posts
@@ -155,6 +228,29 @@ def create_portfolio_post():
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Enforce free post cap (same as My Kit UI)
+        cursor.execute(
+            "SELECT subscription_tier FROM creators WHERE id = %s",
+            (creator_id,),
+        )
+        creator = cursor.fetchone() or {}
+        tier = (creator.get("subscription_tier") or "free").lower()
+        is_pro = tier in ("pro", "elite")
+        if not is_pro:
+            cursor.execute(
+                "SELECT COUNT(*) AS c FROM portfolio_posts WHERE creator_id = %s",
+                (creator_id,),
+            )
+            count = int(cursor.fetchone()["c"] or 0)
+            if count >= FREE_POST_LIMIT:
+                cursor.close()
+                conn.close()
+                return jsonify({
+                    "error": f"Free kits include {FREE_POST_LIMIT} posts. Upgrade to Pro to add more.",
+                    "upgrade_required": True,
+                    "code": "post_limit",
+                }), 403
 
         cursor.execute('''
             INSERT INTO portfolio_posts (
@@ -349,22 +445,22 @@ def update_kit_settings():
             updates.append("rates_gifted = %s")
             values.append(data['rates_gifted'])
 
-        # Handle publish action
+        # Handle publish action (My Kit — available on free; Pro adds kit views + more posts)
         if data.get('publish'):
+            cursor.execute(
+                "SELECT kit_slug, username FROM creators WHERE id = %s",
+                (creator_id,),
+            )
+            creator = cursor.fetchone() or {}
+
             updates.append("kit_published = %s")
             values.append(True)
             # Track when kit was last published
             updates.append("kit_published_at = NOW()")
 
-            # Set kit_slug to username if not already set
-            cursor.execute('''
-                SELECT kit_slug, username FROM creators WHERE id = %s
-            ''', (creator_id,))
-            creator = cursor.fetchone()
-
-            if creator and not creator['kit_slug']:
+            if creator and not creator.get('kit_slug'):
                 updates.append("kit_slug = %s")
-                values.append(creator['username'])
+                values.append(creator.get('username'))
 
         if updates:
             values.append(creator_id)
@@ -403,11 +499,14 @@ def get_kit_settings():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Free users cannot keep a live public kit (closes the auto-fill publish loophole)
+        enforce_free_kit_limits(cursor, creator_id, commit_conn=conn)
+
         cursor.execute('''
             SELECT
                 kit_tagline, kit_published, kit_published_at, kit_slug,
                 rates_reel, rates_tiktok, rates_photo, rates_gifted,
-                username
+                username, subscription_tier
             FROM creators
             WHERE id = %s
         ''', (creator_id,))
@@ -428,6 +527,7 @@ def get_kit_settings():
             'rates_tiktok': creator['rates_tiktok'],
             'rates_photo': creator['rates_photo'],
             'rates_gifted': creator['rates_gifted'],
+            'is_pro': _is_pro_tier(creator.get('subscription_tier')),
         })
 
     except Exception as e:
@@ -780,21 +880,23 @@ def get_public_kit(slug):
         try:
             cursor.execute('''
                 SELECT
-                    id, username, username as first_name, image_profile as avatar_url,
-                    COALESCE(kit_tagline, '') as tagline, niche as niches,
-                    followers_count as follower_count, engagement_rate,
-                    COALESCE(kit_published, false) as kit_published,
-                    COALESCE(rates_reel, 0) as rates_reel,
-                    COALESCE(rates_tiktok, 0) as rates_tiktok,
-                    COALESCE(rates_photo, 0) as rates_photo,
-                    COALESCE(rates_gifted, true) as rates_gifted,
-                    COALESCE(regions, '[]') as regions,
-                    COALESCE(primary_age_range, '') as primary_age_range,
-                    COALESCE(subscription_tier, 'free') as subscription_tier,
-                    COALESCE(social_links, '[]') as social_links
-                FROM creators
-                WHERE username = %s
-            ''', (slug,))
+                    c.id, c.username, c.username as first_name, c.image_profile as avatar_url,
+                    COALESCE(c.kit_tagline, '') as tagline, c.niche as niches,
+                    c.followers_count as follower_count, c.engagement_rate,
+                    COALESCE(c.kit_published, false) as kit_published,
+                    COALESCE(c.rates_reel, 0) as rates_reel,
+                    COALESCE(c.rates_tiktok, 0) as rates_tiktok,
+                    COALESCE(c.rates_photo, 0) as rates_photo,
+                    COALESCE(c.rates_gifted, true) as rates_gifted,
+                    COALESCE(c.regions, '[]') as regions,
+                    COALESCE(c.primary_age_range, '') as primary_age_range,
+                    COALESCE(c.subscription_tier, 'free') as subscription_tier,
+                    COALESCE(c.social_links, '[]') as social_links,
+                    u.email AS user_email
+                FROM creators c
+                LEFT JOIN users u ON u.id = c.user_id
+                WHERE c.username = %s OR c.kit_slug = %s
+            ''', (slug, slug))
             creator = cursor.fetchone()
         except Exception as col_err:
             # Kit columns don't exist, fallback to basic query
@@ -803,19 +905,21 @@ def get_public_kit(slug):
             conn.rollback()  # Reset the failed transaction
             cursor.execute('''
                 SELECT
-                    id, username, username as first_name, image_profile as avatar_url,
-                    '' as tagline, niche as niches,
-                    followers_count as follower_count, engagement_rate,
+                    c.id, c.username, c.username as first_name, c.image_profile as avatar_url,
+                    '' as tagline, c.niche as niches,
+                    c.followers_count as follower_count, c.engagement_rate,
                     false as kit_published,
                     0 as rates_reel,
                     0 as rates_tiktok,
                     0 as rates_photo,
                     true as rates_gifted,
-                    COALESCE(regions, '[]') as regions,
-                    COALESCE(primary_age_range, '') as primary_age_range,
-                    COALESCE(social_links, '[]') as social_links
-                FROM creators
-                WHERE username = %s
+                    COALESCE(c.regions, '[]') as regions,
+                    COALESCE(c.primary_age_range, '') as primary_age_range,
+                    COALESCE(c.social_links, '[]') as social_links,
+                    u.email AS user_email
+                FROM creators c
+                LEFT JOIN users u ON u.id = c.user_id
+                WHERE c.username = %s
             ''', (slug,))
             creator = cursor.fetchone()
 
@@ -1020,6 +1124,9 @@ def get_public_kit(slug):
                 elif platform in ('twitter', 'x'):
                     socials['twitter'] = url
 
+        # Mailto CTA uses account email from users table only (never bio/scrape)
+        contact_email = (creator.get('user_email') or '').strip() or None
+
         return jsonify({
             'creator_id': creator['id'],  # For interaction tracking
             'username': creator['username'],
@@ -1038,6 +1145,7 @@ def get_public_kit(slug):
             'kit_views': kit_views if is_pro else None,  # Only show views for Pro creators
             'is_pro': is_pro,
             'socials': socials,
+            'contact_email': contact_email,
             'posts': [serialize_post(p) for p in posts],
         })
 

@@ -2531,7 +2531,14 @@ def onboarding_step3():
 
         conn.close()
         base_url = get_base_url()
-        return jsonify({'ok': True, 'redirect': f'{base_url}/creator/dashboard/for-you'}), 200
+        # Mech 3: post-onboarding lands on AI Manager (flag via env, default on)
+        land_manager = os.getenv("AI_MANAGER_POST_ONBOARDING_LANDING_V1", "1") != "0"
+        landing = (
+            f'{base_url}/creator/dashboard/pr-ready?onboarding=true'
+            if land_manager
+            else f'{base_url}/creator/dashboard/for-you'
+        )
+        return jsonify({'ok': True, 'redirect': landing}), 200
 
     except Exception as e:
         app.logger.error(f"🔥 Error in onboarding step3: {str(e)}")
