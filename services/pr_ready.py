@@ -823,9 +823,9 @@ def compute_pr_ready_score(
         "score_capped": score_capped,
         "free_score_cap": None if is_pro else FREE_SCORE_CAP,
         "status": status,
-        "score_label": "Hireability score",
+        "score_label": "Reply Chance",
         "score_promise": (
-            "how ready your profile is for PR gifting, UGC campaigns, and paid outreach"
+            "how likely brands are to reply when you pitch — estimated from your profile"
         ),
         "projected_score": projected_raw,
         "projected_gain": next_gain,
@@ -917,7 +917,7 @@ def build_manager_bar(
         headline = "You're campaign-ready — keep climbing with your manager's growth moves."
         cta = "See growth moves →"
     elif state == "stalled":
-        headline = "Your hireability hasn't moved in a week. Your manager wrote a new plan."
+        headline = "Your reply chance hasn't moved in a week. Your manager wrote a new plan."
         cta = "Open new plan →"
     elif state == "climbed" and week_gain > 0:
         headline = f"Up +{week_gain} this week. Keep going to land more brand replies."

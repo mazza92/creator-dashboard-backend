@@ -333,7 +333,7 @@ def get_pr_ready():
                 "score_capped": bool(report.get("score_capped")),
                 "free_score_cap": report.get("free_score_cap"),
                 "status": report["status"],
-                "score_label": report.get("score_label") or "Hireability score",
+                "score_label": report.get("score_label") or "Reply Chance",
                 "score_promise": report.get("score_promise"),
                 "projected_score": report.get("projected_score"),
                 "projected_gain": report.get("projected_gain"),
