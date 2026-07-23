@@ -12107,8 +12107,20 @@ def test_welcome_email_endpoint():
 @app.route('/sitemap.xml', methods=['GET'])
 def sitemap():
     """
-    Generate dynamic sitemap for all PR brand pages
+    Generate dynamic sitemap for all PR brand pages.
+    Note: canonical SEO sitemap lives at https://newcollab.co/sitemap.xml (Next.js).
+    This API route is a fallback for crawlers that hit api.newcollab.co.
     """
+    from datetime import datetime as dt
+
+    def _lastmod(value=None):
+        if value is None:
+            return dt.utcnow().strftime('%Y-%m-%d')
+        if hasattr(value, 'strftime'):
+            return value.strftime('%Y-%m-%d')
+        text = str(value).strip()
+        return text[:10] if len(text) >= 10 else dt.utcnow().strftime('%Y-%m-%d')
+
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -12118,13 +12130,15 @@ def sitemap():
             SELECT slug, updated_at
             FROM pr_brands
             WHERE slug IS NOT NULL
-            ORDER BY updated_at DESC
+              AND TRIM(slug) <> ''
+            ORDER BY updated_at DESC NULLS LAST
         ''')
-        pr_brands = cursor.fetchall()
+        pr_brands = cursor.fetchall() or []
 
         cursor.close()
         conn.close()
 
+        today = _lastmod()
         # Build sitemap XML
         sitemap_xml = '''<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -12133,7 +12147,7 @@ def sitemap():
         # Add homepage
         sitemap_xml += f'''  <url>
     <loc>https://newcollab.co/</loc>
-    <lastmod>{datetime.datetime.now().strftime('%Y-%m-%d')}</lastmod>
+    <lastmod>{today}</lastmod>
     <changefreq>daily</changefreq>
     <priority>1.0</priority>
   </url>
@@ -12142,7 +12156,7 @@ def sitemap():
         # Add main directory page
         sitemap_xml += f'''  <url>
     <loc>https://newcollab.co/directory</loc>
-    <lastmod>{datetime.datetime.now().strftime('%Y-%m-%d')}</lastmod>
+    <lastmod>{today}</lastmod>
     <changefreq>daily</changefreq>
     <priority>0.9</priority>
   </url>
@@ -12153,7 +12167,7 @@ def sitemap():
         for category in categories:
             sitemap_xml += f'''  <url>
     <loc>https://newcollab.co/directory/{category}</loc>
-    <lastmod>{datetime.datetime.now().strftime('%Y-%m-%d')}</lastmod>
+    <lastmod>{today}</lastmod>
     <changefreq>daily</changefreq>
     <priority>0.85</priority>
   </url>
@@ -12161,13 +12175,12 @@ def sitemap():
 
         # Add all PR brand pages
         for brand in pr_brands:
-            last_mod = (
-                brand['updated_at'].strftime('%Y-%m-%d')
-                if brand.get('updated_at')
-                else datetime.datetime.now().strftime('%Y-%m-%d')
-            )
+            slug = (brand.get('slug') or '').strip()
+            if not slug:
+                continue
+            last_mod = _lastmod(brand.get('updated_at'))
             sitemap_xml += f'''  <url>
-    <loc>https://newcollab.co/brand/{brand['slug']}</loc>
+    <loc>https://newcollab.co/brand/{slug}</loc>
     <lastmod>{last_mod}</lastmod>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
@@ -12183,6 +12196,8 @@ def sitemap():
 
     except Exception as e:
         app.logger.error(f"Error generating sitemap: {str(e)}")
+        import traceback
+        app.logger.error(traceback.format_exc())
         return "Error generating sitemap", 500
 
 
