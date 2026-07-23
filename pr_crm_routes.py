@@ -1874,7 +1874,7 @@ def get_brands():
                 contact_email, instagram_handle, tiktok_handle, youtube_handle,
                 has_application_form, application_form_url,
                 response_rate, avg_response_time_days, is_premium, notes,
-                avg_product_value, collaboration_type, payment_offered
+                avg_product_value, collaboration_type, payment_offered, micro_friendly
             FROM pr_brands
             WHERE {where_sql}
             ORDER BY {sort_sql}
@@ -2499,7 +2499,7 @@ def discover_brand():
                 contact_email, instagram_handle, tiktok_handle, youtube_handle,
                 has_application_form, application_form_url,
                 response_rate, avg_response_time_days, is_premium, notes,
-                avg_product_value, collaboration_type, payment_offered,
+                avg_product_value, collaboration_type, payment_offered, micro_friendly,
                 source, discovery_tier, verified_contact
             FROM pr_brands
             WHERE LOWER(REPLACE(brand_name, ' ', '')) ILIKE %s
@@ -7691,7 +7691,7 @@ def get_for_you():
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate, b.price_point, b.price_point,
-                    b.min_followers, b.website, b.application_form_url
+                    b.min_followers, b.micro_friendly, b.website, b.application_form_url
                 FROM pr_brands b
                 WHERE b.slug IS NOT NULL
                   AND COALESCE(b.status, 'published') = 'published'
@@ -7713,7 +7713,7 @@ def get_for_you():
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate, b.price_point, b.price_point,
-                    b.min_followers, b.website, b.application_form_url
+                    b.min_followers, b.micro_friendly, b.website, b.application_form_url
                 FROM pr_brands b
                 WHERE b.slug IS NOT NULL
                   AND COALESCE(b.status, 'published') = 'published'
@@ -7734,7 +7734,7 @@ def get_for_you():
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate, b.price_point,
-                    b.min_followers, b.website, b.application_form_url
+                    b.min_followers, b.micro_friendly, b.website, b.application_form_url
                 FROM pr_brands b
                 WHERE b.slug IS NOT NULL
                   AND COALESCE(b.status, 'published') = 'published'
@@ -7755,7 +7755,7 @@ def get_for_you():
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate, b.price_point,
-                    b.min_followers, b.website, b.application_form_url
+                    b.min_followers, b.micro_friendly, b.website, b.application_form_url
                 FROM pr_brands b
                 WHERE b.slug IS NOT NULL
                   AND COALESCE(b.status, 'published') = 'published'
@@ -7780,7 +7780,7 @@ def get_for_you():
                     SELECT
                         b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                         b.description, b.category, b.response_rate, b.price_point,
-                        b.min_followers, b.website, b.application_form_url
+                        b.min_followers, b.micro_friendly, b.website, b.application_form_url
                     FROM pr_brands b
                     WHERE b.slug IS NOT NULL
                       AND COALESCE(b.status, 'published') = 'published'
@@ -7798,7 +7798,7 @@ def get_for_you():
                     SELECT
                         b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                         b.description, b.category, b.response_rate, b.price_point,
-                        b.min_followers, b.website, b.application_form_url
+                        b.min_followers, b.micro_friendly, b.website, b.application_form_url
                     FROM pr_brands b
                     WHERE b.slug IS NOT NULL
                       AND COALESCE(b.status, 'published') = 'published'
@@ -7815,7 +7815,7 @@ def get_for_you():
                     SELECT
                         b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                         b.description, b.category, b.response_rate, b.price_point,
-                        b.min_followers, b.website, b.application_form_url
+                        b.min_followers, b.micro_friendly, b.website, b.application_form_url
                     FROM pr_brands b
                     WHERE b.slug IS NOT NULL
                       AND COALESCE(b.status, 'published') = 'published'
@@ -7832,7 +7832,7 @@ def get_for_you():
                     SELECT
                         b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                         b.description, b.category, b.response_rate, b.price_point,
-                        b.min_followers, b.website, b.application_form_url
+                        b.min_followers, b.micro_friendly, b.website, b.application_form_url
                     FROM pr_brands b
                     WHERE b.slug IS NOT NULL
                       AND COALESCE(b.status, 'published') = 'published'
@@ -7891,7 +7891,7 @@ def get_for_you():
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate, b.price_point,
-                    b.min_followers, b.max_followers, b.website, b.application_form_url,
+                    b.min_followers, b.max_followers, b.micro_friendly, b.website, b.application_form_url,
                     b.has_application_form,
                     (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
                     b.niches AS brand_niches,
@@ -7948,7 +7948,7 @@ def get_for_you():
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate, b.price_point,
-                    b.min_followers, b.max_followers, b.website, b.application_form_url,
+                    b.min_followers, b.max_followers, b.micro_friendly, b.website, b.application_form_url,
                     b.has_application_form,
                     (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
                     -- Match score scaled to 55-82%% range (lower since no profile match)
@@ -7987,7 +7987,7 @@ def get_for_you():
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate, b.price_point,
-                    b.min_followers, b.website, b.application_form_url,
+                    b.min_followers, b.micro_friendly, b.website, b.application_form_url,
                     b.has_application_form,
                     (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
                     65 AS match_score
@@ -8043,7 +8043,7 @@ def get_for_you():
             SELECT
                 b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                 b.description, b.category, b.response_rate, b.price_point,
-                b.min_followers, b.website, b.application_form_url
+                b.min_followers, b.micro_friendly, b.website, b.application_form_url
             FROM pr_brands b
             WHERE b.slug IS NOT NULL
               AND COALESCE(b.status, 'published') = 'published'
@@ -8065,7 +8065,7 @@ def get_for_you():
             SELECT
                 b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                 b.description, b.category, b.response_rate, b.price_point,
-                b.min_followers, b.website, b.application_form_url, b.created_at
+                b.min_followers, b.micro_friendly, b.website, b.application_form_url, b.created_at
             FROM pr_brands b
             WHERE b.slug IS NOT NULL
               AND COALESCE(b.status, 'published') = 'published'
@@ -8121,7 +8121,7 @@ def get_for_you():
                             SELECT
                                 b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                                 b.description, b.category, b.response_rate, b.price_point,
-                                b.min_followers, b.max_followers, b.website, b.application_form_url,
+                                b.min_followers, b.max_followers, b.micro_friendly, b.website, b.application_form_url,
                                 b.has_application_form,
                                 (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
                                 b.niches AS brand_niches,

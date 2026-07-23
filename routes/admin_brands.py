@@ -120,7 +120,7 @@ def get_brands():
                 total_applications, total_responses, last_verified_at,
                 is_featured, is_premium, has_application_form,
                 application_method, application_requirements,
-                accepting_pr, open_pr_featured, roundup_featured, notes, success_stories, source_url,
+                accepting_pr, open_pr_featured, roundup_featured, micro_friendly, notes, success_stories, source_url,
                 cover_image_url, avg_product_value, collaboration_type, payment_offered,
                 seo_title, seo_description,
                 hero_product, target_audience, tone, price_point, enriched_at,
@@ -203,7 +203,7 @@ def get_brand(brand_id):
                 total_applications, total_responses, last_verified_at,
                 is_featured, is_premium, has_application_form,
                 application_method, application_requirements,
-                accepting_pr, open_pr_featured, roundup_featured, notes, success_stories, source_url,
+                accepting_pr, open_pr_featured, roundup_featured, micro_friendly, notes, success_stories, source_url,
                 cover_image_url, avg_product_value, collaboration_type, payment_offered,
                 seo_title, seo_description,
                 hero_product, target_audience, tone, price_point, enriched_at,
@@ -268,7 +268,7 @@ def create_brand():
                 response_rate, avg_response_time_days,
                 is_featured, is_premium, has_application_form,
                 application_method, application_requirements,
-                accepting_pr, open_pr_featured, roundup_featured, notes, success_stories, source_url,
+                accepting_pr, open_pr_featured, roundup_featured, micro_friendly, notes, success_stories, source_url,
                 cover_image_url, avg_product_value, collaboration_type, payment_offered,
                 seo_title, seo_description,
                 status, created_at
@@ -281,7 +281,7 @@ def create_brand():
                 %s, %s,
                 %s, %s, %s,
                 %s, %s,
-                %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s,
                 %s, CURRENT_TIMESTAMP
@@ -298,7 +298,7 @@ def create_brand():
             data.get('youtube'),
             data.get('category', 'other'),
             Json(data.get('niches', [])),  # JSONB column
-            data.get('product_types'),
+            Json(data.get('product_types')) if isinstance(data.get('product_types'), (list, dict)) else data.get('product_types'),
             data.get('min_followers', 0),
             data.get('max_followers'),
             Json(data.get('platforms', [])),  # JSONB column
@@ -315,6 +315,7 @@ def create_brand():
             data.get('accepting_pr', True),
             data.get('open_pr_featured', False),
             data.get('roundup_featured', False),
+            data.get('micro_friendly', False),
             data.get('notes'),
             data.get('success_stories'),
             data.get('source_url'),
@@ -342,7 +343,7 @@ def create_brand():
                 total_applications, total_responses, last_verified_at,
                 is_featured, is_premium, has_application_form,
                 application_method, application_requirements,
-                accepting_pr, open_pr_featured, roundup_featured, notes, success_stories, source_url,
+                accepting_pr, open_pr_featured, roundup_featured, micro_friendly, notes, success_stories, source_url,
                 cover_image_url, avg_product_value, collaboration_type, payment_offered,
                 seo_title, seo_description,
                 hero_product, target_audience, tone, price_point, enriched_at,
@@ -405,11 +406,15 @@ def update_brand(brand_id):
             'response_rate', 'avg_response_time_days',
             'total_applications', 'total_responses', 'last_verified_at',
             'has_application_form', 'application_method', 'application_requirements',
-            'is_premium', 'open_pr_featured', 'roundup_featured', 'notes', 'success_stories', 'source_url',
+            'is_premium', 'open_pr_featured', 'roundup_featured', 'micro_friendly', 'notes', 'success_stories', 'source_url',
             'cover_image_url', 'avg_product_value', 'collaboration_type', 'payment_offered',
             'status', 'seo_title', 'seo_description',
             'hero_product', 'target_audience', 'tone', 'price_point', 'enriched_at'
         ]
+
+        # JSONB columns must be wrapped with Json() — psycopg2 adapts raw
+        # Python lists to text[], which fails against jsonb columns
+        jsonb_fields = {'niches', 'product_types', 'platforms', 'regions'}
 
         update_fields = []
         params = []
@@ -430,6 +435,8 @@ def update_brand(brand_id):
                 if key == 'category' and value:
                     from brand_categories import normalize_category
                     value = normalize_category(value)
+                if key in jsonb_fields and isinstance(value, (list, dict)):
+                    value = Json(value)
                 update_fields.append(f"{key} = %s")
                 params.append(value)
 
@@ -480,7 +487,7 @@ def update_brand(brand_id):
                 total_applications, total_responses, last_verified_at,
                 is_featured, is_premium, has_application_form,
                 application_method, application_requirements,
-                accepting_pr, open_pr_featured, roundup_featured, notes, success_stories, source_url,
+                accepting_pr, open_pr_featured, roundup_featured, micro_friendly, notes, success_stories, source_url,
                 cover_image_url, avg_product_value, collaboration_type, payment_offered,
                 seo_title, seo_description,
                 hero_product, target_audience, tone, price_point, enriched_at,
@@ -637,15 +644,30 @@ def bulk_update_brands():
         if not brand_ids or not updates:
             return jsonify({'error': 'ids and updates are required'}), 400
 
-        # Build update query
-        allowed_fields = ['status', 'category', 'is_featured', 'accepting_pr', 'open_pr_featured', 'roundup_featured']
+        # Build update query — matches the BULK_EDIT_FIELDS config on the frontend
+        allowed_fields = [
+            'status', 'category',
+            'is_featured', 'accepting_pr', 'open_pr_featured', 'roundup_featured',
+            'micro_friendly', 'is_premium', 'has_application_form', 'payment_offered',
+            'collaboration_type', 'application_method', 'tone',
+            'min_followers', 'max_followers', 'response_rate', 'avg_response_time_days',
+            'price_point', 'avg_product_value',
+            'platforms', 'regions', 'niches',
+        ]
+        jsonb_fields = {'platforms', 'regions', 'niches'}
         update_fields = []
         params = []
 
         for field, value in updates.items():
-            if field in allowed_fields:
-                update_fields.append(f"{field} = %s")
-                params.append(value)
+            if field not in allowed_fields:
+                continue
+            if field == 'category' and value:
+                from brand_categories import normalize_category
+                value = normalize_category(value)
+            if field in jsonb_fields and isinstance(value, (list, dict)):
+                value = Json(value)
+            update_fields.append(f"{field} = %s")
+            params.append(value)
 
         if not update_fields:
             return jsonify({'error': 'No valid fields to update'}), 400
