@@ -197,10 +197,13 @@ def diy_scrape_is_acceptable(
     profile: Dict[str, Any], platform: str, *, allow_partial: bool = False
 ) -> bool:
     """
-    Same required bar for TikTok + Instagram DIY:
-      public  → followers + bio + at least one latest post
-      private → followers + bio (posts may be hidden)
-      allow_partial → followers + bio only (IG IP wall / onboarding rescue)
+    Required bar for TikTok + Instagram DIY:
+      public  → followers + at least one latest post (bio preferred, not required)
+      private → followers (posts may be hidden; bio preferred, not required)
+      allow_partial → followers only (IG IP wall / onboarding rescue)
+
+    Empty bio is accepted when we have followers + content proof — AI Manager
+    then flags missing bio as a critical optimization.
     """
     if not profile:
         return False
@@ -221,11 +224,10 @@ def diy_scrape_is_acceptable(
         followers = int(profile.get("followerCount") or 0)
         is_private = bool(profile.get("privateAccount"))
         latest = profile.get("latestVideos") or []
-        bio = profile.get("signature") or ""
 
     if not handle:
         return False
-    if followers <= 0 or not _diy_bio_ok(bio):
+    if followers <= 0:
         return False
     if is_private or allow_partial or profile.get("_partial_scrape"):
         return True

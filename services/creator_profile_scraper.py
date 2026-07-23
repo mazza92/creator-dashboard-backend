@@ -258,6 +258,12 @@ class CreatorProfileScraper:
         email_match = re.search(r'[\w.-]+@[\w.-]+\.\w+', bio)
         if email_match:
             collab_email = email_match.group()
+        bio_empty = not bool((bio or "").strip())
+        if bio_empty:
+            print(
+                f"[Scrape] {platform} @{raw_scrape.get('username') or raw_scrape.get('uniqueId', '')} "
+                f"accepted with empty bio — AI Manager will flag as critical"
+            )
 
         # Extract recent captions
         recent_captions = []
@@ -356,6 +362,7 @@ class CreatorProfileScraper:
             # Bio signals
             'has_collab_email': has_collab_email,
             'collab_email_extracted': collab_email,
+            'bio_empty': bio_empty,
 
             # Content archive
             'recent_post_thumbnails': thumbnail_urls,

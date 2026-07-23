@@ -275,8 +275,8 @@ class TestAcceptable(unittest.TestCase):
         }
         self.assertFalse(diy_scrape_is_acceptable(profile, "instagram"))
 
-    def test_public_requires_followers_bio_and_latest_post(self):
-        """Same required fields as TikTok DIY: followers + bio + latest post."""
+    def test_public_requires_followers_and_latest_post(self):
+        """Followers + latest post required; empty bio is allowed (manager flags it)."""
         base = {
             "username": "nainadiary.jpg",
             "followersCount": 554,
@@ -289,9 +289,19 @@ class TestAcceptable(unittest.TestCase):
         no_fol = dict(base, followersCount=0)
         self.assertFalse(diy_scrape_is_acceptable(no_fol, "instagram"))
         no_bio = dict(base, biography="")
-        self.assertFalse(diy_scrape_is_acceptable(no_bio, "instagram"))
+        self.assertTrue(diy_scrape_is_acceptable(no_bio, "instagram"))
         no_posts = dict(base, latestPosts=[])
         self.assertFalse(diy_scrape_is_acceptable(no_posts, "instagram"))
+
+    def test_tiktok_empty_bio_acceptable_with_followers_and_videos(self):
+        profile = {
+            "uniqueId": "addy_hati",
+            "followerCount": 75,
+            "signature": "",
+            "privateAccount": False,
+            "latestVideos": [{"text": "hi", "videoMeta": {"coverUrl": "https://x"}}],
+        }
+        self.assertTrue(diy_scrape_is_acceptable(profile, "tiktok"))
 
     def test_rejects_implausible_follower_counts(self):
         profile = {

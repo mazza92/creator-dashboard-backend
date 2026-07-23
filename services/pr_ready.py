@@ -341,8 +341,61 @@ def compute_pr_ready_score(
     kit_ok = bool(kit_status.get("is_published")) and post_count >= 3
     # One win: niche-first bio + public PR email (merged former #1 + #2)
     bio_pack_ok = _bio_looks_professional(bio, has_email) and has_email
+    # Empty scrape bio (no rewrite saved) = critical manager priority
+    bio_empty = bool(scrape.get("bio_empty")) or (
+        not scrape_bio and not (saved_bio and len(saved_bio.strip()) >= 8)
+    )
 
     bio_preview = (scrape_bio or bio)[:140] if (scrape_bio or bio) else ""
+    if bio_empty and not bio_pack_ok:
+        bio_item = {
+            "id": "bio",
+            "title": "Add a bio — brands skip blank profiles",
+            "label": "Bio missing (critical)",
+            "done": False,
+            "critical": True,
+            "impact": 5,
+            "time_minutes": 3,
+            "tip": "Write a niche-first bio and add a public PR email brands can copy.",
+            "why": (
+                "Your profile has no bio. Brands decide in seconds — a blank bio looks "
+                "inactive or incomplete, so they skip you before opening your content."
+            ),
+            "current": "Empty bio on your social profile",
+            "optimized_bio": None,
+            "needs_email": True,
+            "email": "",
+            "cta": "Write my bio",
+            "cta_action": "rewrite_bio",
+            "free": True,
+            "value": "action",
+            "evidence": None,
+        }
+    else:
+        bio_item = {
+            "id": "bio",
+            "title": "Optimize your bio for brand outreach",
+            "label": "Pro bio + PR email",
+            "done": bio_pack_ok,
+            "critical": False,
+            "impact": 5,
+            "time_minutes": 3,
+            "tip": "Niche + proof + a public PR email brands can copy into outreach tools.",
+            "why": (
+                "PR teams skim in ~3 seconds — and many agencies export emails into CRMs. "
+                "A niche-first bio without a public email still gets skipped."
+            ),
+            "current": bio_preview or "No usable bio found on your social profile",
+            "optimized_bio": bio if bio_pack_ok else (saved_bio if saved_bio and saved_bio != scrape_bio else None),
+            "needs_email": not has_email,
+            "email": extracted or "",
+            "cta": "Optimize my bio",
+            "cta_action": "rewrite_bio",
+            "free": True,
+            "value": "action",
+            "evidence": extracted if extracted else None,
+        }
+
     portfolio_count = max(
         post_count,
         len(_as_list(scrape.get("recent_posts"))),
@@ -370,28 +423,7 @@ def compute_pr_ready_score(
 
     # Manager-style checklist: outcome titles + impact/time + brand-ops why.
     checklist = [
-        {
-            "id": "bio",
-            "title": "Optimize your bio for brand outreach",
-            "label": "Pro bio + PR email",
-            "done": bio_pack_ok,
-            "impact": 5,
-            "time_minutes": 3,
-            "tip": "Niche + proof + a public PR email brands can copy into outreach tools.",
-            "why": (
-                "PR teams skim in ~3 seconds — and many agencies export emails into CRMs. "
-                "A niche-first bio without a public email still gets skipped."
-            ),
-            "current": bio_preview or "No usable bio found on your social profile",
-            "optimized_bio": bio if bio_pack_ok else (saved_bio if saved_bio and saved_bio != scrape_bio else None),
-            "needs_email": not has_email,
-            "email": extracted or "",
-            "cta": "Optimize my bio",
-            "cta_action": "rewrite_bio",
-            "free": True,
-            "value": "action",
-            "evidence": extracted if extracted else None,
-        },
+        bio_item,
         {
             "id": "kit",
             "title": "Publish your portfolio",
@@ -586,7 +618,16 @@ def compute_pr_ready_score(
 
     fixes = [item for item in checklist if not item["done"]]
     if not is_pro:
-        fixes.sort(key=lambda f: (0 if f.get("free") else 1, -int(f.get("impact") or 0)))
+        # Critical empty-bio (and similar) always surface first
+        fixes.sort(
+            key=lambda f: (
+                0 if f.get("critical") else 1,
+                0 if f.get("free") else 1,
+                -int(f.get("impact") or 0),
+            )
+        )
+    else:
+        fixes.sort(key=lambda f: (0 if f.get("critical") else 1, -int(f.get("impact") or 0)))
 
     free_open = [f for f in fixes if f.get("free")]
     pro_open = [f for f in fixes if not f.get("free")]
@@ -747,20 +788,30 @@ def compute_pr_ready_score(
         }
     elif top_gap:
         gap_title = top_gap.get("title") or top_gap.get("label") or "top gap"
+        is_critical = bool(top_gap.get("critical"))
         manager["priority"] = {
             "id": top_gap["id"],
             "title": gap_title,
-            "headline": f"If you only fix one thing today, make it your {gap_title.lower()}.",
+            "headline": (
+                f"Critical: {gap_title}"
+                if is_critical
+                else f"If you only fix one thing today, make it your {gap_title.lower()}."
+            ),
             "why_short": (top_gap.get("why") or "")[:220],
             "cta": top_gap.get("cta") or "Start this fix",
             "cta_action": top_gap.get("cta_action") or "rewrite_bio",
             "impact": top_gap.get("impact") or 3,
             "time_minutes": top_gap.get("time_minutes") or 5,
             "score_gain": points_per_box,
+            "critical": is_critical,
         }
         manager["briefing"] = {
             "priority": gap_title,
-            "priority_note": "Highest ROI for brand replies today.",
+            "priority_note": (
+                "Critical gap — fix this before pitching brands."
+                if is_critical
+                else "Highest ROI for brand replies today."
+            ),
             "recommended_shoot": top_gap.get("suggested_shoot") or recommended_shoot,
             "shoot_minutes": int(top_gap.get("time_minutes") or 18),
             "estimated_score_gain": points_per_box,
