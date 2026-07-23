@@ -1620,13 +1620,28 @@ def _ig_parse_imginn_html(
     if bio.lower() in ("undefined", "null", "none"):
         bio = ""
     if not bio and og and "undefined" not in og.lower() and not re.search(r"\b0\s+Followers\b", og, re.I):
-        # Strip trailing "X Followers, Y Following..." from og description
-        bio = re.sub(
-            r"\s*[\d,.]+[KMBkmb]?\s*Followers,\s*[\d,.]+[KMBkmb]?\s*Following,\s*(?:[\d,.]+[KMBkmb]?|undefined)\s*Posts\s*$",
-            "",
-            og,
-            flags=re.I,
-        ).strip()
+        # Prefer quoted bio from share snippets; else strip follower meta + HTML
+        quoted = re.search(
+            r'on\s+(?:Instagram|TikTok)\s*:\s*[“"\']\s*(.+?)\s*[”"\']\s*$',
+            unescape(og),
+            re.I | re.S,
+        )
+        if quoted:
+            bio = re.sub(r"<[^>]+>", "", unescape(quoted.group(1))).strip()
+        else:
+            bio = re.sub(r"<[^>]+>", "", unescape(og)).strip()
+            bio = re.sub(
+                r"\s*[\d,.]+[KMBkmb]?\s*Followers,\s*[\d,.]+[KMBkmb]?\s*Following,\s*(?:[\d,.]+[KMBkmb]?|undefined)\s*Posts\s*$",
+                "",
+                bio,
+                flags=re.I,
+            ).strip()
+            bio = re.sub(
+                r"^[\s\S]*?(?:F?ollowers|Following)\s*,\s*[\d,.]+\s*Following\s*,\s*[\d,.]+\s*Posts\s*[-–—:]?\s*",
+                "",
+                bio,
+                flags=re.I,
+            ).strip()
         if bio.lower() in ("undefined", "null", "none"):
             bio = ""
 

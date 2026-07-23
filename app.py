@@ -2531,8 +2531,8 @@ def onboarding_step3():
 
         conn.close()
         base_url = get_base_url()
-        # Mech 3: post-onboarding lands on AI Manager (flag via env, default on)
-        land_manager = os.getenv("AI_MANAGER_POST_ONBOARDING_LANDING_V1", "1") != "0"
+        # Default landing is For You (AI Manager band invites deeper coaching)
+        land_manager = os.getenv("AI_MANAGER_POST_ONBOARDING_LANDING_V1", "0") == "1"
         landing = (
             f'{base_url}/creator/dashboard/pr-ready?onboarding=true'
             if land_manager

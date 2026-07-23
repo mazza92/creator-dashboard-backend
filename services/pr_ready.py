@@ -845,6 +845,22 @@ def compute_pr_ready_score(
     }
 
 
+def _hireability_band_meta(score: int) -> Dict[str, Any]:
+    """Stars + label for the For You AI Manager hireability band."""
+    score = int(score or 0)
+    if score >= 85:
+        stars, label = 5, "Campaign ready"
+    elif score >= CAMPAIGN_READY_THRESHOLD:
+        stars, label = 4, "Almost ready"
+    elif score >= 40:
+        stars, label = 3, "Building"
+    elif score >= 20:
+        stars, label = 2, "Needs work"
+    else:
+        stars, label = 1, "Getting started"
+    return {"stars": stars, "label": label}
+
+
 def build_manager_bar(
     *,
     score: int,
@@ -854,8 +870,8 @@ def build_manager_bar(
     days_since_score_change: int = 0,
 ) -> Optional[Dict[str, Any]]:
     """
-    Slim payload for the For You persistent manager score bar (routing Mech 1).
-    Returns None when the bar should not render (Pro power-user / maxed score).
+    Slim payload for the For You AI Manager hireability band (routing Mech 1).
+    Returns None when the band should not render (Pro power-user / maxed score).
     """
     checklist = checklist or []
     manager = manager or {}
@@ -872,6 +888,9 @@ def build_manager_bar(
     setup_incomplete = ("bio" in open_ids) or ("kit" in open_ids)
     climb = manager.get("score_climb") or {}
     week_gain = int(climb.get("week_gain") or 0)
+    priority = manager.get("priority") or {}
+    priority_title = (priority.get("title") or "").strip()
+    is_critical = bool(priority.get("critical"))
 
     if setup_incomplete:
         state = "setup_incomplete"
@@ -889,9 +908,46 @@ def build_manager_bar(
         state = "waiting"
         est = 0
 
+    meta = _hireability_band_meta(score)
+
+    if state == "setup_incomplete":
+        headline = f"Finish setup (~{est} min) so brands take you seriously."
+        cta = "Open AI Manager →"
+    elif state == "campaign_ready":
+        headline = "You're campaign-ready — keep climbing with your manager's growth moves."
+        cta = "See growth moves →"
+    elif state == "stalled":
+        headline = "Your hireability hasn't moved in a week. Your manager wrote a new plan."
+        cta = "Open new plan →"
+    elif state == "climbed" and week_gain > 0:
+        headline = f"Up +{week_gain} this week. Keep going to land more brand replies."
+        cta = "Continue with AI Manager →"
+    elif is_critical and priority_title:
+        headline = f"Critical: fix {priority_title.lower()} to unlock better brand deals."
+        cta = "Fix with AI Manager →"
+    elif priority_title and fixes_remaining > 0:
+        headline = (
+            f"Close “{priority_title}” to improve your chance of landing a brand deal."
+        )
+        cta = "Improve with AI Manager →"
+    elif fixes_remaining > 0:
+        headline = (
+            f"Your manager has {fixes_remaining} fix"
+            f"{'es' if fixes_remaining != 1 else ''} that lift your odds of brand replies."
+        )
+        cta = "Improve with AI Manager →"
+    else:
+        headline = "Work with your AI Manager to improve your chance of landing brand deals."
+        cta = "Open AI Manager →"
+
     return {
         "state": state,
         "score": score,
+        "stars": meta["stars"],
+        "label": meta["label"],
+        "headline": headline,
+        "cta": cta,
+        "priority_title": priority_title or None,
         "score_delta_last_7d": max(0, week_gain),
         "fixes_remaining": fixes_remaining,
         "days_since_score_change": int(days_since_score_change or 0),

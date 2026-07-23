@@ -11,6 +11,7 @@ import os
 import json
 import re
 import requests
+from html import unescape
 from datetime import datetime
 from decimal import Decimal
 from urllib.parse import urlparse, urljoin
@@ -36,6 +37,38 @@ def convert_decimals(obj):
     elif isinstance(obj, list):
         return [convert_decimals(item) for item in obj]
     return obj
+
+
+def clean_social_bio_snippet(raw, limit: int = 150) -> str:
+    """Strip HTML / og-description noise from scraped bios for unlock preview UI."""
+    if not raw:
+        return ""
+    s = unescape(str(raw)).replace("&#064;", "@")
+    s = unescape(s)
+    s = re.sub(r"<[^>]+>", "", s)
+    quoted = re.search(
+        r'on\s+(?:Instagram|TikTok)\s*:\s*[“"\']\s*(.+?)\s*[”"\']\s*$',
+        s,
+        re.I | re.S,
+    )
+    if quoted:
+        s = quoted.group(1)
+    else:
+        s = re.sub(
+            r"^[\s\S]*?(?:F?ollowers|Following)\s*,\s*[\d,.]+\s*Following\s*,\s*[\d,.]+\s*Posts\s*[-–—:]?\s*",
+            "",
+            s,
+            flags=re.I,
+        )
+        s = re.sub(r"^[\s\S]*?on\s+(?:Instagram|TikTok)\s*:\s*", "", s, flags=re.I)
+        s = s.strip(" \t\r\n\"“”'")
+    s = re.sub(r"\s+", " ", s).strip()
+    if re.match(r"^\d[\d,.]*\s*(followers|following|posts)\b", s, re.I):
+        return ""
+    if len(s) < 3:
+        return ""
+    return s[:limit]
+
 
 # Gemini Pitch Generator (LLM-based pitch generation)
 try:
@@ -1589,9 +1622,9 @@ def compute_fit_with_ai_depth(creator, brand, user_id, cursor, conn, is_for_you_
 
         profile_snapshot = {
             'platform': creator_profile.get('primary_platform', 'instagram'),
-            'handle': creator_profile.get('handle', ''),
+            'handle': re.sub(r'<[^>]+>', '', str(creator_profile.get('handle') or '')).lstrip('@').strip(),
             'follower_count': creator_profile.get('follower_count', 0),
-            'bio': (creator_profile.get('raw_bio') or '')[:150],
+            'bio': clean_social_bio_snippet(creator_profile.get('raw_bio') or ''),
             'is_public': creator_profile.get('is_public', True),
             'niche': creator_profile.get('primary_niche', ''),
             'niches': all_niches[:3],  # Up to 3 niches for display
