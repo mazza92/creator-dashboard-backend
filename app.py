@@ -12133,7 +12133,7 @@ def sitemap():
         # Add homepage
         sitemap_xml += f'''  <url>
     <loc>https://newcollab.co/</loc>
-    <lastmod>{datetime.now().strftime('%Y-%m-%d')}</lastmod>
+    <lastmod>{datetime.datetime.now().strftime('%Y-%m-%d')}</lastmod>
     <changefreq>daily</changefreq>
     <priority>1.0</priority>
   </url>
@@ -12142,7 +12142,7 @@ def sitemap():
         # Add main directory page
         sitemap_xml += f'''  <url>
     <loc>https://newcollab.co/directory</loc>
-    <lastmod>{datetime.now().strftime('%Y-%m-%d')}</lastmod>
+    <lastmod>{datetime.datetime.now().strftime('%Y-%m-%d')}</lastmod>
     <changefreq>daily</changefreq>
     <priority>0.9</priority>
   </url>
@@ -12153,7 +12153,7 @@ def sitemap():
         for category in categories:
             sitemap_xml += f'''  <url>
     <loc>https://newcollab.co/directory/{category}</loc>
-    <lastmod>{datetime.now().strftime('%Y-%m-%d')}</lastmod>
+    <lastmod>{datetime.datetime.now().strftime('%Y-%m-%d')}</lastmod>
     <changefreq>daily</changefreq>
     <priority>0.85</priority>
   </url>
@@ -12161,7 +12161,11 @@ def sitemap():
 
         # Add all PR brand pages
         for brand in pr_brands:
-            last_mod = brand['updated_at'].strftime('%Y-%m-%d') if brand.get('updated_at') else datetime.now().strftime('%Y-%m-%d')
+            last_mod = (
+                brand['updated_at'].strftime('%Y-%m-%d')
+                if brand.get('updated_at')
+                else datetime.datetime.now().strftime('%Y-%m-%d')
+            )
             sitemap_xml += f'''  <url>
     <loc>https://newcollab.co/brand/{brand['slug']}</loc>
     <lastmod>{last_mod}</lastmod>
