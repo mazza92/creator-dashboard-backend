@@ -940,8 +940,56 @@ def scrape_opengraph():
 
 
 # ============================================================================
-# AI ENRICHMENT ENDPOINT
+# AI ENRICHMENT ENDPOINTS
 # ============================================================================
+
+@admin_brands_bp.route('/brands/bulk-enrich', methods=['POST'])
+@admin_required
+def bulk_enrich_brands_endpoint():
+    """
+    Bulk AI-enrich multiple brands at once
+
+    Request Body:
+        {
+            "ids": [1, 2, 3],
+            "only_missing_fields": true  // optional, defaults to true
+        }
+
+    Returns:
+        { "success": true, "enriched": 5, "total": 5 }
+    """
+    try:
+        data = request.get_json()
+        brand_ids = data.get('ids', [])
+        only_missing = data.get('only_missing_fields', True)
+
+        if not brand_ids:
+            return jsonify({'success': False, 'error': 'No brand IDs provided'}), 400
+
+        # Import the bulk enrichment service
+        import sys
+        import os
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from services.bulk_ai_enricher import bulk_enrich_brands
+
+        # Run bulk enrichment
+        enriched_count = bulk_enrich_brands(
+            brand_ids=brand_ids,
+            only_missing_fields=only_missing,
+            rate_limit_delay=0.5  # Faster for admin UI
+        )
+
+        return jsonify({
+            'success': True,
+            'enriched': enriched_count,
+            'total': len(brand_ids)
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @admin_brands_bp.route('/brands/<int:brand_id>/enrich', methods=['POST'])
 @admin_required

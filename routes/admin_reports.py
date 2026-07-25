@@ -297,22 +297,22 @@ def get_today_stats():
         """)
         pipeline_saves_today = cursor.fetchone()['count']
 
-        # Users at daily limit (check last_unlock_date = today in server time)
+        # Users at daily limit (3 free unlocks used)
         cursor.execute("""
             SELECT COUNT(*) as count
             FROM creators
             WHERE (subscription_tier = 'free' OR subscription_tier IS NULL)
-            AND daily_unlocks_used >= 5
+            AND daily_unlocks_used >= 3
             AND last_unlock_date >= CURRENT_DATE - INTERVAL '1 day'
         """)
         users_at_limit = cursor.fetchone()['count']
 
-        # Users near limit (3-4 unlocks)
+        # Users near limit (2 unlocks used, 1 remaining)
         cursor.execute("""
             SELECT COUNT(*) as count
             FROM creators
             WHERE (subscription_tier = 'free' OR subscription_tier IS NULL)
-            AND daily_unlocks_used >= 3 AND daily_unlocks_used < 5
+            AND daily_unlocks_used >= 2 AND daily_unlocks_used < 3
             AND last_unlock_date >= CURRENT_DATE - INTERVAL '1 day'
         """)
         users_near_limit = cursor.fetchone()['count']
@@ -718,17 +718,17 @@ def get_quota_hits():
             SELECT COUNT(*) as count
             FROM creators
             WHERE (subscription_tier = 'free' OR subscription_tier IS NULL)
-            AND daily_unlocks_used >= 5
+            AND daily_unlocks_used >= 3
             AND last_unlock_date = %s
         """, (today,))
         users_at_limit = cursor.fetchone()['count']
 
-        # Users near limit (3-4 unlocks)
+        # Users near limit (2 unlocks used, 1 remaining)
         cursor.execute("""
             SELECT COUNT(*) as count
             FROM creators
             WHERE (subscription_tier = 'free' OR subscription_tier IS NULL)
-            AND daily_unlocks_used >= 3 AND daily_unlocks_used < 5
+            AND daily_unlocks_used >= 2 AND daily_unlocks_used < 3
             AND last_unlock_date = %s
         """, (today,))
         users_near_limit = cursor.fetchone()['count']
@@ -745,7 +745,7 @@ def get_quota_hits():
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)
-            AND c.daily_unlocks_used >= 5
+            AND c.daily_unlocks_used >= 3
             AND c.last_unlock_date >= %s
             ORDER BY c.last_unlock_date DESC
             LIMIT 50
@@ -1945,29 +1945,28 @@ def get_founder_dashboard():
         """, (prev_start_date, prev_end_date))
         signups_last_period = cursor.fetchone()['count']
 
-        # Pitches by day (selected period)
+        # Brand unlocks by day (selected period)
         cursor.execute("""
             SELECT
-                DATE(pitched_at) as date,
+                DATE(unlocked_at) as date,
                 COUNT(*) as count
-            FROM creator_pipeline
-            WHERE pitched_at >= %s AND pitched_at <= %s
-            AND pitched_at IS NOT NULL
-            GROUP BY DATE(pitched_at)
+            FROM brand_unlocks
+            WHERE unlocked_at >= %s AND unlocked_at <= %s
+            GROUP BY DATE(unlocked_at)
             ORDER BY date ASC
         """, (start_date, end_date))
         pitches_daily = [{'date': str(row['date']), 'count': row['count']} for row in cursor.fetchall()]
 
-        # Current period vs previous period pitches
+        # Current period vs previous period unlocks
         cursor.execute("""
-            SELECT COUNT(*) as count FROM creator_pipeline
-            WHERE pitched_at >= %s AND pitched_at <= %s
+            SELECT COUNT(*) as count FROM brand_unlocks
+            WHERE unlocked_at >= %s AND unlocked_at <= %s
         """, (start_date, end_date))
         pitches_this_period = cursor.fetchone()['count']
 
         cursor.execute("""
-            SELECT COUNT(*) as count FROM creator_pipeline
-            WHERE pitched_at >= %s AND pitched_at < %s
+            SELECT COUNT(*) as count FROM brand_unlocks
+            WHERE unlocked_at >= %s AND unlocked_at < %s
         """, (prev_start_date, prev_end_date))
         pitches_last_period = cursor.fetchone()['count']
 
@@ -1997,16 +1996,18 @@ def get_founder_dashboard():
         active_last_period = cursor.fetchone()['count']
 
         # ================== CREATOR ACTIVATION FUNNEL (All Time) ==================
+        # Tracks: Signed up -> Unlocked brand ('Get Brand PR') -> Pitched brand (Contact or Apply)
+
         cursor.execute("SELECT COUNT(*) as count FROM creators")
         total_signups = cursor.fetchone()['count']
 
-        # Users who saved at least 1 brand
+        # Users who unlocked at least 1 brand (clicked "Get Brand PR" / "Contact Brand")
         cursor.execute("""
-            SELECT COUNT(DISTINCT creator_id) as count FROM creator_pipeline
+            SELECT COUNT(DISTINCT creator_id) as count FROM brand_unlocks
         """)
-        saved_brand = cursor.fetchone()['count']
+        unlocked_brand = cursor.fetchone()['count']
 
-        # Users who pitched at least 1 brand
+        # Users who pitched at least 1 brand (sent actual pitch via creator_pipeline)
         cursor.execute("""
             SELECT COUNT(DISTINCT creator_id) as count FROM creator_pipeline
             WHERE pitched_at IS NOT NULL
@@ -2050,22 +2051,38 @@ def get_founder_dashboard():
         """)
         unique_pitch_users = cursor.fetchone()['count']
 
-        # ================== TOP BRANDS BY PITCHES ==================
-        # Most pitched brands by creators - useful for partnership insights
+        # ================== TOP BRANDS BY UNLOCKS & PITCHES ==================
+        # Most unlocked + pitched brands - tracks actual engagement
+        # Use subqueries to avoid cross-product issues
         cursor.execute("""
             SELECT
                 pb.id as brand_id,
                 pb.brand_name,
                 pb.category,
                 pb.logo_url,
-                COUNT(*) as saves,
-                SUM(CASE WHEN cp.pitched_at IS NOT NULL THEN 1 ELSE 0 END) as pitch_count,
-                SUM(CASE WHEN cp.stage = 'replied' THEN 1 ELSE 0 END) as replies,
-                SUM(CASE WHEN cp.stage = 'deal_closed' THEN 1 ELSE 0 END) as deals
-            FROM creator_pipeline cp
-            JOIN pr_brands pb ON cp.brand_id = pb.id
-            GROUP BY pb.id, pb.brand_name, pb.category, pb.logo_url
-            ORDER BY saves DESC
+                COALESCE(unlocks.unlock_count, 0) as unlock_count,
+                COALESCE(pipeline.saves, 0) as saves,
+                COALESCE(pipeline.pitch_count, 0) as pitch_count,
+                COALESCE(pipeline.replies, 0) as replies,
+                COALESCE(pipeline.deals, 0) as deals
+            FROM pr_brands pb
+            LEFT JOIN (
+                SELECT brand_id, COUNT(*) as unlock_count
+                FROM brand_unlocks
+                GROUP BY brand_id
+            ) unlocks ON unlocks.brand_id = pb.id
+            LEFT JOIN (
+                SELECT
+                    brand_id,
+                    COUNT(*) as saves,
+                    SUM(CASE WHEN pitched_at IS NOT NULL THEN 1 ELSE 0 END) as pitch_count,
+                    SUM(CASE WHEN stage = 'replied' THEN 1 ELSE 0 END) as replies,
+                    SUM(CASE WHEN stage = 'deal_closed' THEN 1 ELSE 0 END) as deals
+                FROM creator_pipeline
+                GROUP BY brand_id
+            ) pipeline ON pipeline.brand_id = pb.id
+            WHERE unlocks.unlock_count IS NOT NULL OR pipeline.saves IS NOT NULL
+            ORDER BY unlock_count DESC, pitch_count DESC
             LIMIT 15
         """)
         top_brands = []
@@ -2076,12 +2093,93 @@ def get_founder_dashboard():
                 'brand_name': row['brand_name'],
                 'category': row['category'],
                 'logo_url': row['logo_url'],
+                'unlock_count': row['unlock_count'],
                 'saves': row['saves'],
                 'pitch_count': row['pitch_count'],
                 'replies': row['replies'],
                 'deals': row['deals'],
                 'reply_rate': reply_rate
             })
+
+        # ================== BRANDS BY CATEGORY ==================
+        # Category breakdown for unlocks and pitches
+        # Use subqueries to avoid cross-product issues
+        cursor.execute("""
+            SELECT
+                pb.category,
+                COALESCE(unlocks.unlock_count, 0) as unlock_count,
+                COALESCE(unlocks.unique_users, 0) as unique_users,
+                COALESCE(pitches.pitch_count, 0) as pitch_count
+            FROM pr_brands pb
+            LEFT JOIN (
+                SELECT
+                    pb2.category,
+                    COUNT(*) as unlock_count,
+                    COUNT(DISTINCT bu.creator_id) as unique_users
+                FROM brand_unlocks bu
+                JOIN pr_brands pb2 ON pb2.id = bu.brand_id
+                GROUP BY pb2.category
+            ) unlocks ON unlocks.category = pb.category
+            LEFT JOIN (
+                SELECT
+                    pb2.category,
+                    COUNT(*) as pitch_count
+                FROM creator_pipeline cp
+                JOIN pr_brands pb2 ON pb2.id = cp.brand_id
+                WHERE cp.pitched_at IS NOT NULL
+                GROUP BY pb2.category
+            ) pitches ON pitches.category = pb.category
+            WHERE unlocks.unlock_count IS NOT NULL OR pitches.pitch_count IS NOT NULL
+            GROUP BY pb.category, unlocks.unlock_count, unlocks.unique_users, pitches.pitch_count
+            ORDER BY unlock_count DESC
+        """)
+        brands_by_category = []
+        for row in cursor.fetchall():
+            brands_by_category.append({
+                'category': row['category'],
+                'unlock_count': row['unlock_count'],
+                'unique_users': row['unique_users'],
+                'pitch_count': row['pitch_count']
+            })
+
+        # ================== AI MANAGER ACTIONS ==================
+        # Track unique users who completed key AI Manager checklist items
+        # TODO: Implement proper event tracking for AI Manager button clicks
+        # For now, counting users who added bios/portfolios in last 14 days (since feature launch)
+
+        # Users who optimized their bio recently (added bio in last 14 days)
+        cursor.execute("""
+            SELECT COUNT(DISTINCT id) as count
+            FROM creators
+            WHERE created_at >= NOW() - INTERVAL '14 days'
+            AND bio IS NOT NULL AND LENGTH(TRIM(bio)) > 50
+        """)
+        optimized_bio_count = cursor.fetchone()['count']
+
+        # Users who built portfolio recently (added portfolio in last 14 days)
+        cursor.execute("""
+            SELECT COUNT(DISTINCT pp.creator_id) as count
+            FROM portfolio_posts pp
+            WHERE pp.created_at >= NOW() - INTERVAL '14 days'
+        """)
+        built_portfolio_count = cursor.fetchone()['count']
+
+        # Recent bio optimizations (last 7 days)
+        cursor.execute("""
+            SELECT COUNT(DISTINCT id) as count
+            FROM creators
+            WHERE created_at >= NOW() - INTERVAL '7 days'
+            AND (bio IS NOT NULL AND LENGTH(TRIM(bio)) > 50)
+        """)
+        bio_optimized_7d = cursor.fetchone()['count']
+
+        # Recent portfolio builds (users who added portfolio posts in last 7 days)
+        cursor.execute("""
+            SELECT COUNT(DISTINCT creator_id) as count
+            FROM portfolio_posts
+            WHERE created_at >= NOW() - INTERVAL '7 days'
+        """)
+        portfolio_built_7d = cursor.fetchone()['count']
 
         conn.close()
 
@@ -2131,6 +2229,7 @@ def get_founder_dashboard():
             'at_limit_count': at_limit_count,
             'near_limit_count': near_limit_count,
             'top_brands': top_brands,
+            'brands_by_category': brands_by_category,
             'health': {
                 'signups': {
                     'this_week': signups_this_period,  # Keep key name for frontend compat
@@ -2159,9 +2258,19 @@ def get_founder_dashboard():
                 'end_date': end_date.strftime('%Y-%m-%d'),
             },
             'traffic': traffic,
+            'ai_manager': {
+                'optimize_bio': {
+                    'total': optimized_bio_count,
+                    'last_7d': bio_optimized_7d
+                },
+                'build_portfolio': {
+                    'total': built_portfolio_count,
+                    'last_7d': portfolio_built_7d
+                }
+            },
             'funnel': {
                 'signed_up': total_signups,
-                'saved_brand': saved_brand,
+                'unlocked_brand': unlocked_brand,
                 'sent_pitch': sent_pitch,
                 'pitched_multiple': pitched_multiple,
                 'got_package': got_package
