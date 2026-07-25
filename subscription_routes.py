@@ -162,9 +162,13 @@ def create_checkout_session():
             return jsonify({'error': 'Not authenticated'}), 401
 
         tier = request.json.get('tier')  # 'pro' or 'elite'
+        interval = request.json.get('interval', 'monthly')  # 'monthly' or 'yearly'
 
         if tier not in ['pro', 'elite']:
             return jsonify({'error': 'Invalid tier'}), 400
+
+        if interval not in ['monthly', 'yearly']:
+            return jsonify({'error': 'Invalid interval'}), 400
 
         # Get creator email from users table
         conn = get_db_connection()
@@ -182,8 +186,24 @@ def create_checkout_session():
         if not creator:
             return jsonify({'error': 'Creator not found'}), 404
 
-        # Get price ID from environment
-        price_id = os.getenv('STRIPE_PRICE_ID_PRO') if tier == 'pro' else os.getenv('STRIPE_PRICE_ID_ELITE')
+        # Get price ID from environment based on tier and interval
+        if tier == 'pro':
+            if interval == 'yearly':
+                price_id = os.getenv('STRIPE_PRICE_ID_PRO_ANNUAL')
+                if not price_id:
+                    # Fallback to monthly if annual not configured
+                    price_id = os.getenv('STRIPE_PRICE_ID_PRO')
+                    interval = 'monthly'
+            else:
+                price_id = os.getenv('STRIPE_PRICE_ID_PRO')
+        else:  # elite
+            if interval == 'yearly':
+                price_id = os.getenv('STRIPE_PRICE_ID_ELITE_ANNUAL')
+                if not price_id:
+                    price_id = os.getenv('STRIPE_PRICE_ID_ELITE')
+                    interval = 'monthly'
+            else:
+                price_id = os.getenv('STRIPE_PRICE_ID_ELITE')
 
         if not price_id:
             return jsonify({'error': 'Price ID not configured. Please set STRIPE_PRICE_ID_PRO and STRIPE_PRICE_ID_ELITE in environment variables.'}), 500
@@ -204,6 +224,7 @@ def create_checkout_session():
             metadata={
                 'creator_id': str(creator_id),
                 'tier': tier,
+                'interval': interval,
                 'creator_name': creator.get('name', '')
             },
             allow_promotion_codes=True,  # Allow discount codes
