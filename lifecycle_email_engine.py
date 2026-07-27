@@ -825,10 +825,9 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Get creator
+        # Get creator - only select columns that definitely exist
         cursor.execute("""
-            SELECT c.id, c.username, c.contact_unlocks_this_month,
-                   u.email, u.first_name
+            SELECT c.id, c.username, u.email, u.first_name
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.id = %s
@@ -854,7 +853,7 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
             'first_name': creator.get('first_name') or creator.get('username') or 'there',
             'current_score': 0,
             'score_delta': 0,
-            'unlocks_used': creator.get('contact_unlocks_this_month', 0) or 0,
+            'unlocks_used': 0,
             'unlocks_quota': 3,
             'replies_count': 0,
             'weekly_theme_title': 'Bio polish',
