@@ -295,7 +295,7 @@ FORBIDDEN_PHRASES = [
     "amazing", "excited to work with", "elevate", "unleash",
     "leverage", "obsessed", "huge fan", "in today's fast-paced",
     "synergy", "delve", "cutting-edge", "revolutionary",
-    "unparalleled", "game-changer", "next-level", "seamless"
+    "unparalleled", "game-changer", "next-level"
 ]
 
 # Gender-assumed words for women (when niche isn't explicitly women's fashion)
