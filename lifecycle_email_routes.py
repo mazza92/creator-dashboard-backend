@@ -107,6 +107,20 @@ def cron_daily_emails():
     - limit: Only process this many users (for testing)
     - test_email: Only send to this specific email address
     """
+    # Check for import errors first
+    if _import_error:
+        return jsonify({
+            'success': False,
+            'error': 'Import error in lifecycle_email_engine',
+            'traceback': _import_error
+        }), 500
+
+    if process_daily_lifecycle_emails is None:
+        return jsonify({
+            'success': False,
+            'error': 'process_daily_lifecycle_emails function not loaded'
+        }), 500
+
     try:
         # Use get_json(silent=True) to handle non-JSON content types gracefully
         data = request.get_json(silent=True) or {}
