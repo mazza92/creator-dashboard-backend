@@ -16,6 +16,7 @@ from functools import lru_cache
 from jinja2 import Environment, FileSystemLoader
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from public_routes import make_unsubscribe_token
 
 # ============================================
 # CONFIGURATION
@@ -332,13 +333,22 @@ def send_lifecycle_email(
         if not template.get('exempt_from_daily_cap') and is_quiet_hours():
             return False, "Quiet hours - email queued"
 
+        # Get user_id for unsubscribe token
+        cursor.execute("SELECT user_id FROM creators WHERE id = %s", (creator_id,))
+        creator_row = cursor.fetchone()
+        user_id = creator_row['user_id'] if creator_row else creator_id
+
+        # Generate signed unsubscribe URL
+        unsubscribe_token = make_unsubscribe_token(str(user_id))
+        unsubscribe_url = f"{BACKEND_URL}/api/public/unsubscribe?uid={user_id}&token={unsubscribe_token}"
+
         # Build context with defaults
         full_context = {
             'first_name': context.get('first_name', 'there'),
             'preheader': template.get('preheader_template', ''),
-            'cta_url': context.get('cta_url', f"{FRONTEND_URL}/creator/dashboard/ai-manager"),
-            'preferences_url': f"{BACKEND_URL}/api/email/preferences/{creator_id}",
-            'unsubscribe_url': f"{BACKEND_URL}/api/email/unsubscribe/{creator_id}",
+            'cta_url': context.get('cta_url', f"{FRONTEND_URL}/creator/dashboard/pr-ready"),
+            'preferences_url': f"{FRONTEND_URL}/creator/dashboard/settings",
+            'unsubscribe_url': unsubscribe_url,
             'subject': template.get('subject_template', ''),
             **context
         }
@@ -803,9 +813,9 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
 
         # Template-specific context
         if template_slug.startswith('max_'):
-            context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/upgrade"
+            context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/pr-ready"
         elif template_slug.startswith('edu_'):
-            context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/ai-manager"
+            context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/pr-ready"
         elif template_slug == 'weekly_digest':
             context = {**context, **build_weekly_digest_context(creator_id)}
 
@@ -875,7 +885,7 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
                 {'name': 'Check your matches', 'category': '', 'reason': 'See what fits your profile'}
             ],
             'win_story': None,  # Would need a win tracking system
-            'cta_url': f"{FRONTEND_URL}/creator/dashboard/ai-manager",
+            'cta_url': f"{FRONTEND_URL}/creator/dashboard/pr-ready",
         }
 
         return context
@@ -928,7 +938,7 @@ def trigger_welcome_email(creator_id: int, email: str, first_name: str = None):
 
     context = {
         'first_name': first_name or 'there',
-        'cta_url': f"{FRONTEND_URL}/creator/dashboard/ai-manager",
+        'cta_url': f"{FRONTEND_URL}/creator/dashboard/pr-ready",
     }
 
     return send_lifecycle_email(
@@ -960,7 +970,7 @@ def trigger_reply_celebration(creator_id: int, brand_id: int):
             return False, "Creator not found"
 
         context = build_brand_email_context(creator_id, brand_id)
-        context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/inbox"
+        context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/pr-pipeline"
 
         return send_lifecycle_email(
             to_email=result['email'],
@@ -1008,7 +1018,7 @@ def trigger_first_pr_box(creator_id: int, brand_id: int):
             return False, "Creator not found"
 
         context = build_brand_email_context(creator_id, brand_id)
-        context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/community?share=true"
+        context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/for-you"
 
         conn.commit()
 
