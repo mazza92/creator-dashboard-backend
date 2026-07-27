@@ -102,7 +102,7 @@ def cron_daily_emails():
     Should be called by cron every day at 10am.
 
     Query params / JSON body:
-    - batch_size: Max users to process (default 100)
+    - batch_size: Max users to process (default 20)
     - dry_run: If true, only count eligible users, don't send (default false)
     - limit: Only process this many users (for testing)
     - test_email: Only send to this specific email address
@@ -124,7 +124,7 @@ def cron_daily_emails():
     try:
         # Use get_json(silent=True) to handle non-JSON content types gracefully
         data = request.get_json(silent=True) or {}
-        batch_size = data.get('batch_size', 100)
+        batch_size = data.get('batch_size', 20)
         dry_run = data.get('dry_run', False)
         limit = data.get('limit')  # Optional limit for testing
         test_email = data.get('test_email')  # Only send to this email
@@ -158,7 +158,7 @@ def cron_weekly_digest():
     Should be called by cron every Monday at 8am.
 
     Query params / JSON body:
-    - batch_size: Max users to process (default 100)
+    - batch_size: Max users to process (default 20)
     - dry_run: If true, only count eligible users, don't send (default false)
     - limit: Only process this many users (for testing)
     - test_email: Only send to this specific email address
@@ -183,7 +183,7 @@ def cron_weekly_digest():
     try:
         # Use get_json(silent=True) to handle non-JSON content types gracefully
         data = request.get_json(silent=True) or {}
-        batch_size = data.get('batch_size', 100)
+        batch_size = data.get('batch_size', 20)
         dry_run = data.get('dry_run', False)
         limit = data.get('limit')
         test_email = data.get('test_email')
