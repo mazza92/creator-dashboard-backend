@@ -2979,6 +2979,129 @@ def get_top_searched_brands():
 
 
 # ============================================
+# DASHBOARD INITIALIZATION (COMBINED ENDPOINT)
+# ============================================
+
+@pr_crm.route('/dashboard-init', methods=['GET'])
+def dashboard_init():
+    """
+    Combined initialization endpoint for dashboard.
+    Returns subscription status, unlock balance, pipeline summary, and unlocked brands
+    in a single request to reduce round trips.
+    """
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        # 1. Get creator profile with subscription info
+        cursor.execute('''
+            SELECT
+                c.id, c.subscription_tier, c.unlocks_tier, c.unlocks_remaining,
+                c.unlocks_reset_at, c.creator_niches, c.niche,
+                u.first_name, u.email
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE c.id = %s
+        ''', (creator_id,))
+        creator = cursor.fetchone()
+
+        if not creator:
+            return jsonify({'success': False, 'error': 'Creator not found'}), 404
+
+        # 2. Get unlock balance
+        tier = creator.get('subscription_tier') or 'free'
+        is_pro = tier in ('pro', 'elite')
+
+        if is_pro:
+            unlock_balance = {
+                'tier': tier,
+                'remaining': None,
+                'used': 0,
+                'limit': None,
+                'is_unlimited': True,
+                'reset_at': None
+            }
+        else:
+            unlocks_remaining = creator.get('unlocks_remaining')
+            unlocks_reset_at = creator.get('unlocks_reset_at')
+
+            # Check if reset needed
+            if unlocks_reset_at and unlocks_reset_at.date() <= date.today():
+                unlocks_remaining = FREE_UNLOCK_LIMIT
+                cursor.execute('''
+                    UPDATE creators
+                    SET unlocks_remaining = %s,
+                        unlocks_reset_at = (DATE_TRUNC('month', NOW()) + INTERVAL '1 month')::date
+                    WHERE id = %s
+                ''', (FREE_UNLOCK_LIMIT, creator_id))
+                conn.commit()
+                unlocks_reset_at = None  # Will be refreshed
+
+            if unlocks_remaining is None:
+                unlocks_remaining = FREE_UNLOCK_LIMIT
+
+            used = FREE_UNLOCK_LIMIT - unlocks_remaining
+            unlock_balance = {
+                'tier': 'free',
+                'remaining': unlocks_remaining,
+                'used': used,
+                'limit': FREE_UNLOCK_LIMIT,
+                'is_unlimited': False,
+                'reset_at': unlocks_reset_at.isoformat() if unlocks_reset_at else None
+            }
+
+        # 3. Get unlocked brand IDs
+        cursor.execute('''
+            SELECT brand_id FROM brand_unlocks WHERE creator_id = %s
+        ''', (creator_id,))
+        unlocked_brand_ids = [row['brand_id'] for row in cursor.fetchall()]
+
+        # 4. Get pipeline summary (brand IDs by stage)
+        cursor.execute('''
+            SELECT brand_id, stage FROM creator_pipeline WHERE creator_id = %s
+        ''', (creator_id,))
+        pipeline_rows = cursor.fetchall()
+
+        saved_brand_ids = [r['brand_id'] for r in pipeline_rows]
+        pitched_brand_ids = [r['brand_id'] for r in pipeline_rows if r['stage'] == 'pitched']
+
+        # 5. Parse user niches
+        raw_niches = creator.get('creator_niches') or creator.get('niche') or []
+        if isinstance(raw_niches, str):
+            try:
+                raw_niches = json.loads(raw_niches)
+            except:
+                raw_niches = [n.strip() for n in raw_niches.split(',') if n.strip()]
+
+        user_niches = raw_niches if isinstance(raw_niches, list) else []
+
+        return jsonify({
+            'success': True,
+            'subscription': {
+                'tier': tier,
+                'is_pro': is_pro
+            },
+            'unlock_balance': unlock_balance,
+            'unlocked_brand_ids': unlocked_brand_ids,
+            'saved_brand_ids': saved_brand_ids,
+            'pitched_brand_ids': pitched_brand_ids,
+            'user_niches': user_niches,
+            'first_name': creator.get('first_name')
+        })
+
+    except Exception as e:
+        print(f"Error in dashboard_init: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ============================================
 # PIPELINE MANAGEMENT ENDPOINTS
 # ============================================
 
