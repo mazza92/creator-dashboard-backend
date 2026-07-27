@@ -788,7 +788,7 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
 
         context = {
             'first_name': creator.get('first_name') or creator.get('username') or 'there',
-            'current_score': creator.get('creator_score', 0) or 0,
+            'current_score': 0,  # creator_score column doesn't exist
             'unlocks_used': creator.get('contact_unlocks_this_month', 0) or 0,
             'unlocks_quota': 3,
             'pitches_sent': creator.get('total_pitches_sent', 0) or 0,
@@ -827,7 +827,7 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
 
         # Get creator
         cursor.execute("""
-            SELECT c.id, c.username, c.creator_score, c.contact_unlocks_this_month,
+            SELECT c.id, c.username, c.contact_unlocks_this_month,
                    u.email, u.first_name
             FROM creators c
             JOIN users u ON c.user_id = u.id
@@ -850,12 +850,9 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
         except Exception:
             new_brands = []
 
-        # Calculate score
-        current_score = creator.get('creator_score', 0) or 0
-
         context = {
             'first_name': creator.get('first_name') or creator.get('username') or 'there',
-            'current_score': current_score,
+            'current_score': 0,
             'score_delta': 0,
             'unlocks_used': creator.get('contact_unlocks_this_month', 0) or 0,
             'unlocks_quota': 3,
