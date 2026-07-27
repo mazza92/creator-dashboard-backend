@@ -752,7 +752,9 @@ def process_weekly_digest(batch_size: int = 100) -> Dict[str, int]:
 
             except Exception as e:
                 stats['errors'] += 1
-                print(f"Error sending digest to creator {creator['id']}: {e}")
+                if 'error_details' not in stats:
+                    stats['error_details'] = []
+                stats['error_details'].append(f"Creator {creator['id']}: {str(e)}")
 
         return stats
     finally:
