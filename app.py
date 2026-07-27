@@ -5385,11 +5385,13 @@ def update_application_status(id):
         conn.close()
 
 
-def send_verification_email(email, token):
+def send_verification_email(email, token, first_name=None):
     """
-    Send email verification link to user
-    Raises exception if sending fails
+    Send email verification link to user using lifecycle template.
+    Raises exception if sending fails.
     """
+    from jinja2 import Environment, FileSystemLoader
+
     base_url = get_base_url()
     verification_url = f"{base_url}/verify-email?token={token}"
     app.logger.info(f"🔍 Environment detection - using base URL: {base_url}")
@@ -5406,71 +5408,35 @@ def send_verification_email(email, token):
         app.logger.error("🔥 SMTP credentials not configured!")
         raise ValueError("SMTP credentials missing")
 
-    msg = MIMEMultipart('alternative')
-    msg['From'] = f"Newcollab Team <{smtp_username}>"
-    msg['To'] = email
-    msg['Subject'] = 'Verify your Newcollab account'
+    # Load and render lifecycle template
+    template_dir = os.path.join(os.path.dirname(__file__), 'templates')
+    jinja_env = Environment(loader=FileSystemLoader(template_dir))
+    template = jinja_env.get_template('lifecycle/01_verification.html')
 
-    # Plain text version for email clients that don't support HTML
+    context = {
+        'first_name': first_name or 'there',
+        'verify_url': verification_url,
+    }
+    html_body = template.render(**context)
+
+    # Plain text fallback
     text_body = f"""
-Welcome to Newcollab!
+Hi {first_name or 'there'},
 
-Please verify your email to complete your account setup by clicking this link:
+Welcome to Newcollab. Click below to verify your email and get started:
 {verification_url}
 
-This link expires in 24 hours.
+Your verification link expires in 24 hours.
 
-If you didn't create this account, you can safely ignore this email.
+If you didn't sign up, ignore this email.
 
----
-Newcollab Team
-https://newcollab.co
+Your Newcollab Manager
     """
 
-    # HTML version with better styling
-    html_body = f"""
-    <!DOCTYPE html>
-    <html>
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        </head>
-        <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
-            <div style="max-width: 600px; margin: 0 auto; padding: 20px; background-color: #ffffff;">
-                <div style="text-align: center; padding: 20px 0;">
-                    <h1 style="color: #3B82F6; margin: 0; font-size: 28px;">Welcome to Newcollab!</h1>
-                </div>
-
-                <div style="background-color: #F3F4F6; border-radius: 8px; padding: 30px; margin: 20px 0;">
-                    <p style="color: #374151; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                        Thank you for joining Newcollab! To complete your account setup and start connecting with brands, please verify your email address.
-                    </p>
-
-                    <div style="text-align: center; margin: 30px 0;">
-                        <a href="{verification_url}"
-                           style="background-color: #3B82F6; color: white; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 16px; display: inline-block;">
-                            Verify Email Address
-                        </a>
-                    </div>
-
-                    <p style="color: #6B7280; font-size: 14px; line-height: 1.6; margin: 20px 0 0 0;">
-                        Or copy and paste this link into your browser:<br>
-                        <a href="{verification_url}" style="color: #3B82F6; word-break: break-all;">{verification_url}</a>
-                    </p>
-                </div>
-
-                <div style="padding: 20px; text-align: center;">
-                    <p style="color: #9CA3AF; font-size: 13px; margin: 0;">
-                        This link expires in 24 hours. If you didn't create this account, you can safely ignore this email.
-                    </p>
-                    <p style="color: #9CA3AF; font-size: 13px; margin: 10px 0 0 0;">
-                        &copy; 2026 Newcollab. All rights reserved.
-                    </p>
-                </div>
-            </div>
-        </body>
-    </html>
-    """
+    msg = MIMEMultipart('alternative')
+    msg['From'] = f"Newcollab team <{smtp_username}>"
+    msg['To'] = email
+    msg['Subject'] = 'Verify your Newcollab account'
 
     msg.attach(MIMEText(text_body, 'plain'))
     msg.attach(MIMEText(html_body, 'html'))
@@ -5519,7 +5485,7 @@ def resend_verification():
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("SELECT id, is_verified, verification_token FROM users WHERE email = %s", (email,))
+        cursor.execute("SELECT id, first_name, is_verified, verification_token FROM users WHERE email = %s", (email,))
         user = cursor.fetchone()
         if not user:
             conn.close()
@@ -5536,7 +5502,7 @@ def resend_verification():
         conn.commit()
         conn.close()
 
-        send_verification_email(email, verification_token)
+        send_verification_email(email, verification_token, first_name=user.get('first_name'))
         return jsonify({'message': 'Verification email resent successfully'}), 200
     except Exception as e:
         app.logger.error(f"🔥 Resend verification error: {str(e)}\n{traceback.format_exc()}")
@@ -5664,8 +5630,8 @@ def register_brand():
 
         conn.commit()
 
-        # Send verification email with token (fixed)
-        send_verification_email(email, verification_token)
+        # Send verification email with token (using lifecycle template)
+        send_verification_email(email, verification_token, first_name=first_name)
 
         # Store user session
         session['user_id'] = user_id
@@ -5786,7 +5752,7 @@ def register_creator_account():
         # Try to send verification email (don't fail registration if email fails)
         email_sent = False
         try:
-            send_verification_email(email, verification_token)
+            send_verification_email(email, verification_token, first_name=first_name)
             email_sent = True
             app.logger.info(f"✅ Verification email sent successfully to {email}")
         except Exception as email_error:
@@ -5972,7 +5938,7 @@ def register_creator():
         # Try to send verification email (don't fail registration if email fails)
         email_sent = False
         try:
-            send_verification_email(email, verification_token)
+            send_verification_email(email, verification_token, first_name=first_name)
             email_sent = True
             app.logger.info(f"✅ Verification email sent successfully to {email}")
         except Exception as email_error:

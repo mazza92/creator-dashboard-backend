@@ -8,6 +8,9 @@ from flask_jwt_extended import get_jwt_identity
 import stripe
 import os
 import requests
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 from psycopg2.extras import RealDictCursor
 
@@ -46,6 +49,109 @@ def send_ga4_event(client_id, event_name, params=None):
     except Exception as e:
         print(f"❌ Error sending GA4 event: {e}")
         return False
+
+
+def send_pro_subscriber_notification(creator_data, tier, amount, interval):
+    """
+    Send internal email notification to team@newcollab.co when a new Pro subscriber signs up.
+    """
+    try:
+        smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+        smtp_port = int(os.getenv('SMTP_PORT', 587))
+        smtp_username = os.getenv('SMTP_USERNAME')
+        smtp_password = os.getenv('SMTP_PASSWORD')
+
+        if not smtp_username or not smtp_password:
+            print("⚠️  SMTP credentials not set, skipping Pro subscriber notification")
+            return False
+
+        to_email = 'team@newcollab.co'
+
+        # Format amount (convert from cents)
+        amount_formatted = f"${amount / 100:.2f}" if amount else "N/A"
+
+        # Build email content
+        subject = f"🎉 New Pro Subscriber: @{creator_data.get('username', 'Unknown')}"
+
+        html_content = f"""
+        <html>
+        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 20px; max-width: 600px;">
+            <h2 style="color: #10b981; margin-bottom: 20px;">🎉 New Pro Subscriber!</h2>
+
+            <div style="background: #f9fafb; border-radius: 12px; padding: 20px; margin-bottom: 20px;">
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr>
+                        <td style="padding: 8px 0; color: #6b7280; width: 120px;">Creator:</td>
+                        <td style="padding: 8px 0; font-weight: 600;">@{creator_data.get('username', 'N/A')}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; color: #6b7280;">Email:</td>
+                        <td style="padding: 8px 0;">{creator_data.get('email', 'N/A')}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; color: #6b7280;">Tier:</td>
+                        <td style="padding: 8px 0; font-weight: 600; color: #7c3aed;">{tier.upper()}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; color: #6b7280;">Billing:</td>
+                        <td style="padding: 8px 0;">{interval.capitalize()}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; color: #6b7280;">Amount:</td>
+                        <td style="padding: 8px 0; font-weight: 600; color: #10b981;">{amount_formatted}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; color: #6b7280;">Followers:</td>
+                        <td style="padding: 8px 0;">{creator_data.get('followers', 'N/A'):,}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; color: #6b7280;">Creator ID:</td>
+                        <td style="padding: 8px 0;">#{creator_data.get('id', 'N/A')}</td>
+                    </tr>
+                </table>
+            </div>
+
+            <p style="color: #6b7280; font-size: 13px;">
+                Converted at {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}
+            </p>
+        </body>
+        </html>
+        """
+
+        text_content = f"""
+New Pro Subscriber!
+
+Creator: @{creator_data.get('username', 'N/A')}
+Email: {creator_data.get('email', 'N/A')}
+Tier: {tier.upper()}
+Billing: {interval.capitalize()}
+Amount: {amount_formatted}
+Followers: {creator_data.get('followers', 'N/A')}
+Creator ID: #{creator_data.get('id', 'N/A')}
+
+Converted at {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}
+        """
+
+        msg = MIMEMultipart('alternative')
+        msg['From'] = f"Newcollab <{smtp_username}>"
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(text_content, 'plain'))
+        msg.attach(MIMEText(html_content, 'html'))
+
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()
+        server.login(smtp_username, smtp_password)
+        server.sendmail(smtp_username, to_email, msg.as_string())
+        server.quit()
+
+        print(f"✅ Pro subscriber notification sent for @{creator_data.get('username')}")
+        return True
+
+    except Exception as e:
+        print(f"❌ Error sending Pro subscriber notification: {e}")
+        return False
+
 
 subscription_bp = Blueprint('subscription', __name__, url_prefix='/api/subscription')
 
@@ -467,7 +573,9 @@ def stripe_webhook():
             print(f"✅ Checkout completed for creator {creator_id} - {tier} tier")
 
             conn = get_db_connection()
-            cursor = conn.cursor()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+            # Update subscription and fetch creator data for notification
             cursor.execute('''
                 UPDATE creators
                 SET subscription_tier = %s,
@@ -476,7 +584,18 @@ def stripe_webhook():
                     stripe_customer_id = %s,
                     subscription_started_at = NOW()
                 WHERE id = %s
+                RETURNING id, username, ig_followers
             ''', (tier, subscription_id, customer_id, creator_id))
+            updated_creator = cursor.fetchone()
+
+            # Fetch email from users table
+            cursor.execute('''
+                SELECT u.email FROM users u
+                JOIN creators c ON c.user_id = u.id
+                WHERE c.id = %s
+            ''', (creator_id,))
+            user_row = cursor.fetchone()
+
             conn.commit()
             cursor.close()
             conn.close()
@@ -495,6 +614,16 @@ def stripe_webhook():
                     "transaction_id": subscription_id or session.get('id'),
                 }
             )
+
+            # Send internal notification to team@newcollab.co
+            interval = session['metadata'].get('interval', 'monthly')
+            creator_data = {
+                'id': creator_id,
+                'username': updated_creator.get('username') if updated_creator else 'Unknown',
+                'email': user_row.get('email') if user_row else 'Unknown',
+                'followers': updated_creator.get('ig_followers', 0) if updated_creator else 0
+            }
+            send_pro_subscriber_notification(creator_data, tier, amount_total, interval)
 
         # Handle subscription deleted/canceled
         elif event['type'] == 'customer.subscription.deleted':
