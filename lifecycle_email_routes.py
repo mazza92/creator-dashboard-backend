@@ -400,18 +400,71 @@ def preview_template(template_slug):
 @require_admin_auth
 def test_send_email():
     """Send a test lifecycle email to a specific address."""
+    from lifecycle_email_engine import render_template, _send_smtp, FRONTEND_URL
+
     try:
         data = request.json
         template_slug = data.get('template_slug')
         to_email = data.get('to_email')
-        creator_id = data.get('creator_id', 1)  # Default to creator 1 for context
+        skip_checks = data.get('skip_checks', False)
 
         if not template_slug or not to_email:
             return jsonify({'error': 'Missing template_slug or to_email'}), 400
 
-        context = build_email_context(creator_id, template_slug)
+        # For skip_checks mode, render and send directly without DB lookups
+        if skip_checks:
+            # Map template slugs to files
+            template_map = {
+                'weekly_digest': '21_weekly_digest.html',
+                'welcome_manager': '02_welcome_manager.html',
+                'celebration_first_box': '23_celebration_first_box.html',
+            }
 
-        # Override some context for testing
+            template_file = template_map.get(template_slug, f'{template_slug}.html')
+
+            # Build test context with sample data
+            context = {
+                'first_name': data.get('first_name', 'Test'),
+                'current_score': 75,
+                'score_delta': 5,
+                'unlocks_used': 1,
+                'unlocks_quota': 3,
+                'weekly_theme_title': 'Bio polish',
+                'weekly_theme_body': 'Brands scan bios in 3 seconds. This week, audit yours.',
+                'new_brands': [
+                    {'name': 'Glossier', 'category': 'Beauty', 'reason': 'New this week'},
+                    {'name': 'Rare Beauty', 'category': 'Beauty', 'reason': 'Matches your niche'},
+                ],
+                'win_story': None,
+                'cta_url': f"{FRONTEND_URL}/creator/dashboard/pr-ready",
+                'preferences_url': f"{FRONTEND_URL}/creator/dashboard/settings",
+                'unsubscribe_url': f"{FRONTEND_URL}/unsubscribe",
+                'preheader': 'Your weekly digest from Newcollab',
+            }
+
+            # Render template
+            html_content = render_template(f'lifecycle/{template_file}', context)
+
+            # Subject mapping
+            subject_map = {
+                'weekly_digest': 'your monday brief from your manager',
+                'welcome_manager': 'your newcollab manager just arrived',
+                'celebration_first_box': 'you got your first PR box',
+            }
+            subject = subject_map.get(template_slug, f'Test: {template_slug}')
+
+            # Send directly via SMTP
+            success, result = _send_smtp(to_email, subject, html_content)
+
+            return jsonify({
+                'success': success,
+                'message': result if success else f"SMTP error: {result}",
+                'mode': 'skip_checks'
+            })
+
+        # Normal mode - use full send_lifecycle_email flow
+        creator_id = data.get('creator_id', 1)
+        context = build_email_context(creator_id, template_slug)
         context['first_name'] = data.get('first_name', 'Test')
 
         success, message = send_lifecycle_email(
@@ -427,9 +480,11 @@ def test_send_email():
             'message': message
         })
     except Exception as e:
+        import traceback
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': str(e),
+            'traceback': traceback.format_exc()
         }), 500
 
 
