@@ -650,7 +650,7 @@ def process_daily_lifecycle_emails(batch_size: int = 100) -> Dict[str, int]:
             FROM creators c
             JOIN users u ON c.user_id = u.id
             LEFT JOIN email_preferences ep ON ep.creator_id = c.id
-            WHERE u.email_verified = true
+            WHERE u.is_verified = true
             AND (ep.unsubscribed_all IS NULL OR ep.unsubscribed_all = false)
             AND (c.lifecycle_emails_sent_today IS NULL OR c.lifecycle_emails_sent_today < %s)
             ORDER BY c.last_login DESC NULLS LAST
@@ -720,7 +720,7 @@ def process_weekly_digest(batch_size: int = 100) -> Dict[str, int]:
             SELECT c.id, c.user_id, u.email
             FROM creators c
             JOIN users u ON c.user_id = u.id
-            WHERE u.email_verified = true
+            WHERE u.is_verified = true
             ORDER BY c.id
             LIMIT %s
         """, (batch_size,))
