@@ -706,7 +706,7 @@ def process_weekly_digest(batch_size: int = 100) -> Dict[str, int]:
     if datetime.now().weekday() != 0:  # 0 = Monday
         return {'skipped': 0, 'reason': 'Not Monday'}
 
-    stats = {'processed': 0, 'sent': 0, 'skipped': 0, 'errors': 0}
+    stats = {'processed': 0, 'sent': 0, 'skipped': 0, 'errors': 0, 'version': 'v2'}
 
     if not is_feature_enabled('email_weekly_digest_v2'):
         return {'skipped': 0, 'reason': 'Feature disabled'}
@@ -749,6 +749,9 @@ def process_weekly_digest(batch_size: int = 100) -> Dict[str, int]:
                     stats['sent'] += 1
                 else:
                     stats['skipped'] += 1
+                    if 'skip_reasons' not in stats:
+                        stats['skip_reasons'] = []
+                    stats['skip_reasons'].append(f"Creator {creator['id']}: {message}")
 
             except Exception as e:
                 stats['errors'] += 1
