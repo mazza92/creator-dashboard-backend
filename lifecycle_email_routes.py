@@ -100,18 +100,38 @@ def cron_daily_emails():
     """
     Process daily lifecycle emails.
     Should be called by cron every day at 10am.
+
+    Query params / JSON body:
+    - batch_size: Max users to process (default 100)
+    - dry_run: If true, only count eligible users, don't send (default false)
+    - limit: Only process this many users (for testing)
+    - test_email: Only send to this specific email address
     """
     try:
-        batch_size = request.json.get('batch_size', 100) if request.json else 100
-        stats = process_daily_lifecycle_emails(batch_size=batch_size)
+        data = request.json or {}
+        batch_size = data.get('batch_size', 100)
+        dry_run = data.get('dry_run', False)
+        limit = data.get('limit')  # Optional limit for testing
+        test_email = data.get('test_email')  # Only send to this email
+
+        # Pass test parameters to the engine
+        stats = process_daily_lifecycle_emails(
+            batch_size=batch_size,
+            dry_run=dry_run,
+            limit=limit,
+            test_email=test_email
+        )
         return jsonify({
             'success': True,
+            'dry_run': dry_run,
             'stats': stats
         })
     except Exception as e:
+        error_trace = traceback.format_exc()
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': str(e),
+            'traceback': error_trace
         }), 500
 
 
@@ -121,6 +141,13 @@ def cron_weekly_digest():
     """
     Process weekly digest emails.
     Should be called by cron every Monday at 8am.
+
+    Query params / JSON body:
+    - batch_size: Max users to process (default 100)
+    - dry_run: If true, only count eligible users, don't send (default false)
+    - limit: Only process this many users (for testing)
+    - test_email: Only send to this specific email address
+    - skip_day_check: If true, run even if not Monday (for testing)
     """
     from datetime import datetime
 
@@ -138,20 +165,33 @@ def cron_weekly_digest():
             'error': 'process_weekly_digest function not loaded'
         }), 500
 
-    # Quick sanity check - it's not Monday, skip
-    if datetime.now().weekday() != 0:
-        return jsonify({
-            'success': True,
-            'skipped': True,
-            'reason': 'Not Monday',
-            'current_day': datetime.now().strftime('%A')
-        })
-
     try:
-        batch_size = request.json.get('batch_size', 100) if request.json else 100
-        stats = process_weekly_digest(batch_size=batch_size)
+        data = request.json or {}
+        batch_size = data.get('batch_size', 100)
+        dry_run = data.get('dry_run', False)
+        limit = data.get('limit')
+        test_email = data.get('test_email')
+        skip_day_check = data.get('skip_day_check', False)
+
+        # Quick sanity check - it's not Monday, skip (unless skip_day_check is set)
+        if not skip_day_check and datetime.now().weekday() != 0:
+            return jsonify({
+                'success': True,
+                'skipped': True,
+                'reason': 'Not Monday',
+                'current_day': datetime.now().strftime('%A')
+            })
+
+        stats = process_weekly_digest(
+            batch_size=batch_size,
+            dry_run=dry_run,
+            limit=limit,
+            test_email=test_email,
+            skip_day_check=skip_day_check
+        )
         return jsonify({
             'success': True,
+            'dry_run': dry_run,
             'stats': stats
         })
     except Exception as e:

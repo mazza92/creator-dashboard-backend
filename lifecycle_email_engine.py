@@ -632,32 +632,64 @@ def evaluate_trigger(creator: Dict, template: Dict, cursor) -> bool:
 # CRON JOB HANDLERS
 # ============================================
 
-def process_daily_lifecycle_emails(batch_size: int = 100) -> Dict[str, int]:
+def process_daily_lifecycle_emails(
+    batch_size: int = 100,
+    dry_run: bool = False,
+    limit: int = None,
+    test_email: str = None
+) -> Dict[str, int]:
     """
     Process daily lifecycle emails for all eligible creators.
     Called by cron job.
+
+    Args:
+        batch_size: Number of creators to process per batch
+        dry_run: If True, only count eligible users without sending emails
+        limit: If set, only process this many creators total
+        test_email: If set, only process creator with this email address
     """
-    stats = {'processed': 0, 'sent': 0, 'skipped': 0, 'errors': 0}
+    stats = {
+        'processed': 0,
+        'sent': 0,
+        'skipped': 0,
+        'errors': 0,
+        'dry_run': dry_run,
+        'test_email': test_email,
+        'limit': limit
+    }
 
     conn = get_db_connection()
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Get creators who might need emails
-        # Exclude those who already hit daily limit or unsubscribed
-        cursor.execute("""
-            SELECT c.id, c.user_id, u.email, c.lifecycle_state
-            FROM creators c
-            JOIN users u ON c.user_id = u.id
-            LEFT JOIN email_preferences ep ON ep.creator_id = c.id
-            WHERE u.is_verified = true
-            AND (ep.unsubscribed_all IS NULL OR ep.unsubscribed_all = false)
-            AND (c.lifecycle_emails_sent_today IS NULL OR c.lifecycle_emails_sent_today < %s)
-            ORDER BY c.last_login DESC NULLS LAST
-            LIMIT %s
-        """, (MAX_EMAILS_PER_DAY, batch_size))
+        # Build query based on parameters
+        if test_email:
+            # Only process the specific test email
+            cursor.execute("""
+                SELECT c.id, c.user_id, u.email, c.lifecycle_state
+                FROM creators c
+                JOIN users u ON c.user_id = u.id
+                WHERE u.email = %s
+                AND u.is_verified = true
+            """, (test_email,))
+        else:
+            # Get creators who might need emails
+            # Exclude those who already hit daily limit or unsubscribed
+            effective_limit = limit if limit else batch_size
+            cursor.execute("""
+                SELECT c.id, c.user_id, u.email, c.lifecycle_state
+                FROM creators c
+                JOIN users u ON c.user_id = u.id
+                LEFT JOIN email_preferences ep ON ep.creator_id = c.id
+                WHERE u.is_verified = true
+                AND (ep.unsubscribed_all IS NULL OR ep.unsubscribed_all = false)
+                AND (c.lifecycle_emails_sent_today IS NULL OR c.lifecycle_emails_sent_today < %s)
+                ORDER BY c.last_login DESC NULLS LAST
+                LIMIT %s
+            """, (MAX_EMAILS_PER_DAY, effective_limit))
 
         creators = cursor.fetchall()
+        stats['total_eligible'] = len(creators)
 
         for creator in creators:
             stats['processed'] += 1
@@ -671,6 +703,12 @@ def process_daily_lifecycle_emails(batch_size: int = 100) -> Dict[str, int]:
 
                 # Send the highest priority email
                 template = eligible[0]
+
+                # In dry_run mode, just log what would be sent
+                if dry_run:
+                    stats['sent'] += 1
+                    print(f"[DRY RUN] Would send {template['slug']} to creator {creator['id']} ({creator['email']})")
+                    continue
 
                 # Build context
                 context = build_email_context(creator['id'], template['slug'])
@@ -699,14 +737,37 @@ def process_daily_lifecycle_emails(batch_size: int = 100) -> Dict[str, int]:
         conn.close()
 
 
-def process_weekly_digest(batch_size: int = 100) -> Dict[str, int]:
+def process_weekly_digest(
+    batch_size: int = 100,
+    dry_run: bool = False,
+    limit: int = None,
+    test_email: str = None,
+    skip_day_check: bool = False
+) -> Dict[str, int]:
     """
     Send weekly digest emails (Monday only).
+
+    Args:
+        batch_size: Number of creators to process per batch
+        dry_run: If True, only count eligible users without sending emails
+        limit: If set, only process this many creators total
+        test_email: If set, only process creator with this email address
+        skip_day_check: If True, skip the Monday-only check (for testing)
     """
-    if datetime.now().weekday() != 0:  # 0 = Monday
+    # Allow skipping day check for testing
+    if not skip_day_check and datetime.now().weekday() != 0:  # 0 = Monday
         return {'skipped': 0, 'reason': 'Not Monday'}
 
-    stats = {'processed': 0, 'sent': 0, 'skipped': 0, 'errors': 0, 'version': 'v2'}
+    stats = {
+        'processed': 0,
+        'sent': 0,
+        'skipped': 0,
+        'errors': 0,
+        'version': 'v2',
+        'dry_run': dry_run,
+        'test_email': test_email,
+        'limit': limit
+    }
 
     if not is_feature_enabled('email_weekly_digest_v2'):
         return {'skipped': 0, 'reason': 'Feature disabled'}
@@ -715,17 +776,30 @@ def process_weekly_digest(batch_size: int = 100) -> Dict[str, int]:
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Get verified creators - use dedup to avoid sending twice per week
-        cursor.execute("""
-            SELECT c.id, c.user_id, u.email
-            FROM creators c
-            JOIN users u ON c.user_id = u.id
-            WHERE u.is_verified = true
-            ORDER BY c.id
-            LIMIT %s
-        """, (batch_size,))
+        # Build query based on parameters
+        if test_email:
+            # Only process the specific test email
+            cursor.execute("""
+                SELECT c.id, c.user_id, u.email
+                FROM creators c
+                JOIN users u ON c.user_id = u.id
+                WHERE u.email = %s
+                AND u.is_verified = true
+            """, (test_email,))
+        else:
+            # Get verified creators - use dedup to avoid sending twice per week
+            effective_limit = limit if limit else batch_size
+            cursor.execute("""
+                SELECT c.id, c.user_id, u.email
+                FROM creators c
+                JOIN users u ON c.user_id = u.id
+                WHERE u.is_verified = true
+                ORDER BY c.id
+                LIMIT %s
+            """, (effective_limit,))
 
         creators = cursor.fetchall()
+        stats['total_eligible'] = len(creators)
 
         for creator in creators:
             stats['processed'] += 1
@@ -736,6 +810,12 @@ def process_weekly_digest(batch_size: int = 100) -> Dict[str, int]:
                 dedup_key = f"weekly_digest_{creator['id']}_{week_key}"
 
                 context = build_weekly_digest_context(creator['id'])
+
+                # In dry_run mode, just log what would be sent
+                if dry_run:
+                    stats['sent'] += 1
+                    print(f"[DRY RUN] Would send weekly_digest to creator {creator['id']} ({creator['email']})")
+                    continue
 
                 success, message = send_lifecycle_email(
                     to_email=creator['email'],
