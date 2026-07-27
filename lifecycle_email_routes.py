@@ -108,7 +108,8 @@ def cron_daily_emails():
     - test_email: Only send to this specific email address
     """
     try:
-        data = request.json or {}
+        # Use get_json(silent=True) to handle non-JSON content types gracefully
+        data = request.get_json(silent=True) or {}
         batch_size = data.get('batch_size', 100)
         dry_run = data.get('dry_run', False)
         limit = data.get('limit')  # Optional limit for testing
@@ -166,7 +167,8 @@ def cron_weekly_digest():
         }), 500
 
     try:
-        data = request.json or {}
+        # Use get_json(silent=True) to handle non-JSON content types gracefully
+        data = request.get_json(silent=True) or {}
         batch_size = data.get('batch_size', 100)
         dry_run = data.get('dry_run', False)
         limit = data.get('limit')
