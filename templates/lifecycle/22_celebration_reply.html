@@ -1,0 +1,23 @@
+{% extends "lifecycle/base_lifecycle.html" %}
+
+{% block content %}
+<p>Hi {{ first_name or "there" }},</p>
+
+<div class="win-box">
+    <p>You got a reply from {{ brand_name }}. That's a real win. Most creators never get this far.</p>
+</div>
+
+<p>Here's what I need you to know about the next 24 hours, because how you respond matters more than the pitch that got you here.</p>
+
+<p><strong>Reply today.</strong> Not tomorrow. Within 12 hours if you can. Brands who reply and then wait days for the creator to respond move on to someone faster.</p>
+
+<p><strong>Match their energy.</strong> If they wrote 2 sentences, you write 2 sentences. If they asked a question, answer it in the first line. Don't over-write.</p>
+
+<p><strong>Confirm the offer clearly.</strong> If they're offering PR (free product), say what you'll create in exchange (1 Reel, 3 photos, 1 story). Specific deliverables build trust. Vague answers kill deals.</p>
+
+<p><strong>Ask for shipping timeline.</strong> "What's the shipping window?" is a 1-line question that shows you're organized and moves the conversation forward.</p>
+
+<p>I've drafted a first response for you. Open your inbox to review.</p>
+
+<a href="{{ cta_url }}" class="cta-button">Open my inbox</a>
+{% endblock %}

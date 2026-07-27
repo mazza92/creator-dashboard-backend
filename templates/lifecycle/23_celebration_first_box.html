@@ -1,0 +1,23 @@
+{% extends "lifecycle/base_lifecycle.html" %}
+
+{% block content %}
+<p>Hi {{ first_name or "there" }},</p>
+
+<div class="win-box">
+    <p>Your first PR box landed. That's a real moment. Take a screenshot. Save the day. Most people who sign up for tools like this never get here.</p>
+</div>
+
+<p>Now, three real things about what happens next:</p>
+
+<ol class="numbered-list">
+    <li><strong>Deliver on your promise.</strong> Whatever content you offered, ship it on time, with the quality you'd want if you were the brand. This is what separates one-time gifts from recurring partnerships.</li>
+    <li><strong>Tag them thoughtfully.</strong> When you post the content, tag {{ brand_name }} and their handle. Send them a DM with a link to the post so it doesn't get lost in their notifications.</li>
+    <li><strong>Ask for the next thing.</strong> After the content ships and performs, message them back: "Really enjoyed working on this. Any upcoming campaigns I could be part of?" This is how gifts become paid partnerships.</li>
+</ol>
+
+<p>If you're up for it, share your win in the community. Other creators get pulled forward by hearing how others got there.</p>
+
+<a href="{{ cta_url }}" class="cta-button">Share your win</a>
+
+<p><a href="#" class="cta-secondary">Or just quietly celebrate. I get it.</a></p>
+{% endblock %}

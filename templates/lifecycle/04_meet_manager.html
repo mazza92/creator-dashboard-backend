@@ -1,0 +1,15 @@
+{% extends "lifecycle/base_lifecycle.html" %}
+
+{% block content %}
+<p>Hi {{ first_name or "there" }},</p>
+
+<p>I noticed you signed up but haven't set up your plan yet. Not chasing you. Just want to say two things.</p>
+
+<p>First, most creators who land brand deals through Newcollab do the exact same 2 things in their first week: fix their bio for brand outreach, and publish a portfolio brands can actually look at. Those 2 things take 15 minutes and move your reply chance up meaningfully.</p>
+
+<p>Second, I'm not a template or a chatbot. I'm the manager. Every action in your plan is picked because it's the highest-leverage next move for your specific profile. If something in the plan feels wrong, hit reply on this email and tell me.</p>
+
+<p>Here when you're ready.</p>
+
+<a href="{{ cta_url }}" class="cta-button">See my plan</a>
+{% endblock %}

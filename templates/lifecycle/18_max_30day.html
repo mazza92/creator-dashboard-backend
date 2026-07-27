@@ -1,0 +1,25 @@
+{% extends "lifecycle/base_lifecycle.html" %}
+
+{% block content %}
+<p>Hi {{ first_name or "there" }},</p>
+
+<p>I want to lay out what I'd actually do with you if you went Pro. Not a features list. A plan.</p>
+
+<p><strong>Week 1:</strong> We finish the 2 fixes locked in your plan (whitelisting + concept sketch). Your score climbs from {{ current_score }}% to about 82%.</p>
+
+<p><strong>Week 2:</strong> I open 5 more brand matches personalized to your profile. You pitch the top 3. I automate the day 6 follow-ups.</p>
+
+<p><strong>Week 3:</strong> I run the audit on your last 12 posts and flag 2 quick content tweaks that improve your fit for the brands most likely to reply. You post them.</p>
+
+<p><strong>Week 4:</strong> You should have replies coming in by now. I help you draft your response to each one. We plan follow-ups on the ones who took a meeting but didn't send yet.</p>
+
+<div class="highlight-box">
+    <p>That's what Pro looks like. Not "unlimited unlocks." A specific 30-day plan tied to what your profile actually needs.</p>
+</div>
+
+<p>Your quota resets in {{ days_until_reset }} days if you'd rather wait. Fine either way. I just wanted you to see what the plan would be.</p>
+
+<a href="{{ cta_url }}" class="cta-button">Start my 30-day plan</a>
+
+<p style="text-align: center; margin-top: 8px; color: #6b7280; font-size: 14px;">$19/mo</p>
+{% endblock %}

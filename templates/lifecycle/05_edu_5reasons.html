@@ -1,0 +1,23 @@
+{% extends "lifecycle/base_lifecycle.html" %}
+
+{% block content %}
+<p>Hi {{ first_name or "there" }},</p>
+
+<p>Most creators assume brands ignore them because they're too small. Almost never true.</p>
+
+<p>I've watched thousands of pitches. Here are the actual top 5 reasons brands don't reply:</p>
+
+<ol class="numbered-list">
+    <li>Your bio doesn't say what you make. Brands scan for niche fit in under 3 seconds. "UGC Creator" tells them nothing.</li>
+    <li>Your last 9 posts don't show product in real use. Brands hire creators who demonstrate, not just display.</li>
+    <li>You have no visible contact. Brands who liked you can't figure out how to write back.</li>
+    <li>Your pitch subject line says "collaboration inquiry." Every creator sends that. It doesn't stand out.</li>
+    <li>You didn't follow up. 67% of brand replies come after a follow-up. Most creators send once and give up.</li>
+</ol>
+
+<p>The good news: every one of these is a 15-minute fix.</p>
+
+<p>Want your manager's audit of which of these is holding YOU back specifically?</p>
+
+<a href="{{ cta_url }}" class="cta-button">See my audit</a>
+{% endblock %}

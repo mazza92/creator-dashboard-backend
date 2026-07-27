@@ -51,6 +51,7 @@ from pool_routes import pool_bp
 # from marketplace_routes import marketplace_bp  # Disabled - using inline endpoint instead (newer schema)
 from indexnow_routes import indexnow_bp
 from email_cron_routes import email_cron_bp
+from lifecycle_email_routes import lifecycle_email_bp
 from social_verification_routes import social_verification_bp, detect_country_from_ip, RESTRICTED_REGIONS
 from routes.admin_pr_hunter import admin_pr_hunter_bp
 from routes.admin_brands import admin_brands_bp
@@ -274,6 +275,7 @@ app.register_blueprint(pool_bp)
 # app.register_blueprint(marketplace_bp)  # Disabled - using inline endpoint instead (newer schema)
 app.register_blueprint(indexnow_bp)
 app.register_blueprint(email_cron_bp)
+app.register_blueprint(lifecycle_email_bp)
 app.register_blueprint(social_verification_bp)
 if pr_ready_bp is not None:
     app.register_blueprint(pr_ready_bp)

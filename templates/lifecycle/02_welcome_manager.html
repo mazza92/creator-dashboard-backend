@@ -1,0 +1,19 @@
+{% extends "lifecycle/base_lifecycle.html" %}
+
+{% block content %}
+<p>Hi {{ first_name or "there" }},</p>
+
+<p>I'm your Newcollab manager. My job over the next few weeks is to help you go from "I want brand deals" to "I have a reply in my inbox."</p>
+
+<p>Here's what I know so far:</p>
+
+<p>You just joined. You have 3 brand unlocks this month. Each one is a full strategy plus verified contact, not just an email.</p>
+
+<p>If I could give you one piece of advice for this week, it's this: use all 3 unlocks. The more brands you pitch, the higher your chances of landing a reply. Creators who pitch 3 brands in their first week are 4x more likely to get a response than those who only pitch 1.</p>
+
+<p>I'll send you a short guide every 3 to 4 days on how brands actually evaluate creators. Nothing spammy. Just what I'd tell a friend.</p>
+
+<p>Ready to see who I've matched you with?</p>
+
+<a href="{{ cta_url }}" class="cta-button">Meet your matches</a>
+{% endblock %}

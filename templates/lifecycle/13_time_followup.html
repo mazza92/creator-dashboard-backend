@@ -1,0 +1,45 @@
+{% extends "lifecycle/base_lifecycle.html" %}
+
+{% block content %}
+<p>Hi {{ first_name or "there" }},</p>
+
+{% if is_pro %}
+<p>Quick nudge. You have {{ pending_count }} follow-up{{ 's' if pending_count > 1 else '' }} due today.</p>
+
+<div class="brand-list">
+{% for brand in pending_brands %}
+    <div class="brand-item">
+        <span class="brand-name">{{ brand.name }}</span>
+        <span class="brand-meta"> &bull; pitched {{ brand.days_ago }} days ago ({{ brand.response_rate }}% response rate)</span>
+    </div>
+{% endfor %}
+</div>
+
+<p>I've drafted each one in your Pro voice. Review and send takes about 3 minutes total.</p>
+
+<p><strong>Pro tip for follow-ups:</strong> keep them short. Reference your original pitch in one line. Add one piece of new value (a recent post that's doing well, a content idea specific to them, or a fresh product angle). End with a low-pressure ask.</p>
+
+<a href="{{ cta_url }}" class="cta-button">Review & send</a>
+
+{% else %}
+<p>You pitched {{ pending_count }} brand{{ 's' if pending_count > 1 else '' }} over 7 days ago and haven't heard back yet. Time to follow up.</p>
+
+<p>Here's who needs a nudge:</p>
+
+<div class="brand-list">
+{% for brand in pending_brands %}
+    <div class="brand-item">
+        <span class="brand-name">{{ brand.name }}</span>
+        <span class="brand-meta"> &bull; pitched {{ brand.days_ago }} days ago ({{ brand.response_rate }}% response rate)</span>
+    </div>
+{% endfor %}
+</div>
+
+<p><strong>Why it matters:</strong><br>
+67% of brand replies come after a follow-up. Following up doubles your reply rate. Brands are busy, and a polite nudge shows you're serious.</p>
+
+<p>On free, I'll draft the follow-up when you tap through. Pro members get automatic follow-ups sent for them on the right day, plus tracking on which brands opened your emails.</p>
+
+<a href="{{ cta_url }}" class="cta-button">Send follow-ups</a>
+{% endif %}
+{% endblock %}

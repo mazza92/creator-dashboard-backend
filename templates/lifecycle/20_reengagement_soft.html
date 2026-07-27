@@ -1,0 +1,19 @@
+{% extends "lifecycle/base_lifecycle.html" %}
+
+{% block content %}
+<p>Hi {{ first_name or "there" }},</p>
+
+<p>I haven't seen you in 3 weeks. That's fine. Creators drop off for 100 reasons and I'm not going to guilt you.</p>
+
+<p>But I wanted to say two things.</p>
+
+<p>First, {{ new_brands_count }} new brands were added to your matches while you were away. Two of them are strong fits for you specifically.</p>
+
+<p>Second, if the thing that made you stop was "this isn't working," here's honest data: creators who come back after a 2 to 3 week break land brand deals at similar rates to consistent users. The break doesn't hurt you.</p>
+
+<p>If you want back in, one click.</p>
+
+<a href="{{ cta_url }}" class="cta-button">See what's new</a>
+
+<p style="margin-top: 16px; color: #6b7280; font-size: 14px;">If it's not for you anymore, that's also fine. I'm here when you change your mind.</p>
+{% endblock %}

@@ -1,0 +1,30 @@
+{% extends "lifecycle/base_lifecycle.html" %}
+
+{% block content %}
+<p>Hi {{ first_name or "there" }},</p>
+
+<p>Here's something that will change how you think about pitching:</p>
+
+<p>Most creators send one email. If no reply in 3 days, they conclude "the brand said no" and move on.</p>
+
+<p>That's the mistake.</p>
+
+<p>67% of brand replies come after a follow-up. Not on the first email. On the second, third, or fourth touch.</p>
+
+<p>Here's the cadence that works:</p>
+
+<ul>
+    <li><strong>Touch 1:</strong> your initial pitch (day 0)</li>
+    <li><strong>Touch 2:</strong> day 6 nudge. One sentence. "Hi, just following up on the note below. Happy to answer any questions."</li>
+    <li><strong>Touch 3:</strong> day 14 value-add. "Wanted to share I just posted [something related] and it hit [some metric]. Still keen to work together if the timing is right."</li>
+    <li><strong>Touch 4:</strong> day 30 soft close. "Understand you might be busy. If this isn't the right timing, no worries. I'll circle back next quarter."</li>
+</ul>
+
+<p>If they don't reply after 4 touches, then you can conclude no.</p>
+
+<p>Most creators would rather send 10 new pitches than follow up on 3. Follow-ups convert 4x higher.</p>
+
+<p>I automate this if you're on Pro. On free, I remind you when it's time.</p>
+
+<a href="{{ cta_url }}" class="cta-button">Check your pipeline</a>
+{% endblock %}

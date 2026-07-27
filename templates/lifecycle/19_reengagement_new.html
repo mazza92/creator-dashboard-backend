@@ -1,0 +1,24 @@
+{% extends "lifecycle/base_lifecycle.html" %}
+
+{% block content %}
+<p>Hi {{ first_name or "there" }},</p>
+
+<p>I haven't seen you in 2 weeks. Not chasing. Just wanted to share what's new.</p>
+
+<p>{{ new_brands_count }} new brands were added to Newcollab in your niche while you were away. Here are 3 worth your attention:</p>
+
+<div class="brand-list">
+{% for brand in top_new_brands %}
+    <div class="brand-item">
+        <span class="brand-name">{{ brand.name }}</span>
+        <span class="brand-meta"> &bull; {{ brand.category }} &bull; fits your profile at {{ brand.fit_score }}%</span>
+    </div>
+{% endfor %}
+</div>
+
+<p>If you want to check them out, one click below.</p>
+
+<p>Your unlocks reset on {{ reset_date }}, so you have {{ unlocks_available }} available right now.</p>
+
+<a href="{{ cta_url }}" class="cta-button">See new matches</a>
+{% endblock %}

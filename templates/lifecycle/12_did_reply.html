@@ -1,0 +1,26 @@
+{% extends "lifecycle/base_lifecycle.html" %}
+
+{% block content %}
+<p>Hi {{ first_name or "there" }},</p>
+
+<p>It's been 2 weeks since you pitched {{ brand_name }}.</p>
+
+<p>Did they get back to you?</p>
+
+<p>If yes: mark it in your pipeline so I can help you plan the follow-up (and set your reply expectations for the next brand).</p>
+
+<p>If no: don't take it personally. This is where most creators quit. Brands often reply on the follow-up, not the first email. I'll help you send one.</p>
+
+<p>Update your pipeline in one tap.</p>
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin: 24px 0;">
+    <tr>
+        <td style="padding-right: 12px;">
+            <a href="{{ reply_url }}" class="cta-button" style="background-color: #10b981;">They replied</a>
+        </td>
+        <td>
+            <a href="{{ followup_url }}" class="cta-button">Send follow-up</a>
+        </td>
+    </tr>
+</table>
+{% endblock %}

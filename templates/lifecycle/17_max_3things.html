@@ -1,0 +1,25 @@
+{% extends "lifecycle/base_lifecycle.html" %}
+
+{% block content %}
+<p>Hi {{ first_name or "there" }},</p>
+
+<p>You've used all 3 unlocks this month. Nice work. Most creators never use all 3.</p>
+
+<p>Here's what I want you to know before your quota resets.</p>
+
+<p>The creators who land regular PR aren't sending more pitches. They're sending better pitches. Specifically, they do 3 things you're not doing yet:</p>
+
+<ol class="numbered-list">
+    <li>They send a follow-up on day 6. Every time. Reply rate jumps from around 5% to around 18%.</li>
+    <li>They add whitelisting or usage rights to their pitch. Brands running Meta and TikTok ads (60% of your target brands) prioritize this. Without it, they skip you for someone who has it flagged.</li>
+    <li>They post 1 content piece per week specifically to feed the pitch. A "for this brand" clip or a fresh routine post. Brands who check your last 9 posts see relevance.</li>
+</ol>
+
+<p>I can walk you through all 3 in your manager plan. Comes with unlimited unlocks, a weekly plan, and a personalized brand queue.</p>
+
+<a href="{{ cta_url }}" class="cta-button">Let your manager finish the job</a>
+
+<p style="text-align: center; margin-top: 8px; color: #6b7280; font-size: 14px;">$19/mo</p>
+
+<p style="margin-top: 24px; color: #6b7280;">Not ready yet? Fine. I'll refresh your 3 unlocks in {{ days_until_reset }} days. But these 3 shifts will matter more than any single unlock.</p>
+{% endblock %}

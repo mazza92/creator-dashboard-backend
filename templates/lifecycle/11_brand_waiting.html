@@ -1,0 +1,23 @@
+{% extends "lifecycle/base_lifecycle.html" %}
+
+{% block content %}
+<p>Hi {{ first_name or "there" }},</p>
+
+<p>Six days ago you saved {{ brand_name }}. Still on your list, not sent.</p>
+
+<p>I'll give you the honest breakdown of what happens with time:</p>
+
+<p><strong>Days 1 to 7 after saving:</strong> highest reply rate. You're motivated, the brand hasn't been pitched by 50 other creators yet, and your content is fresh in your feed.</p>
+
+<p><strong>Days 8 to 21:</strong> reply rate drops about 30%. Not fatal, still worth pitching.</p>
+
+<p><strong>After day 21:</strong> I usually recommend swapping the brand out for a fresher match. The window has closed.</p>
+
+<p>You're on day 6. Still in the sweet spot. Your pitch is drafted.</p>
+
+<p>If {{ brand_name }} isn't your priority anymore, that's fine. You can remove them and I'll surface a better match.</p>
+
+<a href="{{ cta_url }}" class="cta-button">Pitch {{ brand_name }} now</a>
+
+<p><a href="{{ remove_url }}" class="cta-secondary">Not interested anymore? Remove from your list.</a></p>
+{% endblock %}

@@ -1,0 +1,23 @@
+{% extends "lifecycle/base_lifecycle.html" %}
+
+{% block content %}
+<p>Hi {{ first_name or "there" }},</p>
+
+<p>You've used all 3 unlocks this month. Most creators never use all 3. That means you're pitching, which is the hard part.</p>
+
+<p>Your quota resets on {{ reset_date }}. That's {{ days_until_reset }} days from now.</p>
+
+<p>Here's what I recommend doing in the meantime, and honestly, this is where the biggest wins come from:</p>
+
+<p><strong>Follow up on the 3 pitches you sent.</strong> 67% of replies come after a follow-up. Your fresh pitches are hitting inboxes right now, and the brands that were going to reply, will reply to a follow-up in the next 7 to 10 days.</p>
+
+<p><strong>Refresh your portfolio.</strong> Add 1 or 2 new pieces. Brands who checked you out and passed will re-check when you bump your profile.</p>
+
+<p><strong>Post 1 piece of content in your niche this week.</strong> Brands review your last 9 posts before replying. Keep them fresh.</p>
+
+<p>If you want to keep pitching without waiting, Pro removes the cap and adds weekly coaching. I'll send you a note about that in a couple days if it makes sense for you.</p>
+
+<p>For now, the follow-up game is where you can move the needle.</p>
+
+<a href="{{ cta_url }}" class="cta-button">Check my follow-ups</a>
+{% endblock %}

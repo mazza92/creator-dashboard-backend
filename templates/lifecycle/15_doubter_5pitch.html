@@ -1,0 +1,25 @@
+{% extends "lifecycle/base_lifecycle.html" %}
+
+{% block content %}
+<p>Hi {{ first_name or "there" }},</p>
+
+<p>I want to share something honest.</p>
+
+<p>Most creators expect a reply on pitch 1 or 2. Real data from thousands of pitches through Newcollab shows the average creator gets their first reply between pitch 5 and pitch 8. Not pitch 1.</p>
+
+<p>If you've sent 3 pitches and heard nothing, you're right where 80% of creators are.</p>
+
+<p>The ones who get replies aren't luckier. They just keep going past pitch 3.</p>
+
+<p>Here's what I'd do if I were you this week:</p>
+
+<p>Send one more pitch. Not to a random brand. To one where your fit is above 60%. I've marked those in your matches with a green "strong fit" tag.</p>
+
+<p>Then send a follow-up on day 6 to your first pitch. Even a 2-line nudge. Follow-ups have a much higher reply rate than first pitches.</p>
+
+<div class="highlight-box">
+    <p>You're not stuck. You're at the halfway mark most creators quit at.</p>
+</div>
+
+<a href="{{ cta_url }}" class="cta-button">See my strong-fit matches</a>
+{% endblock %}

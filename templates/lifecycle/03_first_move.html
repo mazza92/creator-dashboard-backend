@@ -1,0 +1,19 @@
+{% extends "lifecycle/base_lifecycle.html" %}
+
+{% block content %}
+<p>Hi {{ first_name or "there" }},</p>
+
+<p>You signed up yesterday and haven't unlocked a brand yet. That's fine. Most creators browse first.</p>
+
+<p>Here's the thing I wish every new creator knew:</p>
+
+<p>Before you pitch anyone, spend 5 minutes fixing your bio and publishing your portfolio. That single step raises your reply chance from around 5% to around 18%. Same effort, 3 times the odds.</p>
+
+<p>Brands check your profile in the 10 seconds between reading your subject line and deciding whether to open your email. If your bio doesn't tell them who you are and how to reach you, they close the tab.</p>
+
+<p>I laid out both fixes in your plan. Should take about 15 minutes.</p>
+
+<p>Once these are done, pitch your first brand. I'll help write it.</p>
+
+<a href="{{ cta_url }}" class="cta-button">Open my plan</a>
+{% endblock %}

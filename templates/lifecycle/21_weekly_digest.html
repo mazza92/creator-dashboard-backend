@@ -1,0 +1,63 @@
+{% extends "lifecycle/base_lifecycle.html" %}
+
+{% block content %}
+<p>Hi {{ first_name or "there" }},</p>
+
+<p>Here's what's new this week.</p>
+
+<div class="stats-block">
+    <p style="margin: 0 0 8px 0; font-size: 13px; color: #6b7280;">YOUR PROGRESS</p>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr>
+            <td style="padding: 4px 0;">
+                <span style="color: #6b7280; font-size: 13px;">Score:</span>
+            </td>
+            <td style="padding: 4px 0; text-align: right;">
+                <span style="color: #15161a; font-weight: 600;">{{ current_score }}%</span>
+                <span style="color: {% if score_delta >= 0 %}#10b981{% else %}#ef4444{% endif %}; font-size: 13px;">
+                    ({{ '+' if score_delta >= 0 else '' }}{{ score_delta }} vs last week)
+                </span>
+            </td>
+        </tr>
+        <tr>
+            <td style="padding: 4px 0;">
+                <span style="color: #6b7280; font-size: 13px;">Unlocks:</span>
+            </td>
+            <td style="padding: 4px 0; text-align: right;">
+                <span style="color: #15161a; font-weight: 600;">{{ unlocks_used }} used of {{ unlocks_quota }}</span>
+            </td>
+        </tr>
+        <tr>
+            <td style="padding: 4px 0;">
+                <span style="color: #6b7280; font-size: 13px;">Replies received:</span>
+            </td>
+            <td style="padding: 4px 0; text-align: right;">
+                <span style="color: #15161a; font-weight: 600;">{{ replies_count }}</span>
+            </td>
+        </tr>
+    </table>
+</div>
+
+<p style="margin: 24px 0 8px 0; font-size: 13px; color: #6b7280;">THIS WEEK'S FOCUS</p>
+<p><strong>{{ weekly_theme_title }}</strong></p>
+<p>{{ weekly_theme_body }}</p>
+
+<p style="margin: 24px 0 8px 0; font-size: 13px; color: #6b7280;">NEW BRANDS IN YOUR MATCH LIST</p>
+<div class="brand-list">
+{% for brand in new_brands %}
+    <div class="brand-item">
+        <span class="brand-name">{{ brand.name }}</span>
+        <span class="brand-meta"> &bull; {{ brand.category }} &bull; {{ brand.reason }}</span>
+    </div>
+{% endfor %}
+</div>
+
+{% if win_story %}
+<div class="win-box">
+    <p style="margin: 0 0 8px 0; font-size: 13px; color: #065f46;">CREATOR WIN OF THE WEEK</p>
+    <p style="margin: 0;">{{ win_story.handle }} ({{ win_story.followers }} followers) landed {{ win_story.brand }} using {{ win_story.tactic }}. {{ win_story.summary }}</p>
+</div>
+{% endif %}
+
+<a href="{{ cta_url }}" class="cta-button">See my full plan</a>
+{% endblock %}

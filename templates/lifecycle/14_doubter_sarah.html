@@ -1,0 +1,32 @@
+{% extends "lifecycle/base_lifecycle.html" %}
+
+{% block content %}
+<p>Hi {{ first_name or "there" }},</p>
+
+<p>I want to tell you about Sarah.</p>
+
+<p>She joined Newcollab 6 weeks ago with 340 followers. She's a nursing student who posts skincare content between shifts.</p>
+
+<p>Her first 3 pitches got 0 replies. She almost quit.</p>
+
+<p>On pitch 4, she used the follow-up sequence I laid out in her plan. She got a reply from a small clean-beauty brand offering to send her their new serum.</p>
+
+<p>Pitch 5: another yes. Pitch 6: no reply. Pitch 7: yes.</p>
+
+<p>By pitch 10, she had 4 brand replies, 2 free PR boxes, and 1 conversation about a paid post.</p>
+
+<p><strong>She has 340 followers.</strong></p>
+
+<p>Here's what she did differently from most creators:</p>
+<ul>
+    <li>Every pitch had a specific creative angle for that brand</li>
+    <li>Every unanswered pitch got a follow-up on day 6</li>
+    <li>Her bio included "collab: sarah@..." so brands could find her</li>
+</ul>
+
+<p>You're {{ pitches_sent }} pitches in. Statistically, your reply is close. Most creators who quit at pitch 3 to 5 would have gotten one on pitch 6 to 8.</p>
+
+<p>Ready to send your next?</p>
+
+<a href="{{ cta_url }}" class="cta-button">Open my plan</a>
+{% endblock %}

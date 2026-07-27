@@ -1,0 +1,17 @@
+{% extends "lifecycle/base_lifecycle.html" %}
+
+{% block content %}
+<p>Hi {{ first_name or "there" }},</p>
+
+<p>Two days ago you saved {{ brand_name }} to your pipeline. Timing matters here.</p>
+
+{% if brand_response_rate %}
+<p>{{ brand_name }} replies to about {{ brand_response_rate }}% of pitches. That's actually strong. But their inbox fills up fast, so the sooner you send, the better your position.</p>
+{% else %}
+<p>Brands see so many pitches that the ones sent within the first week of a creator saving them tend to land at higher rates.</p>
+{% endif %}
+
+<p>I've drafted the pitch for you. Open, review, edit if you want to. Should take 2 minutes.</p>
+
+<a href="{{ cta_url }}" class="cta-button">Pitch {{ brand_name }}</a>
+{% endblock %}
