@@ -5,25 +5,46 @@ API endpoints for lifecycle email system including cron jobs,
 admin controls, and action triggers.
 """
 import os
+import traceback
 from flask import Blueprint, request, jsonify
 from functools import wraps
 
-from lifecycle_email_engine import (
-    process_daily_lifecycle_emails,
-    process_weekly_digest,
-    trigger_welcome_email,
-    trigger_reply_celebration,
-    trigger_first_pr_box,
-    trigger_quota_hit,
-    get_all_feature_flags,
-    set_feature_flag,
-    is_feature_enabled,
-    get_eligible_emails,
-    update_creator_state,
-    send_lifecycle_email,
-    build_email_context,
-    get_db_connection
-)
+# Track import errors for debugging
+_import_error = None
+try:
+    from lifecycle_email_engine import (
+        process_daily_lifecycle_emails,
+        process_weekly_digest,
+        trigger_welcome_email,
+        trigger_reply_celebration,
+        trigger_first_pr_box,
+        trigger_quota_hit,
+        get_all_feature_flags,
+        set_feature_flag,
+        is_feature_enabled,
+        get_eligible_emails,
+        update_creator_state,
+        send_lifecycle_email,
+        build_email_context,
+        get_db_connection
+    )
+except Exception as e:
+    _import_error = traceback.format_exc()
+    # Define stubs so blueprint can still load
+    process_daily_lifecycle_emails = None
+    process_weekly_digest = None
+    trigger_welcome_email = None
+    trigger_reply_celebration = None
+    trigger_first_pr_box = None
+    trigger_quota_hit = None
+    get_all_feature_flags = None
+    set_feature_flag = None
+    is_feature_enabled = None
+    get_eligible_emails = None
+    update_creator_state = None
+    send_lifecycle_email = None
+    build_email_context = None
+    get_db_connection = None
 
 lifecycle_email_bp = Blueprint('lifecycle_email', __name__)
 
@@ -32,13 +53,28 @@ CRON_TOKEN = os.getenv('CRON_SECRET', 'lifecycle-cron-secret-2026')
 ADMIN_TOKEN = os.getenv('ADMIN_TOKEN', 'pr-hunter-admin-2026')
 
 
+@lifecycle_email_bp.route('/api/lifecycle-email/health', methods=['GET'])
+def lifecycle_health():
+    """Health check endpoint to diagnose import/setup issues."""
+    return jsonify({
+        'status': 'ok' if _import_error is None else 'import_error',
+        'import_error': _import_error,
+        'functions_loaded': {
+            'process_weekly_digest': process_weekly_digest is not None,
+            'process_daily_lifecycle_emails': process_daily_lifecycle_emails is not None,
+            'trigger_welcome_email': trigger_welcome_email is not None,
+        }
+    })
+
+
 def require_cron_auth(f):
     """Decorator to require cron authentication."""
     @wraps(f)
     def decorated(*args, **kwargs):
         token = request.headers.get('X-Cron-Token') or request.args.get('cron_token')
+        print(f"[CRON AUTH] Received token: '{token}', Expected: '{CRON_TOKEN}', Headers: {dict(request.headers)}")
         if token != CRON_TOKEN:
-            return jsonify({'error': 'Unauthorized'}), 401
+            return jsonify({'error': 'Unauthorized', 'debug': f'received={token}, expected_len={len(CRON_TOKEN)}'}), 401
         return f(*args, **kwargs)
     return decorated
 
@@ -86,6 +122,31 @@ def cron_weekly_digest():
     Process weekly digest emails.
     Should be called by cron every Monday at 8am.
     """
+    from datetime import datetime
+
+    # Check for import errors first
+    if _import_error:
+        return jsonify({
+            'success': False,
+            'error': 'Import error in lifecycle_email_engine',
+            'traceback': _import_error
+        }), 500
+
+    if process_weekly_digest is None:
+        return jsonify({
+            'success': False,
+            'error': 'process_weekly_digest function not loaded'
+        }), 500
+
+    # Quick sanity check - it's not Monday, skip
+    if datetime.now().weekday() != 0:
+        return jsonify({
+            'success': True,
+            'skipped': True,
+            'reason': 'Not Monday',
+            'current_day': datetime.now().strftime('%A')
+        })
+
     try:
         batch_size = request.json.get('batch_size', 100) if request.json else 100
         stats = process_weekly_digest(batch_size=batch_size)
@@ -94,9 +155,11 @@ def cron_weekly_digest():
             'stats': stats
         })
     except Exception as e:
+        error_trace = traceback.format_exc()
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': str(e),
+            'traceback': error_trace
         }), 500
 
 

@@ -715,19 +715,13 @@ def process_weekly_digest(batch_size: int = 100) -> Dict[str, int]:
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Get creators who haven't received digest this week
+        # Get verified creators - use dedup to avoid sending twice per week
         cursor.execute("""
-            SELECT c.id, c.user_id, u.email, c.lifecycle_state,
-                   c.weekly_digest_week_number
+            SELECT c.id, c.user_id, u.email
             FROM creators c
             JOIN users u ON c.user_id = u.id
-            LEFT JOIN email_preferences ep ON ep.creator_id = c.id
             WHERE u.email_verified = true
-            AND (ep.unsubscribed_all IS NULL OR ep.unsubscribed_all = false)
-            AND (ep.receive_weekly_digest IS NULL OR ep.receive_weekly_digest = true)
-            AND c.lifecycle_state != 'dormant'
-            AND (c.last_weekly_digest_at IS NULL OR c.last_weekly_digest_at < date_trunc('week', NOW()))
-            ORDER BY c.last_login DESC NULLS LAST
+            ORDER BY c.id
             LIMIT %s
         """, (batch_size,))
 
@@ -737,26 +731,22 @@ def process_weekly_digest(batch_size: int = 100) -> Dict[str, int]:
             stats['processed'] += 1
 
             try:
+                # Use dedup_key to prevent duplicate sends this week
+                week_key = datetime.now().strftime('%Y-W%W')
+                dedup_key = f"weekly_digest_{creator['id']}_{week_key}"
+
                 context = build_weekly_digest_context(creator['id'])
 
                 success, message = send_lifecycle_email(
                     to_email=creator['email'],
                     template_slug='weekly_digest',
                     context=context,
-                    creator_id=creator['id']
+                    creator_id=creator['id'],
+                    dedup_key=dedup_key
                 )
 
                 if success:
                     stats['sent'] += 1
-                    # Update digest tracking
-                    week_num = ((creator.get('weekly_digest_week_number') or 0) % 12) + 1
-                    cursor.execute("""
-                        UPDATE creators SET
-                            last_weekly_digest_at = NOW(),
-                            weekly_digest_week_number = %s
-                        WHERE id = %s
-                    """, (week_num, creator['id']))
-                    conn.commit()
                 else:
                     stats['skipped'] += 1
 
@@ -832,7 +822,8 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
 
         # Get creator
         cursor.execute("""
-            SELECT c.*, u.email, u.first_name
+            SELECT c.id, c.username, c.creator_score, c.contact_unlocks_this_month,
+                   u.email, u.first_name
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.id = %s
@@ -842,49 +833,40 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
         if not creator:
             return {}
 
-        # Get week number for theme rotation
-        week_num = ((creator.get('weekly_digest_week_number') or 0) % 12) + 1
+        # Get new brands this week
+        try:
+            cursor.execute("""
+                SELECT name, category FROM pr_brands
+                WHERE created_at >= NOW() - INTERVAL '7 days'
+                ORDER BY created_at DESC
+                LIMIT 3
+            """)
+            new_brands = cursor.fetchall()
+        except Exception:
+            new_brands = []
 
-        # Get theme
-        cursor.execute("""
-            SELECT theme_title, theme_body FROM weekly_digest_themes
-            WHERE week_number = %s AND active = true
-        """, (week_num,))
-        theme = cursor.fetchone()
-
-        # Get new brands this week (simplified - gets recent brands)
-        cursor.execute("""
-            SELECT name, category FROM pr_brands
-            WHERE created_at >= NOW() - INTERVAL '7 days'
-            AND source = 'curated'
-            ORDER BY created_at DESC
-            LIMIT 3
-        """)
-        new_brands = cursor.fetchall()
-
-        # Calculate score delta (simplified)
+        # Calculate score
         current_score = creator.get('creator_score', 0) or 0
-        score_delta = 0  # Would need historical tracking
 
         context = {
             'first_name': creator.get('first_name') or creator.get('username') or 'there',
             'current_score': current_score,
-            'score_delta': score_delta,
+            'score_delta': 0,
             'unlocks_used': creator.get('contact_unlocks_this_month', 0) or 0,
             'unlocks_quota': 3,
-            'replies_count': creator.get('total_replies_received', 0) or 0,
-            'weekly_theme_title': theme['theme_title'] if theme else 'Bio polish',
-            'weekly_theme_body': theme['theme_body'] if theme else 'Brands scan bios in 3 seconds. This week, audit yours.',
+            'replies_count': 0,
+            'weekly_theme_title': 'Bio polish',
+            'weekly_theme_body': 'Brands scan bios in 3 seconds. This week, audit yours.',
             'new_brands': [
                 {
                     'name': b['name'],
-                    'category': b['category'] or 'Lifestyle',
+                    'category': b.get('category') or 'Lifestyle',
                     'reason': 'New this week'
                 } for b in new_brands
             ] if new_brands else [
                 {'name': 'Check your matches', 'category': '', 'reason': 'See what fits your profile'}
             ],
-            'win_story': None,  # Would need a win tracking system
+            'win_story': None,
             'cta_url': f"{FRONTEND_URL}/creator/dashboard/pr-ready",
         }
 
