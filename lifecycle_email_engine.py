@@ -840,13 +840,14 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
         # Get new brands this week
         try:
             cursor.execute("""
-                SELECT name, category FROM pr_brands
+                SELECT brand_name AS name, category FROM pr_brands
                 WHERE created_at >= NOW() - INTERVAL '7 days'
                 ORDER BY created_at DESC
                 LIMIT 3
             """)
             new_brands = cursor.fetchall()
-        except Exception:
+        except Exception as e:
+            print(f"[WEEKLY DIGEST] Error fetching new brands: {e}")
             new_brands = []
 
         context = {
