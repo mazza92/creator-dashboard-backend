@@ -183,8 +183,8 @@ def cron_weekly_digest():
     try:
         # Use get_json(silent=True) to handle non-JSON content types gracefully
         data = request.get_json(silent=True) or {}
-        # Lower batch size for weekly (10) to account for Vercel cold starts
-        batch_size = data.get('batch_size', 10)
+        # Very low batch size (5) to handle Vercel cold starts within cron timeouts
+        batch_size = data.get('batch_size', 5)
         dry_run = data.get('dry_run', False)
         limit = data.get('limit')
         test_email = data.get('test_email')
