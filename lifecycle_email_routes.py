@@ -413,43 +413,120 @@ def test_send_email():
 
         # For skip_checks mode, render and send directly without DB lookups
         if skip_checks:
-            # Map template slugs to files
+            # Map template slugs to files (all 23 lifecycle emails)
             template_map = {
-                'weekly_digest': '21_weekly_digest.html',
+                'verification': '01_verification.html',
                 'welcome_manager': '02_welcome_manager.html',
+                'first_move': '03_first_move.html',
+                'meet_manager': '04_meet_manager.html',
+                'edu_5reasons': '05_edu_5reasons.html',
+                'edu_60sec': '06_edu_60sec.html',
+                'edu_pitch': '07_edu_pitch.html',
+                'edu_followup': '08_edu_followup.html',
+                'edu_edge': '09_edu_edge.html',
+                'pitch_brand': '10_pitch_brand.html',
+                'brand_waiting': '11_brand_waiting.html',
+                'did_reply': '12_did_reply.html',
+                'time_followup': '13_time_followup.html',
+                'doubter_sarah': '14_doubter_sarah.html',
+                'doubter_5pitch': '15_doubter_5pitch.html',
+                'max_quota_hit': '16_max_quota_hit.html',
+                'max_3things': '17_max_3things.html',
+                'max_30day': '18_max_30day.html',
+                'reengagement_new': '19_reengagement_new.html',
+                'reengagement_soft': '20_reengagement_soft.html',
+                'weekly_digest': '21_weekly_digest.html',
+                'celebration_reply': '22_celebration_reply.html',
                 'celebration_first_box': '23_celebration_first_box.html',
             }
 
             template_file = template_map.get(template_slug, f'{template_slug}.html')
 
-            # Build test context with sample data
+            # Comprehensive test context covering all template variables
             context = {
                 'first_name': data.get('first_name', 'Test'),
-                'current_score': 75,
-                'score_delta': 5,
-                'unlocks_used': 1,
-                'unlocks_quota': 3,
-                'weekly_theme_title': 'Bio polish',
-                'weekly_theme_body': 'Brands scan bios in 3 seconds. This week, audit yours.',
-                'new_brands': [
-                    {'name': 'Glossier', 'category': 'Beauty', 'reason': 'New this week'},
-                    {'name': 'Rare Beauty', 'category': 'Beauty', 'reason': 'Matches your niche'},
-                ],
-                'win_story': None,
+                'verify_url': f"{FRONTEND_URL}/verify?token=test123",
                 'cta_url': f"{FRONTEND_URL}/creator/dashboard/pr-ready",
                 'preferences_url': f"{FRONTEND_URL}/creator/dashboard/settings",
                 'unsubscribe_url': f"{FRONTEND_URL}/unsubscribe",
-                'preheader': 'Your weekly digest from Newcollab',
+                'preheader': 'Test email from Newcollab',
+                # Score & unlocks
+                'current_score': 72,
+                'score_delta': 8,
+                'unlocks_used': 2,
+                'unlocks_quota': 3,
+                'unlocks_available': 1,
+                'pitches_sent': 4,
+                'replies_count': 1,
+                'reset_date': 'August 1',
+                'days_until_reset': 5,
+                'month': 'July',
+                'is_pro': False,
+                # Brand-specific
+                'brand_name': 'Summer Fridays',
+                'brand_category': 'Beauty',
+                'brand_response_rate': 15,
+                'brand_slug': 'summer-fridays',
+                'reply_url': f"{FRONTEND_URL}/creator/dashboard/pr-pipeline",
+                'followup_url': f"{FRONTEND_URL}/creator/dashboard/pr-pipeline",
+                'remove_url': f"{FRONTEND_URL}/creator/dashboard/pr-pipeline?remove=1",
+                # Follow-up & pending
+                'pending_count': 2,
+                'pending_brands': [
+                    {'name': 'Glossier', 'days_ago': 8, 'response_rate': 12},
+                    {'name': 'Rare Beauty', 'days_ago': 10, 'response_rate': 18},
+                ],
+                # Re-engagement
+                'new_brands_count': 12,
+                'top_new_brands': [
+                    {'name': 'Rhode Skin', 'category': 'Skincare', 'fit_score': 92},
+                    {'name': 'Tower 28', 'category': 'Beauty', 'fit_score': 87},
+                    {'name': 'Good Molecules', 'category': 'Skincare', 'fit_score': 81},
+                ],
+                # Weekly digest
+                'weekly_theme_title': 'Bio polish',
+                'weekly_theme_body': 'Brands scan bios in 3 seconds. This week, audit yours.',
+                'new_brands': [
+                    {'name': 'Rhode Skin', 'category': 'Skincare', 'reason': 'New this week'},
+                    {'name': 'Tower 28', 'category': 'Beauty', 'reason': 'Matches your niche'},
+                ],
+                'win_story': {
+                    'handle': '@skincarebyjess',
+                    'followers': '3.2K',
+                    'brand': 'Summer Fridays',
+                    'tactic': 'personalized follow-up on day 5',
+                    'summary': 'Landed a full PR skincare set worth $200.'
+                },
             }
 
             # Render template
             html_content = render_template(f'lifecycle/{template_file}', context)
 
-            # Subject mapping
+            # Subject mapping for all templates
             subject_map = {
-                'weekly_digest': 'your monday brief from your manager',
+                'verification': 'Verify your Newcollab account',
                 'welcome_manager': 'your newcollab manager just arrived',
-                'celebration_first_box': 'you got your first PR box',
+                'first_move': 'your first move this week',
+                'meet_manager': 'let me introduce myself',
+                'edu_5reasons': '5 reasons brands ignore pitches',
+                'edu_60sec': 'the 60-second pitch framework',
+                'edu_pitch': 'how to write a pitch that gets replies',
+                'edu_followup': 'the follow-up that actually works',
+                'edu_edge': 'the edge micro-creators have',
+                'pitch_brand': f'ready to pitch {context["brand_name"]}?',
+                'brand_waiting': f'{context["brand_name"]} is waiting for your pitch',
+                'did_reply': 'did you get a reply?',
+                'time_followup': 'time to follow up',
+                'doubter_sarah': 'how sarah landed her first brand deal',
+                'doubter_5pitch': 'what 5 pitches taught me',
+                'max_quota_hit': 'you hit your unlock limit',
+                'max_3things': '3 things to do while you wait',
+                'max_30day': 'your unlocks reset soon',
+                'reengagement_new': 'new brands just dropped',
+                'reengagement_soft': 'still thinking about brand deals?',
+                'weekly_digest': 'your monday brief from your manager',
+                'celebration_reply': 'you got a reply!',
+                'celebration_first_box': 'you got your first PR box!',
             }
             subject = subject_map.get(template_slug, f'Test: {template_slug}')
 
