@@ -786,15 +786,20 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
         if not creator:
             return {}
 
+        unlocks_used = creator.get('daily_unlocks_used', 0) or 0
+        unlocks_quota = 3
+        subscription_tier = creator.get('subscription_tier', 'free')
+
         context = {
             'first_name': creator.get('first_name') or creator.get('username') or 'there',
             'current_score': 0,  # creator_score column doesn't exist
-            'unlocks_used': creator.get('daily_unlocks_used', 0) or 0,
-            'unlocks_quota': 3,
+            'unlocks_used': unlocks_used,
+            'unlocks_quota': unlocks_quota,
+            'unlocks_available': max(0, unlocks_quota - unlocks_used),
             'pitches_sent': creator.get('total_pitches_sent', 0) or 0,
             'replies_count': creator.get('total_replies_received', 0) or 0,
-            'subscription_tier': creator.get('subscription_tier', 'free'),
-            'is_pro': creator.get('subscription_tier') in ('pro', 'elite'),
+            'subscription_tier': subscription_tier,
+            'is_pro': subscription_tier in ('pro', 'elite'),
         }
 
         # Calculate reset date
@@ -805,6 +810,30 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
         context['reset_date'] = reset_date.strftime('%B %d')
         context['days_until_reset'] = (reset_date - today).days
         context['month'] = today.strftime('%B')
+
+        # Get pending follow-ups count (pitched > 7 days ago, no response)
+        try:
+            cursor.execute("""
+                SELECT COUNT(*) as cnt FROM creator_pipeline
+                WHERE creator_id = %s
+                AND stage = 'pitched'
+                AND pitched_at < NOW() - INTERVAL '7 days'
+            """, (creator_id,))
+            row = cursor.fetchone()
+            context['pending_count'] = row['cnt'] if row else 0
+        except Exception:
+            context['pending_count'] = 0
+
+        # Get new brands count (added in last 30 days)
+        try:
+            cursor.execute("""
+                SELECT COUNT(*) as cnt FROM pr_brands
+                WHERE created_at >= NOW() - INTERVAL '30 days'
+            """)
+            row = cursor.fetchone()
+            context['new_brands_count'] = row['cnt'] if row else 0
+        except Exception:
+            context['new_brands_count'] = 0
 
         # Template-specific context
         if template_slug.startswith('max_'):
