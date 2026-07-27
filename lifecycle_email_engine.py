@@ -684,7 +684,7 @@ def process_daily_lifecycle_emails(
                 WHERE u.is_verified = true
                 AND (ep.unsubscribed_all IS NULL OR ep.unsubscribed_all = false)
                 AND (c.lifecycle_emails_sent_today IS NULL OR c.lifecycle_emails_sent_today < %s)
-                ORDER BY c.last_login DESC NULLS LAST
+                ORDER BY c.created_at DESC NULLS LAST
                 LIMIT %s
             """, (MAX_EMAILS_PER_DAY, effective_limit))
 
