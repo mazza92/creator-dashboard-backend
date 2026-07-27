@@ -113,7 +113,7 @@ def determine_lifecycle_state(creator: Dict[str, Any]) -> str:
     # Extract relevant fields
     days_since_signup = (datetime.now() - creator.get('created_at', datetime.now())).days
     days_since_login = (datetime.now() - (creator.get('last_login') or creator.get('created_at', datetime.now()))).days
-    unlocks_used = creator.get('contact_unlocks_this_month', 0) or 0
+    unlocks_used = creator.get('daily_unlocks_used', 0) or 0
     replies_received = creator.get('total_replies_received', 0) or 0
     has_pr_box = creator.get('first_pr_box_received_at') is not None
     subscription_tier = creator.get('subscription_tier', 'free') or 'free'
@@ -145,7 +145,7 @@ def update_creator_state(creator_id: int) -> str:
 
         # Get creator data
         cursor.execute("""
-            SELECT id, created_at, last_login, contact_unlocks_this_month,
+            SELECT id, created_at, last_login, daily_unlocks_used,
                    total_replies_received, first_pr_box_received_at,
                    subscription_tier, lifecycle_state
             FROM creators WHERE id = %s
@@ -558,14 +558,14 @@ def evaluate_trigger(creator: Dict, template: Dict, cursor) -> bool:
         # Check additional conditions
         condition = conditions.get('condition')
         if condition == 'no_unlocks':
-            if (creator.get('contact_unlocks_this_month', 0) or 0) > 0:
+            if (creator.get('daily_unlocks_used', 0) or 0) > 0:
                 return False
         elif condition == 'incomplete_profile':
             # Check if profile is incomplete (simplified check)
             if creator.get('bio') and creator.get('instagram_handle'):
                 return False
         elif condition == 'has_activity':
-            if (creator.get('contact_unlocks_this_month', 0) or 0) == 0:
+            if (creator.get('daily_unlocks_used', 0) or 0) == 0:
                 # Check for any plan actions
                 cursor.execute("""
                     SELECT id FROM ai_manager_actions
@@ -789,7 +789,7 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
         context = {
             'first_name': creator.get('first_name') or creator.get('username') or 'there',
             'current_score': 0,  # creator_score column doesn't exist
-            'unlocks_used': creator.get('contact_unlocks_this_month', 0) or 0,
+            'unlocks_used': creator.get('daily_unlocks_used', 0) or 0,
             'unlocks_quota': 3,
             'pitches_sent': creator.get('total_pitches_sent', 0) or 0,
             'replies_count': creator.get('total_replies_received', 0) or 0,
@@ -879,13 +879,14 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
 
 def build_brand_email_context(creator_id: int, brand_id: int) -> Dict[str, Any]:
     """Build context for brand-specific emails (pitching, follow-up, etc.)."""
+    import re
     conn = get_db_connection()
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Get brand info
+        # Get brand info - use brand_name (not name) as per pr_brands schema
         cursor.execute("""
-            SELECT id, name, slug, category, response_rate
+            SELECT id, brand_name, category, response_rate
             FROM pr_brands WHERE id = %s
         """, (brand_id,))
         brand = cursor.fetchone()
@@ -893,17 +894,20 @@ def build_brand_email_context(creator_id: int, brand_id: int) -> Dict[str, Any]:
         if not brand:
             return {}
 
+        # Generate slug from brand_name (pr_brands has no slug column)
+        brand_slug = re.sub(r'[^a-z0-9]+', '-', brand['brand_name'].lower()).strip('-')
+
         # Get base context
         context = build_email_context(creator_id, 'pitch_brand')
 
         # Add brand-specific fields
         context.update({
-            'brand_name': brand['name'],
-            'brand_slug': brand['slug'],
-            'brand_category': brand['category'],
+            'brand_name': brand['brand_name'],
+            'brand_slug': brand_slug,
+            'brand_category': brand.get('category') or 'Lifestyle',
             'brand_response_rate': brand.get('response_rate'),
-            'cta_url': f"{FRONTEND_URL}/creator/dashboard/pr-pipeline?brand={brand['slug']}",
-            'remove_url': f"{FRONTEND_URL}/creator/dashboard/pr-pipeline?remove={brand['slug']}",
+            'cta_url': f"{FRONTEND_URL}/creator/dashboard/pr-pipeline?brand_id={brand_id}",
+            'remove_url': f"{FRONTEND_URL}/creator/dashboard/pr-pipeline?remove={brand_id}",
         })
 
         return context
@@ -1029,7 +1033,7 @@ def trigger_quota_hit(creator_id: int):
 
         # Check quota
         cursor.execute("""
-            SELECT c.contact_unlocks_this_month, c.subscription_tier, u.email
+            SELECT c.daily_unlocks_used, c.subscription_tier, u.email
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.id = %s
@@ -1042,7 +1046,7 @@ def trigger_quota_hit(creator_id: int):
         if result.get('subscription_tier') in ('pro', 'elite'):
             return False, "Pro user - no quota"
 
-        if (result.get('contact_unlocks_this_month') or 0) < 3:
+        if (result.get('daily_unlocks_used') or 0) < 3:
             return False, "Quota not hit"
 
         context = build_email_context(creator_id, 'max_quota_hit')
