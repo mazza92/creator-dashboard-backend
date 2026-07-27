@@ -52,6 +52,7 @@ from pool_routes import pool_bp
 from indexnow_routes import indexnow_bp
 from email_cron_routes import email_cron_bp
 from lifecycle_email_routes import lifecycle_email_bp
+from lifecycle_email_engine import trigger_welcome_email
 from social_verification_routes import social_verification_bp, detect_country_from_ip, RESTRICTED_REGIONS
 from routes.admin_pr_hunter import admin_pr_hunter_bp
 from routes.admin_brands import admin_brands_bp
@@ -1989,22 +1990,22 @@ def complete_profile():
 
         session.modified = True
 
-        # Send welcome email after profile completion (best practice - user has full profile now)
+        # Send lifecycle welcome email after profile completion
         try:
-            cursor.execute("SELECT email, first_name, role FROM users WHERE id = %s", (user_id,))
-            user_for_welcome = cursor.fetchone()
-            if user_for_welcome:
-                welcome_data = {
-                    'email': user_for_welcome.get('email', ''),
-                    'first_name': user_for_welcome.get('first_name', ''),
-                    'username': username
-                }
-                app.logger.info(f"🎉 Sending welcome email after profile completion for user_id: {user_id}")
-                welcome_sent = send_welcome_email(user_id, user_for_welcome.get('role', 'creator'), welcome_data)
-                if welcome_sent:
-                    app.logger.info(f"✅ Welcome email sent successfully to {welcome_data['email']}")
-                else:
-                    app.logger.warning(f"⚠️ Welcome email returned False for {welcome_data['email']}")
+            if creator_row:
+                cursor.execute("SELECT email, first_name FROM users WHERE id = %s", (user_id,))
+                user_for_welcome = cursor.fetchone()
+                if user_for_welcome:
+                    app.logger.info(f"🎉 Sending lifecycle welcome email for creator_id: {creator_row['id']}")
+                    success, msg = trigger_welcome_email(
+                        creator_id=creator_row['id'],
+                        email=user_for_welcome.get('email', ''),
+                        first_name=user_for_welcome.get('first_name')
+                    )
+                    if success:
+                        app.logger.info(f"✅ Lifecycle welcome email sent: {msg}")
+                    else:
+                        app.logger.warning(f"⚠️ Lifecycle welcome email skipped: {msg}")
         except Exception as welcome_error:
             app.logger.error(f"⚠️ Failed to send welcome email for user_id {user_id}: {str(welcome_error)}")
             # Continue - welcome email failure shouldn't break onboarding
@@ -2516,18 +2517,21 @@ def onboarding_step3():
         sync_niche_to_pr_wishlist(creator_id, json.dumps(niches), conn)
         conn.commit()
 
-        # Send welcome email now that onboarding is complete
+        # Send lifecycle welcome email now that onboarding is complete
         try:
             cursor.execute("SELECT email, first_name FROM users WHERE id = %s", (user_id,))
             user_data = cursor.fetchone()
-            cursor.execute("SELECT username FROM creators WHERE id = %s", (creator_id,))
-            creator_data = cursor.fetchone()
             if user_data:
-                send_welcome_email(user_id, 'creator', {
-                    'email': user_data.get('email', ''),
-                    'first_name': user_data.get('first_name', ''),
-                    'username': creator_data.get('username', '') if creator_data else ''
-                })
+                app.logger.info(f"🎉 Sending lifecycle welcome email for creator_id: {creator_id}")
+                success, msg = trigger_welcome_email(
+                    creator_id=creator_id,
+                    email=user_data.get('email', ''),
+                    first_name=user_data.get('first_name')
+                )
+                if success:
+                    app.logger.info(f"✅ Lifecycle welcome email sent: {msg}")
+                else:
+                    app.logger.warning(f"⚠️ Lifecycle welcome email skipped: {msg}")
         except Exception as welcome_error:
             app.logger.error(f"⚠️ Failed to send welcome email: {str(welcome_error)}")
 
