@@ -4126,20 +4126,13 @@ def collaboration_requests():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Fetch collaboration requests with unread message count using JOIN (not correlated subquery)
+        # Fetch collaboration requests (simplified - messages table doesn't have request_id column)
         cursor.execute('''
             SELECT
-                cr.id, cr.creator_id, cr.brand_id, cr.status, cr.message,
-                cr.created_at, cr.updated_at,
-                COALESCE(m.unread_count, 0) AS unread_count
-            FROM collaboration_requests cr
-            LEFT JOIN (
-                SELECT request_id, COUNT(*) AS unread_count
-                FROM messages
-                WHERE is_read = FALSE AND sender_type = 'creator'
-                GROUP BY request_id
-            ) m ON cr.id = m.request_id
-            ORDER BY cr.created_at DESC
+                id, creator_id, brand_id, status, message,
+                created_at, updated_at
+            FROM collaboration_requests
+            ORDER BY created_at DESC
             LIMIT 100
         ''')
         requests = cursor.fetchall()

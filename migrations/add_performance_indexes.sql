@@ -9,9 +9,8 @@ CREATE INDEX IF NOT EXISTS idx_collab_requests_brand_id ON collaboration_request
 CREATE INDEX IF NOT EXISTS idx_collab_requests_status ON collaboration_requests(status);
 CREATE INDEX IF NOT EXISTS idx_collab_requests_created_at ON collaboration_requests(created_at DESC);
 
--- Messages indexes (for unread count queries)
-CREATE INDEX IF NOT EXISTS idx_messages_request_id ON messages(request_id);
-CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(request_id, is_read, sender_type) WHERE is_read = FALSE;
+-- Messages indexes
+-- NOTE: messages table doesn't have request_id column - skipping those indexes
 
 -- Bookings indexes (dashboard stats queries)
 CREATE INDEX IF NOT EXISTS idx_bookings_creator_id ON bookings(creator_id);
