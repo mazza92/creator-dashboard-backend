@@ -669,13 +669,39 @@ Analyze and return JSON only.'''
         text = re.sub(r',\s*]', ']', text)
 
         # Fix single quotes to double quotes (common LLM error)
-        # Only replace if not inside a string already
         text = re.sub(r"(?<![a-zA-Z])'([^']*)'(?=\s*[,}\]])", r'"\1"', text)
+
+        # Fix unquoted property names (key: value -> "key": value)
+        text = re.sub(r'([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', text)
+
+        # Fix missing colons after keys (common truncation issue)
+        text = re.sub(r'"([^"]+)"\s+("|\d|true|false|\[|\{)', r'"\1": \2', text)
+
+        # Fix boolean values not properly formatted
+        text = re.sub(r':\s*True\b', ': true', text)
+        text = re.sub(r':\s*False\b', ': false', text)
+        text = re.sub(r':\s*None\b', ': null', text)
+
+        # Fix newlines inside strings (replace with space)
+        def fix_string_newlines(match):
+            return match.group(0).replace('\n', ' ').replace('\r', '')
+        text = re.sub(r'"[^"]*"', fix_string_newlines, text)
 
         # Step 4: Try to parse
         try:
             return json.loads(text)
         except json.JSONDecodeError as e:
+            # Step 5: Try Python's ast.literal_eval as fallback
+            try:
+                import ast
+                # Convert JSON-like to Python-like
+                py_text = text.replace('true', 'True').replace('false', 'False').replace('null', 'None')
+                result = ast.literal_eval(py_text)
+                if isinstance(result, dict):
+                    return result
+            except:
+                pass
+
             print(f"[TextAnalysis] JSON repair failed: {e}")
             # Last resort: try to extract key fields manually
             return self._extract_fields_manually(original_text)
@@ -687,43 +713,112 @@ Analyze and return JSON only.'''
         """
         result = self._get_fallback_vision_result()
 
-        # Try to extract primary_niche
+        # Try to extract primary_niche (most important field)
         niche_patterns = [
             r'"primary_niche"\s*:\s*"([^"]+)"',
             r"primary_niche['\"]?\s*:\s*['\"]?(\w+)",
+            r'"niche"\s*:\s*"([^"]+)"',
         ]
         for pattern in niche_patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
-                result['primary_niche'] = match.group(1).lower()
+                niche = match.group(1).lower().strip()
+                # Normalize common variations
+                niche_map = {
+                    'cosmetics': 'makeup',
+                    'beauty': 'beauty',
+                    'skin': 'skincare',
+                    'hair': 'haircare',
+                    'clothes': 'fashion',
+                    'style': 'fashion',
+                    'health': 'wellness',
+                    'workout': 'fitness',
+                    'gym': 'fitness',
+                    'cooking': 'food',
+                    'recipes': 'food',
+                    'dogs': 'pet',
+                    'cats': 'pet',
+                    'animals': 'pet',
+                    'decor': 'home',
+                    'interior': 'home',
+                    'gadgets': 'tech',
+                }
+                result['primary_niche'] = niche_map.get(niche, niche)
                 break
 
         # Try to extract confidence
-        conf_match = re.search(r'"primary_niche_confidence"\s*:\s*(\d+)', text)
+        conf_match = re.search(r'(?:primary_niche_)?confidence["\']?\s*:\s*(\d+)', text, re.IGNORECASE)
         if conf_match:
-            result['primary_niche_confidence'] = int(conf_match.group(1))
+            result['primary_niche_confidence'] = min(100, int(conf_match.group(1)))
+
+        # Extract secondary_niches
+        secondary_match = re.search(r'"secondary_niches"\s*:\s*\[(.*?)\]', text, re.DOTALL)
+        if secondary_match:
+            niches_str = secondary_match.group(1)
+            niches = re.findall(r'"([^"]+)"', niches_str)
+            result['secondary_niches'] = [n.lower() for n in niches[:5]]
 
         # Extract brands_already_tagged
         brands_match = re.search(r'"brands_already_tagged"\s*:\s*\[(.*?)\]', text, re.DOTALL)
         if brands_match:
             brands_str = brands_match.group(1)
             brands = re.findall(r'"([^"]+)"', brands_str)
-            result['brand_readiness_signals']['brands_already_tagged'] = brands
+            result['brand_readiness_signals']['brands_already_tagged'] = brands[:10]
 
         # Extract content_themes
         themes_match = re.search(r'"content_themes"\s*:\s*\[(.*?)\]', text, re.DOTALL)
         if themes_match:
             themes_str = themes_match.group(1)
             themes = re.findall(r'"([^"]+)"', themes_str)
-            result['content_themes'] = themes
+            result['content_themes'] = themes[:10]
+
+        # Extract aesthetic color_palette
+        palette_match = re.search(r'"color_palette"\s*:\s*"([^"]+)"', text, re.IGNORECASE)
+        if palette_match:
+            result['aesthetic']['color_palette'] = palette_match.group(1).lower()
+
+        # Extract composition_style
+        comp_match = re.search(r'"composition_style"\s*:\s*"([^"]+)"', text, re.IGNORECASE)
+        if comp_match:
+            result['aesthetic']['composition_style'] = comp_match.group(1).lower()
 
         # Check for shows_products_in_use
         products_match = re.search(r'"shows_products_in_use"\s*:\s*(true|false)', text, re.IGNORECASE)
         if products_match:
             result['brand_readiness_signals']['shows_products_in_use'] = products_match.group(1).lower() == 'true'
 
+        # Check for captions_niche_relevant
+        captions_match = re.search(r'"captions_niche_relevant"\s*:\s*(true|false)', text, re.IGNORECASE)
+        if captions_match:
+            result['brand_readiness_signals']['captions_niche_relevant'] = captions_match.group(1).lower() == 'true'
+
+        # Check for already_features_brands
+        features_match = re.search(r'"already_features_brands"\s*:\s*(true|false)', text, re.IGNORECASE)
+        if features_match:
+            result['brand_readiness_signals']['already_features_brands'] = features_match.group(1).lower() == 'true'
+
+        # Extract content_format_breakdown counts
+        format_patterns = {
+            'product_close_ups': r'"product_close_ups"\s*:\s*(\d+)',
+            'grwm_routine': r'"grwm_routine"\s*:\s*(\d+)',
+            'before_after': r'"before_after"\s*:\s*(\d+)',
+            'selfies_face_focus': r'"selfies_face_focus"\s*:\s*(\d+)',
+            'lifestyle_context': r'"lifestyle_context"\s*:\s*(\d+)',
+        }
+        for key, pattern in format_patterns.items():
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                result['content_format_breakdown'][key] = min(12, int(match.group(1)))
+
+        # Extract content_gaps
+        gaps_match = re.search(r'"content_gaps"\s*:\s*\[(.*?)\]', text, re.DOTALL)
+        if gaps_match:
+            gaps_str = gaps_match.group(1)
+            gaps = re.findall(r'"([^"]+)"', gaps_str)
+            result['content_gaps'] = gaps[:5]
+
         result['_extracted_manually'] = True
-        print(f"[TextAnalysis] Extracted manually: niche={result['primary_niche']}")
+        print(f"[TextAnalysis] Extracted manually: niche={result['primary_niche']}, confidence={result.get('primary_niche_confidence')}")
         return result
 
     def _get_fallback_vision_result(self) -> Dict[str, Any]:
