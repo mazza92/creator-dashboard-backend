@@ -94,7 +94,7 @@ def require_admin_auth(f):
 # CRON JOB ENDPOINTS
 # ============================================
 
-@lifecycle_email_bp.route('/api/lifecycle-email/cron/daily', methods=['POST'])
+@lifecycle_email_bp.route('/api/lifecycle-email/cron/daily', methods=['GET', 'POST'])
 @require_cron_auth
 def cron_daily_emails():
     """
@@ -157,7 +157,7 @@ def cron_daily_emails():
         }), 500
 
 
-@lifecycle_email_bp.route('/api/lifecycle-email/cron/weekly-digest', methods=['POST'])
+@lifecycle_email_bp.route('/api/lifecycle-email/cron/weekly-digest', methods=['GET', 'POST'])
 @require_cron_auth
 def cron_weekly_digest():
     """
