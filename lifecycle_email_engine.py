@@ -114,7 +114,8 @@ def determine_lifecycle_state(creator: Dict[str, Any]) -> str:
     # Note: last_login doesn't exist in DB, using created_at as proxy
     days_since_signup = (datetime.now() - creator.get('created_at', datetime.now())).days
     days_since_login = days_since_signup  # Using signup date since last_login not tracked
-    unlocks_used = creator.get('daily_unlocks_used', 0) or 0
+    # Use total_unlocks (lifetime) not daily_unlocks_used (resets daily!)
+    unlocks_used = creator.get('total_unlocks', 0) or creator.get('daily_unlocks_used', 0) or 0
     replies_received = creator.get('total_replies_received', 0) or 0
     has_pr_box = creator.get('first_pr_box_received_at') is not None
     subscription_tier = creator.get('subscription_tier', 'free') or 'free'
@@ -153,6 +154,14 @@ def update_creator_state(creator_id: int) -> str:
             WHERE c.id = %s
         """, (creator_id,))
         creator = cursor.fetchone()
+
+        # Get TOTAL lifetime unlocks (not daily which resets)
+        cursor.execute("""
+            SELECT COUNT(*) as total FROM brand_unlocks WHERE creator_id = %s
+        """, (creator_id,))
+        unlock_row = cursor.fetchone()
+        if creator:
+            creator['total_unlocks'] = unlock_row['total'] if unlock_row else 0
 
         if not creator:
             return 'unknown'
@@ -561,15 +570,27 @@ def evaluate_trigger(creator: Dict, template: Dict, cursor) -> bool:
         # Check additional conditions
         condition = conditions.get('condition')
         if condition == 'no_unlocks':
-            if (creator.get('daily_unlocks_used', 0) or 0) > 0:
+            # Check TOTAL lifetime unlocks, not just daily (daily resets each day!)
+            cursor.execute("""
+                SELECT COUNT(*) as total FROM brand_unlocks WHERE creator_id = %s
+            """, (creator_id,))
+            unlock_row = cursor.fetchone()
+            total_unlocks = unlock_row['total'] if unlock_row else 0
+            if total_unlocks > 0:
                 return False
         elif condition == 'incomplete_profile':
             # Check if profile is incomplete (simplified check)
             if creator.get('bio') and creator.get('instagram_handle'):
                 return False
         elif condition == 'has_activity':
-            if (creator.get('daily_unlocks_used', 0) or 0) == 0:
-                # Check for any plan actions
+            # Check TOTAL lifetime unlocks (not daily which resets)
+            cursor.execute("""
+                SELECT COUNT(*) as total FROM brand_unlocks WHERE creator_id = %s
+            """, (creator_id,))
+            unlock_row = cursor.fetchone()
+            total_unlocks = unlock_row['total'] if unlock_row else 0
+            if total_unlocks == 0:
+                # Also check for any plan actions
                 cursor.execute("""
                     SELECT id FROM ai_manager_actions
                     WHERE creator_id = %s AND completed_at IS NOT NULL
