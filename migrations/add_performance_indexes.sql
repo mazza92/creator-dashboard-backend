@@ -29,9 +29,9 @@ CREATE INDEX IF NOT EXISTS idx_creators_created_at ON creators(created_at DESC);
 
 -- Brands indexes
 CREATE INDEX IF NOT EXISTS idx_brands_spotlight ON brands(spotlight) WHERE spotlight = TRUE;
-CREATE INDEX IF NOT EXISTS idx_brands_status ON brands(status);
 CREATE INDEX IF NOT EXISTS idx_brands_category ON brands(category);
 CREATE INDEX IF NOT EXISTS idx_brands_name ON brands(name);
+-- NOTE: status column doesn't exist on brands
 
 -- Campaigns indexes
 CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns(status);
