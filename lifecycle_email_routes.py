@@ -126,13 +126,14 @@ def cron_daily_emails():
         data = request.get_json(silent=True) or {}
 
         # Query params take precedence, then JSON body, then defaults
-        batch_size = int(request.args.get('batch_size', data.get('batch_size', 10)))
+        # Use very small default (3) for cron services with short timeouts
+        batch_size = int(request.args.get('batch_size', data.get('batch_size', 3)))
         dry_run = request.args.get('dry_run', str(data.get('dry_run', 'false'))).lower() == 'true'
         limit = request.args.get('limit', data.get('limit'))
         if limit:
             limit = int(limit)
         else:
-            limit = 10  # Default limit to prevent timeouts
+            limit = 3  # Very small default for cron services with 30s timeout
         test_email = request.args.get('test_email', data.get('test_email'))
 
         # Pass test parameters to the engine
@@ -191,13 +192,13 @@ def cron_weekly_digest():
         data = request.get_json(silent=True) or {}
 
         # Query params take precedence, then JSON body, then defaults
-        batch_size = int(request.args.get('batch_size', data.get('batch_size', 5)))
+        batch_size = int(request.args.get('batch_size', data.get('batch_size', 3)))
         dry_run = request.args.get('dry_run', str(data.get('dry_run', 'false'))).lower() == 'true'
         limit = request.args.get('limit', data.get('limit'))
         if limit:
             limit = int(limit)
         else:
-            limit = 10  # Default limit to prevent timeouts
+            limit = 3  # Very small default for cron services with 30s timeout
         test_email = request.args.get('test_email', data.get('test_email'))
         skip_day_check = request.args.get('skip_day_check', str(data.get('skip_day_check', 'false'))).lower() == 'true'
 
