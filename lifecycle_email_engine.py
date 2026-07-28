@@ -143,12 +143,14 @@ def update_creator_state(creator_id: int) -> str:
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Get creator data
+        # Get creator data (join users for last_login)
         cursor.execute("""
-            SELECT id, created_at, last_login, daily_unlocks_used,
-                   total_replies_received, first_pr_box_received_at,
-                   subscription_tier, lifecycle_state
-            FROM creators WHERE id = %s
+            SELECT c.id, c.created_at, u.last_login, c.daily_unlocks_used,
+                   c.total_replies_received, c.first_pr_box_received_at,
+                   c.subscription_tier, c.lifecycle_state
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE c.id = %s
         """, (creator_id,))
         creator = cursor.fetchone()
 
@@ -454,8 +456,9 @@ def get_eligible_emails(creator_id: int) -> List[Dict[str, Any]]:
         cursor.execute("""
             SELECT c.*,
                    u.email,
+                   u.last_login,
                    EXTRACT(DAY FROM NOW() - c.created_at) as days_since_signup,
-                   EXTRACT(DAY FROM NOW() - COALESCE(c.last_login, c.created_at)) as days_since_login
+                   EXTRACT(DAY FROM NOW() - COALESCE(u.last_login, c.created_at)) as days_since_login
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.id = %s
