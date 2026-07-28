@@ -12,7 +12,7 @@ import json
 import re
 import requests
 from html import unescape
-from datetime import datetime
+from datetime import datetime, date
 from decimal import Decimal
 from urllib.parse import urlparse, urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
