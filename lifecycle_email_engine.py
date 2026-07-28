@@ -690,13 +690,15 @@ def process_daily_lifecycle_emails(
 
         # Build query based on parameters
         if test_email:
-            # Only process the specific test email
+            # Only process the specific test email (still respect unsubscribe)
             cursor.execute("""
                 SELECT c.id, c.user_id, u.email, c.lifecycle_state
                 FROM creators c
                 JOIN users u ON c.user_id = u.id
+                LEFT JOIN email_preferences ep ON ep.creator_id = c.id
                 WHERE u.email = %s
                 AND u.is_verified = true
+                AND ep.unsubscribed_at IS NULL
             """, (test_email,))
         else:
             # Get creators who might need emails
@@ -708,7 +710,7 @@ def process_daily_lifecycle_emails(
                 JOIN users u ON c.user_id = u.id
                 LEFT JOIN email_preferences ep ON ep.creator_id = c.id
                 WHERE u.is_verified = true
-                AND (ep.unsubscribed_all IS NULL OR ep.unsubscribed_all = false)
+                AND ep.unsubscribed_at IS NULL
                 AND (c.lifecycle_emails_sent_today IS NULL OR c.lifecycle_emails_sent_today < %s)
                 ORDER BY c.created_at DESC NULLS LAST
                 LIMIT %s
@@ -811,22 +813,26 @@ def process_weekly_digest(
 
         # Build query based on parameters
         if test_email:
-            # Only process the specific test email
+            # Only process the specific test email (still respect unsubscribe)
             cursor.execute("""
                 SELECT c.id, c.user_id, u.email
                 FROM creators c
                 JOIN users u ON c.user_id = u.id
+                LEFT JOIN email_preferences ep ON ep.creator_id = c.id
                 WHERE u.email = %s
                 AND u.is_verified = true
+                AND ep.unsubscribed_at IS NULL
             """, (test_email,))
         else:
-            # Get verified creators - use dedup to avoid sending twice per week
+            # Get verified creators - exclude unsubscribed
             effective_limit = limit if limit else batch_size
             cursor.execute("""
                 SELECT c.id, c.user_id, u.email
                 FROM creators c
                 JOIN users u ON c.user_id = u.id
+                LEFT JOIN email_preferences ep ON ep.creator_id = c.id
                 WHERE u.is_verified = true
+                AND ep.unsubscribed_at IS NULL
                 ORDER BY c.id
                 LIMIT %s
             """, (effective_limit,))
