@@ -584,7 +584,7 @@ def stripe_webhook():
                     stripe_customer_id = %s,
                     subscription_started_at = NOW()
                 WHERE id = %s
-                RETURNING id, username, ig_followers
+                RETURNING id, username, followers_count
             ''', (tier, subscription_id, customer_id, creator_id))
             updated_creator = cursor.fetchone()
 
@@ -621,7 +621,7 @@ def stripe_webhook():
                 'id': creator_id,
                 'username': updated_creator.get('username') if updated_creator else 'Unknown',
                 'email': user_row.get('email') if user_row else 'Unknown',
-                'followers': updated_creator.get('ig_followers', 0) if updated_creator else 0
+                'followers': updated_creator.get('followers_count', 0) if updated_creator else 0
             }
             send_pro_subscriber_notification(creator_data, tier, amount_total, interval)
 
