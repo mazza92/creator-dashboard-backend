@@ -111,8 +111,9 @@ def determine_lifecycle_state(creator: Dict[str, Any]) -> str:
     States: new, explorer, engaged, doubter, maximizer, winner, dormant
     """
     # Extract relevant fields
+    # Note: last_login doesn't exist in DB, using created_at as proxy
     days_since_signup = (datetime.now() - creator.get('created_at', datetime.now())).days
-    days_since_login = (datetime.now() - (creator.get('last_login') or creator.get('created_at', datetime.now()))).days
+    days_since_login = days_since_signup  # Using signup date since last_login not tracked
     unlocks_used = creator.get('daily_unlocks_used', 0) or 0
     replies_received = creator.get('total_replies_received', 0) or 0
     has_pr_box = creator.get('first_pr_box_received_at') is not None
@@ -143,13 +144,12 @@ def update_creator_state(creator_id: int) -> str:
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Get creator data (join users for last_login)
+        # Get creator data
         cursor.execute("""
-            SELECT c.id, c.created_at, u.last_login, c.daily_unlocks_used,
+            SELECT c.id, c.created_at, c.daily_unlocks_used,
                    c.total_replies_received, c.first_pr_box_received_at,
                    c.subscription_tier, c.lifecycle_state
             FROM creators c
-            JOIN users u ON c.user_id = u.id
             WHERE c.id = %s
         """, (creator_id,))
         creator = cursor.fetchone()
@@ -453,12 +453,12 @@ def get_eligible_emails(creator_id: int) -> List[Dict[str, Any]]:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         # Get creator data with all relevant fields
+        # Note: last_login column doesn't exist, using created_at as fallback
         cursor.execute("""
             SELECT c.*,
                    u.email,
-                   u.last_login,
                    EXTRACT(DAY FROM NOW() - c.created_at) as days_since_signup,
-                   EXTRACT(DAY FROM NOW() - COALESCE(u.last_login, c.created_at)) as days_since_login
+                   EXTRACT(DAY FROM NOW() - c.created_at) as days_since_login
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.id = %s
