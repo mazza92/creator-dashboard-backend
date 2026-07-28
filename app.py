@@ -4704,13 +4704,10 @@ def creator_submission_history():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         
+        # Simplified query - messages table doesn't have request_id column
         cursor.execute('''
             SELECT cr.id, cr.content_brief, cr.status, b.name AS brand_name,
-            (SELECT COUNT(*)
-            FROM messages 
-            WHERE request_id = cr.id 
-            AND is_read = FALSE 
-            AND sender_type = 'brand') AS unread_count
+            0 AS unread_count
             FROM collaboration_requests cr
             JOIN brands b ON cr.brand_id = b.id
             WHERE cr.creator_id = %s
@@ -5204,62 +5201,19 @@ def inquire_application(application_id):
 
 
 # API for sending messages
+# NOTE: messages table uses booking_id, not request_id - this endpoint is deprecated
 @app.route('/messages', methods=['POST'])
 def send_message():
-    data = request.json
-    request_id = data.get('request_id')
-    sender_type = data.get('sender_type')  # 'brand' or 'creator'
-    message = data.get('message')
-
-    if not request_id or not sender_type or not message:
-        return jsonify({'error': 'Missing required fields'}), 400
-
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        # Insert the message into the messages table with is_read = FALSE
-        cursor.execute('''
-            INSERT INTO messages (request_id, sender_type, message, created_at, is_read)
-            VALUES (%s, %s, %s, NOW(), FALSE)
-        ''', (request_id, sender_type, message))
-
-        conn.commit()
-        conn.close()
-
-        return jsonify({'message': 'Message sent successfully'}), 201
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    return jsonify({'error': 'This messaging endpoint is not available'}), 501
 
 
 
 
 # API for fetching messages for a specific request
+# NOTE: messages table uses booking_id, not request_id - returning empty for now
 @app.route('/messages/<int:request_id>', methods=['GET'])
 def get_messages_for_request(request_id):
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-         # Fetch all messages for the given request_id
-        cursor.execute('''
-            SELECT * FROM messages WHERE request_id = %s ORDER BY created_at ASC
-        ''', (request_id,))
-        messages = cursor.fetchall()
-
-        # Mark all unread messages for this request as read
-        cursor.execute('''
-            UPDATE messages
-            SET is_read = TRUE
-            WHERE request_id = %s AND is_read = FALSE
-        ''', (request_id,))
-
-        conn.commit()
-        conn.close()
-
-        return jsonify(messages), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    return jsonify([]), 200
 
 
 @app.route('/reply-inquiry/<int:id>', methods=['POST'])
@@ -5267,16 +5221,12 @@ def reply_inquiry(id):
     try:
         data = request.json
         reply_message = data.get('message')
-        sender_type = data.get('sender_type')
         conn = get_db_connection()
         cursor = conn.cursor()
+        # Only update collaboration_requests - messages table uses booking_id not request_id
         cursor.execute('''
-            INSERT INTO messages (request_id, sender_type, message, created_at)
-            VALUES (%s, %s, %s, NOW())
-        ''', (id, sender_type, reply_message,))
-        cursor.execute('''
-            UPDATE collaboration_requests 
-            SET inquire_message = %s, status = %s 
+            UPDATE collaboration_requests
+            SET inquire_message = %s, status = %s
             WHERE id = %s
         ''', (reply_message, 'Waiting for Brand Response', id))
         conn.commit()
