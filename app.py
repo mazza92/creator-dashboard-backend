@@ -53,7 +53,6 @@ from indexnow_routes import indexnow_bp
 from email_cron_routes import email_cron_bp
 from lifecycle_email_routes import lifecycle_email_bp
 from lifecycle_email_engine import trigger_welcome_email
-from blog_search_routes import blog_search_bp
 from social_verification_routes import social_verification_bp, detect_country_from_ip, RESTRICTED_REGIONS
 from routes.admin_pr_hunter import admin_pr_hunter_bp
 from routes.admin_brands import admin_brands_bp
@@ -278,7 +277,6 @@ app.register_blueprint(pool_bp)
 app.register_blueprint(indexnow_bp)
 app.register_blueprint(email_cron_bp)
 app.register_blueprint(lifecycle_email_bp)
-app.register_blueprint(blog_search_bp)
 app.register_blueprint(social_verification_bp)
 if pr_ready_bp is not None:
     app.register_blueprint(pr_ready_bp)
@@ -857,13 +855,6 @@ def google_signup():
         email = data.get('email')
         name = data.get('name')
 
-        # Blog widget / landing page signup context
-        signup_ref = data.get('signup_ref', '')
-        first_unlock_intent = data.get('first_unlock_intent', '')
-        brand_query = data.get('brand_query', '')
-        signup_source_page = data.get('signup_source_page', '')
-        signup_intent = data.get('signup_intent', '')
-
         app.logger.debug(f"Received Google Sign-In request: email={email}, name={name}, idToken={id_token_str[:50]}...")
 
         # Verify Firebase ID token
@@ -981,37 +972,6 @@ def google_signup():
             )
             creator_id = cursor.fetchone()['id']
             app.logger.info(f"Created new creator with ID: {creator_id}")
-
-            # Store blog widget signup context (if any)
-            if signup_ref or first_unlock_intent or signup_source_page or signup_intent:
-                signup_meta = {
-                    'ref': signup_ref or None,
-                    'first_unlock_intent': first_unlock_intent or None,
-                    'source_page': signup_source_page or None,
-                    'intent': signup_intent or None,
-                }
-                try:
-                    cursor.execute("""
-                        UPDATE users SET signup_meta = %s WHERE id = %s
-                    """, (json.dumps(signup_meta), user_id))
-                except Exception:
-                    try:
-                        cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS signup_meta JSONB")
-                        cursor.execute("UPDATE users SET signup_meta = %s WHERE id = %s", (json.dumps(signup_meta), user_id))
-                    except Exception as meta_error:
-                        app.logger.warning(f"⚠️ Could not store signup_meta: {str(meta_error)}")
-                app.logger.info(f"📊 Signup context stored for {email}: ref={signup_ref}, brand={first_unlock_intent}")
-
-            # Log unmatched brand query to brand_demand table for content planning
-            if brand_query:
-                try:
-                    cursor.execute("""
-                        INSERT INTO brand_demand (query_raw, query_normalized, source_page, ip_hash)
-                        VALUES (%s, %s, %s, %s)
-                    """, (brand_query, brand_query.lower().strip(), signup_source_page or 'signup', None))
-                    app.logger.info(f"📝 Brand demand logged from Google signup: {brand_query}")
-                except Exception as demand_error:
-                    app.logger.warning(f"⚠️ Could not log brand_demand: {str(demand_error)}")
 
             conn.commit()
 
@@ -1810,19 +1770,11 @@ def get_creators():
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        # Paginated with specific columns to avoid heavy payload
-        limit = request.args.get('limit', 50, type=int)
-        offset = request.args.get('offset', 0, type=int)
-        cursor.execute('''
-            SELECT id, user_id, name, username, bio, followers_count,
-                   instagram_handle, tiktok_handle, subscription_tier, created_at
-            FROM creators
-            ORDER BY created_at DESC
-            LIMIT %s OFFSET %s
-        ''', (min(limit, 200), offset))
+        
+        # Fetch creators
+        cursor.execute('SELECT * FROM creators')
         creators = cursor.fetchall()
-
+        
         conn.close()
 
         return jsonify(creators)
@@ -4054,7 +4006,7 @@ def get_creator_stats():
     if not creator_id:
         app.logger.error("Unauthorized: No creator_id in session")
         return jsonify({"error": "Unauthorized"}), 403
-
+    
     try:
         conn = get_db_connection()
         if not conn:
@@ -4062,26 +4014,43 @@ def get_creator_stats():
             return jsonify({'error': 'Database connection failed'}), 500
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Single optimized query combining all 3 stats (was 3 separate queries)
+        # Total Earnings: Sum of bid_amount minus platform_fee for Sponsor and Campaign Invite
         cursor.execute('''
-            SELECT
-                COALESCE(SUM(
-                    CASE WHEN payment_status IN ('Completed', 'Paid', 'On Hold', 'Pending')
-                    THEN COALESCE(bid_amount, 0) - COALESCE(platform_fee, 0)
-                    ELSE 0 END
-                ), 0) AS total_earnings,
-                COUNT(CASE WHEN payment_status IN ('On Hold', 'Pending') THEN 1 END) AS active_campaigns,
-                COUNT(CASE WHEN content_status IN ('Confirmed', 'Pending', 'Revision Requested', 'Approved') THEN 1 END) AS pending_actions
-            FROM bookings
-            WHERE creator_id = %s
-            AND type IN ('Sponsor', 'Campaign Invite')
+            SELECT COALESCE(SUM(
+                COALESCE(b.bid_amount, 0) - 
+                COALESCE(b.platform_fee, 0)
+            ), 0) AS total_earnings
+            FROM bookings b
+            WHERE b.creator_id = %s 
+            AND b.type IN ('Sponsor', 'Campaign Invite')
+            AND b.payment_status IN ('Completed', 'Paid', 'On Hold', 'Pending')
         ''', (creator_id,))
-        result = cursor.fetchone()
+        total_earnings = cursor.fetchone()['total_earnings'] or 0.0
+
+        # Active Campaigns: Count of active Sponsor and Campaign Invite bookings
+        cursor.execute('''
+            SELECT COUNT(*) AS active_campaigns
+            FROM bookings b
+            WHERE b.creator_id = %s 
+            AND b.type IN ('Sponsor', 'Campaign Invite')
+            AND b.payment_status IN ('On Hold', 'Pending')
+        ''', (creator_id,))
+        active_campaigns = cursor.fetchone()['active_campaigns'] or 0
+
+        # Pending Actions: Count of bookings awaiting creator action
+        cursor.execute('''
+            SELECT COUNT(*) AS pending_actions
+            FROM bookings b
+            WHERE b.creator_id = %s 
+            AND b.type IN ('Sponsor', 'Campaign Invite')
+            AND b.content_status IN ('Confirmed', 'Pending', 'Revision Requested', 'Approved')
+        ''', (creator_id,))
+        pending_actions = cursor.fetchone()['pending_actions'] or 0
 
         stats = {
-            "total_earnings": float(result['total_earnings'] or 0),
-            "active_campaigns": result['active_campaigns'] or 0,
-            "pending_actions": result['pending_actions'] or 0
+            "total_earnings": float(total_earnings),
+            "active_campaigns": active_campaigns,
+            "pending_actions": pending_actions
         }
 
         app.logger.info(f"🟢 Stats fetched for creator_id={creator_id}: {stats}")
@@ -4096,9 +4065,7 @@ def get_creator_stats():
 
 @app.route('/creator-recent-requests', methods=['GET'])
 def get_creator_recent_requests():
-    creator_id = session.get('creator_id')
-    if not creator_id:
-        return jsonify({'error': 'Not authenticated'}), 401
+    creator_id = 1  # Example: session.get('creator_id', 1)
     try:
         requests_data = query_to_fetch_recent_requests(creator_id)
         if requests_data:
@@ -4111,9 +4078,7 @@ def get_creator_recent_requests():
 
 @app.route('/creator-submission-metrics', methods=['GET'])
 def get_submission_metrics():
-    creator_id = session.get('creator_id')
-    if not creator_id:
-        return jsonify({'error': 'Not authenticated'}), 401
+    creator_id = 1  # For testing, replace with actual logged-in creator's ID
     metrics_data = query_to_fetch_submission_metrics(creator_id)
     return jsonify(metrics_data)
 
@@ -4125,18 +4090,15 @@ def collaboration_requests():
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        # Fetch collaboration requests (simplified - messages table doesn't have request_id column)
+        
+        # Fetch collaboration requests (messages table doesn't have request_id - hardcode unread to 0)
         cursor.execute('''
-            SELECT
-                id, creator_id, brand_id, status, message,
-                created_at, updated_at
-            FROM collaboration_requests
-            ORDER BY created_at DESC
-            LIMIT 100
+            SELECT cr.*, 0 AS unread_count
+            FROM collaboration_requests cr
+            ORDER BY cr.created_at DESC
         ''')
         requests = cursor.fetchall()
-
+        
         # Return the fetched data
         return jsonify(requests), 200
         
@@ -4704,7 +4666,7 @@ def creator_submission_history():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         
-        # Simplified query - messages table doesn't have request_id column
+        # messages table uses booking_id not request_id - hardcode unread to 0
         cursor.execute('''
             SELECT cr.id, cr.content_brief, cr.status, b.name AS brand_name,
             0 AS unread_count
@@ -4743,15 +4705,7 @@ def get_brands():
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        # Paginated with default limit to avoid loading all brands
-        limit = request.args.get('limit', 100, type=int)
-        offset = request.args.get('offset', 0, type=int)
-        cursor.execute('''
-            SELECT id, name, logo, category, status, spotlight, created_at
-            FROM brands
-            ORDER BY name
-            LIMIT %s OFFSET %s
-        ''', (min(limit, 500), offset))
+        cursor.execute('SELECT * FROM brands')
         brands = cursor.fetchall()
         conn.close()
 
@@ -5038,19 +4992,13 @@ def get_active_campaigns():
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        # Fetch active campaigns with specific columns and limit
-        cursor.execute('''
-            SELECT id, name, brand_id, start_date, end_date, budget, status, created_at
-            FROM campaigns
-            WHERE status = %s
-            ORDER BY created_at DESC
-            LIMIT 50
-        ''', ('active',))
+        
+        # Fetch active campaigns from the 'campaigns' table
+        cursor.execute('SELECT * FROM campaigns WHERE status = %s', ('active',))
         active_campaigns = cursor.fetchall()
-
+        
         conn.close()
-
+        
         if not active_campaigns:
             return jsonify({'message': 'No active campaigns found.'}), 404
         
@@ -5209,7 +5157,6 @@ def send_message():
 
 
 
-# API for fetching messages for a specific request
 # NOTE: messages table uses booking_id, not request_id - returning empty for now
 @app.route('/messages/<int:request_id>', methods=['GET'])
 def get_messages_for_request(request_id):
@@ -5701,13 +5648,6 @@ def register_creator_account():
         last_name = data.get('lastName', data.get('last_name', ''))
         pr_list_signup = data.get('pr_list_signup') in ('true', True, '1')
 
-        # Blog widget / landing page signup context
-        signup_ref = data.get('signup_ref', '')  # e.g. "blog_widget"
-        first_unlock_intent = data.get('first_unlock_intent', '')  # matched brand slug
-        brand_query = data.get('brand_query', '')  # unmatched brand search
-        signup_source_page = data.get('signup_source_page', '')  # blog post slug
-        signup_intent = data.get('signup_intent', '')  # e.g. "brand_specific"
-
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -5765,47 +5705,6 @@ def register_creator_account():
 
         if pr_list_signup:
             app.logger.info(f"📋 PR list signup flag stored for {email}")
-
-        # Store blog widget signup context (if any)
-        if signup_ref or first_unlock_intent or signup_source_page or signup_intent:
-            signup_meta = {
-                'ref': signup_ref or None,
-                'first_unlock_intent': first_unlock_intent or None,
-                'source_page': signup_source_page or None,
-                'intent': signup_intent or None,
-            }
-            try:
-                # Try to update signup_meta column (add it if missing)
-                cursor.execute("""
-                    UPDATE users SET signup_meta = %s WHERE id = %s
-                """, (json.dumps(signup_meta), user_id))
-            except Exception as meta_error:
-                # Column might not exist - try to add it
-                try:
-                    cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS signup_meta JSONB")
-                    conn.commit()
-                    cursor.execute("UPDATE users SET signup_meta = %s WHERE id = %s", (json.dumps(signup_meta), user_id))
-                except Exception:
-                    app.logger.warning(f"⚠️ Could not store signup_meta: {str(meta_error)}")
-            conn.commit()
-            app.logger.info(f"📊 Signup context stored for {email}: ref={signup_ref}, brand={first_unlock_intent}")
-
-        # Log unmatched brand query to brand_demand table for content planning
-        if brand_query:
-            try:
-                cursor.execute("""
-                    INSERT INTO brand_demand (query_raw, query_normalized, source_page, ip_hash)
-                    VALUES (%s, %s, %s, %s)
-                """, (
-                    brand_query,
-                    brand_query.lower().strip(),
-                    signup_source_page or 'signup',
-                    None  # No IP hash for signup (user already converted)
-                ))
-                conn.commit()
-                app.logger.info(f"📝 Brand demand logged from signup: {brand_query}")
-            except Exception as demand_error:
-                app.logger.warning(f"⚠️ Could not log brand_demand: {str(demand_error)}")
 
         session.clear()
         session['user_id'] = user_id
