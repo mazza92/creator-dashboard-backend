@@ -122,12 +122,18 @@ def cron_daily_emails():
         }), 500
 
     try:
-        # Use get_json(silent=True) to handle non-JSON content types gracefully
+        # Support both query params (for cron services) and JSON body
         data = request.get_json(silent=True) or {}
-        batch_size = data.get('batch_size', 20)
-        dry_run = data.get('dry_run', False)
-        limit = data.get('limit')  # Optional limit for testing
-        test_email = data.get('test_email')  # Only send to this email
+
+        # Query params take precedence, then JSON body, then defaults
+        batch_size = int(request.args.get('batch_size', data.get('batch_size', 10)))
+        dry_run = request.args.get('dry_run', str(data.get('dry_run', 'false'))).lower() == 'true'
+        limit = request.args.get('limit', data.get('limit'))
+        if limit:
+            limit = int(limit)
+        else:
+            limit = 10  # Default limit to prevent timeouts
+        test_email = request.args.get('test_email', data.get('test_email'))
 
         # Pass test parameters to the engine
         stats = process_daily_lifecycle_emails(
@@ -181,14 +187,19 @@ def cron_weekly_digest():
         }), 500
 
     try:
-        # Use get_json(silent=True) to handle non-JSON content types gracefully
+        # Support both query params (for cron services) and JSON body
         data = request.get_json(silent=True) or {}
-        # Very low batch size (5) to handle Vercel cold starts within cron timeouts
-        batch_size = data.get('batch_size', 5)
-        dry_run = data.get('dry_run', False)
-        limit = data.get('limit')
-        test_email = data.get('test_email')
-        skip_day_check = data.get('skip_day_check', False)
+
+        # Query params take precedence, then JSON body, then defaults
+        batch_size = int(request.args.get('batch_size', data.get('batch_size', 5)))
+        dry_run = request.args.get('dry_run', str(data.get('dry_run', 'false'))).lower() == 'true'
+        limit = request.args.get('limit', data.get('limit'))
+        if limit:
+            limit = int(limit)
+        else:
+            limit = 10  # Default limit to prevent timeouts
+        test_email = request.args.get('test_email', data.get('test_email'))
+        skip_day_check = request.args.get('skip_day_check', str(data.get('skip_day_check', 'false'))).lower() == 'true'
 
         # Quick sanity check - it's not Monday, skip (unless skip_day_check is set)
         if not skip_day_check and datetime.now().weekday() != 0:
