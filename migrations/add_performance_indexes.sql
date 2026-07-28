@@ -6,8 +6,8 @@
 -- Collaboration Requests indexes
 CREATE INDEX IF NOT EXISTS idx_collab_requests_creator_id ON collaboration_requests(creator_id);
 CREATE INDEX IF NOT EXISTS idx_collab_requests_brand_id ON collaboration_requests(brand_id);
-CREATE INDEX IF NOT EXISTS idx_collab_requests_status ON collaboration_requests(status);
 CREATE INDEX IF NOT EXISTS idx_collab_requests_created_at ON collaboration_requests(created_at DESC);
+-- NOTE: status column doesn't exist on collaboration_requests
 
 -- Messages indexes
 -- NOTE: messages table doesn't have request_id column - skipping those indexes
