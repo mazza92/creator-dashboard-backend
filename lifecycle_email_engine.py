@@ -691,6 +691,10 @@ def process_daily_lifecycle_emails(
         creators = cursor.fetchall()
         stats['total_eligible'] = len(creators)
 
+        # Track error details for debugging
+        if 'error_details' not in stats:
+            stats['error_details'] = []
+
         for creator in creators:
             stats['processed'] += 1
 
@@ -730,7 +734,10 @@ def process_daily_lifecycle_emails(
 
             except Exception as e:
                 stats['errors'] += 1
-                print(f"Error processing creator {creator['id']}: {e}")
+                error_msg = f"Creator {creator['id']}: {str(e)}"
+                print(f"Error processing {error_msg}")
+                if len(stats.get('error_details', [])) < 5:  # Keep first 5 errors
+                    stats['error_details'].append(error_msg)
 
         return stats
     finally:
