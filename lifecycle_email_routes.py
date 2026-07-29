@@ -640,8 +640,24 @@ def test_send_email():
 def get_creator_state(creator_id):
     """Get lifecycle state and eligible emails for a creator."""
     try:
+        from psycopg2.extras import RealDictCursor
         state = update_creator_state(creator_id)
         eligible = get_eligible_emails(creator_id)
+
+        # Get debug info
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("""
+            SELECT c.lifecycle_state, c.lifecycle_emails_sent_today, c.lifecycle_last_email_date,
+                   EXTRACT(DAY FROM NOW() - c.created_at) as days_since_signup,
+                   EXTRACT(DAY FROM NOW() - COALESCE(u.last_login, c.created_at)) as days_since_login,
+                   u.last_login, u.is_verified
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE c.id = %s
+        """, (creator_id,))
+        debug = cursor.fetchone()
+        conn.close()
 
         return jsonify({
             'success': True,
@@ -654,7 +670,15 @@ def get_creator_state(creator_id):
                     'priority': e['priority'],
                     'category': e['category']
                 } for e in eligible
-            ]
+            ],
+            'debug': {
+                'days_since_signup': float(debug['days_since_signup']) if debug else None,
+                'days_since_login': float(debug['days_since_login']) if debug else None,
+                'last_login': str(debug['last_login']) if debug and debug['last_login'] else None,
+                'emails_sent_today': debug['lifecycle_emails_sent_today'] if debug else None,
+                'last_email_date': str(debug['lifecycle_last_email_date']) if debug and debug['lifecycle_last_email_date'] else None,
+                'is_verified': debug['is_verified'] if debug else None
+            }
         })
     except Exception as e:
         return jsonify({
