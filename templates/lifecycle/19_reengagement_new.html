@@ -3,7 +3,7 @@
 {% block content %}
 <p>Hi {{ first_name or "there" }},</p>
 
-<p>I haven't seen you in 2 weeks. Not chasing. Just wanted to share what's new.</p>
+<p>I haven't seen you in {{ weeks_inactive }} week{{ 's' if weeks_inactive != 1 else '' }}. Not chasing. Just wanted to share what's new.</p>
 
 <p>{{ new_brands_count }} new brands were added to Newcollab in your niche while you were away. Here are 3 worth your attention:</p>
 

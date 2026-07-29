@@ -436,6 +436,8 @@ def preview_template(template_slug):
                 {'name': 'Brand B', 'days_ago': 10, 'response_rate': 8},
             ],
             'new_brands_count': 6,
+            'days_inactive': 14,
+            'weeks_inactive': 2,
             'top_new_brands': [
                 {'name': 'New Brand 1', 'category': 'Beauty', 'fit_score': 85},
                 {'name': 'New Brand 2', 'category': 'Skincare', 'fit_score': 72},
@@ -548,6 +550,8 @@ def test_send_email():
                 ],
                 # Re-engagement
                 'new_brands_count': 12,
+                'days_inactive': 14,
+                'weeks_inactive': 2,
                 'top_new_brands': [
                     {'name': 'Rhode Skin', 'category': 'Skincare', 'fit_score': 92},
                     {'name': 'Tower 28', 'category': 'Beauty', 'fit_score': 87},

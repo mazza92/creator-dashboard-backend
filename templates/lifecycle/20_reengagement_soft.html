@@ -3,7 +3,7 @@
 {% block content %}
 <p>Hi {{ first_name or "there" }},</p>
 
-<p>I haven't seen you in 3 weeks. That's fine. Creators drop off for 100 reasons and I'm not going to guilt you.</p>
+<p>I haven't seen you in {{ weeks_inactive }} week{{ 's' if weeks_inactive != 1 else '' }}. That's fine. Creators drop off for 100 reasons and I'm not going to guilt you.</p>
 
 <p>But I wanted to say two things.</p>
 

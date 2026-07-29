@@ -987,6 +987,25 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
         elif template_slug == 'weekly_digest':
             context = {**context, **build_weekly_digest_context(creator_id)}
         elif template_slug.startswith('reengagement_'):
+            # Calculate actual days/weeks inactive
+            try:
+                cursor.execute("""
+                    SELECT u.last_login FROM creators c
+                    JOIN users u ON c.user_id = u.id
+                    WHERE c.id = %s
+                """, (creator_id,))
+                row = cursor.fetchone()
+                if row and row['last_login']:
+                    days_inactive = (date.today() - row['last_login'].date()).days
+                else:
+                    days_inactive = 14  # Default fallback
+                weeks_inactive = max(1, days_inactive // 7)
+                context['days_inactive'] = days_inactive
+                context['weeks_inactive'] = weeks_inactive
+            except Exception:
+                context['days_inactive'] = 14
+                context['weeks_inactive'] = 2
+
             # Get top 3 new brands for reengagement email
             try:
                 cursor.execute("""
