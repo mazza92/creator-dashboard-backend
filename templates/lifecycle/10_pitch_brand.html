@@ -3,7 +3,7 @@
 {% block content %}
 <p>Hi {{ first_name or "there" }},</p>
 
-<p>Two days ago you saved {{ brand_name }} to your pipeline. Timing matters here.</p>
+<p>{{ days_since_action }} day{{ 's' if days_since_action != 1 else '' }} ago you saved {{ brand_name }} to your pipeline. Timing matters here.</p>
 
 {% if brand_response_rate %}
 <p>{{ brand_name }} replies to about {{ brand_response_rate }}% of pitches. That's actually strong. But their inbox fills up fast, so the sooner you send, the better your position.</p>

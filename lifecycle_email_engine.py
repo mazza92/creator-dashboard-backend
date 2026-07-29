@@ -984,6 +984,99 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
             context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/pr-ready"
         elif template_slug.startswith('edu_'):
             context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/pr-ready"
+        elif template_slug == 'time_followup':
+            # Get actual pending brands for follow-up email
+            try:
+                cursor.execute("""
+                    SELECT p.brand_name AS name,
+                           EXTRACT(DAY FROM NOW() - p.pitched_at)::int AS days_ago,
+                           COALESCE(b.response_rate, 10) AS response_rate
+                    FROM creator_pipeline p
+                    LEFT JOIN pr_brands b ON p.brand_name = b.brand_name
+                    WHERE p.creator_id = %s
+                    AND p.stage = 'pitched'
+                    AND p.pitched_at < NOW() - INTERVAL '7 days'
+                    ORDER BY p.pitched_at ASC
+                    LIMIT 5
+                """, (creator_id,))
+                pending = cursor.fetchall()
+                context['pending_brands'] = [
+                    {'name': p['name'], 'days_ago': p['days_ago'] or 7, 'response_rate': p['response_rate'] or 10}
+                    for p in pending
+                ] if pending else []
+            except Exception as e:
+                print(f"[FOLLOWUP] Error fetching pending brands: {e}")
+                context['pending_brands'] = []
+            context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/pr-pipeline"
+        elif template_slug in ('pitch_brand', 'brand_waiting', 'did_reply', 'celebration_reply', 'celebration_first_box'):
+            # Brand-specific emails - get the most recent brand from pipeline
+            try:
+                if template_slug == 'pitch_brand':
+                    # Brand saved but not pitched (2+ days ago)
+                    cursor.execute("""
+                        SELECT p.brand_name, p.created_at,
+                               EXTRACT(DAY FROM NOW() - p.created_at)::int AS days_ago,
+                               COALESCE(b.response_rate, 15) AS response_rate
+                        FROM creator_pipeline p
+                        LEFT JOIN pr_brands b ON p.brand_name = b.brand_name
+                        WHERE p.creator_id = %s AND p.stage = 'saved'
+                        ORDER BY p.created_at DESC LIMIT 1
+                    """, (creator_id,))
+                elif template_slug == 'brand_waiting':
+                    # Brand saved 6+ days ago, not pitched
+                    cursor.execute("""
+                        SELECT p.brand_name, p.created_at,
+                               EXTRACT(DAY FROM NOW() - p.created_at)::int AS days_ago,
+                               COALESCE(b.response_rate, 15) AS response_rate
+                        FROM creator_pipeline p
+                        LEFT JOIN pr_brands b ON p.brand_name = b.brand_name
+                        WHERE p.creator_id = %s AND p.stage = 'saved'
+                        AND p.created_at < NOW() - INTERVAL '5 days'
+                        ORDER BY p.created_at ASC LIMIT 1
+                    """, (creator_id,))
+                elif template_slug == 'did_reply':
+                    # Brand pitched 2+ weeks ago
+                    cursor.execute("""
+                        SELECT p.brand_name, p.pitched_at,
+                               EXTRACT(DAY FROM NOW() - p.pitched_at)::int AS days_ago,
+                               COALESCE(b.response_rate, 15) AS response_rate
+                        FROM creator_pipeline p
+                        LEFT JOIN pr_brands b ON p.brand_name = b.brand_name
+                        WHERE p.creator_id = %s AND p.stage = 'pitched'
+                        AND p.pitched_at < NOW() - INTERVAL '13 days'
+                        ORDER BY p.pitched_at ASC LIMIT 1
+                    """, (creator_id,))
+                else:
+                    # Celebration emails - get most recent replied/won brand
+                    cursor.execute("""
+                        SELECT p.brand_name, p.updated_at,
+                               0 AS days_ago,
+                               COALESCE(b.response_rate, 15) AS response_rate
+                        FROM creator_pipeline p
+                        LEFT JOIN pr_brands b ON p.brand_name = b.brand_name
+                        WHERE p.creator_id = %s AND p.stage IN ('replied', 'won')
+                        ORDER BY p.updated_at DESC LIMIT 1
+                    """, (creator_id,))
+
+                brand_row = cursor.fetchone()
+                if brand_row:
+                    context['brand_name'] = brand_row['name'] if 'name' in brand_row else brand_row['brand_name']
+                    context['brand_response_rate'] = brand_row['response_rate'] or 15
+                    context['days_since_action'] = brand_row['days_ago'] or 2
+                else:
+                    context['brand_name'] = 'your saved brand'
+                    context['brand_response_rate'] = 15
+                    context['days_since_action'] = 2
+            except Exception as e:
+                print(f"[BRAND EMAIL] Error fetching brand context: {e}")
+                context['brand_name'] = 'your saved brand'
+                context['brand_response_rate'] = 15
+                context['days_since_action'] = 2
+
+            context['reply_url'] = f"{FRONTEND_URL}/creator/dashboard/pr-pipeline?action=replied"
+            context['followup_url'] = f"{FRONTEND_URL}/creator/dashboard/pr-pipeline?action=followup"
+            context['remove_url'] = f"{FRONTEND_URL}/creator/dashboard/pr-pipeline?action=remove"
+            context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/pr-pipeline"
         elif template_slug == 'weekly_digest':
             context = {**context, **build_weekly_digest_context(creator_id)}
         elif template_slug.startswith('reengagement_'):

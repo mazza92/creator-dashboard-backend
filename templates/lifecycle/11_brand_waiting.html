@@ -3,7 +3,7 @@
 {% block content %}
 <p>Hi {{ first_name or "there" }},</p>
 
-<p>Six days ago you saved {{ brand_name }}. Still on your list, not sent.</p>
+<p>{{ days_since_action }} day{{ 's' if days_since_action != 1 else '' }} ago you saved {{ brand_name }}. Still on your list, not sent.</p>
 
 <p>I'll give you the honest breakdown of what happens with time:</p>
 
@@ -13,7 +13,7 @@
 
 <p><strong>After day 21:</strong> I usually recommend swapping the brand out for a fresher match. The window has closed.</p>
 
-<p>You're on day 6. Still in the sweet spot. Your pitch is drafted.</p>
+<p>You're on day {{ days_since_action }}. {% if days_since_action <= 7 %}Still in the sweet spot.{% elif days_since_action <= 21 %}Still worth sending.{% else %}Getting late, but still worth a shot.{% endif %} Your pitch is drafted.</p>
 
 <p>If {{ brand_name }} isn't your priority anymore, that's fine. You can remove them and I'll surface a better match.</p>
 

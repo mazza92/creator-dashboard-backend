@@ -3,7 +3,7 @@
 {% block content %}
 <p>Hi {{ first_name or "there" }},</p>
 
-<p>It's been 2 weeks since you pitched {{ brand_name }}.</p>
+<p>It's been {{ days_since_action }} day{{ 's' if days_since_action != 1 else '' }} since you pitched {{ brand_name }}.</p>
 
 <p>Did they get back to you?</p>
 
