@@ -718,7 +718,7 @@ def process_daily_lifecycle_emails(
                     OR c.lifecycle_last_email_date IS NULL
                     OR c.lifecycle_last_email_date < CURRENT_DATE
                 )
-                ORDER BY c.created_at DESC NULLS LAST
+                ORDER BY u.last_login ASC NULLS FIRST, c.created_at ASC
                 LIMIT %s
             """, (MAX_EMAILS_PER_DAY, effective_limit))
 
