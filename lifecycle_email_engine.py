@@ -703,6 +703,7 @@ def process_daily_lifecycle_emails(
         else:
             # Get creators who might need emails
             # Exclude those who already hit daily limit or unsubscribed
+            # Include creators whose counter is from a previous day (needs reset)
             effective_limit = limit if limit else batch_size
             cursor.execute("""
                 SELECT c.id, c.user_id, u.email, c.lifecycle_state
@@ -711,7 +712,12 @@ def process_daily_lifecycle_emails(
                 LEFT JOIN email_preferences ep ON ep.creator_id = c.id
                 WHERE u.is_verified = true
                 AND ep.unsubscribed_at IS NULL
-                AND (c.lifecycle_emails_sent_today IS NULL OR c.lifecycle_emails_sent_today < %s)
+                AND (
+                    c.lifecycle_emails_sent_today IS NULL
+                    OR c.lifecycle_emails_sent_today < %s
+                    OR c.lifecycle_last_email_date IS NULL
+                    OR c.lifecycle_last_email_date < CURRENT_DATE
+                )
                 ORDER BY c.created_at DESC NULLS LAST
                 LIMIT %s
             """, (MAX_EMAILS_PER_DAY, effective_limit))
