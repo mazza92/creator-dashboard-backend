@@ -442,14 +442,25 @@ def confirm_checkout():
 
         # Extract metadata
         tier = checkout_session.metadata.get('tier')
+        interval = checkout_session.metadata.get('interval', 'monthly')
         subscription_id = checkout_session.subscription
         customer_id = checkout_session.customer
 
-        print(f"✅ Confirming checkout for creator {creator_id} - {tier} tier")
+        print(f"✅ Confirming checkout for creator {creator_id} - {tier} tier ({interval})")
 
         # Update database
         conn = get_db_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Get user email for Meta CAPI
+        cursor.execute('''
+            SELECT u.email FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE c.id = %s
+        ''', (creator_id,))
+        user_row = cursor.fetchone()
+        user_email = user_row['email'] if user_row else None
+
         cursor.execute('''
             UPDATE creators
             SET subscription_tier = %s,
@@ -464,6 +475,25 @@ def confirm_checkout():
         conn.close()
 
         print(f"✅ Activated {tier} subscription for creator {creator_id}")
+
+        # Send Meta Conversions API Purchase event (server-side)
+        try:
+            from services.meta_capi import send_purchase_event
+            value = 152 if interval == 'yearly' else (49 if tier == 'elite' else 19)
+            content_id = f"subscription_{tier}_{interval}"
+            content_name = f"NewCollab {tier.title()}" + (" Annual" if interval == 'yearly' else "")
+
+            send_purchase_event(
+                email=user_email,
+                value=value,
+                content_name=content_name,
+                content_id=content_id,
+                event_id=session_id,  # Dedup with browser pixel
+                client_ip=request.remote_addr,
+                client_user_agent=request.headers.get('User-Agent'),
+            )
+        except Exception as capi_err:
+            print(f"[META CAPI] Failed to send purchase event: {capi_err}")
 
         return jsonify({
             'success': True,
