@@ -1171,7 +1171,7 @@ def trigger_first_pr_box(creator_id: int, brand_id: int):
 
 
 def trigger_quota_hit(creator_id: int):
-    """Trigger email when user hits 3/3 unlocks."""
+    """Trigger email when user hits 3/3 unlocks (unlocks_remaining becomes 0)."""
     if not is_feature_enabled('email_maximizer_pro_v2'):
         return False, "Feature disabled"
 
@@ -1179,9 +1179,9 @@ def trigger_quota_hit(creator_id: int):
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Check quota
+        # Check quota - supports both unlocks_remaining (new) and daily_unlocks_used (legacy)
         cursor.execute("""
-            SELECT c.daily_unlocks_used, c.subscription_tier, u.email
+            SELECT c.daily_unlocks_used, c.unlocks_remaining, c.subscription_tier, u.email
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.id = %s
@@ -1194,7 +1194,12 @@ def trigger_quota_hit(creator_id: int):
         if result.get('subscription_tier') in ('pro', 'elite'):
             return False, "Pro user - no quota"
 
-        if (result.get('daily_unlocks_used') or 0) < 3:
+        # Check quota hit: unlocks_remaining == 0 (new system) OR daily_unlocks_used >= 3 (legacy)
+        unlocks_remaining = result.get('unlocks_remaining')
+        daily_unlocks_used = result.get('daily_unlocks_used') or 0
+
+        quota_hit = (unlocks_remaining is not None and unlocks_remaining == 0) or daily_unlocks_used >= 3
+        if not quota_hit:
             return False, "Quota not hit"
 
         context = build_email_context(creator_id, 'max_quota_hit')

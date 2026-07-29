@@ -26,6 +26,13 @@ except ImportError:
     def proxy_profile_snapshot_thumbnails(snapshot):
         return snapshot
 
+try:
+    from lifecycle_email_engine import trigger_quota_hit
+except ImportError:
+    def trigger_quota_hit(creator_id):
+        print(f"[lifecycle] trigger_quota_hit not available, skipping for creator {creator_id}")
+        return None
+
 
 def convert_decimals(obj):
     """Convert Decimal types to JSON-serializable float/int for database values."""
@@ -6513,6 +6520,14 @@ def attempt_unlock(creator_id, brand_id, conn=None):
         ''', (creator_id, brand_id))
 
         conn.commit()
+
+        # Trigger quota hit email when user uses their last unlock
+        if new_remaining == 0:
+            try:
+                trigger_quota_hit(creator_id)
+                print(f"[lifecycle] Triggered quota_hit email for creator {creator_id}")
+            except Exception as email_err:
+                print(f"[lifecycle] Failed to trigger quota_hit email: {email_err}")
 
         return {
             "status": "unlocked",
