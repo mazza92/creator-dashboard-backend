@@ -1357,6 +1357,11 @@ def login():
         user_id = user['id']
         user_role = user['role']
         app.logger.info(f"🟢 User Found: ID={user_id}, Role={user_role}")
+
+        # Update last_login timestamp
+        cursor.execute("UPDATE users SET last_login = NOW() WHERE id = %s", (user_id,))
+        conn.commit()
+
         cursor.execute("SELECT id, username, niche FROM creators WHERE user_id = %s", (user_id,))
         creator = cursor.fetchone()
         creator_id = creator['id'] if creator else None
