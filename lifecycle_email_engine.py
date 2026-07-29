@@ -729,6 +729,10 @@ def process_daily_lifecycle_emails(
         if 'error_details' not in stats:
             stats['error_details'] = []
 
+        # Track which creators are processed for debugging
+        if 'processed_creators' not in stats:
+            stats['processed_creators'] = []
+
         for creator in creators:
             stats['processed'] += 1
 
@@ -737,6 +741,13 @@ def process_daily_lifecycle_emails(
 
                 if not eligible:
                     stats['skipped'] += 1
+                    if len(stats['processed_creators']) < 10:
+                        stats['processed_creators'].append({
+                            'id': creator['id'],
+                            'state': creator.get('lifecycle_state'),
+                            'eligible_count': 0,
+                            'result': 'skipped_no_eligible'
+                        })
                     continue
 
                 # Send the highest priority email
@@ -745,6 +756,14 @@ def process_daily_lifecycle_emails(
                 # In dry_run mode, just log what would be sent
                 if dry_run:
                     stats['sent'] += 1
+                    if len(stats['processed_creators']) < 10:
+                        stats['processed_creators'].append({
+                            'id': creator['id'],
+                            'state': creator.get('lifecycle_state'),
+                            'eligible_count': len(eligible),
+                            'would_send': template['slug'],
+                            'result': 'dry_run_sent'
+                        })
                     print(f"[DRY RUN] Would send {template['slug']} to creator {creator['id']} ({creator['email']})")
                     continue
 
