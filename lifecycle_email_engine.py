@@ -986,6 +986,30 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
             context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/pr-ready"
         elif template_slug == 'weekly_digest':
             context = {**context, **build_weekly_digest_context(creator_id)}
+        elif template_slug.startswith('reengagement_'):
+            # Get top 3 new brands for reengagement email
+            try:
+                cursor.execute("""
+                    SELECT brand_name AS name, category
+                    FROM pr_brands
+                    WHERE created_at >= NOW() - INTERVAL '30 days'
+                    ORDER BY created_at DESC
+                    LIMIT 3
+                """)
+                brands = cursor.fetchall()
+                context['top_new_brands'] = [
+                    {
+                        'name': b['name'],
+                        'category': b.get('category') or 'Lifestyle',
+                        'fit_score': 85  # Default fit score for new brands
+                    } for b in brands
+                ] if brands else [
+                    {'name': 'New Opportunity', 'category': 'Lifestyle', 'fit_score': 85}
+                ]
+            except Exception as e:
+                print(f"[REENGAGEMENT] Error fetching top brands: {e}")
+                context['top_new_brands'] = []
+            context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/pr-ready"
 
         return context
     finally:
