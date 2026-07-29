@@ -806,6 +806,41 @@ def bulk_update_states():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@lifecycle_email_bp.route('/api/lifecycle-email/admin/reset-daily-counters', methods=['POST'])
+@require_admin_auth
+def reset_daily_counters():
+    """
+    Reset daily throttle counters for creators whose last_email_date is in the past.
+    This fixes stale counters that prevented the cron from processing creators.
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            UPDATE creators
+            SET lifecycle_emails_sent_today = 0
+            WHERE lifecycle_last_email_date < CURRENT_DATE
+              AND lifecycle_emails_sent_today > 0
+            RETURNING id
+        """)
+
+        reset_count = cursor.rowcount
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'counters_reset': reset_count
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 # ============================================
 # EMAIL PREFERENCES (User-facing)
 # ============================================
