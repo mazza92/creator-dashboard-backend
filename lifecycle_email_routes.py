@@ -730,6 +730,82 @@ def get_email_stats():
         }), 500
 
 
+@lifecycle_email_bp.route('/api/lifecycle-email/admin/bulk-update-states', methods=['POST'])
+@require_admin_auth
+def bulk_update_states():
+    """
+    Bulk update lifecycle states for all creators based on their actual unlock counts.
+    This fixes stale states that weren't updated during normal cron runs.
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Update all creator states in one SQL based on actual brand_unlocks count
+        # This is much faster than calling update_creator_state() for each creator
+        cursor.execute("""
+            WITH unlock_counts AS (
+                SELECT creator_id, COUNT(*) as total_unlocks
+                FROM brand_unlocks
+                GROUP BY creator_id
+            ),
+            creator_data AS (
+                SELECT
+                    c.id,
+                    c.lifecycle_state as old_state,
+                    c.subscription_tier,
+                    c.total_replies_received,
+                    c.first_pr_box_received_at,
+                    EXTRACT(DAY FROM NOW() - c.created_at) as days_since_signup,
+                    EXTRACT(DAY FROM NOW() - COALESCE(u.last_login, c.created_at)) as days_since_login,
+                    COALESCE(uc.total_unlocks, 0) as total_unlocks
+                FROM creators c
+                JOIN users u ON c.user_id = u.id
+                LEFT JOIN unlock_counts uc ON uc.creator_id = c.id
+            )
+            UPDATE creators c
+            SET lifecycle_state = CASE
+                WHEN cd.first_pr_box_received_at IS NOT NULL OR COALESCE(cd.total_replies_received, 0) > 0 THEN 'winner'
+                WHEN cd.days_since_login >= 14 THEN 'dormant'
+                WHEN cd.total_unlocks >= 3 AND COALESCE(cd.subscription_tier, 'free') = 'free' THEN 'maximizer'
+                WHEN cd.total_unlocks >= 2 AND cd.days_since_signup >= 14 AND COALESCE(cd.total_replies_received, 0) = 0 THEN 'doubter'
+                WHEN cd.total_unlocks >= 2 THEN 'engaged'
+                WHEN cd.total_unlocks >= 1 THEN 'explorer'
+                WHEN cd.days_since_signup <= 3 THEN 'new'
+                ELSE 'explorer'
+            END,
+            lifecycle_state_updated_at = NOW()
+            FROM creator_data cd
+            WHERE c.id = cd.id
+            RETURNING c.id, cd.old_state, c.lifecycle_state as new_state
+        """)
+
+        results = cursor.fetchall()
+        conn.commit()
+
+        # Count changes
+        changed = sum(1 for r in results if r[1] != r[2])
+        state_counts = {}
+        for r in results:
+            new_state = r[2]
+            state_counts[new_state] = state_counts.get(new_state, 0) + 1
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'total_processed': len(results),
+            'states_changed': changed,
+            'state_distribution': state_counts
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 # ============================================
 # EMAIL PREFERENCES (User-facing)
 # ============================================
