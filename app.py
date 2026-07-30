@@ -910,6 +910,10 @@ def google_signup():
                     conn.close()
                     return jsonify({'error': 'Creator profile not found. Please complete registration.'}), 404
 
+            # Update last_login timestamp for Google OAuth login
+            cursor.execute("UPDATE users SET last_login = NOW() WHERE id = %s", (user_id,))
+            conn.commit()
+
             # Set session
             session['user_id'] = user_id
             session['user_role'] = role
@@ -949,8 +953,8 @@ def google_signup():
             # Create user (already verified via Google)
             cursor.execute(
                 '''
-                INSERT INTO users (first_name, last_name, email, password, role, is_verified, verification_token)
-                VALUES (%s, %s, %s, %s, 'creator', TRUE, NULL)
+                INSERT INTO users (first_name, last_name, email, password, role, is_verified, verification_token, last_login)
+                VALUES (%s, %s, %s, %s, 'creator', TRUE, NULL, NOW())
                 RETURNING id
                 ''',
                 (first_name or None, last_name or None, email, google_placeholder_password)
