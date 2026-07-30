@@ -1078,7 +1078,8 @@ def _process_campaign_batch(cursor, campaign_id, subject, html_content, batch_si
             personalized_subject = personalize_text(subject, recipient)
             personalized_content = personalize_text(html_content, recipient)
 
-            success = send_email_gmail(
+            # Use retry logic for rate limit resilience (same as background thread)
+            success = _send_with_retry(
                 to_email=recipient_email,
                 subject=personalized_subject,
                 html_content=personalized_content
@@ -1304,6 +1305,22 @@ def continue_campaign(campaign_id):
             (campaign_id, STUCK_SENDING_TIMEOUT_MINUTES)
         )
         recovered = cursor.rowcount
+
+        # Reset exhausted recipients (attempt_count >= MAX) to allow retry
+        # This is key for the Continue button to work when recipients hit retry limit
+        cursor.execute(
+            """
+            UPDATE email_campaign_recipients
+            SET attempt_count = 0,
+                last_error = 'Retry limit reset by Continue action',
+                updated_at = NOW()
+            WHERE campaign_id = %s
+              AND status IN ('failed_temp', 'pending')
+              AND attempt_count >= %s
+            """,
+            (campaign_id, MAX_SEND_ATTEMPTS)
+        )
+        reset_exhausted = cursor.rowcount
         conn.commit()
 
         # Get campaign details
@@ -1322,8 +1339,8 @@ def continue_campaign(campaign_id):
             conn.close()
             return jsonify({'error': 'Campaign not found'}), 404
 
-        # Ensure campaign is in sending status
-        if campaign['status'] not in ('sending', 'failed'):
+        # Ensure campaign is in sending status (reset from 'failed', 'sent', or 'draft')
+        if campaign['status'] != 'sending':
             cursor.execute(
                 "UPDATE email_campaigns SET status = 'sending' WHERE id = %s",
                 (campaign_id,)
@@ -1362,6 +1379,7 @@ def continue_campaign(campaign_id):
             'sent_this_batch': sent,
             'failed_this_batch': failed,
             'recovered_stuck': recovered,
+            'reset_exhausted': reset_exhausted,
             'total_sent': summary['sent'],
             'total_recipients': summary['total'],
             'remaining': pending,
