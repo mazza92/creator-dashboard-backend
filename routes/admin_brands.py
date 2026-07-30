@@ -1389,3 +1389,158 @@ JSON:"""
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============================================================================
+# FOLLOWER REQUIREMENTS ENRICHMENT ENDPOINTS
+# ============================================================================
+
+@admin_brands_bp.route('/brands/follower-enrichment/stats', methods=['GET'])
+@admin_required
+def get_follower_enrichment_stats_endpoint():
+    """
+    Get statistics on min_followers and micro_friendly coverage.
+
+    Returns:
+        {
+            "total_published": 2000,
+            "min_followers_null": 150,
+            "min_followers_filled": 1850,
+            "micro_friendly_null": 200,
+            "micro_friendly_filled": 1800,
+            "micro_friendly_true": 1200,
+            "micro_friendly_false": 600,
+            "needs_enrichment": 250
+        }
+    """
+    try:
+        from services.bulk_ai_enricher import get_follower_enrichment_stats
+        stats = get_follower_enrichment_stats()
+
+        if 'error' in stats:
+            return jsonify({'success': False, 'error': stats['error']}), 500
+
+        return jsonify({
+            'success': True,
+            **stats
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@admin_brands_bp.route('/brands/follower-enrichment/run', methods=['POST'])
+@admin_required
+def run_follower_enrichment():
+    """
+    Trigger bulk enrichment of min_followers and micro_friendly for all published brands.
+
+    Request Body:
+        {
+            "limit": 100,              // Max brands to process (default 100)
+            "only_null_values": true,  // Only enrich brands with NULL values (default true)
+            "dry_run": false           // If true, don't update DB, just log (default false)
+        }
+
+    Returns:
+        {
+            "success": true,
+            "processed": 100,
+            "updated": 95,
+            "errors": 3,
+            "skipped": 2
+        }
+    """
+    try:
+        data = request.get_json() or {}
+
+        limit = min(int(data.get('limit', 100)), 500)  # Cap at 500 per run
+        only_null_values = data.get('only_null_values', True)
+        dry_run = data.get('dry_run', False)
+
+        from services.bulk_ai_enricher import bulk_enrich_follower_requirements
+
+        print(f"[Admin] Starting follower enrichment: limit={limit}, only_null={only_null_values}, dry_run={dry_run}")
+
+        stats = bulk_enrich_follower_requirements(
+            limit=limit,
+            only_null_values=only_null_values,
+            rate_limit_delay=0.5,
+            dry_run=dry_run
+        )
+
+        return jsonify({
+            'success': True,
+            **stats
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@admin_brands_bp.route('/brands/<int:brand_id>/enrich-followers', methods=['POST'])
+@admin_required
+def enrich_single_brand_followers(brand_id):
+    """
+    AI-enrich min_followers and micro_friendly for a single brand.
+
+    Returns:
+        {
+            "success": true,
+            "min_followers": 5000,
+            "micro_friendly": true
+        }
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            SELECT id, brand_name, website, category, description,
+                   has_application_form, application_form_url,
+                   min_followers, micro_friendly
+            FROM pr_brands
+            WHERE id = %s
+        """, (brand_id,))
+
+        brand = cursor.fetchone()
+
+        if not brand:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Brand not found'}), 404
+
+        from services.bulk_ai_enricher import enrich_follower_requirements_ai
+
+        result = enrich_follower_requirements_ai(dict(brand))
+
+        if not result:
+            conn.close()
+            return jsonify({'success': False, 'error': 'AI enrichment failed'}), 200
+
+        # Update database
+        cursor.execute("""
+            UPDATE pr_brands
+            SET min_followers = %s,
+                micro_friendly = %s,
+                updated_at = NOW()
+            WHERE id = %s
+        """, (result['min_followers'], result['micro_friendly'], brand_id))
+
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'brand_name': brand['brand_name'],
+            'min_followers': result['min_followers'],
+            'micro_friendly': result['micro_friendly']
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500

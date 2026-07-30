@@ -615,3 +615,334 @@ def enrich_new_awin_brands(limit: int = 100) -> int:
     except Exception as e:
         print(f"[AI Enrich] Error: {e}")
         return 0
+
+
+# ============================================================================
+# FOLLOWER REQUIREMENTS ENRICHMENT
+# ============================================================================
+
+def enrich_follower_requirements_ai(brand: Dict) -> Optional[Dict]:
+    """
+    Use Claude AI to determine accurate min_followers and micro_friendly values.
+
+    This specialized enrichment focuses ONLY on follower requirements:
+    - min_followers: The minimum follower count this brand accepts for PR gifting
+    - micro_friendly: Whether the brand actively works with micro-influencers (<10K)
+
+    Args:
+        brand: Brand dict with: brand_name, website, category, description, etc.
+
+    Returns:
+        Dict with {min_followers: int, micro_friendly: bool} or None if fails
+    """
+    if not ANTHROPIC_API_KEY:
+        print("[Follower Enrich] ERROR: ANTHROPIC_API_KEY not configured")
+        return None
+
+    brand_name = brand.get('brand_name', '')
+    website = brand.get('website', '')
+    category = brand.get('category', '')
+    description = brand.get('description', '')
+    has_application_form = brand.get('has_application_form', False)
+    application_form_url = brand.get('application_form_url', '')
+
+    if not brand_name:
+        return None
+
+    # Build context from available data
+    context_parts = [f"Brand: {brand_name}"]
+    if website:
+        context_parts.append(f"Website: {website}")
+    if category:
+        context_parts.append(f"Category: {category}")
+    if description:
+        context_parts.append(f"Description: {description}")
+    if has_application_form:
+        context_parts.append("Has public PR application form: Yes")
+    if application_form_url:
+        context_parts.append(f"Application URL: {application_form_url}")
+
+    context = "\n".join(context_parts)
+
+    prompt = f"""You are an expert at determining influencer requirements for brand PR programs.
+
+{context}
+
+Based on the brand information above, determine:
+
+1. **min_followers**: The minimum follower count this brand likely requires for PR gifting.
+   GUIDELINES:
+   - Small indie/startup DTC brands (newer, niche): 500-2000 followers
+   - Mid-size DTC brands (established online presence): 2000-5000 followers
+   - Growing brands with some retail presence: 5000-10000 followers
+   - Established mainstream brands: 10000-25000 followers
+   - Major/luxury brands (Sephora-level, luxury goods): 25000-100000 followers
+   - If the brand has a public application form, they're likely more open to smaller creators
+   - Beauty/skincare brands tend to accept smaller creators than fashion brands
+   - Brands in the "sustainable", "wellness", or "indie" space tend to be more micro-friendly
+
+2. **micro_friendly**: Is this brand actively open to working with micro-influencers (<10K followers)?
+   - TRUE if: indie brand, has public PR form, explicitly targets small creators, newer DTC brand, community-focused
+   - FALSE if: luxury brand, requires professional content, high follower minimums, exclusive/premium positioning
+   - When in doubt for DTC brands with application forms, lean towards TRUE
+
+Return ONLY valid JSON:
+{{"min_followers": <integer>, "micro_friendly": <true or false>}}
+
+JSON:"""
+
+    try:
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": CLAUDE_MODEL,
+                "max_tokens": 200,
+                "messages": [{"role": "user", "content": prompt}]
+            },
+            timeout=30
+        )
+        response.raise_for_status()
+
+        result = response.json()
+        text = result.get('content', [{}])[0].get('text', '')
+
+        # Parse JSON from response
+        if '```json' in text:
+            text = text.split('```json')[1].split('```')[0].strip()
+        elif '```' in text:
+            text = text.split('```')[1].split('```')[0].strip()
+
+        enriched = json.loads(text)
+
+        # Validate response
+        min_followers = enriched.get('min_followers')
+        micro_friendly = enriched.get('micro_friendly')
+
+        if min_followers is None or micro_friendly is None:
+            print(f"[Follower Enrich] Missing fields in response for {brand_name}")
+            return None
+
+        # Validate min_followers range
+        try:
+            min_followers = int(min_followers)
+            if min_followers < 100:
+                min_followers = 500
+            elif min_followers > 500000:
+                min_followers = 100000
+        except (ValueError, TypeError):
+            min_followers = 5000  # Default
+
+        # Ensure micro_friendly is boolean
+        if isinstance(micro_friendly, str):
+            micro_friendly = micro_friendly.lower() in ['true', 'yes', '1']
+        else:
+            micro_friendly = bool(micro_friendly)
+
+        return {
+            'min_followers': min_followers,
+            'micro_friendly': micro_friendly
+        }
+
+    except json.JSONDecodeError as e:
+        print(f"[Follower Enrich] JSON parse error for {brand_name}: {e}")
+        return None
+    except requests.RequestException as e:
+        print(f"[Follower Enrich] API error for {brand_name}: {e}")
+        return None
+    except Exception as e:
+        print(f"[Follower Enrich] Unexpected error for {brand_name}: {e}")
+        return None
+
+
+def bulk_enrich_follower_requirements(
+    *,
+    limit: int = 500,
+    only_null_values: bool = True,
+    rate_limit_delay: float = 0.5,
+    dry_run: bool = False
+) -> Dict:
+    """
+    Bulk enrich min_followers and micro_friendly for all published brands.
+
+    This task iterates through published brands and uses AI to determine
+    accurate follower requirements based on brand characteristics.
+
+    Args:
+        limit: Maximum number of brands to process in one run
+        only_null_values: If True, only enrich brands with NULL values
+        rate_limit_delay: Seconds to wait between API calls
+        dry_run: If True, don't update database, just log what would happen
+
+    Returns:
+        Dict with {processed: int, updated: int, errors: int, skipped: int}
+    """
+    try:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+    except ImportError:
+        print("[Follower Enrich] ERROR: psycopg2 not installed")
+        return {'processed': 0, 'updated': 0, 'errors': 0, 'skipped': 0}
+
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        print("[Follower Enrich] ERROR: DATABASE_URL not found")
+        return {'processed': 0, 'updated': 0, 'errors': 0, 'skipped': 0}
+
+    stats = {'processed': 0, 'updated': 0, 'errors': 0, 'skipped': 0}
+
+    try:
+        conn = psycopg2.connect(db_url)
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Build query based on mode
+        if only_null_values:
+            # Only brands with NULL min_followers OR NULL micro_friendly
+            cursor.execute("""
+                SELECT id, brand_name, website, category, description,
+                       has_application_form, application_form_url,
+                       min_followers, micro_friendly, logo_url
+                FROM pr_brands
+                WHERE COALESCE(status, 'published') = 'published'
+                  AND (min_followers IS NULL OR micro_friendly IS NULL)
+                ORDER BY id ASC
+                LIMIT %s
+            """, (limit,))
+        else:
+            # ALL published brands (re-evaluate existing values)
+            cursor.execute("""
+                SELECT id, brand_name, website, category, description,
+                       has_application_form, application_form_url,
+                       min_followers, micro_friendly, logo_url
+                FROM pr_brands
+                WHERE COALESCE(status, 'published') = 'published'
+                ORDER BY id ASC
+                LIMIT %s
+            """, (limit,))
+
+        brands = cursor.fetchall()
+        total = len(brands)
+        print(f"[Follower Enrich] Found {total} brands to process...")
+
+        if total == 0:
+            conn.close()
+            return stats
+
+        for i, brand in enumerate(brands):
+            stats['processed'] += 1
+            brand_name = brand['brand_name']
+
+            print(f"\n[Follower Enrich] {i+1}/{total}: {brand_name}...")
+
+            # Skip if both fields already have values (when only_null_values=True)
+            if only_null_values and brand.get('min_followers') is not None and brand.get('micro_friendly') is not None:
+                print(f"[Follower Enrich] - Skipped (already has values)")
+                stats['skipped'] += 1
+                continue
+
+            # Get AI enrichment
+            result = enrich_follower_requirements_ai(dict(brand))
+
+            if not result:
+                print(f"[Follower Enrich] ⚠ Failed to enrich {brand_name}")
+                stats['errors'] += 1
+                time.sleep(rate_limit_delay)
+                continue
+
+            min_followers = result['min_followers']
+            micro_friendly = result['micro_friendly']
+
+            print(f"[Follower Enrich] AI result: min_followers={min_followers}, micro_friendly={micro_friendly}")
+
+            if dry_run:
+                print(f"[Follower Enrich] DRY RUN - would update {brand_name}")
+                stats['updated'] += 1
+            else:
+                # Update database
+                try:
+                    cursor.execute("""
+                        UPDATE pr_brands
+                        SET min_followers = %s,
+                            micro_friendly = %s,
+                            updated_at = NOW()
+                        WHERE id = %s
+                    """, (min_followers, micro_friendly, brand['id']))
+                    stats['updated'] += 1
+                    print(f"[Follower Enrich] ✓ Updated {brand_name}")
+                except Exception as db_err:
+                    print(f"[Follower Enrich] DB error for {brand_name}: {db_err}")
+                    stats['errors'] += 1
+
+            # Commit every 25 brands
+            if (i + 1) % 25 == 0:
+                conn.commit()
+                print(f"[Follower Enrich] Committed batch ({i+1}/{total})")
+
+            # Rate limiting
+            if i < total - 1:
+                time.sleep(rate_limit_delay)
+
+        conn.commit()
+        conn.close()
+
+        print(f"\n[Follower Enrich] COMPLETE:")
+        print(f"  Processed: {stats['processed']}")
+        print(f"  Updated: {stats['updated']}")
+        print(f"  Errors: {stats['errors']}")
+        print(f"  Skipped: {stats['skipped']}")
+
+    except Exception as e:
+        print(f"[Follower Enrich] Database error: {e}")
+        if conn:
+            conn.rollback()
+            conn.close()
+
+    return stats
+
+
+def get_follower_enrichment_stats() -> Dict:
+    """
+    Get stats on min_followers and micro_friendly coverage.
+
+    Returns:
+        Dict with counts of null/filled values
+    """
+    try:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+    except ImportError:
+        return {'error': 'psycopg2 not installed'}
+
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        return {'error': 'DATABASE_URL not found'}
+
+    try:
+        conn = psycopg2.connect(db_url)
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute("""
+            SELECT
+                COUNT(*) as total_published,
+                SUM(CASE WHEN min_followers IS NULL THEN 1 ELSE 0 END) as min_followers_null,
+                SUM(CASE WHEN min_followers IS NOT NULL THEN 1 ELSE 0 END) as min_followers_filled,
+                SUM(CASE WHEN micro_friendly IS NULL THEN 1 ELSE 0 END) as micro_friendly_null,
+                SUM(CASE WHEN micro_friendly IS NOT NULL THEN 1 ELSE 0 END) as micro_friendly_filled,
+                SUM(CASE WHEN micro_friendly = TRUE THEN 1 ELSE 0 END) as micro_friendly_true,
+                SUM(CASE WHEN micro_friendly = FALSE THEN 1 ELSE 0 END) as micro_friendly_false,
+                SUM(CASE WHEN min_followers IS NULL OR micro_friendly IS NULL THEN 1 ELSE 0 END) as needs_enrichment
+            FROM pr_brands
+            WHERE COALESCE(status, 'published') = 'published'
+        """)
+
+        stats = cursor.fetchone()
+        conn.close()
+
+        return dict(stats) if stats else {}
+
+    except Exception as e:
+        return {'error': str(e)}
