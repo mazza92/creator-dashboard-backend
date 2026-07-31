@@ -46,7 +46,7 @@ def run_migration(dry_run=False):
         # Step 1: Add columns to creators table
         print("\n[1/5] Adding unlock columns to creators table...")
         cur.execute("""
-            ALTER TABLE creators ADD COLUMN IF NOT EXISTS unlocks_remaining INT DEFAULT 5;
+            ALTER TABLE creators ADD COLUMN IF NOT EXISTS unlocks_remaining INT DEFAULT 3;
             ALTER TABLE creators ADD COLUMN IF NOT EXISTS unlocks_tier VARCHAR(20) DEFAULT 'free';
             ALTER TABLE creators ADD COLUMN IF NOT EXISTS unlocks_reset_at TIMESTAMP;
         """)
@@ -79,19 +79,19 @@ def run_migration(dry_run=False):
         pro_count = cur.rowcount
         print(f"      [OK] {pro_count} Pro/Elite users set to unlimited")
 
-        # Step 4: Set Free users to 5 unlocks
-        print("\n[4/5] Setting Free users to 5 unlocks (30-day reset)...")
+        # Step 4: Set Free users to 3 unlocks
+        print("\n[4/5] Setting Free users to 3 unlocks (30-day reset)...")
         cur.execute("""
             UPDATE creators
             SET unlocks_tier = 'free',
-                unlocks_remaining = 5,
+                unlocks_remaining = 3,
                 unlocks_reset_at = NOW() + INTERVAL '30 days'
             WHERE subscription_tier IS NULL
                OR subscription_tier = 'free'
                OR subscription_tier = ''
         """)
         free_count = cur.rowcount
-        print(f"      [OK] {free_count} Free users set to 5 unlocks")
+        print(f"      [OK] {free_count} Free users set to 3 unlocks")
 
         # Step 5: Backfill existing pitches as unlocks
         print("\n[5/5] Backfilling existing pitches as permanent unlocks...")

@@ -4,7 +4,7 @@
 
 -- Step 1: Add unlock tracking columns to creators table
 -- (Using creators since subscription_tier is already here)
-ALTER TABLE creators ADD COLUMN IF NOT EXISTS unlocks_remaining INT DEFAULT 5;
+ALTER TABLE creators ADD COLUMN IF NOT EXISTS unlocks_remaining INT DEFAULT 3;
 ALTER TABLE creators ADD COLUMN IF NOT EXISTS unlocks_tier VARCHAR(20) DEFAULT 'free';
 ALTER TABLE creators ADD COLUMN IF NOT EXISTS unlocks_reset_at TIMESTAMP;
 
@@ -29,10 +29,10 @@ SET unlocks_tier = 'pro',
     unlocks_reset_at = NULL
 WHERE subscription_tier IN ('pro', 'elite');
 
--- Step 4: Set Free users to 5 unlocks, reset in 30 days
+-- Step 4: Set Free users to 3 unlocks, reset in 30 days
 UPDATE creators
 SET unlocks_tier = 'free',
-    unlocks_remaining = 5,
+    unlocks_remaining = 3,
     unlocks_reset_at = NOW() + INTERVAL '30 days'
 WHERE subscription_tier IS NULL
    OR subscription_tier = 'free'
