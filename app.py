@@ -1513,76 +1513,106 @@ def get_profile():
 
     app.logger.info(f"✅ Fetching profile for user_id={user_id}, role={user_role}, creator_id={creator_id}, brand_id={brand_id}")
 
-    conn = get_db_connection()
-    if not conn:
-        app.logger.error("🔥 Database connection failed")
-        response = jsonify({'error': 'Database connection failed'})
-        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
-        response.headers['Access-Control-Allow-Credentials'] = 'true'
-        return response, 500
+    # Retry logic for transient SSL/connection errors
+    max_retries = 2
+    last_error = None
 
-    cursor = conn.cursor(cursor_factory=RealDictCursor)
-    try:
-        cursor.execute('SELECT id, email, phone, country FROM users WHERE id = %s', (user_id,))
-        user_data = cursor.fetchone()
-        if not user_data:
-            app.logger.error(f"🔥 User not found: user_id={user_id}")
-            response = jsonify({'error': 'User not found'})
+    for attempt in range(max_retries):
+        conn = None
+        cursor = None
+        try:
+            conn = get_db_connection()
+            if not conn:
+                app.logger.error("🔥 Database connection failed")
+                response = jsonify({'error': 'Database connection failed'})
+                response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+                response.headers['Access-Control-Allow-Credentials'] = 'true'
+                return response, 500
+
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute('SELECT id, email, phone, country FROM users WHERE id = %s', (user_id,))
+            user_data = cursor.fetchone()
+            if not user_data:
+                app.logger.error(f"🔥 User not found: user_id={user_id}")
+                response = jsonify({'error': 'User not found'})
+                response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+                response.headers['Access-Control-Allow-Credentials'] = 'true'
+                return response, 404
+
+            profile_data = {
+                **user_data,
+                'user_role': user_role,
+                'creator_id': creator_id,
+                'brand_id': brand_id
+            }
+
+            if user_role == 'creator':
+                cursor.execute('SELECT id, bio, followers_count, * FROM creators WHERE user_id = %s', (user_id,))
+                creator_data = cursor.fetchone() or {}
+                profile_data.update(creator_data)
+
+                # Add computed media kit fields
+                if creator_data:
+                    creator_id_val = creator_data.get('id')
+                    username = creator_data.get('username')
+                    kit_published = creator_data.get('kit_published', False)
+
+                    # Count portfolio posts
+                    post_count = 0
+                    try:
+                        cursor.execute('SELECT COUNT(*) as count FROM portfolio_posts WHERE creator_id = %s', (creator_id_val,))
+                        result = cursor.fetchone()
+                        post_count = result['count'] if result else 0
+                    except:
+                        pass  # Table may not exist
+
+                    # has_media_kit = kit is published AND has at least 1 post
+                    profile_data['has_media_kit'] = bool(kit_published and post_count > 0)
+                    profile_data['media_kit_url'] = f"https://newcollab.co/kit/{username}" if username else None
+                    profile_data['portfolio_post_count'] = post_count
+            else:  # brand
+                cursor.execute('SELECT *, logo AS image_profile FROM brands WHERE user_id = %s', (user_id,))
+                brand_data = cursor.fetchone() or {}
+                profile_data.update(brand_data)
+
+            response = jsonify(profile_data)
             response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
             response.headers['Access-Control-Allow-Credentials'] = 'true'
-            return response, 404
+            app.logger.info(f"🟢 Profile response headers: {response.headers}")
+            return response, 200
 
-        profile_data = {
-            **user_data,
-            'user_role': user_role,
-            'creator_id': creator_id,
-            'brand_id': brand_id
-        }
-
-        if user_role == 'creator':
-            cursor.execute('SELECT id, bio, followers_count, * FROM creators WHERE user_id = %s', (user_id,))
-            creator_data = cursor.fetchone() or {}
-            profile_data.update(creator_data)
-
-            # Add computed media kit fields
-            if creator_data:
-                creator_id_val = creator_data.get('id')
-                username = creator_data.get('username')
-                kit_published = creator_data.get('kit_published', False)
-
-                # Count portfolio posts
-                post_count = 0
+        except OperationalError as e:
+            last_error = e
+            app.logger.warning(f"🔄 Database connection error on attempt {attempt + 1}/{max_retries}: {str(e)}")
+            if attempt < max_retries - 1:
+                import time
+                time.sleep(0.5)  # Brief pause before retry
+                continue
+            # Fall through to error handling after all retries exhausted
+        except Exception as e:
+            app.logger.error(f"🔥 Error fetching profile: {str(e)}")
+            response = jsonify({'error': str(e)})
+            response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
+            return response, 500
+        finally:
+            if cursor:
                 try:
-                    cursor.execute('SELECT COUNT(*) as count FROM portfolio_posts WHERE creator_id = %s', (creator_id_val,))
-                    result = cursor.fetchone()
-                    post_count = result['count'] if result else 0
+                    cursor.close()
                 except:
-                    pass  # Table may not exist
+                    pass
+            if conn:
+                try:
+                    conn.close()
+                except:
+                    pass
 
-                # has_media_kit = kit is published AND has at least 1 post
-                profile_data['has_media_kit'] = bool(kit_published and post_count > 0)
-                profile_data['media_kit_url'] = f"https://newcollab.co/kit/{username}" if username else None
-                profile_data['portfolio_post_count'] = post_count
-        else:  # brand
-            cursor.execute('SELECT *, logo AS image_profile FROM brands WHERE user_id = %s', (user_id,))
-            brand_data = cursor.fetchone() or {}
-            profile_data.update(brand_data)
-
-        response = jsonify(profile_data)
-        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
-        response.headers['Access-Control-Allow-Credentials'] = 'true'
-        app.logger.info(f"🟢 Profile response headers: {response.headers}")
-        return response, 200
-
-    except Exception as e:
-        app.logger.error(f"🔥 Error fetching profile: {str(e)}")
-        response = jsonify({'error': str(e)})
-        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
-        response.headers['Access-Control-Allow-Credentials'] = 'true'
-        return response, 500
-    finally:
-        cursor.close()
-        conn.close()
+    # All retries exhausted for OperationalError
+    app.logger.error(f"🔥 Database connection failed after {max_retries} attempts: {str(last_error)}")
+    response = jsonify({'error': 'Database connection temporarily unavailable. Please try again.'})
+    response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+    response.headers['Access-Control-Allow-Credentials'] = 'true'
+    return response, 503
 
 # Event Tracking Endpoint - Logs user interactions for analytics
 @app.route('/api/track-event', methods=['POST', 'OPTIONS'])

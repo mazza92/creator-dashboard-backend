@@ -236,6 +236,8 @@ def final_clean(text: str) -> str:
         (r"\bpassionate about\b", "into"),
         # "thrilled" -> simpler
         (r"\bthrilled\b", "excited"),
+        # "seamless" -> simpler (AI-tell in marketing speak)
+        (r"\bseamless(ly)?\b", "smooth"),
     ]
 
     for pattern, replacement in AI_REPLACEMENTS:
