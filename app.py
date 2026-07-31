@@ -5554,8 +5554,8 @@ def register_brand():
         # Insert user
         cursor.execute(
             '''
-            INSERT INTO users (first_name, last_name, email, phone, country, password, role, is_verified, verification_token)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+            INSERT INTO users (first_name, last_name, email, phone, country, password, role, is_verified, verification_token, last_login)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW()) RETURNING id
             ''',
             (first_name, last_name, email, phone, country, hashed_password, role, False, verification_token)
         )
@@ -5684,8 +5684,8 @@ def register_creator_account():
         if column_exists:
             cursor.execute(
                 '''
-                INSERT INTO users (first_name, last_name, email, password, role, is_verified, verification_token, pr_list_signup)
-                VALUES (%s, %s, %s, %s, 'creator', %s, %s, %s)
+                INSERT INTO users (first_name, last_name, email, password, role, is_verified, verification_token, pr_list_signup, last_login)
+                VALUES (%s, %s, %s, %s, 'creator', %s, %s, %s, NOW())
                 RETURNING id
                 ''',
                 (first_name or None, last_name or None, email, hashed_password, False, verification_token, pr_list_signup)
@@ -5693,8 +5693,8 @@ def register_creator_account():
         else:
             cursor.execute(
                 '''
-                INSERT INTO users (first_name, last_name, email, password, role, is_verified, verification_token)
-                VALUES (%s, %s, %s, %s, 'creator', %s, %s)
+                INSERT INTO users (first_name, last_name, email, password, role, is_verified, verification_token, last_login)
+                VALUES (%s, %s, %s, %s, 'creator', %s, %s, NOW())
                 RETURNING id
                 ''',
                 (first_name or None, last_name or None, email, hashed_password, False, verification_token)
@@ -5860,8 +5860,8 @@ def register_creator():
 
         cursor.execute(
             '''
-            INSERT INTO users (first_name, last_name, email, phone, country, password, role, is_verified, verification_token)
-            VALUES (%s, %s, %s, %s, %s, %s, 'creator', %s, %s)
+            INSERT INTO users (first_name, last_name, email, phone, country, password, role, is_verified, verification_token, last_login)
+            VALUES (%s, %s, %s, %s, %s, %s, 'creator', %s, %s, NOW())
             RETURNING id
             ''',
             (first_name, last_name, email, phone, country, hashed_password, False, verification_token)
@@ -5870,7 +5870,7 @@ def register_creator():
 
         cursor.execute(
             '''
-            INSERT INTO creators 
+            INSERT INTO creators
             (username, bio, followers_count, platforms, image_profile, social_links, user_id, niche, regions,
              primary_age_range, total_posts, total_views, total_likes, total_comments, total_shares, portfolio_links,
              engagement_rate)
