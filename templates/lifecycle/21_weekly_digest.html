@@ -47,7 +47,7 @@
 {% for brand in new_brands %}
     <div class="brand-item">
         <span class="brand-name">{{ brand.name }}</span>
-        <span class="brand-meta"> &bull; {{ brand.category }} &bull; {{ brand.reason }}</span>
+        {% if brand.description %}<span class="brand-meta"> — {{ brand.description }}</span>{% endif %}
     </div>
 {% endfor %}
 </div>

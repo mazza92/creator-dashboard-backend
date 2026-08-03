@@ -999,8 +999,9 @@ def _get_niche_to_category_map() -> Dict[str, List[str]]:
 
 def get_for_you_brands_for_email(creator_id: int, cursor, limit: int = 3) -> List[Dict]:
     """
-    Get For You brand recommendations for email - mirrors the app's For You logic.
+    Get For You brand recommendations for email.
     Returns brands matching creator's niches, excluding already unlocked brands.
+    Simple format: brand name + short description only.
     """
     from datetime import datetime
 
@@ -1040,19 +1041,13 @@ def get_for_you_brands_for_email(creator_id: int, cursor, limit: int = 3) -> Lis
     all_niches = niche_list + (creator_niches if isinstance(creator_niches, list) else [])
     all_niches = [n.strip().lower() for n in all_niches if n and isinstance(n, str)]
 
-    # Get primary niche for display
-    primary_niche = all_niches[0].title() if all_niches else 'Lifestyle'
-
-    # Build matching categories
+    # Build matching categories from niches
     niche_to_category = _get_niche_to_category_map()
     matching_categories = set()
     for niche in all_niches:
         for key, categories in niche_to_category.items():
             if key in niche or niche in key:
                 matching_categories.update(c.lower() for c in categories)
-
-    if not matching_categories:
-        matching_categories = {'lifestyle', 'beauty', 'fashion'}
 
     # Get already unlocked brands to exclude
     cursor.execute("SELECT brand_id FROM brand_unlocks WHERE creator_id = %s", (creator_id,))
@@ -1062,42 +1057,56 @@ def get_for_you_brands_for_email(creator_id: int, cursor, limit: int = 3) -> Lis
     week_number = datetime.now().isocalendar()[1]
     rotation_offset = (week_number * 7) % 100
 
-    # Build query with exclusions
+    # Build query - if we have matching categories, use them; otherwise show popular brands
     exclude_clause = "AND b.id != ALL(%s)" if unlocked_ids else ""
-    cat_list = list(matching_categories)
 
-    # Query brands that match creator's niche categories
-    query_params = [cat_list]
-    if unlocked_ids:
-        query_params.append(unlocked_ids)
-    query_params.append(rotation_offset)
+    if matching_categories:
+        cat_list = list(matching_categories)
+        query_params = [cat_list]
+        if unlocked_ids:
+            query_params.append(unlocked_ids)
+        query_params.append(rotation_offset)
 
-    cursor.execute(f"""
-        SELECT b.id, b.brand_name AS name, b.category, b.slug
-        FROM pr_brands b
-        WHERE LOWER(b.category) = ANY(%s)
-          AND b.status = 'published'
-          AND b.accepting_pr = true
-          {exclude_clause}
-        ORDER BY (b.id + %s) %% 1000, b.created_at DESC
-        LIMIT %s
-    """, tuple(query_params) + (limit,))
+        cursor.execute(f"""
+            SELECT b.brand_name AS name, b.description
+            FROM pr_brands b
+            WHERE LOWER(b.category) = ANY(%s)
+              AND b.status = 'published'
+              AND b.accepting_pr = true
+              {exclude_clause}
+            ORDER BY (b.id + %s) %% 1000, b.created_at DESC
+            LIMIT %s
+        """, tuple(query_params) + (limit,))
+    else:
+        # No niche - show popular accepting brands
+        query_params = []
+        if unlocked_ids:
+            query_params.append(unlocked_ids)
+        query_params.append(rotation_offset)
+
+        cursor.execute(f"""
+            SELECT b.brand_name AS name, b.description
+            FROM pr_brands b
+            WHERE b.status = 'published'
+              AND b.accepting_pr = true
+              {exclude_clause}
+            ORDER BY (b.id + %s) %% 1000, b.created_at DESC
+            LIMIT %s
+        """, tuple(query_params) + (limit,))
 
     brands = cursor.fetchall()
 
-    # Format with accurate match reasons
+    # Simple format: name + truncated description
     result = []
     for b in brands:
-        cat_lower = (b.get('category') or '').lower()
-        if cat_lower in matching_categories:
-            reason = f"Matches your {primary_niche} niche"
-        else:
-            reason = "Recommended for you"
+        desc = b.get('description') or ''
+        # Truncate description to ~60 chars
+        if len(desc) > 60:
+            desc = desc[:57].rsplit(' ', 1)[0] + '...'
 
         result.append({
             'name': b['name'],
-            'category': b.get('category') or 'Lifestyle',
-            'reason': reason
+            'description': desc
         })
 
     return result
