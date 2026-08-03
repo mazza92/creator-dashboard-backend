@@ -1476,58 +1476,69 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
             cat_list = list(matching_categories)
             print(f"[WEEKLY DIGEST] Creator niches: {all_niches}, matching categories (lowercase): {cat_list}")
 
-            # Debug: Check what categories exist in the database
+            # Get brands already unlocked by this creator (exclude from suggestions)
             cursor.execute("""
-                SELECT DISTINCT LOWER(category) as cat FROM pr_brands
-                WHERE status = 'published' AND accepting_pr = true
-                LIMIT 20
-            """)
-            db_categories = [r['cat'] for r in cursor.fetchall()]
-            print(f"[WEEKLY DIGEST] Available DB categories: {db_categories}")
+                SELECT brand_id FROM brand_unlocks WHERE creator_id = %s
+            """, (creator_id,))
+            unlocked_ids = [r['brand_id'] for r in cursor.fetchall()]
+            print(f"[WEEKLY DIGEST] Creator has unlocked {len(unlocked_ids)} brands, excluding from suggestions")
 
-            # First try: matching categories + published + accepting PR
-            # Remove time constraint to get more matches
+            # Use week number for rotation (different brands each week)
+            from datetime import datetime
+            week_number = datetime.now().isocalendar()[1]  # 1-52
+            rotation_offset = (week_number * 7) % 100  # Rotate through brands weekly
+            print(f"[WEEKLY DIGEST] Week {week_number}, rotation offset: {rotation_offset}")
+
+            # Build exclusion clause for unlocked brands
+            exclude_clause = "AND b.id != ALL(%s)" if unlocked_ids else ""
+            exclude_params = [unlocked_ids] if unlocked_ids else []
+
+            # First try: matching categories + published + accepting PR + not unlocked
             if cat_list:
-                placeholders = ','.join(['%s'] * len(cat_list))
                 cursor.execute(f"""
-                    SELECT brand_name AS name, category FROM pr_brands
-                    WHERE LOWER(category) IN ({placeholders})
-                      AND status = 'published'
-                      AND accepting_pr = true
-                    ORDER BY created_at DESC
+                    SELECT b.id, b.brand_name AS name, b.category
+                    FROM pr_brands b
+                    WHERE LOWER(b.category) = ANY(%s)
+                      AND b.status = 'published'
+                      AND b.accepting_pr = true
+                      {exclude_clause}
+                    ORDER BY (b.id + %s) %% 1000, b.created_at DESC
                     LIMIT 3
-                """, tuple(cat_list))
+                """, tuple([cat_list] + exclude_params + [rotation_offset]))
                 matched_brands = cursor.fetchall()
-                print(f"[WEEKLY DIGEST] Category match query returned: {len(matched_brands)} brands")
+                print(f"[WEEKLY DIGEST] Category match (excl unlocked): {len(matched_brands)} brands")
                 if matched_brands:
                     print(f"[WEEKLY DIGEST] Matched brands: {[b['name'] for b in matched_brands]}")
 
             # Fallback: try matching with niches JSONB column
             if not matched_brands and all_niches:
-                # Try to match using the niches JSONB column
                 niche_pattern = '%' + all_niches[0] + '%'
-                cursor.execute("""
-                    SELECT brand_name AS name, category FROM pr_brands
-                    WHERE (niches::text ILIKE %s OR LOWER(category) ILIKE %s)
-                      AND status = 'published'
-                      AND accepting_pr = true
-                    ORDER BY created_at DESC
+                cursor.execute(f"""
+                    SELECT b.id, b.brand_name AS name, b.category
+                    FROM pr_brands b
+                    WHERE (b.niches::text ILIKE %s OR LOWER(b.category) ILIKE %s)
+                      AND b.status = 'published'
+                      AND b.accepting_pr = true
+                      {exclude_clause}
+                    ORDER BY (b.id + %s) %% 1000, b.created_at DESC
                     LIMIT 3
-                """, (niche_pattern, niche_pattern))
+                """, tuple([niche_pattern, niche_pattern] + exclude_params + [rotation_offset]))
                 matched_brands = cursor.fetchall()
-                print(f"[WEEKLY DIGEST] Niches JSONB match found: {len(matched_brands)} brands")
+                print(f"[WEEKLY DIGEST] Niches match (excl unlocked): {len(matched_brands)} brands")
 
             # Fallback: any published + accepting PR brands (for new users)
             if not matched_brands:
-                cursor.execute("""
-                    SELECT brand_name AS name, category FROM pr_brands
-                    WHERE status = 'published'
-                      AND accepting_pr = true
-                    ORDER BY created_at DESC
+                cursor.execute(f"""
+                    SELECT b.id, b.brand_name AS name, b.category
+                    FROM pr_brands b
+                    WHERE b.status = 'published'
+                      AND b.accepting_pr = true
+                      {exclude_clause}
+                    ORDER BY (b.id + %s) %% 1000, b.created_at DESC
                     LIMIT 3
-                """)
+                """, tuple(exclude_params + [rotation_offset]))
                 matched_brands = cursor.fetchall()
-                print(f"[WEEKLY DIGEST] Final fallback found: {len(matched_brands)} brands")
+                print(f"[WEEKLY DIGEST] Fallback (excl unlocked): {len(matched_brands)} brands")
 
         except Exception as e:
             import traceback
