@@ -1526,19 +1526,20 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
                 matched_brands = cursor.fetchall()
                 print(f"[WEEKLY DIGEST] Niches match (excl unlocked): {len(matched_brands)} brands")
 
-            # Fallback: any published + accepting PR brands (for new users)
-            if not matched_brands:
+            # Fallback: only for creators with no niche - show popular lifestyle brands
+            if not matched_brands and not all_niches:
                 cursor.execute(f"""
                     SELECT b.id, b.brand_name AS name, b.category
                     FROM pr_brands b
                     WHERE b.status = 'published'
                       AND b.accepting_pr = true
+                      AND LOWER(b.category) IN ('lifestyle', 'beauty', 'fashion')
                       {exclude_clause}
                     ORDER BY (b.id + %s) %% 1000, b.created_at DESC
                     LIMIT 3
                 """, tuple(exclude_params + [rotation_offset]))
                 matched_brands = cursor.fetchall()
-                print(f"[WEEKLY DIGEST] Fallback (excl unlocked): {len(matched_brands)} brands")
+                print(f"[WEEKLY DIGEST] No-niche fallback: {len(matched_brands)} brands")
 
         except Exception as e:
             import traceback
@@ -1547,17 +1548,21 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
 
         def get_match_reason(brand_category: str) -> str:
             category_lower = (brand_category or '').lower()
-            # Check if brand category matches any of creator's niches
-            if any(n in category_lower for n in all_niches):
+            # Check if brand category is in the matching categories we queried for
+            if category_lower in matching_categories:
                 return f"Matches your {primary_niche_display} niche"
-            elif any(category_lower in n for n in all_niches):
+            # Check for related niches
+            elif any(n in category_lower for n in all_niches):
                 return f"Fits your {primary_niche_display} content"
+            # Category-specific fallbacks
             elif 'beauty' in category_lower or 'skincare' in category_lower:
                 return "Open to beauty creators"
             elif 'fashion' in category_lower:
-                return "Seeking style content"
+                return "Seeking style creators"
             elif 'lifestyle' in category_lower:
                 return "Looking for lifestyle creators"
+            elif 'fitness' in category_lower or 'wellness' in category_lower:
+                return "Seeking wellness creators"
             else:
                 return "New PR opportunity"
 
