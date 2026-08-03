@@ -10,13 +10,15 @@
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr>
             <td style="padding: 4px 0;">
-                <span style="color: #6b7280; font-size: 13px;">Score:</span>
+                <span style="color: #6b7280; font-size: 13px;">Reply Chance:</span>
             </td>
             <td style="padding: 4px 0; text-align: right;">
                 <span style="color: #15161a; font-weight: 600;">{{ current_score }}%</span>
-                <span style="color: {% if score_delta >= 0 %}#10b981{% else %}#ef4444{% endif %}; font-size: 13px;">
-                    ({{ '+' if score_delta >= 0 else '' }}{{ score_delta }} vs last week)
+                {% if score_delta and score_delta > 0 %}
+                <span style="color: #10b981; font-size: 13px;">
+                    (+{{ score_delta }} potential)
                 </span>
+                {% endif %}
             </td>
         </tr>
         <tr>
@@ -30,9 +32,15 @@
     </table>
 </div>
 
-<p style="margin: 24px 0 8px 0; font-size: 13px; color: #6b7280;">THIS WEEK'S FOCUS</p>
+<p style="margin: 24px 0 8px 0; font-size: 13px; color: #6b7280;">YOUR MANAGER'S PLAN</p>
+{% if pending_plans and pending_plans|length > 0 %}
+{% for plan in pending_plans %}
+<p style="margin: 4px 0;"><strong>#{{ plan.number }}</strong> {{ plan.title }}</p>
+{% endfor %}
+{% else %}
 <p><strong>{{ weekly_theme_title }}</strong></p>
 <p>{{ weekly_theme_body }}</p>
+{% endif %}
 
 <p style="margin: 24px 0 8px 0; font-size: 13px; color: #6b7280;">NEW BRANDS IN YOUR MATCH LIST</p>
 <div class="brand-list">

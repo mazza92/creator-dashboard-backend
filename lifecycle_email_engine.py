@@ -1278,21 +1278,29 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
 
 
 def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
-    """Build context specifically for the weekly digest email with real creator data."""
+    """
+    Build context for the weekly digest email using AI Manager data.
+    Uses Reply Chance score and pending manager plans.
+    """
+    # Import pr_ready for score calculation
+    try:
+        from services.pr_ready import compute_pr_ready_score
+    except ImportError:
+        compute_pr_ready_score = None
+
     conn = get_db_connection()
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Get full creator data for personalization
+        # Get full creator data including user_id for scrape lookup
         cursor.execute("""
-            SELECT c.id, c.username, u.email, u.first_name,
+            SELECT c.id, c.username, c.user_id, u.email, u.first_name,
                    c.daily_unlocks_used, c.unlocks_remaining,
                    c.pitches_sent_this_week, c.subscription_tier,
                    c.bio, c.image_profile, c.niche, c.creator_niches,
                    c.kit_published, c.total_pitches_sent, c.total_replies_received,
                    c.followers_count, c.creator_followers, c.engagement_rate,
-                   c.avg_engagement_rate, c.weekly_digest_week_number,
-                   c.first_reply_received_at, c.first_pr_box_received_at
+                   c.avg_engagement_rate, c.weekly_digest_week_number
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.id = %s
@@ -1302,30 +1310,75 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
         if not creator:
             return {}
 
-        # Calculate unlocks used
+        user_id = creator.get('user_id')
         subscription_tier = creator.get('subscription_tier') or 'free'
         is_pro = subscription_tier in ('pro', 'elite')
 
+        # === UNLOCKS: Calculate correctly ===
+        unlocks_remaining = creator.get('unlocks_remaining')
         if is_pro:
             unlocks_used = 0
             unlocks_quota = '∞'
+        elif unlocks_remaining is not None:
+            unlocks_used = max(0, 3 - unlocks_remaining)
+            unlocks_quota = 3
         else:
-            unlocks_remaining = creator.get('unlocks_remaining')
-            if unlocks_remaining is not None:
-                unlocks_used = max(0, 3 - unlocks_remaining)
-            else:
-                unlocks_used = creator.get('pitches_sent_this_week') or creator.get('daily_unlocks_used') or 0
+            # Default for users without unlocks_remaining set
+            unlocks_used = creator.get('daily_unlocks_used') or 0
             unlocks_quota = 3
 
-        # Calculate real progress score
-        current_score = _calculate_creator_progress_score(creator)
+        # === REPLY CHANCE SCORE: Use AI Manager score ===
+        reply_chance = 0
+        pending_plans = []
+        score_delta = 0
 
-        # Score delta: compare to last week (approximate based on recent activity)
-        # If they sent pitches or got replies this week, they improved
-        pitches_this_week = creator.get('pitches_sent_this_week') or 0
-        score_delta = min(15, pitches_this_week * 3)  # Each pitch = ~3% improvement signal
+        if compute_pr_ready_score and user_id:
+            try:
+                # Get creator_profile_data (scrape)
+                cursor.execute("""
+                    SELECT * FROM creator_profile_data WHERE user_id = %s
+                """, (user_id,))
+                scrape = cursor.fetchone()
 
-        # Get creator's niche for brand matching
+                # Get kit status
+                cursor.execute("""
+                    SELECT kit_published as is_published,
+                           (SELECT COUNT(*) FROM portfolio_posts WHERE creator_id = %s) as post_count
+                    FROM creators WHERE id = %s
+                """, (creator_id, creator_id))
+                kit_row = cursor.fetchone()
+                kit_status = {
+                    'is_published': kit_row.get('is_published') if kit_row else False,
+                    'post_count': kit_row.get('post_count') or 0 if kit_row else 0
+                }
+
+                # Compute PR-Ready score
+                report = compute_pr_ready_score(
+                    scrape=dict(scrape) if scrape else {},
+                    kit_status=kit_status,
+                    is_pro=is_pro,
+                    creator_bio=creator.get('bio'),
+                    creator_profile=dict(creator)
+                )
+
+                reply_chance = report.get('score') or 0
+                score_delta = report.get('projected_gain') or 0
+
+                # Get pending plans (fixes that aren't done)
+                fixes = report.get('fixes') or []
+                pending_plans = [
+                    {'number': i + 1, 'title': f.get('title', '')}
+                    for i, f in enumerate(fixes[:3])  # Top 3 pending items
+                ]
+            except Exception as e:
+                print(f"[WEEKLY DIGEST] Error computing PR-Ready score: {e}")
+                reply_chance = _calculate_creator_progress_score(creator)
+
+        # Fallback if pr_ready not available
+        if not reply_chance:
+            reply_chance = _calculate_creator_progress_score(creator)
+
+        # === NEW BRANDS: Match to creator's niche ===
         creator_niche = creator.get('niche') or ''
         creator_niches = creator.get('creator_niches') or []
         if isinstance(creator_niches, str):
@@ -1334,76 +1387,56 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
             except:
                 creator_niches = []
 
-        # Build niche filter for brand matching
         all_niches = [creator_niche] + (creator_niches if isinstance(creator_niches, list) else [])
         all_niches = [n.strip().lower() for n in all_niches if n and isinstance(n, str)]
 
-        # Map common niches to brand categories
-        niche_to_category = {
-            'beauty': ['Beauty', 'Skincare', 'Makeup', 'Haircare'],
-            'skincare': ['Beauty', 'Skincare', 'Wellness'],
-            'fashion': ['Fashion', 'Clothing', 'Accessories', 'Jewelry'],
-            'lifestyle': ['Lifestyle', 'Home', 'Food & Beverage'],
-            'fitness': ['Fitness', 'Activewear', 'Wellness', 'Health'],
-            'food': ['Food & Beverage', 'Kitchen', 'Home'],
-            'parenting': ['Baby', 'Kids', 'Family', 'Home'],
-            'mom': ['Baby', 'Kids', 'Family', 'Lifestyle'],
-            'travel': ['Travel', 'Lifestyle', 'Fashion'],
-            'tech': ['Tech', 'Gaming', 'Gadgets'],
-            'pet': ['Pet', 'Animals'],
-            'wellness': ['Wellness', 'Health', 'Fitness', 'Beauty'],
-            'home': ['Home', 'Kitchen', 'Lifestyle'],
-        }
-
-        # Get matching categories for this creator
+        niche_to_category = _get_niche_to_category_map()
         matching_categories = set()
         for niche in all_niches:
             for key, categories in niche_to_category.items():
                 if key in niche:
                     matching_categories.update(categories)
 
-        # Fallback to Lifestyle if no matches
         if not matching_categories:
             matching_categories = {'Lifestyle', 'Beauty', 'Fashion'}
 
-        # Get new brands matching creator's niche
+        # Get new brands - try with status filter first, then without
+        matched_brands = []
         try:
+            # First try matching categories
             if matching_categories:
                 placeholders = ','.join(['%s'] * len(matching_categories))
                 cursor.execute(f"""
                     SELECT brand_name AS name, category FROM pr_brands
-                    WHERE created_at >= NOW() - INTERVAL '14 days'
+                    WHERE created_at >= NOW() - INTERVAL '30 days'
                       AND category IN ({placeholders})
-                      AND status = 'active'
                     ORDER BY created_at DESC
                     LIMIT 3
                 """, tuple(matching_categories))
                 matched_brands = cursor.fetchall()
 
-                # If no niche matches, fall back to any new brands
-                if not matched_brands:
-                    cursor.execute("""
-                        SELECT brand_name AS name, category FROM pr_brands
-                        WHERE created_at >= NOW() - INTERVAL '14 days'
-                          AND status = 'active'
-                        ORDER BY created_at DESC
-                        LIMIT 3
-                    """)
-                    matched_brands = cursor.fetchall()
-            else:
+            # Fallback to any recent brands
+            if not matched_brands:
                 cursor.execute("""
                     SELECT brand_name AS name, category FROM pr_brands
-                    WHERE created_at >= NOW() - INTERVAL '14 days'
-                      AND status = 'active'
+                    WHERE created_at >= NOW() - INTERVAL '30 days'
                     ORDER BY created_at DESC
                     LIMIT 3
                 """)
                 matched_brands = cursor.fetchall()
-        except Exception as e:
-            print(f"[WEEKLY DIGEST] Error fetching matched brands: {e}")
-            matched_brands = []
 
-        # Generate personalized match reasons
+            # Last resort: any brands at all
+            if not matched_brands:
+                cursor.execute("""
+                    SELECT brand_name AS name, category FROM pr_brands
+                    ORDER BY created_at DESC
+                    LIMIT 3
+                """)
+                matched_brands = cursor.fetchall()
+
+        except Exception as e:
+            print(f"[WEEKLY DIGEST] Error fetching brands: {e}")
+
         def get_match_reason(brand_category: str) -> str:
             category_lower = (brand_category or '').lower()
             if any(n in category_lower for n in all_niches):
@@ -1414,36 +1447,22 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
                 return "Seeking style content"
             elif 'lifestyle' in category_lower:
                 return "Looking for lifestyle creators"
-            elif 'fitness' in category_lower or 'wellness' in category_lower:
-                return "Wellness-focused campaign"
             else:
                 return "New PR opportunity"
 
-        # Get rotating weekly theme based on week number
-        week_number = creator.get('weekly_digest_week_number') or 0
-        themes = _get_weekly_themes()
-        theme = themes[week_number % len(themes)]
-
-        # Update week number for next time
-        try:
-            cursor.execute("""
-                UPDATE creators
-                SET weekly_digest_week_number = COALESCE(weekly_digest_week_number, 0) + 1
-                WHERE id = %s
-            """, (creator_id,))
-            conn.commit()
-        except Exception as e:
-            print(f"[WEEKLY DIGEST] Error updating week number: {e}")
-
+        # Build context
         context = {
             'first_name': creator.get('first_name') or creator.get('username') or 'there',
-            'current_score': current_score,
+            'current_score': reply_chance,
+            'score_label': 'Reply Chance',
             'score_delta': score_delta,
             'unlocks_used': unlocks_used,
             'unlocks_quota': unlocks_quota,
             'replies_count': creator.get('total_replies_received') or 0,
-            'weekly_theme_title': theme['title'],
-            'weekly_theme_body': theme['body'],
+            # Use pending plans from AI Manager, or fallback to static theme
+            'weekly_theme_title': pending_plans[0]['title'] if pending_plans else 'Optimize your profile',
+            'weekly_theme_body': f"Your manager found {len(pending_plans)} improvements. Start with #{pending_plans[0]['number']}." if pending_plans else 'Visit your AI Manager for personalized tips.',
+            'pending_plans': pending_plans,
             'new_brands': [
                 {
                     'name': b['name'],
@@ -1451,9 +1470,9 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
                     'reason': get_match_reason(b.get('category'))
                 } for b in matched_brands
             ] if matched_brands else [
-                {'name': 'Explore new brands', 'category': 'Various', 'reason': 'Browse the full directory'}
+                {'name': 'Explore brands', 'category': 'Various', 'reason': 'Browse the directory'}
             ],
-            'win_story': None,  # TODO: Pull from success stories table when available
+            'win_story': None,
             'cta_url': f"{FRONTEND_URL}/creator/dashboard/pr-ready",
         }
 
