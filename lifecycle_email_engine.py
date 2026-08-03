@@ -1148,10 +1148,8 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
         if not creator:
             return {}
 
-        # Calculate unlocks used this week
+        # Calculate unlocks used this week for Monday brief
         # unlocks_remaining: NULL for pro (unlimited), 0-3 for free users
-        # If unlocks_remaining exists, calculate used = 3 - remaining
-        # Otherwise fall back to pitches_sent_this_week or daily_unlocks_used
         subscription_tier = creator.get('subscription_tier') or 'free'
         is_pro = subscription_tier in ('pro', 'elite')
 
