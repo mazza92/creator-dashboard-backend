@@ -1002,8 +1002,12 @@ def get_for_you_brands_for_email(creator_id: int, cursor, limit: int = 3) -> Lis
     Get For You brand recommendations for email.
     Returns brands matching creator's niches, excluding already unlocked brands.
     Simple format: brand name + short description only.
+
+    Uses creator_id + week for rotation so each creator sees different brands.
+    Matches on creator's actual niches directly (no expansion to avoid over-broad matching).
     """
     from datetime import datetime
+    import logging
 
     # Get creator's niches
     cursor.execute("""
@@ -1015,22 +1019,8 @@ def get_for_you_brands_for_email(creator_id: int, cursor, limit: int = 3) -> Lis
     if not creator:
         return []
 
-    # Parse niches
-    raw_niche = creator.get('niche') or ''
+    # Parse niches - use creator_niches as primary source (cleaner array)
     creator_niches = creator.get('creator_niches') or []
-
-    if isinstance(raw_niche, str) and raw_niche.startswith('['):
-        try:
-            raw_niche = json.loads(raw_niche)
-        except:
-            pass
-
-    if isinstance(raw_niche, list):
-        niche_list = raw_niche
-    elif raw_niche:
-        niche_list = [raw_niche]
-    else:
-        niche_list = []
 
     if isinstance(creator_niches, str):
         try:
@@ -1038,31 +1028,27 @@ def get_for_you_brands_for_email(creator_id: int, cursor, limit: int = 3) -> Lis
         except:
             creator_niches = []
 
-    all_niches = niche_list + (creator_niches if isinstance(creator_niches, list) else [])
-    all_niches = [n.strip().lower() for n in all_niches if n and isinstance(n, str)]
+    # Deduplicate and normalize
+    unique_niches = list(set(n.strip().lower() for n in creator_niches if n and isinstance(n, str)))
 
-    # Build matching categories from niches
-    niche_to_category = _get_niche_to_category_map()
-    matching_categories = set()
-    for niche in all_niches:
-        for key, categories in niche_to_category.items():
-            if key in niche or niche in key:
-                matching_categories.update(c.lower() for c in categories)
+    logging.info(f"[FOR YOU BRANDS] Creator {creator_id} niches: {unique_niches}")
 
     # Get already unlocked brands to exclude
     cursor.execute("SELECT brand_id FROM brand_unlocks WHERE creator_id = %s", (creator_id,))
     unlocked_ids = [r['brand_id'] for r in cursor.fetchall()]
 
-    # Use week number for rotation
+    # Use creator_id + week for unique rotation per creator
     week_number = datetime.now().isocalendar()[1]
-    rotation_offset = (week_number * 7) % 100
+    rotation_offset = ((creator_id * 17) + (week_number * 7)) % 1000
 
-    # Build query - if we have matching categories, use them; otherwise show popular brands
+    logging.info(f"[FOR YOU BRANDS] Creator {creator_id} rotation offset: {rotation_offset}")
+
+    # Build query - match on creator's actual niches directly
     exclude_clause = "AND b.id != ALL(%s)" if unlocked_ids else ""
 
-    if matching_categories:
-        cat_list = list(matching_categories)
-        query_params = [cat_list]
+    if unique_niches:
+        # Match category directly against creator's niches (case-insensitive)
+        query_params = [unique_niches]
         if unlocked_ids:
             query_params.append(unlocked_ids)
         query_params.append(rotation_offset)
@@ -1077,6 +1063,28 @@ def get_for_you_brands_for_email(creator_id: int, cursor, limit: int = 3) -> Lis
             ORDER BY (b.id + %s) %% 1000, b.created_at DESC
             LIMIT %s
         """, tuple(query_params) + (limit,))
+
+        brands = cursor.fetchall()
+        logging.info(f"[FOR YOU BRANDS] Creator {creator_id} matched {len(brands)} brands on exact niches")
+
+        # If no exact matches, try broader search without category filter
+        if not brands:
+            logging.info(f"[FOR YOU BRANDS] Creator {creator_id} no exact matches, using popular brands")
+            query_params = []
+            if unlocked_ids:
+                query_params.append(unlocked_ids)
+            query_params.append(rotation_offset)
+
+            cursor.execute(f"""
+                SELECT b.brand_name AS name, b.description
+                FROM pr_brands b
+                WHERE b.status = 'published'
+                  AND b.accepting_pr = true
+                  {exclude_clause}
+                ORDER BY (b.id + %s) %% 1000, b.created_at DESC
+                LIMIT %s
+            """, tuple(query_params) + (limit,))
+            brands = cursor.fetchall()
     else:
         # No niche - show popular accepting brands
         query_params = []
@@ -1093,8 +1101,7 @@ def get_for_you_brands_for_email(creator_id: int, cursor, limit: int = 3) -> Lis
             ORDER BY (b.id + %s) %% 1000, b.created_at DESC
             LIMIT %s
         """, tuple(query_params) + (limit,))
-
-    brands = cursor.fetchall()
+        brands = cursor.fetchall()
 
     # Simple format: name + truncated description
     result = []
@@ -1108,6 +1115,8 @@ def get_for_you_brands_for_email(creator_id: int, cursor, limit: int = 3) -> Lis
             'name': b['name'],
             'description': desc
         })
+
+    logging.info(f"[FOR YOU BRANDS] Creator {creator_id} returning: {[b['name'] for b in result]}")
 
     return result
 
