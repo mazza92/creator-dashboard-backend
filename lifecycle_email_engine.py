@@ -912,6 +912,117 @@ def process_weekly_digest(
 # CONTEXT BUILDERS
 # ============================================
 
+def _calculate_creator_progress_score(creator: Dict) -> int:
+    """
+    Calculate creator's PR readiness progress score (0-100).
+    Based on profile completeness and activity.
+    """
+    score = 0
+
+    # Profile completeness (40 points max)
+    if creator.get('bio') and len(str(creator.get('bio', '')).strip()) >= 20:
+        score += 10  # Has meaningful bio
+    if creator.get('image_profile'):
+        score += 8   # Has profile image
+    if creator.get('niche') or creator.get('creator_niches'):
+        score += 7   # Has set niches
+    if creator.get('kit_published'):
+        score += 15  # Has published media kit
+
+    # Activity signals (35 points max)
+    pitches_sent = creator.get('total_pitches_sent') or 0
+    if pitches_sent >= 1:
+        score += 10
+    if pitches_sent >= 5:
+        score += 5
+    if pitches_sent >= 10:
+        score += 5
+
+    replies_received = creator.get('total_replies_received') or 0
+    if replies_received >= 1:
+        score += 10
+    if replies_received >= 3:
+        score += 5
+
+    # Engagement quality (25 points max)
+    followers = creator.get('followers_count') or creator.get('creator_followers') or 0
+    if followers >= 500:
+        score += 5
+    if followers >= 1000:
+        score += 5
+    if followers >= 5000:
+        score += 5
+
+    engagement = creator.get('engagement_rate') or creator.get('avg_engagement_rate') or 0
+    if engagement and float(engagement) >= 1:
+        score += 5
+    if engagement and float(engagement) >= 3:
+        score += 5
+
+    return min(100, score)
+
+
+def _get_weekly_themes() -> List[Dict[str, str]]:
+    """Rotating weekly themes for the Monday brief."""
+    return [
+        {'title': 'Bio polish', 'body': 'Brands scan bios in 3 seconds. This week, audit yours for clarity and a clear CTA.'},
+        {'title': 'Portfolio refresh', 'body': 'Update your media kit with your best recent content. First impressions matter.'},
+        {'title': 'Pitch practice', 'body': 'Draft a pitch to your dream brand. Even if you don\'t send it, practice builds confidence.'},
+        {'title': 'Engagement boost', 'body': 'Reply to every comment this week. Active creators get noticed by brand scouts.'},
+        {'title': 'Niche down', 'body': 'Brands love specialists. Double down on your core content theme this week.'},
+        {'title': 'Follow-up week', 'body': 'No response in 7 days? Send a friendly follow-up. Persistence pays.'},
+        {'title': 'Content batch', 'body': 'Create 3+ pieces of content in one session. Consistency attracts brand attention.'},
+        {'title': 'Network expansion', 'body': 'Connect with 3 creators in your niche. Collaborations lead to brand introductions.'},
+    ]
+
+
+def _get_niche_to_category_map() -> Dict[str, List[str]]:
+    """Map creator niches to brand categories for matching."""
+    return {
+        'beauty': ['Beauty', 'Skincare', 'Makeup', 'Haircare'],
+        'skincare': ['Beauty', 'Skincare', 'Wellness'],
+        'fashion': ['Fashion', 'Clothing', 'Accessories', 'Jewelry'],
+        'lifestyle': ['Lifestyle', 'Home', 'Food & Beverage'],
+        'fitness': ['Fitness', 'Activewear', 'Wellness', 'Health'],
+        'food': ['Food & Beverage', 'Kitchen', 'Home'],
+        'parenting': ['Baby', 'Kids', 'Family', 'Home'],
+        'mom': ['Baby', 'Kids', 'Family', 'Lifestyle'],
+        'travel': ['Travel', 'Lifestyle', 'Fashion'],
+        'tech': ['Tech', 'Gaming', 'Gadgets'],
+        'pet': ['Pet', 'Animals'],
+        'wellness': ['Wellness', 'Health', 'Fitness', 'Beauty'],
+        'home': ['Home', 'Kitchen', 'Lifestyle'],
+    }
+
+
+def _get_matching_categories(creator: Dict) -> set:
+    """Get brand categories that match a creator's niches."""
+    creator_niche = creator.get('niche') or ''
+    creator_niches = creator.get('creator_niches') or []
+    if isinstance(creator_niches, str):
+        try:
+            creator_niches = json.loads(creator_niches)
+        except:
+            creator_niches = []
+
+    all_niches = [creator_niche] + (creator_niches if isinstance(creator_niches, list) else [])
+    all_niches = [n.strip().lower() for n in all_niches if n and isinstance(n, str)]
+
+    niche_to_category = _get_niche_to_category_map()
+    matching_categories = set()
+
+    for niche in all_niches:
+        for key, categories in niche_to_category.items():
+            if key in niche:
+                matching_categories.update(categories)
+
+    # Fallback to broad categories if no matches
+    if not matching_categories:
+        matching_categories = {'Lifestyle', 'Beauty', 'Fashion'}
+
+    return matching_categories
+
+
 def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
     """Build the context dict for a lifecycle email."""
     conn = get_db_connection()
@@ -934,9 +1045,12 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
         unlocks_quota = 3
         subscription_tier = creator.get('subscription_tier', 'free')
 
+        # Calculate real progress score
+        current_score = _calculate_creator_progress_score(creator)
+
         context = {
             'first_name': creator.get('first_name') or creator.get('username') or 'there',
-            'current_score': 0,  # creator_score column doesn't exist
+            'current_score': current_score,
             'unlocks_used': unlocks_used,
             'unlocks_quota': unlocks_quota,
             'unlocks_available': max(0, unlocks_quota - unlocks_used),
@@ -1099,24 +1213,59 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
                 context['days_inactive'] = 14
                 context['weeks_inactive'] = 2
 
-            # Get top 3 new brands for reengagement email
+            # Get top 3 new brands matching creator's niche for reengagement email
             try:
-                cursor.execute("""
-                    SELECT brand_name AS name, category
-                    FROM pr_brands
-                    WHERE created_at >= NOW() - INTERVAL '30 days'
-                    ORDER BY created_at DESC
-                    LIMIT 3
-                """)
-                brands = cursor.fetchall()
+                matching_categories = _get_matching_categories(creator)
+
+                if matching_categories:
+                    placeholders = ','.join(['%s'] * len(matching_categories))
+                    cursor.execute(f"""
+                        SELECT brand_name AS name, category
+                        FROM pr_brands
+                        WHERE created_at >= NOW() - INTERVAL '30 days'
+                          AND category IN ({placeholders})
+                          AND status = 'active'
+                        ORDER BY created_at DESC
+                        LIMIT 3
+                    """, tuple(matching_categories))
+                    brands = cursor.fetchall()
+
+                    # Fallback if no niche matches
+                    if not brands:
+                        cursor.execute("""
+                            SELECT brand_name AS name, category
+                            FROM pr_brands
+                            WHERE created_at >= NOW() - INTERVAL '30 days'
+                              AND status = 'active'
+                            ORDER BY created_at DESC
+                            LIMIT 3
+                        """)
+                        brands = cursor.fetchall()
+                else:
+                    cursor.execute("""
+                        SELECT brand_name AS name, category
+                        FROM pr_brands
+                        WHERE created_at >= NOW() - INTERVAL '30 days'
+                          AND status = 'active'
+                        ORDER BY created_at DESC
+                        LIMIT 3
+                    """)
+                    brands = cursor.fetchall()
+
+                # Calculate personalized fit indication based on niche match
+                def get_fit_label(brand_category: str) -> str:
+                    if brand_category in matching_categories:
+                        return "Great fit"
+                    return "New opportunity"
+
                 context['top_new_brands'] = [
                     {
                         'name': b['name'],
                         'category': b.get('category') or 'Lifestyle',
-                        'fit_score': 85  # Default fit score for new brands
+                        'fit_label': get_fit_label(b.get('category') or '')
                     } for b in brands
                 ] if brands else [
-                    {'name': 'New Opportunity', 'category': 'Lifestyle', 'fit_score': 85}
+                    {'name': 'Explore new brands', 'category': 'Various', 'fit_label': 'Browse the directory'}
                 ]
             except Exception as e:
                 print(f"[REENGAGEMENT] Error fetching top brands: {e}")
@@ -1129,16 +1278,21 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
 
 
 def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
-    """Build context specifically for the weekly digest email."""
+    """Build context specifically for the weekly digest email with real creator data."""
     conn = get_db_connection()
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Get creator with unlock tracking fields
+        # Get full creator data for personalization
         cursor.execute("""
             SELECT c.id, c.username, u.email, u.first_name,
                    c.daily_unlocks_used, c.unlocks_remaining,
-                   c.pitches_sent_this_week, c.subscription_tier
+                   c.pitches_sent_this_week, c.subscription_tier,
+                   c.bio, c.image_profile, c.niche, c.creator_niches,
+                   c.kit_published, c.total_pitches_sent, c.total_replies_received,
+                   c.followers_count, c.creator_followers, c.engagement_rate,
+                   c.avg_engagement_rate, c.weekly_digest_week_number,
+                   c.first_reply_received_at, c.first_pr_box_received_at
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.id = %s
@@ -1148,55 +1302,158 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
         if not creator:
             return {}
 
-        # Calculate unlocks used this week for Monday brief
-        # unlocks_remaining: NULL for pro (unlimited), 0-3 for free users
+        # Calculate unlocks used
         subscription_tier = creator.get('subscription_tier') or 'free'
         is_pro = subscription_tier in ('pro', 'elite')
 
         if is_pro:
-            unlocks_used = 0  # Pro users have unlimited
+            unlocks_used = 0
             unlocks_quota = '∞'
         else:
             unlocks_remaining = creator.get('unlocks_remaining')
             if unlocks_remaining is not None:
                 unlocks_used = max(0, 3 - unlocks_remaining)
             else:
-                # Fallback to pitches_sent_this_week or daily_unlocks_used
                 unlocks_used = creator.get('pitches_sent_this_week') or creator.get('daily_unlocks_used') or 0
             unlocks_quota = 3
 
-        # Get new brands this week
+        # Calculate real progress score
+        current_score = _calculate_creator_progress_score(creator)
+
+        # Score delta: compare to last week (approximate based on recent activity)
+        # If they sent pitches or got replies this week, they improved
+        pitches_this_week = creator.get('pitches_sent_this_week') or 0
+        score_delta = min(15, pitches_this_week * 3)  # Each pitch = ~3% improvement signal
+
+        # Get creator's niche for brand matching
+        creator_niche = creator.get('niche') or ''
+        creator_niches = creator.get('creator_niches') or []
+        if isinstance(creator_niches, str):
+            try:
+                creator_niches = json.loads(creator_niches)
+            except:
+                creator_niches = []
+
+        # Build niche filter for brand matching
+        all_niches = [creator_niche] + (creator_niches if isinstance(creator_niches, list) else [])
+        all_niches = [n.strip().lower() for n in all_niches if n and isinstance(n, str)]
+
+        # Map common niches to brand categories
+        niche_to_category = {
+            'beauty': ['Beauty', 'Skincare', 'Makeup', 'Haircare'],
+            'skincare': ['Beauty', 'Skincare', 'Wellness'],
+            'fashion': ['Fashion', 'Clothing', 'Accessories', 'Jewelry'],
+            'lifestyle': ['Lifestyle', 'Home', 'Food & Beverage'],
+            'fitness': ['Fitness', 'Activewear', 'Wellness', 'Health'],
+            'food': ['Food & Beverage', 'Kitchen', 'Home'],
+            'parenting': ['Baby', 'Kids', 'Family', 'Home'],
+            'mom': ['Baby', 'Kids', 'Family', 'Lifestyle'],
+            'travel': ['Travel', 'Lifestyle', 'Fashion'],
+            'tech': ['Tech', 'Gaming', 'Gadgets'],
+            'pet': ['Pet', 'Animals'],
+            'wellness': ['Wellness', 'Health', 'Fitness', 'Beauty'],
+            'home': ['Home', 'Kitchen', 'Lifestyle'],
+        }
+
+        # Get matching categories for this creator
+        matching_categories = set()
+        for niche in all_niches:
+            for key, categories in niche_to_category.items():
+                if key in niche:
+                    matching_categories.update(categories)
+
+        # Fallback to Lifestyle if no matches
+        if not matching_categories:
+            matching_categories = {'Lifestyle', 'Beauty', 'Fashion'}
+
+        # Get new brands matching creator's niche
+        try:
+            if matching_categories:
+                placeholders = ','.join(['%s'] * len(matching_categories))
+                cursor.execute(f"""
+                    SELECT brand_name AS name, category FROM pr_brands
+                    WHERE created_at >= NOW() - INTERVAL '14 days'
+                      AND category IN ({placeholders})
+                      AND status = 'active'
+                    ORDER BY created_at DESC
+                    LIMIT 3
+                """, tuple(matching_categories))
+                matched_brands = cursor.fetchall()
+
+                # If no niche matches, fall back to any new brands
+                if not matched_brands:
+                    cursor.execute("""
+                        SELECT brand_name AS name, category FROM pr_brands
+                        WHERE created_at >= NOW() - INTERVAL '14 days'
+                          AND status = 'active'
+                        ORDER BY created_at DESC
+                        LIMIT 3
+                    """)
+                    matched_brands = cursor.fetchall()
+            else:
+                cursor.execute("""
+                    SELECT brand_name AS name, category FROM pr_brands
+                    WHERE created_at >= NOW() - INTERVAL '14 days'
+                      AND status = 'active'
+                    ORDER BY created_at DESC
+                    LIMIT 3
+                """)
+                matched_brands = cursor.fetchall()
+        except Exception as e:
+            print(f"[WEEKLY DIGEST] Error fetching matched brands: {e}")
+            matched_brands = []
+
+        # Generate personalized match reasons
+        def get_match_reason(brand_category: str) -> str:
+            category_lower = (brand_category or '').lower()
+            if any(n in category_lower for n in all_niches):
+                return f"Matches your {creator_niche or 'content'} niche"
+            elif 'beauty' in category_lower or 'skincare' in category_lower:
+                return "Open to beauty creators"
+            elif 'fashion' in category_lower:
+                return "Seeking style content"
+            elif 'lifestyle' in category_lower:
+                return "Looking for lifestyle creators"
+            elif 'fitness' in category_lower or 'wellness' in category_lower:
+                return "Wellness-focused campaign"
+            else:
+                return "New PR opportunity"
+
+        # Get rotating weekly theme based on week number
+        week_number = creator.get('weekly_digest_week_number') or 0
+        themes = _get_weekly_themes()
+        theme = themes[week_number % len(themes)]
+
+        # Update week number for next time
         try:
             cursor.execute("""
-                SELECT brand_name AS name, category FROM pr_brands
-                WHERE created_at >= NOW() - INTERVAL '7 days'
-                ORDER BY created_at DESC
-                LIMIT 3
-            """)
-            new_brands = cursor.fetchall()
+                UPDATE creators
+                SET weekly_digest_week_number = COALESCE(weekly_digest_week_number, 0) + 1
+                WHERE id = %s
+            """, (creator_id,))
+            conn.commit()
         except Exception as e:
-            print(f"[WEEKLY DIGEST] Error fetching new brands: {e}")
-            new_brands = []
+            print(f"[WEEKLY DIGEST] Error updating week number: {e}")
 
         context = {
             'first_name': creator.get('first_name') or creator.get('username') or 'there',
-            'current_score': 0,
-            'score_delta': 0,
+            'current_score': current_score,
+            'score_delta': score_delta,
             'unlocks_used': unlocks_used,
             'unlocks_quota': unlocks_quota,
-            'replies_count': 0,
-            'weekly_theme_title': 'Bio polish',
-            'weekly_theme_body': 'Brands scan bios in 3 seconds. This week, audit yours.',
+            'replies_count': creator.get('total_replies_received') or 0,
+            'weekly_theme_title': theme['title'],
+            'weekly_theme_body': theme['body'],
             'new_brands': [
                 {
                     'name': b['name'],
                     'category': b.get('category') or 'Lifestyle',
-                    'reason': 'New this week'
-                } for b in new_brands
-            ] if new_brands else [
-                {'name': 'Check your matches', 'category': '', 'reason': 'See what fits your profile'}
+                    'reason': get_match_reason(b.get('category'))
+                } for b in matched_brands
+            ] if matched_brands else [
+                {'name': 'Explore new brands', 'category': 'Various', 'reason': 'Browse the full directory'}
             ],
-            'win_story': None,
+            'win_story': None,  # TODO: Pull from success stories table when available
             'cta_url': f"{FRONTEND_URL}/creator/dashboard/pr-ready",
         }
 
