@@ -1379,16 +1379,38 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
             reply_chance = _calculate_creator_progress_score(creator)
 
         # === NEW BRANDS: Match to creator's niche ===
-        creator_niche = creator.get('niche') or ''
+        # Parse niche - can be a string or JSON array
+        raw_niche = creator.get('niche') or ''
         creator_niches = creator.get('creator_niches') or []
+
+        # Parse raw_niche if it's a JSON array string
+        if isinstance(raw_niche, str) and raw_niche.startswith('['):
+            try:
+                raw_niche = json.loads(raw_niche)
+            except:
+                pass
+
+        # Normalize to list
+        if isinstance(raw_niche, list):
+            niche_list = raw_niche
+        elif raw_niche:
+            niche_list = [raw_niche]
+        else:
+            niche_list = []
+
+        # Parse creator_niches if it's a JSON string
         if isinstance(creator_niches, str):
             try:
                 creator_niches = json.loads(creator_niches)
             except:
                 creator_niches = []
 
-        all_niches = [creator_niche] + (creator_niches if isinstance(creator_niches, list) else [])
-        all_niches = [n.strip().lower() for n in all_niches if n and isinstance(n, str)]
+        # Combine all niches
+        all_niches_raw = niche_list + (creator_niches if isinstance(creator_niches, list) else [])
+        all_niches = [n.strip().lower() for n in all_niches_raw if n and isinstance(n, str)]
+
+        # Get clean primary niche for display (first niche, capitalized)
+        primary_niche_display = all_niches[0].title() if all_niches else 'content'
 
         niche_to_category = _get_niche_to_category_map()
         matching_categories = set()
@@ -1439,8 +1461,11 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
 
         def get_match_reason(brand_category: str) -> str:
             category_lower = (brand_category or '').lower()
+            # Check if brand category matches any of creator's niches
             if any(n in category_lower for n in all_niches):
-                return f"Matches your {creator_niche or 'content'} niche"
+                return f"Matches your {primary_niche_display} niche"
+            elif any(category_lower in n for n in all_niches):
+                return f"Fits your {primary_niche_display} content"
             elif 'beauty' in category_lower or 'skincare' in category_lower:
                 return "Open to beauty creators"
             elif 'fashion' in category_lower:
