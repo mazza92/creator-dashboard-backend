@@ -618,8 +618,60 @@ def test_send_email():
                 'mode': 'skip_checks'
             })
 
-        # Normal mode - use full send_lifecycle_email flow
-        creator_id = data.get('creator_id', 1)
+        # Check for bypass_throttle mode - uses REAL creator data but skips throttling
+        bypass_throttle = data.get('bypass_throttle', False)
+        creator_id = data.get('creator_id')
+
+        if bypass_throttle and creator_id:
+            from lifecycle_email_engine import build_weekly_digest_context, get_db_connection
+            from psycopg2.extras import RealDictCursor
+
+            # Build real context based on template type
+            if template_slug == 'weekly_digest':
+                context = build_weekly_digest_context(creator_id)
+            else:
+                context = build_email_context(creator_id, template_slug)
+
+            # Get creator's first name
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("""
+                SELECT u.first_name, c.username
+                FROM creators c JOIN users u ON c.user_id = u.id
+                WHERE c.id = %s
+            """, (creator_id,))
+            row = cursor.fetchone()
+            conn.close()
+
+            context['first_name'] = data.get('first_name') or (row.get('first_name') if row else None) or (row.get('username') if row else 'there')
+
+            # Map template slug to file
+            template_map = {
+                'weekly_digest': '21_weekly_digest.html',
+            }
+            template_file = template_map.get(template_slug, f'{template_slug}.html')
+
+            # Render with real context
+            html_content = render_template(f'lifecycle/{template_file}', context)
+            subject = 'your monday brief from your manager'
+
+            # Send directly via SMTP (bypass throttling)
+            success, result = _send_smtp(to_email, subject, html_content)
+
+            return jsonify({
+                'success': success,
+                'message': result if success else f"SMTP error: {result}",
+                'mode': 'bypass_throttle',
+                'context_preview': {
+                    'current_score': context.get('current_score'),
+                    'pending_plans': context.get('pending_plans'),
+                    'new_brands': [b.get('name') for b in context.get('new_brands', [])]
+                }
+            })
+
+        # Normal mode - use full send_lifecycle_email flow (includes throttling)
+        if not creator_id:
+            creator_id = 1
         context = build_email_context(creator_id, template_slug)
         context['first_name'] = data.get('first_name', 'Test')
 
