@@ -1058,9 +1058,23 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
         if not creator:
             return {}
 
-        unlocks_used = creator.get('daily_unlocks_used', 0) or 0
-        unlocks_quota = 3
         subscription_tier = creator.get('subscription_tier', 'free')
+        is_pro = subscription_tier in ('pro', 'elite')
+
+        # Calculate unlocks correctly (same as weekly_digest)
+        unlocks_remaining = creator.get('unlocks_remaining')
+        if is_pro:
+            unlocks_used = 0
+            unlocks_quota = '∞'
+            unlocks_available = '∞'
+        elif unlocks_remaining is not None:
+            unlocks_used = max(0, 3 - unlocks_remaining)
+            unlocks_quota = 3
+            unlocks_available = unlocks_remaining
+        else:
+            unlocks_used = creator.get('daily_unlocks_used') or 0
+            unlocks_quota = 3
+            unlocks_available = max(0, 3 - unlocks_used)
 
         # Calculate real progress score
         current_score = _calculate_creator_progress_score(creator)
@@ -1070,7 +1084,7 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
             'current_score': current_score,
             'unlocks_used': unlocks_used,
             'unlocks_quota': unlocks_quota,
-            'unlocks_available': max(0, unlocks_quota - unlocks_used),
+            'unlocks_available': unlocks_available,
             'pitches_sent': creator.get('total_pitches_sent', 0) or 0,
             'replies_count': creator.get('total_replies_received', 0) or 0,
             'subscription_tier': subscription_tier,
@@ -1239,8 +1253,9 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
                     cursor.execute(f"""
                         SELECT brand_name AS name, category
                         FROM pr_brands
-                        WHERE created_at >= NOW() - INTERVAL '30 days'
-                          AND LOWER(category) IN ({placeholders})
+                        WHERE LOWER(category) IN ({placeholders})
+                          AND status = 'published'
+                          AND accepting_pr = true
                         ORDER BY created_at DESC
                         LIMIT 3
                     """, tuple(matching_categories))
@@ -1251,7 +1266,8 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
                         cursor.execute("""
                             SELECT brand_name AS name, category
                             FROM pr_brands
-                            WHERE created_at >= NOW() - INTERVAL '30 days'
+                            WHERE status = 'published'
+                              AND accepting_pr = true
                             ORDER BY created_at DESC
                             LIMIT 3
                         """)
@@ -1260,7 +1276,8 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
                     cursor.execute("""
                         SELECT brand_name AS name, category
                         FROM pr_brands
-                        WHERE created_at >= NOW() - INTERVAL '30 days'
+                        WHERE status = 'published'
+                          AND accepting_pr = true
                         ORDER BY created_at DESC
                         LIMIT 3
                     """)

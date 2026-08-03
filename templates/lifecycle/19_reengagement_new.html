@@ -11,7 +11,7 @@
 {% for brand in top_new_brands %}
     <div class="brand-item">
         <span class="brand-name">{{ brand.name }}</span>
-        <span class="brand-meta"> &bull; {{ brand.category }} &bull; fits your profile at {{ brand.fit_score }}%</span>
+        <span class="brand-meta"> &bull; {{ brand.category }} &bull; {{ brand.fit_label }}</span>
     </div>
 {% endfor %}
 </div>
