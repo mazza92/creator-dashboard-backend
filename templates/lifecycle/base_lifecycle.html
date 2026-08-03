@@ -209,26 +209,16 @@
             color: #6b7280;
         }
 
-        /* Numbered List */
+        /* Numbered List - email-client compatible */
         .numbered-list {
-            counter-reset: item;
-            list-style-type: none;
-            padding-left: 0;
+            list-style-type: decimal;
+            padding-left: 24px;
+            margin: 16px 0;
         }
 
         .numbered-list li {
-            counter-increment: item;
             margin-bottom: 12px;
-            padding-left: 28px;
-            position: relative;
-        }
-
-        .numbered-list li::before {
-            content: counter(item) ".";
-            position: absolute;
-            left: 0;
-            font-weight: 600;
-            color: #3b82f6;
+            padding-left: 8px;
         }
 
         /* Highlight Box */
