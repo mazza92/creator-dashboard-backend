@@ -996,16 +996,32 @@ def _get_niche_to_category_map() -> Dict[str, List[str]]:
 
 
 def _get_matching_categories(creator: Dict) -> set:
-    """Get brand categories that match a creator's niches."""
+    """Get brand categories that match a creator's niches (lowercase for DB matching)."""
     creator_niche = creator.get('niche') or ''
     creator_niches = creator.get('creator_niches') or []
+
+    # Parse niche if it's a JSON string
+    if isinstance(creator_niche, str) and creator_niche.startswith('['):
+        try:
+            creator_niche = json.loads(creator_niche)
+        except:
+            pass
+
     if isinstance(creator_niches, str):
         try:
             creator_niches = json.loads(creator_niches)
         except:
             creator_niches = []
 
-    all_niches = [creator_niche] + (creator_niches if isinstance(creator_niches, list) else [])
+    # Normalize to list
+    if isinstance(creator_niche, list):
+        niche_list = creator_niche
+    elif creator_niche:
+        niche_list = [creator_niche]
+    else:
+        niche_list = []
+
+    all_niches = niche_list + (creator_niches if isinstance(creator_niches, list) else [])
     all_niches = [n.strip().lower() for n in all_niches if n and isinstance(n, str)]
 
     niche_to_category = _get_niche_to_category_map()
@@ -1014,11 +1030,12 @@ def _get_matching_categories(creator: Dict) -> set:
     for niche in all_niches:
         for key, categories in niche_to_category.items():
             if key in niche:
-                matching_categories.update(categories)
+                # Lowercase categories to match database
+                matching_categories.update(c.lower() for c in categories)
 
-    # Fallback to broad categories if no matches
+    # Fallback to broad categories if no matches (lowercase)
     if not matching_categories:
-        matching_categories = {'Lifestyle', 'Beauty', 'Fashion'}
+        matching_categories = {'lifestyle', 'beauty', 'fashion'}
 
     return matching_categories
 
@@ -1223,8 +1240,7 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
                         SELECT brand_name AS name, category
                         FROM pr_brands
                         WHERE created_at >= NOW() - INTERVAL '30 days'
-                          AND category IN ({placeholders})
-                          AND status = 'active'
+                          AND LOWER(category) IN ({placeholders})
                         ORDER BY created_at DESC
                         LIMIT 3
                     """, tuple(matching_categories))
@@ -1236,7 +1252,6 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
                             SELECT brand_name AS name, category
                             FROM pr_brands
                             WHERE created_at >= NOW() - INTERVAL '30 days'
-                              AND status = 'active'
                             ORDER BY created_at DESC
                             LIMIT 3
                         """)
@@ -1246,7 +1261,6 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
                         SELECT brand_name AS name, category
                         FROM pr_brands
                         WHERE created_at >= NOW() - INTERVAL '30 days'
-                          AND status = 'active'
                         ORDER BY created_at DESC
                         LIMIT 3
                     """)
@@ -1254,7 +1268,7 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
 
                 # Calculate personalized fit indication based on niche match
                 def get_fit_label(brand_category: str) -> str:
-                    if brand_category in matching_categories:
+                    if (brand_category or '').lower() in matching_categories:
                         return "Great fit"
                     return "New opportunity"
 
@@ -1417,21 +1431,22 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
         for niche in all_niches:
             for key, categories in niche_to_category.items():
                 if key in niche:
-                    matching_categories.update(categories)
+                    # Lowercase categories to match database
+                    matching_categories.update(c.lower() for c in categories)
 
         if not matching_categories:
-            matching_categories = {'Lifestyle', 'Beauty', 'Fashion'}
+            matching_categories = {'lifestyle', 'beauty', 'fashion'}
 
-        # Get new brands - try with status filter first, then without
+        # Get new brands matching creator's niche
         matched_brands = []
         try:
-            # First try matching categories
+            # First try matching categories (case-insensitive)
             if matching_categories:
                 placeholders = ','.join(['%s'] * len(matching_categories))
                 cursor.execute(f"""
                     SELECT brand_name AS name, category FROM pr_brands
                     WHERE created_at >= NOW() - INTERVAL '30 days'
-                      AND category IN ({placeholders})
+                      AND LOWER(category) IN ({placeholders})
                     ORDER BY created_at DESC
                     LIMIT 3
                 """, tuple(matching_categories))
