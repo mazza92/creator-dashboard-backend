@@ -1493,7 +1493,7 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
             exclude_clause = "AND b.id != ALL(%s)" if unlocked_ids else ""
             exclude_params = [unlocked_ids] if unlocked_ids else []
 
-            # First try: matching categories + published + accepting PR + not unlocked
+            # ONLY use exact category matches - no loose fallbacks
             if cat_list:
                 cursor.execute(f"""
                     SELECT b.id, b.brand_name AS name, b.category
@@ -1510,24 +1510,10 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
                 if matched_brands:
                     print(f"[WEEKLY DIGEST] Matched brands: {[b['name'] for b in matched_brands]}")
 
-            # Fallback: try matching with niches JSONB column
-            if not matched_brands and all_niches:
-                niche_pattern = '%' + all_niches[0] + '%'
-                cursor.execute(f"""
-                    SELECT b.id, b.brand_name AS name, b.category
-                    FROM pr_brands b
-                    WHERE (b.niches::text ILIKE %s OR LOWER(b.category) ILIKE %s)
-                      AND b.status = 'published'
-                      AND b.accepting_pr = true
-                      {exclude_clause}
-                    ORDER BY (b.id + %s) %% 1000, b.created_at DESC
-                    LIMIT 3
-                """, tuple([niche_pattern, niche_pattern] + exclude_params + [rotation_offset]))
-                matched_brands = cursor.fetchall()
-                print(f"[WEEKLY DIGEST] Niches match (excl unlocked): {len(matched_brands)} brands")
-
-            # Fallback: only for creators with no niche - show popular lifestyle brands
-            if not matched_brands and not all_niches:
+            # If not enough brands, don't use loose fallbacks - just show what matches
+            # Better to show 1-2 accurate matches than 3 mismatched brands
+            if not matched_brands:
+                # For creators with no niche at all, show popular general brands
                 cursor.execute(f"""
                     SELECT b.id, b.brand_name AS name, b.category
                     FROM pr_brands b
@@ -1539,7 +1525,7 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
                     LIMIT 3
                 """, tuple(exclude_params + [rotation_offset]))
                 matched_brands = cursor.fetchall()
-                print(f"[WEEKLY DIGEST] No-niche fallback: {len(matched_brands)} brands")
+                print(f"[WEEKLY DIGEST] General fallback: {len(matched_brands)} brands")
 
         except Exception as e:
             import traceback
@@ -1548,23 +1534,28 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
 
         def get_match_reason(brand_category: str) -> str:
             category_lower = (brand_category or '').lower()
-            # Check if brand category is in the matching categories we queried for
+            # ONLY say "Matches your niche" if category is EXACTLY in our matching set
             if category_lower in matching_categories:
                 return f"Matches your {primary_niche_display} niche"
-            # Check for related niches
-            elif any(n in category_lower for n in all_niches):
-                return f"Fits your {primary_niche_display} content"
-            # Category-specific fallbacks
-            elif 'beauty' in category_lower or 'skincare' in category_lower:
-                return "Open to beauty creators"
-            elif 'fashion' in category_lower:
+            # For non-matching categories, describe what the brand is looking for
+            elif 'beauty' in category_lower or 'skincare' in category_lower or 'makeup' in category_lower:
+                return "Seeking beauty creators"
+            elif 'haircare' in category_lower:
+                return "Seeking haircare creators"
+            elif 'fashion' in category_lower or 'clothing' in category_lower:
                 return "Seeking style creators"
             elif 'lifestyle' in category_lower:
-                return "Looking for lifestyle creators"
-            elif 'fitness' in category_lower or 'wellness' in category_lower:
+                return "Seeking lifestyle creators"
+            elif 'fitness' in category_lower or 'activewear' in category_lower:
+                return "Seeking fitness creators"
+            elif 'wellness' in category_lower or 'health' in category_lower:
                 return "Seeking wellness creators"
+            elif 'food' in category_lower:
+                return "Seeking food creators"
+            elif 'tech' in category_lower or 'gaming' in category_lower:
+                return "Seeking tech creators"
             else:
-                return "New PR opportunity"
+                return "Accepting creators"
 
         # Build context
         context = {
