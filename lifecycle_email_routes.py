@@ -645,15 +645,64 @@ def test_send_email():
 
             context['first_name'] = data.get('first_name') or (row.get('first_name') if row else None) or (row.get('username') if row else 'there')
 
-            # Map template slug to file
+            # Map template slugs to files (all 23 lifecycle emails)
             template_map = {
+                'verification': '01_verification.html',
+                'welcome_manager': '02_welcome_manager.html',
+                'first_move': '03_first_move.html',
+                'meet_manager': '04_meet_manager.html',
+                'edu_5reasons': '05_edu_5reasons.html',
+                'edu_60sec': '06_edu_60sec.html',
+                'edu_pitch': '07_edu_pitch.html',
+                'edu_followup': '08_edu_followup.html',
+                'edu_edge': '09_edu_edge.html',
+                'pitch_brand': '10_pitch_brand.html',
+                'brand_waiting': '11_brand_waiting.html',
+                'did_reply': '12_did_reply.html',
+                'time_followup': '13_time_followup.html',
+                'doubter_sarah': '14_doubter_sarah.html',
+                'doubter_5pitch': '15_doubter_5pitch.html',
+                'max_quota_hit': '16_max_quota_hit.html',
+                'max_3things': '17_max_3things.html',
+                'max_30day': '18_max_30day.html',
+                'reengagement_new': '19_reengagement_new.html',
+                'reengagement_soft': '20_reengagement_soft.html',
                 'weekly_digest': '21_weekly_digest.html',
+                'celebration_reply': '22_celebration_reply.html',
+                'celebration_first_box': '23_celebration_first_box.html',
             }
             template_file = template_map.get(template_slug, f'{template_slug}.html')
 
+            # Subject mapping for all templates
+            subject_map = {
+                'verification': 'Verify your Newcollab account',
+                'welcome_manager': 'your newcollab manager just arrived',
+                'first_move': 'your first move this week',
+                'meet_manager': 'let me introduce myself',
+                'edu_5reasons': '5 reasons brands ignore pitches',
+                'edu_60sec': 'the 60-second pitch framework',
+                'edu_pitch': 'how to write a pitch that gets replies',
+                'edu_followup': 'the follow-up that actually works',
+                'edu_edge': 'the edge micro-creators have',
+                'pitch_brand': f'ready to pitch {context.get("brand_name", "this brand")}?',
+                'brand_waiting': f'{context.get("brand_name", "A brand")} is waiting for your pitch',
+                'did_reply': 'did you get a reply?',
+                'time_followup': 'time to follow up',
+                'doubter_sarah': 'how sarah landed her first brand deal',
+                'doubter_5pitch': 'what 5 pitches taught me',
+                'max_quota_hit': 'you hit your unlock limit',
+                'max_3things': '3 things to do while you wait',
+                'max_30day': 'your unlocks reset soon',
+                'reengagement_new': 'new brands just dropped',
+                'reengagement_soft': 'still thinking about brand deals?',
+                'weekly_digest': 'your monday brief from your manager',
+                'celebration_reply': f'you got a reply from {context.get("brand_name", "a brand")}!',
+                'celebration_first_box': 'you got your first PR box!',
+            }
+            subject = subject_map.get(template_slug, f'[Test] {template_slug}')
+
             # Render with real context
             html_content = render_template(f'lifecycle/{template_file}', context)
-            subject = 'your monday brief from your manager'
 
             # Send directly via SMTP (bypass throttling)
             success, result = _send_smtp(to_email, subject, html_content)
