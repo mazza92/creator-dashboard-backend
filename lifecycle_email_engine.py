@@ -980,19 +980,127 @@ def _get_niche_to_category_map() -> Dict[str, List[str]]:
     """Map creator niches to brand categories for matching."""
     return {
         'beauty': ['Beauty', 'Skincare', 'Makeup', 'Haircare'],
-        'skincare': ['Beauty', 'Skincare', 'Wellness'],
+        'skincare': ['Skincare', 'Beauty'],
         'fashion': ['Fashion', 'Clothing', 'Accessories', 'Jewelry'],
         'lifestyle': ['Lifestyle', 'Home', 'Food & Beverage'],
-        'fitness': ['Fitness', 'Activewear', 'Wellness', 'Health'],
+        'fitness': ['Fitness', 'Activewear', 'Health'],
         'food': ['Food & Beverage', 'Kitchen', 'Home'],
         'parenting': ['Baby', 'Kids', 'Family', 'Home'],
         'mom': ['Baby', 'Kids', 'Family', 'Lifestyle'],
         'travel': ['Travel', 'Lifestyle', 'Fashion'],
         'tech': ['Tech', 'Gaming', 'Gadgets'],
         'pet': ['Pet', 'Animals'],
-        'wellness': ['Wellness', 'Health', 'Fitness', 'Beauty'],
+        'wellness': ['Wellness', 'Health', 'Skincare'],
         'home': ['Home', 'Kitchen', 'Lifestyle'],
+        'haircare': ['Haircare', 'Beauty'],
+        'makeup': ['Makeup', 'Beauty', 'Skincare'],
     }
+
+
+def get_for_you_brands_for_email(creator_id: int, cursor, limit: int = 3) -> List[Dict]:
+    """
+    Get For You brand recommendations for email - mirrors the app's For You logic.
+    Returns brands matching creator's niches, excluding already unlocked brands.
+    """
+    from datetime import datetime
+
+    # Get creator's niches
+    cursor.execute("""
+        SELECT c.niche, c.creator_niches
+        FROM creators c WHERE c.id = %s
+    """, (creator_id,))
+    creator = cursor.fetchone()
+
+    if not creator:
+        return []
+
+    # Parse niches
+    raw_niche = creator.get('niche') or ''
+    creator_niches = creator.get('creator_niches') or []
+
+    if isinstance(raw_niche, str) and raw_niche.startswith('['):
+        try:
+            raw_niche = json.loads(raw_niche)
+        except:
+            pass
+
+    if isinstance(raw_niche, list):
+        niche_list = raw_niche
+    elif raw_niche:
+        niche_list = [raw_niche]
+    else:
+        niche_list = []
+
+    if isinstance(creator_niches, str):
+        try:
+            creator_niches = json.loads(creator_niches)
+        except:
+            creator_niches = []
+
+    all_niches = niche_list + (creator_niches if isinstance(creator_niches, list) else [])
+    all_niches = [n.strip().lower() for n in all_niches if n and isinstance(n, str)]
+
+    # Get primary niche for display
+    primary_niche = all_niches[0].title() if all_niches else 'Lifestyle'
+
+    # Build matching categories
+    niche_to_category = _get_niche_to_category_map()
+    matching_categories = set()
+    for niche in all_niches:
+        for key, categories in niche_to_category.items():
+            if key in niche or niche in key:
+                matching_categories.update(c.lower() for c in categories)
+
+    if not matching_categories:
+        matching_categories = {'lifestyle', 'beauty', 'fashion'}
+
+    # Get already unlocked brands to exclude
+    cursor.execute("SELECT brand_id FROM brand_unlocks WHERE creator_id = %s", (creator_id,))
+    unlocked_ids = [r['brand_id'] for r in cursor.fetchall()]
+
+    # Use week number for rotation
+    week_number = datetime.now().isocalendar()[1]
+    rotation_offset = (week_number * 7) % 100
+
+    # Build query with exclusions
+    exclude_clause = "AND b.id != ALL(%s)" if unlocked_ids else ""
+    cat_list = list(matching_categories)
+
+    # Query brands that match creator's niche categories
+    query_params = [cat_list]
+    if unlocked_ids:
+        query_params.append(unlocked_ids)
+    query_params.append(rotation_offset)
+
+    cursor.execute(f"""
+        SELECT b.id, b.brand_name AS name, b.category, b.slug
+        FROM pr_brands b
+        WHERE LOWER(b.category) = ANY(%s)
+          AND b.status = 'published'
+          AND b.accepting_pr = true
+          {exclude_clause}
+        ORDER BY (b.id + %s) %% 1000, b.created_at DESC
+        LIMIT %s
+    """, tuple(query_params) + (limit,))
+
+    brands = cursor.fetchall()
+
+    # Format with accurate match reasons
+    result = []
+    for b in brands:
+        cat_lower = (b.get('category') or '').lower()
+        if cat_lower in matching_categories:
+            reason = f"Matches your {primary_niche} niche"
+        else:
+            reason = "Recommended for you"
+
+        result.append({
+            'name': b['name'],
+            'category': b.get('category') or 'Lifestyle',
+            'reason': reason
+        })
+
+    return result
 
 
 def _get_matching_categories(creator: Dict) -> set:
@@ -1458,104 +1566,14 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
         # Get clean primary niche for display (first niche, capitalized)
         primary_niche_display = all_niches[0].title() if all_niches else 'content'
 
-        niche_to_category = _get_niche_to_category_map()
-        matching_categories = set()
-        for niche in all_niches:
-            for key, categories in niche_to_category.items():
-                if key in niche:
-                    # Lowercase categories to match database
-                    matching_categories.update(c.lower() for c in categories)
-
-        if not matching_categories:
-            matching_categories = {'lifestyle', 'beauty', 'fashion'}
-
-        # Get new brands matching creator's niche
-        matched_brands = []
+        # === NEW BRANDS: Use the For You matching logic ===
+        # This ensures email recommendations match what creators see in the app
         try:
-            # Build category list for query (all lowercase)
-            cat_list = list(matching_categories)
-            print(f"[WEEKLY DIGEST] Creator niches: {all_niches}, matching categories (lowercase): {cat_list}")
-
-            # Get brands already unlocked by this creator (exclude from suggestions)
-            cursor.execute("""
-                SELECT brand_id FROM brand_unlocks WHERE creator_id = %s
-            """, (creator_id,))
-            unlocked_ids = [r['brand_id'] for r in cursor.fetchall()]
-            print(f"[WEEKLY DIGEST] Creator has unlocked {len(unlocked_ids)} brands, excluding from suggestions")
-
-            # Use week number for rotation (different brands each week)
-            from datetime import datetime
-            week_number = datetime.now().isocalendar()[1]  # 1-52
-            rotation_offset = (week_number * 7) % 100  # Rotate through brands weekly
-            print(f"[WEEKLY DIGEST] Week {week_number}, rotation offset: {rotation_offset}")
-
-            # Build exclusion clause for unlocked brands
-            exclude_clause = "AND b.id != ALL(%s)" if unlocked_ids else ""
-            exclude_params = [unlocked_ids] if unlocked_ids else []
-
-            # ONLY use exact category matches - no loose fallbacks
-            if cat_list:
-                cursor.execute(f"""
-                    SELECT b.id, b.brand_name AS name, b.category
-                    FROM pr_brands b
-                    WHERE LOWER(b.category) = ANY(%s)
-                      AND b.status = 'published'
-                      AND b.accepting_pr = true
-                      {exclude_clause}
-                    ORDER BY (b.id + %s) %% 1000, b.created_at DESC
-                    LIMIT 3
-                """, tuple([cat_list] + exclude_params + [rotation_offset]))
-                matched_brands = cursor.fetchall()
-                print(f"[WEEKLY DIGEST] Category match (excl unlocked): {len(matched_brands)} brands")
-                if matched_brands:
-                    print(f"[WEEKLY DIGEST] Matched brands: {[b['name'] for b in matched_brands]}")
-
-            # If not enough brands, don't use loose fallbacks - just show what matches
-            # Better to show 1-2 accurate matches than 3 mismatched brands
-            if not matched_brands:
-                # For creators with no niche at all, show popular general brands
-                cursor.execute(f"""
-                    SELECT b.id, b.brand_name AS name, b.category
-                    FROM pr_brands b
-                    WHERE b.status = 'published'
-                      AND b.accepting_pr = true
-                      AND LOWER(b.category) IN ('lifestyle', 'beauty', 'fashion')
-                      {exclude_clause}
-                    ORDER BY (b.id + %s) %% 1000, b.created_at DESC
-                    LIMIT 3
-                """, tuple(exclude_params + [rotation_offset]))
-                matched_brands = cursor.fetchall()
-                print(f"[WEEKLY DIGEST] General fallback: {len(matched_brands)} brands")
-
+            new_brands = get_for_you_brands_for_email(creator_id, cursor, limit=3)
+            print(f"[WEEKLY DIGEST] For You brands for email: {[b['name'] for b in new_brands]}")
         except Exception as e:
-            import traceback
-            print(f"[WEEKLY DIGEST] Error fetching brands: {e}")
-            traceback.print_exc()
-
-        def get_match_reason(brand_category: str) -> str:
-            category_lower = (brand_category or '').lower()
-            # ONLY say "Matches your niche" if category is EXACTLY in our matching set
-            if category_lower in matching_categories:
-                return f"Matches your {primary_niche_display} niche"
-            # For non-matching categories, describe what the brand is looking for
-            elif 'beauty' in category_lower or 'skincare' in category_lower or 'makeup' in category_lower:
-                return "Seeking beauty creators"
-            elif 'haircare' in category_lower:
-                return "Seeking haircare creators"
-            elif 'fashion' in category_lower or 'clothing' in category_lower:
-                return "Seeking style creators"
-            elif 'lifestyle' in category_lower:
-                return "Seeking lifestyle creators"
-            elif 'fitness' in category_lower or 'activewear' in category_lower:
-                return "Seeking fitness creators"
-            elif 'wellness' in category_lower or 'health' in category_lower:
-                return "Seeking wellness creators"
-            elif 'food' in category_lower:
-                return "Seeking food creators"
-            elif 'tech' in category_lower or 'gaming' in category_lower:
-                return "Seeking tech creators"
-            else:
-                return "Accepting creators"
+            print(f"[WEEKLY DIGEST] Error getting For You brands: {e}")
+            new_brands = []
 
         # Build context
         context = {
@@ -1570,13 +1588,8 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
             'weekly_theme_title': pending_plans[0]['title'] if pending_plans else 'Optimize your profile',
             'weekly_theme_body': f"Your manager found {len(pending_plans)} improvements. Start with #{pending_plans[0]['number']}." if pending_plans else 'Visit your AI Manager for personalized tips.',
             'pending_plans': pending_plans,
-            'new_brands': [
-                {
-                    'name': b['name'],
-                    'category': b.get('category') or 'Lifestyle',
-                    'reason': get_match_reason(b.get('category'))
-                } for b in matched_brands
-            ] if matched_brands else [
+            # Use For You brands - already formatted with accurate match reasons
+            'new_brands': new_brands if new_brands else [
                 {'name': 'Explore brands', 'category': 'Various', 'reason': 'Browse the directory'}
             ],
             'win_story': None,
