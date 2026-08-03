@@ -592,18 +592,13 @@ def evaluate_trigger(creator: Dict, template: Dict, cursor) -> bool:
             unlock_row = cursor.fetchone()
             total_unlocks = unlock_row['total'] if unlock_row else 0
             if total_unlocks == 0:
-                # Also check for any completed plan items in ai_manager_plans
-                try:
-                    cursor.execute("""
-                        SELECT 1 FROM ai_manager_plans
-                        WHERE creator_id = %s
-                        AND fixes::text LIKE '%"done": true%'
-                        LIMIT 1
-                    """, (creator_id,))
-                    if not cursor.fetchone():
-                        return False
-                except Exception:
-                    # Table may not exist, just use unlock check
+                # Also check for any pipeline activity (saved brands)
+                cursor.execute("""
+                    SELECT 1 FROM creator_pipeline
+                    WHERE creator_id = %s
+                    LIMIT 1
+                """, (creator_id,))
+                if not cursor.fetchone():
                     return False
 
         return True
