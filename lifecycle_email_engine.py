@@ -1348,13 +1348,21 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
 
         if compute_pr_ready_score and user_id:
             try:
-                # Get creator_profile_data (scrape)
+                # Get creator_profile_data (scrape) - same as dashboard
                 cursor.execute("""
                     SELECT * FROM creator_profile_data WHERE user_id = %s
                 """, (user_id,))
                 scrape = cursor.fetchone()
 
-                # Get kit status
+                # Debug: log scrape data found
+                if scrape:
+                    print(f"[WEEKLY DIGEST] Scrape found: handle={scrape.get('handle')}, "
+                          f"has_bio={bool(scrape.get('raw_bio'))}, "
+                          f"posts={len(scrape.get('recent_posts') or [])}")
+                else:
+                    print(f"[WEEKLY DIGEST] No scrape data for user_id={user_id}")
+
+                # Get kit status - same query pattern as check_media_kit_complete
                 cursor.execute("""
                     SELECT kit_published as is_published,
                            (SELECT COUNT(*) FROM portfolio_posts WHERE creator_id = %s) as post_count
@@ -1365,6 +1373,7 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
                     'is_published': kit_row.get('is_published') if kit_row else False,
                     'post_count': kit_row.get('post_count') or 0 if kit_row else 0
                 }
+                print(f"[WEEKLY DIGEST] Kit status: published={kit_status['is_published']}, posts={kit_status['post_count']}")
 
                 # Compute PR-Ready score
                 report = compute_pr_ready_score(
@@ -1377,13 +1386,19 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
 
                 reply_chance = report.get('score') or 0
                 score_delta = report.get('projected_gain') or 0
+                print(f"[WEEKLY DIGEST] PR-Ready score: {reply_chance}, projected_gain: {score_delta}, status: {report.get('status')}")
 
-                # Get pending plans (fixes that aren't done)
+                # Get pending plans - ONLY items where done=False
                 fixes = report.get('fixes') or []
+                not_done_fixes = [f for f in fixes if not f.get('done', False)]
                 pending_plans = [
                     {'number': i + 1, 'title': f.get('title', '')}
-                    for i, f in enumerate(fixes[:3])  # Top 3 pending items
+                    for i, f in enumerate(not_done_fixes[:3])  # Top 3 pending items
                 ]
+                # Debug: show which fixes are done vs not done
+                for f in fixes:
+                    print(f"[WEEKLY DIGEST] Fix: {f.get('id')} - {f.get('title')[:30]}... done={f.get('done')}")
+                print(f"[WEEKLY DIGEST] Pending plans to show: {pending_plans}")
             except Exception as e:
                 print(f"[WEEKLY DIGEST] Error computing PR-Ready score: {e}")
                 reply_chance = _calculate_creator_progress_score(creator)
@@ -1440,50 +1455,67 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
         # Get new brands matching creator's niche
         matched_brands = []
         try:
-            # Build category list for query
+            # Build category list for query (all lowercase)
             cat_list = list(matching_categories)
-            print(f"[WEEKLY DIGEST] Creator niches: {all_niches}, matching categories: {cat_list}")
+            print(f"[WEEKLY DIGEST] Creator niches: {all_niches}, matching categories (lowercase): {cat_list}")
+
+            # Debug: Check what categories exist in the database
+            cursor.execute("""
+                SELECT DISTINCT LOWER(category) as cat FROM pr_brands
+                WHERE status = 'published' AND accepting_pr = true
+                LIMIT 20
+            """)
+            db_categories = [r['cat'] for r in cursor.fetchall()]
+            print(f"[WEEKLY DIGEST] Available DB categories: {db_categories}")
 
             # First try: matching categories + published + accepting PR
+            # Remove time constraint to get more matches
             if cat_list:
                 placeholders = ','.join(['%s'] * len(cat_list))
                 cursor.execute(f"""
                     SELECT brand_name AS name, category FROM pr_brands
-                    WHERE created_at >= NOW() - INTERVAL '30 days'
-                      AND LOWER(category) IN ({placeholders})
+                    WHERE LOWER(category) IN ({placeholders})
                       AND status = 'published'
                       AND accepting_pr = true
                     ORDER BY created_at DESC
                     LIMIT 3
                 """, tuple(cat_list))
                 matched_brands = cursor.fetchall()
-                print(f"[WEEKLY DIGEST] Category match found: {len(matched_brands)} brands")
+                print(f"[WEEKLY DIGEST] Category match query returned: {len(matched_brands)} brands")
+                if matched_brands:
+                    print(f"[WEEKLY DIGEST] Matched brands: {[b['name'] for b in matched_brands]}")
 
-            # Fallback: any published + accepting PR brands
+            # Fallback: try matching with niches JSONB column
+            if not matched_brands and all_niches:
+                # Try to match using the niches JSONB column
+                niche_pattern = '%' + all_niches[0] + '%'
+                cursor.execute("""
+                    SELECT brand_name AS name, category FROM pr_brands
+                    WHERE (niches::text ILIKE %s OR LOWER(category) ILIKE %s)
+                      AND status = 'published'
+                      AND accepting_pr = true
+                    ORDER BY created_at DESC
+                    LIMIT 3
+                """, (niche_pattern, niche_pattern))
+                matched_brands = cursor.fetchall()
+                print(f"[WEEKLY DIGEST] Niches JSONB match found: {len(matched_brands)} brands")
+
+            # Fallback: any published + accepting PR brands (for new users)
             if not matched_brands:
                 cursor.execute("""
                     SELECT brand_name AS name, category FROM pr_brands
-                    WHERE created_at >= NOW() - INTERVAL '30 days'
-                      AND status = 'published'
+                    WHERE status = 'published'
                       AND accepting_pr = true
                     ORDER BY created_at DESC
                     LIMIT 3
                 """)
                 matched_brands = cursor.fetchall()
-                print(f"[WEEKLY DIGEST] Fallback found: {len(matched_brands)} brands")
-
-            # Last resort: any recent brands
-            if not matched_brands:
-                cursor.execute("""
-                    SELECT brand_name AS name, category FROM pr_brands
-                    WHERE status = 'published'
-                    ORDER BY created_at DESC
-                    LIMIT 3
-                """)
-                matched_brands = cursor.fetchall()
+                print(f"[WEEKLY DIGEST] Final fallback found: {len(matched_brands)} brands")
 
         except Exception as e:
+            import traceback
             print(f"[WEEKLY DIGEST] Error fetching brands: {e}")
+            traceback.print_exc()
 
         def get_match_reason(brand_category: str) -> str:
             category_lower = (brand_category or '').lower()
