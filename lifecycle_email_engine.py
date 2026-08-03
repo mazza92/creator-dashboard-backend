@@ -1440,32 +1440,43 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
         # Get new brands matching creator's niche
         matched_brands = []
         try:
-            # First try matching categories (case-insensitive)
-            if matching_categories:
-                placeholders = ','.join(['%s'] * len(matching_categories))
+            # Build category list for query
+            cat_list = list(matching_categories)
+            print(f"[WEEKLY DIGEST] Creator niches: {all_niches}, matching categories: {cat_list}")
+
+            # First try: matching categories + published + accepting PR
+            if cat_list:
+                placeholders = ','.join(['%s'] * len(cat_list))
                 cursor.execute(f"""
                     SELECT brand_name AS name, category FROM pr_brands
                     WHERE created_at >= NOW() - INTERVAL '30 days'
                       AND LOWER(category) IN ({placeholders})
+                      AND status = 'published'
+                      AND accepting_pr = true
                     ORDER BY created_at DESC
                     LIMIT 3
-                """, tuple(matching_categories))
+                """, tuple(cat_list))
                 matched_brands = cursor.fetchall()
+                print(f"[WEEKLY DIGEST] Category match found: {len(matched_brands)} brands")
 
-            # Fallback to any recent brands
+            # Fallback: any published + accepting PR brands
             if not matched_brands:
                 cursor.execute("""
                     SELECT brand_name AS name, category FROM pr_brands
                     WHERE created_at >= NOW() - INTERVAL '30 days'
+                      AND status = 'published'
+                      AND accepting_pr = true
                     ORDER BY created_at DESC
                     LIMIT 3
                 """)
                 matched_brands = cursor.fetchall()
+                print(f"[WEEKLY DIGEST] Fallback found: {len(matched_brands)} brands")
 
-            # Last resort: any brands at all
+            # Last resort: any recent brands
             if not matched_brands:
                 cursor.execute("""
                     SELECT brand_name AS name, category FROM pr_brands
+                    WHERE status = 'published'
                     ORDER BY created_at DESC
                     LIMIT 3
                 """)
