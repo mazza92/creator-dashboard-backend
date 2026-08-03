@@ -1134,9 +1134,11 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Get creator - only select columns that definitely exist
+        # Get creator with unlock tracking fields
         cursor.execute("""
-            SELECT c.id, c.username, u.email, u.first_name
+            SELECT c.id, c.username, u.email, u.first_name,
+                   c.daily_unlocks_used, c.unlocks_remaining,
+                   c.pitches_sent_this_week, c.subscription_tier
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.id = %s
@@ -1145,6 +1147,25 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
 
         if not creator:
             return {}
+
+        # Calculate unlocks used this week
+        # unlocks_remaining: NULL for pro (unlimited), 0-3 for free users
+        # If unlocks_remaining exists, calculate used = 3 - remaining
+        # Otherwise fall back to pitches_sent_this_week or daily_unlocks_used
+        subscription_tier = creator.get('subscription_tier') or 'free'
+        is_pro = subscription_tier in ('pro', 'elite')
+
+        if is_pro:
+            unlocks_used = 0  # Pro users have unlimited
+            unlocks_quota = '∞'
+        else:
+            unlocks_remaining = creator.get('unlocks_remaining')
+            if unlocks_remaining is not None:
+                unlocks_used = max(0, 3 - unlocks_remaining)
+            else:
+                # Fallback to pitches_sent_this_week or daily_unlocks_used
+                unlocks_used = creator.get('pitches_sent_this_week') or creator.get('daily_unlocks_used') or 0
+            unlocks_quota = 3
 
         # Get new brands this week
         try:
@@ -1163,8 +1184,8 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
             'first_name': creator.get('first_name') or creator.get('username') or 'there',
             'current_score': 0,
             'score_delta': 0,
-            'unlocks_used': 0,
-            'unlocks_quota': 3,
+            'unlocks_used': unlocks_used,
+            'unlocks_quota': unlocks_quota,
             'replies_count': 0,
             'weekly_theme_title': 'Bio polish',
             'weekly_theme_body': 'Brands scan bios in 3 seconds. This week, audit yours.',
