@@ -981,12 +981,41 @@ class PRPackageGenerator:
             logger.error(f"Traceback: {traceback.format_exc()}")
             return None
 
+    def _repair_json(self, text: str) -> str:
+        """
+        Attempt to repair common JSON issues from LLM responses.
+
+        Fixes:
+        - Missing commas between fields (most common Gemini issue)
+        - Trailing commas before } or ]
+        - Unescaped newlines in strings
+        """
+        # Fix missing commas: }\n{ or ]\n{ or "\n" patterns
+        # Pattern: end of value followed by newline and start of new key
+        # e.g., "value"\n  "key" -> "value",\n  "key"
+        text = re.sub(r'("\s*)\n(\s*")', r'\1,\n\2', text)
+
+        # Fix missing comma after } or ] followed by "
+        # e.g., }\n  "key" -> },\n  "key"
+        text = re.sub(r'(\})\s*\n(\s*")', r'\1,\n\2', text)
+        text = re.sub(r'(\])\s*\n(\s*")', r'\1,\n\2', text)
+
+        # Fix missing comma after numbers/booleans/null followed by "
+        text = re.sub(r'(\d)\s*\n(\s*")', r'\1,\n\2', text)
+        text = re.sub(r'(true|false|null)\s*\n(\s*")', r'\1,\n\2', text)
+
+        # Remove trailing commas before } or ]
+        text = re.sub(r',(\s*[\}\]])', r'\1', text)
+
+        return text
+
     def _extract_json(self, text: str) -> Optional[Dict]:
         """
         Robustly extract a JSON object from Gemini response.
 
         Gemini 2.5-flash may prefix JSON with thinking tokens or markdown
         fences even when response_mime_type='application/json' is set.
+        Includes repair logic for common JSON formatting issues.
         """
         if not text:
             return None
@@ -1010,11 +1039,23 @@ class PRPackageGenerator:
         start = text.find('{')
         end = text.rfind('}')
         if start != -1 and end != -1 and end > start:
+            json_text = text[start:end + 1]
+
+            # Try parsing as-is
             try:
-                return json.loads(text[start:end + 1])
+                return json.loads(json_text)
             except json.JSONDecodeError as e:
-                logger.error(f"Could not extract valid JSON: {e}")
-                logger.error(f"Text between braces (first 300 chars): {text[start:start+300]}")
+                logger.warning(f"Initial JSON parse failed: {e}")
+
+            # Try repairing the JSON
+            try:
+                repaired = self._repair_json(json_text)
+                result = json.loads(repaired)
+                logger.info("Successfully parsed JSON after repair")
+                return result
+            except json.JSONDecodeError as e:
+                logger.error(f"Could not extract valid JSON even after repair: {e}")
+                logger.error(f"Text between braces (first 300 chars): {json_text[:300]}")
 
         return None
 

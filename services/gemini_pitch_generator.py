@@ -727,6 +727,32 @@ def _strip_portfolio_lines(pitch: Dict) -> Dict:
     return pitch
 
 
+def _repair_json(text: str) -> str:
+    """
+    Attempt to repair common JSON issues from LLM responses.
+
+    Fixes:
+    - Missing commas between fields (most common Gemini issue)
+    - Trailing commas before } or ]
+    """
+    # Fix missing commas: end of value followed by newline and start of new key
+    # e.g., "value"\n  "key" -> "value",\n  "key"
+    text = re.sub(r'("\s*)\n(\s*")', r'\1,\n\2', text)
+
+    # Fix missing comma after } or ] followed by "
+    text = re.sub(r'(\})\s*\n(\s*")', r'\1,\n\2', text)
+    text = re.sub(r'(\])\s*\n(\s*")', r'\1,\n\2', text)
+
+    # Fix missing comma after numbers/booleans/null followed by "
+    text = re.sub(r'(\d)\s*\n(\s*")', r'\1,\n\2', text)
+    text = re.sub(r'(true|false|null)\s*\n(\s*")', r'\1,\n\2', text)
+
+    # Remove trailing commas before } or ]
+    text = re.sub(r',(\s*[\}\]])', r'\1', text)
+
+    return text
+
+
 def _extract_json(text: str) -> Optional[Dict]:
     """
     Robustly extract a JSON object from a model response.
@@ -734,6 +760,7 @@ def _extract_json(text: str) -> Optional[Dict]:
     Gemini 2.5-flash may prefix the JSON with thinking tokens or markdown
     fences even when response_mime_type='application/json' is set.
     This helper strips common wrappers before parsing.
+    Includes repair logic for common JSON formatting issues.
     """
     if not text:
         return None
@@ -757,8 +784,20 @@ def _extract_json(text: str) -> Optional[Dict]:
     start = text.find('{')
     end = text.rfind('}')
     if start != -1 and end != -1 and end > start:
+        json_text = text[start:end + 1]
+
+        # Try parsing as-is
         try:
-            return json.loads(text[start:end + 1])
+            return json.loads(json_text)
+        except json.JSONDecodeError:
+            pass
+
+        # Try repairing the JSON
+        try:
+            repaired = _repair_json(json_text)
+            result = json.loads(repaired)
+            print("[GeminiPitch] Successfully parsed JSON after repair")
+            return result
         except json.JSONDecodeError:
             pass
 
