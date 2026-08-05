@@ -684,6 +684,9 @@ def process_daily_lifecycle_emails(
         'limit': limit
     }
 
+    import logging
+    logging.info(f"[LIFECYCLE CRON] Starting daily emails: batch_size={batch_size}, limit={limit}, dry_run={dry_run}, test_email={test_email}")
+
     conn = get_db_connection()
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -724,6 +727,7 @@ def process_daily_lifecycle_emails(
 
         creators = cursor.fetchall()
         stats['total_eligible'] = len(creators)
+        logging.info(f"[LIFECYCLE CRON] Found {len(creators)} eligible creators to process")
 
         # Track error details for debugging
         if 'error_details' not in stats:
@@ -735,9 +739,11 @@ def process_daily_lifecycle_emails(
 
         for creator in creators:
             stats['processed'] += 1
+            logging.info(f"[LIFECYCLE CRON] Processing creator {creator['id']} (state: {creator.get('lifecycle_state')})")
 
             try:
                 eligible = get_eligible_emails(creator['id'])
+                logging.info(f"[LIFECYCLE CRON] Creator {creator['id']} has {len(eligible)} eligible emails")
 
                 if not eligible:
                     stats['skipped'] += 1
@@ -792,6 +798,7 @@ def process_daily_lifecycle_emails(
                 if len(stats.get('error_details', [])) < 5:  # Keep first 5 errors
                     stats['error_details'].append(error_msg)
 
+        logging.info(f"[LIFECYCLE CRON] Completed: processed={stats['processed']}, sent={stats['sent']}, skipped={stats['skipped']}, errors={stats['errors']}")
         return stats
     finally:
         conn.close()
