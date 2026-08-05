@@ -494,37 +494,46 @@ def get_eligible_emails(creator_id: int) -> List[Dict[str, Any]]:
         logging.info(f"[ELIGIBLE] Creator {creator_id}: Found {len(templates)} active templates, state={state}")
 
         eligible = []
+        skip_reasons = {'feature_flag': [], 'state': [], 'tier': [], 'throttle': [], 'trigger': []}
 
         for template in templates:
             slug = template['slug']
 
             # Check feature flag
             if template.get('feature_flag') and not is_feature_enabled(template['feature_flag']):
-                logging.debug(f"[ELIGIBLE] Creator {creator_id}: {slug} skipped - feature flag disabled")
+                skip_reasons['feature_flag'].append(slug)
                 continue
 
             # Check required state
             required_states = template.get('required_user_state')
             if required_states and state not in required_states:
-                logging.debug(f"[ELIGIBLE] Creator {creator_id}: {slug} skipped - state {state} not in {required_states}")
+                skip_reasons['state'].append(slug)
                 continue
 
             # Check excluded tiers
             excluded_tiers = template.get('excluded_tiers')
             if excluded_tiers and creator.get('subscription_tier', 'free') in excluded_tiers:
-                logging.debug(f"[ELIGIBLE] Creator {creator_id}: {slug} skipped - tier excluded")
+                skip_reasons['tier'].append(slug)
                 continue
 
             # Check throttling
             can_send, reason = check_throttling(creator_id, template['slug'])
             if not can_send:
-                logging.debug(f"[ELIGIBLE] Creator {creator_id}: {slug} skipped - throttled: {reason}")
+                skip_reasons['throttle'].append(f"{slug}({reason})")
                 continue
 
             # Evaluate trigger conditions
             if evaluate_trigger(creator, template, cursor):
                 logging.info(f"[ELIGIBLE] Creator {creator_id}: {slug} ELIGIBLE")
                 eligible.append(template)
+            else:
+                skip_reasons['trigger'].append(slug)
+
+        # Log skip summary
+        if not eligible:
+            logging.info(f"[ELIGIBLE] Creator {creator_id} skip summary: state={len(skip_reasons['state'])}, trigger={len(skip_reasons['trigger'])}, throttle={len(skip_reasons['throttle'])}, tier={len(skip_reasons['tier'])}, flag={len(skip_reasons['feature_flag'])}")
+            if skip_reasons['trigger']:
+                logging.info(f"[ELIGIBLE] Creator {creator_id} trigger-failed: {skip_reasons['trigger'][:5]}")
 
         return eligible
     finally:
