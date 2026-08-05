@@ -523,6 +523,8 @@ def get_eligible_emails(creator_id: int) -> List[Dict[str, Any]]:
             # Check throttling
             can_send, reason = check_throttling(creator_id, template['slug'])
             if not can_send:
+                if slug == 'max_quota_hit':
+                    logging.info(f"[DEBUG] max_quota_hit throttled: {reason}")
                 skip_reasons['throttle'].append(f"{slug}({reason})")
                 continue
 
