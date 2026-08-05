@@ -649,8 +649,23 @@ def evaluate_trigger(creator: Dict, template: Dict, cursor) -> bool:
         return True
 
     elif trigger_type == 'action_based':
-        # These are triggered by specific user actions, not by cron
-        # Return False for cron evaluation
+        # Action-based triggers are normally fired by user actions, not cron.
+        # However, for backfill/bootstrap, allow cron to send certain emails
+        # to creators in the correct state who never received them.
+
+        # max_quota_hit: Send to maximizers who haven't received it this month
+        if slug == 'max_quota_hit' and creator.get('lifecycle_state') == 'maximizer':
+            month_key = datetime.now().strftime('%Y-%m')
+            cursor.execute("""
+                SELECT id FROM lifecycle_email_sends
+                WHERE creator_id = %s AND template_slug = %s
+                AND sent_at >= date_trunc('month', NOW())
+            """, (creator_id, slug))
+            if not cursor.fetchone():
+                logging.info(f"[TRIGGER] max_quota_hit eligible for maximizer {creator_id} (backfill)")
+                return True
+
+        # Other action_based triggers not handled by cron
         return False
 
     elif trigger_type == 'weekly':
