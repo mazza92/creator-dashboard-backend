@@ -6,6 +6,7 @@ throttling, and feature flags.
 """
 import os
 import json
+import logging
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -692,7 +693,6 @@ def process_daily_lifecycle_emails(
         'limit': limit
     }
 
-    import logging
     logging.info(f"[LIFECYCLE CRON] Starting daily emails: batch_size={batch_size}, limit={limit}, dry_run={dry_run}, test_email={test_email}")
 
     conn = get_db_connection()
@@ -1022,7 +1022,6 @@ def get_for_you_brands_for_email(creator_id: int, cursor, limit: int = 3) -> Lis
     Matches on creator's actual niches directly (no expansion to avoid over-broad matching).
     """
     from datetime import datetime
-    import logging
 
     # Get creator's niches
     cursor.execute("""
