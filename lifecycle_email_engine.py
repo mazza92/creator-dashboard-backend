@@ -590,8 +590,23 @@ def evaluate_trigger(creator: Dict, template: Dict, cursor) -> bool:
         days_since_signup = creator.get('days_since_signup', 0) or 0
 
         # Check if we're in the right day window (day X to day X+2)
-        if not (days <= days_since_signup <= days + 2):
-            return False
+        in_window = days <= days_since_signup <= days + 2
+
+        # Backfill for education series: if creator is past the window but still
+        # in explorer/engaged state and hasn't received this email, allow it
+        # This catches users who missed emails when feature was disabled
+        education_slugs = ['edu_5reasons', 'edu_60sec', 'edu_pitch', 'edu_followup', 'edu_edge']
+        is_education = slug in education_slugs
+
+        if not in_window:
+            if is_education and days_since_signup > days and creator.get('lifecycle_state') in ['explorer', 'engaged']:
+                # Allow backfill for education series up to day 30
+                if days_since_signup <= 30:
+                    logging.info(f"[TRIGGER] {slug} backfill eligible for creator {creator_id} (day {days_since_signup}, target day {days})")
+                else:
+                    return False
+            else:
+                return False
 
         # Check additional conditions
         condition = conditions.get('condition')
