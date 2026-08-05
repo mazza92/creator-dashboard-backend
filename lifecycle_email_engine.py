@@ -499,6 +499,10 @@ def get_eligible_emails(creator_id: int) -> List[Dict[str, Any]]:
         for template in templates:
             slug = template['slug']
 
+            # Debug max_quota_hit specifically
+            if slug == 'max_quota_hit':
+                logging.info(f"[DEBUG] max_quota_hit check: state={state}, required={template.get('required_user_state')}, tier={creator.get('subscription_tier')}, excluded={template.get('excluded_tiers')}, flag={template.get('feature_flag')}")
+
             # Check feature flag
             if template.get('feature_flag') and not is_feature_enabled(template['feature_flag']):
                 skip_reasons['feature_flag'].append(slug)
