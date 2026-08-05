@@ -490,31 +490,39 @@ def get_eligible_emails(creator_id: int) -> List[Dict[str, Any]]:
             ORDER BY priority DESC
         """)
         templates = cursor.fetchall()
+        logging.info(f"[ELIGIBLE] Creator {creator_id}: Found {len(templates)} active templates, state={state}")
 
         eligible = []
 
         for template in templates:
+            slug = template['slug']
+
             # Check feature flag
             if template.get('feature_flag') and not is_feature_enabled(template['feature_flag']):
+                logging.debug(f"[ELIGIBLE] Creator {creator_id}: {slug} skipped - feature flag disabled")
                 continue
 
             # Check required state
             required_states = template.get('required_user_state')
             if required_states and state not in required_states:
+                logging.debug(f"[ELIGIBLE] Creator {creator_id}: {slug} skipped - state {state} not in {required_states}")
                 continue
 
             # Check excluded tiers
             excluded_tiers = template.get('excluded_tiers')
             if excluded_tiers and creator.get('subscription_tier', 'free') in excluded_tiers:
+                logging.debug(f"[ELIGIBLE] Creator {creator_id}: {slug} skipped - tier excluded")
                 continue
 
             # Check throttling
-            can_send, _ = check_throttling(creator_id, template['slug'])
+            can_send, reason = check_throttling(creator_id, template['slug'])
             if not can_send:
+                logging.debug(f"[ELIGIBLE] Creator {creator_id}: {slug} skipped - throttled: {reason}")
                 continue
 
             # Evaluate trigger conditions
             if evaluate_trigger(creator, template, cursor):
+                logging.info(f"[ELIGIBLE] Creator {creator_id}: {slug} ELIGIBLE")
                 eligible.append(template)
 
         return eligible
