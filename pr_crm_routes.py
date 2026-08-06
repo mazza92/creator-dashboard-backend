@@ -85,6 +85,18 @@ except ImportError as e:
     HAS_GEMINI = False
     print(f"⚠️ Gemini pitch generator not available: {e}")
 
+# Gemini Pitch Generator V2 (variance-optimized, feature flagged)
+try:
+    from services.gemini_pitch_generator_v2 import get_generator_v2, validate_match, log_pitch_generation
+    HAS_GEMINI_V2 = True
+except ImportError as e:
+    HAS_GEMINI_V2 = False
+    print(f"⚠️ Gemini pitch generator V2 not available: {e}")
+
+# Feature flag for pitch engine v2 (50/50 A/B test)
+PITCH_ENGINE_V2_ENABLED = os.environ.get('PITCH_ENGINE_V2', '0') == '1'
+PITCH_ENGINE_V2_PERCENT = int(os.environ.get('PITCH_ENGINE_V2_PERCENT', '0'))  # 0-100
+
 # Try to import BeautifulSoup for Tier 2 web scraping
 try:
     from bs4 import BeautifulSoup
@@ -3900,8 +3912,95 @@ def generate_pitch():
             pitch_subject = pitch.get('subject', '')
             pitch_source = 'template'
         else:
+            # Check if we should use v2 (feature flag or A/B test percentage)
+            import random
+            use_v2 = False
+            if HAS_GEMINI_V2:
+                if PITCH_ENGINE_V2_ENABLED:
+                    use_v2 = True
+                elif PITCH_ENGINE_V2_PERCENT > 0:
+                    use_v2 = random.randint(1, 100) <= PITCH_ENGINE_V2_PERCENT
+
             # Initial pitches use Gemini LLM with template fallback
-            if HAS_GEMINI:
+            if use_v2 and HAS_GEMINI_V2:
+                # === PITCH ENGINE V2 ===
+                print(f"[generate_pitch] Using Gemini Pitch Engine V2")
+                gemini_v2 = get_generator_v2()
+
+                # Pre-generation validation with soft warning
+                is_valid, match_warning = validate_match(dict(brand), dict(creator))
+                if match_warning:
+                    print(f"[generate_pitch] Match warning: {match_warning}")
+
+                # Use pro model for Pro subscribers
+                use_pro_model = creator.get('subscription_tier') in ('pro', 'premium')
+
+                result = gemini_v2.generate(
+                    brand=dict(brand),
+                    creator=dict(creator),
+                    template_fallback_fn=generate_golden_template_pitch,
+                    use_pro_model=use_pro_model
+                )
+
+                if result.success:
+                    pitch_body = result.body or ''
+                    pitch_subject = result.subject or ''
+                    pitch_source = result.source  # 'gemini_v2' or 'template_fallback'
+
+                    # Log for analytics (variant performance tracking)
+                    try:
+                        analytics_payload = log_pitch_generation(
+                            creator_id=creator_id,
+                            brand_id=brand['id'],
+                            result=result,
+                            match_warning=match_warning
+                        )
+                        print(f"[generate_pitch] V2 analytics: {analytics_payload.get('opener_variant_id')}/{analytics_payload.get('close_variant_id')}/{analytics_payload.get('subject_variant_id')}")
+                    except Exception as log_err:
+                        print(f"[generate_pitch] Analytics log failed: {log_err}")
+
+                    # Strip any portfolio/URL lines the LLM snuck in
+                    import re as _re
+                    _PORTFOLIO_KW = ("http", "portfolio", "media kit", "find my", "check out my work")
+                    _clean_lines = [
+                        l for l in pitch_body.split('\n')
+                        if not any(kw in l.lower() for kw in _PORTFOLIO_KW)
+                    ]
+                    pitch_body = _re.sub(r'\n{3,}', '\n\n', '\n'.join(_clean_lines)).strip()
+
+                    # Inject portfolio kit link (same as v1)
+                    proof = build_pitch_proof(creator, creator_id=creator.get('id'), brand_id=brand.get('id'))
+                    if proof.get('plain_line'):
+                        portfolio_line = proof['plain_line']
+                        _paragraphs = pitch_body.split('\n\n')
+                        _last = _paragraphs[-1] if _paragraphs else ''
+                        _last_lines = [l for l in _last.split('\n') if l.strip()]
+                        _is_signoff = (
+                            len(_last_lines) <= 3
+                            and all(len(l) <= 40 for l in _last_lines)
+                            and len(_paragraphs) > 1
+                        )
+                        already = (
+                            (proof.get('url') and proof['url'] in pitch_body)
+                            or (proof.get('at_handle') and proof['at_handle'] in pitch_body)
+                            or 'newcollab.co/kit/' in pitch_body
+                        )
+                        if not already:
+                            if _is_signoff:
+                                pitch_body = '\n\n'.join(_paragraphs[:-1]) + f"\n\n{portfolio_line}\n\n" + _last
+                            else:
+                                pitch_body += f"\n\n{portfolio_line}"
+                    pitch_body = ensure_pitch_has_social_handle(pitch_body, creator, html=False)
+                else:
+                    # V2 failed completely - use template
+                    print(f"[generate_pitch] Gemini V2 failed: {result.error}")
+                    pitch = generate_golden_template_pitch(brand, creator)
+                    pitch_body = pitch.get('body', '')
+                    pitch_subject = pitch.get('subject', '')
+                    pitch_source = 'template_fallback'
+
+            elif HAS_GEMINI:
+                # === PITCH ENGINE V1 (legacy) ===
                 gemini = get_gemini_generator()
                 result = gemini.generate(
                     brand=dict(brand),
@@ -4334,20 +4433,81 @@ def generate_pr_package():
         executor = ThreadPoolExecutor(max_workers=1)
         ai_depth_future = executor.submit(run_ai_depth_async)
 
-        # Generate PR Package (runs concurrently with AI Depth)
-        generator = get_pr_package_generator()
-        result = generator.generate(
-            creator=creator_dict,
-            brand=brand_dict,
-            cursor=cursor,
-            max_attempts=2
-        )
+        # ============================================
+        # V2 PITCH GENERATION (single source of truth)
+        # One pitch for preview + send. No more 3 variants.
+        # ============================================
+        if HAS_GEMINI_V2:
+            print("[generate-pr-package] Using V2 pitch generator")
+            generator_v2 = get_generator_v2()
+            v2_result = generator_v2.generate(brand_dict, creator_dict)
 
-        if not result.success:
-            conn.close()
-            return jsonify({'success': False, 'error': result.error or 'Generation failed'}), 500
+            if not v2_result.success:
+                conn.close()
+                return jsonify({'success': False, 'error': v2_result.error or 'Generation failed'}), 500
 
-        package = result.package
+            # V2 returns single pitch - populate all 3 variant slots for backward compatibility
+            pitch_subject = v2_result.subject
+            pitch_body_plain = v2_result.body
+
+            # NOTE: Portfolio URL injection removed - creator's social handle in sig is the portfolio
+            # This improves deliverability and removes automated-looking patterns
+
+            # Convert plain text to HTML (preserve paragraph breaks)
+            pitch_body_html = '<p>' + '</p><p>'.join(
+                line for line in pitch_body_plain.split('\n\n') if line.strip()
+            ) + '</p>'
+
+            # Build package dict matching old format
+            package = {
+                'pitch_short_subject': pitch_subject,
+                'pitch_short_body_html': pitch_body_html,
+                'pitch_short_body_plain': pitch_body_plain,
+                'pitch_growing_subject': pitch_subject,
+                'pitch_growing_body_html': pitch_body_html,
+                'pitch_growing_body_plain': pitch_body_plain,
+                'pitch_founder_subject': pitch_subject,
+                'pitch_founder_body_html': pitch_body_html,
+                'pitch_founder_body_plain': pitch_body_plain,
+                # Deterministic timing (keep existing logic)
+                'optimal_send_day': 'Tuesday',
+                'optimal_send_time_range': '2-5pm ET',
+                'timing_sample_size': 0,
+                'timing_uplift_multiplier': 1.0,
+                # Empty content ideas/follow-ups (V2 focuses on pitch only)
+                'content_ideas': [],
+                'followup_day3_subject': '',
+                'followup_day3_body': '',
+                'followup_day8_subject': '',
+                'followup_day8_body': '',
+                'followup_day14_subject': '',
+                'followup_day14_body': '',
+                'reply_rate_brand_avg': None,
+                'reply_rate_personalized': None,
+                'reply_rate_confidence': None,
+                'generation_reasoning': f'V2 variants: G{v2_result.variant_ids.greeting_id}/O{v2_result.variant_ids.opener_id}/C{v2_result.variant_ids.close_id}/S{v2_result.variant_ids.subject_id}' if v2_result.variant_ids else 'V2',
+            }
+            result_source = 'gemini_v2'
+            result_scrub_failures = 0
+        else:
+            # Fallback to old generator if V2 not available
+            from services.pr_package_generator import get_pr_package_generator
+            print("[generate-pr-package] Falling back to legacy PR Package generator")
+            generator = get_pr_package_generator()
+            result = generator.generate(
+                creator=creator_dict,
+                brand=brand_dict,
+                cursor=cursor,
+                max_attempts=2
+            )
+
+            if not result.success:
+                conn.close()
+                return jsonify({'success': False, 'error': result.error or 'Generation failed'}), 500
+
+            package = result.package
+            result_source = result.source
+            result_scrub_failures = result.scrub_failures
 
         # Replace {{PORTFOLIO_LINK}} with media kit URL, or social handle/profile when no kit
         proof = build_pitch_proof(creator, creator_id=creator_id, brand_id=brand_id)
@@ -4447,7 +4607,7 @@ def generate_pr_package():
             package.get('followup_day8_subject'), package.get('followup_day8_body'),
             package.get('followup_day14_subject'), package.get('followup_day14_body'),
             package.get('reply_rate_brand_avg'), package.get('reply_rate_personalized'), package.get('reply_rate_confidence'),
-            result.source, package.get('generation_reasoning'), result.scrub_failures
+            result_source, package.get('generation_reasoning'), result_scrub_failures
         ))
 
         conn.commit()
@@ -4604,13 +4764,13 @@ def generate_pr_package_v2():
 
     Streams progress events as each step completes:
     1. inbox_found - contact resolved from DB
-    2. pitch_written - Gemini response
+    2. pitch_written - V2 Gemini pitch (single source of truth)
     3. strategy_built - timing + prediction computed
     4. ready - all assembled
 
     Final event contains the complete package with verdict-based payload.
+    Uses V2 Pitch Generator - same pitch for preview and send.
     """
-    from services.pr_package_generator import get_pr_package_generator
     import time
 
     creator_id = get_creator_id_from_session()
@@ -4903,26 +5063,75 @@ def generate_pr_package_v2():
                 return
 
             # ========================================
-            # STEP 2: PITCH WRITTEN (Gemini generation)
+            # STEP 2: PITCH WRITTEN (V2 Gemini generation)
+            # Single pitch - same one shown in preview and sent
             # ========================================
-            generator = get_pr_package_generator()
-            result = generator.generate(
-                creator=dict(creator),
-                brand=dict(brand),
-                cursor=cursor,
-                max_attempts=2
-            )
+            if HAS_GEMINI_V2:
+                print("[generate-pr-package-v2] Using V2 pitch generator")
+                generator_v2 = get_generator_v2()
+                v2_result = generator_v2.generate(dict(brand), dict(creator))
 
-            if not result.success:
-                yield send_event('error', {'error': result.error or 'Generation failed'})
-                return
+                if not v2_result.success:
+                    yield send_event('error', {'error': v2_result.error or 'Generation failed'})
+                    return
 
-            package = result.package
+                # V2 returns single pitch - populate all variant slots
+                pitch_subject = v2_result.subject
+                pitch_body_plain = v2_result.body
+                pitch_body_html = '<p>' + '</p><p>'.join(
+                    line for line in pitch_body_plain.split('\n\n') if line.strip()
+                ) + '</p>'
+
+                package = {
+                    'pitch_short_subject': pitch_subject,
+                    'pitch_short_body_html': pitch_body_html,
+                    'pitch_short_body_plain': pitch_body_plain,
+                    'pitch_growing_subject': pitch_subject,
+                    'pitch_growing_body_html': pitch_body_html,
+                    'pitch_growing_body_plain': pitch_body_plain,
+                    'pitch_founder_subject': pitch_subject,
+                    'pitch_founder_body_html': pitch_body_html,
+                    'pitch_founder_body_plain': pitch_body_plain,
+                    'optimal_send_day': 'Tuesday',
+                    'optimal_send_time_range': '2-5pm ET',
+                    'timing_sample_size': 0,
+                    'timing_uplift_multiplier': 1.0,
+                    'content_ideas': [],
+                    'followup_day3_subject': '',
+                    'followup_day3_body': '',
+                    'followup_day8_subject': '',
+                    'followup_day8_body': '',
+                    'followup_day14_subject': '',
+                    'followup_day14_body': '',
+                    'reply_rate_brand_avg': None,
+                    'reply_rate_personalized': None,
+                    'reply_rate_confidence': None,
+                    'generation_reasoning': f'V2 variants: G{v2_result.variant_ids.greeting_id}/O{v2_result.variant_ids.opener_id}/C{v2_result.variant_ids.close_id}/S{v2_result.variant_ids.subject_id}' if v2_result.variant_ids else 'V2',
+                }
+                result_source = 'gemini_v2'
+            else:
+                # Fallback to legacy generator
+                from services.pr_package_generator import get_pr_package_generator
+                print("[generate-pr-package-v2] Falling back to legacy PR Package generator")
+                generator = get_pr_package_generator()
+                result = generator.generate(
+                    creator=dict(creator),
+                    brand=dict(brand),
+                    cursor=cursor,
+                    max_attempts=2
+                )
+
+                if not result.success:
+                    yield send_event('error', {'error': result.error or 'Generation failed'})
+                    return
+
+                package = result.package
+                result_source = result.source
 
             yield send_event('pitch_written', {
                 'cached': False,
                 'tone': 'growing',
-                'source': result.source
+                'source': result_source
             })
 
             # ========================================
@@ -5026,7 +5235,7 @@ def generate_pr_package_v2():
                 package.get('followup_day8_subject'), package.get('followup_day8_body'),
                 package.get('followup_day14_subject'), package.get('followup_day14_body'),
                 package.get('reply_rate_brand_avg'), package.get('reply_rate_personalized'), package.get('reply_rate_confidence'),
-                result.source, package.get('generation_reasoning'), result.scrub_failures
+                result_source, package.get('generation_reasoning'), 0
             ))
 
             conn.commit()
