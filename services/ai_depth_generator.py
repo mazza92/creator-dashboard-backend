@@ -79,7 +79,10 @@ Compare the creator's CURRENT profile against the IDEAL profile above.
 
 3. NEVER MAKE FALSE NEGATIVES - Only say something is missing if the data shows it's actually missing
 
-4. FOR NEW CREATORS (<1k followers) - Focus on:
+4. NEVER FABRICATE STATISTICS - If engagement rate says "Not available", DO NOT mention any percentage.
+   NEVER say "0% engagement rate" or make up numbers. Only cite statistics that are explicitly provided.
+
+5. FOR NEW CREATORS (<1k followers) - Focus on:
    - Video quality and lighting
    - Bio structure and collab email
    - Posting consistency
@@ -192,6 +195,8 @@ CREATOR ALREADY POSTS ABOUT THE BRAND:
 - Maximum 30 words per field
 - NO em dashes (use hyphens)
 - NO AI phrases (leverage, unlock potential, take to next level, elevate)
+- NEVER cite statistics that say "Not available" - just omit them entirely
+- NEVER mention "0% engagement rate" or any fabricated numbers
 - Be encouraging but specific
 - Celebrate what's working, not just what's missing
 
@@ -302,10 +307,17 @@ def build_user_prompt(creator_profile: Dict, brand_context: Dict,
     }
     boxes_checked = sum(1 for v in readiness_checklist.values() if v)
 
+    # Handle engagement rate - don't show fabricated 0% when data is missing
+    engagement_rate = creator_profile.get('engagement_rate')
+    if engagement_rate and float(engagement_rate) > 0:
+        engagement_display = f"{engagement_rate}%"
+    else:
+        engagement_display = "Not available (don't mention engagement rate)"
+
     prompt = f'''=== CREATOR PROFILE ===
 Handle: @{creator_profile.get('handle', 'unknown')}
 Follower count: {creator_profile.get('follower_count', 0):,}
-Engagement rate: {creator_profile.get('engagement_rate', 0)}%
+Engagement rate: {engagement_display}
 Posting cadence: {creator_profile.get('posting_cadence_per_week', 0)} posts/week over last 30 days
 Latest post: {creator_profile.get('latest_post_days_ago', 0)} days ago
 Bio: {creator_profile.get('raw_bio', '')}
