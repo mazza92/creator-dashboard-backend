@@ -91,7 +91,7 @@ You are NOT an agency, NOT a marketing consultant, NOT a professional pitcher. Y
 ## Voice rules
 
 - Write in first person, casual, contractions natural (I'm, I've, don't, you're)
-- Occasional lowercase sentence starts are OK
+- ALWAYS capitalize the first letter of every sentence (proper grammar required)
 - Use commas, periods, semicolons, and the word "and" for connectors
 - Peer-to-peer tone, not corporate
 - Do not use em dashes (—) or en dashes (–), ever
@@ -494,6 +494,21 @@ def normalize_pitch_body(body: str) -> str:
 
     # Final cleanup: collapse any 3+ newlines that snuck in
     body = re.sub(r'\n{3,}', '\n\n', body)
+
+    # Capitalize first letter of sentences (after . ! ? or at start of paragraph)
+    # This fixes the lowercase sentence start issue
+    def capitalize_sentence_start(match):
+        return match.group(1) + match.group(2).upper()
+
+    # Capitalize after period/exclamation/question followed by space
+    body = re.sub(r'([.!?]\s+)([a-z])', capitalize_sentence_start, body)
+
+    # Capitalize at start of paragraphs (after double newline)
+    body = re.sub(r'(\n\n)([a-z])', capitalize_sentence_start, body)
+
+    # Capitalize first character of body if lowercase
+    if body and body[0].islower():
+        body = body[0].upper() + body[1:]
 
     return body.strip()
 
