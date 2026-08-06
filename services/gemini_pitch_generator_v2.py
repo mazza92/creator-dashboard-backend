@@ -145,16 +145,42 @@ Variants:
 4. "Hi {brand_pr_contact_name}," (only if brand_pr_contact_name provided, otherwise skip greeting)
 5. NO GREETING (opener starts the email directly, for anti-template variety)
 
-## Structure
+## Structure and formatting (MANDATORY)
 
-- Line 1: greeting (using assigned greeting variant, unless variant 5 which skips greeting)
-- Line 2: blank line
-- Line 3: opener (using assigned opener variant - NO greeting words here, just the opener text)
-- Middle: 2 to 4 sentences with one specific product reason and one clear ask (what content you would make)
-- Last line before sig: close (using assigned close variant)
-- Sig: first name on one line, handle with platform on next line (e.g., "@sarah.hairlab on Instagram")
+Structure the body as clear paragraphs separated by blank lines.
+Each paragraph = 1 idea, max 3 sentences.
+Use TWO newline characters (\\n\\n) between paragraphs.
+Never write the entire pitch as one block of text.
 
-CRITICAL: Never double up greetings. The greeting layer handles "Hi X," on line 1. The opener on line 3 should NOT start with "hi" or "hey" again.
+The body MUST have this vertical rhythm:
+
+[Greeting on its own line]
+
+[Blank line]
+
+[Opener paragraph, 1-2 sentences]
+
+[Blank line]
+
+[Personal reason paragraph, 1-3 sentences about why you want the product]
+
+[Blank line]
+
+[Content plan paragraph, 1-2 sentences about what you'd film]
+
+[Blank line]
+
+[Close on its own line]
+
+[Blank line]
+
+[Name on its own line]
+[Handle on next line]
+
+CRITICAL RULES:
+- Never double up greetings. The greeting layer handles "Hi X," on line 1. The opener should NOT start with "hi" or "hey" again.
+- Never chain more than 3 sentences without a paragraph break.
+- The close phrase MUST be on its own paragraph before the signature.
 
 ## Output format
 
@@ -164,24 +190,24 @@ Return valid JSON matching this schema exactly:
   "body": "string, the full pitch body including sig"
 }
 
-## Few-shot examples (study these for tone, length variance, and greeting usage)
+## Few-shot examples (study these for tone, length variance, paragraph breaks, and greeting usage)
 
-Example A (short, 68 words, with greeting):
+Example A (short, with greeting, 4 paragraphs):
 {
   "subject": "Barrier Repair Serum content idea",
-  "body": "Hi Ceremonia team,\\n\\nBeen eyeing your Barrier Repair Serum for a while. My scalp has been sensitive since I stopped using medicated shampoo last spring, and the ceramide combo in yours looks like the right layer for me.\\n\\nI'd film a wash day Reel showing how the serum sits under my usual conditioner.\\n\\nAny chance you could send one over?\\n\\nSarah\\n@sarah.hairlab on Instagram"
+  "body": "Hi Ceremonia team,\\n\\nBeen eyeing your Barrier Repair Serum for a while.\\n\\nMy scalp has been sensitive since I stopped using medicated shampoo last spring, and the ceramide combo in yours looks like the right layer for me.\\n\\nI'd film a wash day Reel showing how the serum sits under my usual conditioner.\\n\\nAny chance you could send one over?\\n\\nSarah\\n@sarah.hairlab on Instagram"
 }
 
-Example B (mid, 82 words, no greeting - variant 5):
+Example B (mid length, no greeting - variant 5, 4 paragraphs):
 {
   "subject": "quick note about Halo Glow Liquid Filter",
-  "body": "Not a form pitch, just a real note about your Halo Glow Liquid Filter.\\n\\nI've been using it under my sunscreen for a month and it's actually the reason my base looks less flat in videos now. I want to do a 45-second GRWM Reel showing the layer order and how it holds through a summer commute.\\n\\nSend one over? I'll take care of the rest.\\n\\nPriya\\n@priyaskincloset on TikTok"
+  "body": "Not a form pitch, just a real note about your Halo Glow Liquid Filter.\\n\\nI've been using it under my sunscreen for a month and it's actually the reason my base looks less flat in videos now.\\n\\nI want to do a 45-second GRWM Reel showing the layer order and how it holds through a summer commute.\\n\\nSend one over? I'll take care of the rest.\\n\\nPriya\\n@priyaskincloset on TikTok"
 }
 
-Example C (longer, 138 words, with named contact greeting):
+Example C (longer, with named contact greeting, 5 paragraphs):
 {
   "subject": "creator interest, Scandinavian Biolabs",
-  "body": "Hi Sofia,\\n\\nquick one. I've been building a scalp care routine for the past 3 months since noticing thinning at my crown. I've tried three different massagers so far and none of them have the flex I need without irritating my skin. Your Scalp Massager keeps coming up when I look at Scandinavian brands, especially the medical-grade silicone.\\n\\nI'd film a short showing how I use it before your Bio-Pilixin serum. Slow pacing, no talking, ASMR-style, about 20 seconds. Fits the type of content my audience saves and shares.\\n\\nIf you want to see the concept first, happy to send a rough idea.\\n\\nTom\\n@tomgrooms on Instagram"
+  "body": "Hi Sofia,\\n\\nquick one.\\n\\nI've been building a scalp care routine for the past 3 months since noticing thinning at my crown. I've tried three different massagers so far and none of them have the flex I need without irritating my skin. Your Scalp Massager keeps coming up when I look at Scandinavian brands, especially the medical-grade silicone.\\n\\nI'd film a short showing how I use it before your Bio-Pilixin serum. Slow pacing, no talking, ASMR-style, about 20 seconds.\\n\\nIf you want to see the concept first, happy to send a rough idea.\\n\\nTom\\n@tomgrooms on Instagram"
 }"""
 
 
@@ -398,6 +424,78 @@ def validate_pitch(pitch: Dict, brand: Dict, variant_ids: VariantIds) -> Validat
         return ValidationResult(False, "subject_missing_ref")
 
     return ValidationResult(True)
+
+
+# ============================================================================
+# POST-GENERATION FORMATTING
+# ============================================================================
+
+def normalize_pitch_body(body: str) -> str:
+    """
+    Normalize pitch body to ensure proper paragraph breaks.
+    Runs after Gemini generates, before saving to DB.
+    """
+    # Strip leading/trailing whitespace
+    body = body.strip()
+
+    # Collapse 3+ newlines to exactly 2
+    body = re.sub(r'\n{3,}', '\n\n', body)
+
+    # Ensure blank line after greeting (line ending with comma)
+    body = re.sub(
+        r'^((?:Hi|Hey)[^\n]+,)\n(?!\n)',
+        r'\1\n\n',
+        body
+    )
+
+    # Ensure blank line before common close phrases
+    close_starters = [
+        r'if you have samples',
+        r'if you want to see',
+        r'any chance you could',
+        r'no worries if not',
+        r'send one over',
+        r'let me know if',
+        r'would love a',
+        r'planning content for',
+    ]
+    for pattern in close_starters:
+        body = re.sub(
+            rf'([.!?])\s*\n?({pattern})',
+            r'\1\n\n\2',
+            body,
+            flags=re.IGNORECASE
+        )
+
+    # Ensure blank line before content-plan starters
+    content_starters = [
+        r"I'd love to film",
+        r"I'd film",
+        r"I want to film",
+        r"I want to do",
+        r"I'd do a",
+        r"I'd love to do",
+    ]
+    for pattern in content_starters:
+        body = re.sub(
+            rf'([.!?])\s*\n?({pattern})',
+            r'\1\n\n\2',
+            body,
+            flags=re.IGNORECASE
+        )
+
+    # Ensure sig block is on its own paragraph
+    # Pattern: close phrase ending, then a short name line, then @handle
+    body = re.sub(
+        r'([.!?])\s*\n([A-Z][a-z]+)\n(@[\w.]+)',
+        r'\1\n\n\2\n\3',
+        body
+    )
+
+    # Final cleanup: collapse any 3+ newlines that snuck in
+    body = re.sub(r'\n{3,}', '\n\n', body)
+
+    return body.strip()
 
 
 # ============================================================================
@@ -644,10 +742,12 @@ class GeminiPitchGeneratorV2:
 
                     if validation.passed:
                         print(f"[GeminiPitchV2] Success on attempt {attempt + 1}")
+                        # Normalize paragraph breaks before returning
+                        normalized_body = normalize_pitch_body(result.get("body", ""))
                         return PitchResult(
                             success=True,
                             subject=result.get("subject"),
-                            body=result.get("body"),
+                            body=normalized_body,
                             source="gemini_v2",
                             variant_ids=variant_ids,
                             model_used=model,
@@ -782,10 +882,12 @@ class GeminiPitchGeneratorV2:
             template_result = fallback_fn(brand, creator)
             print(f"[GeminiPitchV2] Template fallback used: {error_reason}")
 
+            # Normalize paragraph breaks for fallback too
+            normalized_body = normalize_pitch_body(template_result.get("body", ""))
             return PitchResult(
                 success=True,
                 subject=template_result.get("subject"),
-                body=template_result.get("body"),
+                body=normalized_body,
                 source="template_fallback",
                 prompt_version=PROMPT_VERSION
             )
