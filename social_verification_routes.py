@@ -33,9 +33,27 @@ except ImportError:
 # CONFIGURATION
 # ============================================================================
 
-# Restricted regions - South Asian subcontinent blocked due to high fraud/spam rates
-# IN: India, PK: Pakistan, BD: Bangladesh, NP: Nepal, LK: Sri Lanka, MM: Myanmar, BT: Bhutan
-RESTRICTED_REGIONS = ['IN', 'PK', 'BD', 'NP', 'LK', 'MM', 'BT']
+# Restricted regions - blocked due to high fraud/spam rates
+# South Asian subcontinent:
+#   IN: India, PK: Pakistan, BD: Bangladesh, NP: Nepal, LK: Sri Lanka, MM: Myanmar, BT: Bhutan
+# Africa (all except South Africa ZA):
+#   NG: Nigeria, EG: Egypt, KE: Kenya, ET: Ethiopia, GH: Ghana, TZ: Tanzania, UG: Uganda,
+#   DZ: Algeria, MA: Morocco, AO: Angola, MZ: Mozambique, MG: Madagascar, CM: Cameroon,
+#   CI: Ivory Coast, NE: Niger, BF: Burkina Faso, ML: Mali, MW: Malawi, ZM: Zambia, ZW: Zimbabwe,
+#   SN: Senegal, TD: Chad, SO: Somalia, GN: Guinea, RW: Rwanda, BJ: Benin, BI: Burundi,
+#   TN: Tunisia, SS: South Sudan, TG: Togo, SL: Sierra Leone, LY: Libya, CG: Congo,
+#   LR: Liberia, CF: Central African Republic, MR: Mauritania, ER: Eritrea, NA: Namibia,
+#   GM: Gambia, BW: Botswana, GA: Gabon, LS: Lesotho, GW: Guinea-Bissau, GQ: Equatorial Guinea,
+#   MU: Mauritius, SZ: Eswatini, DJ: Djibouti, KM: Comoros, CV: Cape Verde, ST: Sao Tome, SC: Seychelles, CD: DR Congo
+RESTRICTED_REGIONS = [
+    # South Asia
+    'IN', 'PK', 'BD', 'NP', 'LK', 'MM', 'BT',
+    # Africa (excluding South Africa ZA)
+    'NG', 'EG', 'KE', 'ET', 'GH', 'TZ', 'UG', 'DZ', 'MA', 'AO', 'MZ', 'MG', 'CM', 'CI',
+    'NE', 'BF', 'ML', 'MW', 'ZM', 'ZW', 'SN', 'TD', 'SO', 'GN', 'RW', 'BJ', 'BI', 'TN',
+    'SS', 'TG', 'SL', 'LY', 'CG', 'LR', 'CF', 'MR', 'ER', 'NA', 'GM', 'BW', 'GA', 'LS',
+    'GW', 'GQ', 'MU', 'SZ', 'DJ', 'KM', 'CV', 'ST', 'SC', 'CD',
+]
 
 # Minimum thresholds
 MIN_FOLLOWERS = 500
