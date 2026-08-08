@@ -6695,9 +6695,19 @@ def attempt_unlock(creator_id, brand_id, conn=None):
                 UPDATE creators SET unlocks_remaining = %s WHERE id = %s
             ''', (FREE_UNLOCK_LIMIT, creator_id))
 
-        # Check if user has credits
-        if unlocks_remaining <= 0:
-            print(f"[attempt_unlock] PAYWALL triggered for creator {creator_id}: unlocks_remaining={creator.get('unlocks_remaining')}, tier={creator.get('unlocks_tier')}")
+        # ATOMIC: Deduct credit only if remaining > 0 (prevents race condition)
+        # This combines "check" and "decrement" into a single atomic operation
+        cursor.execute('''
+            UPDATE creators
+            SET unlocks_remaining = unlocks_remaining - 1
+            WHERE id = %s AND unlocks_remaining > 0
+            RETURNING unlocks_remaining
+        ''', (creator_id,))
+        result = cursor.fetchone()
+
+        # If no row was updated, user has no credits left
+        if result is None:
+            print(f"[attempt_unlock] PAYWALL triggered for creator {creator_id}: atomic check failed, unlocks_remaining={unlocks_remaining}, tier={creator.get('unlocks_tier')}")
             return {
                 "status": "paywall",
                 "credits_used": 0,
@@ -6706,14 +6716,7 @@ def attempt_unlock(creator_id, brand_id, conn=None):
                 "debug_db_value": creator.get('unlocks_remaining')  # For debugging
             }
 
-        # Deduct credit and create unlock
-        cursor.execute('''
-            UPDATE creators
-            SET unlocks_remaining = unlocks_remaining - 1
-            WHERE id = %s
-            RETURNING unlocks_remaining
-        ''', (creator_id,))
-        new_remaining = cursor.fetchone().get('unlocks_remaining')
+        new_remaining = result.get('unlocks_remaining')
 
         cursor.execute('''
             INSERT INTO brand_unlocks (creator_id, brand_id, unlocked_at)
