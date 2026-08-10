@@ -1851,7 +1851,7 @@ def get_founder_dashboard():
                 c.niche,
                 c.unlocks_remaining,
                 (
-                    SELECT MAX(bu.created_at)
+                    SELECT MAX(bu.unlocked_at)
                     FROM brand_unlocks bu
                     WHERE bu.creator_id = c.id
                 ) as last_unlock_at
