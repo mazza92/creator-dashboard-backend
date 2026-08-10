@@ -1839,81 +1839,65 @@ def get_founder_dashboard():
         subs_needed = max(0, int((goal_mrr - current_mrr) / pro_price))
 
         # ================== AT-LIMIT USERS (Hot Leads) ==================
-        # Free users who maxed 3 pitches/month AND hit limit 7+ days ago (optimal nudge timing)
-        # Support at_limit_limit query param for pagination (default 10, max 200)
+        # Free users with unlocks_remaining = 0 (actually at limit)
+        # Uses creators.unlocks_remaining which is the source of truth
         at_limit_limit = min(int(request.args.get('at_limit_limit', 10)), 200)
         cursor.execute("""
-            WITH user_pitch_counts AS (
-                SELECT
-                    c.id as creator_id,
-                    u.email,
-                    c.username,
-                    c.followers_count,
-                    c.niche,
-                    COUNT(*) as pitches_this_month,
-                    MAX(cp.pitched_at) as last_pitch_at
-                FROM creators c
-                JOIN users u ON c.user_id = u.id
-                JOIN creator_pipeline cp ON c.id = cp.creator_id
-                WHERE (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)
-                AND cp.pitched_at >= DATE_TRUNC('month', NOW())
-                AND (c.last_any_email_sent IS NULL OR c.last_any_email_sent < NOW() - INTERVAL '48 hours')
-                AND u.unsubscribed_at IS NULL
-                GROUP BY c.id, u.email, c.username, c.followers_count, c.niche
-                HAVING COUNT(*) >= 3
-            )
-            SELECT *,
-                EXTRACT(DAY FROM NOW() - last_pitch_at)::INT as days_ago
-            FROM user_pitch_counts
-            WHERE EXTRACT(DAY FROM NOW() - last_pitch_at) >= 7
-            ORDER BY last_pitch_at ASC
+            SELECT
+                c.id as creator_id,
+                u.email,
+                c.username,
+                c.followers_count,
+                c.niche,
+                c.unlocks_remaining,
+                (
+                    SELECT MAX(bu.created_at)
+                    FROM brand_unlocks bu
+                    WHERE bu.creator_id = c.id
+                ) as last_unlock_at
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)
+            AND c.unlocks_remaining = 0
+            AND (c.last_any_email_sent IS NULL OR c.last_any_email_sent < NOW() - INTERVAL '48 hours')
+            AND u.unsubscribed_at IS NULL
+            ORDER BY last_unlock_at DESC NULLS LAST
             LIMIT %s
         """, (at_limit_limit,))
         at_limit_users = []
         for row in cursor.fetchall():
             days_since = None
-            if row['last_pitch_at']:
-                days_since = (datetime.now() - row['last_pitch_at']).days
+            if row['last_unlock_at']:
+                days_since = (datetime.now() - row['last_unlock_at']).days
             at_limit_users.append({
                 'creator_id': row['creator_id'],
                 'email': row['email'],
                 'username': row['username'],
                 'followers': row['followers_count'],
                 'niche': row['niche'],
-                'pitches_used': row['pitches_this_month'],
-                'hit_limit_at': row['last_pitch_at'].strftime('%b %d') if row['last_pitch_at'] else None,
+                'pitches_used': 3,  # They used all 3
+                'hit_limit_at': row['last_unlock_at'].strftime('%b %d') if row['last_unlock_at'] else None,
                 'days_since_limit': days_since,
-                'needs_followup': days_since >= 7 if days_since is not None else False
+                'needs_followup': days_since >= 3 if days_since is not None else True  # Nudge after 3 days
             })
 
-        # Count of users at limit (7+ days ago, excluding recently emailed and unsubscribed)
+        # Count ALL free users at limit (unlocks_remaining = 0)
         cursor.execute("""
-            SELECT COUNT(*) as count FROM (
-                SELECT cp.creator_id, MAX(cp.pitched_at) as last_pitch_at
-                FROM creator_pipeline cp
-                JOIN creators c ON cp.creator_id = c.id
-                JOIN users u ON c.user_id = u.id
-                WHERE (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)
-                AND cp.pitched_at >= DATE_TRUNC('month', NOW())
-                AND (c.last_any_email_sent IS NULL OR c.last_any_email_sent < NOW() - INTERVAL '48 hours')
-                AND u.unsubscribed_at IS NULL
-                GROUP BY cp.creator_id
-                HAVING COUNT(*) >= 3 AND MAX(cp.pitched_at) <= NOW() - INTERVAL '7 days'
-            ) as at_limit
+            SELECT COUNT(*) as count
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)
+            AND c.unlocks_remaining = 0
+            AND u.unsubscribed_at IS NULL
         """)
         at_limit_count = cursor.fetchone()['count']
 
-        # Users near limit (2/3 pitches this month)
+        # Users near limit (1 unlock remaining)
         cursor.execute("""
-            SELECT COUNT(*) as count FROM (
-                SELECT creator_id
-                FROM creator_pipeline cp
-                JOIN creators c ON cp.creator_id = c.id
-                WHERE (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)
-                AND cp.pitched_at >= DATE_TRUNC('month', NOW())
-                GROUP BY cp.creator_id
-                HAVING COUNT(*) = 2
-            ) as near_limit
+            SELECT COUNT(*) as count
+            FROM creators c
+            WHERE (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)
+            AND c.unlocks_remaining = 1
         """)
         near_limit_count = cursor.fetchone()['count']
 
