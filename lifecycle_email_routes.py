@@ -26,6 +26,7 @@ try:
         update_creator_state,
         send_lifecycle_email,
         build_email_context,
+        build_weekly_digest_context,
         get_db_connection
     )
 except Exception as e:
@@ -44,6 +45,7 @@ except Exception as e:
     update_creator_state = None
     send_lifecycle_email = None
     build_email_context = None
+    build_weekly_digest_context = None
     get_db_connection = None
 
 lifecycle_email_bp = Blueprint('lifecycle_email', __name__)
@@ -230,6 +232,36 @@ def cron_weekly_digest():
             'success': False,
             'error': str(e),
             'traceback': error_trace
+        }), 500
+
+
+# ============================================
+# CONTEXT ENDPOINTS (for Vercel cron)
+# ============================================
+
+@lifecycle_email_bp.route('/api/lifecycle-email/context/weekly-digest/<int:creator_id>', methods=['GET'])
+@require_admin_auth
+def get_weekly_digest_context_api(creator_id):
+    """
+    Get weekly digest context for a creator.
+    Called by Vercel cron to fetch personalized data before sending via Resend.
+    """
+    if _import_error:
+        return jsonify({
+            'error': 'Import error',
+            'traceback': _import_error
+        }), 500
+
+    if build_weekly_digest_context is None:
+        return jsonify({'error': 'build_weekly_digest_context not loaded'}), 500
+
+    try:
+        context = build_weekly_digest_context(creator_id)
+        return jsonify(context)
+    except Exception as e:
+        return jsonify({
+            'error': str(e),
+            'traceback': traceback.format_exc()
         }), 500
 
 

@@ -3666,6 +3666,9 @@ def track_pitch():
         brand_id = data.get('brand_id')
         brand_slug = data.get('slug')
         pipeline_id = data.get('pipeline_id')
+        # Store original pitch for follow-up context (Pro feature)
+        pitch_subject = data.get('pitch_subject')
+        pitch_body = data.get('pitch_body')
 
         # Resolve brand_id from slug if not provided
         if not brand_id and brand_slug:
@@ -3752,18 +3755,22 @@ def track_pitch():
         import uuid
         tracking_token = str(uuid.uuid4()).replace('-', '')[:32]
 
-        # Update pipeline stage to 'pitched' if in pipeline, include kit_token and tracking_token
+        # Update pipeline stage to 'pitched' if in pipeline, include kit_token, tracking_token, and original pitch
         cursor.execute('''
-            INSERT INTO creator_pipeline (creator_id, brand_id, stage, pitched_at, kit_token, tracking_token, created_at, updated_at)
-            VALUES (%s, %s, 'pitched', NOW(), %s, %s, NOW(), NOW())
+            INSERT INTO creator_pipeline (creator_id, brand_id, stage, pitched_at, kit_token, tracking_token,
+                                          original_pitch_subject, original_pitch_body, created_at, updated_at)
+            VALUES (%s, %s, 'pitched', NOW(), %s, %s, %s, %s, NOW(), NOW())
             ON CONFLICT (creator_id, brand_id) DO UPDATE
             SET stage = 'pitched',
                 pitched_at = NOW(),
                 kit_token = COALESCE(creator_pipeline.kit_token, %s),
                 tracking_token = COALESCE(creator_pipeline.tracking_token, %s),
+                original_pitch_subject = COALESCE(creator_pipeline.original_pitch_subject, %s),
+                original_pitch_body = COALESCE(creator_pipeline.original_pitch_body, %s),
                 updated_at = NOW()
             RETURNING tracking_token
-        ''', (creator_id, brand_id, kit_token, tracking_token, kit_token, tracking_token))
+        ''', (creator_id, brand_id, kit_token, tracking_token, pitch_subject, pitch_body,
+              kit_token, tracking_token, pitch_subject, pitch_body))
 
         result = cursor.fetchone()
         final_tracking_token = result['tracking_token'] if result else tracking_token
@@ -3898,6 +3905,27 @@ def generate_pitch():
         ''', (creator_id,))
         creator = cursor.fetchone()
 
+        # For follow-ups, fetch original pitch data and calculate timing
+        original_pitch = None
+        days_since_pitched = 7  # Default
+        if is_followup:
+            cursor.execute('''
+                SELECT original_pitch_subject, original_pitch_body, pitched_at,
+                       EXTRACT(DAY FROM NOW() - pitched_at)::INT AS days_since
+                FROM creator_pipeline
+                WHERE creator_id = %s AND brand_id = %s AND pitched_at IS NOT NULL
+                ORDER BY pitched_at DESC LIMIT 1
+            ''', (creator_id, brand['id']))
+            pipeline_data = cursor.fetchone()
+            if pipeline_data:
+                if pipeline_data.get('original_pitch_subject') or pipeline_data.get('original_pitch_body'):
+                    original_pitch = {
+                        'subject': pipeline_data.get('original_pitch_subject'),
+                        'body': pipeline_data.get('original_pitch_body')
+                    }
+                days_since_pitched = pipeline_data.get('days_since') or 7
+                print(f"[generate_pitch] Follow-up context: days_since={days_since_pitched}, has_original={original_pitch is not None}")
+
         cursor.close()
         conn.close()
 
@@ -3906,11 +3934,11 @@ def generate_pitch():
 
         # Generate pitch using Gemini LLM or Follow-up Template
         if is_followup:
-            # Follow-ups use template (no LLM cost for re-pitches)
-            pitch = generate_followup_pitch(brand, creator)
+            # Follow-ups use AI with template fallback (Pro feature)
+            pitch = generate_followup_pitch(brand, creator, original_pitch, days_since_pitched)
             pitch_body = pitch.get('body', '')
             pitch_subject = pitch.get('subject', '')
-            pitch_source = 'template'
+            pitch_source = pitch.get('source', 'template_followup')
         else:
             # Check if we should use v2 (feature flag or A/B test percentage)
             import random
@@ -4088,6 +4116,15 @@ def generate_pitch():
             pitch_response['tier_label'] = template_pitch.get('tier_label')
             pitch_response['kit_published'] = template_pitch.get('kit_published')
             pitch_response['media_kit_url'] = template_pitch.get('media_kit_url')
+
+        # Add follow-up specific fields (timing guidance, hero product, etc.)
+        if is_followup:
+            pitch_response['is_followup'] = True
+            pitch_response['days_since_pitched'] = pitch.get('days_since_pitched', days_since_pitched)
+            pitch_response['timing_recommendation'] = pitch.get('timing_recommendation')
+            pitch_response['hero_product'] = pitch.get('hero_product') or brand.get('hero_product') or brand.get('category')
+            pitch_response['kit_published'] = pitch.get('kit_published')
+            pitch_response['media_kit_url'] = pitch.get('media_kit_url')
 
         # Debug: log what we're returning
         print(f"[generate_pitch] Brand ID: {brand.get('id')}, Name: {brand.get('brand_name')}, is_followup: {is_followup}, source: {pitch_source}")
@@ -6504,14 +6541,76 @@ def generate_golden_template_pitch(brand, creator):
     }
 
 
-def generate_followup_pitch(brand, creator):
-    """Generate a concise follow-up email for brands already pitched"""
-    import random
+# ============================================
+# AI-POWERED FOLLOW-UP GENERATION (Pro Feature)
+# Uses Gemini for intelligent follow-ups with timing awareness
+# ============================================
+
+def get_followup_timing_recommendation(days_since_pitched):
+    """Return timing guidance based on days since original pitch"""
+    if days_since_pitched is None:
+        days_since_pitched = 7
+
+    if days_since_pitched < 5:
+        return {
+            'status': 'early',
+            'icon': '⏳',
+            'title': 'A bit early',
+            'message': f'Consider waiting {6 - days_since_pitched} more days for optimal timing',
+            'urgency': 'low'
+        }
+    elif days_since_pitched <= 7:
+        return {
+            'status': 'optimal',
+            'icon': '🎯',
+            'title': 'Perfect timing!',
+            'message': 'Day 6-7 follow-ups have 2x higher reply rates',
+            'urgency': 'optimal'
+        }
+    elif days_since_pitched <= 10:
+        return {
+            'status': 'good',
+            'icon': '✓',
+            'title': 'Good timing',
+            'message': 'Still within the optimal response window',
+            'urgency': 'medium'
+        }
+    elif days_since_pitched <= 14:
+        return {
+            'status': 'urgent',
+            'icon': '⚡',
+            'title': 'Send soon',
+            'message': f'Window closes in {14 - days_since_pitched} days - follow up today',
+            'urgency': 'high'
+        }
+    else:
+        return {
+            'status': 'closed',
+            'icon': '⚠️',
+            'title': 'Window closed',
+            'message': 'Response rates drop significantly after day 14',
+            'urgency': 'expired'
+        }
+
+
+def generate_ai_followup(brand, creator, original_pitch=None, days_since_pitched=7):
+    """
+    Generate an AI-powered follow-up email using Gemini.
+    Falls back to template if AI fails.
+
+    Args:
+        brand: Brand data dict
+        creator: Creator profile dict
+        original_pitch: Dict with 'subject' and 'body' of original pitch (optional)
+        days_since_pitched: Number of days since original pitch was sent
+
+    Returns:
+        dict with subject, body, timing_recommendation, etc.
+    """
+    import google.generativeai as genai
 
     # Extract creator data
-    creator_name = creator.get('first_name', '').strip() or 'Creator'
-
-    # Use For You followers if set, else media_kit total, else signup followers
+    creator_name = creator.get('first_name', '').strip() or creator.get('username', 'Creator')
     followers = (
         creator.get('creator_followers') or
         creator.get('media_kit_followers') or
@@ -6519,7 +6618,174 @@ def generate_followup_pitch(brand, creator):
         0
     )
 
-    # Determine primary platform
+    # Format followers
+    if followers >= 1000000:
+        followers_str = f"{followers / 1000000:.1f}M"
+    elif followers >= 1000:
+        followers_str = f"{followers / 1000:.1f}K"
+    else:
+        followers_str = str(followers) if followers else 'growing'
+
+    # Determine platform
+    social_links_raw = creator.get('social_links') or []
+    if isinstance(social_links_raw, str):
+        try:
+            social_links_raw = json.loads(social_links_raw)
+        except:
+            social_links_raw = []
+
+    platform = 'Instagram'
+    for link in social_links_raw:
+        if isinstance(link, dict):
+            plat = link.get('platform', '').lower()
+            if plat == 'tiktok':
+                platform = 'TikTok'
+                break
+            elif plat == 'youtube':
+                platform = 'YouTube'
+
+    niche = creator.get('niche') or creator.get('category') or 'lifestyle'
+    brand_name = brand.get('brand_name', 'the brand')
+    hero_product = brand.get('hero_product') or brand.get('category') or 'products'
+
+    # Get timing recommendation
+    timing = get_followup_timing_recommendation(days_since_pitched)
+
+    # Build original pitch context
+    original_context = ""
+    if original_pitch and original_pitch.get('subject'):
+        original_context = f"""
+ORIGINAL PITCH REFERENCE:
+- Subject: {original_pitch.get('subject', 'N/A')}
+- Key angle: Summarize the main value proposition from the original pitch
+"""
+
+    # Timing-specific tone guidance
+    if days_since_pitched <= 7:
+        tone_guidance = "Confident and professional. This is the sweet spot for follow-ups."
+    elif days_since_pitched <= 10:
+        tone_guidance = "Friendly persistence. Acknowledge you're following up without being pushy."
+    elif days_since_pitched <= 14:
+        tone_guidance = "Create soft urgency. Make it clear this is likely your last outreach."
+    else:
+        tone_guidance = "Very brief and direct. Don't over-explain - just a final friendly nudge."
+
+    # Build the prompt
+    prompt = f"""You are a PR outreach expert helping creators follow up on brand pitches.
+
+CONTEXT:
+- Creator: {creator_name} ({followers_str} {platform} followers, {niche} niche)
+- Brand: {brand_name}
+- Hero Product: {hero_product}
+- Days since original pitch: {days_since_pitched}
+{original_context}
+
+FOLLOW-UP REQUIREMENTS:
+1. Subject line: Short, reference original email naturally (e.g., "Circling back on...", "Quick follow-up re:")
+2. Tone: {tone_guidance}
+3. Length: MAXIMUM 60 words in body (follow-ups must be brief)
+4. Include: Reference their {hero_product} specifically
+5. Add NEW value: Mention a fresh angle or specific content idea you'd create
+6. CTA: Soft, low-pressure (e.g., "Would love to hear your thoughts", "Let me know if you're open to it")
+7. Sign off with just first name: {creator_name}
+
+HARD RULES:
+- DO NOT apologize for following up
+- DO NOT repeat the full original pitch
+- DO NOT sound desperate
+- DO NOT use phrases like "I know you're busy" or "Sorry to bother you"
+- Keep it confident and value-focused
+
+Output as JSON with "subject" and "body" fields only. No markdown, just raw JSON.
+"""
+
+    try:
+        # Check if Gemini is configured
+        api_key = os.environ.get('GEMINI_API_KEY') or os.environ.get('GOOGLE_AI_API_KEY')
+        if not api_key:
+            print("[generate_ai_followup] No Gemini API key, using template fallback")
+            return generate_followup_pitch_template(brand, creator, days_since_pitched)
+
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.7,
+                max_output_tokens=300,
+            )
+        )
+
+        # Parse the response
+        response_text = response.text.strip()
+
+        # Clean up markdown code blocks if present
+        if response_text.startswith('```'):
+            response_text = re.sub(r'^```json?\s*', '', response_text)
+            response_text = re.sub(r'\s*```$', '', response_text)
+
+        result = json.loads(response_text)
+        subject = result.get('subject', f"Quick follow-up re: {brand_name}")
+        body = result.get('body', '')
+
+        # Add media kit link if published
+        kit_published = creator.get('kit_published', False)
+        username = creator.get('username', creator.get('id', 'creator'))
+        media_kit_url = None
+
+        if kit_published:
+            creator_id = creator.get('id') or creator.get('creator_id')
+            brand_id = brand.get('id') or brand.get('brand_id')
+            if creator_id and brand_id:
+                kit_token = generate_kit_token(creator_id, brand_id)
+                media_kit_url = f"https://newcollab.co/kit/{username}?ref={kit_token}"
+            else:
+                media_kit_url = f"https://newcollab.co/kit/{username}"
+
+            # Append media kit link if not already in body
+            if media_kit_url and 'newcollab.co' not in body:
+                body = body.rstrip()
+                # Find sign-off and insert before it
+                lines = body.split('\n')
+                if len(lines) >= 2 and len(lines[-1]) < 30:
+                    # Last line is likely the sign-off
+                    body = '\n'.join(lines[:-1]) + f"\n\nMy portfolio: {media_kit_url}\n\n" + lines[-1]
+                else:
+                    body += f"\n\nMy portfolio: {media_kit_url}"
+
+        print(f"[generate_ai_followup] Generated AI follow-up for {brand_name}, days={days_since_pitched}")
+
+        return {
+            'subject': subject,
+            'body': body,
+            'source': 'gemini_followup',
+            'is_followup': True,
+            'days_since_pitched': days_since_pitched,
+            'timing_recommendation': timing,
+            'hero_product': hero_product,
+            'kit_published': kit_published,
+            'media_kit_url': media_kit_url
+        }
+
+    except Exception as e:
+        print(f"[generate_ai_followup] AI generation failed: {e}, using template fallback")
+        return generate_followup_pitch_template(brand, creator, days_since_pitched)
+
+
+def generate_followup_pitch_template(brand, creator, days_since_pitched=7):
+    """Template-based follow-up (fallback when AI unavailable)"""
+    # Extract creator data
+    creator_name = creator.get('first_name', '').strip() or 'Creator'
+
+    followers = (
+        creator.get('creator_followers') or
+        creator.get('media_kit_followers') or
+        creator.get('followers_count') or
+        0
+    )
+
+    # Determine platform
     social_links_raw = creator.get('social_links') or []
     if isinstance(social_links_raw, str):
         try:
@@ -6548,12 +6814,30 @@ def generate_followup_pitch(brand, creator):
     brand_name = brand.get('brand_name', 'the brand')
     hero_product = brand.get('hero_product') or brand.get('category') or 'products'
 
-    # Concise subject
-    subject = f"Quick follow-up re: {brand_name}"
+    # Get timing recommendation
+    timing = get_followup_timing_recommendation(days_since_pitched)
 
-    # Media kit link with tracking token - only include if kit is published
+    # Timing-aware subject lines
+    if days_since_pitched <= 7:
+        subject = f"Quick follow-up - {brand_name} collab"
+    elif days_since_pitched <= 12:
+        subject = f"Circling back on {brand_name}"
+    else:
+        subject = f"Last note about {brand_name} collab"
+
+    # Timing-aware openers
+    if days_since_pitched <= 7:
+        opener = f"Just wanted to bump my email from last week about working with {brand_name}."
+    elif days_since_pitched <= 12:
+        opener = f"Following up on my note from {days_since_pitched} days ago - still interested in creating content around {hero_product}."
+    else:
+        opener = f"Wanted to reach out one more time - I'm still excited about the idea of working with {brand_name}."
+
+    # Media kit link
     kit_published = creator.get('kit_published', False)
     username = creator.get('username', creator.get('id', 'creator'))
+    media_kit_url = None
+
     if kit_published:
         creator_id = creator.get('id') or creator.get('creator_id')
         brand_id = brand.get('id') or brand.get('brand_id')
@@ -6562,37 +6846,62 @@ def generate_followup_pitch(brand, creator):
             media_kit_url = f"https://newcollab.co/kit/{username}?ref={kit_token}"
         else:
             media_kit_url = f"https://newcollab.co/kit/{username}"
-    else:
-        media_kit_url = None
 
-    # Concise follow-up body (under 50 words)
+    # Build body
     body = f"""Hi,
 
-Just following up on my pitch from last week. Still interested in featuring your {hero_product}.
+{opener}
+
+I've been thinking about a specific angle: a behind-the-scenes look at how I actually use {hero_product} - something real, not overly produced.
 
 {followers_str} {platform} followers ready to see it."""
 
-    # Add media kit link if published
     if media_kit_url:
-        body += f"\n\nPlease find my portfolio here: {media_kit_url}"
+        body += f"\n\nMy portfolio: {media_kit_url}"
 
     body += f"""
 
-Let me know if you're open to sending product.
+Happy to chat if you're open to it!
 
 {creator_name}"""
 
     return {
         'subject': subject,
         'body': body,
+        'source': 'template_followup',
+        'is_followup': True,
+        'days_since_pitched': days_since_pitched,
+        'timing_recommendation': timing,
+        'hero_product': hero_product,
         'creator_stats': {
             'followers': followers_str if followers else None,
             'platform': platform
         },
-        'is_followup': True,
         'kit_published': kit_published,
         'media_kit_url': media_kit_url
     }
+
+
+def generate_followup_pitch(brand, creator, original_pitch=None, days_since_pitched=None):
+    """
+    Generate a follow-up email for brands already pitched.
+    Uses AI (Gemini) when available, falls back to template.
+
+    Args:
+        brand: Brand data dict
+        creator: Creator profile dict
+        original_pitch: Dict with 'subject' and 'body' of original pitch (optional)
+        days_since_pitched: Number of days since original pitch (defaults to 7)
+    """
+    if days_since_pitched is None:
+        days_since_pitched = 7
+
+    # Try AI generation first (requires Gemini API key)
+    try:
+        return generate_ai_followup(brand, creator, original_pitch, days_since_pitched)
+    except Exception as e:
+        print(f"[generate_followup_pitch] AI failed: {e}, using template")
+        return generate_followup_pitch_template(brand, creator, days_since_pitched)
 
 
 # ============================================
@@ -7232,6 +7541,9 @@ def confirm_send(pipeline_id):
     data = request.get_json() or {}
     send_confirmation_email = data.get('send_confirmation_email', False)
     contact_method = data.get('contact_method', 'email')
+    # Store original pitch for follow-up context (Pro feature)
+    pitch_subject = data.get('pitch_subject')
+    pitch_body = data.get('pitch_body')
 
     try:
         conn = get_db_connection()
@@ -7251,14 +7563,27 @@ def confirm_send(pipeline_id):
             conn.close()
             return jsonify({'success': False, 'error': 'Not found'}), 404
 
-        cursor.execute("""
-            UPDATE creator_pipeline
-            SET stage = 'waiting',
-                send_confirmed = TRUE,
-                pitched_at = NOW(),
-                updated_at = NOW()
-            WHERE id = %s AND creator_id = %s
-        """, (pipeline_id, creator_id))
+        # Store original pitch subject/body for follow-up context (only on first send)
+        if pitch_subject or pitch_body:
+            cursor.execute("""
+                UPDATE creator_pipeline
+                SET stage = 'waiting',
+                    send_confirmed = TRUE,
+                    pitched_at = NOW(),
+                    original_pitch_subject = COALESCE(original_pitch_subject, %s),
+                    original_pitch_body = COALESCE(original_pitch_body, %s),
+                    updated_at = NOW()
+                WHERE id = %s AND creator_id = %s
+            """, (pitch_subject, pitch_body, pipeline_id, creator_id))
+        else:
+            cursor.execute("""
+                UPDATE creator_pipeline
+                SET stage = 'waiting',
+                    send_confirmed = TRUE,
+                    pitched_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s AND creator_id = %s
+            """, (pipeline_id, creator_id))
 
         # Track send confirmation (credit already deducted in generate-pitch)
         # Only update counters if this is a NEW send (not a re-confirm)
@@ -7310,6 +7635,41 @@ def confirm_send(pipeline_id):
         print(f"Error in confirm_send: {str(e)}")
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@pr_crm.route('/followup-reminder/clicked', methods=['POST'])
+def track_followup_reminder_click():
+    """Track when a creator clicks a follow-up reminder notification (analytics)"""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    try:
+        data = request.get_json() or {}
+        pipeline_id = data.get('pipeline_id')
+
+        if not pipeline_id:
+            return jsonify({'success': False, 'error': 'pipeline_id required'}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Update the followup_reminder_sends table to track click
+        cursor.execute('''
+            UPDATE followup_reminder_sends
+            SET clicked_at = NOW()
+            WHERE pipeline_id = %s AND creator_id = %s AND clicked_at IS NULL
+        ''', (pipeline_id, creator_id))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({'success': True, 'message': 'Click tracked'})
+
+    except Exception as e:
+        print(f"Error tracking followup reminder click: {e}")
+        return jsonify({'success': True})  # Silent fail - not critical
 
 
 def _send_pitch_confirmation_email(to_email, creator_name, brand_name):
