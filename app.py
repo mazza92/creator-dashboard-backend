@@ -731,8 +731,9 @@ def normalize_social_handle(handle, platform=None):
     # underscores — real handles like jerricalee__ are valid.
     handle = re.sub(r'\.{2,}', '.', handle)
 
-    # Strip leading/trailing special chars
-    handle = handle.strip('._-')
+    # Strip leading/trailing periods and hyphens only (NOT underscores - they're valid in handles)
+    # e.g. tatjanapolanco_ is a valid Instagram handle with trailing underscore
+    handle = handle.strip('.-')
 
     return handle
 
