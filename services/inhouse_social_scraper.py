@@ -1721,6 +1721,8 @@ def _ig_fill_user_gaps(user: Dict[str, Any], patch: Dict[str, Any]) -> None:
         user["full_name"] = patch["full_name"]
     if not (user.get("external_url") or "").strip() and (patch.get("external_url") or "").strip():
         user["external_url"] = patch["external_url"]
+    if not (user.get("profile_pic_url") or "").strip() and (patch.get("profile_pic_url") or "").strip():
+        user["profile_pic_url"] = patch["profile_pic_url"]
     for edge_key, patch_key in (
         ("edge_followed_by", "edge_followed_by"),
         ("edge_follow", "edge_follow"),
@@ -1928,6 +1930,7 @@ def _ig_to_profile_shape(user: Dict[str, Any], posts: List[Dict[str, Any]], hand
         "isPrivate": bool(user.get("is_private") or user.get("isPrivate")),
         "isBusinessAccount": bool(user.get("is_business_account") or user.get("isBusinessAccount")),
         "businessCategoryName": user.get("business_category_name") or user.get("category_name") or "",
+        "profile_pic_url": user.get("profile_pic_url") or user.get("profile_pic_url_hd") or "",
         "latestPosts": posts,
     }
 
