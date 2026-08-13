@@ -1431,22 +1431,31 @@ def _ig_parse_profile_embed_html(
 
     # Fallback: search entire document for any CDN image URL
     if not profile_pic:
-        # Find all CDN image URLs and pick the smallest (likely profile pic)
+        # Find all CDN image URLs
         all_imgs = re.findall(r'(https://[^"\'>\s]*(?:cdninstagram|fbcdn|scontent)[^"\'>\s]*\.(?:jpg|jpeg|png|webp)[^"\'>\s]*)', text)
-        for img_url in all_imgs[:20]:  # Check first 20 matches
-            # Profile pics are typically small (150x150, s150x150, etc.)
-            if '150x150' in img_url or 's150x150' in img_url or '_s.' in img_url:
+
+        def is_profile_pic_candidate(url):
+            """Filter out logos, icons, and static assets - keep only profile pics."""
+            url_lower = url.lower()
+            # Skip static assets, logos, icons, glyphs
+            if any(skip in url_lower for skip in ['static', 'glyph', 'logo', 'icon', '/e/', '/s/']):
+                return False
+            # Skip very short URLs (likely logos)
+            if len(url) < 80:
+                return False
+            # Profile pics have numeric IDs and _n.jpg pattern
+            if re.search(r'/\d+_\d+.*_n\.jpg', url):
+                return True
+            # Profile pics have 150x150 size
+            if '150x150' in url or 's150x150' in url:
+                return True
+            return False
+
+        for img_url in all_imgs[:30]:  # Check first 30 matches
+            if is_profile_pic_candidate(img_url):
                 profile_pic = img_url.replace('\\u0026', '&').replace('\\/', '/')
                 print(f"[InHouse/IG] embed avatar from CDN pattern")
                 break
-        # Last resort: just use the first small-ish image
-        if not profile_pic and all_imgs:
-            # Skip large images (post thumbnails are usually larger dimensions)
-            for img_url in all_imgs[:10]:
-                if '1080x' not in img_url and '640x' not in img_url and '480x' not in img_url:
-                    profile_pic = img_url.replace('\\u0026', '&').replace('\\/', '/')
-                    print(f"[InHouse/IG] embed avatar fallback first CDN img")
-                    break
 
     posts: List[Dict[str, Any]] = []
     # Split on shortcode_media blocks when present
