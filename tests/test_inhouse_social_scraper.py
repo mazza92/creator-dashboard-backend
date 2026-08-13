@@ -154,6 +154,26 @@ class TestInstagramParse(unittest.TestCase):
             f"expected IG avatar CDN path, got {pic[:120]}",
         )
 
+    def test_embed_payload_detector_rejects_spa_shell(self):
+        from services.inhouse_social_scraper import _ig_embed_has_media_payload
+
+        spa = '<script>{"s":"XPolarisEmbedProfileController"}</script>'
+        compact = r'{"followers_count":1200,"graphql_media":[],"profile_pic_url":"https://x"}'
+        self.assertFalse(_ig_embed_has_media_payload(spa))
+        self.assertTrue(_ig_embed_has_media_payload(compact))
+
+    def test_embed_followers_from_edge_followed_by(self):
+        html = (
+            '{"username":"vika_ugc","full_name":"Vika",'
+            '"edge_followed_by":{"count":1200},"posts_count":10,'
+            '"graphql_media":[{"shortcode_media":{"shortcode":"AbCdeFgHijK",'
+            '"display_url":"https://scontent.cdninstagram.com/v/t51.82787-15/x.jpg",'
+            '"taken_at_timestamp":1700000000}}]}'
+        )
+        profile = parse_instagram_profile_embed_html(html, handle="vika_ugc", results_limit=6)
+        self.assertEqual(profile["followersCount"], 1200)
+        self.assertEqual(profile["latestPosts"][0]["shortCode"], "AbCdeFgHijK")
+
     def test_rejects_instagram_logo_og_image(self):
         html = """
         <html><head>

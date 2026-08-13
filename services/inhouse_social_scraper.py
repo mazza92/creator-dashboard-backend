@@ -260,48 +260,55 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
 
     session = _session()
     limit = max(1, min(int(results_limit or 12), 50))
-    _ig_warm_session(session, handle)
     ig_walled = {"hit": False}  # mutable so helpers can mark 429 walls
 
+    # Embed first (anonymous crawler). Hitting web_profile_info 429s the IP and
+    # Instagram then serves an empty SPA shell for /embed/ on the same scrape.
     source = "none"
-    user = _ig_web_profile_info(session, handle, ig_walled=ig_walled)
-    if user:
-        source = "web_api"
-    if not user:
-        user = _ig_mobile_profile_info(session, handle, ig_walled=ig_walled)
-        if user:
-            source = "mobile_api"
-    if not user:
-        user = _ig_graphql_a1(session, handle)
-        if user:
-            source = "graphql"
-    if not user:
-        user = _ig_from_html(session, handle, ig_walled=ig_walled)
-        if user:
-            source = "html_meta"
-
+    user: Optional[Dict[str, Any]] = None
     posts: List[Dict[str, Any]] = []
-    if user:
-        posts = _ig_extract_posts_from_user(user, limit)
+    embed_user, embed_posts = _ig_from_profile_embed(handle, limit)
+    if embed_posts:
+        posts = embed_posts
+        source = "embed"
+    if embed_user:
+        user = embed_user
+        if source == "none":
+            source = "embed"
 
-    # Profile embed = TikTok /embed/@user equivalent (works without session/proxy).
-    # Also run when the earlier source only has the Instagram logo og:image.
-    avatar_missing = _ig_is_placeholder_avatar((user or {}).get("profile_pic_url") or "")
-    if (not posts or not user or _ig_user_is_thin(user) or avatar_missing) and not (user or {}).get("is_private"):
-        embed_user, embed_posts = _ig_from_profile_embed(handle, limit)
-        if embed_posts and not posts:
-            posts = embed_posts
-            if "embed" not in source:
-                source = f"{source}+embed" if source != "none" else "embed"
-        if embed_user:
-            if not user:
-                user = embed_user
-                if source == "none":
-                    source = "embed"
-            else:
-                _ig_fill_user_gaps(user, embed_user)
-                if "embed" not in source:
-                    source = f"{source}+embed"
+    # Session APIs only when embed is missing/thin — warm cookies just before.
+    need_api = (not user or _ig_user_is_thin(user) or not posts) and not (user or {}).get("is_private")
+    if need_api:
+        _ig_warm_session(session, handle)
+        api_user = _ig_web_profile_info(session, handle, ig_walled=ig_walled)
+        if api_user and not user:
+            user = api_user
+            source = f"{source}+web_api" if source != "none" else "web_api"
+        elif api_user:
+            _ig_fill_user_gaps(user, api_user)
+        if not user or _ig_user_is_thin(user):
+            api_user = _ig_mobile_profile_info(session, handle, ig_walled=ig_walled)
+            if api_user and not user:
+                user = api_user
+                source = f"{source}+mobile_api" if source != "none" else "mobile_api"
+            elif api_user:
+                _ig_fill_user_gaps(user, api_user)
+        if not user or _ig_user_is_thin(user):
+            api_user = _ig_graphql_a1(session, handle)
+            if api_user and not user:
+                user = api_user
+                source = f"{source}+graphql" if source != "none" else "graphql"
+            elif api_user:
+                _ig_fill_user_gaps(user, api_user)
+        if not user or _ig_user_is_thin(user):
+            api_user = _ig_from_html(session, handle, ig_walled=ig_walled)
+            if api_user and not user:
+                user = api_user
+                source = f"{source}+html_meta" if source != "none" else "html_meta"
+            elif api_user:
+                _ig_fill_user_gaps(user, api_user)
+        if user and not posts:
+            posts = _ig_extract_posts_from_user(user, limit)
 
     # Prefer embed full_name as bio before SERP (avoids junk follower counts from search)
     if user and not _diy_bio_ok(user.get("biography") or ""):
@@ -324,13 +331,17 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
                 if "crawler" not in source:
                     source = f"{source}+crawler"
 
-    # Search is bio/followers gap-fill only — never the sole source of truth
-    if user and _ig_user_is_thin(user):
+    # Search fills bio/followers when IG HTML has no og:description (common on SPA shells)
+    if not user or _ig_user_is_thin(user):
         search_user = _ig_from_search_snippets(handle)
         if search_user:
-            _ig_fill_user_gaps(user, search_user)
-            if "search" not in source:
-                source = f"{source}+search"
+            if not user:
+                user = search_user
+                source = f"{source}+search" if source != "none" else "search"
+            else:
+                _ig_fill_user_gaps(user, search_user)
+                if "search" not in source:
+                    source = f"{source}+search"
 
     if user and not posts and not user.get("is_private"):
         html_posts = _ig_posts_from_html(session, handle, limit)
@@ -419,7 +430,10 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
                 f"Instagram is rate-limiting this server (HTTP 429) — no profile data for @{handle}. "
                 "Set IG_PROXY (residential proxy) or INSTAGRAM_SESSIONID on the API host, then retry."
             )
-        raise InHouseScrapeError(f"No Instagram data for @{handle}")
+        raise InHouseScrapeError(
+            f"No Instagram data for @{handle} (embed returned an app shell without profile JSON). "
+            "Retry shortly, or set IG_PROXY / INSTAGRAM_SESSIONID."
+        )
 
     profile = _ig_to_profile_shape(user, posts, handle)
 
@@ -1455,6 +1469,23 @@ def _ig_unescape_embedded_text(raw: str) -> str:
     return unescape(s)
 
 
+def _ig_embed_has_media_payload(text: str) -> bool:
+    """True when /embed/ HTML contains the compact iframe JSON (not the SPA shell)."""
+    if not text:
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "followers_count",
+            "graphql_media",
+            "shortcode_media",
+            "profile_pic_url",
+            '"edge_followed_by"',
+            r'edge_followed_by\":',
+        )
+    )
+
+
 def _ig_from_profile_embed(
     handle: str, limit: int
 ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -1464,25 +1495,40 @@ def _ig_from_profile_embed(
     Returns followers + recent posts (thumbs, captions, shortcodes) without
     session cookie or residential proxy — Meta still serves profile embeds to crawlers.
     """
+    headers = {
+        "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.facebook.com/",
+    }
+    urls = (
+        f"https://www.instagram.com/{handle}/embed/?cr=1&v=14&wp=540",
+        f"https://www.instagram.com/{handle}/embed/",
+        f"https://www.instagram.com/{handle}/embed/captioned/",
+    )
+    last_html = ""
     try:
-        _jitter(0.2, 0.6)
-        resp = _http_get(
-            f"https://www.instagram.com/{handle}/embed/",
-            headers={
-                "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
-                "Accept": "text/html,application/xhtml+xml",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Referer": "https://www.facebook.com/",
-            },
-            timeout=25,
-        )
-        print(f"[InHouse/IG] profile embed status={resp.status_code} len={len(resp.text or '')}")
-        if resp.status_code != 200 or not resp.text:
-            return None, []
-        if "followers_count" not in resp.text and "graphql_media" not in resp.text:
-            print("[InHouse/IG] profile embed: no media payload (login wall?)")
-            return None, []
-        return _ig_parse_profile_embed_html(resp.text, handle, limit)
+        for url in urls:
+            _jitter(0.15, 0.45)
+            resp = _http_get(url, headers=headers, timeout=25)
+            text = resp.text or ""
+            print(
+                f"[InHouse/IG] profile embed status={resp.status_code} "
+                f"len={len(text)} path={url.split(handle, 1)[-1]}"
+            )
+            if resp.status_code != 200 or not text:
+                continue
+            last_html = text
+            if not _ig_embed_has_media_payload(text):
+                print("[InHouse/IG] profile embed: SPA/app shell (no compact JSON), trying next URL")
+                continue
+            parsed = _ig_parse_profile_embed_html(text, handle, limit)
+            if parsed[0] or parsed[1]:
+                return parsed
+        if last_html:
+            print("[InHouse/IG] profile embed: parsing last HTML without compact markers")
+            return _ig_parse_profile_embed_html(last_html, handle, limit)
+        return None, []
     except Exception as e:
         print(f"[InHouse/IG] profile embed error: {e}")
         return None, []
@@ -1497,8 +1543,13 @@ def _ig_parse_profile_embed_html(
         return None, []
 
     followers = 0
-    fm = re.search(r'followers_count\\":(\d+)', text) or re.search(
-        r'"followers_count"\s*:\s*(\d+)', text
+    fm = (
+        re.search(r'followers_count\\":(\d+)', text)
+        or re.search(r'"followers_count"\s*:\s*(\d+)', text)
+        or re.search(r'follower_count\\":(\d+)', text)
+        or re.search(r'"follower_count"\s*:\s*(\d+)', text)
+        or re.search(r'edge_followed_by\\":\{\\"count\\":(\d+)', text)
+        or re.search(r'"edge_followed_by"\s*:\s*\{\s*"count"\s*:\s*(\d+)', text)
     )
     if fm:
         followers = int(fm.group(1))
