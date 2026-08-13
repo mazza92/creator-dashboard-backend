@@ -614,6 +614,8 @@ def _ig_from_html(
         bio = _re_str(html, r'"biography"\s*:\s*"((?:\\.|[^"\\])*)"')
         full_name = _re_str(html, r'"full_name"\s*:\s*"((?:\\.|[^"\\])*)"')
         external = _re_str(html, r'"external_url"\s*:\s*"((?:\\.|[^"\\])*)"')
+        profile_pic = (_re_str(html, r'"profile_pic_url_hd"\s*:\s*"((?:\\.|[^"\\])*)"') or
+                       _re_str(html, r'"profile_pic_url"\s*:\s*"((?:\\.|[^"\\])*)"') or "")
 
         # Login-wall pages still expose og:description with public counts
         if not followers and not media:
@@ -622,11 +624,13 @@ def _ig_from_html(
                 return meta_user
 
         if followers or media:
+            print(f"[InHouse/IG] html parsed followers={followers} posts={media} avatar_len={len(profile_pic)}")
             return {
                 "username": handle,
                 "full_name": full_name or "",
                 "biography": bio or "",
                 "external_url": external or "",
+                "profile_pic_url": profile_pic,
                 "edge_followed_by": {"count": followers},
                 "edge_follow": {"count": following},
                 "edge_owner_to_timeline_media": {"count": media, "edges": []},
