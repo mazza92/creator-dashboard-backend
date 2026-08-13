@@ -1416,14 +1416,26 @@ def _ig_parse_profile_embed_html(
         r'profile_pic_url_hd\\":\\"(https:[^\\"]+)\\"',  # HD version escaped
         r'"profile_pic_url_hd"\s*:\s*"(https:[^"]+)"',   # HD version regular
         r'"profilePicUrl"\s*:\s*"(https:[^"]+)"',     # camelCase
-        r'src="(https://[^"]*cdninstagram\.com[^"]*150x150[^"]*)"',  # profile img tag
-        r'data-src="(https://[^"]*cdninstagram\.com[^"]*150x150[^"]*)"',  # lazy load
+        r'src="(https://[^"]*cdninstagram\.com[^"]*150x150[^"]*)"',  # profile img tag 150x150
+        r'src="(https://[^"]*scontent[^"]*150x150[^"]*)"',  # scontent 150x150
+        r'src="(https://[^"]*fbcdn[^"]*150x150[^"]*)"',  # fbcdn 150x150
+        r'data-src="(https://[^"]*150x150[^"]*)"',  # lazy load 150x150
+        r'"src":"(https:[^"]*150x150[^"]*)"',  # JSON src with 150x150
+        r'background-image:\s*url\(["\']?(https://[^"\')\s]+150x150[^"\')\s]*)["\']?\)',  # CSS bg
     ]
     for pattern in pic_patterns:
         pic = re.search(pattern, text)
         if pic:
             profile_pic = _ig_unescape_embedded_url(pic.group(1))
             break
+
+    # Fallback: first img tag with Instagram CDN URL in the header area (profile pics come first)
+    if not profile_pic:
+        header = text[:30000]
+        img = re.search(r'<img[^>]+src="(https://[^"]*(?:cdninstagram|fbcdn|scontent)[^"]*\.jpg[^"]*)"', header)
+        if img:
+            profile_pic = img.group(1)
+            print(f"[InHouse/IG] embed avatar fallback from img tag")
 
     posts: List[Dict[str, Any]] = []
     # Split on shortcode_media blocks when present
