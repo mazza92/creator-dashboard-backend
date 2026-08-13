@@ -1429,13 +1429,24 @@ def _ig_parse_profile_embed_html(
             profile_pic = _ig_unescape_embedded_url(pic.group(1))
             break
 
-    # Fallback: first img tag with Instagram CDN URL in the header area (profile pics come first)
+    # Fallback: search entire document for any CDN image URL
     if not profile_pic:
-        header = text[:30000]
-        img = re.search(r'<img[^>]+src="(https://[^"]*(?:cdninstagram|fbcdn|scontent)[^"]*\.jpg[^"]*)"', header)
-        if img:
-            profile_pic = img.group(1)
-            print(f"[InHouse/IG] embed avatar fallback from img tag")
+        # Find all CDN image URLs and pick the smallest (likely profile pic)
+        all_imgs = re.findall(r'(https://[^"\'>\s]*(?:cdninstagram|fbcdn|scontent)[^"\'>\s]*\.(?:jpg|jpeg|png|webp)[^"\'>\s]*)', text)
+        for img_url in all_imgs[:20]:  # Check first 20 matches
+            # Profile pics are typically small (150x150, s150x150, etc.)
+            if '150x150' in img_url or 's150x150' in img_url or '_s.' in img_url:
+                profile_pic = img_url.replace('\\u0026', '&').replace('\\/', '/')
+                print(f"[InHouse/IG] embed avatar from CDN pattern")
+                break
+        # Last resort: just use the first small-ish image
+        if not profile_pic and all_imgs:
+            # Skip large images (post thumbnails are usually larger dimensions)
+            for img_url in all_imgs[:10]:
+                if '1080x' not in img_url and '640x' not in img_url and '480x' not in img_url:
+                    profile_pic = img_url.replace('\\u0026', '&').replace('\\/', '/')
+                    print(f"[InHouse/IG] embed avatar fallback first CDN img")
+                    break
 
     posts: List[Dict[str, Any]] = []
     # Split on shortcode_media blocks when present
