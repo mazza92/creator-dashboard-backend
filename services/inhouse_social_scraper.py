@@ -436,7 +436,8 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
             "Same data as TikTok DIY is required: followers, bio, and a latest post."
         )
 
-    print(f"[InHouse/IG] @{handle} via {source} (posts={len(posts)})")
+    avatar = profile.get('profile_pic_url', '')
+    print(f"[InHouse/IG] @{handle} via {source} (posts={len(posts)}) avatar_len={len(avatar)}")
     return profile
 
 
@@ -1516,7 +1517,7 @@ def _ig_parse_profile_embed_html(
     }
     print(
         f"[InHouse/IG] profile embed parsed followers={followers} "
-        f"posts={len(posts)} name_len={len(full_name)}"
+        f"posts={len(posts)} name_len={len(full_name)} avatar_len={len(profile_pic)}"
     )
     return user, posts
 
