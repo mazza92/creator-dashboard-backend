@@ -148,6 +148,7 @@ class TestInstagramParse(unittest.TestCase):
         self.assertIn("scontent", pic)
         self.assertIn("cdninstagram.com", pic)
         self.assertNotIn("rsrc.php", pic)
+        self.assertNotIn("\\", pic)
         self.assertTrue(
             "s100x100" in pic or "-19/" in pic or "t51." in pic,
             f"expected IG avatar CDN path, got {pic[:120]}",
@@ -176,14 +177,29 @@ class TestInstagramParse(unittest.TestCase):
 
     def test_embed_escaped_profile_pic_url(self):
         blob = (
-            r'owner\":{\"profile_pic_url\":\"https:\\\/\\\/scontent.cdninstagram.com'
-            r'\\\/v\\\/t51.82787-19\\\/645733534_18057637466419608_n.jpg'
-            r'?stp=dst-jpg_s100x100_tt6&efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLnd3dy4xMDgwLkMzIn0\"}'
+            r'owner\":{\"profile_pic_url\":\"https:\\\/\\\/scontent-iad6-1.cdninstagram.com'
+            r'\\\/v\\\/t51.82787-19\\\/539956579_18525279895001711_n.jpg'
+            r'?stp=dst-jpg_s100x100_tt6&efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLnd3dy4xMDgwLkMzIn0'
+            r'\\u00253D&_nc_ohc=abc&oe=6A83EBFE\"}'
         )
         url = _ig_extract_profile_pic_url(blob)
-        self.assertTrue(url.startswith("https://scontent.cdninstagram.com/"))
+        self.assertTrue(url.startswith("https://scontent-iad6-1.cdninstagram.com/"))
         self.assertIn("t51.82787-19", url)
-        self.assertNotIn("\\/", url)
+        self.assertNotIn("\\", url)
+        self.assertTrue(url.endswith("6A83EBFE"), url[-20:])
+        self.assertIn("%3D", url)
+
+    def test_normalize_strips_leftover_json_backslashes(self):
+        from services.inhouse_social_scraper import _ig_normalize_avatar_url
+
+        broken = (
+            "https://scontent-iad6-1.cdninstagram.com/v/t51.82787-19/539956579_n.jpg"
+            "?stp=dst-jpg_s100x100_tt6&efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLnd3dy4xMDgwLkMzIn0"
+            "\\=&_nc_ohc=abc&oe=6A83EBFE\\"
+        )
+        url = _ig_normalize_avatar_url(broken)
+        self.assertNotIn("\\", url)
+        self.assertTrue(url.endswith("6A83EBFE"))
 
     def test_fill_gaps_replaces_logo_avatar(self):
         user = {

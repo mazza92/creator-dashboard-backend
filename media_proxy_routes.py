@@ -111,6 +111,101 @@ def proxy_media_urls(urls: Optional[Iterable[str]], api_base: Optional[str] = No
     return out
 
 
+def rehost_social_image(image_url: str, dest_prefix: str = "avatars") -> Optional[str]:
+    """
+    Download a social CDN image (with Instagram/TikTok Referer) and upload to Supabase.
+    Profile <img> tags cannot hotlink scontent URLs (CORP + signed query expiry).
+    """
+    if not image_url or not str(image_url).startswith("http"):
+        return None
+    raw = image_url.strip().rstrip("\\")
+    if "supabase" in raw.lower() or "/storage/v1/object/public/" in raw:
+        return raw
+
+    supabase_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+    supabase_key = os.getenv("SUPABASE_KEY") or ""
+    bucket = os.getenv("SUPABASE_BUCKET", "creators")
+    if not supabase_url or not supabase_key:
+        return None
+
+    try:
+        parsed = urlparse(raw)
+        host = (parsed.netloc or "").lower()
+        referer = "https://www.instagram.com/"
+        if "imginn.com" in host:
+            referer = "https://imginn.com/"
+        elif any(
+            s in host
+            for s in (
+                "tiktok",
+                "byteoversea",
+                "muscdn",
+                "ibyteimg",
+                "ttlivecdn",
+                "ibytedtos",
+            )
+        ):
+            referer = "https://www.tiktok.com/"
+
+        resp = requests.get(
+            raw,
+            headers={
+                "User-Agent": _UA,
+                "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                "Referer": referer,
+            },
+            timeout=14,
+        )
+        if resp.status_code != 200 or not resp.content:
+            print(f"[avatar-rehost] upstream {resp.status_code} for {raw[:120]}")
+            return None
+        content_type = resp.headers.get("Content-Type") or "image/jpeg"
+        if "png" in content_type:
+            ext = "png"
+        elif "webp" in content_type:
+            ext = "webp"
+        else:
+            ext = "jpg"
+            content_type = "image/jpeg"
+
+        import uuid as _uuid
+
+        prefix = (dest_prefix or "avatars").strip("/")
+        filename = f"{prefix}/{_uuid.uuid4().hex[:16]}.{ext}"
+        upload = requests.post(
+            f"{supabase_url}/storage/v1/object/{bucket}/{filename}",
+            headers={
+                "Authorization": f"Bearer {supabase_key}",
+                "Content-Type": content_type,
+                "x-upsert": "true",
+            },
+            data=resp.content,
+            timeout=20,
+        )
+        if upload.status_code not in (200, 201):
+            print(f"[avatar-rehost] upload {upload.status_code}: {upload.text[:160]}")
+            return None
+        return f"{supabase_url}/storage/v1/object/public/{bucket}/{filename}"
+    except Exception as e:
+        print(f"[avatar-rehost] failed: {e}")
+        return None
+
+
+def persist_social_avatar(image_url: str, dest_prefix: str = "avatars") -> str:
+    """Durable avatar URL: rehost to storage, else media-proxy, else original."""
+    if not image_url or not isinstance(image_url, str):
+        return ""
+    raw = image_url.strip().rstrip("\\")
+    if not raw:
+        return ""
+    hosted = rehost_social_image(raw, dest_prefix=dest_prefix)
+    if hosted:
+        return hosted
+    if is_social_cdn_url(raw):
+        return to_proxied_media_url(raw)
+    return raw
+
+
 def proxy_profile_snapshot_thumbnails(snapshot: Optional[dict]) -> Optional[dict]:
     """In-place rewrite of profile_snapshot.recent_thumbnails for API responses."""
     if not snapshot or not isinstance(snapshot, dict):

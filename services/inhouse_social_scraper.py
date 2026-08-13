@@ -1308,27 +1308,28 @@ def _ig_posts_from_html(session: requests.Session, handle: str, limit: int) -> L
 
 
 def _ig_unescape_embedded_url(raw: str) -> str:
-    """Unescape IG embed HTML URLs like https:\\\\\\/\\\\\\/scontent..."""
+    """Unescape IG embed HTML URLs like https:\\\\\\/\\\\\\/scontent...\\u00253D."""
     if not raw:
         return ""
     url = unescape(raw.strip())
+    for _ in range(6):
+        nxt = url.replace("\\/", "/")
+        if nxt == url:
+            break
+        url = nxt
+    # \\u00253D → %3D (not "="). Extra backslashes are common in embed JSON.
     for _ in range(4):
-        nxt = (
-            url.replace("\\\\\\/", "/")
-            .replace("\\/", "/")
-            .replace("\\u0026", "&")
-            .replace("\\u00253D", "=")
-            .replace("\\u0025", "%")
+        nxt = re.sub(
+            r"\\+u([0-9a-fA-F]{4})",
+            lambda m: chr(int(m.group(1), 16)),
+            url,
         )
         if nxt == url:
             break
         url = nxt
-    return (
-        url.replace("\u0026", "&")
-        .replace("\u00253D", "=")
-        .replace("\u0025", "%")
-        .strip()
-    )
+    # Leftover \ before query punctuation, and the closing \" captured as trailing \
+    url = re.sub(r"\\([=&?#/%._-])", r"\1", url)
+    return url.rstrip("\\").strip().strip("'").strip('"')
 
 
 def _ig_is_placeholder_avatar(url: str) -> bool:
@@ -1367,6 +1368,9 @@ def _ig_normalize_avatar_url(raw: str) -> str:
         return ""
     if not url.lower().startswith("https://"):
         return ""
+    # Signed CDN URLs cannot contain leftover JSON backslashes
+    if "\\" in url:
+        url = url.replace("\\", "")
     return url
 
 

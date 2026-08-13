@@ -302,7 +302,7 @@ app.register_blueprint(admin_reports_bp)
 app.register_blueprint(admin_email_bp)
 app.register_blueprint(admin_creators_bp)
 
-from media_proxy_routes import media_proxy
+from media_proxy_routes import media_proxy, persist_social_avatar
 app.register_blueprint(media_proxy)
 
 _CORS_ALLOWED_ORIGINS = [
@@ -803,8 +803,9 @@ def scrape_profile_image_url(social_links):
                 profile = scrape_tiktok(handle, results_limit=1)
                 avatar_url = profile.get('avatarUrl', '')
                 if avatar_url:
+                    hosted = persist_social_avatar(avatar_url, dest_prefix=f"avatars/{handle}")
                     app.logger.info(f"✅ Got TikTok avatar URL for @{handle}")
-                    return avatar_url
+                    return hosted or avatar_url
 
             elif platform == 'instagram' and scrape_instagram:
                 app.logger.info(f"📸 Scraping Instagram profile image for @{handle}")
@@ -813,8 +814,9 @@ def scrape_profile_image_url(social_links):
                 # but the processed shape might have it elsewhere
                 avatar_url = profile.get('profile_pic_url', '') or profile.get('avatarUrl', '')
                 if avatar_url:
+                    hosted = persist_social_avatar(avatar_url, dest_prefix=f"avatars/{handle}")
                     app.logger.info(f"✅ Got Instagram avatar URL for @{handle}")
-                    return avatar_url
+                    return hosted or avatar_url
 
         except InHouseScrapeError as e:
             app.logger.warning(f"⚠️ Scrape failed for {platform} @{handle}: {e}")
@@ -2530,9 +2532,13 @@ def onboarding_scrape():
                       profile.get('avatar_url') or
                       profile.get('profile_pic_url') or '')
         if avatar_url:
-            session['scraped_avatar_url'] = avatar_url
+            hosted = persist_social_avatar(avatar_url, dest_prefix=f"avatars/{user_id}")
+            session['scraped_avatar_url'] = hosted or avatar_url
             session.modified = True
-            app.logger.info(f"📸 Stored scraped avatar in session for user {user_id}")
+            app.logger.info(
+                f"📸 Stored scraped avatar in session for user {user_id} "
+                f"({'rehosted' if hosted and hosted != avatar_url else 'raw'})"
+            )
 
         return jsonify({
             'success': True,
