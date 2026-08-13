@@ -364,6 +364,12 @@ class CreatorProfileScraper:
             'collab_email_extracted': collab_email,
             'bio_empty': bio_empty,
 
+            # Avatar URL (for profile display)
+            'avatarUrl': (raw_scrape.get('avatarUrl') or  # TikTok
+                          raw_scrape.get('profile_pic_url') or  # Instagram
+                          raw_scrape.get('profilePicUrl') or
+                          raw_scrape.get('profilePicUrlHd', '')),
+
             # Content archive
             'recent_post_thumbnails': thumbnail_urls,
             'recent_posts': recent_posts_payload,

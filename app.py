@@ -60,6 +60,14 @@ from routes.admin_reports import admin_reports_bp
 from routes.admin_email import admin_email_bp
 from routes.admin_creators import admin_creators_bp
 
+# In-house social scrapers for profile image extraction
+try:
+    from services.inhouse_social_scraper import scrape_instagram, scrape_tiktok, InHouseScrapeError
+except ImportError:
+    scrape_instagram = None
+    scrape_tiktok = None
+    InHouseScrapeError = Exception
+
 # PR-Ready: optional local/feature flag — never crash prod if modules aren't deployed
 try:
     from pr_ready_routes import pr_ready_bp
@@ -761,6 +769,62 @@ def is_production_environment():
 def get_base_url():
     """Helper function to get the appropriate base URL for the environment"""
     return 'https://newcollab.co' if is_production_environment() else 'http://localhost:3000'
+
+
+def scrape_profile_image_url(social_links):
+    """
+    Extract profile image URL from creator's social profiles using in-house scraper.
+    Returns the first successful profile image URL, or None if scraping fails.
+
+    Priority: TikTok > Instagram (TikTok avatars are more stable/persistent)
+    """
+    if not social_links:
+        return None
+
+    # Sort to prioritize TikTok, then Instagram
+    platform_priority = {'TikTok': 1, 'Instagram': 2}
+    sorted_links = sorted(
+        social_links,
+        key=lambda x: platform_priority.get(x.get('platform'), 99)
+    )
+
+    for link in sorted_links:
+        platform = (link.get('platform') or '').lower()
+        url = link.get('url', '')
+
+        # Extract handle from URL
+        handle = url.rstrip('/').split('/')[-1].lstrip('@')
+        if not handle or len(handle) < 2:
+            continue
+
+        try:
+            if platform == 'tiktok' and scrape_tiktok:
+                app.logger.info(f"📸 Scraping TikTok profile image for @{handle}")
+                profile = scrape_tiktok(handle, results_limit=1)
+                avatar_url = profile.get('avatarUrl', '')
+                if avatar_url:
+                    app.logger.info(f"✅ Got TikTok avatar URL for @{handle}")
+                    return avatar_url
+
+            elif platform == 'instagram' and scrape_instagram:
+                app.logger.info(f"📸 Scraping Instagram profile image for @{handle}")
+                profile = scrape_instagram(handle, results_limit=1)
+                # Instagram scrape returns profile_pic_url in the raw shape
+                # but the processed shape might have it elsewhere
+                avatar_url = profile.get('profile_pic_url', '') or profile.get('avatarUrl', '')
+                if avatar_url:
+                    app.logger.info(f"✅ Got Instagram avatar URL for @{handle}")
+                    return avatar_url
+
+        except InHouseScrapeError as e:
+            app.logger.warning(f"⚠️ Scrape failed for {platform} @{handle}: {e}")
+            continue
+        except Exception as e:
+            app.logger.warning(f"⚠️ Unexpected error scraping {platform} @{handle}: {e}")
+            continue
+
+    app.logger.warning("⚠️ Could not scrape profile image from any social platform")
+    return None
 
 
 def upload_file_to_supabase(file, bucket_name):
@@ -1727,9 +1791,9 @@ def update_profile_image():
         app.logger.error(f"Error updating profile image: {e}")
         return jsonify({'error': str(e)}), 500
     finally:
-        if cursor:
+        if 'cursor' in locals() and cursor:
             cursor.close()
-        if conn:
+        if 'conn' in locals() and conn:
             conn.close()
 
 # File Upload Endpoint
@@ -2259,33 +2323,54 @@ def onboarding_step1():
             # Use verified follower count
             followers = social_follower_count
 
+        # Get scraped avatar URL from session (set by onboarding_scrape)
+        scraped_avatar_url = session.get('scraped_avatar_url', '')
+
         if creator:
             # Update existing
-            cursor.execute(
-                '''
-                UPDATE creators
-                SET username = %s, followers_count = %s, platforms = %s, social_links = %s,
-                    social_platform = COALESCE(%s, social_platform),
-                    social_handle = COALESCE(%s, social_handle),
-                    social_follower_count = COALESCE(%s, social_follower_count),
-                    social_verified = COALESCE(%s, social_verified)
-                WHERE user_id = %s
-                RETURNING id
-                ''',
-                (username, followers, json.dumps(platforms_list), json.dumps(social_links),
-                 social_platform, social_handle, social_follower_count, social_verified, user_id)
-            )
+            if scraped_avatar_url:
+                cursor.execute(
+                    '''
+                    UPDATE creators
+                    SET username = %s, followers_count = %s, platforms = %s, social_links = %s,
+                        social_platform = COALESCE(%s, social_platform),
+                        social_handle = COALESCE(%s, social_handle),
+                        social_follower_count = COALESCE(%s, social_follower_count),
+                        social_verified = COALESCE(%s, social_verified),
+                        image_profile = COALESCE(NULLIF(%s, ''), image_profile)
+                    WHERE user_id = %s
+                    RETURNING id
+                    ''',
+                    (username, followers, json.dumps(platforms_list), json.dumps(social_links),
+                     social_platform, social_handle, social_follower_count, social_verified,
+                     scraped_avatar_url, user_id)
+                )
+            else:
+                cursor.execute(
+                    '''
+                    UPDATE creators
+                    SET username = %s, followers_count = %s, platforms = %s, social_links = %s,
+                        social_platform = COALESCE(%s, social_platform),
+                        social_handle = COALESCE(%s, social_handle),
+                        social_follower_count = COALESCE(%s, social_follower_count),
+                        social_verified = COALESCE(%s, social_verified)
+                    WHERE user_id = %s
+                    RETURNING id
+                    ''',
+                    (username, followers, json.dumps(platforms_list), json.dumps(social_links),
+                     social_platform, social_handle, social_follower_count, social_verified, user_id)
+                )
         else:
-            # Insert new creator record
+            # Insert new creator record with scraped avatar
             cursor.execute(
                 '''
                 INSERT INTO creators (user_id, username, followers_count, platforms, social_links,
-                                      social_platform, social_handle, social_follower_count, social_verified)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                      social_platform, social_handle, social_follower_count, social_verified, image_profile)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 ''',
                 (user_id, username, followers, json.dumps(platforms_list), json.dumps(social_links),
-                 social_platform, social_handle, social_follower_count, social_verified)
+                 social_platform, social_handle, social_follower_count, social_verified, scraped_avatar_url)
             )
 
         creator_id = cursor.fetchone()['id']
@@ -2293,9 +2378,13 @@ def onboarding_step1():
 
         # Update session with creator_id
         session['creator_id'] = creator_id
-        # Clear verification result from session (consumed)
+        # Clear consumed session data
         session.pop('social_verification_result', None)
+        session.pop('scraped_avatar_url', None)
         session.modified = True
+
+        if scraped_avatar_url:
+            app.logger.info(f"📸 Applied scraped avatar to image_profile for creator {creator_id}")
 
         conn.close()
         return jsonify({'ok': True, 'creator_id': creator_id}), 200
@@ -2435,6 +2524,15 @@ def onboarding_scrape():
             )
         else:
             app.logger.info(f"✅ Scrape successful for @{handle}: {follower_count} followers")
+
+        # Save scraped avatar URL to session for step1 to apply (row doesn't exist yet)
+        avatar_url = (profile.get('avatarUrl') or
+                      profile.get('avatar_url') or
+                      profile.get('profile_pic_url') or '')
+        if avatar_url:
+            session['scraped_avatar_url'] = avatar_url
+            session.modified = True
+            app.logger.info(f"📸 Stored scraped avatar in session for user {user_id}")
 
         return jsonify({
             'success': True,
@@ -5872,19 +5970,26 @@ def register_creator():
             conn.close()
             return jsonify({'error': 'You must accept the terms and conditions'}), 400
 
-        if 'imageProfile' not in request.files:
-            conn.close()
-            return jsonify({'error': 'No profile picture file provided'}), 400
+        # Scrape profile image from social platforms instead of requiring file upload
+        # This reduces Supabase storage usage and simplifies onboarding
+        profile_pic_url = None
 
-        file = request.files['imageProfile']
-        if not allowed_file(file.filename):
-            conn.close()
-            return jsonify({'error': 'Invalid file format. Only PNG, JPEG, or JPG allowed'}), 400
+        # First, try to scrape from social links (TikTok/Instagram)
+        if social_links:
+            app.logger.info("📸 Attempting to scrape profile image from social links...")
+            profile_pic_url = scrape_profile_image_url(social_links)
 
-        profile_pic_url = upload_file_to_supabase(file, SUPABASE_BUCKET)
+        # Fallback: if user uploaded an image, use that (backwards compatibility)
+        if not profile_pic_url and 'imageProfile' in request.files:
+            file = request.files['imageProfile']
+            if file and allowed_file(file.filename):
+                app.logger.info("📸 Using uploaded profile image as fallback")
+                profile_pic_url = upload_file_to_supabase(file, SUPABASE_BUCKET)
+
+        # If no image available, use empty string (can be updated later)
         if not profile_pic_url:
-            conn.close()
-            return jsonify({'error': 'Failed to upload profile picture'}), 500
+            app.logger.info("⚠️ No profile image available, continuing without one")
+            profile_pic_url = ''
 
         verification_token = generate_verification_token(email)
         hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode()
