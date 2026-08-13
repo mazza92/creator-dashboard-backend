@@ -22,6 +22,9 @@ from services.inhouse_social_scraper import (
     parse_tiktok_embed_frontity_bundle,
     diy_scrape_is_acceptable,
     _ig_extract_pk_from_html,
+    _ig_extract_profile_pic_url,
+    _ig_fill_user_gaps,
+    _ig_is_placeholder_avatar,
     _ig_node_to_post,
 )
 from services.creator_profile_scraper import CreatorProfileScraper
@@ -141,6 +144,64 @@ class TestInstagramParse(unittest.TestCase):
         self.assertTrue(
             any(p.get("displayUrl") for p in posts) or any(p.get("caption") for p in posts)
         )
+        pic = profile.get("profile_pic_url") or ""
+        self.assertIn("scontent", pic)
+        self.assertIn("cdninstagram.com", pic)
+        self.assertNotIn("rsrc.php", pic)
+        self.assertTrue(
+            "s100x100" in pic or "-19/" in pic or "t51." in pic,
+            f"expected IG avatar CDN path, got {pic[:120]}",
+        )
+
+    def test_rejects_instagram_logo_og_image(self):
+        html = """
+        <html><head>
+        <meta property="og:description" content="41 Followers, 10 Following, 8 Posts - See Instagram photos and videos from Kris (@murrrkris.ugc)" />
+        <meta name="description" content="41 Followers, 10 Following, 8 Posts - Kris (@murrrkris.ugc) on Instagram: &quot;UGC creator&quot;" />
+        <meta property="og:image" content="https://static.cdninstagram.com/rsrc.php/v3/yR/r/De-Ehh_L8Jb.png" />
+        </head></html>
+        """
+        profile = parse_instagram_crawler_html(html, handle="murrrkris.ugc")
+        self.assertEqual(profile["followersCount"], 41)
+        self.assertFalse(profile.get("profile_pic_url"))
+        self.assertTrue(_ig_is_placeholder_avatar(
+            "https://www.instagram.com/static/images/ico/favicon-192.png"
+        ))
+        self.assertTrue(_ig_is_placeholder_avatar(
+            "https://static.cdninstagram.com/rsrc.php/yr/r/rzWiSjZRxk5.webp"
+        ))
+        self.assertFalse(_ig_is_placeholder_avatar(
+            "https://scontent.cdninstagram.com/v/t51.82787-19/123_n.jpg?stp=dst-jpg_s100x100_tt6"
+        ))
+
+    def test_embed_escaped_profile_pic_url(self):
+        blob = (
+            r'owner\":{\"profile_pic_url\":\"https:\\\/\\\/scontent.cdninstagram.com'
+            r'\\\/v\\\/t51.82787-19\\\/645733534_18057637466419608_n.jpg'
+            r'?stp=dst-jpg_s100x100_tt6&efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLnd3dy4xMDgwLkMzIn0\"}'
+        )
+        url = _ig_extract_profile_pic_url(blob)
+        self.assertTrue(url.startswith("https://scontent.cdninstagram.com/"))
+        self.assertIn("t51.82787-19", url)
+        self.assertNotIn("\\/", url)
+
+    def test_fill_gaps_replaces_logo_avatar(self):
+        user = {
+            "profile_pic_url": "https://static.cdninstagram.com/rsrc.php/v3/yG/r/logo.png",
+            "biography": "hello",
+            "edge_followed_by": {"count": 10},
+        }
+        _ig_fill_user_gaps(
+            user,
+            {
+                "profile_pic_url": (
+                    "https://scontent.cdninstagram.com/v/t51.82787-19/"
+                    "645733534_n.jpg?stp=dst-jpg_s100x100_tt6"
+                )
+            },
+        )
+        self.assertIn("scontent.cdninstagram.com", user["profile_pic_url"])
+        self.assertNotIn("rsrc.php", user["profile_pic_url"])
 
     def test_search_snippets_reject_instagram_2b_marketing(self):
         """SERP pages quote Instagram's '2 billion users' — must not become follower_count."""

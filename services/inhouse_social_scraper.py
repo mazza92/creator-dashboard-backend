@@ -284,8 +284,10 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
     if user:
         posts = _ig_extract_posts_from_user(user, limit)
 
-    # Profile embed = TikTok /embed/@user equivalent (works without session/proxy)
-    if (not posts or not user or _ig_user_is_thin(user)) and not (user or {}).get("is_private"):
+    # Profile embed = TikTok /embed/@user equivalent (works without session/proxy).
+    # Also run when the earlier source only has the Instagram logo og:image.
+    avatar_missing = _ig_is_placeholder_avatar((user or {}).get("profile_pic_url") or "")
+    if (not posts or not user or _ig_user_is_thin(user) or avatar_missing) and not (user or {}).get("is_private"):
         embed_user, embed_posts = _ig_from_profile_embed(handle, limit)
         if embed_posts and not posts:
             posts = embed_posts
@@ -614,8 +616,13 @@ def _ig_from_html(
         bio = _re_str(html, r'"biography"\s*:\s*"((?:\\.|[^"\\])*)"')
         full_name = _re_str(html, r'"full_name"\s*:\s*"((?:\\.|[^"\\])*)"')
         external = _re_str(html, r'"external_url"\s*:\s*"((?:\\.|[^"\\])*)"')
-        profile_pic = (_re_str(html, r'"profile_pic_url_hd"\s*:\s*"((?:\\.|[^"\\])*)"') or
-                       _re_str(html, r'"profile_pic_url"\s*:\s*"((?:\\.|[^"\\])*)"') or "")
+        profile_pic = _ig_normalize_avatar_url(
+            _re_str(html, r'"profile_pic_url_hd"\s*:\s*"((?:\\.|[^"\\])*)"')
+            or _re_str(html, r'"profile_pic_url"\s*:\s*"((?:\\.|[^"\\])*)"')
+            or ""
+        )
+        if not profile_pic:
+            profile_pic = _ig_extract_profile_pic_url(html)
 
         # Login-wall pages still expose og:description with public counts
         if not followers and not media:
@@ -1128,7 +1135,10 @@ def _ig_user_from_og_meta(html: str, handle: str) -> Optional[Dict[str, Any]]:
     if bio.lower() in ("undefined", "null", "none"):
         bio = ""
 
-    avatar = _ig_meta_content(html, "og:image") or ""
+    # Login-walled pages put the Instagram logo in og:image — never treat that as the user photo.
+    avatar = _ig_normalize_avatar_url(_ig_meta_content(html, "og:image") or "")
+    if not avatar:
+        avatar = _ig_extract_profile_pic_url(html)
     pk = _ig_extract_pk_from_html(html)
 
     print(f"[InHouse/IG] meta followers={followers} posts={media} bio_len={len(bio)} pk={pk or '-'} avatar_len={len(avatar)}")
@@ -1301,14 +1311,121 @@ def _ig_unescape_embedded_url(raw: str) -> str:
     """Unescape IG embed HTML URLs like https:\\\\\\/\\\\\\/scontent..."""
     if not raw:
         return ""
-    url = raw.replace("\\\\\\/", "/").replace("\\/", "/")
-    url = (
-        url.replace("\\u00253D", "=")
-        .replace("\\u0025", "%")
+    url = unescape(raw.strip())
+    for _ in range(4):
+        nxt = (
+            url.replace("\\\\\\/", "/")
+            .replace("\\/", "/")
+            .replace("\\u0026", "&")
+            .replace("\\u00253D", "=")
+            .replace("\\u0025", "%")
+        )
+        if nxt == url:
+            break
+        url = nxt
+    return (
+        url.replace("\u0026", "&")
         .replace("\u00253D", "=")
         .replace("\u0025", "%")
+        .strip()
     )
-    return url.strip()
+
+
+def _ig_is_placeholder_avatar(url: str) -> bool:
+    """True for Instagram brand logo / favicon / rsrc.php glyphs — not a user photo."""
+    u = (url or "").strip().lower()
+    if not u:
+        return True
+    if any(
+        m in u
+        for m in (
+            "rsrc.php",
+            "/static/images/",
+            "static.cdninstagram.com/rsrc",
+            "favicon",
+            "apple-touch-icon",
+            "ig_glyph",
+        )
+    ):
+        return True
+    host_ok = any(h in u for h in ("scontent", "fbcdn.net", "cdninstagram.com"))
+    if "instagram.com" in u and not host_ok:
+        return True
+    return False
+
+
+def _ig_normalize_avatar_url(raw: str) -> str:
+    """Unescape, force https, drop Instagram logo placeholders."""
+    url = _ig_unescape_embedded_url(raw)
+    if not url:
+        return ""
+    if url.startswith("//"):
+        url = "https:" + url
+    elif re.match(r"^(scontent\.|instagram\.[^/]+\.fna\.fbcdn\.net)", url, re.I):
+        url = "https://" + url
+    if _ig_is_placeholder_avatar(url):
+        return ""
+    if not url.lower().startswith("https://"):
+        return ""
+    return url
+
+
+def _ig_extract_profile_pic_url(text: str) -> str:
+    """
+    Pull the user avatar from embed/HTML JSON.
+
+    Embed payloads escape slashes (`https:\\/\\/scontent...`) so a naive
+    `https:[^\\\\"]+` regex stops at the first backslash and falls through
+    to og:image — which is the Instagram logo on login-walled pages.
+    """
+    if not text:
+        return ""
+
+    field_pats = (
+        r'profile_pic_url_hd\\?"\s*:\\?\s*"((?:https:|(?:\\+/)+)[^"]+)"',
+        r'profile_pic_url\\?"\s*:\\?\s*"((?:https:|(?:\\+/)+)[^"]+)"',
+        r'"profilePicUrl"\s*:\s*"(https:[^"]+)"',
+    )
+    for pat in field_pats:
+        m = re.search(pat, text)
+        if not m:
+            continue
+        url = _ig_normalize_avatar_url(m.group(1))
+        if url:
+            return url
+
+    raw_hits = re.findall(
+        r'(?:https:)?(?:\\+/)+[^\s"\'<>]*(?:cdninstagram|fbcdn|scontent)[^\s"\'<>]*'
+        r'\.(?:jpg|jpeg|png|webp)[^\s"\'<>]*',
+        text,
+        flags=re.I,
+    )
+    scored: List[Tuple[int, str]] = []
+    seen = set()
+    for raw in raw_hits[:80]:
+        url = _ig_normalize_avatar_url(raw)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        low = url.lower()
+        score = 0
+        # efg= base64 of {"decode_tag":"profile_pic..."}
+        if "inbyb2zpbgvfcglj" in low:
+            score += 50
+        if re.search(r"t51\.\d+-19/", low):
+            score += 30
+        if any(sz in low for sz in ("s100x100", "s150x150", "s320x320")):
+            score += 20
+        if "stp=dst-jpg_s" in low:
+            score += 10
+        if re.search(r"t51\.\d+-15/", low):
+            score -= 20
+        if score > 0:
+            scored.append((score, url))
+    if scored:
+        scored.sort(key=lambda x: -x[0])
+        return scored[0][1]
+    return ""
 
 
 def _ig_unescape_embedded_text(raw: str) -> str:
@@ -1408,54 +1525,9 @@ def _ig_parse_profile_embed_html(
     if priv:
         is_private = priv.group(1) == "true"
 
-    profile_pic = ""
-    # Try multiple patterns for profile pic URL (Instagram format changes)
-    pic_patterns = [
-        r'profile_pic_url\\":\\"(https:[^\\"]+)\\"',  # escaped JSON
-        r'"profile_pic_url"\s*:\s*"(https:[^"]+)"',   # regular JSON
-        r'profile_pic_url_hd\\":\\"(https:[^\\"]+)\\"',  # HD version escaped
-        r'"profile_pic_url_hd"\s*:\s*"(https:[^"]+)"',   # HD version regular
-        r'"profilePicUrl"\s*:\s*"(https:[^"]+)"',     # camelCase
-        r'src="(https://[^"]*cdninstagram\.com[^"]*150x150[^"]*)"',  # profile img tag 150x150
-        r'src="(https://[^"]*scontent[^"]*150x150[^"]*)"',  # scontent 150x150
-        r'src="(https://[^"]*fbcdn[^"]*150x150[^"]*)"',  # fbcdn 150x150
-        r'data-src="(https://[^"]*150x150[^"]*)"',  # lazy load 150x150
-        r'"src":"(https:[^"]*150x150[^"]*)"',  # JSON src with 150x150
-        r'background-image:\s*url\(["\']?(https://[^"\')\s]+150x150[^"\')\s]*)["\']?\)',  # CSS bg
-    ]
-    for pattern in pic_patterns:
-        pic = re.search(pattern, text)
-        if pic:
-            profile_pic = _ig_unescape_embedded_url(pic.group(1))
-            break
-
-    # Fallback: search entire document for any CDN image URL
-    if not profile_pic:
-        # Find all CDN image URLs
-        all_imgs = re.findall(r'(https://[^"\'>\s]*(?:cdninstagram|fbcdn|scontent)[^"\'>\s]*\.(?:jpg|jpeg|png|webp)[^"\'>\s]*)', text)
-
-        def is_profile_pic_candidate(url):
-            """Filter out logos, icons, and static assets - keep only profile pics."""
-            url_lower = url.lower()
-            # Skip static assets, logos, icons, glyphs
-            if any(skip in url_lower for skip in ['static', 'glyph', 'logo', 'icon', '/e/', '/s/']):
-                return False
-            # Skip very short URLs (likely logos)
-            if len(url) < 80:
-                return False
-            # Profile pics have numeric IDs and _n.jpg pattern
-            if re.search(r'/\d+_\d+.*_n\.jpg', url):
-                return True
-            # Profile pics have 150x150 size
-            if '150x150' in url or 's150x150' in url:
-                return True
-            return False
-
-        for img_url in all_imgs[:30]:  # Check first 30 matches
-            if is_profile_pic_candidate(img_url):
-                profile_pic = img_url.replace('\\u0026', '&').replace('\\/', '/')
-                print(f"[InHouse/IG] embed avatar from CDN pattern")
-                break
+    profile_pic = _ig_extract_profile_pic_url(text)
+    if profile_pic:
+        print("[InHouse/IG] embed avatar from profile_pic_url / CDN")
 
     posts: List[Dict[str, Any]] = []
     # Split on shortcode_media blocks when present
@@ -1710,6 +1782,16 @@ def _ig_parse_imginn_html(
         title = _ig_meta_content(html, "og:title") or ""
         full_name = title.split("(")[0].strip()
 
+    avatar = _ig_normalize_avatar_url(_ig_meta_content(html, "og:image") or "")
+    if not avatar:
+        av = re.search(
+            r'<img[^>]+(?:class="[^"]*avatar[^"]*"[^>]+src="([^"]+)"|src="([^"]+)"[^>]+class="[^"]*avatar[^"]*")',
+            html,
+            re.I,
+        )
+        if av:
+            avatar = _ig_normalize_avatar_url(unescape(av.group(1) or av.group(2) or ""))
+
     # Parse posts first — posts alone are enough (stats optional, like TikTok DIY)
     posts: List[Dict[str, Any]] = []
     for m in re.finditer(r'<div class="item">', html):
@@ -1748,6 +1830,7 @@ def _ig_parse_imginn_html(
         "full_name": full_name or handle,
         "biography": bio,
         "external_url": "",
+        "profile_pic_url": avatar,
         "edge_followed_by": {"count": followers},
         "edge_follow": {"count": following},
         "edge_owner_to_timeline_media": {"count": media, "edges": []},
@@ -1770,8 +1853,10 @@ def _ig_fill_user_gaps(user: Dict[str, Any], patch: Dict[str, Any]) -> None:
         user["full_name"] = patch["full_name"]
     if not (user.get("external_url") or "").strip() and (patch.get("external_url") or "").strip():
         user["external_url"] = patch["external_url"]
-    if not (user.get("profile_pic_url") or "").strip() and (patch.get("profile_pic_url") or "").strip():
-        user["profile_pic_url"] = patch["profile_pic_url"]
+    cur_pic = (user.get("profile_pic_url") or "").strip()
+    nxt_pic = _ig_normalize_avatar_url(patch.get("profile_pic_url") or "")
+    if nxt_pic and (not cur_pic or _ig_is_placeholder_avatar(cur_pic)):
+        user["profile_pic_url"] = nxt_pic
     for edge_key, patch_key in (
         ("edge_followed_by", "edge_followed_by"),
         ("edge_follow", "edge_follow"),
@@ -1979,7 +2064,9 @@ def _ig_to_profile_shape(user: Dict[str, Any], posts: List[Dict[str, Any]], hand
         "isPrivate": bool(user.get("is_private") or user.get("isPrivate")),
         "isBusinessAccount": bool(user.get("is_business_account") or user.get("isBusinessAccount")),
         "businessCategoryName": user.get("business_category_name") or user.get("category_name") or "",
-        "profile_pic_url": user.get("profile_pic_url") or user.get("profile_pic_url_hd") or "",
+        "profile_pic_url": _ig_normalize_avatar_url(
+            user.get("profile_pic_url") or user.get("profile_pic_url_hd") or ""
+        ),
         "latestPosts": posts,
     }
 
