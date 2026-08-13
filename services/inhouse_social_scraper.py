@@ -1127,7 +1127,7 @@ def _ig_user_from_og_meta(html: str, handle: str) -> Optional[Dict[str, Any]]:
     avatar = _ig_meta_content(html, "og:image") or ""
     pk = _ig_extract_pk_from_html(html)
 
-    print(f"[InHouse/IG] meta followers={followers} posts={media} bio_len={len(bio)} pk={pk or '-'}")
+    print(f"[InHouse/IG] meta followers={followers} posts={media} bio_len={len(bio)} pk={pk or '-'} avatar_len={len(avatar)}")
     out: Dict[str, Any] = {
         "username": handle,
         "full_name": full_name,
@@ -1405,9 +1405,21 @@ def _ig_parse_profile_embed_html(
         is_private = priv.group(1) == "true"
 
     profile_pic = ""
-    pic = re.search(r'profile_pic_url\\":\\"(https:[^\\"]+)\\"', text)
-    if pic:
-        profile_pic = _ig_unescape_embedded_url(pic.group(1))
+    # Try multiple patterns for profile pic URL (Instagram format changes)
+    pic_patterns = [
+        r'profile_pic_url\\":\\"(https:[^\\"]+)\\"',  # escaped JSON
+        r'"profile_pic_url"\s*:\s*"(https:[^"]+)"',   # regular JSON
+        r'profile_pic_url_hd\\":\\"(https:[^\\"]+)\\"',  # HD version escaped
+        r'"profile_pic_url_hd"\s*:\s*"(https:[^"]+)"',   # HD version regular
+        r'"profilePicUrl"\s*:\s*"(https:[^"]+)"',     # camelCase
+        r'src="(https://[^"]*cdninstagram\.com[^"]*150x150[^"]*)"',  # profile img tag
+        r'data-src="(https://[^"]*cdninstagram\.com[^"]*150x150[^"]*)"',  # lazy load
+    ]
+    for pattern in pic_patterns:
+        pic = re.search(pattern, text)
+        if pic:
+            profile_pic = _ig_unescape_embedded_url(pic.group(1))
+            break
 
     posts: List[Dict[str, Any]] = []
     # Split on shortcode_media blocks when present
