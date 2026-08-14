@@ -1980,36 +1980,34 @@ def get_founder_dashboard():
         active_last_period = cursor.fetchone()['count']
 
         # ================== CREATOR ACTIVATION FUNNEL (All Time) ==================
-        # Tracks: Signed up -> Unlocked brand ('Get Brand PR') -> Pitched brand (Contact or Apply)
-
+        # Credits fire on unlock (Get Brand PR), not on send.
+        # creator_pipeline.pitched_at is a leftover send/confirm flag and must
+        # not be used as a funnel step — it undercounts post-migration users.
         cursor.execute("SELECT COUNT(*) as count FROM creators")
         total_signups = cursor.fetchone()['count']
 
-        # Users who unlocked at least 1 brand (clicked "Get Brand PR" / "Contact Brand")
         cursor.execute("""
             SELECT COUNT(DISTINCT creator_id) as count FROM brand_unlocks
         """)
         unlocked_brand = cursor.fetchone()['count']
 
-        # Users who pitched at least 1 brand (sent actual pitch via creator_pipeline)
-        cursor.execute("""
-            SELECT COUNT(DISTINCT creator_id) as count FROM creator_pipeline
-            WHERE pitched_at IS NOT NULL
-        """)
-        sent_pitch = cursor.fetchone()['count']
+        # Unlock is the activation event. Keep sent_pitch as an alias so older
+        # clients do not invent an "unlocked but never pitched" gap.
+        sent_pitch = unlocked_brand
 
-        # Users who pitched 2+ brands
+        # Over 2 brands unlocked = 3+ (paywall-adjacent on the free 3-unlock plan)
         cursor.execute("""
             SELECT COUNT(*) as count FROM (
-                SELECT creator_id FROM creator_pipeline
-                WHERE pitched_at IS NOT NULL
+                SELECT creator_id FROM brand_unlocks
                 GROUP BY creator_id
-                HAVING COUNT(*) >= 2
-            ) as multi_pitch
+                HAVING COUNT(*) > 2
+            ) as multi_unlock
         """)
         pitched_multiple = cursor.fetchone()['count']
 
-        # Users who got a package (success stage)
+        subscribed_pro = pro_count_db
+
+        # Kept for older clients; not a funnel step.
         cursor.execute("""
             SELECT COUNT(DISTINCT creator_id) as count FROM creator_pipeline
             WHERE stage = 'success'
@@ -2024,14 +2022,13 @@ def get_founder_dashboard():
         signups_this_month = cursor.fetchone()['count']
 
         cursor.execute("""
-            SELECT COUNT(*) as count FROM creator_pipeline
-            WHERE pitched_at >= DATE_TRUNC('month', NOW())
+            SELECT COUNT(*) as count FROM brand_unlocks
+            WHERE unlocked_at >= DATE_TRUNC('month', NOW())
         """)
         pitches_this_month = cursor.fetchone()['count']
 
         cursor.execute("""
-            SELECT COUNT(DISTINCT creator_id) as count FROM creator_pipeline
-            WHERE pitched_at IS NOT NULL
+            SELECT COUNT(DISTINCT creator_id) as count FROM brand_unlocks
         """)
         unique_pitch_users = cursor.fetchone()['count']
 
@@ -2257,6 +2254,9 @@ def get_founder_dashboard():
                 'unlocked_brand': unlocked_brand,
                 'sent_pitch': sent_pitch,
                 'pitched_multiple': pitched_multiple,
+                'unlocked_multiple': pitched_multiple,
+                'unlocked_over_2': pitched_multiple,
+                'subscribed_pro': subscribed_pro,
                 'got_package': got_package
             },
             'this_month': {

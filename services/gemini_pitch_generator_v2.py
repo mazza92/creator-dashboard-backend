@@ -24,6 +24,8 @@ from typing import Dict, Optional, List
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from services.pitch_identity import resolve_pitch_identity
+
 # Gemini API
 try:
     from google import genai
@@ -56,7 +58,7 @@ MAX_RETRIES = 2
 RETRY_DELAY_BASE = 0.5
 
 # Version tracking
-PROMPT_VERSION = "v2.0"
+PROMPT_VERSION = "v2.1"
 
 
 # ============================================================================
@@ -111,6 +113,8 @@ You are NOT an agency, NOT a marketing consultant, NOT a professional pitcher. Y
 - Do not promise ROI or performance metrics
 - Do not offer usage rights or commercial reuse
 - Do not use the phrase "gifted" or "PR" as jargon; describe the trade in plain language
+- Sign off with the creator's public social name (the Name field). Never use a different legal first name.
+- Only pitch the named product if it fits the creator's niche. If it does not, ask for a product in that niche this brand actually sells. Do not invent SKUs.
 
 ## Banned phrases (never use, in any variation)
 
@@ -174,7 +178,7 @@ The body MUST have this vertical rhythm:
 
 [Blank line]
 
-[Name on its own line]
+[Name on its own line — the creator's public social name/handle, never a different legal first name]
 [Handle on next line]
 
 CRITICAL RULES:
@@ -206,7 +210,7 @@ Example B (mid length, no greeting - variant 5, 4 paragraphs):
 
 Example C (longer, with named contact greeting, 5 paragraphs):
 {
-  "subject": "creator interest, Scandinavian Biolabs",
+  "subject": "scalp massager content idea",
   "body": "Hi Sofia,\\n\\nquick one.\\n\\nI've been building a scalp care routine for the past 3 months since noticing thinning at my crown. I've tried three different massagers so far and none of them have the flex I need without irritating my skin. Your Scalp Massager keeps coming up when I look at Scandinavian brands, especially the medical-grade silicone.\\n\\nI'd film a short showing how I use it before your Bio-Pilixin serum. Slow pacing, no talking, ASMR-style, about 20 seconds.\\n\\nIf you want to see the concept first, happy to send a rough idea.\\n\\nTom\\n@tomgrooms on Instagram"
 }"""
 
@@ -225,6 +229,15 @@ USER_PROMPT_TEMPLATE = """Write one pitch email to {brand_name} for their produc
 - Niche: {niche_primary}
 - Country: {country}
 - Physical attribute if relevant to product: {physical_attribute}
+
+## Sign-off (mandatory)
+Sign the email as the public social name, never a different legal first name:
+{creator_name}
+{creator_handle} on {platform}
+
+## Product fit (mandatory)
+Only pitch {product_sku_name} if it fits this creator's niche ({niche_primary}).
+If the SKU is off-niche, ask for a product in {niche_primary} this brand actually sells. Do not invent SKUs. Do not pitch an unrelated product just because it is listed.
 
 ## Brand context
 
@@ -271,7 +284,7 @@ IMPORTANT: The opener comes AFTER the greeting (on a new line). Do NOT include a
 
 1. "quick note about {product_sku_name}"
 2. "{product_sku_name} content idea"
-3. "creator interest, {brand_name}"
+3. "{niche_primary} idea for {product_sku_name}"
 4. "would love to try {product_sku_name}"
 5. "{brand_name} + {creator_handle}"
 6. "small ask about {product_sku_name}"
@@ -485,9 +498,9 @@ def normalize_pitch_body(body: str) -> str:
         )
 
     # Ensure sig block is on its own paragraph
-    # Pattern: close phrase ending, then a short name line, then @handle
+    # Name line may be a legal first name (Priya) or a public handle (xoitsariel)
     body = re.sub(
-        r'([.!?])\s*\n([A-Z][a-z]+)\n(@[\w.]+)',
+        r'([.!?])\s*\n(@?[\w.]+)\n(@[\w.]+)',
         r'\1\n\n\2\n\3',
         body
     )
@@ -521,44 +534,9 @@ def build_user_prompt(brand: Dict, creator: Dict, variant_ids: VariantIds) -> st
     """
     Build the user prompt from brand/creator data and variant IDs.
     """
-    # Extract creator data - NEVER use "Creator" as a name
-    creator_name = (
-        creator.get("first_name") or
-        creator.get("username") or
-        (creator.get("display_name", "").split()[0] if creator.get("display_name") else None)
-    )
-
-    # If still no name, derive from handle
-    if not creator_name or creator_name.lower() == "creator":
-        handle = creator.get("social_handle", "") or ""
-        handle = handle.lstrip("@")
-        if handle:
-            # Try to extract a readable name from handle (e.g., "priyaskincloset" -> "Priya")
-            # Simple heuristic: take first word-like portion before numbers or underscores
-            import re
-            match = re.match(r'^([a-zA-Z]+)', handle)
-            if match:
-                creator_name = match.group(1).capitalize()
-            else:
-                creator_name = handle.split('_')[0].capitalize()
-        else:
-            creator_name = "Hey"  # Last resort, but should never happen
-
-    creator_handle = creator.get("social_handle", "") or ""
-    if not creator_handle:
-        # Try to extract from social_links
-        social_links = creator.get("social_links", [])
-        if isinstance(social_links, str):
-            try:
-                social_links = json.loads(social_links)
-            except:
-                social_links = []
-        for link in social_links if isinstance(social_links, list) else []:
-            if isinstance(link, dict) and link.get("handle"):
-                creator_handle = link.get("handle", "")
-                break
-
-    creator_handle = creator_handle.lstrip("@")
+    identity = resolve_pitch_identity(creator)
+    creator_name = identity["signoff_name"]
+    creator_handle = identity["handle"]
 
     # Follower count
     followers = (
@@ -652,7 +630,9 @@ def generate_variant_ids(has_contact_name: bool = False) -> VariantIds:
         greeting_id=greeting_id,
         opener_id=random.randint(1, 8),
         close_id=random.randint(1, 8),
-        subject_id=random.randint(1, 8)
+        # Skip variant 3 ("creator interest, {brand}") — it describes the
+        # creator instead of offering an idea, which tanks open rate.
+        subject_id=random.choice([1, 2, 4, 5, 6, 7, 8]),
     )
 
 

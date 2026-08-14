@@ -19,6 +19,8 @@ import time
 from typing import Dict, Optional
 from dataclasses import dataclass
 
+from services.pitch_identity import resolve_pitch_identity
+
 # Gemini API - try new package first, fallback to deprecated
 try:
     from google import genai
@@ -122,7 +124,10 @@ STRUCTURE - every pitch follows this exact skeleton in order:
    Reel", Instagram -> "a Reel and a Story series", YouTube -> "an integrated
    segment in an upcoming video."
 
-6. Close (1 sentence + name): warm sign-off + creator's first name.
+6. Close (1 sentence + name): warm sign-off + the creator's public social
+   handle/username. Never sign a legal first name that differs from the handle
+   brands would search. If `creator.social_handle` or username is provided, that
+   is the sign-off. Use first_name only when no handle exists.
 
 SUBJECT LINE RULES (this drives open rate - treat it as the most important field):
 
@@ -474,15 +479,9 @@ def build_pitch_input(brand: Dict, creator: Dict) -> Dict:
     if brand.get("recent_launch"):
         brand_input["recent_launch"] = brand["recent_launch"]
 
-    # Build creator input
-    creator_first_name = creator.get("first_name", "").strip()
-    if not creator_first_name or not _is_valid_first_name(creator_first_name):
-        # Try display_name
-        display = creator.get("display_name", "") or ""
-        if " " in display:
-            first_word = display.split()[0].strip()
-            if _is_valid_first_name(first_word):
-                creator_first_name = first_word.capitalize()
+    # Build creator input — public social name, not legal first name
+    identity = resolve_pitch_identity(creator)
+    creator_first_name = identity["signoff_name"]
 
     # Parse niche (handle JSON string, array, or plain string)
     creator_niches_raw = creator.get('creator_niches') or creator.get('niche')
@@ -498,8 +497,8 @@ def build_pitch_input(brand: Dict, creator: Dict) -> Dict:
         "follower_count": followers,
     }
 
-    # Social handle from social_links (same source as AIDepth / onboarding)
-    social_handle = (creator.get('social_handle') or '').strip().lstrip('@')
+    # Social handle from identity first, then social_links (same source as AIDepth / onboarding)
+    social_handle = identity["handle"] or (creator.get('social_handle') or '').strip().lstrip('@')
     social_platform = (creator.get('social_platform') or creator.get('primary_platform') or '').strip()
     if not social_handle:
         links = creator.get('social_links') or []
