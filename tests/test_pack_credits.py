@@ -80,5 +80,27 @@ class TestGrantPackBundle(unittest.TestCase):
         self.assertIn('information_schema.columns', sql)
 
 
+class TestPackReportStats(unittest.TestCase):
+    def test_missing_table_returns_zeros(self):
+        from datetime import datetime, timedelta
+        from routes.admin_reports import fetch_pack_report_stats
+
+        cursor = MagicMock()
+        cursor.fetchone.return_value = None
+        cursor.fetchall.return_value = []
+        now = datetime(2026, 8, 14)
+        stats = fetch_pack_report_stats(
+            cursor, now - timedelta(days=7), now, now - timedelta(days=14), now - timedelta(days=7)
+        )
+        self.assertEqual(stats['price_cents'], 900)
+        self.assertEqual(stats['all_time']['purchases'], 0)
+        self.assertEqual(stats['period']['revenue_cents'], 0)
+        self.assertEqual(stats['recent'], [])
+        sql = str(cursor.execute.call_args[0][0])
+        self.assertIn("table_name = 'pack_purchases'", sql)
+        self.assertNotIn('COUNT(*)', sql)
+        self.assertEqual(cursor.execute.call_count, 1)
+
+
 if __name__ == '__main__':
     unittest.main()
