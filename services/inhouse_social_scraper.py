@@ -27,7 +27,7 @@ import codecs
 from datetime import datetime, timedelta, timezone
 from html import unescape
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote, quote_plus
+from urllib.parse import quote, quote_plus, urlparse
 
 import requests
 
@@ -321,8 +321,29 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
             user["biography"] = name
             print(f"[InHouse/IG] bio from full_name len={len(name)}")
 
-    # Session APIs only when embed is missing/thin — warm cookies just before.
-    need_api = (not user or _ig_user_is_thin(user) or not posts) and not (user or {}).get("is_private")
+    # Mirror grid BEFORE Instagram APIs. Hitting web_profile_info 429s this IP
+    # and Cloudflare then 403s imginn on the same scrape.
+    if not posts and not (user or {}).get("is_private"):
+        mirror_user, mirror_posts = _ig_from_imginn(session, handle, limit)
+        if mirror_posts:
+            posts = mirror_posts
+            if "imginn" not in source:
+                source = f"{source}+imginn" if source != "none" else "imginn"
+        if mirror_user:
+            if not user:
+                user = mirror_user
+                if source == "none":
+                    source = "imginn"
+            else:
+                _ig_fill_user_gaps(user, mirror_user)
+
+    # Skip session APIs when the mirror already gave posts — 429s poison later
+    # fallbacks and search/crawler can fill followers + bio.
+    need_api = (
+        not posts
+        and not (user or {}).get("is_private")
+        and (not user or _ig_user_is_thin(user))
+    )
     if need_api:
         _ig_warm_session(session, handle)
         api_user = _ig_web_profile_info(session, handle, ig_walled=ig_walled)
@@ -375,22 +396,6 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
                     user["id"] = crawler_user["pk"]
                 if "crawler" not in source:
                     source = f"{source}+crawler"
-
-    # Public mirrors BEFORE SERP: imginn.com often 403s while imginn.org still
-    # serves the post grid. Do this before search so we don't SERP-hammer for posts.
-    if not posts and not (user or {}).get("is_private"):
-        mirror_user, mirror_posts = _ig_from_imginn(session, handle, limit)
-        if mirror_posts:
-            posts = mirror_posts
-            if "imginn" not in source:
-                source = f"{source}+imginn" if source != "none" else "imginn"
-        if mirror_user:
-            if not user:
-                user = mirror_user
-                if source == "none":
-                    source = "imginn"
-            else:
-                _ig_fill_user_gaps(user, mirror_user)
 
     # Search fills bio/followers when IG HTML has no og:description (common on SPA shells)
     if not user or _ig_user_is_thin(user):
@@ -849,7 +854,7 @@ def _ig_parse_search_snippet_html(html: str, handle: str) -> Optional[Dict[str, 
             return {
                 "username": handle,
                 "full_name": full_name,
-                "biography": bio,
+                "biography": bio or full_name,
                 "external_url": "",
                 "edge_followed_by": {"count": followers},
                 "edge_follow": {"count": following},
@@ -920,7 +925,7 @@ def _ig_parse_search_snippet_html(html: str, handle: str) -> Optional[Dict[str, 
     return {
         "username": handle,
         "full_name": full_name,
-        "biography": bio,
+        "biography": bio or full_name,
         "external_url": "",
         "edge_followed_by": {"count": followers},
         "edge_follow": {"count": following},
@@ -1926,31 +1931,58 @@ def _ig_from_imginn(
 ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Public mirror fallback (bio + recent posts) when Instagram APIs / profile embed fail.
-    imginn.com is frequently 403; imginn.org still serves the same grid HTML.
+
+    Use a clean HTTP client (not the Instagram-warmed session). Sharing IG cookies /
+    429'd connections with imginn often yields Cloudflare 403, while a fresh GET
+    (especially http://imginn.org → https://imginn.com) still serves the grid.
     """
-    hosts = (
+    _ = session  # kept for call-site compatibility
+    urls = (
+        ("imginn.org-http", f"http://imginn.org/{handle}/"),
         ("imginn.org", f"https://imginn.org/{handle}/"),
         ("imginn.com", f"https://imginn.com/{handle}/"),
     )
-    for name, url in hosts:
-        try:
-            _jitter(0.2, 0.5)
-            headers = {
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Referer": f"https://{name}/",
-            }
-            resp = session.get(url, headers=headers, timeout=20)
-            print(f"[InHouse/IG] imginn status={resp.status_code} host={name}")
-            if resp.status_code == 404:
-                continue
-            if resp.status_code != 200 or not resp.text:
-                continue
-            parsed = _ig_parse_imginn_html(resp.text, handle, limit)
-            if parsed[0] or parsed[1]:
-                return parsed
-        except Exception as e:
-            print(f"[InHouse/IG] imginn error host={name}: {e}")
+    header_sets = (
+        {
+            "User-Agent": _UA_POOL[0],
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate",
+            "Cache-Control": "no-cache",
+            "Connection": "close",
+        },
+        {
+            "User-Agent": _UA_POOL[2],
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate",
+            "Connection": "close",
+        },
+    )
+    for name, url in urls:
+        for headers in header_sets:
+            try:
+                _jitter(0.2, 0.6)
+                resp = _http_get(url, headers=headers, timeout=20, allow_redirects=True)
+                try:
+                    host = urlparse(resp.url or url).hostname or name
+                except Exception:
+                    host = name
+                print(
+                    f"[InHouse/IG] imginn status={resp.status_code} "
+                    f"host={name} final={host} len={len(resp.text or '')}"
+                )
+                if resp.status_code in (403, 429, 503, 523):
+                    continue
+                if resp.status_code == 404:
+                    break
+                if resp.status_code != 200 or not resp.text:
+                    continue
+                parsed = _ig_parse_imginn_html(resp.text, handle, limit)
+                if parsed[0] or parsed[1]:
+                    return parsed
+            except Exception as e:
+                print(f"[InHouse/IG] imginn error host={name}: {e}")
     return None, []
 
 
@@ -2103,7 +2135,7 @@ def _ig_parse_imginn_html(
     if not posts and not followers and not bio and not full_name:
         return None, []
 
-    if media <= 0 and posts:
+    if media <= 0 and posts and followers > 0:
         media = len(posts)
 
     user = {
