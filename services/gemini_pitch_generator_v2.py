@@ -695,6 +695,11 @@ class GeminiPitchGeneratorV2:
         Returns:
             PitchResult with generated pitch
         """
+        brand = dict(brand)
+        sku = select_pitch_product(brand, creator)
+        brand["hero_product"] = sku
+        brand["product_sku_name"] = sku
+
         if not self.enabled:
             print("[GeminiPitchV2] Gemini not configured")
             if template_fallback_fn:
@@ -906,6 +911,88 @@ BLOCKED_INBOX_PATTERNS = [
     "contact@"
 ]
 
+_GENERIC_INBOX_RE = re.compile(
+    r"^(info|support|help|hello|contact|care|customerservice)@",
+    re.I,
+)
+_OPTICAL_SKU_RE = re.compile(
+    r"\b(glasses|eyewear|optical|spectacles|contacts|contact lenses|frames)\b",
+    re.I,
+)
+_CBD_SKU_RE = re.compile(
+    r"\b(cbd|thc|cannabis|hemp|delta-?8|delta-?9)\b",
+    re.I,
+)
+_BEAUTY_SKU_RE = re.compile(
+    r"\b(serum|moisturizer|moisturiser|toner|cleanser|sunscreen|spf|mascara|"
+    r"lipstick|blush|foundation|skincare|hair|shampoo|conditioner|cream|mask|"
+    r"lip|brow|fragrance|perfume|baby|diaper|nappy|stroller|nursery)\b",
+    re.I,
+)
+_BEAUTY_PARENTING_NICHES = {
+    "beauty", "skincare", "makeup", "haircare", "cosmetics",
+    "parenting", "baby", "kids", "family", "mom", "mum", "maternity",
+}
+
+
+def is_generic_inbox(email: Optional[str]) -> bool:
+    if not email:
+        return False
+    return bool(_GENERIC_INBOX_RE.match(str(email).strip()))
+
+
+def _creator_niche_tokens(creator: Dict) -> set:
+    tokens = set()
+    for key in ("primary_niche", "niche", "niche_primary"):
+        val = (creator or {}).get(key)
+        if val:
+            tokens.update(str(val).lower().replace("&", " ").replace(",", " ").split())
+    niches = (creator or {}).get("niches") or (creator or {}).get("interest_niches") or []
+    if isinstance(niches, str):
+        niches = [niches]
+    for n in niches:
+        tokens.update(str(n).lower().replace("&", " ").replace(",", " ").split())
+    return {t for t in tokens if t}
+
+
+def select_pitch_product(brand: Dict, creator: Dict) -> str:
+    """
+    Pick a SKU that fits the creator. Skip optical/CBD products for
+    beauty and parenting creators so pitches do not name glasses or hemp.
+    """
+    brand = brand or {}
+    creator = creator or {}
+    brand_name = brand.get("brand_name") or brand.get("name") or "the brand"
+
+    candidates = []
+    for key in ("hero_product", "product_sku_name"):
+        val = brand.get(key)
+        if val and str(val).strip() and str(val).strip() not in candidates:
+            candidates.append(str(val).strip())
+    extras = brand.get("hero_products") or brand.get("products") or []
+    if isinstance(extras, str):
+        extras = [extras]
+    for item in extras:
+        name = item if isinstance(item, str) else (item or {}).get("name") or (item or {}).get("title")
+        if name and str(name).strip() and str(name).strip() not in candidates:
+            candidates.append(str(name).strip())
+
+    tokens = _creator_niche_tokens(creator)
+    beauty_parenting = bool(tokens & _BEAUTY_PARENTING_NICHES)
+
+    def _off_niche(sku: str) -> bool:
+        if not beauty_parenting:
+            return False
+        return bool(_OPTICAL_SKU_RE.search(sku) or _CBD_SKU_RE.search(sku))
+
+    on_niche = [s for s in candidates if not _off_niche(s)]
+    preferred = [s for s in on_niche if _BEAUTY_SKU_RE.search(s)]
+    if preferred:
+        return preferred[0]
+    if on_niche:
+        return on_niche[0]
+    return f"{brand_name} products"
+
 
 def validate_match(brand: Dict, creator: Dict) -> tuple[bool, Optional[str]]:
     """
@@ -913,8 +1000,12 @@ def validate_match(brand: Dict, creator: Dict) -> tuple[bool, Optional[str]]:
     """
     warnings = []
 
-    # Check blocked inbox
-    pr_email = (brand.get("pr_contact_email") or "").lower()
+    # Check blocked inbox (packages store contact_email; some rows use pr_contact_email)
+    pr_email = (
+        brand.get("pr_contact_email")
+        or brand.get("contact_email")
+        or ""
+    ).lower()
     for pattern in BLOCKED_INBOX_PATTERNS:
         if pr_email.startswith(pattern):
             warnings.append(f"Email '{pr_email}' is a generic inbox with low reply rates")

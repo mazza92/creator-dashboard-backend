@@ -9,6 +9,7 @@ calculator prefilters candidates and serves as fallback + brand-context gates
 
 from typing import Dict, List, Tuple, Optional
 import json
+import re
 
 
 # ============================================
@@ -144,6 +145,7 @@ CATEGORY_DNA = {
         'content_keywords': [
             'baby', 'newborn', 'toddler', 'carrier', 'babywear', 'diaper', 'nursery',
             'stroller', 'parenting', 'breastfeed', 'postpartum', 'kids',
+            'mom', 'mum', 'family', 'maternity',
         ],
         'deal_breaker': 'no_baby_content',
     },
@@ -423,6 +425,49 @@ AFFORDABLE_CREATOR_SIGNALS = (
 PARENTING_CREATOR_SIGNALS = (
     'parenting', 'baby', 'mom', 'mum', 'dad', 'family', 'toddler', 'maternity', 'kids',
 )
+OPTICAL_BRAND_SIGNALS = (
+    'glasses', 'eyewear', 'optical', 'spectacles', 'prescription lens',
+    'contact lens', 'contact lenses', 'frames', 'eye care', 'eyecare',
+    'vision correction',
+)
+OPTICAL_CREATOR_SIGNALS = (
+    'glasses', 'eyewear', 'optical', 'frames', 'vision', 'spectacles',
+)
+CBD_BRAND_SIGNALS = (
+    'cbd', 'thc', 'cannabis', 'hemp', 'delta-8', 'delta-9', 'delta 8', 'delta 9',
+)
+_SCORE_STOPWORDS = frozenset({
+    'the', 'a', 'an', 'and', 'or', 'for', 'with', 'from', 'this', 'that', 'your',
+    'our', 'their', 'its', 'to', 'of', 'in', 'on', 'at', 'by', 'is', 'are', 'be',
+    'as', 'we', 'you', 'they', 'it', 'brand', 'brands', 'product', 'products',
+    'creator', 'creators', 'content', 'official', 'shop', 'store', 'new', 'best',
+    'made', 'using', 'use', 'all', 'about', 'more', 'than', 'into', 'over',
+    'collection', 'collections', 'premium', 'quality', 'based', 'free',
+})
+_BEAUTY_SKU_TERMS = (
+    'concealer', 'foundation', 'serum', 'moisturizer', 'moisturiser', 'mascara',
+    'lipstick', 'cleanser', 'toner', 'sunscreen', 'spf', 'blush', 'primer',
+    'fragrance', 'perfume', 'skincare', 'makeup', 'shampoo', 'conditioner',
+)
+_WELLNESS_SKU_TERMS = (
+    'supplement', 'vitamin', 'probiotic', 'adaptogen', 'wellness', 'self-care',
+    'self care', 'mindful', 'ritual',
+)
+_PARENTING_SKU_TERMS = (
+    'baby', 'diaper', 'nappy', 'stroller', 'nursery', 'toddler', 'newborn',
+    'postpartum', 'maternity', 'carrier', 'sippy', 'pacifier',
+)
+_OFF_INTENT_WELLNESS_TERMS = (
+    'deodorant', 'antiperspirant', 'sweat', 'emf', 'radiation', 'faraday',
+)
+_HAIR_BRAND_TERMS = (
+    'shampoo', 'conditioner', 'scalp', 'haircare', 'hair care', 'curl', 'curls',
+)
+_GENERIC_BRAND_TOKENS = _SCORE_STOPWORDS | {
+    'clean', 'natural', 'formula', 'daily', 'gentle', 'vegan', 'skin',
+    'care', 'makeup', 'cosmetic', 'cosmetics', 'beauty', 'official',
+    'line', 'range', 'essentials', 'essential',
+}
 
 
 def _flatten_text(*parts) -> str:
@@ -486,6 +531,17 @@ def check_brand_context_mismatch(creator_profile: Dict, brand: Optional[Dict]) -
     ):
         return True, "Fashion/luxury category does not fit affordable parenting content"
 
+    is_optical_brand = any(s in brand_blob for s in OPTICAL_BRAND_SIGNALS)
+    creator_has_eyewear = any(s in creator_blob for s in OPTICAL_CREATOR_SIGNALS)
+    if is_optical_brand and not creator_has_eyewear:
+        return True, "Optical/eyewear brand does not fit this creator's content"
+
+    is_cbd_brand = any(s in brand_blob for s in CBD_BRAND_SIGNALS)
+    if is_cbd_brand and (is_parenting_creator or any(
+        s in creator_blob for s in ('beauty', 'skincare', 'makeup', 'baby')
+    )):
+        return True, "CBD/cannabis brand does not fit this creator's content"
+
     return False, ''
 
 
@@ -505,7 +561,7 @@ PRIMARY_NICHE_ADJACENCY = {
     'gaming': {'gaming', 'tech', 'entertainment'},
     'pet': {'pet'},
     'baby': {'baby', 'parenting', 'kids', 'family', 'maternity'},
-    'parenting': {'parenting', 'baby', 'kids', 'family', 'lifestyle', 'home'},
+    'parenting': {'parenting', 'baby', 'kids', 'family', 'lifestyle', 'home', 'beauty', 'skincare', 'wellness'},
 }
 
 
@@ -516,13 +572,31 @@ def _mapped_category(category: str) -> str:
         'streetwear': 'fashion', 'activewear': 'fitness', 'athleisure': 'fitness',
         'makeup': 'beauty', 'skincare': 'beauty', 'haircare': 'beauty',
         'cosmetics': 'beauty', 'beverage': 'food', 'beverages': 'food',
-        'food & beverage': 'food', 'parenting': 'lifestyle', 'family': 'lifestyle',
+        'parenting': 'parenting', 'family': 'parenting',
         'kids': 'baby', 'maternity': 'baby', 'babywearing': 'baby',
+        'baby & parenting': 'parenting',
+        'baby and parenting': 'parenting',
+        'parenting & baby': 'parenting',
+        'beauty & parenting': 'parenting',
+        'mom & baby': 'parenting',
         # Vague scrape labels — treat as lifestyle so adjacency isn't empty
         'other': 'lifestyle', 'unknown': 'lifestyle', 'general': 'lifestyle',
         'misc': 'lifestyle', 'miscellaneous': 'lifestyle',
     }
-    return aliases.get(category_lower, category_lower)
+    if category_lower in aliases:
+        return aliases[category_lower]
+    parts = [
+        p.strip()
+        for p in re.split(r'\s*(?:&|and|/|,|\+)\s*', category_lower)
+        if p.strip()
+    ]
+    mapped_parts = [aliases.get(p, p) for p in parts]
+    for prefer in ('baby', 'parenting', 'beauty', 'skincare', 'haircare'):
+        if prefer in mapped_parts:
+            return prefer if prefer not in ('skincare', 'haircare') else 'beauty'
+    if mapped_parts:
+        return mapped_parts[0]
+    return category_lower
 
 
 def check_primary_niche_mismatch(
@@ -664,6 +738,256 @@ def calculate_fit_score(
         'missing': missing,
         'category': category,
     }
+
+
+def _tier_info_for_score(overall_score: float) -> Dict:
+    for tier_name, tier_data in SCORE_TIERS.items():
+        if overall_score >= tier_data['min']:
+            return {
+                'tier': tier_name,
+                'status': tier_data['status'],
+                'stars': tier_data['stars'],
+                'label': tier_data['label'],
+            }
+    return {
+        'tier': 'not_recommended',
+        'status': 'build_first',
+        'stars': 1,
+        'label': 'Not Recommended',
+    }
+
+
+def _meaningful_tokens(text: str) -> set:
+    return {
+        t for t in re.findall(r'[a-z]{4,}', (text or '').lower())
+        if t not in _SCORE_STOPWORDS
+    }
+
+
+def scrape_agrees_with_intent(scrape_primary: str, intent_niches: Optional[List[str]]) -> bool:
+    """True when scrape lane is the same as, or adjacent to, onboarding interests."""
+    mapped = _mapped_category(scrape_primary or '')
+    intents = {
+        _mapped_category(str(n))
+        for n in (intent_niches or [])
+        if n and str(n).strip()
+    }
+    intents.discard('')
+    if not mapped or not intents:
+        return True
+    if mapped in intents:
+        return True
+    scrape_adj = PRIMARY_NICHE_ADJACENCY.get(mapped, {mapped})
+    if intents & scrape_adj:
+        return True
+    for intent in intents:
+        if mapped in PRIMARY_NICHE_ADJACENCY.get(intent, {intent}):
+            return True
+    return False
+
+
+def score_brand_for_creator(
+    creator_profile: Dict,
+    brand: Optional[Dict] = None,
+    interest_niches: Optional[List[str]] = None,
+) -> Dict:
+    """
+    Brand-aware fit score. Category DNA is the baseline; name, description,
+    hero product, creator themes, and onboarding intent differentiate brands
+    in the same category so For You does not flatten to one percentage.
+    """
+    brand = brand or {}
+    profile = creator_profile or {}
+    category = (brand.get('category') or '').lower().strip()
+    base = calculate_fit_score(profile, category, brand=brand)
+
+    aesthetic = profile.get('aesthetic') or {}
+    if isinstance(aesthetic, str):
+        try:
+            aesthetic = json.loads(aesthetic)
+        except Exception:
+            aesthetic = {}
+    descriptors = profile.get('aesthetic_descriptors')
+    if not descriptors and isinstance(aesthetic, dict):
+        descriptors = aesthetic.get('aesthetic_descriptors')
+
+    # Overlap uses real content only. Do not include interest labels or they
+    # match every brand in that lane and flatten scores to the ceiling.
+    creator_blob = _flatten_text(
+        profile.get('raw_bio'),
+        profile.get('content_themes'),
+        descriptors,
+    )
+    intent_blob = _flatten_text(
+        creator_blob,
+        profile.get('primary_niche'),
+        interest_niches,
+        profile.get('match_intent_lanes'),
+    )
+    brand_text = _flatten_text(
+        brand.get('name'),
+        brand.get('brand_name'),
+        brand.get('description'),
+        brand.get('hero_product'),
+        brand.get('product_sku_name'),
+    )
+
+    overlap = _meaningful_tokens(creator_blob) & _meaningful_tokens(brand_text)
+    overlap_pts = min(8, len(overlap) * 2)
+
+    theme_pts = 0
+    themes = profile.get('content_themes') or []
+    if isinstance(themes, str):
+        try:
+            themes = json.loads(themes)
+        except Exception:
+            themes = [themes]
+    for theme in list(themes)[:12]:
+        words = [
+            w for w in re.findall(r'[a-z]{4,}', str(theme).lower())
+            if w not in _SCORE_STOPWORDS
+        ]
+        if not words:
+            continue
+        if all(w in brand_text for w in words[:2]):
+            theme_pts += 3
+        elif any(w in brand_text for w in words):
+            theme_pts += 1
+    if any(s in intent_blob for s in ('fragrance', 'perfume', 'scent')) and any(
+        s in brand_text for s in ('fragrance', 'perfume', 'scent', 'eau')
+    ):
+        theme_pts += 4
+    sku_pts = 0
+    if any(s in brand_text for s in _BEAUTY_SKU_TERMS) and any(
+        s in intent_blob for s in ('beauty', 'makeup', 'skincare', 'glow', 'self-care', 'self care')
+    ):
+        sku_pts += 4
+    if any(s in brand_text for s in _WELLNESS_SKU_TERMS) and any(
+        s in intent_blob for s in ('wellness', 'self-care', 'self care', 'health', 'ritual')
+    ):
+        sku_pts += 3
+    if any(s in brand_text for s in _PARENTING_SKU_TERMS) and any(
+        s in intent_blob for s in ('baby', 'mom', 'mum', 'parent', 'family', 'toddler', 'kids')
+    ):
+        sku_pts += 5
+    theme_pts = min(8, theme_pts)
+
+    intent_lanes = set()
+    for src in (
+        interest_niches or [],
+        profile.get('match_intent_lanes') or [],
+    ):
+        for n in src:
+            mapped = _mapped_category(str(n))
+            if mapped:
+                intent_lanes.add(mapped)
+    if not intent_lanes and profile.get('primary_niche'):
+        intent_lanes.add(_mapped_category(str(profile.get('primary_niche'))))
+
+    proof_lanes = set()
+    for src in (
+        [profile.get('primary_niche')],
+        profile.get('secondary_niches') or [],
+        profile.get('match_proof_lanes') or [],
+    ):
+        for n in src:
+            if not n:
+                continue
+            mapped = _mapped_category(str(n))
+            if mapped:
+                proof_lanes.add(mapped)
+
+    mapped_cat = _mapped_category(category)
+    if mapped_cat == 'lifestyle' and any(s in brand_text for s in _BEAUTY_SKU_TERMS):
+        lane_cat = 'beauty'
+    else:
+        lane_cat = mapped_cat
+    if lane_cat in intent_lanes:
+        lane_pts = 8
+    elif any(lane_cat in PRIMARY_NICHE_ADJACENCY.get(lane, {lane}) for lane in intent_lanes):
+        lane_pts = 0
+    elif lane_cat in proof_lanes:
+        lane_pts = 0
+    else:
+        lane_pts = -14
+
+    penalty = 0
+    hard_caps = []
+    if any(s in brand_text for s in OPTICAL_BRAND_SIGNALS) and not any(
+        s in creator_blob for s in OPTICAL_CREATOR_SIGNALS
+    ):
+        penalty -= 30
+        hard_caps.append(32)
+    if any(s in brand_text for s in CBD_BRAND_SIGNALS):
+        penalty -= 35
+        hard_caps.append(28)
+    wellness_intent = bool(intent_lanes & {'wellness', 'fitness'})
+    if not wellness_intent and any(s in brand_text for s in _OFF_INTENT_WELLNESS_TERMS):
+        penalty -= 18
+    if any(s in brand_text for s in _HAIR_BRAND_TERMS) and not any(
+        s in intent_blob for s in ('hair', 'haircare', 'curl')
+    ):
+        penalty -= 5
+
+    follower_pts = 0
+    try:
+        followers = int(profile.get('follower_count') or 0)
+    except (TypeError, ValueError):
+        followers = 0
+    try:
+        min_f = int(brand.get('min_followers') or 0)
+    except (TypeError, ValueError):
+        min_f = 0
+    if followers and min_f:
+        if followers < min_f * 0.5:
+            follower_pts = -8
+        elif followers < min_f:
+            follower_pts = -3
+        elif followers >= min_f:
+            follower_pts = 1
+
+    distinctive = {
+        t for t in _meaningful_tokens(brand_text)
+        if t not in _GENERIC_BRAND_TOKENS
+    }
+    distinctive_pts = min(14, len(distinctive))
+
+    # Category DNA is a gate, not the displayed percentage. Identical beauty
+    # DNA was flattening every card to 55%.
+    in_intent = lane_cat in intent_lanes
+    lane_base = 52 if in_intent else (40 if lane_pts >= 0 else 30)
+    if base.get('deal_breaker') and (base.get('overall_score') or 0) <= 25:
+        lane_base = min(lane_base, 28)
+
+    score = (
+        lane_base
+        + distinctive_pts
+        + overlap_pts
+        + theme_pts
+        + sku_pts
+        + lane_pts
+        + penalty
+        + follower_pts
+    )
+    for cap in hard_caps:
+        score = min(score, cap)
+    score = int(round(max(8, min(86, score))))
+
+    tier_info = _tier_info_for_score(score)
+    result = dict(base)
+    result.update({
+        'overall_score': score,
+        'tier': tier_info['tier'],
+        'status': tier_info['status'],
+        'stars': tier_info['stars'],
+        'label': tier_info['label'],
+        'brand_overlap_pts': overlap_pts,
+        'theme_bonus_pts': theme_pts,
+        'lane_pts': lane_pts,
+    })
+    if hard_caps and not result.get('deal_breaker'):
+        result['deal_breaker'] = 'Brand product type does not fit this creator'
+    return result
 
 
 def get_score_context_for_llm(fit_score: Dict, brand_name: str) -> str:

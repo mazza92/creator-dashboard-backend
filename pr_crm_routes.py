@@ -87,11 +87,28 @@ except ImportError as e:
 
 # Gemini Pitch Generator V2 (variance-optimized, feature flagged)
 try:
-    from services.gemini_pitch_generator_v2 import get_generator_v2, validate_match, log_pitch_generation
+    from services.gemini_pitch_generator_v2 import (
+        get_generator_v2,
+        validate_match,
+        log_pitch_generation,
+        select_pitch_product,
+        is_generic_inbox,
+    )
     HAS_GEMINI_V2 = True
 except ImportError as e:
     HAS_GEMINI_V2 = False
     print(f"⚠️ Gemini pitch generator V2 not available: {e}")
+
+    def is_generic_inbox(email):
+        return bool(email and re.match(
+            r'^(info|support|help|hello|contact|care|customerservice)@',
+            str(email).strip(),
+            re.I,
+        ))
+
+    def select_pitch_product(brand, creator):
+        brand = brand or {}
+        return brand.get('hero_product') or brand.get('product_sku_name') or 'your product'
 
 # Feature flag for pitch engine v2 (50/50 A/B test)
 PITCH_ENGINE_V2_ENABLED = os.environ.get('PITCH_ENGINE_V2', '0') == '1'
@@ -110,17 +127,27 @@ try:
     from services.ai_depth_generator import get_ai_depth_generator
     from services.creator_profile_scraper import CreatorProfileScraper
     from services.brand_context_enricher import BrandContextEnricher
-    from services.fit_score_calculator import calculate_fit_score
+    from services.fit_score_calculator import (
+        calculate_fit_score,
+        score_brand_for_creator,
+        scrape_agrees_with_intent,
+    )
     HAS_AI_DEPTH = True
 except ImportError as e:
     HAS_AI_DEPTH = False
     print(f"⚠️ AI Depth generator not available: {e}")
     # Fit calculator can still power For You mentor-gate without full AI depth
     try:
-        from services.fit_score_calculator import calculate_fit_score
+        from services.fit_score_calculator import (
+            calculate_fit_score,
+            score_brand_for_creator,
+            scrape_agrees_with_intent,
+        )
         from services.creator_profile_scraper import CreatorProfileScraper
     except ImportError:
         calculate_fit_score = None
+        score_brand_for_creator = None
+        scrape_agrees_with_intent = None
         CreatorProfileScraper = None
 
 pr_crm = Blueprint('pr_crm', __name__, url_prefix='/api/pr-crm')
@@ -179,7 +206,7 @@ FOR_YOU_RELATED_NICHES = {
     'luxury': ['fashion', 'accessories'],
     # Lifestyle/parenting: adjacent product finds — NOT specialty baby carriers by default
     'lifestyle': ['home', 'food', 'wellness', 'beauty', 'skincare'],
-    'parenting': ['family', 'home', 'lifestyle', 'beauty', 'skincare', 'wellness', 'food'],
+    'parenting': ['family', 'home', 'lifestyle', 'beauty', 'skincare', 'wellness'],
     'baby': ['parenting', 'kids', 'family', 'home', 'lifestyle'],
     'kids': ['parenting', 'baby', 'family', 'home', 'lifestyle'],
     'family': ['parenting', 'home', 'lifestyle', 'food', 'beauty'],
@@ -208,6 +235,22 @@ FOR_YOU_EXCLUDE_TIERS = frozenset({'stretch_match', 'not_recommended'})
 # Hard-block categories that are never right for parenting/mom-finds creators
 FOR_YOU_PARENTING_BLOCKED_CATEGORIES = frozenset({
     'fashion', 'luxury', 'apparel', 'clothing', 'streetwear',
+    'cbd', 'cannabis', 'hemp',
+})
+_PARENTING_BLOCKED_NAME_RE = re.compile(
+    r'\b(cbd|thc|cannabis|hemp|delta-?8|delta-?9)\b',
+    re.I,
+)
+_OPTICAL_BRAND_RE = re.compile(
+    r'\b(glasses|eyewear|optical|spectacles|frames|contact lenses?|eye care|eyecare)\b',
+    re.I,
+)
+
+# Onboarding niches that should drive For You when scrape is vague (lifestyle/home)
+CONCRETE_FOR_YOU_NICHES = frozenset({
+    'beauty', 'skincare', 'makeup', 'haircare', 'cosmetics',
+    'parenting', 'baby', 'kids', 'family', 'mom', 'mum', 'maternity',
+    'fitness', 'food', 'fashion', 'tech', 'gaming', 'pet', 'wellness',
 })
 
 
@@ -232,12 +275,17 @@ def _creator_is_parenting_focused(niches, profile=None) -> bool:
 WEAK_SCRAPE_NICHES = frozenset({
     'other', 'unknown', 'general', 'misc', 'miscellaneous', 'n/a', 'na', 'none', '',
 })
+VAGUE_SCRAPE_WHEN_INTERESTS = frozenset({'lifestyle', 'home'}) | WEAK_SCRAPE_NICHES
 
 # Prefer concrete creator niches when inferring from interests/themes
 _INFER_PRIMARY_PREFERRED = [
     'haircare', 'skincare', 'beauty', 'makeup', 'fitness', 'activewear',
     'wellness', 'fashion', 'food', 'parenting', 'baby', 'home', 'lifestyle',
 ]
+_NOISY_SCRAPE_NICHES = frozenset({
+    'home decor', 'organization', 'cooking', 'ugc_creator', 'ugc',
+    'content creator', 'creator', 'other', 'unknown', 'general',
+})
 
 
 def _minimal_fit_profile_from_niches(niches, followers=0):
@@ -267,11 +315,20 @@ def _minimal_fit_profile_from_niches(niches, followers=0):
 def _infer_primary_from_signals(profile, niches=None):
     """
     When scrape primary is 'other'/weak, infer a usable primary from
-    interests + scrape secondary niches + content themes (not inventing niches).
+    onboarding interests first. Themes must not steal the lane (e.g. skincare
+    in posts should not replace Beauty + Baby).
     """
-    tokens = []
+    interest_tokens = set()
     for n in (niches or []):
-        tokens.extend(normalize_niche(n))
+        interest_tokens.update(t.lower().strip() for t in normalize_niche(n) if t)
+    concrete = interest_tokens & CONCRETE_FOR_YOU_NICHES
+    if concrete:
+        for pref in _INFER_PRIMARY_PREFERRED:
+            if pref in concrete:
+                return pref
+        return next(iter(concrete))
+
+    tokens = []
     for s in (profile.get('secondary_niches') or []):
         tokens.extend(normalize_niche(str(s)))
     themes = profile.get('content_themes') or []
@@ -288,119 +345,248 @@ def _infer_primary_from_signals(profile, niches=None):
     if not token_set:
         return None
 
-    # Prefer interest/theme that also appears in scrape secondary/themes
     for pref in _INFER_PRIMARY_PREFERRED:
         if pref in token_set:
             return pref
     return next(iter(token_set), None)
 
 
+def _has_concrete_interests(niches) -> bool:
+    tokens = set()
+    for n in (niches or []):
+        tokens.update(normalize_niche(n))
+    return bool(tokens & CONCRETE_FOR_YOU_NICHES)
+
+
+def _apply_inferred_primary(profile, inferred, niches, keep_scrape_primary=None):
+    secondary = []
+    for n in (niches or []):
+        for part in normalize_niche(n):
+            if part != inferred and part not in secondary:
+                secondary.append(part)
+    if keep_scrape_primary:
+        for part in normalize_niche(str(keep_scrape_primary)):
+            if (
+                part != inferred
+                and part not in secondary
+                and part not in _NOISY_SCRAPE_NICHES
+            ):
+                secondary.append(part)
+    profile['primary_niche'] = inferred
+    profile['secondary_niches'] = secondary
+    return profile
+
+
+def _merge_interest_secondaries(profile, niches):
+    """Keep onboarding niches on the profile so adjacency includes Beauty + Parenting."""
+    primary = str(profile.get('primary_niche') or '').lower().strip()
+    secondary = []
+    for n in (niches or []):
+        for part in normalize_niche(n):
+            if part != primary and part not in secondary:
+                secondary.append(part)
+    for s in (profile.get('secondary_niches') or []):
+        for part in normalize_niche(str(s)):
+            if (
+                part != primary
+                and part not in secondary
+                and part not in _NOISY_SCRAPE_NICHES
+            ):
+                secondary.append(part)
+    profile['secondary_niches'] = secondary
+    return profile
+
+
 def _prepare_for_you_profile(creator_profile_dict, niches=None, followers=0):
     """
-    Scoring profile = scraped social data when niche is usable.
-    Weak scrape primaries ('other') are repaired from interests + scrape themes
-    so For You can still return a full match set. Interests are never blindly
-    merged as secondary_niches when scrape primary is strong.
+    Scoring profile blends scrape (content proof) with onboarding (pitch intent).
+    When scrape is vague OR conflicts with concrete interests (fashion scrape vs
+    Beauty/Wellness), interests win as primary so cards match what the creator
+    actually wants to pitch.
     """
     if not creator_profile_dict or not creator_profile_dict.get('primary_niche'):
-        return _minimal_fit_profile_from_niches(niches, followers)
+        profile = _minimal_fit_profile_from_niches(niches, followers)
+        return _attach_match_lanes(profile, niches, scrape_primary=None)
 
     profile = dict(creator_profile_dict)
     primary = str(profile.get('primary_niche') or '').lower().strip()
+    scrape_primary = primary
     confidence = int(profile.get('primary_niche_confidence') or 0)
+    concrete = _has_concrete_interests(niches)
+    agrees = True
+    if scrape_agrees_with_intent:
+        agrees = scrape_agrees_with_intent(primary, list(niches or []))
+    vague_vs_interests = concrete and primary in VAGUE_SCRAPE_WHEN_INTERESTS
+    conflict_vs_interests = concrete and not agrees and primary not in WEAK_SCRAPE_NICHES
 
-    if primary in WEAK_SCRAPE_NICHES or confidence < 40:
+    if (
+        primary in WEAK_SCRAPE_NICHES
+        or confidence < 40
+        or vague_vs_interests
+        or conflict_vs_interests
+    ):
         inferred = _infer_primary_from_signals(profile, niches)
-        if inferred:
+        if inferred and inferred not in VAGUE_SCRAPE_WHEN_INTERESTS:
+            reason = 'conflict' if conflict_vs_interests else 'vague'
             print(
-                f"[ForYou] Weak scrape niche={primary!r} (conf={confidence}) "
+                f"[ForYou] Scrape niche={primary!r} (conf={confidence}, {reason}) "
                 f"-> inferred primary={inferred!r} from interests/themes"
             )
-            secondary = []
-            for n in (niches or []):
-                for part in normalize_niche(n):
-                    if part != inferred and part not in secondary:
-                        secondary.append(part)
-            for s in (profile.get('secondary_niches') or []):
-                for part in normalize_niche(str(s)):
-                    if part != inferred and part not in secondary:
-                        secondary.append(part)
-            profile['primary_niche'] = inferred
-            profile['secondary_niches'] = secondary
-            # Keep themes; ensure inferred signal is present for content scoring
-            themes = list(profile.get('content_themes') or [])
-            if inferred not in [str(t).lower() for t in themes]:
-                themes = [inferred] + themes
-            profile['content_themes'] = themes
-        else:
-            # Last resort: interests-only minimal profile, keep follower/engagement
+            profile = _apply_inferred_primary(
+                profile, inferred, niches, keep_scrape_primary=scrape_primary
+            )
+        elif primary in WEAK_SCRAPE_NICHES or confidence < 40:
             fallback = _minimal_fit_profile_from_niches(niches, followers or profile.get('follower_count') or 0)
             for key in ('follower_count', 'engagement_rate', 'posting_cadence_per_week',
-                        'raw_bio', 'handle', 'aesthetic'):
+                        'raw_bio', 'handle', 'aesthetic', 'content_themes'):
                 if profile.get(key) is not None:
                     fallback[key] = profile.get(key)
-            return fallback
+            return _attach_match_lanes(fallback, niches, scrape_primary=scrape_primary)
 
+    profile = _merge_interest_secondaries(profile, niches)
     if followers and not profile.get('follower_count'):
         profile['follower_count'] = followers
+    return _attach_match_lanes(profile, niches, scrape_primary=scrape_primary)
+
+
+def _attach_match_lanes(profile, niches, scrape_primary=None):
+    intent = []
+    for n in (niches or []):
+        for part in normalize_niche(n):
+            if part and part not in intent and part not in WEAK_SCRAPE_NICHES:
+                intent.append(part)
+    proof = []
+    if scrape_primary:
+        for part in normalize_niche(str(scrape_primary)):
+            if part and part not in proof and part not in WEAK_SCRAPE_NICHES:
+                proof.append(part)
+    for s in (profile.get('secondary_niches') or []):
+        for part in normalize_niche(str(s)):
+            if part and part not in proof and part not in WEAK_SCRAPE_NICHES:
+                proof.append(part)
+    profile['match_intent_lanes'] = intent
+    profile['match_proof_lanes'] = proof
     return profile
 
 
 def _build_for_you_category_pool(scrape_profile, interest_niches):
     """
     Candidate SQL categories:
-    - Core: scraped primary niche + adjacency (source of truth)
-    - Soft: user interest niches (may add a few off-lane brands; calculator still gates)
-    Weak scrape primaries ('other') do not constrain the pool — interests drive it.
+    - Core: onboarding interests when they are concrete (Beauty, Parenting, etc.)
+    - Soft: scrape lane, only when scrape agrees with interests
+    Conflicting scrape (fashion vs Beauty/Wellness) must not explode the pool
+    into apparel. Vague lifestyle interests must not pull coffee/food when
+    concrete interests already exist.
     """
     related = FOR_YOU_RELATED_NICHES
     core = set()
     soft = set()
-
-    if scrape_profile and scrape_profile.get('primary_niche'):
-        primary = str(scrape_profile.get('primary_niche')).lower().strip()
-        if primary not in WEAK_SCRAPE_NICHES:
-            for part in normalize_niche(primary):
-                core.add(part)
-                core.update(related.get(part, []))
-        for s in (scrape_profile.get('secondary_niches') or []):
-            for part in normalize_niche(str(s)):
-                if part in WEAK_SCRAPE_NICHES:
-                    continue
-                core.add(part)
-                core.update(related.get(part, []))
+    concrete = _has_concrete_interests(interest_niches)
 
     for n in (interest_niches or []):
         for part in normalize_niche(n):
-            soft.add(part)
-            soft.update(related.get(part, []))
+            if part in WEAK_SCRAPE_NICHES:
+                continue
+            core.add(part)
+            if part in VAGUE_SCRAPE_WHEN_INTERESTS and concrete:
+                continue
+            core.update(related.get(part, []))
 
-    # Prefer scrape core; keep soft extras that aren't already included
+    scrape_vague = True
+    scrape_conflicts = False
+    if scrape_profile and scrape_profile.get('primary_niche'):
+        primary = str(scrape_profile.get('primary_niche')).lower().strip()
+        scrape_vague = (
+            primary in WEAK_SCRAPE_NICHES
+            or (primary in VAGUE_SCRAPE_WHEN_INTERESTS and bool(core))
+        )
+        if core and scrape_agrees_with_intent:
+            scrape_conflicts = not scrape_agrees_with_intent(primary, list(interest_niches or []))
+        if not scrape_vague and not scrape_conflicts:
+            for part in normalize_niche(primary):
+                soft.add(part)
+                soft.update(related.get(part, []))
+            for s in (scrape_profile.get('secondary_niches') or []):
+                for part in normalize_niche(str(s)):
+                    if part in WEAK_SCRAPE_NICHES:
+                        continue
+                    soft.add(part)
+                    soft.update(related.get(part, []))
+        elif scrape_conflicts:
+            for part in normalize_niche(primary):
+                if part not in WEAK_SCRAPE_NICHES:
+                    soft.add(part)
+
     if core:
-        return list(core | soft)
+        labels = core if scrape_vague else (core | soft)
+        expanded = set(labels)
+        for part in list(labels):
+            if part in ('baby', 'parenting', 'kids', 'family', 'maternity'):
+                expanded.update({
+                    'baby & parenting', 'baby and parenting', 'parenting & baby',
+                    'mom & baby', 'beauty & parenting',
+                })
+        return list(expanded)
     return list(soft)
+
+
+def _creator_is_eyewear_focused(niches, profile=None) -> bool:
+    blob = ' '.join(str(n) for n in (niches or []))
+    if profile:
+        blob += ' ' + str(profile.get('primary_niche') or '')
+        blob += ' ' + str(profile.get('raw_bio') or '')
+        themes = profile.get('content_themes') or []
+        if isinstance(themes, (list, tuple)):
+            blob += ' ' + ' '.join(str(t) for t in themes)
+    return bool(re.search(r'\b(glasses|eyewear|optical|frames|vision|spectacles)\b', blob, re.I))
+
+
+def _for_you_should_skip_brand(brand, niches, profile=None) -> bool:
+    """Drop fashion/CBD for parenting creators and optical brands for everyone else."""
+    cat = (brand.get('category') or '').lower().strip()
+    name = ' '.join(str(brand.get(k) or '') for k in ('name', 'brand_name', 'description', 'hero_product'))
+    if _creator_is_parenting_focused(niches, profile):
+        if cat in FOR_YOU_PARENTING_BLOCKED_CATEGORIES:
+            return True
+        if _PARENTING_BLOCKED_NAME_RE.search(name):
+            return True
+    if _OPTICAL_BRAND_RE.search(name) and not _creator_is_eyewear_focused(niches, profile):
+        return True
+    return False
+
+
+def pack_contact_email(brand):
+    """Return the brand inbox as stored. Form URLs are extra, not a replacement."""
+    if not brand:
+        return None, False
+    email = (brand.get('contact_email') or brand.get('pr_contact_email') or '').strip() or None
+    generic = is_generic_inbox(email) if email else False
+    return email, generic
 
 
 def _apply_mentor_fit_to_for_you(matched_rows, creator_profile_dict, niches=None, followers=0):
     """
     Calculator-only fallback when mentor LLM is unavailable.
-    Uses brand-aware calculate_fit_score (same as unlock).
+    Uses brand-aware scoring so cards do not share one percentage.
     """
     if not matched_rows:
         return []
-    if calculate_fit_score is None:
-        print("[ForYou] calculate_fit_score unavailable — skipping mentor gate")
+    scorer = score_brand_for_creator or calculate_fit_score
+    if scorer is None:
+        print("[ForYou] fit scorer unavailable — skipping mentor gate")
         return [dict(r) for r in matched_rows][:8]
 
     profile = _prepare_for_you_profile(creator_profile_dict, niches, followers)
-    # Fashion block uses scrape + interests only as a safety net for parenting creators
-    block_fashion = _creator_is_parenting_focused(niches, profile)
 
     scored = []
     for brand_row in matched_rows:
         brand = dict(brand_row)
-        brand_category = (brand.get('category') or '').lower().strip()
-        fit_result = calculate_fit_score(profile, brand_category, brand=brand)
+        if _for_you_should_skip_brand(brand, niches, profile):
+            continue
+        if score_brand_for_creator:
+            fit_result = score_brand_for_creator(profile, brand, interest_niches=list(niches or []))
+        else:
+            fit_result = calculate_fit_score(profile, (brand.get('category') or ''), brand=brand)
         fit_score_val = fit_result.get('overall_score', 0)
         tier = fit_result.get('tier', 'growth_match')
         status = fit_result.get('status', 'not_yet')
@@ -411,20 +597,19 @@ def _apply_mentor_fit_to_for_you(matched_rows, creator_profile_dict, niches=None
         brand['fit_label'] = fit_result.get('label')
         brand['match_source'] = 'calculator_fallback'
 
-        if block_fashion and brand_category in FOR_YOU_PARENTING_BLOCKED_CATEGORIES:
-            continue
-
         if fit_score_val < FOR_YOU_MIN_FIT_SCORE or tier in FOR_YOU_EXCLUDE_TIERS:
             continue
         scored.append(brand)
 
-    scored.sort(
-        key=lambda x: (
-            0 if x.get('fit_status') in ('ready', 'almost') else 1,
-            -((x.get('match_score') or 0) * (1.0 + min(float(x.get('price_point') or 0), 200) / 100.0)),
-        ),
-    )
-    return scored[:8]
+    scored.sort(key=lambda x: x.get('match_score') or 0, reverse=True)
+    try:
+        from services.mentor_matchmaker import diversify_matches
+        return diversify_matches(
+            scored, limit=8, max_per_raw=2, max_per_family=5,
+            interest_niches=list(niches or []),
+        )
+    except Exception:
+        return scored[:8]
 
 
 def _rank_for_you_with_mentor(matched_rows, creator_profile_dict, niches=None, followers=0, creator_id=None):
@@ -4136,7 +4321,7 @@ def generate_pitch():
         return jsonify({
             'success': True,
             **pitch_response,
-            'brand_email': brand.get('contact_email'),
+            'brand_email': pack_contact_email(brand)[0],
             'brand_name': brand.get('brand_name'),
             'brand_logo': brand.get('logo_url'),
             'application_form_url': brand.get('application_form_url'),
@@ -4295,7 +4480,7 @@ def generate_pr_package():
                         'success': True,
                         'package': package_data,
                         'cached': True,
-                        'brand_email': brand.get('contact_email'),
+                        'brand_email': pack_contact_email(brand)[0],
                         'application_form_url': brand.get('application_form_url'),
                         'media_kit_url': cached_media_kit_url,
                         'kit_published': cached_creator.get('kit_published', False) if cached_creator else False,
@@ -4383,7 +4568,7 @@ def generate_pr_package():
                         'success': True,
                         'package': package_data,
                         'cached': True,
-                        'brand_email': brand.get('contact_email'),
+                        'brand_email': pack_contact_email(brand)[0],
                         'application_form_url': brand.get('application_form_url'),
                         'media_kit_url': cached_media_kit_url,
                         'kit_published': cached_creator.get('kit_published', False) if cached_creator else False,
@@ -4477,7 +4662,11 @@ def generate_pr_package():
         if HAS_GEMINI_V2:
             print("[generate-pr-package] Using V2 pitch generator")
             generator_v2 = get_generator_v2()
-            v2_result = generator_v2.generate(brand_dict, creator_dict)
+            v2_result = generator_v2.generate(
+                brand_dict,
+                creator_dict,
+                template_fallback_fn=generate_golden_template_pitch,
+            )
 
             if not v2_result.success:
                 conn.close()
@@ -4741,7 +4930,7 @@ def generate_pr_package():
             'success': True,
             'package': package_data,
             'cached': False,
-            'brand_email': brand.get('contact_email'),
+            'brand_email': pack_contact_email(brand)[0],
             'application_form_url': brand.get('application_form_url'),
             'brand_unlocked': unlock_result.get('brand_unlocked', False),
             'already_unlocked': unlock_result.get('already_unlocked', False),
@@ -4882,7 +5071,7 @@ def generate_pr_package_v2():
             # ========================================
             # STEP 1: INBOX FOUND (contact resolution)
             # ========================================
-            contact_email = brand.get('contact_email')
+            contact_email, _email_generic = pack_contact_email(brand)
             yield send_event('inbox_found', {
                 'email': contact_email,
                 'email_display': f"{contact_email[:12]}..." if contact_email and len(contact_email) > 15 else contact_email,
@@ -5106,7 +5295,11 @@ def generate_pr_package_v2():
             if HAS_GEMINI_V2:
                 print("[generate-pr-package-v2] Using V2 pitch generator")
                 generator_v2 = get_generator_v2()
-                v2_result = generator_v2.generate(dict(brand), dict(creator))
+                v2_result = generator_v2.generate(
+                    dict(brand),
+                    dict(creator),
+                    template_fallback_fn=generate_golden_template_pitch,
+                )
 
                 if not v2_result.success:
                     yield send_event('error', {'error': v2_result.error or 'Generation failed'})
@@ -5597,7 +5790,7 @@ def get_pr_package(brand_id):
         return jsonify({
             'success': True,
             'package': package_data,
-            'brand_email': brand.get('contact_email'),
+            'brand_email': pack_contact_email(brand)[0],
             'application_form_url': brand.get('application_form_url'),
         })
 
@@ -6341,14 +6534,18 @@ def generate_golden_template_pitch(brand, creator):
 
     # ===== BRAND DATA =====
     brand_name = brand.get('brand_name', 'the brand')
-    hero_product_raw = brand.get('hero_product')
     category = (brand.get('category') or '').lower()
+
+    try:
+        hero_product_raw = select_pitch_product(brand, creator)
+    except Exception:
+        hero_product_raw = brand.get('hero_product')
 
     hero_product = clean_hero_product(hero_product_raw) if hero_product_raw else None
     if not hero_product:
         hero_product = f"{brand_name} products"
 
-    has_specific_hero = bool(brand.get('hero_product'))
+    has_specific_hero = bool(hero_product) and not str(hero_product).lower().endswith(' products')
 
     # Grammar: plural detection
     product_lower = hero_product.lower()
@@ -8339,13 +8536,13 @@ def get_for_you():
         # Prevents showing brands with high requirements to micro-creators
         min_follower_cap = get_min_follower_cap(followers)
 
-        # Get IDs the user has already pitched (exclude from recommendations)
+        # Get IDs already in this creator's pipeline (unlocked, saved, pitched)
         cursor.execute("""
-            SELECT brand_id FROM creator_pipeline
-            WHERE creator_id = %s AND (send_confirmed = TRUE OR pitched_at IS NOT NULL)
+            SELECT DISTINCT brand_id FROM creator_pipeline
+            WHERE creator_id = %s AND brand_id IS NOT NULL
         """, (creator_id,))
-        already_pitched = cursor.fetchall()
-        exclude_ids = [r['brand_id'] for r in already_pitched] if already_pitched else [0]
+        already_seen = cursor.fetchall()
+        exclude_ids = [r['brand_id'] for r in already_seen] if already_seen else [0]
 
         # ── Section 1: Most Contacted Brands ─────────────────────────────
         # Top brands by total creators who pitched (stage = 'pitched') in past 30 days
@@ -8562,92 +8759,41 @@ def get_for_you():
         creator_related = set(_build_for_you_category_pool(scrape_profile, interest_niches))
 
         if niches or followers or scrape_profile:
-            # Build the scoring SQL with real differentiation
-            # Filter by brand Instagram followers to avoid showing mega-brands to micro-creators
+            rotation_salt = f"{creator_id}:{datetime.utcnow().strftime('%G-%V')}"
             brand_filter_sql = ""
-            query_params = [
-                [n.lower() for n in niches] if niches else [''],  # Exact match niches
-                list(creator_related) if creator_related else [''],  # Related niches
-                followers, followers, followers, followers, followers,  # For follower checks
-                exclude_ids
-            ]
+            query_params = [exclude_ids]
 
             if min_follower_cap:
                 brand_filter_sql = "AND (b.min_followers IS NULL OR b.min_followers <= %s)"
                 query_params.append(min_follower_cap)
 
-            # Add sensitive category exclusion
             if excluded_categories:
                 brand_filter_sql += " AND LOWER(b.category) != ALL(%s)"
                 query_params.append(excluded_categories)
 
-            # Add niche relevance filter - only show brands matching creator's niches or related niches
             all_relevant_niches = list(creator_related) if creator_related else []
             if all_relevant_niches:
                 brand_filter_sql += " AND LOWER(b.category) = ANY(%s)"
                 query_params.append(all_relevant_niches)
 
-            # Multi-niche users: add contact popularity to secondary sort
-            has_multiple_niches = len(niches) > 1 if niches else False
-            order_clause = """
-                ORDER BY match_score DESC,
-                    (SELECT COUNT(DISTINCT cp.creator_id) FROM creator_pipeline cp
-                     WHERE cp.brand_id = b.id AND cp.stage = 'pitched'
-                     AND cp.created_at > NOW() - INTERVAL '30 days') DESC,
-                    b.response_rate DESC NULLS LAST
-            """ if has_multiple_niches else "ORDER BY match_score DESC, b.response_rate DESC NULLS LAST"
+            query_params.append(rotation_salt)
 
             cursor.execute(f"""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate, b.price_point,
                     b.min_followers, b.max_followers, b.micro_friendly, b.website, b.application_form_url,
-                    b.has_application_form,
+                    b.has_application_form, b.hero_product,
                     (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
                     b.niches AS brand_niches, b.regions, b.avg_product_value,
-                    -- Match score scaled to 58-91%% range with natural variance
-                    LEAST(91, GREATEST(58, (
-                        58 + (
-                            -- NICHE MATCH (0-12 scaled points)
-                            CASE
-                                WHEN LOWER(b.category) = ANY(%s) THEN 12
-                                WHEN LOWER(b.category) = ANY(%s) THEN 8
-                                ELSE 3
-                            END
-                            -- FOLLOWER FIT (0-9 scaled points)
-                            + CASE
-                                WHEN %s BETWEEN COALESCE(b.min_followers, 0)
-                                    AND COALESCE(b.max_followers, 999999999) THEN 9
-                                WHEN %s >= COALESCE(b.min_followers, 0)
-                                    AND b.max_followers IS NULL THEN 8
-                                WHEN %s >= COALESCE(b.min_followers, 0) * 0.7 THEN 6
-                                WHEN %s >= COALESCE(b.min_followers, 0) * 0.5 THEN 4
-                                WHEN %s > COALESCE(b.max_followers, 999999999) THEN 3
-                                ELSE 2
-                            END
-                            -- RESPONSE RATE (0-7 scaled points)
-                            + CASE
-                                WHEN COALESCE(b.response_rate, 0) >= 50 THEN 7
-                                WHEN COALESCE(b.response_rate, 0) >= 35 THEN 5
-                                WHEN COALESCE(b.response_rate, 0) >= 20 THEN 4
-                                WHEN COALESCE(b.response_rate, 0) >= 10 THEN 2
-                                ELSE 1
-                            END
-                            -- BRAND QUALITY SIGNALS (0-5 scaled points)
-                            + CASE WHEN b.has_application_form = true THEN 2 ELSE 0 END
-                            + CASE WHEN b.contact_email IS NOT NULL AND b.contact_email != '' THEN 1 ELSE 0 END
-                            + CASE WHEN COALESCE(b.price_point, 0) >= 50 THEN 2 ELSE 0 END
-                            -- DETERMINISTIC VARIANCE per brand (0-8 points, prime modulo for spread)
-                            + (b.id %% 9)
-                        )
-                    )))::int AS match_score
+                    0 AS match_score
                 FROM pr_brands b
                 WHERE b.slug IS NOT NULL
                   AND COALESCE(b.status, 'published') = 'published'
                   AND b.id != ALL(%s)
                   {brand_filter_sql}
-                {order_clause}
-                LIMIT 60
+                ORDER BY md5(concat_ws(':', b.id::text, %s))
+                LIMIT 90
             """, tuple(query_params))
             matched = cursor.fetchall()
         else:
@@ -8810,7 +8956,8 @@ def get_for_you():
                 )
                 print(
                     f"[ForYou] Effective scoring primary={prep.get('primary_niche')} "
-                    f"secondary={prep.get('secondary_niches')}"
+                    f"secondary={prep.get('secondary_niches')} "
+                    f"intent={prep.get('match_intent_lanes')}"
                 )
 
                 filtered_matched = _rank_for_you_with_mentor(
@@ -8834,17 +8981,18 @@ def get_for_you():
                                 b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                                 b.description, b.category, b.response_rate, b.price_point,
                                 b.min_followers, b.max_followers, b.micro_friendly, b.website, b.application_form_url,
-                                b.has_application_form,
+                                b.has_application_form, b.hero_product,
                                 (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
                                 b.niches AS brand_niches, b.regions, b.avg_product_value,
-                                60 AS match_score
+                                0 AS match_score
                             FROM pr_brands b
                             WHERE b.slug IS NOT NULL
                               AND COALESCE(b.status, 'published') = 'published'
                               AND LOWER(b.category) = ANY(%s)
-                            ORDER BY b.response_rate DESC NULLS LAST
-                            LIMIT 80
-                        """, (related_list,))
+                              AND b.id != ALL(%s)
+                            ORDER BY md5(concat_ws(':', b.id::text, %s))
+                            LIMIT 90
+                        """, (related_list, exclude_ids, f"{creator_id}:{datetime.utcnow().strftime('%G-%V')}"))
                         retry_rows = cursor.fetchall()
                         # Rank with prepared profile so inferred primary is used
                         try:
@@ -8880,6 +9028,13 @@ def get_for_you():
                     )
                 except Exception:
                     filtered_matched = []
+
+        if filtered_matched:
+            prep = _prepare_for_you_profile(scrape_profile, interest_niches, followers or 0)
+            filtered_matched = [
+                b for b in filtered_matched
+                if not _for_you_should_skip_brand(b, interest_niches, prep)
+            ]
 
         if filtered_matched:
             top_score = filtered_matched[0].get('match_score', 0)

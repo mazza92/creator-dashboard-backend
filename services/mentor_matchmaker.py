@@ -1,15 +1,14 @@
 """
-Mentor Matchmaker — sole For You brand ranking brain.
+Mentor Matchmaker — For You brand ranking.
 
-Source of truth for scoring: scraped social profile (same as unlock).
-User dashboard/onboarding niches are INTERESTS only — soft preference for
-ordering, never merged into fit scoring.
+Scoring is brand-aware (name, description, hero SKU vs creator bio/themes/interests).
+Category DNA is only the baseline so two beauty brands do not share one percentage.
 
 Flow:
-1. SQL candidate pool (scrape lane + optional interest expansion)
-2. Calculator unlock-parity prefilter
-3. Gemini returns ordered brand IDs only (tiny JSON — avoids truncation)
-4. Calculator score/status displayed on cards
+1. SQL candidate pool (intent lanes + limited scrape proof)
+2. Brand-aware calculator scores every candidate
+3. Diversity cap + weekly rotation already applied upstream
+4. Gemini optionally reorders IDs; displayed score stays calculator
 5. Cache successful ranks (~1 hour)
 """
 
@@ -20,13 +19,13 @@ import json
 import os
 import re
 import time
+from collections import Counter
 from typing import Dict, List, Optional, Tuple
 
 import requests
 
 from services.fit_score_calculator import (
-    calculate_fit_score,
-    SCORE_TIERS,
+    score_brand_for_creator,
     PRIMARY_NICHE_ADJACENCY,
     _mapped_category,
 )
@@ -44,13 +43,16 @@ _MATCH_CACHE: Dict[int, Tuple[float, str, List[Dict]]] = {}
 _CACHE_TTL_SEC = int(os.getenv('MENTOR_MATCH_CACHE_TTL', '3600'))
 
 MATCHMAKER_SYSTEM = '''You are NewCollab's AI talent manager.
-Rank pre-approved brand IDs for ONE creator using their scraped social profile.
+Rank pre-approved brand IDs for ONE creator using their scraped social profile AND onboarding interests.
 
 Return ONLY: {"ranked_ids":[123,456,789]}
-- Best fit first
+- Best product fit first (match creator themes, bio, and interests to the brand description)
 - Return UP TO 8 IDs whenever the candidate list has enough — aim for 8
 - Only IDs from the candidate list
-- Prefer PRIMARY niche brands over bio buzzwords
+- Honor USER INTERESTS as pitching intent. Scrape is content proof, not a reason to ignore Beauty/Wellness
+- Do not rank coffee, CBD, cannabis, optical/eyewear, or fashion for beauty/parenting/wellness creators unless the brand clearly matches those interests
+- Prefer brands whose products the creator actually talks about
+- Spread across the list — do not always pick the same popular beauty names
 - Never return only 1 ID if more candidates exist
 '''
 
@@ -107,18 +109,19 @@ def _creator_summary(profile: Dict, interest_niches: List[str]) -> str:
         except Exception:
             aesthetic = {}
 
-    return f"""CREATOR SOCIAL PROFILE (scraped — scoring source of truth)
+    return f"""CREATOR SOCIAL PROFILE (scraped — content proof)
 Handle: @{_safe_text(profile.get('handle') or 'creator', 40)}
 Followers: {profile.get('follower_count') or 0}
 Bio: {_safe_text(profile.get('raw_bio'), 220)}
-Primary niche (AI scrape): {_safe_text(profile.get('primary_niche') or 'n/a', 40)}
-Secondary niches (AI scrape): {_safe_text(', '.join(str(s) for s in secondary) if secondary else 'n/a', 120)}
+Primary niche (effective): {_safe_text(profile.get('primary_niche') or 'n/a', 40)}
+Secondary niches: {_safe_text(', '.join(str(s) for s in secondary) if secondary else 'n/a', 120)}
 Content themes: {_safe_text(', '.join(str(t) for t in themes[:12]) if themes else 'n/a', 160)}
 Aesthetic: {_safe_text(', '.join(str(x) for x in (aesthetic.get('aesthetic_descriptors') or [])[:8]), 120)}
 Engagement: {profile.get('engagement_rate')} | Posts/week: {profile.get('posting_cadence_per_week')}
 
-USER INTERESTS (soft preference only — do NOT treat as content proof):
+USER INTERESTS (pitching intent — rank brands in these lanes first):
 {_safe_text(', '.join(interest_niches) if interest_niches else 'none', 120)}
+If interests include beauty, skincare, wellness, parenting, or baby, do not rank coffee, CBD, cannabis, optical/eyewear, or fashion unless the brand category is clearly in those interests.
 """
 
 
@@ -126,6 +129,8 @@ def _brand_card(brand: Dict) -> str:
     return (
         f"- id={brand.get('id')} | {_safe_text(brand.get('name') or brand.get('brand_name'), 50)} | "
         f"cat={_safe_text(brand.get('category'), 24)} | "
+        f"score={brand.get('match_score')} | "
+        f"hero={_safe_text(brand.get('hero_product'), 40)} | "
         f"desc={_safe_text(brand.get('description'), 80)}"
     )
 
@@ -247,19 +252,117 @@ def _in_scrape_lane(profile: Dict, brand_category: str) -> bool:
     return mapped_brand in adjacent
 
 
-def _interest_boost(brand_category: str, interest_niches: List[str]) -> float:
-    """Tiny soft boost — never enough to rescue a Stretch brand."""
-    if not interest_niches:
-        return 0.0
-    cat = (brand_category or '').lower()
-    mapped_cat = _mapped_category(cat)
-    for n in interest_niches:
-        n = (n or '').lower()
-        if not n:
-            continue
-        if n in cat or cat in n or _mapped_category(n) == mapped_cat:
-            return 3.0
-    return 0.0
+_GENERIC_NAME_STEMS = frozenset({
+    'baby', 'beauty', 'skin', 'the', 'for', 'and', 'your', 'new', 'our',
+})
+_PARENTING_FAMILIES = frozenset({'baby', 'parenting', 'family', 'kids', 'maternity'})
+_BEAUTY_FAMILIES = frozenset({'beauty', 'skincare', 'makeup', 'haircare', 'cosmetics'})
+
+
+def _intent_bucket(category: str) -> str:
+    raw = (category or '').lower().strip()
+    mapped = _mapped_category(raw) or raw
+    if mapped in _PARENTING_FAMILIES or raw in _PARENTING_FAMILIES:
+        return 'parenting'
+    if mapped in _BEAUTY_FAMILIES or raw in _BEAUTY_FAMILIES:
+        return 'beauty'
+    return mapped or 'other'
+
+
+def diversify_matches(
+    brands: List[Dict],
+    limit: int = 8,
+    max_per_raw: int = 2,
+    max_per_family: int = 4,
+    interest_niches: Optional[List[str]] = None,
+) -> List[Dict]:
+    """Keep the strongest brands without filling the feed with one category.
+
+    Beauty + Baby creators get reserved seats in both lanes so deodorant
+    and EMF brands cannot consume the leftover slots.
+    """
+    intent = set()
+    for n in interest_niches or []:
+        token = str(n or '').lower().strip()
+        if token:
+            intent.add(token)
+            intent.add(_mapped_category(token))
+    wants_parenting = bool(intent & _PARENTING_FAMILIES)
+    wants_beauty = bool(intent & _BEAUTY_FAMILIES)
+
+    quotas = None
+    if wants_parenting and wants_beauty and limit <= 8:
+        quotas = {'beauty': 4, 'parenting': 3, 'other': 1}
+    elif wants_parenting and wants_beauty:
+        quotas = {'beauty': max(6, limit // 2), 'parenting': max(6, limit // 2), 'other': 2}
+
+    out: List[Dict] = []
+    raw_counts: Counter = Counter()
+    family_counts: Counter = Counter()
+    bucket_counts: Counter = Counter()
+    seen_stems = set()
+    seen_ids = set()
+
+    def _try_append(brand: Dict, enforce_quota: bool) -> bool:
+        bid = brand.get('id')
+        bid_int = None
+        if bid is not None:
+            try:
+                bid_int = int(bid)
+            except (TypeError, ValueError):
+                bid_int = None
+            if bid_int is not None and bid_int in seen_ids:
+                return False
+        raw_cat = (brand.get('category') or '').lower().strip() or 'unknown'
+        family = _mapped_category(raw_cat) or raw_cat
+        bucket = _intent_bucket(raw_cat)
+        raw_limit = max_per_raw
+        if enforce_quota and quotas and bucket == 'parenting':
+            raw_limit = max(max_per_raw, int(quotas.get('parenting') or max_per_raw))
+        if raw_counts[raw_cat] >= raw_limit:
+            return False
+        if family_counts[family] >= max_per_family:
+            return False
+        if enforce_quota and quotas:
+            quota_key = bucket if bucket in quotas else 'other'
+            if bucket_counts[quota_key] >= quotas.get(quota_key, 0):
+                return False
+        name = (brand.get('name') or brand.get('brand_name') or '').lower()
+        stem = re.split(r'[\s+/&-]+', name)[0] if name else ''
+        if stem and len(stem) > 3 and stem not in _GENERIC_NAME_STEMS and stem in seen_stems:
+            return False
+        out.append(brand)
+        raw_counts[raw_cat] += 1
+        family_counts[family] += 1
+        bucket_counts[bucket if bucket in (quotas or {}) else 'other'] += 1
+        if stem and len(stem) > 3 and stem not in _GENERIC_NAME_STEMS:
+            seen_stems.add(stem)
+        if bid_int is not None:
+            seen_ids.add(bid_int)
+        return True
+
+    for brand in brands:
+        if len(out) >= limit:
+            break
+        _try_append(brand, enforce_quota=True)
+
+    if len(out) < limit:
+        for brand in brands:
+            if len(out) >= limit:
+                break
+            _try_append(brand, enforce_quota=False)
+
+    return out
+
+
+def _apply_brand_score(brand: Dict, profile: Dict, interest_niches: Optional[List[str]] = None) -> Tuple[Dict, Dict]:
+    brand_dict = dict(brand)
+    fit = score_brand_for_creator(profile, brand_dict, interest_niches=interest_niches)
+    brand_dict['match_score'] = fit['overall_score']
+    brand_dict['fit_tier'] = fit['tier']
+    brand_dict['fit_status'] = fit['status']
+    brand_dict['fit_label'] = fit['label']
+    return brand_dict, fit
 
 
 def _prefilter_candidates(
@@ -268,50 +371,25 @@ def _prefilter_candidates(
     interest_niches: Optional[List[str]] = None,
     min_score: int = 35,
 ) -> List[Dict]:
-    """Unlock-parity calculator gate. Prefer scrape-lane brands in shortlist."""
+    """Brand-aware gate. Rank by real scores, then diversify the shortlist."""
     interest_niches = interest_niches or []
-    usable_lane = _has_usable_scrape_lane(profile)
-    in_lane = []
-    out_lane = []
+    scored = []
     for brand in brands:
-        brand_dict = dict(brand)
-        cat = brand_dict.get('category') or ''
-        fit = calculate_fit_score(profile, cat, brand=brand_dict)
+        brand_dict, fit = _apply_brand_score(brand, profile, interest_niches)
         if fit['overall_score'] < min_score or fit['tier'] in ('stretch_match', 'not_recommended'):
             continue
-        brand_dict['match_score'] = fit['overall_score']
-        brand_dict['fit_tier'] = fit['tier']
-        brand_dict['fit_status'] = fit['status']
-        brand_dict['fit_label'] = fit['label']
-        in_lane_flag = _in_scrape_lane(profile, cat) if usable_lane else True
-        brand_dict['_sort'] = (
-            fit['overall_score']
-            + _interest_boost(cat, interest_niches)
-            + (10 if in_lane_flag and usable_lane else 0)
-        )
-        if in_lane_flag:
-            in_lane.append(brand_dict)
-        else:
-            out_lane.append(brand_dict)
+        scored.append(brand_dict)
 
-    in_lane.sort(key=lambda b: b.get('_sort') or 0, reverse=True)
-    out_lane.sort(key=lambda b: b.get('_sort') or 0, reverse=True)
-
-    if usable_lane:
-        # Cap off-lane interest brands so beauty feeds aren't flooded with bags/tech
-        kept = in_lane[:14] + out_lane[:4]
-    else:
-        # Weak scrape niche — use full calculator-approved pool (up to 16)
-        kept = in_lane + out_lane
-        print(
-            f"[MentorMatch] Weak scrape lane — shortlist from "
-            f"{len(kept)} calculator-approved brands (no 2-cap)"
-        )
-
-    kept.sort(key=lambda b: b.get('_sort') or 0, reverse=True)
-    for b in kept:
-        b.pop('_sort', None)
-    return kept[:16]
+    scored.sort(key=lambda b: b.get('match_score') or 0, reverse=True)
+    kept = diversify_matches(
+        scored, limit=20, max_per_raw=3, max_per_family=8,
+        interest_niches=interest_niches,
+    )
+    print(
+        f"[MentorMatch] scored={len(scored)} shortlist={len(kept)} "
+        f"primary={profile.get('primary_niche')} interests={interest_niches}"
+    )
+    return kept
 
 
 def _fallback_from_calculator(
@@ -319,49 +397,39 @@ def _fallback_from_calculator(
     brands: List[Dict],
     limit: int = 8,
     require_scrape_lane: bool = False,
+    interest_niches: Optional[List[str]] = None,
 ) -> List[Dict]:
-    """
-    Rank calculator-approved brands.
-    require_scrape_lane=False by default so backfill can fill to 8 when the
-    LLM returns a thin list (critical when scrape niche was weak/'other').
-    """
+    """Rank calculator-approved brands by brand-aware score, then diversify."""
     ranked = []
     usable_lane = _has_usable_scrape_lane(profile)
     for brand in brands:
         b = dict(brand)
-        # Reuse scores from prefilter when present
         if b.get('fit_tier') and b.get('match_score') is not None:
             fit_tier = b.get('fit_tier')
             fit_score = b.get('match_score') or 0
             if fit_tier in ('stretch_match', 'not_recommended') or fit_score < 35:
                 continue
         else:
-            fit = calculate_fit_score(profile, b.get('category') or '', brand=b)
+            b, fit = _apply_brand_score(b, profile, interest_niches)
             if fit['tier'] in ('stretch_match', 'not_recommended') or fit['overall_score'] < 35:
                 continue
-            b['match_score'] = fit['overall_score']
-            b['fit_tier'] = fit['tier']
-            b['fit_status'] = fit['status']
-            b['fit_label'] = fit['label']
-
         if require_scrape_lane and usable_lane and not _in_scrape_lane(profile, b.get('category') or ''):
             continue
         b['mentor_why'] = None
-        b['match_source'] = 'calculator_fallback'
+        b['match_source'] = b.get('match_source') or 'calculator_fallback'
         ranked.append(b)
-    ranked.sort(
-        key=lambda x: (
-            0 if x.get('fit_status') in ('ready', 'almost') else 1,
-            -(x.get('match_score') or 0),
-        )
+    ranked.sort(key=lambda x: x.get('match_score') or 0, reverse=True)
+    return diversify_matches(
+        ranked, limit=limit, max_per_raw=2, max_per_family=5,
+        interest_niches=interest_niches,
     )
-    return ranked[:limit]
 
 
 def _hydrate_from_ids(
     ranked_ids: List[int],
     by_id: Dict[int, Dict],
     profile: Dict,
+    interest_niches: Optional[List[str]] = None,
 ) -> List[Dict]:
     ranked: List[Dict] = []
     seen = set()
@@ -369,17 +437,19 @@ def _hydrate_from_ids(
         if bid in seen or bid not in by_id:
             continue
         brand = dict(by_id[bid])
-        fit = calculate_fit_score(profile, brand.get('category') or '', brand=brand)
+        if brand.get('match_score') is None or not brand.get('fit_tier'):
+            brand, fit = _apply_brand_score(brand, profile, interest_niches)
+        else:
+            fit = {
+                'overall_score': brand.get('match_score') or 0,
+                'tier': brand.get('fit_tier'),
+            }
         if fit['overall_score'] < 35 or fit['tier'] in ('stretch_match', 'not_recommended'):
             print(
                 f"[MentorMatch] Dropping {brand.get('name')} — unlock would be "
                 f"{fit['overall_score']}% {fit['tier']}"
             )
             continue
-        brand['match_score'] = fit['overall_score']
-        brand['fit_tier'] = fit['tier']
-        brand['fit_status'] = fit['status']
-        brand['fit_label'] = fit['label']
         brand['mentor_why'] = None
         brand['match_source'] = 'mentor_llm'
         ranked.append(brand)
@@ -394,12 +464,14 @@ def _backfill_calculator(
     profile: Dict,
     shortlist: List[Dict],
     limit: int = 8,
+    interest_niches: Optional[List[str]] = None,
 ) -> List[Dict]:
-    """Pad thin LLM lists from the pre-approved shortlist (not scrape-lane only)."""
+    """Pad thin LLM lists from the pre-approved shortlist."""
     out = [dict(b) for b in ranked]
     seen = {int(b['id']) for b in out if b.get('id') is not None}
     for b in _fallback_from_calculator(
-        profile, shortlist, limit=limit, require_scrape_lane=False
+        profile, shortlist, limit=limit, require_scrape_lane=False,
+        interest_niches=interest_niches,
     ):
         bid = int(b['id'])
         if bid in seen:
@@ -411,7 +483,11 @@ def _backfill_calculator(
         seen.add(bid)
         if len(out) >= limit:
             break
-    return out
+    out.sort(key=lambda x: x.get('match_score') or 0, reverse=True)
+    return diversify_matches(
+        out, limit=limit, max_per_raw=2, max_per_family=5,
+        interest_niches=interest_niches,
+    )
 
 
 def rank_matches_with_mentor(
@@ -422,25 +498,22 @@ def rank_matches_with_mentor(
     force_refresh: bool = False,
 ) -> List[Dict]:
     """
-    niches = user interest checkboxes (soft only).
-    creator_profile must be scrape-based — do not merge checkbox niches into it.
-    Always aims to return up to 8 brands.
+    niches = user interest checkboxes (pitching intent).
+    creator_profile should already be prepared (intent + scrape proof).
+    Always aims to return up to 8 brands with differentiated scores.
     """
     interest_niches = niches or []
     if not candidate_brands:
         return []
 
     profile = creator_profile or {}
-    fp = _profile_fingerprint(profile, interest_niches) + ':v2fill8'
+    fp = _profile_fingerprint(profile, interest_niches) + ':v5lane'
 
     if creator_id and not force_refresh:
         cached = _MATCH_CACHE.get(int(creator_id))
         if cached and cached[0] > time.time() and cached[1] == fp:
             cached_rows = cached[2] or []
-            # Never serve thin caches — recompute so For You stays full
-            if len(cached_rows) >= 6 and any(
-                str(b.get('match_source', '')).startswith('mentor') for b in cached_rows
-            ):
+            if len(cached_rows) >= 6:
                 print(f"[MentorMatch] cache hit creator={creator_id} n={len(cached_rows)}")
                 return [dict(b) for b in cached_rows]
             print(
@@ -459,53 +532,54 @@ def rank_matches_with_mentor(
         f"interests={interest_niches}"
     )
 
-    last_err = None
-    ranked: List[Dict] = []
-    for attempt in range(1, 3):
-        try:
-            brand_lines = '\n'.join(_brand_card(b) for b in shortlist)
-            prompt = f"""{_creator_summary(profile, interest_niches)}
+    ranked = _fallback_from_calculator(
+        profile, shortlist, limit=8, require_scrape_lane=False,
+        interest_niches=interest_niches,
+    )
+    for b in ranked:
+        b['match_source'] = 'calculator'
 
-CANDIDATE BRAND IDS (pre-approved by fit calculator — pick best first):
+    # Gemini may reorder the already-scored 8. Thin/salvaged lists are ignored.
+    try:
+        brand_lines = '\n'.join(_brand_card(b) for b in ranked)
+        prompt = f"""{_creator_summary(profile, interest_niches)}
+
+CANDIDATE BRAND IDS (already scored — return ALL of these IDs, best product fit first):
 {brand_lines}
 
-Return JSON with up to 8 IDs (use as many as possible from the list):
-{{"ranked_ids":[...up to 8 ids...]}}
+Return JSON with every ID from the list:
+{{"ranked_ids":[...ids...]}}
 """
-            ranked_ids = _call_gemini_rank(prompt)
-            ranked = _hydrate_from_ids(ranked_ids, by_id, profile)
-            if ranked:
-                break
-            print(f'[MentorMatch] LLM ids failed unlock gate on attempt {attempt}')
-        except Exception as e:
-            last_err = e
-            print(f'[MentorMatch] LLM rank failed (attempt {attempt}): {e}')
+        ranked_ids = _call_gemini_rank(prompt)
+        allowed = set(by_id.keys()) | {int(b['id']) for b in ranked if b.get('id') is not None}
+        valid = [i for i in ranked_ids if i in allowed]
+        if len(valid) >= min(6, len(ranked)):
+            reordered = _hydrate_from_ids(valid, {int(b['id']): b for b in ranked}, profile, interest_niches)
+            if len(reordered) >= min(6, len(ranked)):
+                ranked = reordered
+                for b in ranked:
+                    b['match_source'] = 'mentor_llm'
+                print(f'[MentorMatch] LLM reordered {len(ranked)} scored brands')
+        else:
+            print(f'[MentorMatch] ignoring thin LLM reorder n={len(valid)}')
+    except Exception as e:
+        print(f'[MentorMatch] LLM reorder skipped: {e}')
 
-    if ranked:
-        if len(ranked) < 8:
-            before = len(ranked)
-            ranked = _backfill_calculator(ranked, profile, shortlist, limit=8)
-            print(f'[MentorMatch] backfilled {before} -> {len(ranked)} brands')
-        print(f"[MentorMatch] LLM ranked {len(ranked)} brands for creator={creator_id}")
-        if creator_id and len(ranked) >= 4:
-            _MATCH_CACHE[int(creator_id)] = (
-                time.time() + _CACHE_TTL_SEC,
-                fp,
-                [dict(b) for b in ranked],
-            )
-        elif creator_id:
-            _MATCH_CACHE.pop(int(creator_id), None)
-        return ranked
-
-    if last_err:
-        print(f'[MentorMatch] falling back to calculator after: {last_err}')
-
-    fallback = _fallback_from_calculator(
-        profile, shortlist, limit=8, require_scrape_lane=False
+    ranked.sort(key=lambda x: x.get('match_score') or 0, reverse=True)
+    ranked = diversify_matches(
+        ranked, limit=8, max_per_raw=2, max_per_family=5,
+        interest_niches=interest_niches,
     )
-    if creator_id:
+    print(f"[MentorMatch] ranked {len(ranked)} brands for creator={creator_id}")
+    if creator_id and len(ranked) >= 4:
+        _MATCH_CACHE[int(creator_id)] = (
+            time.time() + _CACHE_TTL_SEC,
+            fp,
+            [dict(b) for b in ranked],
+        )
+    elif creator_id:
         _MATCH_CACHE.pop(int(creator_id), None)
-    return fallback
+    return ranked
 
 
 def invalidate_mentor_matches(creator_id: int) -> None:
