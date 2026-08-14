@@ -762,6 +762,7 @@ JSON:"""
 def bulk_enrich_follower_requirements(
     *,
     limit: int = 500,
+    offset: int = 0,
     only_null_values: bool = True,
     rate_limit_delay: float = 0.5,
     dry_run: bool = False
@@ -774,6 +775,7 @@ def bulk_enrich_follower_requirements(
 
     Args:
         limit: Maximum number of brands to process in one run
+        offset: Number of brands to skip (for pagination)
         only_null_values: If True, only enrich brands with NULL values
         rate_limit_delay: Seconds to wait between API calls
         dry_run: If True, don't update database, just log what would happen
@@ -810,8 +812,8 @@ def bulk_enrich_follower_requirements(
                 WHERE COALESCE(status, 'published') = 'published'
                   AND (min_followers IS NULL OR micro_friendly IS NULL)
                 ORDER BY id ASC
-                LIMIT %s
-            """, (limit,))
+                LIMIT %s OFFSET %s
+            """, (limit, offset))
         else:
             # ALL published brands (re-evaluate existing values)
             cursor.execute("""
@@ -821,8 +823,8 @@ def bulk_enrich_follower_requirements(
                 FROM pr_brands
                 WHERE COALESCE(status, 'published') = 'published'
                 ORDER BY id ASC
-                LIMIT %s
-            """, (limit,))
+                LIMIT %s OFFSET %s
+            """, (limit, offset))
 
         brands = cursor.fetchall()
         total = len(brands)
@@ -848,7 +850,7 @@ def bulk_enrich_follower_requirements(
             result = enrich_follower_requirements_ai(dict(brand))
 
             if not result:
-                print(f"[Follower Enrich] ⚠ Failed to enrich {brand_name}")
+                print(f"[Follower Enrich] WARN Failed to enrich {brand_name}")
                 stats['errors'] += 1
                 time.sleep(rate_limit_delay)
                 continue
@@ -872,7 +874,7 @@ def bulk_enrich_follower_requirements(
                         WHERE id = %s
                     """, (min_followers, micro_friendly, brand['id']))
                     stats['updated'] += 1
-                    print(f"[Follower Enrich] ✓ Updated {brand_name}")
+                    print(f"[Follower Enrich] OK Updated {brand_name}")
                 except Exception as db_err:
                     print(f"[Follower Enrich] DB error for {brand_name}: {db_err}")
                     stats['errors'] += 1

@@ -78,6 +78,7 @@ def main():
 
         batch_stats = bulk_enrich_follower_requirements(
             limit=batch_limit,
+            offset=processed_so_far,
             only_null_values=args.only_null,
             rate_limit_delay=args.delay,
             dry_run=args.dry_run
