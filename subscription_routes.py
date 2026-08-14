@@ -359,6 +359,172 @@ def create_checkout_session():
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
+
+def _fulfill_pack_checkout(creator_id, checkout_session):
+    """Credit 3 packs from a paid Stripe session. Does not change subscription_tier."""
+    from services.pack_credits import PACK_PRODUCT, grant_pack_bundle
+
+    if getattr(checkout_session, 'payment_status', None) != 'paid':
+        return None, ('Payment not completed', 400)
+
+    meta = checkout_session.metadata or {}
+    if meta.get('product') != PACK_PRODUCT:
+        return None, ('Not a pack purchase', 400)
+
+    session_creator = str(meta.get('creator_id') or '')
+    if session_creator and session_creator != str(creator_id):
+        return None, ('Session does not match this account', 403)
+
+    conn = get_db_connection()
+    try:
+        result = grant_pack_bundle(conn, creator_id, checkout_session.id)
+    finally:
+        conn.close()
+    return result, None
+
+
+@subscription_bp.route('/create-pack-checkout', methods=['POST'])
+def create_pack_checkout_session():
+    """One-time $9 checkout for 3 extra email+pitch packs."""
+    from services.pack_credits import (
+        PACK_BUNDLE_CENTS,
+        PACK_BUNDLE_SIZE,
+        PACK_PRODUCT,
+    )
+
+    try:
+        creator_id = get_creator_id_from_session()
+        if not creator_id:
+            return jsonify({'error': 'Not authenticated'}), 401
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute('''
+            SELECT u.email, c.username as name, c.subscription_tier
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE c.id = %s
+        ''', (creator_id,))
+        creator = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not creator:
+            return jsonify({'error': 'Creator not found'}), 404
+
+        if (creator.get('subscription_tier') or 'free') in ('pro', 'elite'):
+            return jsonify({'error': 'Pro already includes unlimited packs'}), 400
+
+        frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000').rstrip('/')
+        price_id = os.getenv('STRIPE_PRICE_ID_PACKS')
+        if price_id:
+            line_items = [{'price': price_id, 'quantity': 1}]
+        else:
+            line_items = [{
+                'price_data': {
+                    'currency': 'usd',
+                    'unit_amount': PACK_BUNDLE_CENTS,
+                    'product_data': {
+                        'name': f'{PACK_BUNDLE_SIZE} extra packs',
+                        'description': 'Three brand emails and pitches, ready to send',
+                    },
+                },
+                'quantity': 1,
+            }]
+
+        checkout_session = stripe.checkout.Session.create(
+            customer_email=creator['email'],
+            payment_method_types=['card'],
+            line_items=line_items,
+            mode='payment',
+            success_url=(
+                f"{frontend_url}/creator/dashboard/subscription/success"
+                f"?session_id={{CHECKOUT_SESSION_ID}}&product=packs"
+            ),
+            cancel_url=f"{frontend_url}/creator/dashboard/for-you",
+            metadata={
+                'creator_id': str(creator_id),
+                'product': PACK_PRODUCT,
+                'creator_name': creator.get('name', ''),
+            },
+        )
+
+        print(f"Created pack checkout for creator {creator_id}: {checkout_session.id}")
+        return jsonify({
+            'checkout_url': checkout_session.url,
+            'session_id': checkout_session.id,
+        })
+
+    except stripe.error.InvalidRequestError as e:
+        print(f"Stripe InvalidRequestError (packs): {e}")
+        error_message = str(e)
+        if 'cannot currently make live charges' in error_message.lower():
+            return jsonify({
+                'error': 'Payment processing is temporarily unavailable. Please try again later or contact support.',
+                'code': 'stripe_account_pending'
+            }), 503
+        return jsonify({'error': error_message}), 400
+    except Exception as e:
+        print(f"Error creating pack checkout: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@subscription_bp.route('/confirm-pack-checkout', methods=['POST'])
+def confirm_pack_checkout():
+    """Confirm a $9 pack purchase and credit 3 unlocks."""
+    try:
+        creator_id = get_creator_id_from_session()
+        if not creator_id:
+            return jsonify({'error': 'Not authenticated'}), 401
+
+        session_id = request.json.get('session_id')
+        if not session_id:
+            return jsonify({'error': 'Missing session_id'}), 400
+
+        checkout_session = stripe.checkout.Session.retrieve(session_id)
+        result, err = _fulfill_pack_checkout(creator_id, checkout_session)
+        if err:
+            return jsonify({'error': err[0]}), err[1]
+
+        try:
+            from services.meta_capi import send_purchase_event
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute('''
+                SELECT u.email FROM creators c
+                JOIN users u ON c.user_id = u.id
+                WHERE c.id = %s
+            ''', (creator_id,))
+            user_row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            user_email = user_row['email'] if user_row else None
+            send_purchase_event(
+                email=user_email,
+                value=9,
+                content_name='NewCollab 3 Packs',
+                content_id='pack_bundle_3',
+                event_id=session_id,
+                client_ip=request.remote_addr,
+                client_user_agent=request.headers.get('User-Agent'),
+            )
+        except Exception as capi_err:
+            print(f"[META CAPI] Failed to send pack purchase event: {capi_err}")
+
+        return jsonify({
+            'success': True,
+            'product': 'packs',
+            **(result or {}),
+        })
+
+    except Exception as e:
+        print(f"Error confirming pack checkout: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
 @subscription_bp.route('/portal', methods=['POST'])
 def create_portal_session():
     """Create Stripe Customer Portal session for managing subscription"""
@@ -439,6 +605,18 @@ def confirm_checkout():
 
         if checkout_session.payment_status != 'paid':
             return jsonify({'error': 'Payment not completed'}), 400
+
+        from services.pack_credits import PACK_PRODUCT
+        product = (checkout_session.metadata or {}).get('product')
+        if product == PACK_PRODUCT:
+            result, err = _fulfill_pack_checkout(creator_id, checkout_session)
+            if err:
+                return jsonify({'error': err[0]}), err[1]
+            return jsonify({
+                'success': True,
+                'product': 'packs',
+                **(result or {}),
+            })
 
         # Extract metadata
         tier = checkout_session.metadata.get('tier')

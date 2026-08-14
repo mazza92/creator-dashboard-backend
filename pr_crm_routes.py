@@ -3201,11 +3201,19 @@ def dashboard_init():
     cursor = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
+        from services.pack_credits import (
+            ensure_pack_credits_schema,
+            pack_credits_of,
+            total_unlocks_left,
+        )
+        ensure_pack_credits_schema(conn)
+
         # 1. Get creator profile with subscription info
         cursor.execute('''
             SELECT
                 c.id, c.subscription_tier, c.unlocks_tier, c.unlocks_remaining,
                 c.unlocks_reset_at, c.creator_niches, c.niche,
+                COALESCE(c.pack_credits, 0) AS pack_credits,
                 u.first_name, u.email
             FROM creators c
             JOIN users u ON c.user_id = u.id
@@ -3248,12 +3256,14 @@ def dashboard_init():
             if unlocks_remaining is None:
                 unlocks_remaining = FREE_UNLOCK_LIMIT
 
-            used = FREE_UNLOCK_LIMIT - unlocks_remaining
+            pack_credits = pack_credits_of(creator)
+            used = max(0, FREE_UNLOCK_LIMIT - unlocks_remaining)
             unlock_balance = {
                 'tier': 'free',
-                'remaining': unlocks_remaining,
+                'remaining': total_unlocks_left(unlocks_remaining, pack_credits),
                 'used': used,
                 'limit': FREE_UNLOCK_LIMIT,
+                'pack_credits': pack_credits,
                 'is_unlimited': False,
                 'reset_at': unlocks_reset_at.isoformat() if unlocks_reset_at else None
             }
@@ -3792,46 +3802,27 @@ def get_pitch_limits():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        # Billing is unlock-based (free packs + paid pack credits), not pitches_sent.
+        balance = get_creator_unlock_balance(creator_id)
 
-        # Get creator's subscription tier and pitch count
-        cursor.execute('''
-            SELECT subscription_tier, pitches_sent_this_week, last_pitch_reset
-            FROM creators
-            WHERE id = %s
-        ''', (creator_id,))
-        creator = cursor.fetchone()
-
-        cursor.close()
-        conn.close()
-
-        if not creator:
+        if not balance:
             return jsonify({'success': False, 'error': 'Creator not found'}), 404
 
-        tier = creator['subscription_tier'] or 'free'
-        pitches_used = creator.get('pitches_sent_this_week') or 0
-        last_reset = creator.get('last_pitch_reset')
-
-        # Reset monthly count if needed (resets on 1st of each month)
-        from datetime import date
-        today = date.today()
-        month_start = today.replace(day=1)
-
-        if last_reset is None or last_reset < month_start:
-            pitches_used = 0
-
-        # Applications/pitches: free users get 3 per month
-        FREE_MONTHLY_LIMIT = 3
-        is_pro = tier in ['pro', 'elite']
+        is_unlimited = bool(balance.get('is_unlimited'))
+        remaining = balance.get('remaining')
+        used = balance.get('used') or 0
+        pack_credits = balance.get('pack_credits') or 0
 
         return jsonify({
             'success': True,
-            'used': pitches_used,
-            'limit': FREE_MONTHLY_LIMIT if not is_pro else 999,
-            'canPitch': is_pro or pitches_used < FREE_MONTHLY_LIMIT,
-            'tier': tier,
-            'period': 'month'
+            'used': used,
+            'limit': None if is_unlimited else FREE_UNLOCK_LIMIT,
+            'remaining': remaining,
+            'pack_credits': pack_credits,
+            'canPitch': is_unlimited or (remaining or 0) > 0,
+            'tier': balance.get('tier') or 'free',
+            'period': 'month',
+            'is_unlimited': is_unlimited,
         })
 
     except Exception as e:
@@ -3897,20 +3888,8 @@ def track_pitch():
         if last_reset is None or last_reset < month_start:
             pitches_used = 0
 
-        # Applications/pitches: free users get 3 per month
-        FREE_MONTHLY_LIMIT = 3
+        # Billing is charged at unlock time. Do not block send on the legacy pitch counter.
         is_pro = tier in ['pro', 'elite']
-
-        if not is_pro and pitches_used >= FREE_MONTHLY_LIMIT:
-            cursor.close()
-            conn.close()
-            return jsonify({
-                'success': False,
-                'error': 'Monthly application limit reached. Upgrade to Pro for unlimited applications!',
-                'upgrade_required': True,
-                'used': pitches_used,
-                'limit': FREE_MONTHLY_LIMIT
-            }), 403
 
         # Update pitch count
         new_pitch_count = pitches_used + 1
@@ -7122,6 +7101,12 @@ def get_subscription_status(creator_id):
 
 FREE_UNLOCK_LIMIT = 3  # Free users get 3 brand unlocks per month
 
+from services.pack_credits import (
+    ensure_pack_credits_schema,
+    pack_credits_of,
+    total_unlocks_left,
+)
+
 
 def attempt_unlock(creator_id, brand_id, conn=None):
     """
@@ -7141,6 +7126,7 @@ def attempt_unlock(creator_id, brand_id, conn=None):
 
     try:
         print(f"[attempt_unlock] Checking creator {creator_id}, brand {brand_id}")
+        ensure_pack_credits_schema(conn)
 
         # Check if already unlocked (free pass - no credit charge)
         cursor.execute('''
@@ -7154,7 +7140,8 @@ def attempt_unlock(creator_id, brand_id, conn=None):
 
         # Get creator's unlock status
         cursor.execute('''
-            SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier
+            SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier,
+                   COALESCE(pack_credits, 0) AS pack_credits
             FROM creators WHERE id = %s
         ''', (creator_id,))
         creator = cursor.fetchone()
@@ -7182,9 +7169,10 @@ def attempt_unlock(creator_id, brand_id, conn=None):
         # Free tier: check if reset needed
         unlocks_remaining = creator.get('unlocks_remaining') or 0
         unlocks_reset_at = creator.get('unlocks_reset_at')
+        pack_credits = pack_credits_of(creator)
 
         if unlocks_reset_at and datetime.now() > unlocks_reset_at:
-            # Reset the monthly credits
+            # Reset the monthly free credits. Paid packs stay until used.
             unlocks_remaining = FREE_UNLOCK_LIMIT
             cursor.execute('''
                 UPDATE creators
@@ -7194,35 +7182,39 @@ def attempt_unlock(creator_id, brand_id, conn=None):
             ''', (FREE_UNLOCK_LIMIT, creator_id))
             cursor.execute('SELECT unlocks_reset_at FROM creators WHERE id = %s', (creator_id,))
             unlocks_reset_at = cursor.fetchone().get('unlocks_reset_at')
-        elif unlocks_remaining > FREE_UNLOCK_LIMIT:
-            # Cap leftover credits from the previous 5/month limit
-            unlocks_remaining = FREE_UNLOCK_LIMIT
-            cursor.execute('''
-                UPDATE creators SET unlocks_remaining = %s WHERE id = %s
-            ''', (FREE_UNLOCK_LIMIT, creator_id))
 
-        # ATOMIC: Deduct credit only if remaining > 0 (prevents race condition)
-        # This combines "check" and "decrement" into a single atomic operation
+        # ATOMIC: spend a free credit first, then a paid pack credit
         cursor.execute('''
             UPDATE creators
             SET unlocks_remaining = unlocks_remaining - 1
             WHERE id = %s AND unlocks_remaining > 0
-            RETURNING unlocks_remaining
+            RETURNING unlocks_remaining, COALESCE(pack_credits, 0) AS pack_credits
         ''', (creator_id,))
         result = cursor.fetchone()
 
-        # If no row was updated, user has no credits left
         if result is None:
-            print(f"[attempt_unlock] PAYWALL triggered for creator {creator_id}: atomic check failed, unlocks_remaining={unlocks_remaining}, tier={creator.get('unlocks_tier')}")
+            cursor.execute('''
+                UPDATE creators
+                SET pack_credits = pack_credits - 1
+                WHERE id = %s AND COALESCE(pack_credits, 0) > 0
+                RETURNING unlocks_remaining, pack_credits
+            ''', (creator_id,))
+            result = cursor.fetchone()
+
+        if result is None:
+            print(f"[attempt_unlock] PAYWALL triggered for creator {creator_id}: atomic check failed, unlocks_remaining={unlocks_remaining}, pack_credits={pack_credits}, tier={creator.get('unlocks_tier')}")
             return {
                 "status": "paywall",
                 "credits_used": 0,
                 "remaining": 0,
+                "pack_credits": 0,
                 "reset_at": unlocks_reset_at.isoformat() if unlocks_reset_at else None,
-                "debug_db_value": creator.get('unlocks_remaining')  # For debugging
+                "debug_db_value": creator.get('unlocks_remaining')
             }
 
-        new_remaining = result.get('unlocks_remaining')
+        new_remaining = total_unlocks_left(
+            result.get('unlocks_remaining'), result.get('pack_credits')
+        )
 
         cursor.execute('''
             INSERT INTO brand_unlocks (creator_id, brand_id, unlocked_at)
@@ -7282,6 +7274,8 @@ def can_unlock(creator_id, brand_id, conn=None):
     cursor = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
+        ensure_pack_credits_schema(conn)
+
         # Check if already unlocked
         cursor.execute('''
             SELECT id FROM brand_unlocks
@@ -7293,7 +7287,8 @@ def can_unlock(creator_id, brand_id, conn=None):
 
         # Get creator's unlock status
         cursor.execute('''
-            SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier
+            SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier,
+                   COALESCE(pack_credits, 0) AS pack_credits
             FROM creators WHERE id = %s
         ''', (creator_id,))
         creator = cursor.fetchone()
@@ -7308,25 +7303,27 @@ def can_unlock(creator_id, brand_id, conn=None):
         # Free tier: check credits
         unlocks_remaining = creator.get('unlocks_remaining') or 0
         unlocks_reset_at = creator.get('unlocks_reset_at')
+        pack_credits = pack_credits_of(creator)
 
         # Check if reset needed (but don't actually reset here)
         if unlocks_reset_at and datetime.now() > unlocks_reset_at:
             unlocks_remaining = FREE_UNLOCK_LIMIT  # Would be reset on next attempt_unlock
-        elif unlocks_remaining > FREE_UNLOCK_LIMIT:
-            unlocks_remaining = FREE_UNLOCK_LIMIT
 
-        if unlocks_remaining <= 0:
+        total_left = total_unlocks_left(unlocks_remaining, pack_credits)
+        if total_left <= 0:
             return {
                 "can_unlock": False,
                 "paywall": True,
                 "remaining": 0,
+                "pack_credits": pack_credits,
                 "reset_at": unlocks_reset_at.isoformat() if unlocks_reset_at else None
             }
 
         return {
             "can_unlock": True,
             "already_unlocked": False,
-            "remaining": unlocks_remaining,
+            "remaining": total_left,
+            "pack_credits": pack_credits,
             "tier": "free"
         }
 
@@ -7368,8 +7365,10 @@ def get_creator_unlock_balance(creator_id, conn=None):
         close_conn = True
 
     cursor = conn.cursor(cursor_factory=RealDictCursor)
+    ensure_pack_credits_schema(conn)
     cursor.execute('''
-        SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier
+        SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier,
+               COALESCE(pack_credits, 0) AS pack_credits
         FROM creators WHERE id = %s
     ''', (creator_id,))
     creator = cursor.fetchone()
@@ -7389,34 +7388,31 @@ def get_creator_unlock_balance(creator_id, conn=None):
             "tier": "pro",
             "remaining": None,  # unlimited
             "reset_at": None,
-            "is_unlimited": True
+            "is_unlimited": True,
+            "pack_credits": 0,
         }
 
     # Check if reset needed
     unlocks_remaining = creator.get('unlocks_remaining') or 0
     unlocks_reset_at = creator.get('unlocks_reset_at')
+    pack_credits = pack_credits_of(creator)
 
     if unlocks_reset_at and datetime.now() > unlocks_reset_at:
         unlocks_remaining = FREE_UNLOCK_LIMIT  # Would reset on next attempt_unlock
-    elif unlocks_remaining > FREE_UNLOCK_LIMIT:
-        unlocks_remaining = FREE_UNLOCK_LIMIT
-        cursor.execute('''
-            UPDATE creators SET unlocks_remaining = %s WHERE id = %s
-        ''', (FREE_UNLOCK_LIMIT, creator_id))
-        conn.commit()
 
     cursor.close()
     if close_conn:
         conn.close()
 
-    # Calculate used for Hunter.io style display: "X remaining (Y used of N)"
+    total_left = total_unlocks_left(unlocks_remaining, pack_credits)
     used = max(0, FREE_UNLOCK_LIMIT - unlocks_remaining)
 
     return {
         "tier": "free",
-        "remaining": unlocks_remaining,
+        "remaining": total_left,
         "used": used,
         "limit": FREE_UNLOCK_LIMIT,
+        "pack_credits": pack_credits,
         "reset_at": unlocks_reset_at.isoformat() if unlocks_reset_at else None,
         "is_unlimited": False
     }
