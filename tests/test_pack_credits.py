@@ -39,12 +39,17 @@ class TestPackCreditMath(unittest.TestCase):
 class TestGrantPackBundle(unittest.TestCase):
     def setUp(self):
         import services.pack_credits as pack_credits
-        pack_credits._SCHEMA_READY = False
+        pack_credits._COLUMN_READY = None
+        pack_credits._TABLE_READY = None
+
     def test_grants_once_per_stripe_session(self):
         conn = MagicMock()
         cursor = MagicMock()
         conn.cursor.return_value = cursor
+        # catalog checks say schema already exists, then grant INSERT/UPDATE
         cursor.fetchone.side_effect = [
+            (1,),  # pack_credits column exists
+            (1,),  # pack_purchases table exists
             {'id': 1},
             {'pack_credits': 3},
         ]
@@ -62,6 +67,17 @@ class TestGrantPackBundle(unittest.TestCase):
         self.assertFalse(second['granted'])
         self.assertTrue(second['already'])
         self.assertEqual(second['pack_credits'], 3)
+
+    def test_column_check_does_not_alter_table(self):
+        import services.pack_credits as pack_credits
+        conn = MagicMock()
+        cursor = MagicMock()
+        conn.cursor.return_value = cursor
+        cursor.fetchone.return_value = (1,)
+        self.assertTrue(pack_credits.pack_credits_column_exists(conn))
+        sql = ' '.join(str(call.args[0]) for call in cursor.execute.call_args_list)
+        self.assertNotIn('ALTER TABLE', sql.upper())
+        self.assertIn('information_schema.columns', sql)
 
 
 if __name__ == '__main__':

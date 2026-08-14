@@ -3202,18 +3202,18 @@ def dashboard_init():
 
     try:
         from services.pack_credits import (
-            ensure_pack_credits_schema,
             pack_credits_of,
+            pack_credits_select_sql,
             total_unlocks_left,
         )
-        ensure_pack_credits_schema(conn)
+        pack_sql = pack_credits_select_sql(conn)
 
         # 1. Get creator profile with subscription info
-        cursor.execute('''
+        cursor.execute(f'''
             SELECT
                 c.id, c.subscription_tier, c.unlocks_tier, c.unlocks_remaining,
                 c.unlocks_reset_at, c.creator_niches, c.niche,
-                COALESCE(c.pack_credits, 0) AS pack_credits,
+                {pack_sql},
                 u.first_name, u.email
             FROM creators c
             JOIN users u ON c.user_id = u.id
@@ -4591,6 +4591,12 @@ def generate_pr_package():
                 'paywall': True,
                 'remaining': 0,
             }), 402
+        if unlock_result.get('status') == 'error':
+            conn.close()
+            return jsonify({
+                'success': False,
+                'error': unlock_result.get('error') or 'Unlock failed',
+            }), 500
 
         # Get creator data
         cursor.execute('''
@@ -5264,6 +5270,11 @@ def generate_pr_package_v2():
                 yield send_event('paywall', {
                     'error': 'No PR Packages remaining this month',
                     'remaining': 0
+                })
+                return
+            if unlock_result.get('status') == 'error':
+                yield send_event('error', {
+                    'error': unlock_result.get('error') or 'Unlock failed'
                 })
                 return
 
@@ -7102,8 +7113,9 @@ def get_subscription_status(creator_id):
 FREE_UNLOCK_LIMIT = 3  # Free users get 3 brand unlocks per month
 
 from services.pack_credits import (
-    ensure_pack_credits_schema,
+    pack_credits_column_exists,
     pack_credits_of,
+    pack_credits_select_sql,
     total_unlocks_left,
 )
 
@@ -7126,7 +7138,7 @@ def attempt_unlock(creator_id, brand_id, conn=None):
 
     try:
         print(f"[attempt_unlock] Checking creator {creator_id}, brand {brand_id}")
-        ensure_pack_credits_schema(conn)
+        pack_sql = pack_credits_select_sql(conn)
 
         # Check if already unlocked (free pass - no credit charge)
         cursor.execute('''
@@ -7139,9 +7151,9 @@ def attempt_unlock(creator_id, brand_id, conn=None):
             return {"status": "already_unlocked", "credits_used": 0}
 
         # Get creator's unlock status
-        cursor.execute('''
+        cursor.execute(f'''
             SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier,
-                   COALESCE(pack_credits, 0) AS pack_credits
+                   {pack_sql}
             FROM creators WHERE id = %s
         ''', (creator_id,))
         creator = cursor.fetchone()
@@ -7184,15 +7196,21 @@ def attempt_unlock(creator_id, brand_id, conn=None):
             unlocks_reset_at = cursor.fetchone().get('unlocks_reset_at')
 
         # ATOMIC: spend a free credit first, then a paid pack credit
-        cursor.execute('''
+        has_pack_col = pack_credits_column_exists(conn)
+        returning_sql = (
+            "RETURNING unlocks_remaining, COALESCE(pack_credits, 0) AS pack_credits"
+            if has_pack_col else
+            "RETURNING unlocks_remaining, 0 AS pack_credits"
+        )
+        cursor.execute(f'''
             UPDATE creators
             SET unlocks_remaining = unlocks_remaining - 1
             WHERE id = %s AND unlocks_remaining > 0
-            RETURNING unlocks_remaining, COALESCE(pack_credits, 0) AS pack_credits
+            {returning_sql}
         ''', (creator_id,))
         result = cursor.fetchone()
 
-        if result is None:
+        if result is None and has_pack_col:
             cursor.execute('''
                 UPDATE creators
                 SET pack_credits = pack_credits - 1
@@ -7274,7 +7292,7 @@ def can_unlock(creator_id, brand_id, conn=None):
     cursor = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        ensure_pack_credits_schema(conn)
+        pack_sql = pack_credits_select_sql(conn)
 
         # Check if already unlocked
         cursor.execute('''
@@ -7286,9 +7304,9 @@ def can_unlock(creator_id, brand_id, conn=None):
             return {"can_unlock": True, "already_unlocked": True}
 
         # Get creator's unlock status
-        cursor.execute('''
+        cursor.execute(f'''
             SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier,
-                   COALESCE(pack_credits, 0) AS pack_credits
+                   {pack_sql}
             FROM creators WHERE id = %s
         ''', (creator_id,))
         creator = cursor.fetchone()
@@ -7365,10 +7383,10 @@ def get_creator_unlock_balance(creator_id, conn=None):
         close_conn = True
 
     cursor = conn.cursor(cursor_factory=RealDictCursor)
-    ensure_pack_credits_schema(conn)
-    cursor.execute('''
+    pack_sql = pack_credits_select_sql(conn)
+    cursor.execute(f'''
         SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier,
-               COALESCE(pack_credits, 0) AS pack_credits
+               {pack_sql}
         FROM creators WHERE id = %s
     ''', (creator_id,))
     creator = cursor.fetchone()
