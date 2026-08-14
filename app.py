@@ -5473,6 +5473,20 @@ def update_application_status(id):
         conn.close()
 
 
+def email_verification_on_hold():
+    """Skip verification emails until Gmail quota resets. Set SKIP_EMAIL_VERIFICATION=0 to restore."""
+    return os.getenv('SKIP_EMAIL_VERIFICATION', '1').strip().lower() in ('1', 'true', 'yes')
+
+
+def _is_smtp_daily_limit_error(exc) -> bool:
+    text = str(exc).lower()
+    return (
+        '5.4.5' in text
+        or 'daily user sending limit' in text
+        or 'sending limit exceeded' in text
+    )
+
+
 def send_verification_email(email, token, first_name=None):
     """
     Send email verification link to user using lifecycle template.
@@ -5484,10 +5498,15 @@ def send_verification_email(email, token, first_name=None):
     verification_url = f"{base_url}/verify-email?token={token}"
     app.logger.info(f"🔍 Environment detection - using base URL: {base_url}")
 
+    if email_verification_on_hold():
+        app.logger.warning(f"⏸️ Email verification on hold; not sending to {email}")
+        return
+
     smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
     smtp_port = int(os.getenv('SMTP_PORT', 587))
-    smtp_username = os.getenv('SMTP_USERNAME')
-    smtp_password = os.getenv('SMTP_PASSWORD')
+    # Keep verification off the marketing mailbox when a dedicated sender exists.
+    smtp_username = os.getenv('SMTP_TRANSACTIONAL_USERNAME') or os.getenv('SMTP_USERNAME')
+    smtp_password = os.getenv('SMTP_TRANSACTIONAL_PASSWORD') or os.getenv('SMTP_PASSWORD')
 
     app.logger.info(f"📧 Preparing verification email for {email}")
     app.logger.info(f"🔗 Verification URL: {verification_url}")
@@ -5565,11 +5584,24 @@ def generate_verification_token(email):
 
 @app.route('/api/resend-verification', methods=['POST'])
 def resend_verification():
+    email = None
     try:
         data = request.get_json()
         email = data.get('email')
         if not email:
             return jsonify({'error': 'Email is required'}), 400
+
+        if email_verification_on_hold():
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("UPDATE users SET is_verified = true WHERE email = %s", (email,))
+            conn.commit()
+            conn.close()
+            return jsonify({
+                'message': 'Verification is paused. You can continue setup.',
+                'verified': True,
+                'redirect_url': '/onboarding',
+            }), 200
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -5594,6 +5626,23 @@ def resend_verification():
         return jsonify({'message': 'Verification email resent successfully'}), 200
     except Exception as e:
         app.logger.error(f"🔥 Resend verification error: {str(e)}\n{traceback.format_exc()}")
+        if _is_smtp_daily_limit_error(e) and email:
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor(cursor_factory=RealDictCursor)
+                cursor.execute(
+                    "UPDATE users SET is_verified = true WHERE email = %s",
+                    (email,)
+                )
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+            return jsonify({
+                'message': 'Email sending is delayed. Your account is verified. You can continue setup.',
+                'verified': True,
+                'redirect_url': '/onboarding',
+            }), 200
         if 'conn' in locals():
             conn.rollback()
             conn.close()
@@ -5686,13 +5735,15 @@ def register_brand():
         verification_token = generate_verification_token(email)
         hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode()
 
+        skip_verify = email_verification_on_hold()
+
         # Insert user
         cursor.execute(
             '''
             INSERT INTO users (first_name, last_name, email, phone, country, password, role, is_verified, verification_token, last_login)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW()) RETURNING id
             ''',
-            (first_name, last_name, email, phone, country, hashed_password, role, False, verification_token)
+            (first_name, last_name, email, phone, country, hashed_password, role, skip_verify, verification_token)
         )
         user_id = cursor.fetchone()['id']
         app.logger.info(f"🟢 Inserted user with ID: {user_id}")
@@ -5718,8 +5769,15 @@ def register_brand():
 
         conn.commit()
 
-        # Send verification email with token (using lifecycle template)
-        send_verification_email(email, verification_token, first_name=first_name)
+        if skip_verify:
+            app.logger.warning(f"⏸️ Email verification on hold; brand {email} auto-verified")
+        else:
+            try:
+                send_verification_email(email, verification_token, first_name=first_name)
+            except Exception as email_error:
+                app.logger.error(f"⚠️ Failed to send brand verification email to {email}: {str(email_error)}")
+                cursor.execute("UPDATE users SET is_verified = true WHERE id = %s", (user_id,))
+                conn.commit()
 
         # Store user session
         session['user_id'] = user_id
@@ -5729,9 +5787,13 @@ def register_brand():
         app.logger.info(f"🟢 Session Set: user_id={session.get('user_id')}, role={session.get('user_role')}, brand_id={session.get('brand_id')}")
 
         base_url = os.getenv('BASE_URL', 'https://newcollab.co')
+        redirect_url = (
+            f'{base_url}/brand/dashboard/overview' if skip_verify
+            else f'{base_url}/verify-email-pending'
+        )
         return jsonify({
-            'message': 'Registration successful, please verify your email',
-            'redirect_url': f'{base_url}/verify-email-pending',
+            'message': 'Registration successful. Continue setup.' if skip_verify else 'Registration successful, please verify your email',
+            'redirect_url': redirect_url,
             'user_role': role,
             'user_id': user_id,
             'brand_id': brand_id
@@ -5816,6 +5878,9 @@ def register_creator_account():
             except Exception as alter_error:
                 app.logger.warning(f"⚠️ Could not add pr_list_signup column: {str(alter_error)}")
 
+        skip_verify = email_verification_on_hold()
+        is_verified = True if skip_verify else False
+
         if column_exists:
             cursor.execute(
                 '''
@@ -5823,7 +5888,7 @@ def register_creator_account():
                 VALUES (%s, %s, %s, %s, 'creator', %s, %s, %s, NOW())
                 RETURNING id
                 ''',
-                (first_name or None, last_name or None, email, hashed_password, False, verification_token, pr_list_signup)
+                (first_name or None, last_name or None, email, hashed_password, is_verified, verification_token, pr_list_signup)
             )
         else:
             cursor.execute(
@@ -5832,20 +5897,24 @@ def register_creator_account():
                 VALUES (%s, %s, %s, %s, 'creator', %s, %s, NOW())
                 RETURNING id
                 ''',
-                (first_name or None, last_name or None, email, hashed_password, False, verification_token)
+                (first_name or None, last_name or None, email, hashed_password, is_verified, verification_token)
             )
         user_id = cursor.fetchone()['id']
         conn.commit()
 
-        # Try to send verification email (don't fail registration if email fails)
         email_sent = False
-        try:
-            send_verification_email(email, verification_token, first_name=first_name)
-            email_sent = True
-            app.logger.info(f"✅ Verification email sent successfully to {email}")
-        except Exception as email_error:
-            app.logger.error(f"⚠️ Failed to send verification email to {email}: {str(email_error)}")
-            # Continue with registration - user can request resend later
+        if skip_verify:
+            app.logger.warning(f"⏸️ Email verification on hold; {email} auto-verified and sent to onboarding")
+        else:
+            try:
+                send_verification_email(email, verification_token, first_name=first_name)
+                email_sent = True
+                app.logger.info(f"✅ Verification email sent successfully to {email}")
+            except Exception as email_error:
+                app.logger.error(f"⚠️ Failed to send verification email to {email}: {str(email_error)}")
+                cursor.execute("UPDATE users SET is_verified = true WHERE id = %s", (user_id,))
+                conn.commit()
+                app.logger.warning(f"⚠️ Auto-verified {email} because verification email could not be sent")
 
         if pr_list_signup:
             app.logger.info(f"📋 PR list signup flag stored for {email}")
@@ -5859,13 +5928,16 @@ def register_creator_account():
         access_token = create_access_token(identity=str(user_id))  # PyJWT requires string subject
         base_url = get_base_url()
 
-        message = 'Registration successful, please verify your email'
-        if not email_sent:
-            message = 'Registration successful! We had trouble sending the verification email. You can request a new one from the verification page.'
+        if email_sent:
+            message = 'Registration successful, please verify your email'
+            redirect_url = f'{base_url}/verify-email-pending'
+        else:
+            message = 'Registration successful. Continue setup.'
+            redirect_url = f'{base_url}/onboarding'
 
         response = make_response(jsonify({
             'message': message,
-            'redirect_url': f'{base_url}/verify-email-pending',
+            'redirect_url': redirect_url,
             'user_id': user_id,
             'access_token': access_token,
             'email_sent': email_sent
@@ -5997,6 +6069,7 @@ def register_creator():
             app.logger.info("⚠️ No profile image available, continuing without one")
             profile_pic_url = ''
 
+        skip_verify = email_verification_on_hold()
         verification_token = generate_verification_token(email)
         hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode()
 
@@ -6006,7 +6079,7 @@ def register_creator():
             VALUES (%s, %s, %s, %s, %s, %s, 'creator', %s, %s, NOW())
             RETURNING id
             ''',
-            (first_name, last_name, email, phone, country, hashed_password, False, verification_token)
+            (first_name, last_name, email, phone, country, hashed_password, skip_verify, verification_token)
         )
         user_id = cursor.fetchone()['id']
 
@@ -6030,18 +6103,16 @@ def register_creator():
 
         conn.commit()
 
-        # Try to send verification email (don't fail registration if email fails)
         email_sent = False
-        try:
-            send_verification_email(email, verification_token, first_name=first_name)
-            email_sent = True
-            app.logger.info(f"✅ Verification email sent successfully to {email}")
-        except Exception as email_error:
-            app.logger.error(f"⚠️ Failed to send verification email to {email}: {str(email_error)}")
-            # Continue with registration - user can request resend later
-
-        # Note: Welcome email is sent AFTER email verification, not here
-        # This ensures users only get welcome email once they've verified their address
+        if skip_verify:
+            app.logger.warning(f"⏸️ Email verification on hold; {email} auto-verified and sent to onboarding")
+        else:
+            try:
+                send_verification_email(email, verification_token, first_name=first_name)
+                email_sent = True
+                app.logger.info(f"✅ Verification email sent successfully to {email}")
+            except Exception as email_error:
+                app.logger.error(f"⚠️ Failed to send verification email to {email}: {str(email_error)}")
 
         session.clear()
         session['user_id'] = user_id
@@ -6050,13 +6121,16 @@ def register_creator():
         session.permanent = True
         session.modified = True
 
-        message = 'Registration successful, please verify your email'
-        if not email_sent:
-            message = 'Registration successful! We had trouble sending the verification email. You can request a new one from the verification page.'
+        if email_sent:
+            message = 'Registration successful, please verify your email'
+            redirect_url = '/verify-email-pending'
+        else:
+            message = 'Registration successful. Continue setup.'
+            redirect_url = '/onboarding'
 
         return jsonify({
             'message': message,
-            'redirect_url': '/verify-email-pending',
+            'redirect_url': redirect_url,
             'email_sent': email_sent
         }), 201
 

@@ -9,6 +9,8 @@ import psycopg2
 import os
 import sys
 import json
+import html as html_lib
+import time
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -90,6 +92,98 @@ def _serialize_row(row):
     if not row:
         return row
     return {key: _serialize_value(val) for key, val in row.items()}
+
+
+DEFAULT_RESUME_SINCE = date(2026, 8, 12)
+DEFAULT_RESUME_UNTIL = date(2026, 8, 13)
+MAX_RESUME_ONBOARDING_SEND = 200
+RESUME_ONBOARDING_SUBJECT = "Your Newcollab account is ready. Log in to finish"
+
+
+def _parse_iso_date(value, default):
+    if not value:
+        return default
+    try:
+        return datetime.strptime(str(value)[:10], '%Y-%m-%d').date()
+    except (TypeError, ValueError):
+        return default
+
+
+RESUME_ONBOARDING_APP_URL = 'https://app.newcollab.co'
+
+
+def _resume_onboarding_login_urls():
+    # Outbound email to real users. Never use FRONTEND_URL from local .env (localhost).
+    return (
+        f'{RESUME_ONBOARDING_APP_URL}/login',
+        f'{RESUME_ONBOARDING_APP_URL}/forgot-password',
+    )
+
+
+def _is_incomplete_onboarding_sql():
+    """Match login: onboarding is incomplete without username or niche."""
+    return """
+        (
+            NULLIF(BTRIM(COALESCE(c.username::text, '')), '') IS NULL
+            OR c.niche IS NULL
+            OR BTRIM(c.niche::text) IN ('', '[]', 'null', 'None', '""')
+        )
+    """
+
+
+def _fetch_resume_onboarding_cohort(cursor, since_date, until_date, include_sent=False):
+    params = [since_date, until_date]
+    already_sent_sql = ""
+    if not include_sent:
+        already_sent_sql = """
+              AND (
+                c.last_reminder_sent IS NULL
+                OR c.last_reminder_sent < NOW() - INTERVAL '7 days'
+              )
+        """
+
+    cursor.execute(f"""
+        SELECT
+            c.id AS creator_id,
+            u.id AS user_id,
+            u.email,
+            u.first_name,
+            c.username,
+            u.created_at AS signup_date,
+            c.last_reminder_sent,
+            (NULLIF(BTRIM(COALESCE(c.image_profile, '')), '') IS NOT NULL) AS has_image
+        FROM creators c
+        JOIN users u ON c.user_id = u.id
+        WHERE u.email IS NOT NULL
+          AND BTRIM(u.email) <> ''
+          AND u.unsubscribed_at IS NULL
+          AND u.created_at >= %s::date
+          AND u.created_at < (%s::date + INTERVAL '1 day')
+          AND {_is_incomplete_onboarding_sql()}
+          {already_sent_sql}
+        ORDER BY u.created_at DESC
+        LIMIT {MAX_RESUME_ONBOARDING_SEND}
+    """, tuple(params))
+    return [_serialize_row(row) for row in cursor.fetchall()]
+
+
+def _resume_onboarding_email_context(recipient):
+    login_url, forgot_url = _resume_onboarding_login_urls()
+    first_name = (recipient.get('first_name') or '').strip()
+    greeting = f'Hi {html_lib.escape(first_name)}' if first_name else 'Hi'
+    return {
+        'user_id': recipient.get('user_id'),
+        'preheader': 'Log in to resume where you were.',
+        'subject': RESUME_ONBOARDING_SUBJECT,
+        'action_url': login_url,
+        'action_text': 'Log in to finish setup',
+        'secondary_action_url': forgot_url,
+        'secondary_action_text': 'Forgot your password?',
+        'message': (
+            f'<p>{greeting},</p>'
+            f'<p>You started setting up your creator account on Newcollab. Log in to resume where you were.</p>'
+        ),
+    }
 
 
 def _build_where_clause():
@@ -181,6 +275,130 @@ UNLOCK_STATS_SQL = """
           AND bu.unlocked_at >= DATE_TRUNC('week', NOW())
     ) AS unlocks_this_week
 """
+
+
+@admin_creators_bp.route('/creators/resume-onboarding/preview', methods=['GET'])
+@admin_required
+def preview_resume_onboarding():
+    """Preview incomplete onboarding creators for a one-shot resume invite."""
+    since_date = _parse_iso_date(request.args.get('since_date'), DEFAULT_RESUME_SINCE)
+    until_date = _parse_iso_date(request.args.get('until_date'), DEFAULT_RESUME_UNTIL)
+    include_sent = request.args.get('include_sent', '').strip().lower() == 'true'
+    if until_date < since_date:
+        since_date, until_date = until_date, since_date
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        recipients = _fetch_resume_onboarding_cohort(
+            cursor, since_date, until_date, include_sent=include_sent
+        )
+        conn.close()
+        return jsonify({
+            'count': len(recipients),
+            'since_date': since_date.isoformat(),
+            'until_date': until_date.isoformat(),
+            'login_url': _resume_onboarding_login_urls()[0],
+            'recipients': recipients,
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@admin_creators_bp.route('/creators/resume-onboarding/send', methods=['POST'])
+@admin_required
+def send_resume_onboarding():
+    """
+    One-shot resume-onboarding email for incomplete creator accounts.
+    Defaults to the Aug 12–13 2026 signup window. Pass dry_run=true to preview.
+    """
+    data = request.get_json(silent=True) or {}
+    since_date = _parse_iso_date(data.get('since_date'), DEFAULT_RESUME_SINCE)
+    until_date = _parse_iso_date(data.get('until_date'), DEFAULT_RESUME_UNTIL)
+    include_sent = bool(data.get('force') or data.get('include_sent'))
+    dry_run = bool(data.get('dry_run', False))
+    test_email = (data.get('test_email') or '').strip() or None
+    if until_date < since_date:
+        since_date, until_date = until_date, since_date
+
+    try:
+        from email_cron_routes import send_template_email
+
+        if test_email:
+            sample = {
+                'user_id': None,
+                'first_name': 'Nyakallo',
+            }
+            success, error = send_template_email(
+                to_email=test_email,
+                template_name='resume_onboarding.html',
+                subject=RESUME_ONBOARDING_SUBJECT,
+                context=_resume_onboarding_email_context(sample),
+            )
+            if not success:
+                return jsonify({'error': error or 'Failed to send test email'}), 500
+            return jsonify({
+                'success': True,
+                'test': True,
+                'sent_to': test_email,
+            })
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        recipients = _fetch_resume_onboarding_cohort(
+            cursor, since_date, until_date, include_sent=include_sent
+        )
+
+        if dry_run:
+            conn.close()
+            return jsonify({
+                'success': True,
+                'dry_run': True,
+                'count': len(recipients),
+                'since_date': since_date.isoformat(),
+                'until_date': until_date.isoformat(),
+                'recipients': recipients,
+            })
+
+        sent = 0
+        failed = []
+        for recipient in recipients:
+            email = (recipient.get('email') or '').strip()
+            if not email:
+                failed.append({'email': None, 'error': 'Missing email'})
+                continue
+            success, error = send_template_email(
+                to_email=email,
+                template_name='resume_onboarding.html',
+                subject=RESUME_ONBOARDING_SUBJECT,
+                context=_resume_onboarding_email_context(recipient),
+            )
+            if success:
+                cursor.execute("""
+                    UPDATE creators
+                    SET last_reminder_sent = NOW(),
+                        last_any_email_sent = NOW()
+                    WHERE id = %s
+                """, (recipient['creator_id'],))
+                conn.commit()
+                sent += 1
+            else:
+                failed.append({'email': email, 'error': error})
+            time.sleep(0.4)
+
+        conn.close()
+        return jsonify({
+            'success': True,
+            'dry_run': False,
+            'count': len(recipients),
+            'sent': sent,
+            'failed': len(failed),
+            'errors': failed,
+            'since_date': since_date.isoformat(),
+            'until_date': until_date.isoformat(),
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @admin_creators_bp.route('/creators', methods=['GET'])
