@@ -9,10 +9,10 @@ Instagram (same required fields as TikTok — no partial scrapes):
   1) Official APIs when session/proxy allows
   2) /{handle}/embed/ with facebookexternalhit UA — TT-equivalent
      (followers + recent posts with thumbs/captions)
-  3) imginn / user_feed / shortcode GraphQL as secondary post sources
-  4) crawler / search only to fill bio gaps (never alone)
+  3) imginn.org / imginn.com / user_feed / shortcode GraphQL as post sources
+  4) crawler / search to fill followers + bio (never posts-only)
 
-Required fields (public): followers, bio, latest post.
+Required fields (public): followers + latest post (bio preferred, not required).
 """
 
 from __future__ import annotations
@@ -234,6 +234,42 @@ def diy_scrape_is_acceptable(
     return len(latest) > 0
 
 
+def _ig_missing_required_fields(profile: Dict[str, Any]) -> List[str]:
+    """Fields that actually block a public IG DIY scrape (bio is not required)."""
+    missing: List[str] = []
+    followers = int(profile.get("followersCount") or 0)
+    if not _ig_plausible_followers(followers):
+        missing.append("followers")
+    if not profile.get("isPrivate") and not (profile.get("latestPosts") or []):
+        missing.append("latest_post")
+    return missing
+
+
+def _ig_copy_display_name_bio(user: Dict[str, Any], handle: str) -> None:
+    """Use a real display name as biography when the about field is empty."""
+    if not user or _diy_bio_ok(user.get("biography") or ""):
+        return
+    name = (user.get("full_name") or "").strip()
+    if not name or name.lower().lstrip("@") == (handle or "").lower():
+        return
+    user["biography"] = name
+    kind = "display name" if ("|" in name or re.search(
+        r"\b(ugc|skincare|beauty|makeup|lifestyle|creator)\b", name, re.I
+    )) else "full_name"
+    print(f"[InHouse/IG] bio from {kind} len={len(name)}")
+
+
+def _ig_copy_caption_bio(user: Dict[str, Any], posts: List[Dict[str, Any]]) -> None:
+    if not user or _diy_bio_ok(user.get("biography") or ""):
+        return
+    for post in posts or []:
+        cap = (post.get("caption") or "").strip()
+        if len(cap) >= 8:
+            user["biography"] = cap.split("\n")[0][:160].strip()
+            print(f"[InHouse/IG] bio from post caption len={len(user['biography'])}")
+            return
+
+
 # ===========================================================================
 # Instagram
 # ===========================================================================
@@ -242,15 +278,16 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
     """
     Scrape Instagram profile + recent posts into the shared profile shape.
 
-    Same required fields as TikTok DIY: followers, bio, latest posts.
+    Same required fields as TikTok DIY: followers + latest posts (bio preferred).
     Never returns partial/search-only profiles — incomplete scrapes raise.
 
     Cascade (mirrors TikTok SSR → embed):
-      1) web_profile_info / mobile API / GraphQL / HTML
-      2) /{handle}/embed/ via facebookexternalhit (followers + posts) — primary DIY path
-      3) Crawler HTML / search snippets (bio gap-fill only)
-      4) imginn / mobile user feed (extra posts)
-      5) shortcode GraphQL enrichment for thin posts
+      1) /{handle}/embed/ via facebookexternalhit (followers + posts) — primary DIY path
+      2) web_profile_info / mobile API / GraphQL / HTML
+      3) imginn.org / imginn.com (post grid when embed is an SPA shell)
+      4) Crawler HTML / search snippets (followers + bio gap-fill)
+      5) mobile user feed / SERP shortcodes
+      6) shortcode GraphQL enrichment for thin posts
     """
     handle = _clean_handle(handle).lower()
     if not handle:
@@ -275,6 +312,14 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
         user = embed_user
         if source == "none":
             source = "embed"
+
+    # Embed has full_name but rarely biography — fill before the "thin" check
+    # so we don't 429 web_profile_info after a successful iframe scrape.
+    if user and not _diy_bio_ok(user.get("biography") or ""):
+        name = (user.get("full_name") or "").strip()
+        if name and name.lower().lstrip("@") != handle:
+            user["biography"] = name
+            print(f"[InHouse/IG] bio from full_name len={len(name)}")
 
     # Session APIs only when embed is missing/thin — warm cookies just before.
     need_api = (not user or _ig_user_is_thin(user) or not posts) and not (user or {}).get("is_private")
@@ -310,14 +355,14 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
         if user and not posts:
             posts = _ig_extract_posts_from_user(user, limit)
 
-    # Prefer embed full_name as bio before SERP (avoids junk follower counts from search)
     if user and not _diy_bio_ok(user.get("biography") or ""):
         name = (user.get("full_name") or "").strip()
         if name and name.lower().lstrip("@") != handle:
             user["biography"] = name
             print(f"[InHouse/IG] bio from full_name len={len(name)}")
 
-    if not user or _ig_user_is_thin(user) or not str((user or {}).get("pk") or "").isdigit():
+    # Don't fetch crawler HTML just to hunt for pk when embed already has posts.
+    if not user or _ig_user_is_thin(user):
         crawler_user = _ig_from_crawler_html(handle, ig_walled=ig_walled)
         if crawler_user:
             if not user:
@@ -331,6 +376,22 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
                 if "crawler" not in source:
                     source = f"{source}+crawler"
 
+    # Public mirrors BEFORE SERP: imginn.com often 403s while imginn.org still
+    # serves the post grid. Do this before search so we don't SERP-hammer for posts.
+    if not posts and not (user or {}).get("is_private"):
+        mirror_user, mirror_posts = _ig_from_imginn(session, handle, limit)
+        if mirror_posts:
+            posts = mirror_posts
+            if "imginn" not in source:
+                source = f"{source}+imginn" if source != "none" else "imginn"
+        if mirror_user:
+            if not user:
+                user = mirror_user
+                if source == "none":
+                    source = "imginn"
+            else:
+                _ig_fill_user_gaps(user, mirror_user)
+
     # Search fills bio/followers when IG HTML has no og:description (common on SPA shells)
     if not user or _ig_user_is_thin(user):
         search_user = _ig_from_search_snippets(handle)
@@ -342,26 +403,13 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
                 _ig_fill_user_gaps(user, search_user)
                 if "search" not in source:
                     source = f"{source}+search"
+        if user:
+            _ig_copy_display_name_bio(user, handle)
 
     if user and not posts and not user.get("is_private"):
         html_posts = _ig_posts_from_html(session, handle, limit)
         if html_posts:
             posts = html_posts
-
-    # Imginn secondary mirror
-    if (not posts or _ig_user_is_thin(user)) and not (user or {}).get("is_private"):
-        mirror_user, mirror_posts = _ig_from_imginn(session, handle, limit)
-        if mirror_posts and not posts:
-            posts = mirror_posts
-            if "imginn" not in source:
-                source = f"{source}+imginn" if source != "none" else "imginn"
-        if mirror_user:
-            if not user:
-                user = mirror_user
-                if source == "none":
-                    source = "imginn"
-            else:
-                _ig_fill_user_gaps(user, mirror_user)
 
     # Mobile user feed — real posts when mirrors fail (needs numeric pk)
     if not posts and not (user or {}).get("is_private"):
@@ -377,6 +425,14 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
                 posts = feed_posts
                 if "user_feed" not in source:
                     source = f"{source}+user_feed" if source != "none" else "user_feed"
+
+    # SERP shortcodes when every IG/mirror HTML path is walled
+    if not posts and not (user or {}).get("is_private"):
+        search_posts = _ig_posts_from_search_shortcodes(handle, limit)
+        if search_posts:
+            posts = search_posts
+            if "search_posts" not in source:
+                source = f"{source}+search_posts" if source != "none" else "search_posts"
 
     # Enrich thin posts (missing thumb/caption) via shortcode GraphQL
     if posts:
@@ -396,25 +452,9 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
                     if "shortcode" not in source:
                         source = f"{source}+shortcode"
 
-    # Bio fallbacks from real IG fields only (never invent "UGC creator @handle")
-    # Do this BEFORE search so we don't SERP-hammer when embed already has a name/captions.
-    if user and not _diy_bio_ok(user.get("biography") or ""):
-        name = (user.get("full_name") or "").strip()
-        if name and ("|" in name or re.search(
-            r"\b(ugc|skincare|beauty|makeup|lifestyle|creator)\b", name, re.I
-        )):
-            user["biography"] = name
-            print(f"[InHouse/IG] bio from display name len={len(name)}")
-        elif name and name.lower().lstrip("@") != handle:
-            user["biography"] = name
-            print(f"[InHouse/IG] bio from full_name len={len(name)}")
-        else:
-            for p in posts:
-                cap = (p.get("caption") or "").strip()
-                if len(cap) >= 8:
-                    user["biography"] = cap.split("\n")[0][:160].strip()
-                    print(f"[InHouse/IG] bio from post caption len={len(user['biography'])}")
-                    break
+    # Display-name bio first so we don't skip SERP on a post caption.
+    if user:
+        _ig_copy_display_name_bio(user, handle)
 
     # Final bio/followers gap-fill via search (still never return search-only)
     if user and _ig_user_is_thin(user):
@@ -423,6 +463,11 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
             _ig_fill_user_gaps(user, search_user)
             if "search" not in source:
                 source = f"{source}+search"
+        _ig_copy_display_name_bio(user, handle)
+
+    # Caption is last-resort bio only (not the profile about text).
+    if user and not _diy_bio_ok(user.get("biography") or ""):
+        _ig_copy_caption_bio(user, posts)
 
     if not user:
         if ig_walled.get("hit"):
@@ -438,18 +483,10 @@ def scrape_instagram(handle: str, results_limit: int = 12) -> Dict[str, Any]:
     profile = _ig_to_profile_shape(user, posts, handle)
 
     if not diy_scrape_is_acceptable(profile, "instagram"):
-        followers = int(profile.get("followersCount") or 0)
-        bio = profile.get("biography") or ""
-        missing = []
-        if not _ig_plausible_followers(followers):
-            missing.append("followers")
-        if not _diy_bio_ok(bio):
-            missing.append("bio")
-        if not profile.get("isPrivate") and not (profile.get("latestPosts") or []):
-            missing.append("latest_post")
+        missing = _ig_missing_required_fields(profile)
         raise InHouseScrapeError(
             f"Incomplete Instagram profile for @{handle} (missing {', '.join(missing) or 'required fields'}). "
-            "Same data as TikTok DIY is required: followers, bio, and a latest post."
+            "Public profiles need followers and a latest post (bio is preferred, not required)."
         )
 
     avatar = profile.get('profile_pic_url', '')
@@ -742,6 +779,35 @@ def _ig_sanitize_search_followers(followers: int) -> int:
     return 0
 
 
+def _ig_search_display_name(text: str, handle: str) -> str:
+    """SERP titles like 'Ariel | beauty & lifestyle creator (@xoitsariel)'."""
+    if not text or not handle:
+        return ""
+    for nm in re.finditer(
+        rf"([^<>\n]{{2,90}})\s*\(@{re.escape(handle)}\)",
+        text,
+        re.I,
+    ):
+        candidate = re.sub(r"<[^>]+>", "", nm.group(1)).strip()
+        candidate = re.sub(r"\s+", " ", candidate).strip(" -|·•")
+        if " - " in candidate:
+            tail = candidate.rsplit(" - ", 1)[-1].strip()
+            if tail and not re.search(r"\bfollowers?\b", tail, re.I):
+                candidate = tail
+        if len(candidate) < 2:
+            continue
+        if candidate.lower().lstrip("@") == handle.lower():
+            continue
+        if re.search(
+            r"\b(followers|following|posts|instagram photos|see instagram|view instagram)\b",
+            candidate,
+            re.I,
+        ):
+            continue
+        return candidate[:120]
+    return ""
+
+
 def _ig_parse_search_snippet_html(html: str, handle: str) -> Optional[Dict[str, Any]]:
     """Pure parser for SERP HTML / JSON blobs that quote IG profile meta."""
     text = unescape(html or "")
@@ -750,6 +816,7 @@ def _ig_parse_search_snippet_html(html: str, handle: str) -> Optional[Dict[str, 
 
     followers = following = media = 0
     handle_pat = rf"(?:<[^>]+>)*\s*{re.escape(handle)}\s*(?:</[^>]+>)*"
+    full_name = _ig_search_display_name(text, handle)
     # Classic IG meta: "554 Followers, 50 Following, 136 Posts"
     m = re.search(
         r"([\d,.]+[KMBkmb]?)\s*Followers,\s*([\d,.]+[KMBkmb]?)\s*Following,\s*([\d,.]+[KMBkmb]?)\s*Posts",
@@ -777,11 +844,11 @@ def _ig_parse_search_snippet_html(html: str, handle: str) -> Optional[Dict[str, 
             bio = re.sub(r"\s+", " ", m.group(4)).strip()
             bio = re.sub(r"</?b>", "", bio).strip(" .…")
             print(f"[InHouse/IG] search followers={followers} bio_len={len(bio)}")
-            if followers <= 0 and not bio:
+            if followers <= 0 and not bio and not full_name:
                 return None
             return {
                 "username": handle,
-                "full_name": "",
+                "full_name": full_name,
                 "biography": bio,
                 "external_url": "",
                 "edge_followed_by": {"count": followers},
@@ -846,13 +913,13 @@ def _ig_parse_search_snippet_html(html: str, handle: str) -> Optional[Dict[str, 
             if handle.lower() in window.lower() or "instagram" in window.lower():
                 bio = window
 
-    if followers <= 0 and not bio:
+    if followers <= 0 and not bio and not full_name:
         return None
 
-    print(f"[InHouse/IG] search followers={followers} bio_len={len(bio)}")
+    print(f"[InHouse/IG] search followers={followers} bio_len={len(bio)} name_len={len(full_name)}")
     return {
         "username": handle,
-        "full_name": "",
+        "full_name": full_name,
         "biography": bio,
         "external_url": "",
         "edge_followed_by": {"count": followers},
@@ -863,6 +930,40 @@ def _ig_parse_search_snippet_html(html: str, handle: str) -> Optional[Dict[str, 
         "is_business_account": False,
         "business_category_name": "",
     }
+
+
+def _ig_posts_from_search_shortcodes(handle: str, limit: int) -> List[Dict[str, Any]]:
+    """Last-resort posts: IG-style /p/ and /reel/ shortcodes indexed by search engines."""
+    queries = (
+        ("bing", f"https://www.bing.com/search?q={quote_plus('site:instagram.com/' + handle)}&setlang=en"),
+        ("startpage", f"https://www.startpage.com/sp/search?query={quote_plus('site:instagram.com/' + handle + '/reel')}"),
+    )
+    codes: List[str] = []
+    for engine, url in queries:
+        try:
+            resp = _http_get(
+                url,
+                headers={
+                    "User-Agent": random.choice(_UA_POOL),
+                    "Accept": "text/html",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+                timeout=15,
+            )
+            print(f"[InHouse/IG] search shortcodes status={resp.status_code} via={engine}")
+            if resp.status_code != 200 or not resp.text:
+                continue
+            for code in _ig_extract_shortcodes(resp.text, limit):
+                if code not in codes:
+                    codes.append(code)
+            if len(codes) >= 3:
+                break
+        except Exception as e:
+            print(f"[InHouse/IG] search shortcodes error: {e}")
+    posts = _ig_stub_posts_from_shortcodes(codes, limit)
+    if posts:
+        print(f"[InHouse/IG] search shortcodes posts={len(posts)}")
+    return posts
 
 
 def _ig_owner_from_shortcode(session: requests.Session, shortcode: str) -> Optional[Dict[str, Any]]:
@@ -1306,16 +1407,18 @@ def _ig_posts_from_html(session: requests.Session, handle: str, limit: int) -> L
             return []
         html = resp.text
         shared = re.search(r"window\._sharedData\s*=\s*(\{.+?\});", html)
-        if not shared:
-            return []
-        data = json.loads(shared.group(1))
-        user = (
-            data.get("entry_data", {})
-            .get("ProfilePage", [{}])[0]
-            .get("graphql", {})
-            .get("user", {})
-        )
-        return _ig_extract_posts_from_user(user or {}, limit)
+        if shared:
+            data = json.loads(shared.group(1))
+            user = (
+                data.get("entry_data", {})
+                .get("ProfilePage", [{}])[0]
+                .get("graphql", {})
+                .get("user", {})
+            )
+            posts = _ig_extract_posts_from_user(user or {}, limit)
+            if posts:
+                return posts
+        return _ig_stub_posts_from_shortcodes(_ig_extract_shortcodes(html, limit), limit)
     except Exception as e:
         print(f"[InHouse/IG] html posts error: {e}")
         return []
@@ -1486,6 +1589,86 @@ def _ig_embed_has_media_payload(text: str) -> bool:
     )
 
 
+def _ig_embed_is_app_shell(text: str) -> bool:
+    """True when /embed/ is a login/SPA/broken shell with no compact profile JSON."""
+    if _ig_embed_has_media_payload(text):
+        return False
+    if not text:
+        return True
+    return any(
+        marker in text
+        for marker in (
+            "EmbedIsBroken",
+            "XPolarisEmbedProfileController",
+            "utm_campaign=invalid",
+            '"require_login"',
+        )
+    )
+
+
+_IG_SHORTCODE_STOP = {
+    "controllers",
+    "explore",
+    "stories",
+    "highlights",
+    "accounts",
+    "instagram",
+    "reels",
+    "tagged",
+    "followers",
+    "following",
+}
+
+
+def _ig_looks_like_shortcode(code: str) -> bool:
+    """Instagram media shortcodes are typically 11 mixed-case chars, not dictionary words."""
+    if not code or not re.fullmatch(r"[A-Za-z0-9_-]{8,15}", code):
+        return False
+    if code.lower() in _IG_SHORTCODE_STOP:
+        return False
+    if code.isalpha() and (code.islower() or code.isupper()):
+        return False
+    if len(code) == 11:
+        return True
+    return 9 <= len(code) <= 13 and bool(re.search(r"\d", code))
+
+
+def _ig_extract_shortcodes(text: str, limit: int = 12) -> List[str]:
+    if not text:
+        return []
+    found: List[str] = []
+    for m in re.finditer(r"(?:/p/|/reel/|/reels/|/tv/)([A-Za-z0-9_-]{8,15})", text):
+        code = m.group(1)
+        if not _ig_looks_like_shortcode(code) or code in found:
+            continue
+        found.append(code)
+        if len(found) >= limit:
+            break
+    return found
+
+
+def _ig_stub_posts_from_shortcodes(codes: List[str], limit: int) -> List[Dict[str, Any]]:
+    posts: List[Dict[str, Any]] = []
+    for code in codes:
+        if not _ig_looks_like_shortcode(code):
+            continue
+        posts.append(
+            {
+                "likesCount": 0,
+                "commentsCount": 0,
+                "videoViewCount": 0,
+                "caption": "",
+                "displayUrl": "",
+                "timestamp": "",
+                "isPinnedItem": False,
+                "shortCode": code,
+            }
+        )
+        if len(posts) >= limit:
+            break
+    return posts
+
+
 def _ig_from_profile_embed(
     handle: str, limit: int
 ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -1525,9 +1708,13 @@ def _ig_from_profile_embed(
             parsed = _ig_parse_profile_embed_html(text, handle, limit)
             if parsed[0] or parsed[1]:
                 return parsed
-        if last_html:
+        if last_html and _ig_embed_has_media_payload(last_html):
+            print("[InHouse/IG] profile embed: parsing last HTML with compact markers")
+            return _ig_parse_profile_embed_html(last_html, handle, limit)
+        if last_html and not _ig_embed_is_app_shell(last_html):
             print("[InHouse/IG] profile embed: parsing last HTML without compact markers")
             return _ig_parse_profile_embed_html(last_html, handle, limit)
+        print("[InHouse/IG] profile embed: no usable compact payload")
         return None, []
     except Exception as e:
         print(f"[InHouse/IG] profile embed error: {e}")
@@ -1739,25 +1926,32 @@ def _ig_from_imginn(
 ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Public mirror fallback (bio + recent posts) when Instagram APIs / profile embed fail.
-    Secondary to /{handle}/embed/ (the primary TikTok-equivalent path).
+    imginn.com is frequently 403; imginn.org still serves the same grid HTML.
     """
-    try:
-        _jitter(0.2, 0.5)
-        url = f"https://imginn.com/{handle}/"
-        headers = {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Referer": "https://imginn.com/",
-        }
-        resp = session.get(url, headers=headers, timeout=20)
-        print(f"[InHouse/IG] imginn status={resp.status_code}")
-        if resp.status_code == 404:
-            return None, []
-        if resp.status_code != 200 or not resp.text:
-            return None, []
-        return _ig_parse_imginn_html(resp.text, handle, limit)
-    except Exception as e:
-        print(f"[InHouse/IG] imginn error: {e}")
-        return None, []
+    hosts = (
+        ("imginn.org", f"https://imginn.org/{handle}/"),
+        ("imginn.com", f"https://imginn.com/{handle}/"),
+    )
+    for name, url in hosts:
+        try:
+            _jitter(0.2, 0.5)
+            headers = {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": f"https://{name}/",
+            }
+            resp = session.get(url, headers=headers, timeout=20)
+            print(f"[InHouse/IG] imginn status={resp.status_code} host={name}")
+            if resp.status_code == 404:
+                continue
+            if resp.status_code != 200 or not resp.text:
+                continue
+            parsed = _ig_parse_imginn_html(resp.text, handle, limit)
+            if parsed[0] or parsed[1]:
+                return parsed
+        except Exception as e:
+            print(f"[InHouse/IG] imginn error host={name}: {e}")
+    return None, []
 
 
 def _ig_parse_imginn_html(
@@ -1836,6 +2030,8 @@ def _ig_parse_imginn_html(
     if not full_name:
         title = _ig_meta_content(html, "og:title") or ""
         full_name = title.split("(")[0].strip()
+    if full_name and full_name.lower().lstrip("@") == handle.lower():
+        full_name = ""
 
     avatar = _ig_normalize_avatar_url(_ig_meta_content(html, "og:image") or "")
     if not avatar:
@@ -1874,6 +2070,36 @@ def _ig_parse_imginn_html(
         if len(posts) >= limit:
             break
 
+    if len(posts) < limit:
+        seen = {p.get("shortCode") for p in posts if p.get("shortCode")}
+        for code in _ig_extract_shortcodes(html, limit):
+            if code in seen:
+                continue
+            href = re.search(
+                rf'href="[^"]*/p/{re.escape(code)}/?[^"]*"',
+                html,
+            )
+            chunk_start = href.start() if href else html.find(code)
+            chunk = html[max(0, chunk_start - 200) : chunk_start + 1800] if chunk_start >= 0 else ""
+            img = re.search(r'<img[^>]+src="([^"]+)"', chunk)
+            alt = re.search(r'<img[^>]+alt="([^"]*)"', chunk)
+            display = unescape((img.group(1) if img else "").replace("&#38;", "&"))
+            caption = unescape(alt.group(1)) if alt else ""
+            posts.append(
+                {
+                    "likesCount": 0,
+                    "commentsCount": 0,
+                    "caption": caption,
+                    "displayUrl": display,
+                    "timestamp": "",
+                    "isPinnedItem": False,
+                    "shortCode": code,
+                }
+            )
+            seen.add(code)
+            if len(posts) >= limit:
+                break
+
     if not posts and not followers and not bio and not full_name:
         return None, []
 
@@ -1882,7 +2108,7 @@ def _ig_parse_imginn_html(
 
     user = {
         "username": handle,
-        "full_name": full_name or handle,
+        "full_name": full_name,
         "biography": bio,
         "external_url": "",
         "profile_pic_url": avatar,
@@ -1904,8 +2130,13 @@ def _ig_fill_user_gaps(user: Dict[str, Any], patch: Dict[str, Any]) -> None:
         return
     if not (user.get("biography") or "").strip() and (patch.get("biography") or "").strip():
         user["biography"] = patch["biography"]
-    if not (user.get("full_name") or "").strip() and (patch.get("full_name") or "").strip():
-        user["full_name"] = patch["full_name"]
+    cur_name = (user.get("full_name") or "").strip()
+    nxt_name = (patch.get("full_name") or "").strip()
+    handle = (user.get("username") or "").strip()
+    if nxt_name and (
+        not cur_name or (handle and cur_name.lower().lstrip("@") == handle.lower())
+    ):
+        user["full_name"] = nxt_name
     if not (user.get("external_url") or "").strip() and (patch.get("external_url") or "").strip():
         user["external_url"] = patch["external_url"]
     cur_pic = (user.get("profile_pic_url") or "").strip()

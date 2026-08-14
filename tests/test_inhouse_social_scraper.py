@@ -23,9 +23,16 @@ from services.inhouse_social_scraper import (
     diy_scrape_is_acceptable,
     _ig_extract_pk_from_html,
     _ig_extract_profile_pic_url,
+    _ig_extract_shortcodes,
+    _ig_embed_is_app_shell,
+    _ig_embed_has_media_payload,
     _ig_fill_user_gaps,
     _ig_is_placeholder_avatar,
+    _ig_looks_like_shortcode,
+    _ig_missing_required_fields,
     _ig_node_to_post,
+    _ig_parse_imginn_html,
+    _ig_copy_display_name_bio,
 )
 from services.creator_profile_scraper import CreatorProfileScraper
 
@@ -154,13 +161,62 @@ class TestInstagramParse(unittest.TestCase):
             f"expected IG avatar CDN path, got {pic[:120]}",
         )
 
-    def test_embed_payload_detector_rejects_spa_shell(self):
-        from services.inhouse_social_scraper import _ig_embed_has_media_payload
+    def test_search_snippets_display_name(self):
+        html = (
+            "3,573 Followers, 1,391 Following, 353 Posts - "
+            "Ariel | beauty & lifestyle creator (@xoitsariel) on Instagram"
+        )
+        profile = parse_instagram_search_snippets(html, handle="xoitsariel")
+        self.assertEqual(profile["followersCount"], 3573)
+        self.assertEqual(profile["fullName"], "Ariel | beauty & lifestyle creator")
+        user = {
+            "username": "xoitsariel",
+            "full_name": profile["fullName"],
+            "biography": "",
+        }
+        _ig_copy_display_name_bio(user, "xoitsariel")
+        self.assertIn("beauty", user["biography"])
 
+    def test_embed_payload_detector_rejects_spa_shell(self):
         spa = '<script>{"s":"XPolarisEmbedProfileController"}</script>'
         compact = r'{"followers_count":1200,"graphql_media":[],"profile_pic_url":"https://x"}'
         self.assertFalse(_ig_embed_has_media_payload(spa))
+        self.assertTrue(_ig_embed_is_app_shell(spa))
         self.assertTrue(_ig_embed_has_media_payload(compact))
+        self.assertFalse(_ig_embed_is_app_shell(compact))
+
+    def test_embed_payload_detector_rejects_broken_embed(self):
+        broken = "<html>EmbedIsBroken utm_campaign=invalid Polarisshell</html>"
+        self.assertFalse(_ig_embed_has_media_payload(broken))
+        self.assertTrue(_ig_embed_is_app_shell(broken))
+
+    def test_shortcode_extractor_rejects_dictionary_words(self):
+        html = (
+            '<a href="/p/DWsl979jjC0/">reel</a>'
+            '<a href="/reel/DWiC4JYkRjh/">reel</a>'
+            '<a href="/reels/xoitsariel/">profile</a>'
+            '<a href="https://www.picuki.com/controllers">junk</a>'
+        )
+        codes = _ig_extract_shortcodes(html, limit=12)
+        self.assertEqual(codes, ["DWsl979jjC0", "DWiC4JYkRjh"])
+        self.assertFalse(_ig_looks_like_shortcode("controllers"))
+        self.assertFalse(_ig_looks_like_shortcode("xoitsariel"))
+
+    def test_imginn_shortcode_fallback_without_item_cards(self):
+        html = """
+        <html><head>
+        <meta property="og:title" content="xoitsariel(@xoitsariel) View Instagram Profile">
+        </head><body>
+        <a href="/p/DWsl979jjC0/"><img src="https://cdn.example.com/a.jpg" alt="Pinned reel caption"></a>
+        <a href="/p/DWiC4JYkRjh/"><img src="https://cdn.example.com/b.jpg" alt="Hair tool"></a>
+        </body></html>
+        """
+        user, posts = _ig_parse_imginn_html(html, "xoitsariel", 12)
+        self.assertIsNotNone(user)
+        self.assertEqual(user.get("full_name") or "", "")
+        self.assertGreaterEqual(len(posts), 2)
+        self.assertEqual(posts[0]["shortCode"], "DWsl979jjC0")
+        self.assertTrue(posts[0].get("displayUrl"))
 
     def test_embed_followers_from_edge_followed_by(self):
         html = (
@@ -389,6 +445,8 @@ class TestAcceptable(unittest.TestCase):
         self.assertTrue(diy_scrape_is_acceptable(no_bio, "instagram"))
         no_posts = dict(base, latestPosts=[])
         self.assertFalse(diy_scrape_is_acceptable(no_posts, "instagram"))
+        self.assertEqual(_ig_missing_required_fields(no_posts), ["latest_post"])
+        self.assertEqual(_ig_missing_required_fields(no_bio), [])
 
     def test_tiktok_empty_bio_acceptable_with_followers_and_videos(self):
         profile = {
