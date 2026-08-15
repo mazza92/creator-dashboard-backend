@@ -59,6 +59,7 @@ from routes.admin_brands import admin_brands_bp
 from routes.admin_reports import admin_reports_bp
 from routes.admin_email import admin_email_bp
 from routes.admin_creators import admin_creators_bp
+from content_submission_routes import content_hub_bp
 
 # In-house social scrapers for profile image extraction
 try:
@@ -301,6 +302,7 @@ app.register_blueprint(admin_brands_bp)
 app.register_blueprint(admin_reports_bp)
 app.register_blueprint(admin_email_bp)
 app.register_blueprint(admin_creators_bp)
+app.register_blueprint(content_hub_bp)
 
 from media_proxy_routes import media_proxy, persist_social_avatar
 app.register_blueprint(media_proxy)
