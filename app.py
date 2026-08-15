@@ -2425,8 +2425,8 @@ def onboarding_scrape():
         if not handle:
             return jsonify({'success': False, 'error': 'Handle is required'}), 400
 
-        if platform not in ['instagram', 'tiktok']:
-            return jsonify({'success': False, 'error': 'Platform must be instagram or tiktok'}), 400
+        if platform not in ['instagram', 'tiktok', 'youtube']:
+            return jsonify({'success': False, 'error': 'Platform must be instagram, tiktok, or youtube'}), 400
 
         app.logger.info(f"📱 Onboarding scrape starting for @{handle} on {platform}")
 
@@ -2437,8 +2437,9 @@ def onboarding_scrape():
         conn = get_db_connection()
 
         # Run the scrape (in-house social scrape + Gemini analysis)
-        # skip_minimums=True allows new creators with <500 followers during onboarding
-        # Pass db_conn to save profile to creator_profile_data for For You matching
+        # skip_minimums=True skips the legacy 5-post check.
+        # Quality bar: 500 followers/subscribers, 12 posts/videos, recent activity.
+        # Visual Gemini is not a reject. Instagram covers are too thin to judge UGC on.
         profile, vision_data = scrape_and_enrich_creator(user_id, handle, platform, db_conn=conn, skip_minimums=True)
 
         # Close connection after scrape completes
@@ -2447,22 +2448,21 @@ def onboarding_scrape():
         except:
             pass
 
+        from services.onboarding_scrape_errors import onboarding_scrape_user_error
+
         if not profile:
             app.logger.warning(f"⚠️ Scrape returned no data for @{handle}")
-            return jsonify({
-                'success': False,
-                'error': 'Could not fetch profile. Please check your username is correct and your profile is public.'
-            }), 400
+            return jsonify(onboarding_scrape_user_error(
+                Exception(f"No {platform} data for @{handle}"), handle, platform
+            )), 400
 
         # Check for private profile (processed profile uses 'is_public')
         is_public = profile.get('is_public', True)
         if not is_public:
             app.logger.warning(f"🔒 Private profile detected: @{handle}")
-            return jsonify({
-                'success': False,
-                'error': 'Your profile appears to be private. Please make your profile public to continue.',
-                'is_private': True
-            }), 400
+            return jsonify(onboarding_scrape_user_error(
+                ValueError(f"Account @{handle} is private"), handle, platform
+            )), 400
 
         # Get processed fields (normalized by scraper)
         follower_count = profile.get('follower_count', 0)
@@ -2472,11 +2472,9 @@ def onboarding_scrape():
         # Check if we got meaningful data (private profiles often return 0 posts)
         if post_count == 0 and follower_count == 0:
             app.logger.warning(f"⚠️ No data returned for @{handle} - likely private")
-            return jsonify({
-                'success': False,
-                'error': 'Could not access your profile data. Please ensure your profile is public.',
-                'is_private': True
-            }), 400
+            return jsonify(onboarding_scrape_user_error(
+                ValueError(f"Account @{handle} is private"), handle, platform
+            )), 400
 
         partial_scrape = bool(profile.get('partial_scrape'))
 
@@ -2484,11 +2482,11 @@ def onboarding_scrape():
         # Skip when Instagram IP-walled us and we only recovered a partial profile.
         if latest_post_days_ago > 365 and not partial_scrape:
             app.logger.warning(f"⚠️ Stale profile data for @{handle} - latest post is {latest_post_days_ago} days old")
-            return jsonify({
-                'success': False,
-                'error': 'Your profile appears inactive or private. Please ensure your profile is public with recent posts.',
-                'is_private': True
-            }), 400
+            return jsonify(onboarding_scrape_user_error(
+                Exception(f"Incomplete {platform} profile for @{handle} (missing latest_post)"),
+                handle,
+                platform,
+            )), 400
 
         # Build summary for frontend
         # Format follower count for display
@@ -2547,26 +2545,19 @@ def onboarding_scrape():
             'partial_scrape': partial_scrape,
         })
 
-    except ValueError as e:
-        # ValueError is raised for private accounts, missing data, etc.
-        error_msg = str(e)
-        app.logger.warning(f"⚠️ Validation error in onboarding scrape: {error_msg}")
-
-        # Check if it's a private account error
-        is_private = 'private' in error_msg.lower()
-
-        return jsonify({
-            'success': False,
-            'error': error_msg if is_private else 'Could not analyze profile. Please check your username and try again.',
-            'is_private': is_private
-        }), 400
+    except (ValueError, InHouseScrapeError) as e:
+        from services.onboarding_scrape_errors import onboarding_scrape_user_error
+        app.logger.warning(f"⚠️ Validation error in onboarding scrape: {str(e)}")
+        return jsonify(onboarding_scrape_user_error(
+            e, locals().get('handle') or '', locals().get('platform') or 'instagram'
+        )), 400
 
     except Exception as e:
+        from services.onboarding_scrape_errors import onboarding_scrape_user_error
         app.logger.error(f"🔥 Error in onboarding scrape: {str(e)}")
-        return jsonify({
-            'success': False,
-            'error': 'Failed to analyze profile. Please try again.'
-        }), 500
+        return jsonify(onboarding_scrape_user_error(
+            e, locals().get('handle') or '', locals().get('platform') or 'instagram'
+        )), 400
 
 
 @app.route('/api/user/onboarding/step2', methods=['POST', 'OPTIONS'])

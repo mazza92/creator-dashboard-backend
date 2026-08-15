@@ -2,7 +2,7 @@
 Creator Profile Scraper Service
 
 Handles:
-1. In-house Instagram/TikTok scraping (sole path)
+1. In-house Instagram/TikTok/YouTube scraping (sole path)
 2. Post-scrape processing (derived metrics)
 3. Gemini Vision analysis for thumbnails
 4. Storage in creator_profile_data table
@@ -20,6 +20,8 @@ from services.inhouse_social_scraper import (
     scrape_tiktok as diy_scrape_tiktok,
     diy_scrape_is_acceptable,
 )
+from services.youtube_scraper import scrape_youtube as diy_scrape_youtube
+from services.profile_quality import assert_onboarding_quality
 
 # Gemini configuration
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
@@ -53,21 +55,39 @@ class CreatorProfileScraper:
             return profile
         raise ValueError(f"In-house TikTok scrape thin for @{handle}")
 
+    def scrape_youtube_profile(self, handle: str) -> Dict[str, Any]:
+        """Scrape YouTube channel via in-house scraper."""
+        handle = handle.lstrip('@').strip()
+        profile = diy_scrape_youtube(handle, results_limit=12)
+        if diy_scrape_is_acceptable(profile, 'youtube'):
+            print(f"[Scrape] yt @{handle} via diy")
+            return profile
+        raise ValueError(f"In-house YouTube scrape thin for @{handle}")
+
     def process_scrape(self, raw_scrape: Dict, platform: str) -> Dict[str, Any]:
         """
         Compute derived fields from raw scrape data.
 
         Args:
-            raw_scrape: Raw data from in-house Instagram/TikTok scraper
-            platform: 'instagram' or 'tiktok'
+            raw_scrape: Raw data from in-house Instagram/TikTok/YouTube scraper
+            platform: 'instagram', 'tiktok', or 'youtube'
 
         Returns:
             Processed profile data with derived metrics
         """
+        platform = (platform or '').lower()
         if platform == 'instagram':
             posts = raw_scrape.get('latestPosts', [])
             followers = raw_scrape.get('followersCount', 0)
             bio = raw_scrape.get('biography', '')
+        elif platform == 'youtube':
+            posts = raw_scrape.get('latestVideos', [])
+            followers = (
+                raw_scrape.get('subscriberCount')
+                or raw_scrape.get('followerCount')
+                or 0
+            )
+            bio = raw_scrape.get('description') or raw_scrape.get('signature', '')
         else:  # tiktok
             posts = raw_scrape.get('latestVideos', [])
             followers = raw_scrape.get('followerCount', 0)
@@ -85,6 +105,10 @@ class CreatorProfileScraper:
         for p in posts[:12]:
             if platform == 'instagram':
                 total_engagement += (p.get('likesCount', 0) + p.get('commentsCount', 0))
+            elif platform == 'youtube':
+                total_engagement += int(p.get('likeCount') or p.get('likesCount') or 0) + int(
+                    p.get('commentCount') or p.get('commentsCount') or 0
+                )
             else:
                 # TikTok: likes (diggCount), comments, shares
                 total_engagement += (p.get('diggCount', 0) + p.get('commentCount', 0) + p.get('shareCount', 0))
@@ -142,8 +166,7 @@ class CreatorProfileScraper:
             if platform == 'instagram':
                 caption = p.get('caption', '')
             else:
-                # TikTok: caption is in 'text' field
-                caption = p.get('text', '')
+                caption = p.get('text') or p.get('title') or p.get('caption', '')
             if caption:
                 recent_captions.append(caption)
 
@@ -152,15 +175,7 @@ class CreatorProfileScraper:
         thumbnail_urls = []
         posts_for_thumbnails = non_pinned_posts[:9] if len(non_pinned_posts) >= 3 else posts[:9]
         for p in posts_for_thumbnails:
-            if platform == 'instagram':
-                url = p.get('displayUrl', '')
-            else:
-                # TikTok: cover URL is in videoMeta.coverUrl or covers array
-                video_meta = p.get('videoMeta', {})
-                url = video_meta.get('coverUrl', '') or video_meta.get('originalCoverUrl', '')
-                # Some TikTok scrapers use 'covers' array
-                if not url and p.get('covers'):
-                    url = p.get('covers', [''])[0]
+            url = self._post_thumbnail_url(p, platform)
             if url:
                 thumbnail_urls.append(url)
 
@@ -177,6 +192,15 @@ class CreatorProfileScraper:
                 comments = int(p.get('commentsCount') or 0)
                 views = int(p.get('videoViewCount') or p.get('viewsCount') or p.get('views') or 0)
                 caption = (p.get('caption') or '')[:500]
+            elif platform == 'youtube':
+                thumb = self._post_thumbnail_url(p, platform)
+                vid = str(p.get('videoId') or p.get('id') or '').strip()
+                post_url = f"https://www.youtube.com/watch?v={vid}" if vid else None
+                likes = int(p.get('likeCount') or p.get('likesCount') or 0)
+                comments = int(p.get('commentCount') or p.get('commentsCount') or 0)
+                views = int(p.get('viewCount') or p.get('playCount') or 0)
+                caption = (p.get('text') or p.get('title') or p.get('caption') or '')[:500]
+                code = vid
             else:
                 video_meta = p.get('videoMeta') or {}
                 thumb = (
@@ -219,7 +243,11 @@ class CreatorProfileScraper:
             # Public stats
             'follower_count': followers,
             'following_count': raw_scrape.get('followsCount') or raw_scrape.get('followingCount', 0),
-            'post_count': raw_scrape.get('postsCount') or raw_scrape.get('videoCount', 0),
+            'post_count': (
+                raw_scrape.get('postsCount')
+                or raw_scrape.get('videoCount')
+                or 0
+            ),
             'is_verified': raw_scrape.get('isVerified') or raw_scrape.get('verified', False),
             'is_public': not (raw_scrape.get('isPrivate') or raw_scrape.get('privateAccount', False)),
             'is_business_account': raw_scrape.get('isBusinessAccount', False),
@@ -257,19 +285,46 @@ class CreatorProfileScraper:
 
         return result
 
+    def _post_thumbnail_url(self, post: Dict, platform: str) -> str:
+        if not isinstance(post, dict):
+            return ''
+        if platform == 'instagram':
+            return post.get('displayUrl') or ''
+        if platform == 'youtube':
+            video_meta = post.get('videoMeta') or {}
+            url = (
+                post.get('thumbnail')
+                or post.get('displayUrl')
+                or video_meta.get('coverUrl')
+                or ''
+            )
+            if url:
+                return url
+            vid = str(post.get('videoId') or post.get('id') or '').strip()
+            return f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg" if vid else ''
+        video_meta = post.get('videoMeta') or {}
+        url = video_meta.get('coverUrl') or video_meta.get('originalCoverUrl') or ''
+        if not url and post.get('covers'):
+            url = (post.get('covers') or [''])[0]
+        return url or post.get('displayUrl') or post.get('thumbnail') or ''
+
     def _parse_post_date(self, post: Dict, platform: str) -> Optional[datetime]:
         """Parse post date from raw data."""
         try:
+            from datetime import timezone as _tz
             if platform == 'instagram':
                 timestamp_str = post.get('timestamp')
                 if timestamp_str:
-                    return datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-            else:  # tiktok
-                create_time = post.get('createTime')
-                if create_time:
-                    from datetime import timezone as _tz
-                    return datetime.fromtimestamp(int(create_time), tz=_tz.utc)
-        except:
+                    return datetime.fromisoformat(str(timestamp_str).replace('Z', '+00:00'))
+            create_time = post.get('createTime')
+            if create_time not in (None, '', 0, '0'):
+                return datetime.fromtimestamp(int(create_time), tz=_tz.utc)
+            timestamp_str = post.get('publishedAt') or post.get('timestamp')
+            if timestamp_str and not str(timestamp_str).isdigit():
+                return datetime.fromisoformat(str(timestamp_str).replace('Z', '+00:00'))
+            if timestamp_str and str(timestamp_str).isdigit():
+                return datetime.fromtimestamp(int(timestamp_str), tz=_tz.utc)
+        except Exception:
             pass
         return None
 
@@ -931,45 +986,59 @@ Analyze and return JSON only.'''
 
 
 def scrape_and_enrich_creator(user_id, handle: str, platform: str,
-                              db_conn=None, skip_minimums: bool = False) -> Tuple[Dict, Optional[Dict]]:
+                              db_conn=None, skip_minimums: bool = False,
+                              skip_follower_floor: bool = False) -> Tuple[Dict, Optional[Dict]]:
     """
     Full pipeline: scrape profile, process, run text analysis, save.
 
     Args:
         user_id: User UUID
         handle: Social media handle
-        platform: 'instagram' or 'tiktok'
+        platform: 'instagram', 'tiktok', or 'youtube'
         db_conn: Database connection
-        skip_minimums: Skip follower/post minimum checks (for onboarding)
-
-    Returns:
-        Tuple of (profile_data, vision_data)
+        skip_minimums: Skip the legacy 5-post check (onboarding uses the 12-post quality bar)
+        skip_follower_floor: Skip the full quality bar (kit refresh only)
     """
     scraper = CreatorProfileScraper(db_conn)
+    platform = (platform or '').lower()
 
     # Step 1: Scrape profile
     if platform == 'instagram':
         raw_scrape = scraper.scrape_instagram_profile(handle)
-    else:
+    elif platform == 'tiktok':
         raw_scrape = scraper.scrape_tiktok_profile(handle)
+    elif platform == 'youtube':
+        raw_scrape = scraper.scrape_youtube_profile(handle)
+    else:
+        raise ValueError(f"Unsupported onboarding platform: {platform}")
 
     # Check for private account (always enforce)
     is_private = raw_scrape.get('isPrivate') or raw_scrape.get('privateAccount', False) or raw_scrape.get('private', False)
     if is_private:
         raise ValueError(f"Account @{handle} is private")
 
-    # Check minimum followers (skip for onboarding)
-    followers = raw_scrape.get('followersCount') or raw_scrape.get('followerCount', 0)
+    # Check minimum followers (legacy path when skip_minimums is off)
+    followers = (
+        raw_scrape.get('followersCount')
+        or raw_scrape.get('followerCount')
+        or raw_scrape.get('subscriberCount')
+        or 0
+    )
     if not skip_minimums and followers < 500:
         raise ValueError(f"Account @{handle} has fewer than 500 followers")
 
-    # Check minimum posts (skip for onboarding)
+    # Check minimum posts (legacy path; onboarding uses the 12-post quality bar)
     posts = raw_scrape.get('postsCount') or raw_scrape.get('videoCount', 0)
     if not skip_minimums and posts < 5:
         raise ValueError(f"Account @{handle} has fewer than 5 posts")
 
     # Step 2: Process scrape
     profile_data = scraper.process_scrape(raw_scrape, platform)
+
+    # Brand-ready bar: 500 followers, 12 posts, recent activity.
+    # Visual Gemini is not a reject. IG thumbs are too thin to judge UGC on.
+    if not skip_follower_floor:
+        assert_onboarding_quality(profile_data, handle, check_visual=False)
 
     # Step 3: Run vision analysis
     vision_data = None

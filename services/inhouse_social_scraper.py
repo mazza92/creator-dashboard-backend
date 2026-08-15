@@ -219,6 +219,11 @@ def diy_scrape_is_acceptable(
         # Synthetic onboarding bios must never count as real profile data
         if re.match(rf"^UGC creator @{re.escape(str(handle))}$", (bio or "").strip(), re.I):
             return False
+    elif platform == "youtube":
+        handle = profile.get("uniqueId") or profile.get("username") or ""
+        followers = int(profile.get("subscriberCount") or profile.get("followerCount") or 0)
+        is_private = bool(profile.get("privateAccount") or profile.get("isPrivate"))
+        latest = profile.get("latestVideos") or []
     else:
         handle = profile.get("uniqueId") or ""
         followers = int(profile.get("followerCount") or 0)
@@ -228,6 +233,9 @@ def diy_scrape_is_acceptable(
     if not handle:
         return False
     if followers <= 0:
+        # YouTube can hide subscriber counts; videos are enough to run the quality bar.
+        if platform == "youtube" and len(latest) > 0:
+            return True
         return False
     if is_private or allow_partial or profile.get("_partial_scrape"):
         return True

@@ -463,6 +463,7 @@ def refresh_scrape():
                 platform,
                 db_conn=conn,
                 skip_minimums=True,
+                skip_follower_floor=True,
             )
             scrape = _load_scrape(conn, user_id) or profile
             stale = False
