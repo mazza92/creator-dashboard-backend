@@ -71,15 +71,15 @@ CATEGORY_DNA = {
         'deal_breaker': None,  # Beauty is broad, less strict
     },
     'haircare': {
-        'required_signals': ['hair', 'haircare', 'styling', 'color', 'treatment'],
+        'required_signals': ['hair', 'haircare', 'wig', 'curl', 'scalp'],
         'weights': {
             'niche_match': 0.35,
             'content_proof': 0.35,
             'engagement': 0.15,
             'consistency': 0.15,
         },
-        'niche_keywords': ['hair', 'haircare', 'styling', 'beauty', 'parenting', 'mom', 'lifestyle'],
-        'content_keywords': ['hair', 'wash', 'style', 'color', 'treatment', 'shine', 'curl', 'straight'],
+        'niche_keywords': ['hair', 'haircare', 'wig', 'curl', 'scalp', 'blowout'],
+        'content_keywords': ['hair', 'wash day', 'hairstyle', 'hair color', 'hair treatment', 'curl', 'scalp', 'wig'],
         'deal_breaker': 'no_hair_content',
     },
     'wellness': {
@@ -192,7 +192,7 @@ def get_brand_dna(category: str) -> Dict:
         'athleisure': 'fitness',
         'makeup': 'beauty',
         'skincare': 'beauty',
-        'haircare': 'beauty',
+        # haircare keeps its own DNA — do not fold wigs/shampoo into beauty
         'beverage': 'food',
         'beverages': 'food',
         'food & beverage': 'food',
@@ -392,7 +392,11 @@ def check_deal_breaker(creator_profile: Dict, brand_dna: Dict, category: str) ->
     content_keywords = brand_dna.get('content_keywords', [])
 
     # Check if ANY content keywords appear
-    has_relevant_content = any(kw.lower() in all_content for kw in content_keywords)
+    has_relevant_content = any(
+        re.search(r'\b' + re.escape(kw.lower()) + r'\b', all_content)
+        for kw in content_keywords
+        if kw
+    )
 
     if not has_relevant_content:
         if category == 'pet':
@@ -433,6 +437,13 @@ OPTICAL_BRAND_SIGNALS = (
 OPTICAL_CREATOR_SIGNALS = (
     'glasses', 'eyewear', 'optical', 'frames', 'vision', 'spectacles',
 )
+WIG_BRAND_SIGNALS = (
+    'wig', 'wigs', 'hairpiece', 'hair piece', 'hair extension', 'hair extensions',
+    'lace front', 'glueless',
+)
+HAIR_CREATOR_SIGNALS = (
+    'hair', 'haircare', 'wig', 'wigs', 'curl', 'curly', 'scalp', 'blowout',
+)
 CBD_BRAND_SIGNALS = (
     'cbd', 'thc', 'cannabis', 'hemp', 'delta-8', 'delta-9', 'delta 8', 'delta 9',
 )
@@ -462,6 +473,7 @@ _OFF_INTENT_WELLNESS_TERMS = (
 )
 _HAIR_BRAND_TERMS = (
     'shampoo', 'conditioner', 'scalp', 'haircare', 'hair care', 'curl', 'curls',
+    'wig', 'wigs', 'hairpiece', 'hair extension',
 )
 _GENERIC_BRAND_TOKENS = _SCORE_STOPWORDS | {
     'clean', 'natural', 'formula', 'daily', 'gentle', 'vegan', 'skin',
@@ -536,6 +548,17 @@ def check_brand_context_mismatch(creator_profile: Dict, brand: Optional[Dict]) -
     if is_optical_brand and not creator_has_eyewear:
         return True, "Optical/eyewear brand does not fit this creator's content"
 
+    is_wig_brand = any(s in brand_blob for s in WIG_BRAND_SIGNALS)
+    creator_has_hair = any(
+        re.search(r'\b' + re.escape(s) + r'\b', creator_blob)
+        for s in HAIR_CREATOR_SIGNALS
+    )
+    if is_wig_brand and not creator_has_hair:
+        return True, "Wig/hair-system brand does not fit this creator's content"
+
+    if category == 'haircare' and not creator_has_hair:
+        return True, "Haircare brand does not fit this creator's content"
+
     is_cbd_brand = any(s in brand_blob for s in CBD_BRAND_SIGNALS)
     if is_cbd_brand and (is_parenting_creator or any(
         s in creator_blob for s in ('beauty', 'skincare', 'makeup', 'baby')
@@ -547,10 +570,10 @@ def check_brand_context_mismatch(creator_profile: Dict, brand: Optional[Dict]) -
 
 # Scraped primary niche adjacency — off-lane brands need content proof or they Stretch
 PRIMARY_NICHE_ADJACENCY = {
-    'beauty': {'beauty', 'skincare', 'makeup', 'haircare', 'wellness', 'cosmetics'},
-    'skincare': {'beauty', 'skincare', 'makeup', 'haircare', 'wellness'},
-    'makeup': {'beauty', 'skincare', 'makeup', 'haircare'},
-    'haircare': {'beauty', 'skincare', 'makeup', 'haircare'},
+    'beauty': {'beauty', 'skincare', 'makeup', 'wellness', 'cosmetics'},
+    'skincare': {'beauty', 'skincare', 'makeup', 'wellness'},
+    'makeup': {'beauty', 'skincare', 'makeup'},
+    'haircare': {'haircare', 'beauty'},
     'wellness': {'wellness', 'beauty', 'skincare', 'fitness', 'supplements'},
     'fitness': {'fitness', 'activewear', 'athleisure', 'sports', 'wellness'},
     'fashion': {'fashion', 'accessories', 'activewear', 'athleisure', 'luxury'},
@@ -570,8 +593,8 @@ def _mapped_category(category: str) -> str:
     aliases = {
         'luxury': 'fashion', 'apparel': 'fashion', 'clothing': 'fashion',
         'streetwear': 'fashion', 'activewear': 'fitness', 'athleisure': 'fitness',
-        'makeup': 'beauty', 'skincare': 'beauty', 'haircare': 'beauty',
-        'cosmetics': 'beauty', 'beverage': 'food', 'beverages': 'food',
+        'makeup': 'beauty', 'skincare': 'beauty', 'cosmetics': 'beauty',
+        'beverage': 'food', 'beverages': 'food',
         'parenting': 'parenting', 'family': 'parenting',
         'kids': 'baby', 'maternity': 'baby', 'babywearing': 'baby',
         'baby & parenting': 'parenting',
@@ -593,7 +616,7 @@ def _mapped_category(category: str) -> str:
     mapped_parts = [aliases.get(p, p) for p in parts]
     for prefer in ('baby', 'parenting', 'beauty', 'skincare', 'haircare'):
         if prefer in mapped_parts:
-            return prefer if prefer not in ('skincare', 'haircare') else 'beauty'
+            return 'beauty' if prefer == 'skincare' else prefer
     if mapped_parts:
         return mapped_parts[0]
     return category_lower
@@ -917,6 +940,18 @@ def score_brand_for_creator(
         s in creator_blob for s in OPTICAL_CREATOR_SIGNALS
     ):
         penalty -= 30
+        hard_caps.append(32)
+    if any(s in brand_text for s in WIG_BRAND_SIGNALS) and not any(
+        re.search(r'\b' + re.escape(s) + r'\b', intent_blob)
+        for s in HAIR_CREATOR_SIGNALS
+    ):
+        penalty -= 30
+        hard_caps.append(32)
+    if mapped_cat == 'haircare' and not any(
+        re.search(r'\b' + re.escape(s) + r'\b', intent_blob)
+        for s in HAIR_CREATOR_SIGNALS
+    ):
+        penalty -= 22
         hard_caps.append(32)
     if any(s in brand_text for s in CBD_BRAND_SIGNALS):
         penalty -= 35

@@ -108,6 +108,19 @@ class TestBrandAwareScores(unittest.TestCase):
         mismatch, _ = check_brand_context_mismatch(self.profile, self.eydology)
         self.assertTrue(mismatch)
 
+    def test_wig_brand_is_not_a_beauty_match(self):
+        wig = _brand(
+            310,
+            'Wigfever',
+            'haircare',
+            'Glueless wigs and hair systems for everyday wear.',
+            hero_product='Lace Front Wig',
+        )
+        fit = self._score(wig)
+        self.assertLess(fit['overall_score'], 35)
+        mismatch, _ = check_brand_context_mismatch(self.profile, wig)
+        self.assertTrue(mismatch)
+
     def test_makeup_brand_outscores_optical(self):
         tarte = self._score(self.tarte)
         eye = self._score(self.eydology)
@@ -195,6 +208,12 @@ class TestPrepareForYouProfile(unittest.TestCase):
             interests,
             prep,
         ))
+        self.assertTrue(_for_you_should_skip_brand(
+            {'name': 'Wigfever', 'description': 'Glueless wigs and hair systems', 'category': 'haircare'},
+            ['beauty', 'travel', 'lifestyle'],
+            prep,
+        ))
+        self.assertNotIn('haircare', pool)
 
 
 class TestBeautyBabyParentingFeed(unittest.TestCase):

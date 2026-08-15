@@ -197,10 +197,10 @@ def normalize_niche(niche_str):
 # Shared related-niche map for For You + matched count.
 # Keep relationships tight — lifestyle must NOT auto-pull luxury fashion.
 FOR_YOU_RELATED_NICHES = {
-    'beauty': ['skincare', 'makeup', 'haircare', 'wellness'],
+    'beauty': ['skincare', 'makeup', 'wellness'],
     'skincare': ['beauty', 'makeup', 'wellness'],
     'makeup': ['beauty', 'skincare'],
-    'haircare': ['beauty', 'skincare'],
+    'haircare': ['beauty'],
     # Fashion stays within style/apparel — not parenting/lifestyle mom finds
     'fashion': ['accessories', 'activewear', 'athleisure'],
     'luxury': ['fashion', 'accessories'],
@@ -243,6 +243,14 @@ _PARENTING_BLOCKED_NAME_RE = re.compile(
 )
 _OPTICAL_BRAND_RE = re.compile(
     r'\b(glasses|eyewear|optical|spectacles|frames|contact lenses?|eye care|eyecare)\b',
+    re.I,
+)
+_WIG_BRAND_RE = re.compile(
+    r'wig|hairpieces?|hair pieces?|hair extensions?|lace front|glueless',
+    re.I,
+)
+_HAIR_CREATOR_RE = re.compile(
+    r'\b(hair|haircare|wig|wigs|curl|curly|scalp|blowout|extensions?)\b',
     re.I,
 )
 
@@ -541,8 +549,20 @@ def _creator_is_eyewear_focused(niches, profile=None) -> bool:
     return bool(re.search(r'\b(glasses|eyewear|optical|frames|vision|spectacles)\b', blob, re.I))
 
 
+def _creator_is_hair_focused(niches, profile=None) -> bool:
+    blob = ' '.join(str(n) for n in (niches or []))
+    if profile:
+        blob += ' ' + str(profile.get('primary_niche') or '')
+        blob += ' ' + ' '.join(str(s) for s in (profile.get('secondary_niches') or []))
+        blob += ' ' + str(profile.get('raw_bio') or '')
+        themes = profile.get('content_themes') or []
+        if isinstance(themes, (list, tuple)):
+            blob += ' ' + ' '.join(str(t) for t in themes)
+    return bool(_HAIR_CREATOR_RE.search(blob))
+
+
 def _for_you_should_skip_brand(brand, niches, profile=None) -> bool:
-    """Drop fashion/CBD for parenting creators and optical brands for everyone else."""
+    """Drop fashion/CBD for parenting creators, optical, and wig/haircare without hair proof."""
     cat = (brand.get('category') or '').lower().strip()
     name = ' '.join(str(brand.get(k) or '') for k in ('name', 'brand_name', 'description', 'hero_product'))
     if _creator_is_parenting_focused(niches, profile):
@@ -551,6 +571,11 @@ def _for_you_should_skip_brand(brand, niches, profile=None) -> bool:
         if _PARENTING_BLOCKED_NAME_RE.search(name):
             return True
     if _OPTICAL_BRAND_RE.search(name) and not _creator_is_eyewear_focused(niches, profile):
+        return True
+    hair_focused = _creator_is_hair_focused(niches, profile)
+    if cat == 'haircare' and not hair_focused:
+        return True
+    if _WIG_BRAND_RE.search(name) and not hair_focused:
         return True
     return False
 
@@ -8566,8 +8591,9 @@ def get_for_you():
         # Build related niches for Section 1 (same logic as Section 2)
         # STRICT mapping: wellness ≠ fitness, they're distinct niches
         related_niches_map = {
-            'beauty': ['skincare', 'makeup', 'haircare'],
+            'beauty': ['skincare', 'makeup'],
             'skincare': ['beauty', 'wellness'],
+            'haircare': ['beauty'],
             'fashion': ['lifestyle', 'accessories', 'activewear'],
             'lifestyle': ['fashion', 'home'],
             'fitness': ['athleisure', 'activewear', 'sports'],  # NOT wellness
