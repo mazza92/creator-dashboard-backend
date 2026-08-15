@@ -14,6 +14,7 @@ import requests
 
 from brand_stats_synthesis import resolve_brand_stats, resolve_pitch_social_proof
 from brand_categories import normalize_category, aggregate_category_counts, category_label
+from services.public_brand_guard import scraper_rate_limit
 
 public_bp = Blueprint('public', __name__, url_prefix='/api/public')
 
@@ -279,6 +280,8 @@ def add_cors_headers(response):
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         response.headers['Access-Control-Max-Age'] = '3600'
+    if request.method == 'GET' and (request.path or '').startswith('/api/public/brands'):
+        response.headers.setdefault('Cache-Control', 'public, max-age=60, s-maxage=300')
     return response
 
 def get_db_connection():
@@ -332,6 +335,7 @@ def submit_to_indexnow(urls):
         return False
 
 @public_bp.route('/brands', methods=['GET'])
+@scraper_rate_limit
 def get_public_brands():
     """
     Public endpoint: Get paginated brand directory
@@ -584,6 +588,7 @@ def get_public_brands():
 
 
 @public_bp.route('/brands/<slug>', methods=['GET'])
+@scraper_rate_limit
 def get_public_brand(slug):
     """
     Public endpoint: Get single brand details by slug

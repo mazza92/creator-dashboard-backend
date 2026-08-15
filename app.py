@@ -3295,7 +3295,10 @@ def get_marketplace_creators():
         return jsonify({'error': str(e)}), 500
 
 
+from services.public_brand_guard import scraper_rate_limit, strip_gated_brand_fields
+
 @app.route('/api/public/brands/<slug>', methods=['GET'])
+@scraper_rate_limit
 def get_public_brand_by_slug(slug):
     """
     Public endpoint for individual brand pages with SEO optimization
@@ -3437,7 +3440,7 @@ def get_public_brand_by_slug(slug):
         }
 
         conn.close()
-        return jsonify(brand), 200
+        return jsonify(strip_gated_brand_fields(brand)), 200
 
     except Exception as e:
         app.logger.error(f"Error fetching public brand: {str(e)}")
