@@ -1,7 +1,7 @@
 """
 Admin Email Campaign API Routes
-Email marketing system for creator engagement
-Using Gmail SMTP for sending
+Email marketing system for creator engagement.
+Creator campaigns send through Resend. Brand outreach still uses Gmail SMTP.
 """
 
 from flask import Blueprint, request, jsonify, session
@@ -28,6 +28,7 @@ from services.outreach_image_gen import (
     get_showcase_creators,
     init as init_outreach_image_gen,
 )
+from services.resend_mail import send_resend_email
 # Initialise schema + seed on first import (idempotent)
 try:
     init_outreach_image_gen()
@@ -47,7 +48,7 @@ def get_db_connection():
 
 MAX_SEND_ATTEMPTS = 3
 STUCK_SENDING_TIMEOUT_MINUTES = 5  # Recipients stuck in 'sending' for this long are recovered
-CRON_BATCH_SIZE = 25  # How many emails to send per cron invocation (~20s at 0.8s/email)
+CRON_BATCH_SIZE = 40  # How many emails to send per cron invocation (~8s at 0.12s/email via Resend)
 ALLOWED_BRAND_TEMPLATE_IDS = {8}
 DISALLOWED_BRAND_TEMPLATE_IDS = {6, 7}
 BLOCKED_OUTREACH_STATUSES = {
@@ -839,17 +840,38 @@ def _pick_recipients_for_send(cursor, campaign_id):
     return cursor.fetchall()
 
 
-def _send_with_retry(to_email, subject, html_content, max_retries=3):
-    """Send email with retry logic and exponential backoff for rate limiting."""
+def _send_campaign_email(to_email, subject, html_content, recipient=None):
+    """Send one creator-campaign email through Resend."""
+    unsubscribe_url = None
+    if recipient:
+        user_id = recipient.get('user_id')
+        if user_id:
+            unsubscribe_url = _build_unsubscribe_url(user_id)
+    return send_resend_email(
+        to_email,
+        subject,
+        html_content,
+        unsubscribe_url=unsubscribe_url,
+        tags=[{'name': 'type', 'value': 'campaign'}],
+    )
+
+
+def _send_with_retry(to_email, subject, html_content, max_retries=3, recipient=None):
+    """Send campaign email with retry on Resend rate limits and 5xx errors."""
+    last_error = 'Resend send failed'
     for attempt in range(max_retries):
-        result = send_email_gmail(to_email, subject, html_content)
-        if result:
+        result = _send_campaign_email(
+            to_email, subject, html_content, recipient=recipient
+        )
+        if result.get('success'):
             return True
-        # Check if it's a rate limit / connection issue - retry with backoff
-        if attempt < max_retries - 1:
-            backoff = (attempt + 1) * 10  # 10s, 20s, 30s
-            print(f"[Retry] Attempt {attempt + 1} failed for {to_email}, waiting {backoff}s...")
-            time.sleep(backoff)
+        last_error = result.get('error') or last_error
+        if not result.get('retryable') or attempt >= max_retries - 1:
+            break
+        backoff = (attempt + 1) * 5
+        print(f"[Retry] Resend attempt {attempt + 1} failed for {to_email}: {last_error}, waiting {backoff}s...")
+        time.sleep(backoff)
+    print(f"[Resend] Failed {to_email}: {last_error}")
     return False
 
 
@@ -861,9 +883,9 @@ def _send_emails_background(campaign_id, recipients, subject, html_content):
     cursor = conn.cursor(cursor_factory=RealDictCursor)
 
     BATCH_SIZE = 25
-    DELAY_BETWEEN_EMAILS = 1.5  # Increased from 0.8 to avoid Gmail rate limits
-    RATE_LIMIT_PAUSE = 30  # Pause every N emails to avoid Gmail connection limits
-    RATE_LIMIT_BATCH = 50  # Pause after this many emails
+    DELAY_BETWEEN_EMAILS = 0.12
+    RATE_LIMIT_PAUSE = 2
+    RATE_LIMIT_BATCH = 80
     sent_count = 0
     failed_count = 0
 
@@ -879,7 +901,8 @@ def _send_emails_background(campaign_id, recipients, subject, html_content):
                 success = _send_with_retry(
                     to_email=recipient_email,
                     subject=personalized_subject,
-                    html_content=personalized_content
+                    html_content=personalized_content,
+                    recipient=recipient,
                 )
 
                 if success:
@@ -906,7 +929,7 @@ def _send_emails_background(campaign_id, recipients, subject, html_content):
                         """
                         UPDATE email_campaign_recipients
                         SET status = 'failed_temp',
-                            last_error = 'SMTP send failed',
+                            last_error = 'Resend send failed',
                             updated_at = NOW()
                         WHERE id = %s
                         """,
@@ -917,7 +940,7 @@ def _send_emails_background(campaign_id, recipients, subject, html_content):
                         INSERT INTO email_logs (campaign_id, user_id, creator_id, email, status, error_message)
                         VALUES (%s, %s, %s, %s, 'failed', %s)
                         """,
-                        (campaign_id, recipient['user_id'], recipient['creator_id'], recipient_email, 'SMTP send failed')
+                        (campaign_id, recipient['user_id'], recipient['creator_id'], recipient_email, 'Resend send failed')
                     )
                     failed_count += 1
 
@@ -927,7 +950,7 @@ def _send_emails_background(campaign_id, recipients, subject, html_content):
                     conn.commit()
                     print(f"[Background] Progress: {i + 1}/{len(recipients)} processed")
 
-                # Rate limit pause: longer break every N emails to avoid Gmail connection limits
+                # Light pause so a 2k send does not burst Resend in one tight loop
                 if (i + 1) % RATE_LIMIT_BATCH == 0 and i < len(recipients) - 1:
                     print(f"[Background] Rate limit pause: {RATE_LIMIT_PAUSE}s after {i + 1} emails...")
                     time.sleep(RATE_LIMIT_PAUSE)
@@ -1082,7 +1105,8 @@ def _process_campaign_batch(cursor, campaign_id, subject, html_content, batch_si
             success = _send_with_retry(
                 to_email=recipient_email,
                 subject=personalized_subject,
-                html_content=personalized_content
+                html_content=personalized_content,
+                recipient=recipient,
             )
 
             if success:
@@ -1106,15 +1130,14 @@ def _process_campaign_batch(cursor, campaign_id, subject, html_content, batch_si
                 cursor.execute(
                     """
                     UPDATE email_campaign_recipients
-                    SET status = 'failed_temp', last_error = 'SMTP send failed', updated_at = NOW()
+                    SET status = 'failed_temp', last_error = 'Resend send failed', updated_at = NOW()
                     WHERE id = %s
                     """,
                     (recipient_id,)
                 )
                 failed_count += 1
 
-            # Small delay to avoid rate limiting
-            time.sleep(0.8)
+            time.sleep(0.12)
 
         except Exception as e:
             cursor.execute(
@@ -1626,12 +1649,14 @@ def send_test_email(campaign_id):
         personalized_subject = f"[TEST] {personalize_text(subject, sample)}"
         personalized_content = personalize_text(html_content, sample)
 
-        success = send_email_gmail(test_email, personalized_subject, personalized_content)
+        result = _send_campaign_email(test_email, personalized_subject, personalized_content)
 
-        if success:
+        if result.get('success'):
             return jsonify({'message': f'Test email sent to {test_email}'})
         else:
-            return jsonify({'error': 'Failed to send test email. Check Gmail credentials.'}), 500
+            return jsonify({
+                'error': result.get('error') or 'Failed to send test email. Check RESEND_API_KEY.'
+            }), 500
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1852,14 +1877,13 @@ def send_admin_email():
         failures = []
 
         for email in normalized:
-            ok = send_email_gmail(email, subject, html_content)
-            if ok:
+            result = _send_campaign_email(email, subject, html_content)
+            if result.get('success'):
                 sent += 1
             else:
                 failed += 1
                 failures.append(email)
-            # Keep behavior consistent with campaign throttling to avoid SMTP spikes.
-            time.sleep(0.8)
+            time.sleep(0.12)
 
         status_code = 200 if failed == 0 else 207
         return jsonify({
