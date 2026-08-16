@@ -110,6 +110,8 @@ except ImportError as e:
         brand = brand or {}
         return brand.get('hero_product') or brand.get('product_sku_name') or 'your product'
 
+from services.outreach_dedupe import duplicate_outreach_block
+
 # Feature flag for pitch engine v2 (50/50 A/B test)
 PITCH_ENGINE_V2_ENABLED = os.environ.get('PITCH_ENGINE_V2', '0') == '1'
 PITCH_ENGINE_V2_PERCENT = int(os.environ.get('PITCH_ENGINE_V2_PERCENT', '0'))  # 0-100
@@ -4936,15 +4938,19 @@ def generate_pr_package():
         status = fit_result.get('status', 'almost')
         mentor_verdict = MENTOR_VERDICTS_MAP.get(status, MENTOR_VERDICTS_MAP['almost'])
 
+        unlock_fields = serialize_unlock_result(unlock_result)
+        print(
+            f"[generate-pr-package] unlock remaining={unlock_fields.get('remaining')} "
+            f"credits_used={unlock_fields.get('credits_used')} quota_hit={unlock_fields.get('quota_hit')}"
+        )
+
         return jsonify({
             'success': True,
             'package': package_data,
             'cached': False,
             'brand_email': pack_contact_email(brand)[0],
             'application_form_url': brand.get('application_form_url'),
-            'brand_unlocked': unlock_result.get('brand_unlocked', False),
-            'already_unlocked': unlock_result.get('already_unlocked', False),
-            'credits_remaining': unlock_result.get('credits_remaining'),
+            **unlock_fields,
             'media_kit_url': media_kit_url,
             'kit_published': kit_published or False,
             # AI Depth fields
@@ -5589,9 +5595,7 @@ def generate_pr_package_v2():
                 'hero_variant': hero_variant,
                 'total_unlocks': total_unlocks + 1,  # Incremented after this unlock
                 'fast_mode': fast_mode,
-                'brand_unlocked': unlock_result.get('brand_unlocked', False),
-                'already_unlocked': unlock_result.get('already_unlocked', False),
-                'credits_remaining': unlock_result.get('credits_remaining'),
+                **serialize_unlock_result(unlock_result),
                 'used_ai_depth': fit_result.get('used_ai_depth', False),
                 # Coaching fields for mentor-first UI
                 'is_coaching': fit_result.get('is_coaching', False),
@@ -7299,6 +7303,33 @@ def attempt_unlock(creator_id, brand_id, conn=None):
             conn.close()
 
 
+def serialize_unlock_result(unlock_result):
+    """Normalize attempt_unlock() into fields the frontend can trust."""
+    if not unlock_result:
+        return {
+            'unlock_status': None,
+            'already_unlocked': False,
+            'brand_unlocked': False,
+            'credits_used': 0,
+            'remaining': None,
+            'credits_remaining': None,
+        }
+    status = unlock_result.get('status')
+    credits_used = int(unlock_result.get('credits_used') or 0)
+    remaining = unlock_result.get('remaining')
+    already = status == 'already_unlocked'
+    quota_hit = (not already) and credits_used == 1 and remaining == 0
+    return {
+        'unlock_status': status,
+        'already_unlocked': already,
+        'brand_unlocked': credits_used == 1 and not already,
+        'credits_used': credits_used,
+        'remaining': remaining,
+        'credits_remaining': remaining,
+        'quota_hit': quota_hit,
+    }
+
+
 def can_unlock(creator_id, brand_id, conn=None):
     """
     Check if a creator CAN unlock a brand WITHOUT actually deducting credits.
@@ -7873,6 +7904,78 @@ def confirm_send(pipeline_id):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+def _ensure_mailto_opened_at_column(cursor):
+    cursor.execute("""
+        ALTER TABLE creator_pipeline
+        ADD COLUMN IF NOT EXISTS mailto_opened_at TIMESTAMPTZ
+    """)
+
+
+@pr_crm.route('/pipeline/begin-send', methods=['POST'])
+def begin_pipeline_send():
+    """Record a mailto open and reject accidental duplicate sends to the same brand."""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    data = request.get_json() or {}
+    brand_id = data.get('brand_id')
+    brand_slug = data.get('slug')
+    is_followup = bool(data.get('is_followup'))
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        _ensure_mailto_opened_at_column(cursor)
+        conn.commit()
+
+        if not brand_id and brand_slug:
+            cursor.execute('SELECT id FROM pr_brands WHERE slug = %s', (brand_slug,))
+            brand_row = cursor.fetchone()
+            if brand_row:
+                brand_id = brand_row['id']
+
+        if not brand_id:
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, 'error': 'brand_id or slug required'}), 400
+
+        cursor.execute("""
+            SELECT id, send_confirmed, pitched_at, followup_sent_at, mailto_opened_at
+            FROM creator_pipeline
+            WHERE creator_id = %s AND brand_id = %s
+        """, (creator_id, brand_id))
+        pipeline_item = cursor.fetchone()
+
+        block = duplicate_outreach_block(pipeline_item, is_followup=is_followup)
+        if block:
+            cursor.close()
+            conn.close()
+            return jsonify({'success': False, **block}), 409
+
+        cursor.execute("""
+            INSERT INTO creator_pipeline (
+                creator_id, brand_id, stage, mailto_opened_at, created_at, updated_at
+            )
+            VALUES (%s, %s, 'saved', NOW(), NOW(), NOW())
+            ON CONFLICT (creator_id, brand_id) DO UPDATE
+            SET mailto_opened_at = NOW(),
+                updated_at = NOW()
+            RETURNING id
+        """, (creator_id, brand_id))
+        conn.commit()
+        pipeline_id = cursor.fetchone()['id']
+        cursor.close()
+        conn.close()
+        return jsonify({'success': True, 'pipeline_id': pipeline_id})
+
+    except Exception as e:
+        import traceback
+        print(f"Error in begin_pipeline_send: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @pr_crm.route('/followup-reminder/clicked', methods=['POST'])
 def track_followup_reminder_click():
     """Track when a creator clicks a follow-up reminder notification (analytics)"""
@@ -8231,8 +8334,8 @@ def get_bumps_remaining():
 def get_kit_views():
     """
     Get kit views with brand attribution for "Who Viewed Your Kit" feature.
-    Free users: Get total count only (teaser)
-    Pro users: Get full list with brand names, timestamps, view counts
+    Free users: count plus one teaser brand name.
+    Pro users: full list with brand names, timestamps, view counts.
     """
     creator_id = get_creator_id_from_session()
     if not creator_id:
@@ -8268,7 +8371,20 @@ def get_kit_views():
         unique_brands = cursor.fetchone()['unique_brands']
 
         if not is_pro:
-            # Free users only get the count (teaser)
+            teaser_brand_name = None
+            cursor.execute('''
+                SELECT pb.brand_name
+                FROM kit_views kv
+                JOIN pr_brands pb ON pb.id = kv.brand_id
+                WHERE kv.creator_id = %s
+                  AND kv.viewed_at > NOW() - INTERVAL '7 days'
+                  AND kv.brand_id IS NOT NULL
+                ORDER BY kv.viewed_at DESC
+                LIMIT 1
+            ''', (creator_id,))
+            teaser = cursor.fetchone()
+            if teaser and teaser.get('brand_name'):
+                teaser_brand_name = teaser['brand_name']
             cursor.close()
             conn.close()
             return jsonify({
@@ -8276,7 +8392,8 @@ def get_kit_views():
                 'is_pro': False,
                 'views_this_week': total_views,
                 'brands_this_week': unique_brands,
-                'views': []  # Empty list for free users
+                'teaser_brand_name': teaser_brand_name,
+                'views': []
             })
 
         # Pro users get full details

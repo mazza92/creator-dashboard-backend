@@ -53,7 +53,11 @@ from indexnow_routes import indexnow_bp
 from email_cron_routes import email_cron_bp
 from lifecycle_email_routes import lifecycle_email_bp
 from lifecycle_email_engine import trigger_welcome_email
-from social_verification_routes import social_verification_bp, detect_country_from_ip, RESTRICTED_REGIONS
+from social_verification_routes import (
+    social_verification_bp,
+    should_block_auth_for_region,
+    is_request_from_restricted_region,
+)
 from routes.admin_pr_hunter import admin_pr_hunter_bp
 from routes.admin_brands import admin_brands_bp
 from routes.admin_reports import admin_reports_bp
@@ -910,9 +914,8 @@ def google_signup():
 
     try:
         # Region check FIRST - block restricted regions before any processing
-        user_country = detect_country_from_ip()
-        if user_country and user_country.upper() in RESTRICTED_REGIONS:
-            app.logger.warning(f"🚫 Google signup blocked - restricted region: {user_country}")
+        if is_request_from_restricted_region():
+            app.logger.warning("🚫 Google signup blocked - restricted region")
             return jsonify({'error': 'Service not available in your region'}), 403
 
         data = request.get_json()
@@ -1402,7 +1405,7 @@ def login():
 
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
-        cursor.execute("SELECT id, password, role FROM users WHERE email = %s", (email,))
+        cursor.execute("SELECT id, password, role, country FROM users WHERE email = %s", (email,))
         user = cursor.fetchone()
         app.logger.info(f"🟢 User Query Result: {user.get('id') if user else None}")
 
@@ -1430,6 +1433,16 @@ def login():
         user_id = user['id']
         user_role = user['role']
         app.logger.info(f"🟢 User Found: ID={user_id}, Role={user_role}")
+
+        # Same geo gate as signup, after credentials so failed logins stay fast.
+        # Known allowed-country accounts skip the IP lookup so their login UX
+        # is unchanged. Geo miss still fail-opens (localhost / lookup timeout).
+        if should_block_auth_for_region(user.get('country'), timeout=1.0):
+            app.logger.warning(f"🚫 Login blocked - restricted region user_id={user_id}")
+            response = jsonify({'error': 'Service not available in your region'})
+            response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
+            return response, 403
 
         # Update last_login timestamp
         cursor.execute("UPDATE users SET last_login = NOW() WHERE id = %s", (user_id,))
@@ -5821,9 +5834,8 @@ def register_creator_account():
 
     try:
         # Region check FIRST - block restricted regions before any processing
-        user_country = detect_country_from_ip()
-        if user_country and user_country.upper() in RESTRICTED_REGIONS:
-            app.logger.warning(f"🚫 Creator signup blocked - restricted region: {user_country}")
+        if is_request_from_restricted_region():
+            app.logger.warning("🚫 Creator signup blocked - restricted region")
             return jsonify({'error': 'Service not available in your region'}), 403
 
         # Handle both JSON and form data

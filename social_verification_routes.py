@@ -149,8 +149,40 @@ def get_user_country_from_session():
     return None
 
 
-def detect_country_from_ip():
-    """Detect country from current request IP - standalone function for callbacks"""
+# English names we historically stored on users.country (signup used full names).
+# Used to skip the IP lookup on login for accounts already known to be allowed.
+RESTRICTED_COUNTRY_NAMES = {
+    # South Asia
+    'india': 'IN', 'pakistan': 'PK', 'bangladesh': 'BD', 'nepal': 'NP',
+    'sri lanka': 'LK', 'myanmar': 'MM', 'burma': 'MM', 'bhutan': 'BT',
+    # Africa (excluding South Africa)
+    'nigeria': 'NG', 'egypt': 'EG', 'kenya': 'KE', 'ethiopia': 'ET',
+    'ghana': 'GH', 'tanzania': 'TZ', 'uganda': 'UG', 'algeria': 'DZ',
+    'morocco': 'MA', 'angola': 'AO', 'mozambique': 'MZ', 'madagascar': 'MG',
+    'cameroon': 'CM', 'ivory coast': 'CI', "cote d'ivoire": 'CI',
+    'côte d’ivoire': 'CI', 'niger': 'NE', 'burkina faso': 'BF', 'mali': 'ML',
+    'malawi': 'MW', 'zambia': 'ZM', 'zimbabwe': 'ZW', 'senegal': 'SN',
+    'chad': 'TD', 'somalia': 'SO', 'guinea': 'GN', 'rwanda': 'RW',
+    'benin': 'BJ', 'burundi': 'BI', 'tunisia': 'TN', 'south sudan': 'SS',
+    'togo': 'TG', 'sierra leone': 'SL', 'libya': 'LY', 'congo': 'CG',
+    'republic of the congo': 'CG', 'liberia': 'LR',
+    'central african republic': 'CF', 'mauritania': 'MR', 'eritrea': 'ER',
+    'namibia': 'NA', 'gambia': 'GM', 'botswana': 'BW', 'gabon': 'GA',
+    'lesotho': 'LS', 'guinea-bissau': 'GW', 'equatorial guinea': 'GQ',
+    'mauritius': 'MU', 'eswatini': 'SZ', 'swaziland': 'SZ',
+    'djibouti': 'DJ', 'comoros': 'KM', 'cape verde': 'CV', 'cabo verde': 'CV',
+    'sao tome and principe': 'ST', 'são tomé and príncipe': 'ST',
+    'seychelles': 'SC', 'dr congo': 'CD',
+    'democratic republic of the congo': 'CD',
+    'democratic republic of congo': 'CD',
+}
+
+
+def detect_country_from_ip(timeout=3):
+    """Detect country from current request IP - standalone function for callbacks.
+
+    Returns None for localhost/private IPs and on lookup failure (fail-open).
+    """
     try:
         client_ip = request.headers.get('X-Forwarded-For', request.headers.get('X-Real-IP', request.remote_addr))
         if client_ip:
@@ -158,12 +190,52 @@ def detect_country_from_ip():
             # Skip localhost/private IPs
             if client_ip in ['127.0.0.1', 'localhost', '::1'] or client_ip.startswith(('192.168.', '10.', '172.')):
                 return None
-            geo_response = requests.get(f'http://ip-api.com/json/{client_ip}?fields=countryCode', timeout=3)
+            geo_response = requests.get(
+                f'http://ip-api.com/json/{client_ip}?fields=countryCode',
+                timeout=timeout,
+            )
             if geo_response.status_code == 200:
                 return geo_response.json().get('countryCode')
     except Exception as e:
         print(f"⚠️ detect_country_from_ip error: {e}")
     return None
+
+
+def country_value_is_restricted(country):
+    """True when a stored ISO code or English country name is in RESTRICTED_REGIONS."""
+    raw = (country or '').strip()
+    if not raw:
+        return False
+    code = raw.upper()
+    if len(code) == 2 and code.isalpha():
+        return code in RESTRICTED_REGIONS
+    mapped = RESTRICTED_COUNTRY_NAMES.get(raw.lower())
+    return bool(mapped and mapped in RESTRICTED_REGIONS)
+
+
+def stored_country_is_allowed(country):
+    """True when we already know this account is in an allowed country."""
+    raw = (country or '').strip() if country else ''
+    if not raw:
+        return False
+    return not country_value_is_restricted(raw)
+
+
+def is_request_from_restricted_region(timeout=3):
+    """True only when IP country is known AND restricted. Fail-open otherwise."""
+    code = detect_country_from_ip(timeout=timeout)
+    return bool(code and code.upper() in RESTRICTED_REGIONS)
+
+
+def should_block_auth_for_region(stored_country, timeout=1.0):
+    """Login geo gate that does not change UX for allowed-country accounts.
+
+    Known allowed countries skip the IP lookup (no extra latency, no travel lockout).
+    Unknown or restricted stored countries use the same fail-open IP check as signup.
+    """
+    if stored_country_is_allowed(stored_country):
+        return False
+    return is_request_from_restricted_region(timeout=timeout)
 
 
 def encrypt_token(token):
