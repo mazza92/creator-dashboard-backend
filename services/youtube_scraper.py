@@ -33,6 +33,18 @@ _RELATIVE_UNITS = (
     (r"(\d+)\s*year", 365),
 )
 
+# Classic Innertube renderers plus 2025/2026 channel-grid view models.
+_VIDEO_RENDERER_KEYS = (
+    "videoRenderer",
+    "gridVideoRenderer",
+    "compactVideoRenderer",
+    "reelItemRenderer",
+    "channelVideoPlayerRenderer",
+    "lockupViewModel",
+    "shortsLockupViewModel",
+)
+_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
 
 def parse_compact_count(text: Any) -> int:
     """Parse YouTube counts like '1.2K subscribers' or '12,345'."""
@@ -140,11 +152,15 @@ def extract_yt_initial_data(html: str) -> Dict[str, Any]:
     return {}
 
 
+def _looks_like_video_id(vid: str) -> bool:
+    return bool(vid and _VIDEO_ID_RE.match(vid))
+
+
 def _iter_video_renderers(obj: Any, out: Optional[List[dict]] = None) -> List[dict]:
     if out is None:
         out = []
     if isinstance(obj, dict):
-        for key in ("videoRenderer", "gridVideoRenderer", "reelItemRenderer"):
+        for key in _VIDEO_RENDERER_KEYS:
             node = obj.get(key)
             if isinstance(node, dict):
                 out.append(node)
@@ -156,16 +172,87 @@ def _iter_video_renderers(obj: Any, out: Optional[List[dict]] = None) -> List[di
     return out
 
 
+def _video_id_from_obj(obj: Any, depth: int = 0) -> str:
+    if depth > 8:
+        return ""
+    if isinstance(obj, dict):
+        for key in ("videoId", "contentId"):
+            vid = str(obj.get(key) or "").strip()
+            if _looks_like_video_id(vid):
+                return vid
+        for nested_key in (
+            "reelWatchEndpoint",
+            "watchEndpoint",
+            "navigationEndpoint",
+            "innertubeCommand",
+            "onTap",
+        ):
+            nested = obj.get(nested_key)
+            if nested:
+                found = _video_id_from_obj(nested, depth + 1)
+                if found:
+                    return found
+        entity = str(obj.get("entityId") or "")
+        if entity.startswith("shorts-shelf-item-"):
+            vid = entity.rsplit("-", 1)[-1]
+            if _looks_like_video_id(vid):
+                return vid
+    elif isinstance(obj, list):
+        for item in obj[:12]:
+            found = _video_id_from_obj(item, depth + 1)
+            if found:
+                return found
+    return ""
+
+
 def _video_id(renderer: dict) -> str:
     vid = str(renderer.get("videoId") or "").strip()
     if vid:
         return vid
-    nav = renderer.get("navigationEndpoint") or {}
-    if isinstance(nav, dict):
-        reel = nav.get("reelWatchEndpoint") or nav.get("watchEndpoint") or {}
-        if isinstance(reel, dict):
-            return str(reel.get("videoId") or "").strip()
+    content_id = str(renderer.get("contentId") or "").strip()
+    if _looks_like_video_id(content_id):
+        return content_id
+    return _video_id_from_obj(renderer)
+
+
+def _is_video_lockup(renderer: dict) -> bool:
+    content_type = str(renderer.get("contentType") or "").upper()
+    if not content_type:
+        return True
+    return "VIDEO" in content_type or "SHORT" in content_type
+
+
+def _ytimg_url(obj: Any) -> str:
+    if not isinstance(obj, dict):
+        return ""
+    url = str(obj.get("url") or "").strip()
+    if url and ("ytimg.com" in url or "/vi/" in url or "googleusercontent.com" in url):
+        if "an_webp" in url:
+            return ""
+        return url
     return ""
+
+
+def _collect_thumb_urls(obj: Any, out: List[str], depth: int = 0) -> None:
+    if depth > 10 or len(out) >= 8:
+        return
+    if isinstance(obj, dict):
+        url = _ytimg_url(obj)
+        if url:
+            out.append(url)
+        sources = obj.get("sources") or obj.get("thumbnails")
+        if isinstance(sources, list):
+            for item in sources:
+                url = _ytimg_url(item) if isinstance(item, dict) else ""
+                if url:
+                    out.append(url)
+        for key in ("contentImage", "thumbnailViewModel", "thumbnail", "image"):
+            nested = obj.get(key)
+            if nested:
+                _collect_thumb_urls(nested, out, depth + 1)
+    elif isinstance(obj, list):
+        for item in obj[:8]:
+            _collect_thumb_urls(item, out, depth + 1)
 
 
 def _thumbnail_url(renderer: dict, video_id: str) -> str:
@@ -175,20 +262,76 @@ def _thumbnail_url(renderer: dict, video_id: str) -> str:
         url = str(last.get("url") or "").strip()
         if url:
             return url
+    collected: List[str] = []
+    _collect_thumb_urls(
+        {
+            "contentImage": renderer.get("contentImage"),
+            "thumbnailViewModel": renderer.get("thumbnailViewModel"),
+            "thumbnail": renderer.get("thumbnail"),
+        },
+        collected,
+    )
+    if collected:
+        return collected[-1]
     if video_id:
         return f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
     return ""
 
 
+def _lockup_title(renderer: dict) -> str:
+    overlay = renderer.get("overlayMetadata") or {}
+    metadata = renderer.get("metadata") or {}
+    lockup_meta = metadata.get("lockupMetadataViewModel") or {}
+    return (
+        yt_text(renderer.get("title") or renderer.get("headline"))
+        or yt_text(lockup_meta.get("title"))
+        or yt_text(overlay.get("primaryText"))
+        or ""
+    )
+
+
+def _lockup_published_and_views(renderer: dict) -> tuple:
+    published = yt_text(renderer.get("publishedTimeText"))
+    views = parse_compact_count(yt_text(renderer.get("viewCountText") or renderer.get("viewCount")))
+    overlay = renderer.get("overlayMetadata") or {}
+    if not views:
+        views = parse_compact_count(yt_text(overlay.get("secondaryText")))
+
+    texts: List[str] = []
+
+    def collect(obj: Any, depth: int = 0) -> None:
+        if depth > 8 or len(texts) >= 40:
+            return
+        if isinstance(obj, dict):
+            text = yt_text(obj)
+            if text and 2 < len(text) < 80:
+                texts.append(text)
+            for value in obj.values():
+                collect(value, depth + 1)
+        elif isinstance(obj, list):
+            for item in obj[:24]:
+                collect(item, depth + 1)
+
+    collect(renderer.get("metadata") or {})
+    for text in texts:
+        lowered = text.lower()
+        if not published and relative_published_to_unix(text):
+            published = text
+        if not views and "view" in lowered:
+            views = parse_compact_count(text)
+    return published, views
+
+
 def video_from_renderer(renderer: dict, *, now: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
     if not isinstance(renderer, dict):
+        return None
+    if not _is_video_lockup(renderer):
         return None
     vid = _video_id(renderer)
     if not vid:
         return None
-    title = yt_text(renderer.get("title") or renderer.get("headline"))
-    published = yt_text(renderer.get("publishedTimeText"))
-    views = parse_compact_count(yt_text(renderer.get("viewCountText") or renderer.get("viewCount")))
+    title = _lockup_title(renderer)
+    published, views = _lockup_published_and_views(renderer)
     thumb = _thumbnail_url(renderer, vid)
     create_time = relative_published_to_unix(published, now=now)
     return {

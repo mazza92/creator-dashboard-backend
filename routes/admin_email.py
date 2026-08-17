@@ -59,6 +59,17 @@ BLOCKED_OUTREACH_STATUSES = {
 DEFAULT_FOLLOWUP_COOLDOWN_HOURS = 96  # 4 days between follow-ups unless overridden
 
 
+def _free_at_unlock_limit_sql(conn):
+    """Same definition as founder-dashboard at-limit: free, 0 unlocks, no pack credits."""
+    from services.pack_credits import pack_credits_column_exists
+    pack_sql = " AND COALESCE(c.pack_credits, 0) = 0" if pack_credits_column_exists(conn) else ""
+    return (
+        " AND (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)"
+        " AND c.unlocks_remaining = 0"
+        f"{pack_sql}"
+    )
+
+
 admin_email_bp = Blueprint('admin_email', __name__, url_prefix='/api/admin/email')
 
 
@@ -374,19 +385,18 @@ def get_segments():
             'icon': 'trophy'
         })
 
-        # At Quota Limit
-        cursor.execute("""
+        # At 3/3 unlocks (founder dashboard at-limit, not weekly pitch count)
+        cursor.execute(f"""
             SELECT COUNT(DISTINCT c.id) as count
             FROM creators c
             JOIN users u ON c.user_id = u.id
-            WHERE COALESCE(c.pitches_sent_this_week, 0) >= 3
-            AND COALESCE(c.subscription_tier, 'free') = 'free'
-            AND u.unsubscribed_at IS NULL
+            WHERE u.unsubscribed_at IS NULL
+            {_free_at_unlock_limit_sql(conn)}
         """)
         segments.append({
             'id': 'at_quota_limit',
-            'name': 'At Pitch Limit (3/3)',
-            'description': 'Free users who hit weekly limit - upgrade candidates!',
+            'name': 'At 3/3 unlocks (free)',
+            'description': 'Used all 3 free packs, no extra credits. Founder sprint / Pro upgrade.',
             'count': cursor.fetchone()['count'],
             'icon': 'thunderbolt',
             'highlight': True
@@ -538,7 +548,7 @@ def preview_segment():
         elif segment_id == 'power_users':
             base_query += " AND COALESCE(c.pitches_sent_total, 0) >= 5"
         elif segment_id == 'at_quota_limit':
-            base_query += " AND COALESCE(c.pitches_sent_this_week, 0) >= 3 AND COALESCE(c.subscription_tier, 'free') = 'free'"
+            base_query += _free_at_unlock_limit_sql(conn)
         elif segment_id == 'dormant':
             base_query += """
                 AND c.id NOT IN (
@@ -857,22 +867,49 @@ def _send_campaign_email(to_email, subject, html_content, recipient=None):
 
 
 def _send_with_retry(to_email, subject, html_content, max_retries=2, recipient=None):
-    """Send campaign email with retry on Resend rate limits and 5xx errors."""
+    """Send campaign email with retry on Resend rate limits and 5xx errors.
+
+    Returns (success, error, retryable).
+    """
     last_error = 'Resend send failed'
+    retryable = False
     for attempt in range(max_retries):
         result = _send_campaign_email(
             to_email, subject, html_content, recipient=recipient
         )
         if result.get('success'):
-            return True
+            return True, None, False
         last_error = result.get('error') or last_error
-        if not result.get('retryable') or attempt >= max_retries - 1:
+        retryable = bool(result.get('retryable'))
+        if not retryable or attempt >= max_retries - 1:
             break
         backoff = attempt + 1
         print(f"[Retry] Resend attempt {attempt + 1} failed for {to_email}: {last_error}, waiting {backoff}s...")
         time.sleep(backoff)
     print(f"[Resend] Failed {to_email}: {last_error}")
-    return False
+    return False, last_error, retryable
+
+
+def _mark_already_logged_sent(cursor, campaign_id):
+    """Mark recipients sent when email_logs already recorded a successful send."""
+    cursor.execute(
+        """
+        UPDATE email_campaign_recipients e
+        SET status = 'sent',
+            last_error = NULL,
+            updated_at = NOW()
+        WHERE e.campaign_id = %s
+          AND e.status <> 'sent'
+          AND EXISTS (
+              SELECT 1 FROM email_logs l
+              WHERE l.campaign_id = e.campaign_id
+                AND LOWER(l.email) = LOWER(e.email)
+                AND l.status = 'sent'
+          )
+        """,
+        (campaign_id,),
+    )
+    return cursor.rowcount or 0
 
 
 def _send_emails_background(campaign_id, recipients, subject, html_content):
@@ -897,8 +934,7 @@ def _send_emails_background(campaign_id, recipients, subject, html_content):
                 personalized_subject = personalize_text(subject, recipient)
                 personalized_content = personalize_text(html_content, recipient)
 
-                # Use retry logic for rate limit resilience
-                success = _send_with_retry(
+                success, send_error, send_retryable = _send_with_retry(
                     to_email=recipient_email,
                     subject=personalized_subject,
                     html_content=personalized_content,
@@ -925,22 +961,23 @@ def _send_emails_background(campaign_id, recipients, subject, html_content):
                     )
                     sent_count += 1
                 else:
+                    fail_status = 'failed_temp' if send_retryable else 'failed_perm'
                     cursor.execute(
                         """
                         UPDATE email_campaign_recipients
-                        SET status = 'failed_temp',
-                            last_error = 'Resend send failed',
+                        SET status = %s,
+                            last_error = %s,
                             updated_at = NOW()
                         WHERE id = %s
                         """,
-                        (recipient_id,)
+                        (fail_status, (send_error or 'Resend send failed')[:500], recipient_id)
                     )
                     cursor.execute(
                         """
                         INSERT INTO email_logs (campaign_id, user_id, creator_id, email, status, error_message)
                         VALUES (%s, %s, %s, %s, 'failed', %s)
                         """,
-                        (campaign_id, recipient['user_id'], recipient['creator_id'], recipient_email, 'Resend send failed')
+                        (campaign_id, recipient['user_id'], recipient['creator_id'], recipient_email, send_error or 'Resend send failed')
                     )
                     failed_count += 1
 
@@ -1091,7 +1128,7 @@ def _process_campaign_batch(cursor, campaign_id, subject, html_content, batch_si
             personalized_subject = personalize_text(subject, recipient)
             personalized_content = personalize_text(html_content, recipient)
 
-            success = _send_with_retry(
+            success, send_error, send_retryable = _send_with_retry(
                 to_email=recipient_email,
                 subject=personalized_subject,
                 html_content=personalized_content,
@@ -1116,13 +1153,14 @@ def _process_campaign_batch(cursor, campaign_id, subject, html_content, batch_si
                 )
                 sent_count += 1
             else:
+                fail_status = 'failed_temp' if send_retryable else 'failed_perm'
                 cursor.execute(
                     """
                     UPDATE email_campaign_recipients
-                    SET status = 'failed_temp', last_error = 'Resend send failed', updated_at = NOW()
+                    SET status = %s, last_error = %s, updated_at = NOW()
                     WHERE id = %s
                     """,
-                    (recipient_id,)
+                    (fail_status, (send_error or 'Resend send failed')[:500], recipient_id)
                 )
                 failed_count += 1
 
@@ -1198,6 +1236,10 @@ def cron_process_campaigns():
     if not _cron_authorized():
         return jsonify({'error': 'Unauthorized'}), 401
 
+    from services.resend_mail import resend_configured
+    if not resend_configured():
+        return jsonify({'skipped': True, 'reason': 'resend_not_configured'}), 200
+
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -1238,6 +1280,7 @@ def cron_process_campaigns():
             if not html_content:
                 continue
 
+            _mark_already_logged_sent(cursor, campaign['id'])
             _recover_orphaned_sending(cursor, campaign['id'])
             conn.commit()
 
@@ -1265,6 +1308,7 @@ def cron_process_campaigns():
         sending_campaigns = cursor.fetchall()
 
         for camp in sending_campaigns:
+            _mark_already_logged_sent(cursor, camp['id'])
             counts = _recipient_counts(cursor, camp['id'])
             pending = (counts['retryable'] or 0)
             sending = (counts['sending'] or 0)
@@ -1334,31 +1378,19 @@ def reset_campaign(campaign_id):
 @admin_required
 def continue_campaign(campaign_id):
     """
-    Manually continue a sending campaign by processing a batch.
-    Can be called repeatedly from the UI to keep sending.
+    Process the next batch of a sending campaign.
+    Does not reopen a finished campaign. Does not reset retry counts unless
+    the client explicitly asks (manual Continue).
     """
     try:
+        from services.resend_mail import resend_configured
+
+        data = request.get_json(silent=True) or {}
+        reset_attempts = bool(data.get('reset_attempts'))
+
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        recovered = _recover_orphaned_sending(cursor, campaign_id)
-
-        cursor.execute(
-            """
-            UPDATE email_campaign_recipients
-            SET attempt_count = 0,
-                last_error = 'Retry limit reset by Continue action',
-                updated_at = NOW()
-            WHERE campaign_id = %s
-              AND status IN ('failed_temp', 'pending')
-              AND attempt_count >= %s
-            """,
-            (campaign_id, MAX_SEND_ATTEMPTS)
-        )
-        reset_exhausted = cursor.rowcount
-        conn.commit()
-
-        # Get campaign details
         cursor.execute(
             """
             SELECT ec.*, et.subject as template_subject, et.html_content as template_html_content
@@ -1369,27 +1401,100 @@ def continue_campaign(campaign_id):
             (campaign_id,)
         )
         campaign = cursor.fetchone()
-
         if not campaign:
             conn.close()
             return jsonify({'error': 'Campaign not found'}), 404
 
-        # Ensure campaign is in sending status (reset from 'failed', 'sent', or 'draft')
+        marked_sent = _mark_already_logged_sent(cursor, campaign_id)
+        recovered = 0
+        reset_exhausted = 0
+
+        counts = _recipient_counts(cursor, campaign_id)
+        retryable = counts['retryable'] or 0
+        sending_count = counts['sending'] or 0
+        already_complete = (
+            campaign['status'] == 'sent'
+            or (retryable == 0 and sending_count == 0 and (counts['sent'] or 0) > 0)
+        )
+        if already_complete and not reset_attempts:
+            summary = _refresh_campaign_totals_from_recipients(cursor, campaign_id, final=True)
+            conn.commit()
+            conn.close()
+            return jsonify({
+                'message': 'Campaign already complete',
+                'sent_this_batch': marked_sent,
+                'failed_this_batch': 0,
+                'recovered_stuck': 0,
+                'reset_exhausted': 0,
+                'total_sent': summary['sent'],
+                'total_recipients': summary['total'],
+                'remaining': 0,
+                'sending': 0,
+                'is_complete': True,
+                'status': summary['status'],
+            })
+
+        if not resend_configured():
+            conn.commit()
+            conn.close()
+            return jsonify({
+                'error': 'RESEND_API_KEY not set',
+                'is_complete': False,
+                'remaining': retryable,
+                'sending': sending_count,
+            }), 503
+
+        recovered = _recover_orphaned_sending(cursor, campaign_id)
+        if reset_attempts:
+            cursor.execute(
+                """
+                UPDATE email_campaign_recipients
+                SET attempt_count = 0,
+                    last_error = 'Retry limit reset by Continue action',
+                    updated_at = NOW()
+                WHERE campaign_id = %s
+                  AND status IN ('failed_temp', 'pending')
+                  AND attempt_count >= %s
+                """,
+                (campaign_id, MAX_SEND_ATTEMPTS)
+            )
+            reset_exhausted = cursor.rowcount
+
+        counts = _recipient_counts(cursor, campaign_id)
+        retryable = counts['retryable'] or 0
+        sending_count = counts['sending'] or 0
+        if retryable == 0 and sending_count == 0:
+            summary = _refresh_campaign_totals_from_recipients(cursor, campaign_id, final=True)
+            conn.commit()
+            conn.close()
+            return jsonify({
+                'message': 'No remaining recipients',
+                'sent_this_batch': marked_sent,
+                'failed_this_batch': 0,
+                'recovered_stuck': recovered,
+                'reset_exhausted': reset_exhausted,
+                'total_sent': summary['sent'],
+                'total_recipients': summary['total'],
+                'remaining': 0,
+                'sending': 0,
+                'is_complete': True,
+                'status': summary['status'],
+            })
+
         if campaign['status'] != 'sending':
             cursor.execute(
-                "UPDATE email_campaigns SET status = 'sending' WHERE id = %s",
+                "UPDATE email_campaigns SET status = 'sending' WHERE id = %s AND status <> 'sent'",
                 (campaign_id,)
             )
-            conn.commit()
+
+        conn.commit()
 
         subject = campaign['subject_override'] or campaign.get('template_subject') or 'New update from Newcollab'
         html_content = campaign.get('html_content_override') or campaign.get('template_html_content')
-
         if not html_content:
             conn.close()
             return jsonify({'error': 'Campaign has no email content'}), 400
 
-        # Process a batch
         sent, failed = _process_campaign_batch(
             cursor, campaign_id, subject, html_content, CRON_BATCH_SIZE, conn=conn
         )
@@ -1403,7 +1508,6 @@ def continue_campaign(campaign_id):
                     cursor, campaign_id, subject, html_content, CRON_BATCH_SIZE, conn=conn
                 )
 
-        # Update totals and check if complete
         counts = _recipient_counts(cursor, campaign_id)
         pending = (counts['retryable'] or 0)
         sending_count = (counts['sending'] or 0)
@@ -1460,6 +1564,11 @@ def send_campaign(campaign_id):
             conn.close()
             return jsonify({'error': 'Campaign not found'}), 404
 
+        from services.resend_mail import resend_configured
+        if not resend_configured():
+            conn.close()
+            return jsonify({'error': 'RESEND_API_KEY not set'}), 503
+
         # Only block if fully sent — 'sending' may be a stuck/crashed thread, allow resume
         if campaign['status'] == 'sent':
             conn.close()
@@ -1497,7 +1606,7 @@ def send_campaign(campaign_id):
                 AND c.id NOT IN (SELECT DISTINCT creator_id FROM creator_pipeline WHERE pitched_at IS NOT NULL)
             """
         elif segment_id == 'at_quota_limit':
-            recipient_query += " AND COALESCE(c.pitches_sent_this_week, 0) >= 3 AND COALESCE(c.subscription_tier, 'free') = 'free'"
+            recipient_query += _free_at_unlock_limit_sql(conn)
         elif segment_id == 'dormant':
             recipient_query += """
                 AND c.id NOT IN (

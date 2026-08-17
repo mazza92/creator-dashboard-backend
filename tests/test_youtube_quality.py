@@ -21,6 +21,7 @@ from services.youtube_scraper import (
     parse_compact_count,
     profile_from_yt_initial_data,
     relative_published_to_unix,
+    video_from_renderer,
 )
 
 
@@ -71,6 +72,90 @@ def _yt_payload():
     }
 
 
+def _lockup_video(i: int) -> dict:
+    vid = f"{i:02d}abcdefghi"
+    return {
+        "lockupViewModel": {
+            "contentId": vid,
+            "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+            "contentImage": {
+                "thumbnailViewModel": {
+                    "image": {
+                        "sources": [
+                            {"url": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg", "width": 480},
+                        ]
+                    }
+                }
+            },
+            "metadata": {
+                "lockupMetadataViewModel": {
+                    "title": {"content": f"Look {i}"},
+                    "metadata": {
+                        "contentMetadataViewModel": {
+                            "metadataRows": [{
+                                "metadataParts": [
+                                    {"text": {"content": "3.3K views"}},
+                                    {"text": {"content": "5 hours ago" if i == 0 else "2 days ago"}},
+                                ]
+                            }]
+                        }
+                    },
+                }
+            },
+        }
+    }
+
+
+def _yt_lockup_payload():
+    now = datetime(2026, 8, 17, tzinfo=timezone.utc)
+    return {
+        "metadata": {
+            "channelMetadataRenderer": {
+                "title": "LE COACH",
+                "description": "Football tactics. hello@example.com",
+                "avatar": {"thumbnails": [{"url": "https://yt3.googleusercontent.com/avatar.jpg"}]},
+                "vanityChannelUrl": "https://www.youtube.com/@le_coach_tactic",
+            }
+        },
+        "header": {
+            "pageHeaderRenderer": {
+                "content": {
+                    "pageHeaderViewModel": {
+                        "metadata": {
+                            "contentMetadataViewModel": {
+                                "metadataRows": [{
+                                    "metadataParts": [
+                                        {"text": {"content": "109K subscribers"}},
+                                        {"text": {"content": "416 videos"}},
+                                    ]
+                                }]
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "contents": {
+            "twoColumnBrowseResultsRenderer": {
+                "tabs": [{
+                    "tabRenderer": {
+                        "title": "Videos",
+                        "content": {
+                            "richGridRenderer": {
+                                "contents": [
+                                    {"richItemRenderer": {"content": _lockup_video(i)}}
+                                    for i in range(12)
+                                ]
+                            }
+                        },
+                    }
+                }]
+            }
+        },
+        "_now": now,
+    }
+
+
 class TestYoutubeParsers(unittest.TestCase):
     def test_compact_counts(self):
         self.assertEqual(parse_compact_count("12.4K subscribers"), 12400)
@@ -102,6 +187,62 @@ class TestYoutubeParsers(unittest.TestCase):
         html = f"<script>var ytInitialData = {json.dumps(payload)};</script>"
         self.assertEqual(extract_yt_initial_data(html)["header"]["c4TabbedHeaderRenderer"]["title"]["simpleText"], "X")
 
+    def test_lockup_view_model_video(self):
+        now = datetime(2026, 8, 17, 20, 0, tzinfo=timezone.utc)
+        item = video_from_renderer(_lockup_video(0)["lockupViewModel"], now=now)
+        self.assertIsNotNone(item)
+        self.assertEqual(item["videoId"], "00abcdefghi")
+        self.assertEqual(item["title"], "Look 0")
+        self.assertEqual(item["viewCount"], 3300)
+        self.assertIsNotNone(item["createTime"])
+        self.assertLess(now.timestamp() - item["createTime"], 6 * 3600)
+        self.assertIn("ytimg.com", item["thumbnail"])
+
+    def test_shorts_lockup_view_model(self):
+        renderer = {
+            "entityId": "shorts-shelf-item-WacGmZz3xvg",
+            "overlayMetadata": {
+                "primaryText": {"content": "Why Luis Enrique is the BEST COACH"},
+                "secondaryText": {"content": "14K views"},
+            },
+            "onTap": {
+                "innertubeCommand": {
+                    "reelWatchEndpoint": {"videoId": "WacGmZz3xvg"}
+                }
+            },
+            "thumbnailViewModel": {
+                "thumbnailViewModel": {
+                    "image": {
+                        "sources": [{"url": "https://i.ytimg.com/vi/WacGmZz3xvg/hq720.jpg"}]
+                    }
+                }
+            },
+        }
+        item = video_from_renderer(renderer)
+        self.assertEqual(item["videoId"], "WacGmZz3xvg")
+        self.assertIn("Luis Enrique", item["title"])
+        self.assertEqual(item["viewCount"], 14000)
+        self.assertIn("WacGmZz3xvg", item["thumbnail"])
+
+    def test_playlist_lockup_is_ignored(self):
+        renderer = {
+            "contentId": "PLabcdefghijklmnopqrstuvwxyz0123",
+            "contentType": "LOCKUP_CONTENT_TYPE_PLAYLIST",
+            "metadata": {"lockupMetadataViewModel": {"title": {"content": "Best of"}}},
+        }
+        self.assertIsNone(video_from_renderer(renderer))
+
+    def test_profile_from_lockup_grid(self):
+        data = _yt_lockup_payload()
+        profile = profile_from_yt_initial_data(
+            data, "le_coach_tactic", results_limit=12, now=data["_now"]
+        )
+        self.assertEqual(profile["subscriberCount"], 109000)
+        self.assertEqual(profile["videoCount"], 416)
+        self.assertEqual(len(profile["latestVideos"]), 12)
+        self.assertEqual(profile["latestVideos"][0]["title"], "Look 0")
+        self.assertTrue(diy_scrape_is_acceptable(profile, "youtube"))
+
 
 class TestYoutubeQualityPipeline(unittest.TestCase):
     def test_process_scrape_maps_youtube_fields(self):
@@ -115,6 +256,18 @@ class TestYoutubeQualityPipeline(unittest.TestCase):
         self.assertGreaterEqual(len(processed["recent_post_thumbnails"]), 3)
         self.assertIn("hello@example.com", processed["collab_email_extracted"])
         assert_onboarding_quality(processed, "mayaglow")
+
+    def test_process_scrape_maps_lockup_grid(self):
+        data = _yt_lockup_payload()
+        raw = profile_from_yt_initial_data(
+            data, "le_coach_tactic", results_limit=12, now=data["_now"]
+        )
+        processed = CreatorProfileScraper().process_scrape(raw, "youtube")
+        self.assertEqual(processed["follower_count"], 109000)
+        self.assertEqual(processed["post_count"], 416)
+        self.assertLess(processed["latest_post_days_ago"], 30)
+        self.assertGreaterEqual(len(processed["recent_post_thumbnails"]), 3)
+        assert_onboarding_quality(processed, "le_coach_tactic")
 
     def test_quality_reads_subscriber_count(self):
         self.assertEqual(raw_follower_count({"subscriberCount": 800}), 800)
