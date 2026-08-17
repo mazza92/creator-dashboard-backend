@@ -2289,8 +2289,25 @@ def onboarding_step1():
             return jsonify({'error': 'Username is required'}), 400
         if not platform:
             return jsonify({'error': 'Platform is required'}), 400
-        if followers <= 0:
-            return jsonify({'error': 'Follower count is required'}), 400
+
+        from services.profile_quality import (
+            ONBOARDING_PLATFORMS,
+            UNSUPPORTED_ONBOARDING_PLATFORM_MESSAGE,
+            resolve_verified_onboarding_followers,
+        )
+
+        if platform not in ONBOARDING_PLATFORMS:
+            return jsonify({'error': UNSUPPORTED_ONBOARDING_PLATFORM_MESSAGE}), 400
+
+        try:
+            followers = resolve_verified_onboarding_followers(
+                username=username,
+                platform=platform,
+                quality_session=session.get('onboarding_quality'),
+                verification_result=session.get('social_verification_result'),
+            )
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -2398,6 +2415,7 @@ def onboarding_step1():
         # Clear consumed session data
         session.pop('social_verification_result', None)
         session.pop('scraped_avatar_url', None)
+        session.pop('onboarding_quality', None)
         session.modified = True
 
         if scraped_avatar_url:
@@ -2539,6 +2557,14 @@ def onboarding_scrape():
             )
         else:
             app.logger.info(f"✅ Scrape successful for @{handle}: {follower_count} followers")
+
+        # Proof for step1: client cannot skip scrape or swap in a Pinterest/blog handle.
+        session['onboarding_quality'] = {
+            'handle': handle.lower().lstrip('@'),
+            'platform': platform,
+            'followers': int(follower_count or 0),
+        }
+        session.modified = True
 
         # Save scraped avatar URL to session for step1 to apply (row doesn't exist yet)
         avatar_url = (profile.get('avatarUrl') or
@@ -6025,13 +6051,34 @@ def register_creator():
             conn.close()
             return jsonify({'error': 'Invalid JSON format'}), 400
 
+        from services.profile_quality import (
+            MIN_FOLLOWERS,
+            ONBOARDING_PLATFORMS,
+            UNSUPPORTED_ONBOARDING_PLATFORM_MESSAGE,
+        )
+
         # Normalize all social handles
         for link in social_links:
+            plat = str(link.get('platform') or '').strip().lower()
+            if plat and plat not in ONBOARDING_PLATFORMS:
+                conn.close()
+                return jsonify({'error': UNSUPPORTED_ONBOARDING_PLATFORM_MESSAGE}), 400
             if link.get('handle'):
                 raw_handle = link['handle']
                 link['handle'] = normalize_social_handle(raw_handle, link.get('platform'))
                 if raw_handle != link['handle']:
                     app.logger.info(f"📝 Handle normalized: '{raw_handle}' -> '{link['handle']}'")
+
+        reported_followers = [
+            int(link.get('followersCount') or 0)
+            for link in social_links
+            if str(link.get('followersCount', '')).replace('.', '', 1).isdigit()
+        ]
+        if reported_followers and max(reported_followers) < MIN_FOLLOWERS:
+            conn.close()
+            return jsonify({
+                'error': f'You need at least {MIN_FOLLOWERS} followers on Instagram, TikTok, or YouTube to join.'
+            }), 400
 
         metrics = {
             "total_posts": int(request.form.get('totalPosts', 0)),

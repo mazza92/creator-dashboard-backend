@@ -25,6 +25,20 @@ MIN_THUMBNAILS = 3
 MIN_VISUAL_SCORE = 60
 MAX_VISUAL_THUMBS = 6
 
+# Only these platforms can be scraped and quality-checked. Pinterest / X / Blog
+# let spam accounts self-report stats and skip the bar.
+ONBOARDING_PLATFORMS = frozenset({"instagram", "tiktok", "youtube"})
+
+UNSUPPORTED_ONBOARDING_PLATFORM_MESSAGE = (
+    "Join with a public Instagram, TikTok, or YouTube. "
+    "We verify those profiles so brands get real creators."
+)
+
+UNVERIFIED_ONBOARDING_MESSAGE = (
+    "Verify your public Instagram, TikTok, or YouTube first. "
+    "We cannot accept self-reported stats."
+)
+
 
 class ProfileQualityError(ValueError):
     """Raised when a scraped profile is real but below the product bar."""
@@ -343,3 +357,54 @@ def assert_onboarding_quality(profile: dict, handle: str, *, check_visual: bool 
             f"reason={visual.get('reason')} score={visual.get('score')} "
             f"thumbs={len(thumbs)} (advisory, not a reject)"
         )
+
+
+def _norm_handle(value: str) -> str:
+    return (value or "").lstrip("@").strip().lower()
+
+
+def resolve_verified_onboarding_followers(
+    *,
+    username: str,
+    platform: str,
+    quality_session=None,
+    verification_result=None,
+) -> int:
+    """Return scraped or OAuth follower count.
+
+    Raises ValueError when the client skipped verification or picked a
+    platform we cannot quality-check (Pinterest, blog, X, etc.).
+    """
+    handle = _norm_handle(username)
+    platform = (platform or "").strip().lower()
+
+    if platform not in ONBOARDING_PLATFORMS:
+        raise ValueError(UNSUPPORTED_ONBOARDING_PLATFORM_MESSAGE)
+
+    candidates = []
+
+    if isinstance(verification_result, dict) and verification_result.get("verified"):
+        v_platform = (verification_result.get("platform") or "").strip().lower()
+        profile = verification_result.get("profile") or {}
+        v_handle = _norm_handle(profile.get("username"))
+        v_followers = _as_int(profile.get("follower_count"))
+        if v_platform == platform and (not v_handle or v_handle == handle):
+            candidates.append(v_followers)
+
+    if isinstance(quality_session, dict):
+        q_handle = _norm_handle(quality_session.get("handle"))
+        q_platform = (quality_session.get("platform") or "").strip().lower()
+        q_followers = _as_int(quality_session.get("followers"))
+        if q_platform == platform and q_handle == handle:
+            candidates.append(q_followers)
+
+    for count in candidates:
+        if count <= 0:
+            continue
+        if fails_follower_floor(count):
+            raise ValueError(
+                f"You need at least {MIN_FOLLOWERS} followers on Instagram, TikTok, or YouTube to join."
+            )
+        return count
+
+    raise ValueError(UNVERIFIED_ONBOARDING_MESSAGE)

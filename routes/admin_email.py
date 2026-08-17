@@ -47,8 +47,8 @@ def get_db_connection():
 
 
 MAX_SEND_ATTEMPTS = 3
-STUCK_SENDING_TIMEOUT_MINUTES = 5  # Recipients stuck in 'sending' for this long are recovered
-CRON_BATCH_SIZE = 40  # How many emails to send per cron invocation (~8s at 0.12s/email via Resend)
+STUCK_SENDING_TIMEOUT_SECONDS = 45  # Dead Vercel workers leave rows in 'sending'
+CRON_BATCH_SIZE = 12  # Stay well under the Vercel 60s cap (Resend + retry)
 ALLOWED_BRAND_TEMPLATE_IDS = {8}
 DISALLOWED_BRAND_TEMPLATE_IDS = {6, 7}
 BLOCKED_OUTREACH_STATUSES = {
@@ -856,7 +856,7 @@ def _send_campaign_email(to_email, subject, html_content, recipient=None):
     )
 
 
-def _send_with_retry(to_email, subject, html_content, max_retries=3, recipient=None):
+def _send_with_retry(to_email, subject, html_content, max_retries=2, recipient=None):
     """Send campaign email with retry on Resend rate limits and 5xx errors."""
     last_error = 'Resend send failed'
     for attempt in range(max_retries):
@@ -868,7 +868,7 @@ def _send_with_retry(to_email, subject, html_content, max_retries=3, recipient=N
         last_error = result.get('error') or last_error
         if not result.get('retryable') or attempt >= max_retries - 1:
             break
-        backoff = (attempt + 1) * 5
+        backoff = attempt + 1
         print(f"[Retry] Resend attempt {attempt + 1} failed for {to_email}: {last_error}, waiting {backoff}s...")
         time.sleep(backoff)
     print(f"[Resend] Failed {to_email}: {last_error}")
@@ -1009,53 +1009,18 @@ def _send_emails_background(campaign_id, recipients, subject, html_content):
 
 
 def _recover_stuck_sending(cursor):
-    """
-    Recover recipients stuck in 'sending' status for too long.
-    This happens when the background thread crashes.
-    """
-    cursor.execute(
-        """
-        UPDATE email_campaign_recipients
-        SET status = 'failed_temp',
-            last_error = 'Sending thread interrupted - will retry',
-            updated_at = NOW()
-        WHERE status = 'sending'
-          AND last_attempt_at < NOW() - INTERVAL '%s minutes'
-        RETURNING campaign_id, COUNT(*) as recovered
-        """,
-        (STUCK_SENDING_TIMEOUT_MINUTES,)
-    )
-    # This won't return grouped results, so let's do it differently
-    pass
+    return _recover_orphaned_sending(cursor)
 
 
 def _recover_stuck_sending_v2(cursor):
-    """
-    Recover recipients stuck in 'sending' status for too long.
-    Returns count of recovered recipients.
-    """
-    cursor.execute(
-        """
-        WITH recovered AS (
-            UPDATE email_campaign_recipients
-            SET status = 'failed_temp',
-                last_error = 'Sending thread interrupted - will retry',
-                updated_at = NOW()
-            WHERE status = 'sending'
-              AND last_attempt_at < NOW() - INTERVAL '%s minutes'
-            RETURNING campaign_id
-        )
-        SELECT COUNT(*) as count FROM recovered
-        """,
-        (STUCK_SENDING_TIMEOUT_MINUTES,)
-    )
-    result = cursor.fetchone()
-    return result['count'] if result else 0
+    return _recover_orphaned_sending(cursor)
 
 
-def _process_campaign_batch(cursor, campaign_id, subject, html_content, batch_size):
+def _process_campaign_batch(cursor, campaign_id, subject, html_content, batch_size, conn=None):
     """
     Process a batch of recipients synchronously.
+    Commits after each email when conn is provided so a killed Vercel
+    worker does not leave already-delivered mail stuck in 'sending'.
     Returns (sent_count, failed_count).
     """
     # Pick recipients to send
@@ -1090,6 +1055,9 @@ def _process_campaign_batch(cursor, campaign_id, subject, html_content, batch_si
     if not recipients:
         return 0, 0
 
+    if conn:
+        conn.commit()
+
     sent_count = 0
     failed_count = 0
 
@@ -1098,10 +1066,31 @@ def _process_campaign_batch(cursor, campaign_id, subject, html_content, batch_si
         recipient_email = (recipient.get('email') or '').strip().lower()
 
         try:
+            cursor.execute(
+                """
+                SELECT 1 FROM email_logs
+                WHERE campaign_id = %s AND LOWER(email) = %s AND status = 'sent'
+                LIMIT 1
+                """,
+                (campaign_id, recipient_email)
+            )
+            if cursor.fetchone():
+                cursor.execute(
+                    """
+                    UPDATE email_campaign_recipients
+                    SET status = 'sent', last_error = NULL, updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (recipient_id,)
+                )
+                sent_count += 1
+                if conn:
+                    conn.commit()
+                continue
+
             personalized_subject = personalize_text(subject, recipient)
             personalized_content = personalize_text(html_content, recipient)
 
-            # Use retry logic for rate limit resilience (same as background thread)
             success = _send_with_retry(
                 to_email=recipient_email,
                 subject=personalized_subject,
@@ -1137,7 +1126,9 @@ def _process_campaign_batch(cursor, campaign_id, subject, html_content, batch_si
                 )
                 failed_count += 1
 
-            time.sleep(0.12)
+            if conn:
+                conn.commit()
+            time.sleep(0.08)
 
         except Exception as e:
             cursor.execute(
@@ -1149,39 +1140,73 @@ def _process_campaign_batch(cursor, campaign_id, subject, html_content, batch_si
                 (str(e)[:500], recipient_id)
             )
             failed_count += 1
+            if conn:
+                conn.commit()
 
     return sent_count, failed_count
 
 
-@admin_email_bp.route('/cron/process', methods=['POST'])
+def _recover_orphaned_sending(cursor, campaign_id=None):
+    """Requeue recipients left in 'sending' after a serverless worker died."""
+    if campaign_id is None:
+        cursor.execute(
+            """
+            UPDATE email_campaign_recipients
+            SET status = 'failed_temp',
+                last_error = 'Sending worker interrupted - will retry',
+                updated_at = NOW()
+            WHERE status = 'sending'
+              AND last_attempt_at < NOW() - make_interval(secs => %s)
+            """,
+            (STUCK_SENDING_TIMEOUT_SECONDS,)
+        )
+    else:
+        cursor.execute(
+            """
+            UPDATE email_campaign_recipients
+            SET status = 'failed_temp',
+                last_error = 'Sending worker interrupted - will retry',
+                updated_at = NOW()
+            WHERE campaign_id = %s
+              AND status = 'sending'
+              AND last_attempt_at < NOW() - make_interval(secs => %s)
+            """,
+            (campaign_id, STUCK_SENDING_TIMEOUT_SECONDS)
+        )
+    return cursor.rowcount or 0
+
+
+def _cron_authorized():
+    allowed = {
+        os.getenv('CRON_SECRET'),
+        os.getenv('EMAIL_CRON_SECRET'),
+        'newcollab-cron-2026',
+    }
+    allowed.discard(None)
+    secret = request.headers.get('X-Cron-Secret') or request.args.get('secret')
+    auth = request.headers.get('Authorization') or ''
+    bearer = auth.split(' ', 1)[1].strip() if auth.lower().startswith('bearer ') else ''
+    return secret in allowed or bearer in allowed
+
+
+@admin_email_bp.route('/cron/process', methods=['GET', 'POST'])
 def cron_process_campaigns():
     """
     Cron endpoint to process pending email campaigns.
-    Call this every 1-2 minutes from an external scheduler (cron-job.org, Vercel cron, etc.)
-
-    This endpoint:
-    1. Recovers stuck 'sending' recipients
-    2. Processes a batch of pending recipients from active campaigns
-    3. Updates campaign status
-
-    Auth: Uses a simple secret token to prevent abuse
+    Vercel cron hits this every minute so sends keep moving if the admin tab closes.
     """
-    # Simple auth for cron - check header or query param
-    cron_secret = request.headers.get('X-Cron-Secret') or request.args.get('secret')
-    if cron_secret != 'newcollab-cron-2026':
+    if not _cron_authorized():
         return jsonify({'error': 'Unauthorized'}), 401
 
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Step 1: Recover stuck recipients
-        recovered = _recover_stuck_sending_v2(cursor)
+        recovered = _recover_orphaned_sending(cursor)
         if recovered > 0:
             print(f"[Cron] Recovered {recovered} stuck recipients")
             conn.commit()
 
-        # Step 2: Find campaigns that need processing
         cursor.execute(
             """
             SELECT DISTINCT ec.id, ec.subject_override, ec.html_content_override,
@@ -1192,7 +1217,7 @@ def cron_process_campaigns():
               AND EXISTS (
                   SELECT 1 FROM email_campaign_recipients ecr
                   WHERE ecr.campaign_id = ec.id
-                    AND ecr.status IN ('pending', 'failed_temp')
+                    AND ecr.status IN ('pending', 'failed_temp', 'sending')
                     AND ecr.attempt_count < %s
               )
             ORDER BY ec.id
@@ -1213,13 +1238,15 @@ def cron_process_campaigns():
             if not html_content:
                 continue
 
+            _recover_orphaned_sending(cursor, campaign['id'])
+            conn.commit()
+
             sent, failed = _process_campaign_batch(
-                cursor, campaign['id'], subject, html_content, CRON_BATCH_SIZE
+                cursor, campaign['id'], subject, html_content, CRON_BATCH_SIZE, conn=conn
             )
             total_sent += sent
             total_failed += failed
 
-            # Update campaign totals
             _refresh_campaign_totals_from_recipients(cursor, campaign['id'], final=False)
             conn.commit()
 
@@ -1314,23 +1341,8 @@ def continue_campaign(campaign_id):
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # First recover any stuck recipients for this campaign
-        cursor.execute(
-            """
-            UPDATE email_campaign_recipients
-            SET status = 'failed_temp',
-                last_error = 'Recovered from stuck sending state',
-                updated_at = NOW()
-            WHERE campaign_id = %s
-              AND status = 'sending'
-              AND last_attempt_at < NOW() - INTERVAL '%s minutes'
-            """,
-            (campaign_id, STUCK_SENDING_TIMEOUT_MINUTES)
-        )
-        recovered = cursor.rowcount
+        recovered = _recover_orphaned_sending(cursor, campaign_id)
 
-        # Reset exhausted recipients (attempt_count >= MAX) to allow retry
-        # This is key for the Continue button to work when recipients hit retry limit
         cursor.execute(
             """
             UPDATE email_campaign_recipients
@@ -1379,8 +1391,17 @@ def continue_campaign(campaign_id):
 
         # Process a batch
         sent, failed = _process_campaign_batch(
-            cursor, campaign_id, subject, html_content, CRON_BATCH_SIZE
+            cursor, campaign_id, subject, html_content, CRON_BATCH_SIZE, conn=conn
         )
+
+        if sent == 0 and failed == 0:
+            stolen = _recover_orphaned_sending(cursor, campaign_id)
+            recovered += stolen
+            conn.commit()
+            if stolen:
+                sent, failed = _process_campaign_batch(
+                    cursor, campaign_id, subject, html_content, CRON_BATCH_SIZE, conn=conn
+                )
 
         # Update totals and check if complete
         counts = _recipient_counts(cursor, campaign_id)
@@ -1406,6 +1427,7 @@ def continue_campaign(campaign_id):
             'total_sent': summary['sent'],
             'total_recipients': summary['total'],
             'remaining': pending,
+            'sending': sending_count,
             'is_complete': is_complete,
             'status': summary['status']
         })
@@ -1515,25 +1537,12 @@ def send_campaign(campaign_id):
 
         counts_before = _recipient_counts(cursor, campaign_id)
         already_sent = counts_before['sent'] or 0
+        retryable = counts_before['retryable'] or 0
 
-        recipients = _pick_recipients_for_send(cursor, campaign_id)
-        if recipients:
-            cursor.execute(
-                """
-                UPDATE email_campaigns
-                SET status = 'sending'
-                WHERE id = %s
-                """,
-                (campaign_id,)
-            )
-            final_summary = None
-        else:
+        if retryable == 0 and (counts_before['sending'] or 0) == 0:
             final_summary = _refresh_campaign_totals_from_recipients(cursor, campaign_id, final=True)
-        conn.commit()
-
-        conn.close()
-
-        if not recipients:
+            conn.commit()
+            conn.close()
             return jsonify({
                 'message': 'No new recipients to send to',
                 'sending': 0,
@@ -1541,19 +1550,39 @@ def send_campaign(campaign_id):
                 'status': final_summary['status'] if final_summary else 'draft'
             })
 
-        # Start background thread to send claimed recipients
-        thread = threading.Thread(
-            target=_send_emails_background,
-            args=(campaign_id, recipients, subject, html_content)
+        cursor.execute(
+            """
+            UPDATE email_campaigns
+            SET status = 'sending'
+            WHERE id = %s
+            """,
+            (campaign_id,)
         )
-        thread.daemon = True
-        thread.start()
+        _recover_orphaned_sending(cursor, campaign_id)
+        conn.commit()
+
+        sent, failed = _process_campaign_batch(
+            cursor, campaign_id, subject, html_content, CRON_BATCH_SIZE, conn=conn
+        )
+        counts = _recipient_counts(cursor, campaign_id)
+        pending = counts['retryable'] or 0
+        sending_count = counts['sending'] or 0
+        if pending == 0 and sending_count == 0:
+            summary = _refresh_campaign_totals_from_recipients(cursor, campaign_id, final=True)
+        else:
+            summary = _refresh_campaign_totals_from_recipients(cursor, campaign_id, final=False)
+        conn.commit()
+        conn.close()
 
         return jsonify({
-            'message': f'Sending started for {len(recipients)} recipients',
-            'sending': len(recipients),
-            'already_sent': already_sent,
-            'status': 'sending'
+            'message': f'Sending started: {sent} sent this batch, {pending} remaining',
+            'sending': pending + sending_count,
+            'sent_this_batch': sent,
+            'failed_this_batch': failed,
+            'already_sent': already_sent + sent,
+            'remaining': pending,
+            'is_complete': pending == 0 and sending_count == 0,
+            'status': summary['status']
         })
 
     except Exception as e:
@@ -1597,6 +1626,7 @@ def get_send_status(campaign_id):
             'sent': sent,
             'failed': failed,
             'remaining': retryable,
+            'sending': counts['sending'] or 0,
             'progress': progress
         })
 

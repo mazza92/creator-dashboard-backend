@@ -333,7 +333,7 @@ def create_checkout_session():
                 'interval': interval,
                 'creator_name': creator.get('name', '')
             },
-            allow_promotion_codes=True,  # Allow discount codes
+            allow_promotion_codes=True,
         )
 
         print(f"✅ Created checkout session for creator {creator_id} - {tier} tier")
@@ -603,7 +603,9 @@ def confirm_checkout():
         # Retrieve the checkout session from Stripe
         checkout_session = stripe.checkout.Session.retrieve(session_id)
 
-        if checkout_session.payment_status != 'paid':
+        payment_ok = checkout_session.payment_status in ('paid', 'no_payment_required')
+        session_complete = checkout_session.status == 'complete'
+        if not (payment_ok or (session_complete and checkout_session.subscription)):
             return jsonify({'error': 'Payment not completed'}), 400
 
         from services.pack_credits import PACK_PRODUCT
@@ -639,15 +641,18 @@ def confirm_checkout():
         user_row = cursor.fetchone()
         user_email = user_row['email'] if user_row else None
 
+        is_trial = (checkout_session.metadata or {}).get('trial') == '7'
+        sub_status = 'trialing' if is_trial else 'active'
+
         cursor.execute('''
             UPDATE creators
             SET subscription_tier = %s,
-                subscription_status = 'active',
+                subscription_status = %s,
                 stripe_subscription_id = %s,
                 stripe_customer_id = %s,
                 subscription_started_at = NOW()
             WHERE id = %s
-        ''', (tier, subscription_id, customer_id, creator_id))
+        ''', (tier, sub_status, subscription_id, customer_id, creator_id))
         conn.commit()
         cursor.close()
         conn.close()
@@ -772,13 +777,20 @@ def stripe_webhook():
         # Handle successful checkout
         if event['type'] == 'checkout.session.completed':
             session = event['data']['object']
-            creator_id = session['metadata'].get('creator_id')
-            tier = session['metadata'].get('tier')
+            meta = session.get('metadata') or {}
+            if meta.get('product') == 'packs' or not meta.get('tier'):
+                print("Skipping non-subscription checkout in subscription webhook")
+                return jsonify({'success': True}), 200
+
+            creator_id = meta.get('creator_id')
+            tier = meta.get('tier')
             subscription_id = session.get('subscription')
             customer_id = session.get('customer')
             amount_total = session.get('amount_total', 0)  # In cents
+            is_trial = meta.get('trial') == '7' or (amount_total or 0) == 0
+            sub_status = 'trialing' if is_trial else 'active'
 
-            print(f"✅ Checkout completed for creator {creator_id} - {tier} tier")
+            print(f"✅ Checkout completed for creator {creator_id} - {tier} ({sub_status})")
 
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -787,13 +799,13 @@ def stripe_webhook():
             cursor.execute('''
                 UPDATE creators
                 SET subscription_tier = %s,
-                    subscription_status = 'active',
+                    subscription_status = %s,
                     stripe_subscription_id = %s,
                     stripe_customer_id = %s,
                     subscription_started_at = NOW()
                 WHERE id = %s
                 RETURNING id, username, followers_count
-            ''', (tier, subscription_id, customer_id, creator_id))
+            ''', (tier, sub_status, subscription_id, customer_id, creator_id))
             updated_creator = cursor.fetchone()
 
             # Fetch email from users table
@@ -865,11 +877,20 @@ def stripe_webhook():
 
             conn = get_db_connection()
             cursor = conn.cursor()
-            cursor.execute('''
-                UPDATE creators
-                SET subscription_status = %s
-                WHERE stripe_subscription_id = %s
-            ''', (status, subscription_id))
+            if status in ('canceled', 'unpaid', 'incomplete_expired'):
+                cursor.execute('''
+                    UPDATE creators
+                    SET subscription_tier = 'free',
+                        subscription_status = %s,
+                        subscription_ends_at = NOW()
+                    WHERE stripe_subscription_id = %s
+                ''', (status, subscription_id))
+            else:
+                cursor.execute('''
+                    UPDATE creators
+                    SET subscription_status = %s
+                    WHERE stripe_subscription_id = %s
+                ''', (status, subscription_id))
             conn.commit()
             cursor.close()
             conn.close()

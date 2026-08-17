@@ -12,5 +12,11 @@
       "src": "/(.*)",
       "dest": "app.py"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/admin/email/cron/process",
+      "schedule": "* * * * *"
+    }
   ]
 }

@@ -199,5 +199,94 @@ class TestVisualAssess(unittest.TestCase):
         self.assertTrue(review["ok"])
 
 
+class TestOnboardingPlatformGate(unittest.TestCase):
+    def test_rejects_pinterest_blog_and_twitter(self):
+        from services.profile_quality import (
+            UNVERIFIED_ONBOARDING_MESSAGE,
+            UNSUPPORTED_ONBOARDING_PLATFORM_MESSAGE,
+            resolve_verified_onboarding_followers,
+        )
+
+        for platform in ("pinterest", "blog", "twitter", "x"):
+            with self.assertRaises(ValueError) as ctx:
+                resolve_verified_onboarding_followers(
+                    username="sp4c3d0u1",
+                    platform=platform,
+                    quality_session={"handle": "sp4c3d0u1", "platform": platform, "followers": 99999},
+                )
+            self.assertEqual(str(ctx.exception), UNSUPPORTED_ONBOARDING_PLATFORM_MESSAGE)
+
+        with self.assertRaises(ValueError) as ctx:
+            resolve_verified_onboarding_followers(
+                username="sp4c3d0u1",
+                platform="instagram",
+            )
+        self.assertEqual(str(ctx.exception), UNVERIFIED_ONBOARDING_MESSAGE)
+
+    def test_rejects_self_reported_stats_even_on_allowed_platform(self):
+        from services.profile_quality import (
+            UNVERIFIED_ONBOARDING_MESSAGE,
+            resolve_verified_onboarding_followers,
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            resolve_verified_onboarding_followers(
+                username="annabelle",
+                platform="instagram",
+                quality_session=None,
+                verification_result=None,
+            )
+        self.assertEqual(str(ctx.exception), UNVERIFIED_ONBOARDING_MESSAGE)
+
+    def test_uses_scraped_session_not_client_count(self):
+        from services.profile_quality import resolve_verified_onboarding_followers
+
+        count = resolve_verified_onboarding_followers(
+            username="@Sp4c3d0u1",
+            platform="instagram",
+            quality_session={"handle": "sp4c3d0u1", "platform": "instagram", "followers": 820},
+        )
+        self.assertEqual(count, 820)
+
+    def test_rejects_handle_or_platform_mismatch(self):
+        from services.profile_quality import (
+            UNVERIFIED_ONBOARDING_MESSAGE,
+            resolve_verified_onboarding_followers,
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            resolve_verified_onboarding_followers(
+                username="otherhandle",
+                platform="instagram",
+                quality_session={"handle": "sp4c3d0u1", "platform": "instagram", "followers": 820},
+            )
+        self.assertEqual(str(ctx.exception), UNVERIFIED_ONBOARDING_MESSAGE)
+
+    def test_oauth_verified_session_is_accepted(self):
+        from services.profile_quality import resolve_verified_onboarding_followers
+
+        count = resolve_verified_onboarding_followers(
+            username="glowtok",
+            platform="tiktok",
+            verification_result={
+                "verified": True,
+                "platform": "tiktok",
+                "profile": {"username": "glowtok", "follower_count": 1500},
+            },
+        )
+        self.assertEqual(count, 1500)
+
+    def test_scraped_below_floor_still_rejects(self):
+        from services.profile_quality import resolve_verified_onboarding_followers
+
+        with self.assertRaises(ValueError) as ctx:
+            resolve_verified_onboarding_followers(
+                username="tiny",
+                platform="youtube",
+                quality_session={"handle": "tiny", "platform": "youtube", "followers": 20},
+            )
+        self.assertIn("500", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
