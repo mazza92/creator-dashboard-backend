@@ -33,27 +33,45 @@ except ImportError:
 # CONFIGURATION
 # ============================================================================
 
-# Restricted regions - blocked due to high fraud/spam rates
-# South Asian subcontinent:
-#   IN: India, PK: Pakistan, BD: Bangladesh, NP: Nepal, LK: Sri Lanka, MM: Myanmar, BT: Bhutan
-# Africa (all except South Africa ZA):
-#   NG: Nigeria, EG: Egypt, KE: Kenya, ET: Ethiopia, GH: Ghana, TZ: Tanzania, UG: Uganda,
-#   DZ: Algeria, MA: Morocco, AO: Angola, MZ: Mozambique, MG: Madagascar, CM: Cameroon,
-#   CI: Ivory Coast, NE: Niger, BF: Burkina Faso, ML: Mali, MW: Malawi, ZM: Zambia, ZW: Zimbabwe,
-#   SN: Senegal, TD: Chad, SO: Somalia, GN: Guinea, RW: Rwanda, BJ: Benin, BI: Burundi,
-#   TN: Tunisia, SS: South Sudan, TG: Togo, SL: Sierra Leone, LY: Libya, CG: Congo,
-#   LR: Liberia, CF: Central African Republic, MR: Mauritania, ER: Eritrea, NA: Namibia,
-#   GM: Gambia, BW: Botswana, GA: Gabon, LS: Lesotho, GW: Guinea-Bissau, GQ: Equatorial Guinea,
-#   MU: Mauritius, SZ: Eswatini, DJ: Djibouti, KM: Comoros, CV: Cape Verde, ST: Sao Tome, SC: Seychelles, CD: DR Congo
-RESTRICTED_REGIONS = [
-    # South Asia
-    'IN', 'PK', 'BD', 'NP', 'LK', 'MM', 'BT',
-    # Africa (excluding South Africa ZA)
-    'NG', 'EG', 'KE', 'ET', 'GH', 'TZ', 'UG', 'DZ', 'MA', 'AO', 'MZ', 'MG', 'CM', 'CI',
-    'NE', 'BF', 'ML', 'MW', 'ZM', 'ZW', 'SN', 'TD', 'SO', 'GN', 'RW', 'BJ', 'BI', 'TN',
-    'SS', 'TG', 'SL', 'LY', 'CG', 'LR', 'CF', 'MR', 'ER', 'NA', 'GM', 'BW', 'GA', 'LS',
-    'GW', 'GQ', 'MU', 'SZ', 'DJ', 'KM', 'CV', 'ST', 'SC', 'CD',
-]
+# Serve only US, UK, CA, AU, NZ, and Europe. Everything else is blocked on
+# signup, login, and onboarding. Empty/unknown geo still fail-opens
+# (localhost, lookup timeout) so local dev and flaky IP APIs do not lock people out.
+ALLOWED_REGIONS = frozenset({
+    'US', 'GB', 'CA', 'AU', 'NZ',
+    # EU-27
+    'AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR', 'DE', 'GR', 'HU',
+    'IE', 'IT', 'LV', 'LT', 'LU', 'MT', 'NL', 'PL', 'PT', 'RO', 'SK', 'SI', 'ES', 'SE',
+    # EFTA + microstates + UK crown dependencies
+    'IS', 'LI', 'NO', 'CH', 'AD', 'MC', 'SM', 'VA', 'IM', 'JE', 'GG', 'GI', 'AX', 'FO',
+    # Rest of Europe (not RU/BY/TR)
+    'AL', 'BA', 'MK', 'ME', 'RS', 'XK', 'UA', 'MD',
+})
+
+# Full names historically stored on users.country (CountryDropdown).
+# Used to skip the IP lookup on login for accounts already known to be allowed.
+ALLOWED_COUNTRY_NAMES = {
+    'united states': 'US', 'united states of america': 'US', 'usa': 'US', 'america': 'US',
+    'united kingdom': 'GB', 'great britain': 'GB', 'england': 'GB', 'scotland': 'GB',
+    'wales': 'GB', 'northern ireland': 'GB', 'uk': 'GB',
+    'australia': 'AU',
+    'canada': 'CA',
+    'new zealand': 'NZ',
+    'ireland': 'IE', 'republic of ireland': 'IE',
+    'france': 'FR', 'germany': 'DE', 'spain': 'ES', 'italy': 'IT', 'portugal': 'PT',
+    'netherlands': 'NL', 'the netherlands': 'NL', 'holland': 'NL',
+    'belgium': 'BE', 'austria': 'AT', 'switzerland': 'CH', 'sweden': 'SE',
+    'norway': 'NO', 'denmark': 'DK', 'finland': 'FI', 'iceland': 'IS',
+    'poland': 'PL', 'czech republic': 'CZ', 'czechia': 'CZ', 'hungary': 'HU',
+    'romania': 'RO', 'bulgaria': 'BG', 'greece': 'GR', 'croatia': 'HR',
+    'slovakia': 'SK', 'slovenia': 'SI', 'lithuania': 'LT', 'latvia': 'LV',
+    'estonia': 'EE', 'luxembourg': 'LU', 'malta': 'MT', 'cyprus': 'CY',
+    'liechtenstein': 'LI', 'andorra': 'AD', 'monaco': 'MC', 'san marino': 'SM',
+    'vatican': 'VA', 'vatican city': 'VA',
+    'albania': 'AL', 'bosnia': 'BA', 'bosnia and herzegovina': 'BA',
+    'north macedonia': 'MK', 'macedonia': 'MK', 'montenegro': 'ME',
+    'serbia': 'RS', 'kosovo': 'XK', 'ukraine': 'UA', 'moldova': 'MD',
+    'gibraltar': 'GI', 'isle of man': 'IM', 'jersey': 'JE', 'guernsey': 'GG',
+}
 
 # Minimum thresholds
 MIN_FOLLOWERS = 500
@@ -149,35 +167,6 @@ def get_user_country_from_session():
     return None
 
 
-# English names we historically stored on users.country (signup used full names).
-# Used to skip the IP lookup on login for accounts already known to be allowed.
-RESTRICTED_COUNTRY_NAMES = {
-    # South Asia
-    'india': 'IN', 'pakistan': 'PK', 'bangladesh': 'BD', 'nepal': 'NP',
-    'sri lanka': 'LK', 'myanmar': 'MM', 'burma': 'MM', 'bhutan': 'BT',
-    # Africa (excluding South Africa)
-    'nigeria': 'NG', 'egypt': 'EG', 'kenya': 'KE', 'ethiopia': 'ET',
-    'ghana': 'GH', 'tanzania': 'TZ', 'uganda': 'UG', 'algeria': 'DZ',
-    'morocco': 'MA', 'angola': 'AO', 'mozambique': 'MZ', 'madagascar': 'MG',
-    'cameroon': 'CM', 'ivory coast': 'CI', "cote d'ivoire": 'CI',
-    'côte d’ivoire': 'CI', 'niger': 'NE', 'burkina faso': 'BF', 'mali': 'ML',
-    'malawi': 'MW', 'zambia': 'ZM', 'zimbabwe': 'ZW', 'senegal': 'SN',
-    'chad': 'TD', 'somalia': 'SO', 'guinea': 'GN', 'rwanda': 'RW',
-    'benin': 'BJ', 'burundi': 'BI', 'tunisia': 'TN', 'south sudan': 'SS',
-    'togo': 'TG', 'sierra leone': 'SL', 'libya': 'LY', 'congo': 'CG',
-    'republic of the congo': 'CG', 'liberia': 'LR',
-    'central african republic': 'CF', 'mauritania': 'MR', 'eritrea': 'ER',
-    'namibia': 'NA', 'gambia': 'GM', 'botswana': 'BW', 'gabon': 'GA',
-    'lesotho': 'LS', 'guinea-bissau': 'GW', 'equatorial guinea': 'GQ',
-    'mauritius': 'MU', 'eswatini': 'SZ', 'swaziland': 'SZ',
-    'djibouti': 'DJ', 'comoros': 'KM', 'cape verde': 'CV', 'cabo verde': 'CV',
-    'sao tome and principe': 'ST', 'são tomé and príncipe': 'ST',
-    'seychelles': 'SC', 'dr congo': 'CD',
-    'democratic republic of the congo': 'CD',
-    'democratic republic of congo': 'CD',
-}
-
-
 def detect_country_from_ip(timeout=3):
     """Detect country from current request IP - standalone function for callbacks.
 
@@ -201,37 +190,58 @@ def detect_country_from_ip(timeout=3):
     return None
 
 
+def normalize_country_code(country):
+    """Map a stored ISO code or English country name to a 2-letter ISO code."""
+    raw = (country or '').strip()
+    if not raw:
+        return None
+    code = raw.upper()
+    if code == 'UK':
+        return 'GB'
+    if len(code) == 2 and code.isalpha():
+        return code
+    return ALLOWED_COUNTRY_NAMES.get(raw.lower())
+
+
+def region_code_is_allowed(country):
+    """True when geo is unknown (fail-open) or the country is in the serve zone."""
+    raw = (country or '').strip()
+    if not raw:
+        return True
+    code = normalize_country_code(raw)
+    return bool(code and code in ALLOWED_REGIONS)
+
+
 def country_value_is_restricted(country):
-    """True when a stored ISO code or English country name is in RESTRICTED_REGIONS."""
+    """True when a stored ISO code or English name is outside the serve zone."""
     raw = (country or '').strip()
     if not raw:
         return False
-    code = raw.upper()
-    if len(code) == 2 and code.isalpha():
-        return code in RESTRICTED_REGIONS
-    mapped = RESTRICTED_COUNTRY_NAMES.get(raw.lower())
-    return bool(mapped and mapped in RESTRICTED_REGIONS)
+    code = normalize_country_code(raw)
+    if not code:
+        return True
+    return code not in ALLOWED_REGIONS
 
 
 def stored_country_is_allowed(country):
     """True when we already know this account is in an allowed country."""
-    raw = (country or '').strip() if country else ''
-    if not raw:
-        return False
-    return not country_value_is_restricted(raw)
+    code = normalize_country_code(country)
+    return bool(code and code in ALLOWED_REGIONS)
 
 
 def is_request_from_restricted_region(timeout=3):
-    """True only when IP country is known AND restricted. Fail-open otherwise."""
+    """True only when IP country is known AND outside the serve zone. Fail-open otherwise."""
     code = detect_country_from_ip(timeout=timeout)
-    return bool(code and code.upper() in RESTRICTED_REGIONS)
+    if not code:
+        return False
+    return not region_code_is_allowed(code)
 
 
 def should_block_auth_for_region(stored_country, timeout=1.0):
     """Login geo gate that does not change UX for allowed-country accounts.
 
     Known allowed countries skip the IP lookup (no extra latency, no travel lockout).
-    Unknown or restricted stored countries use the same fail-open IP check as signup.
+    Unknown or out-of-zone stored countries use the same fail-open IP check as signup.
     """
     if stored_country_is_allowed(stored_country):
         return False
@@ -274,13 +284,13 @@ def validate_social_gates(data: dict, platform: str, user_country: str) -> dict:
     2. Account is public
     3. Follower count >= 500
     4. Media/post count >= 5
-    5. Region allowed (not India/Pakistan)
+    5. Region allowed (US, UK, AU, NZ, Europe)
     """
     # Normalize country code
     country_code = (user_country or '').upper().strip()
 
     gates = {
-        "region_allowed": country_code not in RESTRICTED_REGIONS if country_code else True,
+        "region_allowed": region_code_is_allowed(country_code),
         "oauth_connected": bool(data.get("access_token")),
         "account_public": _is_public(data, platform),
         "follower_min": (data.get("follower_count") or 0) >= MIN_FOLLOWERS,
@@ -450,7 +460,7 @@ def check_region():
     country_code = (user_country or '').upper().strip()
 
     # If we still have no country, allow by default (better UX than blocking)
-    is_allowed = country_code not in RESTRICTED_REGIONS if country_code else True
+    is_allowed = region_code_is_allowed(country_code)
 
     # Log the region check (only if we have creator_id)
     if not is_allowed and creator_id:
@@ -521,7 +531,7 @@ def verify_handle():
     user_country = get_user_country_from_session() or ''
     country_code = user_country.upper().strip()
 
-    if country_code in RESTRICTED_REGIONS:
+    if not region_code_is_allowed(country_code):
         return jsonify({
             'success': False,
             'verified': False,
@@ -629,7 +639,7 @@ def connect_instagram():
 
     # Check region first
     user_country = get_user_country_from_session()
-    if user_country and user_country.upper() in RESTRICTED_REGIONS:
+    if user_country and not region_code_is_allowed(user_country):
         return redirect(f"{return_url}?social=failed&reason=restricted_region")
 
     if not INSTAGRAM_APP_ID:
@@ -797,7 +807,7 @@ def callback_instagram():
                         print(f"⚠️ Failed to store country in DB: {e}")
 
         user_country = user_country or ''
-        print(f"🌍 Final country for verification: '{user_country}' (restricted: {user_country.upper() in RESTRICTED_REGIONS if user_country else 'unknown'})")
+        print(f"🌍 Final country for verification: '{user_country}' (restricted: {not region_code_is_allowed(user_country)})")
 
         # Run 5-gate verification
         result = validate_social_gates(profile_data, 'instagram', user_country)
@@ -850,7 +860,7 @@ def connect_tiktok():
 
     # Check region first
     user_country = get_user_country_from_session()
-    if user_country and user_country.upper() in RESTRICTED_REGIONS:
+    if user_country and not region_code_is_allowed(user_country):
         return redirect(f"{return_url}?social=failed&reason=restricted_region")
 
     if not TIKTOK_CLIENT_KEY:
@@ -1016,7 +1026,7 @@ def callback_tiktok():
                         print(f"⚠️ Failed to store country in DB: {e}")
 
         user_country = user_country or ''
-        print(f"🌍 Final country for TikTok verification: '{user_country}' (restricted: {user_country.upper() in RESTRICTED_REGIONS if user_country else 'unknown'})")
+        print(f"🌍 Final country for TikTok verification: '{user_country}' (restricted: {not region_code_is_allowed(user_country)})")
 
         # Run 5-gate verification
         result = validate_social_gates(profile_data, 'tiktok', user_country)
@@ -1249,7 +1259,7 @@ def check_requires_verification():
 
         # Check region
         user_country = get_user_country_from_session()
-        if user_country and user_country.upper() in RESTRICTED_REGIONS:
+        if user_country and not region_code_is_allowed(user_country):
             return jsonify({
                 'requires_verification': True,
                 'blocked': True,
