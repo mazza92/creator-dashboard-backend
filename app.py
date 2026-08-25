@@ -7,7 +7,7 @@ from psycopg2 import OperationalError
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
 import stripe
-from flask import Flask, jsonify, request, session, make_response
+from flask import Flask, jsonify, request, session, make_response, redirect
 from google.oauth2 import id_token
 from google.auth.transport.requests import Request
 from flask_session import Session
@@ -1119,7 +1119,7 @@ def forgot_password():
         smtp_port = int(os.getenv('SMTP_PORT', 587))
         smtp_username = os.getenv('SMTP_USERNAME')
         smtp_password = os.getenv('SMTP_PASSWORD')
-        frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+        frontend_url = os.getenv('FRONTEND_URL', 'https://app.newcollab.co')
 
         msg = MIMEMultipart()
         msg['From'] = smtp_username
@@ -1159,8 +1159,16 @@ def forgot_password():
         return jsonify({'error': 'An unexpected error occurred. Please try again.'}), 500
 
 # Reset Password endpoint
-@app.route('/reset-password', methods=['POST'])
+@app.route('/reset-password', methods=['GET', 'POST'])
 def reset_password():
+    frontend_url = os.getenv('FRONTEND_URL', 'https://app.newcollab.co').rstrip('/')
+    if request.method == 'GET':
+        token = request.args.get('token') or ''
+        dest = f"{frontend_url}/reset-password"
+        if token:
+            dest = f"{dest}?token={token}"
+        return redirect(dest, code=302)
+
     try:
         data = request.get_json()
         if not data or not all(key in data for key in ['token', 'new_password']):
@@ -1169,18 +1177,37 @@ def reset_password():
 
         token = data['token']
         new_password = data['new_password']
+        if not token or not str(token).strip():
+            return jsonify({'error': 'Invalid or missing reset token. Request a new link.'}), 400
 
-        # Decode JWT token
+        # Decode JWT token. `jwt` is the JWTManager instance, so use PyJWT exceptions.
         try:
             payload = decode_token(token)
-            identity = payload['sub']  # 'sub' contains the identity
+            identity = payload.get('sub')
+            if isinstance(identity, str):
+                try:
+                    parsed = json.loads(identity)
+                    if isinstance(parsed, dict):
+                        identity = parsed
+                except (TypeError, ValueError):
+                    pass
+            if not isinstance(identity, dict):
+                app.logger.error("Password reset token identity is not a dict")
+                return jsonify({'error': 'Invalid password reset link.'}), 400
             user_id = identity['user_id']
             email = identity['email']
-        except jwt.ExpiredSignatureError:
+        except pyjwt.ExpiredSignatureError:
             app.logger.error("Password reset token expired")
             return jsonify({'error': 'Password reset link has expired. Please request a new one.'}), 400
-        except jwt.InvalidTokenError:
+        except pyjwt.InvalidTokenError:
             app.logger.error("Invalid password reset token")
+            return jsonify({'error': 'Invalid password reset link.'}), 400
+        except Exception as decode_err:
+            err_name = type(decode_err).__name__
+            if 'Expired' in err_name:
+                app.logger.error("Password reset token expired")
+                return jsonify({'error': 'Password reset link has expired. Please request a new one.'}), 400
+            app.logger.error(f"Password reset token decode failed: {err_name}: {decode_err}")
             return jsonify({'error': 'Invalid password reset link.'}), 400
 
         # Connect to database
