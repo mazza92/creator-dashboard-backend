@@ -15,7 +15,7 @@ import requests
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import HTTPException
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 import time
 from datetime import timedelta, timezone
 import datetime
@@ -1104,12 +1104,19 @@ def forgot_password():
             app.logger.info(f"User {email} uses Google Sign-In; cannot reset password")
             return jsonify({'error': 'This account uses Google Sign-In. Please sign in with Google.'}), 400
 
-        # Generate JWT token using Flask-JWT-Extended
+        # Dedicated reset JWT. Flask-JWT-Extended access tokens put a dict in `sub`,
+        # and PyJWT 2.10 rejects that on decode ("Subject must be a string").
         try:
-            token = create_access_token(
-                identity={'user_id': user['id'], 'email': email},
-                expires_delta=datetime.timedelta(hours=1)
-            )
+            secret_key = os.getenv('JWT_SECRET_KEY')
+            token = pyjwt.encode({
+                'sub': str(user['id']),
+                'email': email,
+                'purpose': 'password_reset',
+                'iat': int(time.time()),
+                'exp': int(time.time()) + 3600,
+            }, secret_key, algorithm='HS256')
+            if isinstance(token, bytes):
+                token = token.decode('utf-8')
         except Exception as e:
             app.logger.error(f"JWT token creation error: {str(e)}")
             return jsonify({'error': 'Failed to generate reset token.'}), 500
@@ -1119,24 +1126,30 @@ def forgot_password():
         smtp_port = int(os.getenv('SMTP_PORT', 587))
         smtp_username = os.getenv('SMTP_USERNAME')
         smtp_password = os.getenv('SMTP_PASSWORD')
-        frontend_url = os.getenv('FRONTEND_URL', 'https://app.newcollab.co')
+        frontend_url = os.getenv('FRONTEND_URL', 'https://app.newcollab.co').rstrip('/')
+        reset_url = f"{frontend_url}/reset-password?token={quote(token, safe='-_.')}"
 
-        msg = MIMEMultipart()
+        msg = MIMEMultipart('alternative')
         msg['From'] = smtp_username
         msg['To'] = email
         msg['Subject'] = "Password Reset Request"
-        body = f"""
-        Hello,
+        text_body = f"""Hello,
 
-        You requested to reset your password. Click the link below to set a new password:
-        {frontend_url}/reset-password?token={token}
+You requested to reset your password. Open this link to set a new password:
+{reset_url}
 
-        This link will expire in 1 hour. If you did not request a password reset, please ignore this email.
+This link expires in 1 hour. If you did not request a password reset, ignore this email.
 
-        Best regards,
-        Your App Team
-        """
-        msg.attach(MIMEText(body, 'plain'))
+Newcollab
+"""
+        html_body = f"""<p>Hello,</p>
+<p>You requested to reset your password. Click the button below to set a new password:</p>
+<p><a href="{reset_url}" style="display:inline-block;padding:12px 20px;background:#26A69A;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;">Reset password</a></p>
+<p>Or copy this link:<br>{reset_url}</p>
+<p>This link expires in 1 hour. If you did not request a password reset, ignore this email.</p>
+<p>Newcollab</p>"""
+        msg.attach(MIMEText(text_body, 'plain'))
+        msg.attach(MIMEText(html_body, 'html'))
 
         try:
             server = smtplib.SMTP(smtp_server, smtp_port)
@@ -1166,7 +1179,7 @@ def reset_password():
         token = request.args.get('token') or ''
         dest = f"{frontend_url}/reset-password"
         if token:
-            dest = f"{dest}?token={token}"
+            dest = f"{dest}?token={quote(token, safe='-_.')}"
         return redirect(dest, code=302)
 
     try:
@@ -1175,39 +1188,29 @@ def reset_password():
             app.logger.error("Missing token or new_password in reset password request")
             return jsonify({'error': 'Token and new password are required'}), 400
 
-        token = data['token']
+        token = str(data['token'] or '').replace('\n', '').replace('\r', '').replace(' ', '')
         new_password = data['new_password']
-        if not token or not str(token).strip():
+        if not token:
             return jsonify({'error': 'Invalid or missing reset token. Request a new link.'}), 400
 
-        # Decode JWT token. `jwt` is the JWTManager instance, so use PyJWT exceptions.
         try:
-            payload = decode_token(token)
-            identity = payload.get('sub')
-            if isinstance(identity, str):
-                try:
-                    parsed = json.loads(identity)
-                    if isinstance(parsed, dict):
-                        identity = parsed
-                except (TypeError, ValueError):
-                    pass
-            if not isinstance(identity, dict):
-                app.logger.error("Password reset token identity is not a dict")
+            payload = pyjwt.decode(token, os.getenv('JWT_SECRET_KEY'), algorithms=['HS256'])
+            if payload.get('purpose') != 'password_reset':
+                app.logger.error("Password reset token has wrong purpose")
+                return jsonify({'error': 'Invalid password reset link. Request a new one from Forgot Password.'}), 400
+            user_id = int(payload['sub'])
+            email = payload.get('email')
+            if not email:
+                app.logger.error("Password reset token missing email")
                 return jsonify({'error': 'Invalid password reset link.'}), 400
-            user_id = identity['user_id']
-            email = identity['email']
         except pyjwt.ExpiredSignatureError:
             app.logger.error("Password reset token expired")
             return jsonify({'error': 'Password reset link has expired. Please request a new one.'}), 400
-        except pyjwt.InvalidTokenError:
-            app.logger.error("Invalid password reset token")
-            return jsonify({'error': 'Invalid password reset link.'}), 400
-        except Exception as decode_err:
-            err_name = type(decode_err).__name__
-            if 'Expired' in err_name:
-                app.logger.error("Password reset token expired")
-                return jsonify({'error': 'Password reset link has expired. Please request a new one.'}), 400
-            app.logger.error(f"Password reset token decode failed: {err_name}: {decode_err}")
+        except pyjwt.InvalidTokenError as e:
+            app.logger.error(f"Invalid password reset token: {type(e).__name__}: {e}")
+            return jsonify({'error': 'Invalid password reset link. Request a new one from Forgot Password.'}), 400
+        except (TypeError, ValueError, KeyError) as e:
+            app.logger.error(f"Password reset token payload error: {type(e).__name__}: {e}")
             return jsonify({'error': 'Invalid password reset link.'}), 400
 
         # Connect to database
