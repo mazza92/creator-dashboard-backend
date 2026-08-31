@@ -41,6 +41,12 @@ GMAIL_USER = os.getenv('SMTP_USERNAME', 'team@newcollab.co')
 GMAIL_APP_PASSWORD = os.getenv('SMTP_PASSWORD')
 
 
+def _campaign_mailer_ready():
+    """Resend in production; Gmail SMTP is enough for local campaign tests."""
+    from services.resend_mail import resend_configured
+    return resend_configured() or bool(GMAIL_APP_PASSWORD)
+
+
 def get_db_connection():
     """Get database connection"""
     return psycopg2.connect(os.getenv('DATABASE_URL'), cursor_factory=RealDictCursor)
@@ -464,18 +470,8 @@ def get_segments():
         return jsonify({'error': str(e)}), 500
 
 
-@admin_email_bp.route('/users/search', methods=['GET'])
-@admin_required
-def search_users():
-    """Search users by email, name or username for individual targeting"""
-    try:
-        q = request.args.get('q', '').strip()
-        if len(q) < 2:
-            return jsonify({'users': []})
-
-        conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("""
+def _creator_search_select_sql():
+    return """
             SELECT
                 c.id as creator_id,
                 u.id as user_id,
@@ -487,6 +483,39 @@ def search_users():
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE u.unsubscribed_at IS NULL
+    """
+
+
+@admin_email_bp.route('/users/search', methods=['GET'])
+@admin_required
+def search_users():
+    """Search users by email, name or username for individual targeting"""
+    try:
+        q = request.args.get('q', '').strip()
+        emails_param = request.args.get('emails', '').strip()
+        if emails_param:
+            emails = [e.strip().lower() for e in re.split(r'[,;\s]+', emails_param) if '@' in e]
+            if not emails:
+                return jsonify({'users': [], 'missing': []})
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute(
+                _creator_search_select_sql() + " AND LOWER(u.email) = ANY(%s) ORDER BY u.email",
+                (emails,),
+            )
+            users = cursor.fetchall()
+            conn.close()
+            found = {u['email'].lower() for u in users if u.get('email')}
+            missing = [e for e in emails if e not in found]
+            return jsonify({'users': users, 'missing': missing})
+
+        if len(q) < 2:
+            return jsonify({'users': []})
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute(
+            _creator_search_select_sql() + """
               AND (
                 u.email ILIKE %s
                 OR u.first_name ILIKE %s
@@ -494,7 +523,9 @@ def search_users():
               )
             ORDER BY u.created_at DESC
             LIMIT 30
-        """, (f'%{q}%', f'%{q}%', f'%{q}%'))
+        """,
+            (f'%{q}%', f'%{q}%', f'%{q}%'),
+        )
         users = cursor.fetchall()
         conn.close()
         return jsonify({'users': users})
@@ -851,19 +882,30 @@ def _pick_recipients_for_send(cursor, campaign_id):
 
 
 def _send_campaign_email(to_email, subject, html_content, recipient=None):
-    """Send one creator-campaign email through Resend."""
+    """Send one creator-campaign email through Resend, with Gmail SMTP fallback."""
     unsubscribe_url = None
     if recipient:
         user_id = recipient.get('user_id')
         if user_id:
             unsubscribe_url = _build_unsubscribe_url(user_id)
-    return send_resend_email(
-        to_email,
-        subject,
-        html_content,
-        unsubscribe_url=unsubscribe_url,
-        tags=[{'name': 'type', 'value': 'campaign'}],
-    )
+    from services.resend_mail import resend_configured
+    if resend_configured():
+        return send_resend_email(
+            to_email,
+            subject,
+            html_content,
+            unsubscribe_url=unsubscribe_url,
+            tags=[{'name': 'type', 'value': 'campaign'}],
+        )
+    if GMAIL_APP_PASSWORD:
+        print(f"[Campaign email] RESEND_API_KEY not set — sending via Gmail SMTP to {to_email}")
+        return send_email_gmail_with_meta(to_email, subject, html_content)
+    return {
+        'success': False,
+        'message_id': None,
+        'error': 'RESEND_API_KEY not set (and no SMTP_PASSWORD for fallback)',
+        'retryable': False,
+    }
 
 
 def _send_with_retry(to_email, subject, html_content, max_retries=2, recipient=None):
@@ -1236,9 +1278,8 @@ def cron_process_campaigns():
     if not _cron_authorized():
         return jsonify({'error': 'Unauthorized'}), 401
 
-    from services.resend_mail import resend_configured
-    if not resend_configured():
-        return jsonify({'skipped': True, 'reason': 'resend_not_configured'}), 200
+    if not _campaign_mailer_ready():
+        return jsonify({'skipped': True, 'reason': 'mailer_not_configured'}), 200
 
     try:
         conn = get_db_connection()
@@ -1383,8 +1424,6 @@ def continue_campaign(campaign_id):
     the client explicitly asks (manual Continue).
     """
     try:
-        from services.resend_mail import resend_configured
-
         data = request.get_json(silent=True) or {}
         reset_attempts = bool(data.get('reset_attempts'))
 
@@ -1434,11 +1473,11 @@ def continue_campaign(campaign_id):
                 'status': summary['status'],
             })
 
-        if not resend_configured():
+        if not _campaign_mailer_ready():
             conn.commit()
             conn.close()
             return jsonify({
-                'error': 'RESEND_API_KEY not set',
+                'error': 'No email sender configured. Set RESEND_API_KEY or SMTP_PASSWORD.',
                 'is_complete': False,
                 'remaining': retryable,
                 'sending': sending_count,
@@ -1564,10 +1603,9 @@ def send_campaign(campaign_id):
             conn.close()
             return jsonify({'error': 'Campaign not found'}), 404
 
-        from services.resend_mail import resend_configured
-        if not resend_configured():
+        if not _campaign_mailer_ready():
             conn.close()
-            return jsonify({'error': 'RESEND_API_KEY not set'}), 503
+            return jsonify({'error': 'No email sender configured. Set RESEND_API_KEY or SMTP_PASSWORD.'}), 503
 
         # Only block if fully sent — 'sending' may be a stuck/crashed thread, allow resume
         if campaign['status'] == 'sent':
@@ -1792,12 +1830,13 @@ def send_test_email(campaign_id):
 
         if result.get('success'):
             return jsonify({'message': f'Test email sent to {test_email}'})
-        else:
-            return jsonify({
-                'error': result.get('error') or 'Failed to send test email. Check RESEND_API_KEY.'
-            }), 500
+        error = result.get('error') or 'Failed to send test email. Check RESEND_API_KEY.'
+        print(f"[TEST EMAIL] Failed to send to {test_email}: {error}")
+        return jsonify({'error': error}), 500
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 
