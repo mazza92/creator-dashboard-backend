@@ -3265,25 +3265,12 @@ def dashboard_init():
                 'reset_at': None
             }
         else:
-            unlocks_remaining = creator.get('unlocks_remaining')
-            unlocks_reset_at = creator.get('unlocks_reset_at')
             pack_credits = pack_credits_of(creator)
-            used, remaining = free_unlock_usage(
-                cursor, creator_id, unlocks_remaining, pack_credits, unlocks_reset_at
-            )
-            reset_due = bool(unlocks_reset_at and datetime.now() > unlocks_reset_at)
-            expected_remaining = max(0, FREE_UNLOCK_LIMIT - used)
-            stored_remaining = FREE_UNLOCK_LIMIT if unlocks_remaining is None else int(unlocks_remaining)
-            if not reset_due and stored_remaining > expected_remaining:
-                cursor.execute(
-                    '''
-                    UPDATE creators
-                    SET unlocks_remaining = %s
-                    WHERE id = %s AND unlocks_remaining > %s
-                    ''',
-                    (expected_remaining, creator_id, expected_remaining),
-                )
-                conn.commit()
+            used, remaining = sync_free_unlock_remaining(cursor, creator_id, pack_credits)
+            conn.commit()
+            cursor.execute('SELECT unlocks_reset_at FROM creators WHERE id = %s', (creator_id,))
+            reset_row = cursor.fetchone() or {}
+            unlocks_reset_at = reset_row.get('unlocks_reset_at') or creator.get('unlocks_reset_at')
             unlock_balance = {
                 'tier': 'free',
                 'remaining': remaining,
@@ -7184,16 +7171,32 @@ def brand_already_delivered(cursor, creator_id, brand_id):
     return cursor.fetchone() is not None
 
 
-def free_unlock_usage(cursor, creator_id, unlocks_remaining, pack_credits=0, unlocks_reset_at=None):
-    """used/remaining for the quota bar. Trust delivered packs, not only the counter."""
-    remaining_counter = FREE_UNLOCK_LIMIT if unlocks_remaining is None else int(unlocks_remaining)
-    if unlocks_reset_at and datetime.now() > unlocks_reset_at:
-        remaining_counter = FREE_UNLOCK_LIMIT
-    counter_used = max(0, FREE_UNLOCK_LIMIT - remaining_counter)
+def free_unlock_usage(cursor, creator_id, unlocks_remaining=None, pack_credits=0, unlocks_reset_at=None):
+    """Quota bar is packs delivered this calendar month, not the remaining counter."""
     delivered = count_delivered_unlocks_this_month(cursor, creator_id)
-    used = min(FREE_UNLOCK_LIMIT, max(counter_used, delivered))
+    used = min(FREE_UNLOCK_LIMIT, delivered)
     remaining = max(0, FREE_UNLOCK_LIMIT - used) + int(pack_credits or 0)
     return used, remaining
+
+
+def sync_free_unlock_remaining(cursor, creator_id, pack_credits=0):
+    """Write unlocks_remaining to match packs delivered this month."""
+    used, remaining = free_unlock_usage(cursor, creator_id, pack_credits=pack_credits)
+    remaining_free = max(0, FREE_UNLOCK_LIMIT - used)
+    cursor.execute(
+        '''
+        UPDATE creators
+        SET unlocks_remaining = %s,
+            unlocks_reset_at = date_trunc('month', NOW()) + interval '1 month'
+        WHERE id = %s
+          AND COALESCE(unlocks_tier, 'free') <> 'pro'
+          AND COALESCE(subscription_tier, 'free') NOT IN ('pro', 'elite')
+          AND unlocks_remaining IS DISTINCT FROM %s
+        ''',
+        (remaining_free, creator_id, remaining_free),
+    )
+    return used, remaining
+
 
 
 
@@ -7224,12 +7227,10 @@ def attempt_unlock(creator_id, brand_id, conn=None):
                 FROM creators WHERE id = %s
             ''', (creator_id,))
             creator_row = cursor.fetchone() or {}
-            _used, remaining = free_unlock_usage(
-                cursor, creator_id,
-                creator_row.get('unlocks_remaining'),
-                pack_credits_of(creator_row),
-                creator_row.get('unlocks_reset_at'),
+            _used, remaining = sync_free_unlock_remaining(
+                cursor, creator_id, pack_credits_of(creator_row)
             )
+            conn.commit()
             print(f"[attempt_unlock] Brand {brand_id} already delivered for creator {creator_id}")
             return {"status": "already_unlocked", "credits_used": 0, "remaining": remaining}
 
@@ -7261,78 +7262,36 @@ def attempt_unlock(creator_id, brand_id, conn=None):
             conn.commit()
             return {"status": "unlocked", "credits_used": 0, "remaining": None, "tier": "pro"}
 
-        # Free tier: check if reset needed
-        unlocks_remaining = creator.get('unlocks_remaining') or 0
-        unlocks_reset_at = creator.get('unlocks_reset_at')
+        # Free tier: quota is packs delivered this calendar month, not a rolling 30-day counter.
         pack_credits = pack_credits_of(creator)
-
-        if unlocks_reset_at and datetime.now() > unlocks_reset_at:
-            # Reset the monthly free credits. Paid packs stay until used.
-            unlocks_remaining = FREE_UNLOCK_LIMIT
-            cursor.execute('''
-                UPDATE creators
-                SET unlocks_remaining = %s,
-                    unlocks_reset_at = NOW() + INTERVAL '30 days'
-                WHERE id = %s
-            ''', (FREE_UNLOCK_LIMIT, creator_id))
-            cursor.execute('SELECT unlocks_reset_at FROM creators WHERE id = %s', (creator_id,))
-            unlocks_reset_at = cursor.fetchone().get('unlocks_reset_at')
-
+        leftover_packs = pack_credits
         delivered = count_delivered_unlocks_this_month(cursor, creator_id)
-        if delivered >= FREE_UNLOCK_LIMIT and pack_credits <= 0:
-            print(
-                f"[attempt_unlock] PAYWALL triggered for creator {creator_id}: "
-                f"delivered={delivered}/{FREE_UNLOCK_LIMIT} this month"
-            )
-            return {
-                "status": "paywall",
-                "credits_used": 0,
-                "remaining": 0,
-                "pack_credits": 0,
-                "reset_at": unlocks_reset_at.isoformat() if unlocks_reset_at else None,
-                "debug_db_value": creator.get('unlocks_remaining')
-            }
-
-        # ATOMIC: spend a free credit first (unless monthly packs are already used), then a paid pack
         has_pack_col = pack_credits_column_exists(conn)
-        returning_sql = (
-            "RETURNING unlocks_remaining, COALESCE(pack_credits, 0) AS pack_credits"
-            if has_pack_col else
-            "RETURNING unlocks_remaining, 0 AS pack_credits"
-        )
-        result = None
-        if delivered < FREE_UNLOCK_LIMIT:
-            cursor.execute(f'''
-                UPDATE creators
-                SET unlocks_remaining = unlocks_remaining - 1
-                WHERE id = %s AND unlocks_remaining > 0
-                {returning_sql}
-            ''', (creator_id,))
-            result = cursor.fetchone()
 
-        if result is None and has_pack_col:
-            cursor.execute('''
-                UPDATE creators
-                SET pack_credits = pack_credits - 1
-                WHERE id = %s AND COALESCE(pack_credits, 0) > 0
-                RETURNING unlocks_remaining, pack_credits
-            ''', (creator_id,))
-            result = cursor.fetchone()
-
-        if result is None:
-            print(f"[attempt_unlock] PAYWALL triggered for creator {creator_id}: atomic check failed, unlocks_remaining={unlocks_remaining}, pack_credits={pack_credits}, tier={creator.get('unlocks_tier')}")
-            return {
-                "status": "paywall",
-                "credits_used": 0,
-                "remaining": 0,
-                "pack_credits": 0,
-                "reset_at": unlocks_reset_at.isoformat() if unlocks_reset_at else None,
-                "debug_db_value": creator.get('unlocks_remaining')
-            }
-
-        new_remaining = total_unlocks_left(
-            result.get('unlocks_remaining'), result.get('pack_credits')
-        )
+        if delivered >= FREE_UNLOCK_LIMIT:
+            spent_pack = None
+            if has_pack_col and pack_credits > 0:
+                cursor.execute('''
+                    UPDATE creators
+                    SET pack_credits = pack_credits - 1
+                    WHERE id = %s AND COALESCE(pack_credits, 0) > 0
+                    RETURNING unlocks_remaining, pack_credits
+                ''', (creator_id,))
+                spent_pack = cursor.fetchone()
+            if spent_pack is None:
+                print(
+                    f"[attempt_unlock] PAYWALL triggered for creator {creator_id}: "
+                    f"delivered={delivered}/{FREE_UNLOCK_LIMIT} this month"
+                )
+                return {
+                    "status": "paywall",
+                    "credits_used": 0,
+                    "remaining": 0,
+                    "pack_credits": 0,
+                    "reset_at": None,
+                    "debug_db_value": creator.get('unlocks_remaining')
+                }
+            leftover_packs = int(spent_pack.get('pack_credits') or 0)
 
         cursor.execute('''
             INSERT INTO brand_unlocks (creator_id, brand_id, unlocked_at)
@@ -7340,16 +7299,15 @@ def attempt_unlock(creator_id, brand_id, conn=None):
             ON CONFLICT (creator_id, brand_id) DO NOTHING
         ''', (creator_id, brand_id))
 
-        # Also save to pipeline so brand appears in inbox
         cursor.execute('''
             INSERT INTO creator_pipeline (creator_id, brand_id, stage, created_at, updated_at)
             VALUES (%s, %s, 'saved', NOW(), NOW())
             ON CONFLICT (creator_id, brand_id) DO NOTHING
         ''', (creator_id, brand_id))
 
+        _used, new_remaining = sync_free_unlock_remaining(cursor, creator_id, leftover_packs)
         conn.commit()
 
-        # Trigger quota hit email when user uses their last unlock
         if new_remaining == 0:
             try:
                 trigger_quota_hit(creator_id)
@@ -7530,22 +7488,11 @@ def get_creator_unlock_balance(creator_id, conn=None):
     unlocks_remaining = creator.get('unlocks_remaining') or 0
     unlocks_reset_at = creator.get('unlocks_reset_at')
     pack_credits = pack_credits_of(creator)
-    used, remaining = free_unlock_usage(
-        cursor, creator_id, unlocks_remaining, pack_credits, unlocks_reset_at
-    )
-    reset_due = bool(unlocks_reset_at and datetime.now() > unlocks_reset_at)
-    expected_remaining = max(0, FREE_UNLOCK_LIMIT - used)
-    stored_remaining = FREE_UNLOCK_LIMIT if unlocks_remaining is None else int(unlocks_remaining)
-    if not reset_due and stored_remaining > expected_remaining:
-        cursor.execute(
-            '''
-            UPDATE creators
-            SET unlocks_remaining = %s
-            WHERE id = %s AND unlocks_remaining > %s
-            ''',
-            (expected_remaining, creator_id, expected_remaining),
-        )
-        conn.commit()
+    used, remaining = sync_free_unlock_remaining(cursor, creator_id, pack_credits)
+    conn.commit()
+    cursor.execute('SELECT unlocks_reset_at FROM creators WHERE id = %s', (creator_id,))
+    reset_row = cursor.fetchone() or {}
+    unlocks_reset_at = reset_row.get('unlocks_reset_at') or unlocks_reset_at
 
     cursor.close()
     if close_conn:
