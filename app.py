@@ -3604,21 +3604,16 @@ def unlock_brand_access(slug):
                     'limit': DAILY_LIMIT
                 }), 403
 
-        # Save to wishlist/pipeline
+        # Save to wishlist/pipeline. Do not write brand_unlocks here — that table
+        # is the monthly PR pack quota. Old public-directory brands are a
+        # different id space and were stealing free pack credits.
         cursor.execute('''
             INSERT INTO creator_pipeline (creator_id, brand_id, status, created_at)
             VALUES (%s, %s, 'interested', NOW())
             ON CONFLICT (creator_id, brand_id) DO UPDATE SET updated_at = NOW()
         ''', (creator_id, brand['id']))
 
-        # Track unlock event for analytics (only count first unlock per brand)
-        cursor.execute('''
-            INSERT INTO brand_unlocks (creator_id, brand_id, unlocked_at)
-            VALUES (%s, %s, NOW())
-            ON CONFLICT (creator_id, brand_id) DO NOTHING
-            RETURNING id
-        ''', (creator_id, brand['id']))
-        is_new_unlock = cursor.fetchone() is not None
+        is_new_unlock = False
 
         # Increment total_unlocks counter on users table (only for NEW unlocks)
         if is_new_unlock:

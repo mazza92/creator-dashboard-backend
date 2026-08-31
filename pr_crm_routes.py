@@ -7127,77 +7127,19 @@ def get_subscription_status(creator_id):
 # CREDIT UNLOCK SYSTEM
 # ============================================
 
-FREE_UNLOCK_LIMIT = 3  # Free users get 3 brand unlocks per month
-
 from services.pack_credits import (
     pack_credits_column_exists,
     pack_credits_of,
     pack_credits_select_sql,
     total_unlocks_left,
 )
-
-
-def count_delivered_unlocks_this_month(cursor, creator_id):
-    """Distinct brands this calendar month that already have a pack or unlock row."""
-    cursor.execute(
-        '''
-        SELECT COUNT(*) AS n FROM (
-            SELECT brand_id FROM brand_unlocks
-            WHERE creator_id = %s AND unlocked_at >= date_trunc('month', NOW())
-            UNION
-            SELECT brand_id FROM pr_packages
-            WHERE creator_id = %s AND COALESCE(generated_at, NOW()) >= date_trunc('month', NOW())
-        ) delivered
-        ''',
-        (creator_id, creator_id),
-    )
-    row = cursor.fetchone() or {}
-    return int(row.get('n') or 0)
-
-
-def brand_already_delivered(cursor, creator_id, brand_id):
-    """True if this creator already has a pack or unlock row for the brand."""
-    cursor.execute(
-        '''
-        SELECT 1 FROM brand_unlocks
-        WHERE creator_id = %s AND brand_id = %s
-        UNION ALL
-        SELECT 1 FROM pr_packages
-        WHERE creator_id = %s AND brand_id = %s
-        LIMIT 1
-        ''',
-        (creator_id, brand_id, creator_id, brand_id),
-    )
-    return cursor.fetchone() is not None
-
-
-def free_unlock_usage(cursor, creator_id, unlocks_remaining=None, pack_credits=0, unlocks_reset_at=None):
-    """Quota bar is packs delivered this calendar month, not the remaining counter."""
-    delivered = count_delivered_unlocks_this_month(cursor, creator_id)
-    used = min(FREE_UNLOCK_LIMIT, delivered)
-    remaining = max(0, FREE_UNLOCK_LIMIT - used) + int(pack_credits or 0)
-    return used, remaining
-
-
-def sync_free_unlock_remaining(cursor, creator_id, pack_credits=0):
-    """Write unlocks_remaining to match packs delivered this month."""
-    used, remaining = free_unlock_usage(cursor, creator_id, pack_credits=pack_credits)
-    remaining_free = max(0, FREE_UNLOCK_LIMIT - used)
-    cursor.execute(
-        '''
-        UPDATE creators
-        SET unlocks_remaining = %s,
-            unlocks_reset_at = date_trunc('month', NOW()) + interval '1 month'
-        WHERE id = %s
-          AND COALESCE(unlocks_tier, 'free') <> 'pro'
-          AND COALESCE(subscription_tier, 'free') NOT IN ('pro', 'elite')
-          AND unlocks_remaining IS DISTINCT FROM %s
-        ''',
-        (remaining_free, creator_id, remaining_free),
-    )
-    return used, remaining
-
-
+from services.unlock_quota import (
+    FREE_UNLOCK_LIMIT,
+    brand_already_delivered,
+    count_delivered_unlocks_this_month,
+    free_unlock_usage,
+    sync_free_unlock_remaining,
+)
 
 
 def attempt_unlock(creator_id, brand_id, conn=None):
@@ -7220,40 +7162,33 @@ def attempt_unlock(creator_id, brand_id, conn=None):
         print(f"[attempt_unlock] Checking creator {creator_id}, brand {brand_id}")
         pack_sql = pack_credits_select_sql(conn)
 
-        # Already delivered this brand (unlock row OR cached pack) — no extra charge
-        if brand_already_delivered(cursor, creator_id, brand_id):
-            cursor.execute(f'''
-                SELECT unlocks_remaining, unlocks_reset_at, {pack_sql}
-                FROM creators WHERE id = %s
-            ''', (creator_id,))
-            creator_row = cursor.fetchone() or {}
-            _used, remaining = sync_free_unlock_remaining(
-                cursor, creator_id, pack_credits_of(creator_row)
-            )
-            conn.commit()
-            print(f"[attempt_unlock] Brand {brand_id} already delivered for creator {creator_id}")
-            return {"status": "already_unlocked", "credits_used": 0, "remaining": remaining}
-
-        # Get creator's unlock status
+        # Serialize quota checks for this creator so two tabs cannot pass 3/3.
         cursor.execute(f'''
             SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier,
                    {pack_sql}
             FROM creators WHERE id = %s
+            FOR UPDATE
         ''', (creator_id,))
         creator = cursor.fetchone()
 
         if not creator:
             return {"status": "error", "error": "Creator not found"}
 
+        if brand_already_delivered(cursor, creator_id, brand_id):
+            _used, remaining = sync_free_unlock_remaining(
+                cursor, creator_id, pack_credits_of(creator)
+            )
+            conn.commit()
+            print(f"[attempt_unlock] Brand {brand_id} already delivered for creator {creator_id}")
+            return {"status": "already_unlocked", "credits_used": 0, "remaining": remaining}
+
         # Pro/Elite users get unlimited unlocks
         if creator.get('unlocks_tier') == 'pro' or creator.get('subscription_tier') in ('pro', 'elite'):
-            # Create unlock record without charging
             cursor.execute('''
                 INSERT INTO brand_unlocks (creator_id, brand_id, unlocked_at)
                 VALUES (%s, %s, NOW())
                 ON CONFLICT (creator_id, brand_id) DO NOTHING
             ''', (creator_id, brand_id))
-            # Also save to pipeline so brand appears in inbox
             cursor.execute('''
                 INSERT INTO creator_pipeline (creator_id, brand_id, stage, created_at, updated_at)
                 VALUES (%s, %s, 'saved', NOW(), NOW())
@@ -7262,11 +7197,11 @@ def attempt_unlock(creator_id, brand_id, conn=None):
             conn.commit()
             return {"status": "unlocked", "credits_used": 0, "remaining": None, "tier": "pro"}
 
-        # Free tier: quota is packs delivered this calendar month, not a rolling 30-day counter.
         pack_credits = pack_credits_of(creator)
         leftover_packs = pack_credits
         delivered = count_delivered_unlocks_this_month(cursor, creator_id)
         has_pack_col = pack_credits_column_exists(conn)
+        spent_pack_credit = False
 
         if delivered >= FREE_UNLOCK_LIMIT:
             spent_pack = None
@@ -7283,6 +7218,7 @@ def attempt_unlock(creator_id, brand_id, conn=None):
                     f"[attempt_unlock] PAYWALL triggered for creator {creator_id}: "
                     f"delivered={delivered}/{FREE_UNLOCK_LIMIT} this month"
                 )
+                conn.rollback()
                 return {
                     "status": "paywall",
                     "credits_used": 0,
@@ -7292,18 +7228,41 @@ def attempt_unlock(creator_id, brand_id, conn=None):
                     "debug_db_value": creator.get('unlocks_remaining')
                 }
             leftover_packs = int(spent_pack.get('pack_credits') or 0)
+            spent_pack_credit = True
 
         cursor.execute('''
             INSERT INTO brand_unlocks (creator_id, brand_id, unlocked_at)
             VALUES (%s, %s, NOW())
             ON CONFLICT (creator_id, brand_id) DO NOTHING
+            RETURNING id
         ''', (creator_id, brand_id))
+        inserted = cursor.fetchone()
+        if not inserted:
+            _used, remaining = sync_free_unlock_remaining(cursor, creator_id, leftover_packs)
+            conn.commit()
+            return {"status": "already_unlocked", "credits_used": 0, "remaining": remaining}
 
         cursor.execute('''
             INSERT INTO creator_pipeline (creator_id, brand_id, stage, created_at, updated_at)
             VALUES (%s, %s, 'saved', NOW(), NOW())
             ON CONFLICT (creator_id, brand_id) DO NOTHING
         ''', (creator_id, brand_id))
+
+        delivered_after = count_delivered_unlocks_this_month(cursor, creator_id)
+        if delivered_after > FREE_UNLOCK_LIMIT and not spent_pack_credit:
+            cursor.execute(
+                'DELETE FROM brand_unlocks WHERE creator_id = %s AND brand_id = %s',
+                (creator_id, brand_id),
+            )
+            conn.commit()
+            return {
+                "status": "paywall",
+                "credits_used": 0,
+                "remaining": 0,
+                "pack_credits": leftover_packs,
+                "reset_at": None,
+                "debug_db_value": creator.get('unlocks_remaining')
+            }
 
         _used, new_remaining = sync_free_unlock_remaining(cursor, creator_id, leftover_packs)
         conn.commit()

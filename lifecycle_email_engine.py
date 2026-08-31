@@ -1246,20 +1246,18 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
         subscription_tier = creator.get('subscription_tier', 'free')
         is_pro = subscription_tier in ('pro', 'elite')
 
-        # Calculate unlocks correctly (same as weekly_digest)
-        unlocks_remaining = creator.get('unlocks_remaining')
+        from services.unlock_quota import FREE_UNLOCK_LIMIT, count_delivered_unlocks_this_month, usage_from_delivered
         if is_pro:
             unlocks_used = 0
             unlocks_quota = '∞'
             unlocks_available = '∞'
-        elif unlocks_remaining is not None:
-            unlocks_used = max(0, 3 - unlocks_remaining)
-            unlocks_quota = 3
-            unlocks_available = unlocks_remaining
         else:
-            unlocks_used = creator.get('daily_unlocks_used') or 0
-            unlocks_quota = 3
-            unlocks_available = max(0, 3 - unlocks_used)
+            delivered = count_delivered_unlocks_this_month(cursor, creator_id)
+            pack_credits = creator.get('pack_credits') or 0
+            unlocks_used, remaining_free, unlocks_available = usage_from_delivered(delivered, pack_credits)
+            unlocks_quota = FREE_UNLOCK_LIMIT
+            # Email copy uses free slots, not paid pack credits
+            unlocks_available = remaining_free
 
         # Calculate real progress score
         current_score = _calculate_creator_progress_score(creator)
@@ -1530,18 +1528,14 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
         subscription_tier = creator.get('subscription_tier') or 'free'
         is_pro = subscription_tier in ('pro', 'elite')
 
-        # === UNLOCKS: Calculate correctly ===
-        unlocks_remaining = creator.get('unlocks_remaining')
+        from services.unlock_quota import FREE_UNLOCK_LIMIT, count_delivered_unlocks_this_month, usage_from_delivered
         if is_pro:
             unlocks_used = 0
             unlocks_quota = '∞'
-        elif unlocks_remaining is not None:
-            unlocks_used = max(0, 3 - unlocks_remaining)
-            unlocks_quota = 3
         else:
-            # Default for users without unlocks_remaining set
-            unlocks_used = creator.get('daily_unlocks_used') or 0
-            unlocks_quota = 3
+            delivered = count_delivered_unlocks_this_month(cursor, creator_id)
+            unlocks_used, _remaining_free, _remaining = usage_from_delivered(delivered, 0)
+            unlocks_quota = FREE_UNLOCK_LIMIT
 
         # === REPLY CHANCE SCORE: Use AI Manager score ===
         reply_chance = 0
@@ -1847,11 +1841,10 @@ def trigger_quota_hit(creator_id: int):
         if result.get('subscription_tier') in ('pro', 'elite'):
             return False, "Pro user - no quota"
 
-        # Check quota hit: unlocks_remaining == 0 (new system) OR daily_unlocks_used >= 3 (legacy)
-        unlocks_remaining = result.get('unlocks_remaining')
-        daily_unlocks_used = result.get('daily_unlocks_used') or 0
-
-        quota_hit = (unlocks_remaining is not None and unlocks_remaining == 0) or daily_unlocks_used >= 3
+        # Quota hit = 3 PR packs delivered this calendar month, not a stale remaining counter
+        from services.unlock_quota import FREE_UNLOCK_LIMIT, count_delivered_unlocks_this_month
+        delivered = count_delivered_unlocks_this_month(cursor, creator_id)
+        quota_hit = delivered >= FREE_UNLOCK_LIMIT
         if not quota_hit:
             return False, "Quota not hit"
 
