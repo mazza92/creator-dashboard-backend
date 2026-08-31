@@ -3267,27 +3267,26 @@ def dashboard_init():
         else:
             unlocks_remaining = creator.get('unlocks_remaining')
             unlocks_reset_at = creator.get('unlocks_reset_at')
-
-            # Check if reset needed
-            if unlocks_reset_at and unlocks_reset_at.date() <= date.today():
-                unlocks_remaining = FREE_UNLOCK_LIMIT
-                cursor.execute('''
-                    UPDATE creators
-                    SET unlocks_remaining = %s,
-                        unlocks_reset_at = (DATE_TRUNC('month', NOW()) + INTERVAL '1 month')::date
-                    WHERE id = %s
-                ''', (FREE_UNLOCK_LIMIT, creator_id))
-                conn.commit()
-                unlocks_reset_at = None  # Will be refreshed
-
-            if unlocks_remaining is None:
-                unlocks_remaining = FREE_UNLOCK_LIMIT
-
             pack_credits = pack_credits_of(creator)
-            used = max(0, FREE_UNLOCK_LIMIT - unlocks_remaining)
+            used, remaining = free_unlock_usage(
+                cursor, creator_id, unlocks_remaining, pack_credits, unlocks_reset_at
+            )
+            reset_due = bool(unlocks_reset_at and datetime.now() > unlocks_reset_at)
+            expected_remaining = max(0, FREE_UNLOCK_LIMIT - used)
+            stored_remaining = FREE_UNLOCK_LIMIT if unlocks_remaining is None else int(unlocks_remaining)
+            if not reset_due and stored_remaining > expected_remaining:
+                cursor.execute(
+                    '''
+                    UPDATE creators
+                    SET unlocks_remaining = %s
+                    WHERE id = %s AND unlocks_remaining > %s
+                    ''',
+                    (expected_remaining, creator_id, expected_remaining),
+                )
+                conn.commit()
             unlock_balance = {
                 'tier': 'free',
-                'remaining': total_unlocks_left(unlocks_remaining, pack_credits),
+                'remaining': remaining,
                 'used': used,
                 'limit': FREE_UNLOCK_LIMIT,
                 'pack_credits': pack_credits,
@@ -4395,6 +4394,21 @@ def generate_pr_package():
 
         brand_id = brand['id']
 
+        unlock_result = attempt_unlock(creator_id, brand_id, conn)
+        if unlock_result.get('status') == 'paywall':
+            return jsonify({
+                'success': False,
+                'error': 'No PR Packages remaining this month',
+                'paywall': True,
+                'remaining': 0,
+            }), 402
+        if unlock_result.get('status') == 'error':
+            return jsonify({
+                'success': False,
+                'error': unlock_result.get('error') or 'Unlock failed',
+            }), 500
+        unlock_fields = serialize_unlock_result(unlock_result)
+
         # Check if package already exists (and regenerate not requested)
         if not regenerate:
             cursor.execute('''
@@ -4518,6 +4532,7 @@ def generate_pr_package():
                         'profile_snapshot': stored_profile_snapshot,
                         'total_unlocks': 1,
                         'fast_mode': False,
+                        **unlock_fields,
                     })
 
                 else:
@@ -4606,24 +4621,8 @@ def generate_pr_package():
                         'profile_snapshot': fit_result.get('profile_snapshot'),
                         'total_unlocks': 1,
                         'fast_mode': False,
+                        **unlock_fields,
                     })
-
-        # Run unlock logic (same as generate-pitch)
-        unlock_result = attempt_unlock(creator_id, brand_id, conn)
-        if unlock_result.get('status') == 'paywall':
-            conn.close()
-            return jsonify({
-                'success': False,
-                'error': 'No PR Packages remaining this month',
-                'paywall': True,
-                'remaining': 0,
-            }), 402
-        if unlock_result.get('status') == 'error':
-            conn.close()
-            return jsonify({
-                'success': False,
-                'error': unlock_result.get('error') or 'Unlock failed',
-            }), 500
 
         # Get creator data
         cursor.execute('''
@@ -5056,6 +5055,20 @@ def generate_pr_package_v2():
             resolved_brand_id = brand['id']
             brand_name = brand.get('brand_name') or brand.get('name')
 
+            unlock_result = attempt_unlock(creator_id, resolved_brand_id, conn)
+            if unlock_result.get('status') == 'paywall':
+                yield send_event('paywall', {
+                    'error': 'No PR Packages remaining this month',
+                    'remaining': 0
+                })
+                return
+            if unlock_result.get('status') == 'error':
+                yield send_event('error', {
+                    'error': unlock_result.get('error') or 'Unlock failed'
+                })
+                return
+            unlock_fields = serialize_unlock_result(unlock_result)
+
             # Get creator data with user info
             cursor.execute('''
                 SELECT c.*, u.id as user_id, u.total_unlocks, u.hero_variant, u.fast_mode_enabled,
@@ -5291,25 +5304,13 @@ def generate_pr_package_v2():
                         'better_matches': fit_result.get('better_matches'),
                         'show_alternatives': fit_result.get('show_alternatives', False),
                         # Profile snapshot for UI transparency
-                        'profile_snapshot': fit_result.get('profile_snapshot')
+                        'profile_snapshot': fit_result.get('profile_snapshot'),
+                        **unlock_fields,
                     })
                     return
 
-            # Not cached - run unlock logic
-            unlock_result = attempt_unlock(creator_id, resolved_brand_id, conn)
-            if unlock_result.get('status') == 'paywall':
-                yield send_event('paywall', {
-                    'error': 'No PR Packages remaining this month',
-                    'remaining': 0
-                })
-                return
-            if unlock_result.get('status') == 'error':
-                yield send_event('error', {
-                    'error': unlock_result.get('error') or 'Unlock failed'
-                })
-                return
+            # Not cached — generate a new pack
 
-            # ========================================
             # STEP 2: PITCH WRITTEN (V2 Gemini generation)
             # Single pitch - same one shown in preview and sent
             # ========================================
@@ -7149,6 +7150,53 @@ from services.pack_credits import (
 )
 
 
+def count_delivered_unlocks_this_month(cursor, creator_id):
+    """Distinct brands this calendar month that already have a pack or unlock row."""
+    cursor.execute(
+        '''
+        SELECT COUNT(*) AS n FROM (
+            SELECT brand_id FROM brand_unlocks
+            WHERE creator_id = %s AND unlocked_at >= date_trunc('month', NOW())
+            UNION
+            SELECT brand_id FROM pr_packages
+            WHERE creator_id = %s AND COALESCE(generated_at, NOW()) >= date_trunc('month', NOW())
+        ) delivered
+        ''',
+        (creator_id, creator_id),
+    )
+    row = cursor.fetchone() or {}
+    return int(row.get('n') or 0)
+
+
+def brand_already_delivered(cursor, creator_id, brand_id):
+    """True if this creator already has a pack or unlock row for the brand."""
+    cursor.execute(
+        '''
+        SELECT 1 FROM brand_unlocks
+        WHERE creator_id = %s AND brand_id = %s
+        UNION ALL
+        SELECT 1 FROM pr_packages
+        WHERE creator_id = %s AND brand_id = %s
+        LIMIT 1
+        ''',
+        (creator_id, brand_id, creator_id, brand_id),
+    )
+    return cursor.fetchone() is not None
+
+
+def free_unlock_usage(cursor, creator_id, unlocks_remaining, pack_credits=0, unlocks_reset_at=None):
+    """used/remaining for the quota bar. Trust delivered packs, not only the counter."""
+    remaining_counter = FREE_UNLOCK_LIMIT if unlocks_remaining is None else int(unlocks_remaining)
+    if unlocks_reset_at and datetime.now() > unlocks_reset_at:
+        remaining_counter = FREE_UNLOCK_LIMIT
+    counter_used = max(0, FREE_UNLOCK_LIMIT - remaining_counter)
+    delivered = count_delivered_unlocks_this_month(cursor, creator_id)
+    used = min(FREE_UNLOCK_LIMIT, max(counter_used, delivered))
+    remaining = max(0, FREE_UNLOCK_LIMIT - used) + int(pack_credits or 0)
+    return used, remaining
+
+
+
 def attempt_unlock(creator_id, brand_id, conn=None):
     """
     Core unlock gate function. Call this before generating a pitch.
@@ -7169,15 +7217,21 @@ def attempt_unlock(creator_id, brand_id, conn=None):
         print(f"[attempt_unlock] Checking creator {creator_id}, brand {brand_id}")
         pack_sql = pack_credits_select_sql(conn)
 
-        # Check if already unlocked (free pass - no credit charge)
-        cursor.execute('''
-            SELECT id FROM brand_unlocks
-            WHERE creator_id = %s AND brand_id = %s
-        ''', (creator_id, brand_id))
-
-        if cursor.fetchone():
-            print(f"[attempt_unlock] Brand {brand_id} already unlocked for creator {creator_id}")
-            return {"status": "already_unlocked", "credits_used": 0}
+        # Already delivered this brand (unlock row OR cached pack) — no extra charge
+        if brand_already_delivered(cursor, creator_id, brand_id):
+            cursor.execute(f'''
+                SELECT unlocks_remaining, unlocks_reset_at, {pack_sql}
+                FROM creators WHERE id = %s
+            ''', (creator_id,))
+            creator_row = cursor.fetchone() or {}
+            _used, remaining = free_unlock_usage(
+                cursor, creator_id,
+                creator_row.get('unlocks_remaining'),
+                pack_credits_of(creator_row),
+                creator_row.get('unlocks_reset_at'),
+            )
+            print(f"[attempt_unlock] Brand {brand_id} already delivered for creator {creator_id}")
+            return {"status": "already_unlocked", "credits_used": 0, "remaining": remaining}
 
         # Get creator's unlock status
         cursor.execute(f'''
@@ -7224,20 +7278,37 @@ def attempt_unlock(creator_id, brand_id, conn=None):
             cursor.execute('SELECT unlocks_reset_at FROM creators WHERE id = %s', (creator_id,))
             unlocks_reset_at = cursor.fetchone().get('unlocks_reset_at')
 
-        # ATOMIC: spend a free credit first, then a paid pack credit
+        delivered = count_delivered_unlocks_this_month(cursor, creator_id)
+        if delivered >= FREE_UNLOCK_LIMIT and pack_credits <= 0:
+            print(
+                f"[attempt_unlock] PAYWALL triggered for creator {creator_id}: "
+                f"delivered={delivered}/{FREE_UNLOCK_LIMIT} this month"
+            )
+            return {
+                "status": "paywall",
+                "credits_used": 0,
+                "remaining": 0,
+                "pack_credits": 0,
+                "reset_at": unlocks_reset_at.isoformat() if unlocks_reset_at else None,
+                "debug_db_value": creator.get('unlocks_remaining')
+            }
+
+        # ATOMIC: spend a free credit first (unless monthly packs are already used), then a paid pack
         has_pack_col = pack_credits_column_exists(conn)
         returning_sql = (
             "RETURNING unlocks_remaining, COALESCE(pack_credits, 0) AS pack_credits"
             if has_pack_col else
             "RETURNING unlocks_remaining, 0 AS pack_credits"
         )
-        cursor.execute(f'''
-            UPDATE creators
-            SET unlocks_remaining = unlocks_remaining - 1
-            WHERE id = %s AND unlocks_remaining > 0
-            {returning_sql}
-        ''', (creator_id,))
-        result = cursor.fetchone()
+        result = None
+        if delivered < FREE_UNLOCK_LIMIT:
+            cursor.execute(f'''
+                UPDATE creators
+                SET unlocks_remaining = unlocks_remaining - 1
+                WHERE id = %s AND unlocks_remaining > 0
+                {returning_sql}
+            ''', (creator_id,))
+            result = cursor.fetchone()
 
         if result is None and has_pack_col:
             cursor.execute('''
@@ -7350,13 +7421,7 @@ def can_unlock(creator_id, brand_id, conn=None):
     try:
         pack_sql = pack_credits_select_sql(conn)
 
-        # Check if already unlocked
-        cursor.execute('''
-            SELECT id FROM brand_unlocks
-            WHERE creator_id = %s AND brand_id = %s
-        ''', (creator_id, brand_id))
-
-        if cursor.fetchone():
+        if brand_already_delivered(cursor, creator_id, brand_id):
             return {"can_unlock": True, "already_unlocked": True}
 
         # Get creator's unlock status
@@ -7374,17 +7439,13 @@ def can_unlock(creator_id, brand_id, conn=None):
         if creator.get('unlocks_tier') == 'pro' or creator.get('subscription_tier') in ('pro', 'elite'):
             return {"can_unlock": True, "already_unlocked": False, "remaining": None, "tier": "pro"}
 
-        # Free tier: check credits
         unlocks_remaining = creator.get('unlocks_remaining') or 0
         unlocks_reset_at = creator.get('unlocks_reset_at')
         pack_credits = pack_credits_of(creator)
-
-        # Check if reset needed (but don't actually reset here)
-        if unlocks_reset_at and datetime.now() > unlocks_reset_at:
-            unlocks_remaining = FREE_UNLOCK_LIMIT  # Would be reset on next attempt_unlock
-
-        total_left = total_unlocks_left(unlocks_remaining, pack_credits)
-        if total_left <= 0:
+        _used, remaining = free_unlock_usage(
+            cursor, creator_id, unlocks_remaining, pack_credits, unlocks_reset_at
+        )
+        if remaining <= 0:
             return {
                 "can_unlock": False,
                 "paywall": True,
@@ -7396,7 +7457,7 @@ def can_unlock(creator_id, brand_id, conn=None):
         return {
             "can_unlock": True,
             "already_unlocked": False,
-            "remaining": total_left,
+            "remaining": remaining,
             "pack_credits": pack_credits,
             "tier": "free"
         }
@@ -7466,24 +7527,33 @@ def get_creator_unlock_balance(creator_id, conn=None):
             "pack_credits": 0,
         }
 
-    # Check if reset needed
     unlocks_remaining = creator.get('unlocks_remaining') or 0
     unlocks_reset_at = creator.get('unlocks_reset_at')
     pack_credits = pack_credits_of(creator)
-
-    if unlocks_reset_at and datetime.now() > unlocks_reset_at:
-        unlocks_remaining = FREE_UNLOCK_LIMIT  # Would reset on next attempt_unlock
+    used, remaining = free_unlock_usage(
+        cursor, creator_id, unlocks_remaining, pack_credits, unlocks_reset_at
+    )
+    reset_due = bool(unlocks_reset_at and datetime.now() > unlocks_reset_at)
+    expected_remaining = max(0, FREE_UNLOCK_LIMIT - used)
+    stored_remaining = FREE_UNLOCK_LIMIT if unlocks_remaining is None else int(unlocks_remaining)
+    if not reset_due and stored_remaining > expected_remaining:
+        cursor.execute(
+            '''
+            UPDATE creators
+            SET unlocks_remaining = %s
+            WHERE id = %s AND unlocks_remaining > %s
+            ''',
+            (expected_remaining, creator_id, expected_remaining),
+        )
+        conn.commit()
 
     cursor.close()
     if close_conn:
         conn.close()
 
-    total_left = total_unlocks_left(unlocks_remaining, pack_credits)
-    used = max(0, FREE_UNLOCK_LIMIT - unlocks_remaining)
-
     return {
         "tier": "free",
-        "remaining": total_left,
+        "remaining": remaining,
         "used": used,
         "limit": FREE_UNLOCK_LIMIT,
         "pack_credits": pack_credits,
