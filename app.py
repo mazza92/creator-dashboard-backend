@@ -97,7 +97,9 @@ is_production = os.getenv('FLASK_ENV') == 'production' or os.getenv('VERCEL_ENV'
 app.config['SESSION_TYPE'] = 'redis'
 app.config['SESSION_PERMANENT'] = True
 app.config['SESSION_USE_SIGNER'] = False
-app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=1)
+# Must outlast onboarding drop-off. 1 hour caused Redis to expire while the
+# browser still sent the cookie, so later /profile + scrape saw an empty SID.
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
 app.config['SESSION_REFRESH_EACH_REQUEST'] = False  # CRITICAL: Don't refresh TTL on every request (saves Redis ops)
 # Production uses HTTPS with Secure cookies, development uses HTTP without
 app.config['SESSION_COOKIE_SECURE'] = is_production
@@ -165,6 +167,50 @@ except Exception as e:
 @app.after_request
 def handle_session_errors(response):
     """Catch Redis rate limit errors and prevent 500 crashes"""
+    return response
+
+
+def _session_cookie_kwargs():
+    """Cookie flags that actually stick on app.newcollab.co → api.newcollab.co XHR."""
+    kwargs = {
+        'max_age': int(app.config['PERMANENT_SESSION_LIFETIME'].total_seconds()),
+        'httponly': True,
+        'secure': bool(is_production),
+        'samesite': 'None' if is_production else 'Lax',
+        'path': '/',
+    }
+    if is_production:
+        kwargs['domain'] = '.newcollab.co'
+    return kwargs
+
+
+def _abandon_empty_session():
+    """
+    Prevent Flask-Session from minting a new empty SID.
+
+    flask-session's Redis save_session always Set-Cookies (should_set_cookie is
+    commented out). Unauthenticated GET /profile and OPTIONS then overwrite a
+    login cookie that was just set by a parallel /google-signup.
+    """
+    session.clear()
+    session.modified = False
+
+
+def _establish_auth_session(user_id, role, creator_id=None, brand_id=None):
+    session.clear()
+    session['user_id'] = user_id
+    session['user_role'] = role
+    if creator_id is not None:
+        session['creator_id'] = creator_id
+    if brand_id is not None:
+        session['brand_id'] = brand_id
+    session.permanent = True
+    session.modified = True
+
+
+def _auth_json_response(payload, status=200):
+    response = make_response(jsonify(payload), status)
+    response.set_cookie('session', session.sid, **_session_cookie_kwargs())
     return response
 
 
@@ -368,6 +414,9 @@ def add_cors_headers(response):
         response.headers['Access-Control-Allow-Origin'] = origin
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         response.headers['Access-Control-Expose-Headers'] = 'Content-Type, X-CSRF-Token, Set-Cookie'
+    # CORS preflight must not mint/overwrite the session cookie before POST /google-signup.
+    if request.method == 'OPTIONS':
+        _abandon_empty_session()
     return response
 
 # PR Categories for wishlist management
@@ -986,11 +1035,7 @@ def google_signup():
             cursor.execute("UPDATE users SET last_login = NOW() WHERE id = %s", (user_id,))
             conn.commit()
 
-            # Set session
-            session['user_id'] = user_id
-            session['user_role'] = role
-            if creator_id:
-                session['creator_id'] = creator_id
+            _establish_auth_session(user_id, role, creator_id=creator_id)
 
             # Determine redirect URL based on role and onboarding status
             if role == 'creator':
@@ -1002,13 +1047,14 @@ def google_signup():
             app.logger.debug(f"Session before response: {session}")
             conn.close()
 
-            return jsonify({
+            return _auth_json_response({
                 'user_id': user_id,
                 'user_role': role,
                 'creator_id': creator_id,
                 'onboarding_complete': onboarding_complete,
+                'needs_onboarding': not onboarding_complete,
                 'redirect_url': redirect_url
-            }), 200
+            }, 200)
         else:
             # New user: Create account via Google signup
             app.logger.info(f"Creating new account for Google user: {email}")
@@ -1051,21 +1097,18 @@ def google_signup():
 
             conn.commit()
 
-            # Set session for new user
-            session['user_id'] = user_id
-            session['user_role'] = 'creator'
-            session['creator_id'] = creator_id
+            _establish_auth_session(user_id, 'creator', creator_id=creator_id)
 
             conn.close()
 
-            return jsonify({
+            return _auth_json_response({
                 'user_id': user_id,
                 'user_role': 'creator',
                 'creator_id': creator_id,
                 'onboarding_complete': False,
                 'needs_onboarding': True,
                 'redirect_url': '/onboarding'
-            }), 201
+            }, 201)
 
     except ValueError as e:
         app.logger.error(f"Token verification failed: {str(e)}")
@@ -1496,13 +1539,7 @@ def login():
                 creator.get('niche')
             )
 
-        # Clear existing session
-        session.clear()
-        session['user_id'] = user_id
-        session['user_role'] = user_role
-        session['creator_id'] = creator_id
-        session['brand_id'] = brand_id
-        session.permanent = True
+        _establish_auth_session(user_id, user_role, creator_id=creator_id, brand_id=brand_id)
         app.logger.info(f"🟢 Session Set: user_id={user_id}, role={user_role}, onboarding_complete={onboarding_complete}")
 
         # Determine redirect URL based on role and onboarding status
@@ -1520,36 +1557,14 @@ def login():
             'onboarding_complete': onboarding_complete,
             'redirect_url': redirect_url
         }
-        response = make_response(jsonify(login_response))
-        # Clear old session cookies
-        response.set_cookie(
-            'session',
-            '',
-            samesite='None',
-            secure=True,
-            httponly=True,
-            max_age=0,
-            path='/'
-        )
-        # Set new session cookie
-        response.set_cookie(
-            'session',
-            session.sid,
-            samesite='None',
-            secure=True,
-            httponly=True,
-            max_age=86400,
-            path='/',
-            expires=datetime.datetime.now() + timedelta(days=1)
-        )
-        # Clear other conflicting cookies
+        # Do not expire the cookie without Domain=.newcollab.co — that creates a
+        # host-only empty cookie on api.newcollab.co that shadows the real SID.
+        response = _auth_json_response(login_response, 200)
         response.set_cookie('session_app', '', samesite='None', secure=True, httponly=True, max_age=0, path='/')
         response.set_cookie('connect.sid', '', samesite='None', secure=True, httponly=True, max_age=0, path='/')
         response.set_cookie('access_token_cookie', '', samesite='None', secure=True, httponly=True, max_age=0, path='/')
-        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
-        response.headers['Access-Control-Allow-Credentials'] = 'true'
         app.logger.info(f"🟢 Login successful for user_id: {user_id}, role: {user_role}")
-        return response, 200
+        return response
 
     except Exception as e:
         app.logger.error(f"🔥 Login Error: {str(e)}", exc_info=True)
@@ -1610,7 +1625,9 @@ def get_profile():
 
     if not user_id:
         app.logger.warning(f"❌ Session expired or invalid: No user_id in session")
-        # Return 401 with clear message for frontend to handle gracefully
+        # Do not Set-Cookie an empty host-only SID — that overwrites a login
+        # cookie just set by a parallel /google-signup or /login request.
+        _abandon_empty_session()
         response = jsonify({
             'error': 'Session expired',
             'code': 'SESSION_EXPIRED',
@@ -1619,8 +1636,6 @@ def get_profile():
         })
         response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
         response.headers['Access-Control-Allow-Credentials'] = 'true'
-        # Clear invalid session cookie
-        response.set_cookie('session', '', expires=0, httponly=True, secure=True, samesite='None')
         return response, 401
 
     app.logger.info(f"✅ Fetching profile for user_id={user_id}, role={user_role}, creator_id={creator_id}, brand_id={brand_id}")
@@ -1773,15 +1788,17 @@ def get_session():
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         return response, 200
 
-    # Mark session as not modified to prevent unnecessary Redis write
-    session.modified = False
-
     session_contents = {
         'user_id': session.get('user_id'),
         'user_role': session.get('user_role'),
         'creator_id': session.get('creator_id'),
         'brand_id': session.get('brand_id')
     }
+    # Read-only: do not mint an empty SID that can overwrite a just-set login cookie.
+    if not session_contents['user_id']:
+        _abandon_empty_session()
+    else:
+        session.modified = False
 
     # Only log occasionally to reduce noise
     # app.logger.info(f"🔍 Session contents requested: {session_contents}")
@@ -6019,15 +6036,7 @@ def register_creator_account():
                 domain=None
             )
 
-        response.set_cookie(
-            'session',
-            session.sid,
-            max_age=3600,
-            secure=os.getenv('FLASK_ENV') == 'production',
-            httponly=True,
-            samesite='None' if os.getenv('FLASK_ENV') == 'production' else 'Lax',
-            domain='.newcollab.co' if os.getenv('FLASK_ENV') == 'production' else None
-        )
+        response.set_cookie('session', session.sid, **_session_cookie_kwargs())
 
         return response
 
