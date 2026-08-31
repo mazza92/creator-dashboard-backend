@@ -7806,13 +7806,22 @@ def confirm_send(pipeline_id):
             conn.close()
             return jsonify({'success': False, 'error': 'Not found'}), 404
 
+        # Arm the 7-day follow-up reminder. Confirm is the only signal we trust.
+        cursor.execute("""
+            UPDATE creators
+            SET followup_notifications_enabled = COALESCE(followup_notifications_enabled, TRUE)
+            WHERE id = %s
+        """, (creator_id,))
+
+        first_confirm = not pipeline_item.get('pitched_at') and not pipeline_item.get('send_confirmed')
+
         # Store original pitch subject/body for follow-up context (only on first send)
         if pitch_subject or pitch_body:
             cursor.execute("""
                 UPDATE creator_pipeline
                 SET stage = 'waiting',
                     send_confirmed = TRUE,
-                    pitched_at = NOW(),
+                    pitched_at = COALESCE(pitched_at, NOW()),
                     original_pitch_subject = COALESCE(original_pitch_subject, %s),
                     original_pitch_body = COALESCE(original_pitch_body, %s),
                     updated_at = NOW()
@@ -7823,7 +7832,7 @@ def confirm_send(pipeline_id):
                 UPDATE creator_pipeline
                 SET stage = 'waiting',
                     send_confirmed = TRUE,
-                    pitched_at = NOW(),
+                    pitched_at = COALESCE(pitched_at, NOW()),
                     updated_at = NOW()
                 WHERE id = %s AND creator_id = %s
             """, (pipeline_id, creator_id))
@@ -7871,7 +7880,14 @@ def confirm_send(pipeline_id):
         cursor.close()
         conn.close()
 
-        return jsonify({'success': True, 'stage': 'waiting', 'contact_method': contact_method})
+        return jsonify({
+            'success': True,
+            'stage': 'waiting',
+            'contact_method': contact_method,
+            'followup_reminder_armed': True,
+            'followup_due_days': 7,
+            'first_confirm': first_confirm,
+        })
 
     except Exception as e:
         import traceback
