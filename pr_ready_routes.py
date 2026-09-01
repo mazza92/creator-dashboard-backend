@@ -280,8 +280,8 @@ def _persist_scrape_posts(conn, user_id, scrape) -> None:
         cur.close()
 
 
-@pr_ready_bp.route("", methods=["GET"])
-@pr_ready_bp.route("/", methods=["GET"])
+@pr_ready_bp.route("", methods=["GET"], strict_slashes=False)
+@pr_ready_bp.route("/", methods=["GET"], strict_slashes=False)
 def get_pr_ready():
     """Score + scrape summary + kit status for the logged-in creator."""
     creator_id = get_creator_id_from_session()

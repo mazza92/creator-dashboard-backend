@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 import hashlib
 from io import BytesIO
 from typing import Iterable, List, Optional, Tuple
@@ -160,13 +161,98 @@ def to_proxied_media_url(url: Optional[str], api_base: Optional[str] = None) -> 
     return f"{base}{path}" if base else path
 
 
-def proxy_media_urls(urls: Optional[Iterable[str]], api_base: Optional[str] = None) -> List[str]:
-    out: List[str] = []
-    for url in urls or []:
-        if not url:
+def _as_int(value) -> int:
+    try:
+        return int(float(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def coerce_post_url(item: Optional[dict], handle: str = "", platform: str = "") -> str:
+    """Build a public post URL from scrape fields (TikTok video id, IG shortcode, etc.)."""
+    if not isinstance(item, dict):
+        return ""
+    url = (
+        item.get("post_url")
+        or item.get("url")
+        or item.get("webVideoUrl")
+        or item.get("permalink")
+        or ""
+    )
+    url = str(url).strip() if url else ""
+    if url:
+        return url
+    handle = str(handle or "").strip().lstrip("@")
+    platform = str(platform or "").strip().lower()
+    code = str(item.get("shortCode") or item.get("shortcode") or item.get("videoId") or "").strip()
+    if not code and platform in ("tiktok", "tt", "youtube", "yt"):
+        code = str(item.get("id") or "").strip()
+    if not code or code in ("None", "0"):
+        return ""
+    if platform in ("youtube", "yt"):
+        return f"https://www.youtube.com/watch?v={code}"
+    if platform in ("tiktok", "tt"):
+        return f"https://www.tiktok.com/@{handle}/video/{code}" if handle else ""
+    if platform in ("instagram", "ig"):
+        if code.isdigit():
+            return ""
+        return f"https://www.instagram.com/p/{code}/"
+    if code.isdigit() and handle:
+        return f"https://www.tiktok.com/@{handle}/video/{code}"
+    if not code.isdigit():
+        return f"https://www.instagram.com/p/{code}/"
+    return ""
+
+
+def format_snapshot_posts(profile: Optional[dict], limit: int = 9) -> List[dict]:
+    """Normalize scrape posts for the pitch 'best work' picker."""
+    if not profile or not isinstance(profile, dict):
+        return []
+    raw = profile.get("recent_posts") or []
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            raw = parsed if isinstance(parsed, list) else []
+        except Exception:
+            raw = []
+    handle = str(profile.get("handle") or "").strip().lstrip("@")
+    platform = str(profile.get("primary_platform") or profile.get("platform") or "").strip().lower()
+    posts: List[dict] = []
+    seen = set()
+
+    def add(thumb: str, post_url: Optional[str] = None, likes: int = 0, views: int = 0, short_code: str = ""):
+        thumb = (thumb or "").strip()
+        post_url = (post_url or "").strip()
+        if not thumb or not post_url:
+            return
+        key = post_url
+        if key in seen:
+            return
+        seen.add(key)
+        posts.append(
+            {
+                "thumbnail_url": to_proxied_media_url(thumb),
+                "post_url": post_url,
+                "shortCode": short_code or None,
+                "likes": likes,
+                "views": views,
+            }
+        )
+
+    for item in raw:
+        if len(posts) >= limit:
+            break
+        if not isinstance(item, dict):
             continue
-        out.append(to_proxied_media_url(str(url), api_base=api_base))
-    return out
+        code = str(item.get("shortCode") or item.get("shortcode") or item.get("videoId") or "").strip()
+        add(
+            item.get("thumbnail_url") or item.get("displayUrl") or item.get("thumb") or "",
+            coerce_post_url(item, handle, platform),
+            _as_int(item.get("likes")),
+            _as_int(item.get("views")),
+            code,
+        )
+    return posts
 
 
 def rehost_social_image(image_url: str, dest_prefix: str = "avatars") -> Optional[str]:
@@ -283,13 +369,28 @@ def persist_social_avatar(image_url: str, dest_prefix: str = "avatars") -> str:
     return raw
 
 
+def proxy_media_urls(urls: Optional[Iterable[str]], api_base: Optional[str] = None) -> List[str]:
+    """Proxy a list of social CDN thumbnail URLs."""
+    out: List[str] = []
+    for url in urls or []:
+        proxied = to_proxied_media_url(url, api_base)
+        if proxied:
+            out.append(proxied)
+    return out
+
+
 def proxy_profile_snapshot_thumbnails(snapshot: Optional[dict]) -> Optional[dict]:
-    """In-place rewrite of profile_snapshot.recent_thumbnails for API responses."""
+    """In-place rewrite of profile_snapshot thumbs for API responses."""
     if not snapshot or not isinstance(snapshot, dict):
         return snapshot
     thumbs = snapshot.get("recent_thumbnails")
     if isinstance(thumbs, list) and thumbs:
         snapshot["recent_thumbnails"] = proxy_media_urls(thumbs)
+    posts = snapshot.get("recent_posts")
+    if isinstance(posts, list):
+        for post in posts:
+            if isinstance(post, dict) and post.get("thumbnail_url"):
+                post["thumbnail_url"] = to_proxied_media_url(post["thumbnail_url"])
     return snapshot
 
 

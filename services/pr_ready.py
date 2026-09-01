@@ -1680,7 +1680,13 @@ def _recent_posts_for_kit(scrape: Dict) -> List[Dict[str, Any]]:
         posts.append(
             {
                 "thumbnail_url": thumb,
-                "post_url": p.get("post_url") or None,
+                "post_url": (
+                    p.get("post_url")
+                    or p.get("url")
+                    or p.get("webVideoUrl")
+                    or p.get("permalink")
+                    or None
+                ),
                 "views": int(p.get("views") or 0),
                 "likes": int(p.get("likes") or 0),
                 "comments": int(p.get("comments") or 0),
@@ -2600,7 +2606,7 @@ def scrape_summary(scrape: Optional[Dict]) -> Optional[Dict[str, Any]]:
         return None
     thumbs = _as_list(scrape.get("recent_post_thumbnails"))
     recent_posts = []
-    for p in _recent_posts_for_kit(scrape)[:6]:
+    for p in _recent_posts_for_kit(scrape)[:9]:
         proxied = proxy_media_urls([p["thumbnail_url"]])
         recent_posts.append(
             {

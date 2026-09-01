@@ -987,6 +987,13 @@ Analyze and return JSON only.'''
             if result.get('brand_readiness_signals'):
                 if isinstance(result['brand_readiness_signals'], str):
                     result['brand_readiness_signals'] = json.loads(result['brand_readiness_signals'])
+            for json_key in ('recent_posts', 'content_themes', 'secondary_niches', 'recent_captions'):
+                val = result.get(json_key)
+                if isinstance(val, str):
+                    try:
+                        result[json_key] = json.loads(val)
+                    except Exception:
+                        pass
 
         return dict(result) if result else None
 

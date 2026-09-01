@@ -47,5 +47,42 @@ class TestPersistThumbnails(unittest.TestCase):
         self.assertEqual(profile["recent_posts"][0]["thumbnail_url"], durable)
 
 
+class TestCoercePostUrl(unittest.TestCase):
+    def test_tiktok_from_video_id(self):
+        from media_proxy_routes import coerce_post_url, format_snapshot_posts
+
+        url = coerce_post_url(
+            {"shortCode": "7550123456789012345", "thumbnail_url": "https://cdn.example/a.jpg"},
+            handle="juliaklag",
+            platform="tiktok",
+        )
+        self.assertEqual(url, "https://www.tiktok.com/@juliaklag/video/7550123456789012345")
+
+        posts = format_snapshot_posts({
+            "handle": "juliaklag",
+            "primary_platform": "tiktok",
+            "recent_posts": [
+                {
+                    "thumbnail_url": "https://example.com/thumb.jpg",
+                    "shortCode": "7550123456789012345",
+                }
+            ],
+            "recent_post_thumbnails": ["https://example.com/thumb.jpg"],
+        })
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(posts[0]["post_url"], "https://www.tiktok.com/@juliaklag/video/7550123456789012345")
+
+    def test_skips_thumbs_without_url(self):
+        from media_proxy_routes import format_snapshot_posts
+
+        posts = format_snapshot_posts({
+            "handle": "juliaklag",
+            "primary_platform": "tiktok",
+            "recent_posts": [],
+            "recent_post_thumbnails": ["https://example.com/thumb.jpg"],
+        })
+        self.assertEqual(posts, [])
+
+
 if __name__ == "__main__":
     unittest.main()

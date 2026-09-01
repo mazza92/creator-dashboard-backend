@@ -298,6 +298,13 @@ def generate_irresistible_pitch(
             brand_id=brand.get("id"),
         ) or {}
     portfolio = resolve_portfolio_link(creator, proof)
+    profile_key = re.sub(r"^https?://(www\.)?", "", (profile_url or "").strip().rstrip("/").lower())
+    portfolio_key = re.sub(r"^https?://(www\.)?", "", (portfolio or "").strip().rstrip("/").lower())
+    # Intro already links the profile — don't repeat the same URL as "Recent work".
+    if portfolio and portfolio_key and portfolio_key != profile_key:
+        portfolio_line = f"Recent work: {portfolio}"
+    else:
+        portfolio_line = ""
 
     intro = f"I create {niche} content on {platform_mention}"
     if followers:
@@ -309,8 +316,6 @@ def generate_irresistible_pitch(
     box_line = f"Trade offer for a {product} PR box:"
 
     location_line = f"No fee. Just product + shipping to {shipping['display']}."
-
-    portfolio_line = f"Recent work: {portfolio}" if portfolio else ""
 
     body_parts = [
         f"Hi {brand_name},",
@@ -378,11 +383,16 @@ def apply_location_to_body(body: str, location_display: str, previous_display: s
 def pitch_to_html(plain: str) -> str:
     paras = [p.strip() for p in (plain or "").split("\n\n") if p.strip()]
     html = "".join(f"<p>{p.replace(chr(10), '<br>')}</p>" for p in paras)
-    return re.sub(
+    html = re.sub(
         r"(Instagram|TikTok|YouTube) \((https?://[^)\s]+)\)",
         r'<a href="\2">\1</a>',
         html,
         count=1,
+    )
+    return re.sub(
+        r"(Example \d+) \((https?://[^)\s]+)\)",
+        r'<a href="\2">\1</a>',
+        html,
     )
 
 

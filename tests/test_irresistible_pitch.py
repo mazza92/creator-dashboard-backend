@@ -121,7 +121,8 @@ class TestIrresistiblePitch(unittest.TestCase):
                 "url": "https://tiktok.com/@gabydky",
             },
         )
-        self.assertIn("Recent work: https://tiktok.com/@gabydky", pitch["body"])
+        self.assertIn("tiktok.com/@gabydky", pitch["body"])
+        self.assertNotIn("Recent work:", pitch["body"])
 
     def test_apply_location(self):
         body = "No fee. Just product + shipping to [CITY, COUNTRY].\n\nWorth a look?"

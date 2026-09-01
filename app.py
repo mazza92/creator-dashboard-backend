@@ -76,7 +76,8 @@ except ImportError:
 # PR-Ready: optional local/feature flag — never crash prod if modules aren't deployed
 try:
     from pr_ready_routes import pr_ready_bp
-except ImportError:
+except Exception as exc:
+    print(f"[startup] pr_ready_bp unavailable: {exc}")
     pr_ready_bp = None
 
 # Initialize Flask app

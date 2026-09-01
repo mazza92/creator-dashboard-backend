@@ -18,13 +18,20 @@ from urllib.parse import urlparse, urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
-    from media_proxy_routes import proxy_media_urls, proxy_profile_snapshot_thumbnails
+    from media_proxy_routes import (
+        format_snapshot_posts,
+        proxy_media_urls,
+        proxy_profile_snapshot_thumbnails,
+    )
 except ImportError:
     def proxy_media_urls(urls, api_base=None):
         return list(urls or [])
 
     def proxy_profile_snapshot_thumbnails(snapshot):
         return snapshot
+
+    def format_snapshot_posts(profile, limit=9):
+        return []
 
 try:
     from lifecycle_email_engine import trigger_quota_hit
@@ -1697,6 +1704,7 @@ def compute_fit_with_ai_depth(creator, brand, user_id, cursor, conn, is_for_you_
                 'content_gaps': content_gaps,
                 'brands_already_tagged': brand_readiness.get('brands_already_tagged', []) if brand_readiness else [],
                 'recent_post_thumbnails': scraped_profile.get('recent_post_thumbnails', []) if scraped_profile else [],
+                'recent_posts': scraped_profile.get('recent_posts', []) if scraped_profile else [],
                 'recent_captions': scraped_profile.get('recent_captions', []) if scraped_profile else []
             }
 
@@ -1862,8 +1870,9 @@ def compute_fit_with_ai_depth(creator, brand, user_id, cursor, conn, is_for_you_
             'engagement_rate': creator_profile.get('engagement_rate', 0),
             # Proxy social CDN URLs — browsers block direct Instagram/imginn embeds (CORP)
             'recent_thumbnails': proxy_media_urls(
-                (creator_profile.get('recent_post_thumbnails') or [])[:3]
+                (creator_profile.get('recent_post_thumbnails') or [])[:9]
             ),
+            'recent_posts': format_snapshot_posts(creator_profile, limit=9),
             'content_themes': (creator_profile.get('content_themes') or [])[:3],
         }
 
@@ -4199,6 +4208,28 @@ def generate_pitch():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@pr_crm.route('/pitch-posts', methods=['GET'])
+def get_pitch_posts():
+    """Scraped posts with public URLs for the pitch best-work picker."""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute('SELECT user_id FROM creators WHERE id = %s', (creator_id,))
+        row = cursor.fetchone() or {}
+        posts = _live_pitch_posts(cursor, row.get('user_id'))
+        return jsonify({'success': True, 'recent_posts': posts})
+    except Exception as e:
+        print(f"[pitch-posts] {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
 @pr_crm.route('/pitch-location', methods=['POST'])
 def save_pitch_location():
     """Save city/country for the gifted-PR pitch (shipping destination)."""
@@ -4313,6 +4344,54 @@ def _location_response_fields(pitch):
         'needs_location': pitch.get('needs_location'),
         'product_name': pitch.get('product_name'),
     }
+
+
+def _live_pitch_posts(cursor, user_id):
+    """Public post URLs + thumbs for the pitch 'best work' picker."""
+    if not cursor or not user_id:
+        return []
+    try:
+        cursor.execute(
+            '''
+            SELECT handle, primary_platform, recent_posts, recent_post_thumbnails
+            FROM creator_profile_data
+            WHERE user_id = %s
+            ''',
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return []
+        return format_snapshot_posts(dict(row), limit=9)
+    except Exception as err:
+        print(f"[pitch] live posts lookup skipped: {err}")
+        try:
+            cursor.connection.rollback()
+        except Exception:
+            pass
+        return []
+
+
+def _hydrate_snapshot_posts(snapshot, cursor, user_id):
+    """Replace cached thumbs-only posts with live scrape URLs when possible."""
+    snapshot = dict(snapshot or {})
+    posts = _live_pitch_posts(cursor, user_id)
+    if posts:
+        snapshot['recent_posts'] = posts
+        return snapshot
+    if snapshot.get('recent_posts') or snapshot.get('handle'):
+        rebuilt = format_snapshot_posts(
+            {
+                'handle': snapshot.get('handle'),
+                'primary_platform': snapshot.get('platform'),
+                'platform': snapshot.get('platform'),
+                'recent_posts': snapshot.get('recent_posts') or [],
+            },
+            limit=9,
+        )
+        if rebuilt:
+            snapshot['recent_posts'] = rebuilt
+    return snapshot
 
 
 @pr_crm.route('/generate-pr-package', methods=['POST'])
@@ -4486,6 +4565,11 @@ def generate_pr_package():
                     if isinstance(stored_profile_snapshot, str):
                         stored_profile_snapshot = json.loads(stored_profile_snapshot) if stored_profile_snapshot else None
                     stored_profile_snapshot = proxy_profile_snapshot_thumbnails(stored_profile_snapshot)
+                    stored_profile_snapshot = _hydrate_snapshot_posts(
+                        stored_profile_snapshot,
+                        cursor,
+                        cached_creator.get('user_id'),
+                    )
 
                     stored_ugc_guide = existing.get('ugc_guide')
                     if isinstance(stored_ugc_guide, str):
@@ -5121,6 +5205,11 @@ def generate_pr_package_v2():
                         if isinstance(stored_profile_snapshot, str):
                             stored_profile_snapshot = json.loads(stored_profile_snapshot) if stored_profile_snapshot else None
                         stored_profile_snapshot = proxy_profile_snapshot_thumbnails(stored_profile_snapshot)
+                        stored_profile_snapshot = _hydrate_snapshot_posts(
+                            stored_profile_snapshot,
+                            cursor,
+                            user_id,
+                        )
 
                         stored_ugc_guide = existing.get('ugc_guide')
                         if isinstance(stored_ugc_guide, str):
