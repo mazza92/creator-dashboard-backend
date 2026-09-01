@@ -283,6 +283,12 @@ class CreatorProfileScraper:
             'ig_walled': bool(raw_scrape.get('_ig_walled')),
         }
 
+        try:
+            from media_proxy_routes import persist_profile_media
+            persist_profile_media(result)
+        except Exception as persist_err:
+            print(f"[Scrape] thumbnail persist skipped: {persist_err}")
+
         return result
 
     def _post_thumbnail_url(self, post: Dict, platform: str) -> str:

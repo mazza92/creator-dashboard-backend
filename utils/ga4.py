@@ -107,7 +107,7 @@ def _get_ga4_client():
 
 def get_traffic_data(bust_cache=False):
     """
-    Returns traffic data for the last 7 days vs previous 7 days.
+    Returns traffic data for the last 30 days.
     Raises on auth error - caller should catch and return empty state.
 
     Returns None if GA4 is not configured.
@@ -139,16 +139,17 @@ def get_traffic_data(bust_cache=False):
         print(f"[GA4] Failed to build API client: {e}")
         return None
 
+    last_30d = DateRange(start_date="30daysAgo", end_date="today")
+
     totals_request = RunReportRequest(
         property=f"properties/{property_id}",
-        date_ranges=[
-            DateRange(start_date="7daysAgo", end_date="today"),
-            DateRange(start_date="14daysAgo", end_date="8daysAgo"),
-        ],
+        date_ranges=[last_30d],
         metrics=[
             Metric(name="activeUsers"),
-            Metric(name="screenPageViews"),
+            Metric(name="newUsers"),
             Metric(name="sessions"),
+            Metric(name="engagementRate"),
+            Metric(name="engagedSessions"),
         ],
     )
 
@@ -167,32 +168,35 @@ def get_traffic_data(bust_cache=False):
         return None
 
     this_week = totals.rows[0].metric_values if totals.rows else None
-    last_week = totals.rows[1].metric_values if len(totals.rows) > 1 else None
 
     visitors_this  = int(this_week[0].value) if this_week else 0
-    pageviews_this = int(this_week[1].value) if this_week else 0
-    visitors_last  = int(last_week[0].value) if last_week else 0
-    pageviews_last = int(last_week[1].value) if last_week else 0
+    new_users_this = int(this_week[1].value) if this_week else 0
+    engagement_rate = round(float(this_week[3].value) * 100, 1) if this_week else 0
+    engaged_sessions = int(this_week[4].value) if this_week else 0
 
-    # ── REPORT 2: daily visitors for sparkline (last 7 days) ──────
+    # ── REPORT 2: daily visitors + new users for sparklines (last 30 days) ──
     daily_request = RunReportRequest(
         property=f"properties/{property_id}",
-        date_ranges=[DateRange(start_date="6daysAgo", end_date="today")],
+        date_ranges=[last_30d],
         dimensions=[Dimension(name="date")],
-        metrics=[Metric(name="activeUsers")],
+        metrics=[
+            Metric(name="activeUsers"),
+            Metric(name="newUsers"),
+        ],
         order_bys=[OrderBy(dimension=OrderBy.DimensionOrderBy(dimension_name="date"))]
     )
     daily = client.run_report(daily_request)
-    # Returns 7 values oldest→today
     daily_visitors = [int(r.metric_values[0].value) for r in daily.rows]
-    # Pad to 7 if fewer days returned
-    while len(daily_visitors) < 7:
+    daily_new_users = [int(r.metric_values[1].value) for r in daily.rows]
+    while len(daily_visitors) < 31:
         daily_visitors.insert(0, 0)
+    while len(daily_new_users) < 31:
+        daily_new_users.insert(0, 0)
 
     # ── REPORT 3: traffic sources ─────────────────────────────────
     sources_request = RunReportRequest(
         property=f"properties/{property_id}",
-        date_ranges=[DateRange(start_date="7daysAgo", end_date="today")],
+        date_ranges=[last_30d],
         dimensions=[Dimension(name="sessionDefaultChannelGroup")],
         metrics=[Metric(name="sessions")],
         order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="sessions"), desc=True)],
@@ -232,7 +236,7 @@ def get_traffic_data(bust_cache=False):
     # ── REPORT 4: top pages ───────────────────────────────────────
     pages_request = RunReportRequest(
         property=f"properties/{property_id}",
-        date_ranges=[DateRange(start_date="7daysAgo", end_date="today")],
+        date_ranges=[last_30d],
         dimensions=[Dimension(name="pagePath")],
         metrics=[Metric(name="screenPageViews")],
         order_bys=[OrderBy(metric=OrderBy.MetricOrderBy(metric_name="screenPageViews"), desc=True)],
@@ -259,10 +263,12 @@ def get_traffic_data(bust_cache=False):
 
     result = {
         "visitors_this_week": visitors_this,
-        "visitors_last_week": visitors_last,
-        "pageviews_this_week": pageviews_this,
-        "pageviews_last_week": pageviews_last,
+        "visitors_last_week": 0,
+        "new_users_this_week": new_users_this,
+        "engagement_rate": engagement_rate,
+        "engaged_sessions": engaged_sessions,
         "daily_visitors_7d": daily_visitors,   # for sparkline, oldest first
+        "daily_new_users": daily_new_users,
         "organic_pct": organic_pct,
         "sources": sources,
         "top_pages": top_pages,

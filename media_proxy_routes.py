@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import os
 import re
+import hashlib
 from io import BytesIO
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 from urllib.parse import quote, unquote, urlparse
 
 import requests
@@ -40,6 +41,63 @@ _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
+
+_PLACEHOLDER_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240">'
+    b'<rect fill="#F3F4F6" width="240" height="240"/>'
+    b'<circle cx="120" cy="120" r="28" fill="#E5E7EB"/>'
+    b'<polygon points="112,106 140,120 112,134" fill="#9CA3AF"/>'
+    b'</svg>'
+)
+
+
+def _cdn_headers(host: str) -> dict:
+    host = (host or "").lower()
+    referer = "https://www.instagram.com/"
+    origin = "https://www.instagram.com"
+    if "imginn.com" in host:
+        referer = "https://imginn.com/"
+        origin = "https://imginn.com"
+    elif any(
+        s in host
+        for s in (
+            "tiktok",
+            "byteoversea",
+            "muscdn",
+            "ibyteimg",
+            "ttlivecdn",
+            "ibytedtos",
+        )
+    ):
+        referer = "https://www.tiktok.com/"
+        origin = "https://www.tiktok.com"
+    return {
+        "User-Agent": _UA,
+        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": referer,
+        "Origin": origin,
+        "Sec-Fetch-Dest": "image",
+        "Sec-Fetch-Mode": "no-cors",
+        "Sec-Fetch-Site": "cross-site",
+    }
+
+
+def _fetch_cdn_bytes(url: str, timeout: int = 10) -> Optional[Tuple[bytes, str]]:
+    """Download a social CDN image. Signed TikTok/IG URLs only work while fresh."""
+    parsed = urlparse(url)
+    headers = _cdn_headers(parsed.netloc)
+    resp = requests.get(url, headers=headers, timeout=timeout)
+    if resp.status_code == 200 and resp.content:
+        content_type = resp.headers.get("Content-Type") or "image/jpeg"
+        return resp.content, content_type
+    print(f"[media-cdn] upstream {resp.status_code} for {url[:120]}")
+    return None
+
+
+def _already_hosted(url: str) -> bool:
+    raw = (url or "").lower()
+    return "supabase" in raw or "/storage/v1/object/public/" in raw
 
 
 def _host_allowed(host: str) -> bool:
@@ -119,8 +177,10 @@ def rehost_social_image(image_url: str, dest_prefix: str = "avatars") -> Optiona
     if not image_url or not str(image_url).startswith("http"):
         return None
     raw = image_url.strip().rstrip("\\")
-    if "supabase" in raw.lower() or "/storage/v1/object/public/" in raw:
+    if _already_hosted(raw):
         return raw
+    if not is_social_cdn_url(raw):
+        return None
 
     supabase_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
     supabase_key = os.getenv("SUPABASE_KEY") or ""
@@ -129,37 +189,10 @@ def rehost_social_image(image_url: str, dest_prefix: str = "avatars") -> Optiona
         return None
 
     try:
-        parsed = urlparse(raw)
-        host = (parsed.netloc or "").lower()
-        referer = "https://www.instagram.com/"
-        if "imginn.com" in host:
-            referer = "https://imginn.com/"
-        elif any(
-            s in host
-            for s in (
-                "tiktok",
-                "byteoversea",
-                "muscdn",
-                "ibyteimg",
-                "ttlivecdn",
-                "ibytedtos",
-            )
-        ):
-            referer = "https://www.tiktok.com/"
-
-        resp = requests.get(
-            raw,
-            headers={
-                "User-Agent": _UA,
-                "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-                "Referer": referer,
-            },
-            timeout=14,
-        )
-        if resp.status_code != 200 or not resp.content:
-            print(f"[avatar-rehost] upstream {resp.status_code} for {raw[:120]}")
+        fetched = _fetch_cdn_bytes(raw, timeout=10)
+        if not fetched:
             return None
-        content_type = resp.headers.get("Content-Type") or "image/jpeg"
+        content, content_type = fetched
         if "png" in content_type:
             ext = "png"
         elif "webp" in content_type:
@@ -168,10 +201,9 @@ def rehost_social_image(image_url: str, dest_prefix: str = "avatars") -> Optiona
             ext = "jpg"
             content_type = "image/jpeg"
 
-        import uuid as _uuid
-
         prefix = (dest_prefix or "avatars").strip("/")
-        filename = f"{prefix}/{_uuid.uuid4().hex[:16]}.{ext}"
+        stem = hashlib.sha1(urlparse(raw).path.encode("utf-8")).hexdigest()[:16]
+        filename = f"{prefix}/{stem}.{ext}"
         upload = requests.post(
             f"{supabase_url}/storage/v1/object/{bucket}/{filename}",
             headers={
@@ -179,7 +211,7 @@ def rehost_social_image(image_url: str, dest_prefix: str = "avatars") -> Optiona
                 "Content-Type": content_type,
                 "x-upsert": "true",
             },
-            data=resp.content,
+            data=content,
             timeout=20,
         )
         if upload.status_code not in (200, 201):
@@ -189,6 +221,51 @@ def rehost_social_image(image_url: str, dest_prefix: str = "avatars") -> Optiona
     except Exception as e:
         print(f"[avatar-rehost] failed: {e}")
         return None
+
+
+def persist_social_thumbnails(urls: Optional[Iterable[str]], dest_prefix: str = "thumbs") -> List[str]:
+    """Copy social CDN thumbs to Supabase so signed TikTok/IG URLs can expire."""
+    out: List[str] = []
+    for url in urls or []:
+        raw = str(url or "").strip()
+        if not raw:
+            continue
+        if _already_hosted(raw) or not is_social_cdn_url(raw):
+            out.append(raw)
+            continue
+        out.append(rehost_social_image(raw, dest_prefix=dest_prefix) or raw)
+    return out
+
+
+def persist_profile_media(profile: Optional[dict]) -> Optional[dict]:
+    """Rehost scrape thumbnails in-place. Safe to call on every scrape."""
+    if not profile or not isinstance(profile, dict):
+        return profile
+    handle = str(profile.get("handle") or "unknown").lstrip("@")[:40] or "unknown"
+    prefix = f"thumbs/{handle}"
+    mapping = {}
+
+    def persist_one(url):
+        raw = str(url or "").strip()
+        if not raw:
+            return raw
+        if raw in mapping:
+            return mapping[raw]
+        hosted = persist_social_thumbnails([raw], dest_prefix=prefix)
+        mapping[raw] = hosted[0] if hosted else raw
+        return mapping[raw]
+
+    thumbs = profile.get("recent_post_thumbnails")
+    if isinstance(thumbs, list) and thumbs:
+        profile["recent_post_thumbnails"] = [persist_one(u) for u in thumbs if u]
+
+    for post in profile.get("recent_posts") or []:
+        if not isinstance(post, dict):
+            continue
+        thumb = post.get("thumbnail_url") or post.get("displayUrl")
+        if thumb:
+            post["thumbnail_url"] = persist_one(thumb)
+    return profile
 
 
 def persist_social_avatar(image_url: str, dest_prefix: str = "avatars") -> str:
@@ -232,42 +309,18 @@ def proxy_media():
         abort(403, description="Domain not allowed")
 
     try:
-        parsed = urlparse(url)
-        host = (parsed.netloc or "").lower()
-        referer = "https://www.instagram.com/"
-        if "imginn.com" in host:
-            referer = "https://imginn.com/"
-        elif any(
-            s in host
-            for s in (
-                "tiktok",
-                "byteoversea",
-                "muscdn",
-                "ibyteimg",
-                "ttlivecdn",
-                "ibytedtos",
-            )
-        ):
-            referer = "https://www.tiktok.com/"
+        fetched = _fetch_cdn_bytes(url, timeout=12)
+        if not fetched:
+            # Expired/signed CDN URLs cannot be recovered here — show a tile, not a broken <img>
+            img_io = BytesIO(_PLACEHOLDER_SVG)
+            img_io.seek(0)
+            response = send_file(img_io, mimetype="image/svg+xml", max_age=120)
+            response.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+            response.headers["Cache-Control"] = "public, max-age=120"
+            return response
 
-        resp = requests.get(
-            url,
-            headers={
-                "User-Agent": _UA,
-                "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-                "Referer": referer,
-            },
-            timeout=12,
-            stream=True,
-        )
-        if resp.status_code != 200:
-            # Expired/signed CDN URLs are common — quiet 404, not a server fault
-            print(f"[media-proxy] upstream {resp.status_code} for {url[:120]}")
-            abort(404, description="Media not found")
-
-        content_type = resp.headers.get("Content-Type") or "image/jpeg"
+        content, content_type = fetched
         if not content_type.startswith("image/") and "octet-stream" not in content_type:
-            # Some CDNs omit type; sniff from URL
             if re.search(r"\.(png)(?:\?|$)", url, re.I):
                 content_type = "image/png"
             elif re.search(r"\.(webp)(?:\?|$)", url, re.I):
@@ -275,15 +328,12 @@ def proxy_media():
             else:
                 content_type = "image/jpeg"
 
-        # Cap size (~5MB) to avoid abuse
-        content = resp.content
         if len(content) > 5 * 1024 * 1024:
             abort(413, description="Media too large")
 
         img_io = BytesIO(content)
         img_io.seek(0)
         response = send_file(img_io, mimetype=content_type, max_age=86400)
-        # Allow embedding from app.newcollab.co / localhost
         response.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
         response.headers["Cache-Control"] = "public, max-age=86400"
         return response

@@ -2003,7 +2003,13 @@ def get_founder_dashboard():
             pack_stats['buyers_with_credits'] = int(cursor.fetchone()['count'] or 0)
 
         # ================== AT-LIMIT USERS (Hot Leads) ==================
-        # Free users with 0 remaining unlocks AND 0 paid pack credits
+        # Free users who used all 3 free unlocks this calendar month vs last month.
+        from services.unlock_quota import (
+            DELIVERED_THIS_MONTH_BY_CREATOR_SQL,
+            DELIVERED_LAST_MONTH_BY_CREATOR_SQL,
+            FREE_UNLOCK_LIMIT,
+        )
+
         at_limit_limit = min(int(request.args.get('at_limit_limit', 10)), 200)
         cursor.execute(f"""
             SELECT
@@ -2012,17 +2018,19 @@ def get_founder_dashboard():
                 c.username,
                 c.followers_count,
                 c.niche,
-                c.unlocks_remaining,
+                d.delivered as unlocks_used,
                 (
                     SELECT MAX(bu.unlocked_at)
                     FROM brand_unlocks bu
                     WHERE bu.creator_id = c.id
+                      AND bu.unlocked_at >= date_trunc('month', NOW())
+                      AND EXISTS (SELECT 1 FROM pr_brands pb WHERE pb.id = bu.brand_id)
                 ) as last_unlock_at
             FROM creators c
             JOIN users u ON c.user_id = u.id
+            JOIN ({DELIVERED_THIS_MONTH_BY_CREATOR_SQL}) d ON d.creator_id = c.id
             WHERE (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)
-            AND c.unlocks_remaining = 0
-            {pack_exhausted_sql}
+            AND d.delivered >= {FREE_UNLOCK_LIMIT}
             AND (c.last_any_email_sent IS NULL OR c.last_any_email_sent < NOW() - INTERVAL '48 hours')
             AND u.unsubscribed_at IS NULL
             ORDER BY last_unlock_at DESC NULLS LAST
@@ -2033,38 +2041,53 @@ def get_founder_dashboard():
             days_since = None
             if row['last_unlock_at']:
                 days_since = (datetime.now() - row['last_unlock_at']).days
+            unlocks_used = int(row['unlocks_used'] or FREE_UNLOCK_LIMIT)
             at_limit_users.append({
                 'creator_id': row['creator_id'],
                 'email': row['email'],
                 'username': row['username'],
                 'followers': row['followers_count'],
                 'niche': row['niche'],
-                'pitches_used': 3,  # They used all 3
+                'pitches_used': unlocks_used,
                 'hit_limit_at': row['last_unlock_at'].strftime('%b %d') if row['last_unlock_at'] else None,
                 'days_since_limit': days_since,
                 'needs_followup': days_since >= 3 if days_since is not None else True  # Nudge after 3 days
             })
 
-        # Count ALL free users at true paywall (0 free unlocks, 0 paid packs)
         cursor.execute(f"""
             SELECT COUNT(*) as count
             FROM creators c
             JOIN users u ON c.user_id = u.id
+            JOIN ({DELIVERED_THIS_MONTH_BY_CREATOR_SQL}) d ON d.creator_id = c.id
             WHERE (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)
-            AND c.unlocks_remaining = 0
-            {pack_exhausted_sql}
+            AND d.delivered >= {FREE_UNLOCK_LIMIT}
             AND u.unsubscribed_at IS NULL
         """)
-        at_limit_count = cursor.fetchone()['count']
+        at_limit_count = int(cursor.fetchone()['count'] or 0)
 
-        # Users near limit (1 unlock remaining)
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT COUNT(*) as count
             FROM creators c
+            JOIN users u ON c.user_id = u.id
+            JOIN ({DELIVERED_LAST_MONTH_BY_CREATOR_SQL}) d ON d.creator_id = c.id
             WHERE (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)
-            AND c.unlocks_remaining = 1
+            AND d.delivered >= {FREE_UNLOCK_LIMIT}
+            AND u.unsubscribed_at IS NULL
         """)
-        near_limit_count = cursor.fetchone()['count']
+        at_limit_last_month = int(cursor.fetchone()['count'] or 0)
+        at_limit_change = at_limit_count - at_limit_last_month
+
+        # Near limit: 2 of 3 free unlocks used this month
+        cursor.execute(f"""
+            SELECT COUNT(*) as count
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            JOIN ({DELIVERED_THIS_MONTH_BY_CREATOR_SQL}) d ON d.creator_id = c.id
+            WHERE (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)
+            AND d.delivered = {FREE_UNLOCK_LIMIT - 1}
+            AND u.unsubscribed_at IS NULL
+        """)
+        near_limit_count = int(cursor.fetchone()['count'] or 0)
 
         # ================== HEALTH METRICS (Dynamic Period) ==================
         # Sparkline data for signups, pitches, and active creators based on selected period
@@ -2185,7 +2208,15 @@ def get_founder_dashboard():
             SELECT COUNT(*) as count FROM creators
             WHERE created_at >= DATE_TRUNC('month', NOW())
         """)
-        signups_this_month = cursor.fetchone()['count']
+        signups_this_month = int(cursor.fetchone()['count'] or 0)
+
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM creators
+            WHERE created_at >= DATE_TRUNC('month', NOW()) - INTERVAL '1 month'
+              AND created_at < DATE_TRUNC('month', NOW())
+        """)
+        signups_last_month = int(cursor.fetchone()['count'] or 0)
+        signups_month_change = signups_this_month - signups_last_month
 
         cursor.execute("""
             SELECT COUNT(*) as count FROM brand_unlocks
@@ -2328,6 +2359,16 @@ def get_founder_dashboard():
         """)
         portfolio_built_7d = cursor.fetchone()['count']
 
+        # ================== ONBOARDING SURVEY ==================
+        onboarding_survey = None
+        try:
+            from services.onboarding_survey_insights import fetch_onboarding_survey_insights
+            onboarding_survey = fetch_onboarding_survey_insights(cursor)
+        except Exception as survey_err:
+            print(f"[survey] founder dashboard aggregation failed: {survey_err}")
+            from services.onboarding_survey_insights import empty_survey_insights
+            onboarding_survey = empty_survey_insights(error=str(survey_err))
+
         conn.close()
 
         # ================== TRAFFIC from GA4 ==================
@@ -2337,11 +2378,20 @@ def get_founder_dashboard():
             from utils.ga4 import get_traffic_data
             traffic_raw = get_traffic_data(bust_cache=bust_cache)
             if traffic_raw:
-                # Visitor → signup rate: combine GA4 visitors with DB signups
-                visitors = traffic_raw["visitors_this_week"]
+                # Match GA4's 30-day window so visitor → signup is apples-to-apples
+                conn = get_db_connection()
+                cursor = conn.cursor(cursor_factory=RealDictCursor)
+                cursor.execute("""
+                    SELECT COUNT(*) as count FROM creators
+                    WHERE created_at >= NOW() - INTERVAL '30 days'
+                """)
+                signups_last_30d = int(cursor.fetchone()['count'] or 0)
+                conn.close()
+
+                new_users = traffic_raw.get("new_users_this_week") or traffic_raw.get("visitors_this_week") or 0
                 visitor_signup_rate = round(
-                    (signups_this_period / visitors * 100), 1
-                ) if visitors else 0
+                    (signups_last_30d / new_users * 100), 1
+                ) if new_users else 0
 
                 import time as _time
                 fetched_at = traffic_raw.get("fetched_at") or int(_time.time())
@@ -2349,10 +2399,11 @@ def get_founder_dashboard():
                 traffic = {
                     **traffic_raw,
                     "visitor_signup_rate": visitor_signup_rate,
-                    "signups_this_week": signups_this_period,
+                    "signups_this_week": signups_last_30d,
                     "connected": True,
                     "cache_age_minutes": age_minutes,
                     "cache_ttl_minutes": 15,
+                    "range_days": 30,
                 }
         except Exception as e:
             print(f"[GA4] Error fetching traffic data: {e}")
@@ -2374,6 +2425,8 @@ def get_founder_dashboard():
             },
             'at_limit_users': at_limit_users,
             'at_limit_count': at_limit_count,
+            'at_limit_last_month': at_limit_last_month,
+            'at_limit_change': at_limit_change,
             'near_limit_count': near_limit_count,
             'top_brands': top_brands,
             'brands_by_category': brands_by_category,
@@ -2429,13 +2482,16 @@ def get_founder_dashboard():
             },
             'this_month': {
                 'signups': signups_this_month,
+                'signups_last_month': signups_last_month,
+                'signups_change': signups_month_change,
                 'total_signups': total_signups,
                 'pitches': pitches_this_month,
                 'unique_pitch_users': unique_pitch_users,
                 'pack_purchases': pack_stats['this_month']['purchases'],
                 'pack_revenue_cents': pack_stats['this_month']['revenue_cents'],
                 'pack_buyers': pack_stats['this_month']['buyers']
-            }
+            },
+            'onboarding_survey': onboarding_survey,
         }), 200
 
     except Exception as e:

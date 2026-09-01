@@ -4064,7 +4064,7 @@ def generate_pitch():
 
         # Get creator profile with collab count for tiered pitch generation
         cursor.execute('''
-            SELECT c.*, u.first_name, u.last_name, u.email,
+            SELECT c.*, u.first_name, u.last_name, u.email, u.country,
                    (SELECT COUNT(*) FROM creator_pipeline cp
                     WHERE cp.creator_id = c.id
                     AND cp.stage IN ('success', 'responded')) AS collab_count,
@@ -4103,178 +4103,38 @@ def generate_pitch():
                 days_since_pitched = pipeline_data.get('days_since') or 7
                 print(f"[generate_pitch] Follow-up context: days_since={days_since_pitched}, has_original={original_pitch is not None}")
 
+        if creator and not is_followup:
+            creator = _attach_scraped_engagement(dict(creator), cursor)
+
         cursor.close()
         conn.close()
 
         if not creator:
             return jsonify({'success': False, 'error': 'Creator not found'}), 404
 
-        # Generate pitch using Gemini LLM or Follow-up Template
+        # Generate pitch: irresistible gifted-PR template for first contact;
+        # follow-ups keep the existing AI/template path.
         if is_followup:
-            # Follow-ups use AI with template fallback (Pro feature)
             pitch = generate_followup_pitch(brand, creator, original_pitch, days_since_pitched)
             pitch_body = pitch.get('body', '')
             pitch_subject = pitch.get('subject', '')
             pitch_source = pitch.get('source', 'template_followup')
         else:
-            # Check if we should use v2 (feature flag or A/B test percentage)
-            import random
-            use_v2 = False
-            if HAS_GEMINI_V2:
-                if PITCH_ENGINE_V2_ENABLED:
-                    use_v2 = True
-                elif PITCH_ENGINE_V2_PERCENT > 0:
-                    use_v2 = random.randint(1, 100) <= PITCH_ENGINE_V2_PERCENT
-
-            # Initial pitches use Gemini LLM with template fallback
-            if use_v2 and HAS_GEMINI_V2:
-                # === PITCH ENGINE V2 ===
-                print(f"[generate_pitch] Using Gemini Pitch Engine V2")
-                gemini_v2 = get_generator_v2()
-
-                # Pre-generation validation with soft warning
-                is_valid, match_warning = validate_match(dict(brand), dict(creator))
-                if match_warning:
-                    print(f"[generate_pitch] Match warning: {match_warning}")
-
-                # Use pro model for Pro subscribers
-                use_pro_model = creator.get('subscription_tier') in ('pro', 'premium')
-
-                result = gemini_v2.generate(
-                    brand=dict(brand),
-                    creator=dict(creator),
-                    template_fallback_fn=generate_golden_template_pitch,
-                    use_pro_model=use_pro_model
-                )
-
-                if result.success:
-                    pitch_body = result.body or ''
-                    pitch_subject = result.subject or ''
-                    pitch_source = result.source  # 'gemini_v2' or 'template_fallback'
-
-                    # Log for analytics (variant performance tracking)
-                    try:
-                        analytics_payload = log_pitch_generation(
-                            creator_id=creator_id,
-                            brand_id=brand['id'],
-                            result=result,
-                            match_warning=match_warning
-                        )
-                        print(f"[generate_pitch] V2 analytics: {analytics_payload.get('opener_variant_id')}/{analytics_payload.get('close_variant_id')}/{analytics_payload.get('subject_variant_id')}")
-                    except Exception as log_err:
-                        print(f"[generate_pitch] Analytics log failed: {log_err}")
-
-                    # Strip any portfolio/URL lines the LLM snuck in
-                    import re as _re
-                    _PORTFOLIO_KW = ("http", "portfolio", "media kit", "find my", "check out my work")
-                    _clean_lines = [
-                        l for l in pitch_body.split('\n')
-                        if not any(kw in l.lower() for kw in _PORTFOLIO_KW)
-                    ]
-                    pitch_body = _re.sub(r'\n{3,}', '\n\n', '\n'.join(_clean_lines)).strip()
-
-                    # Inject portfolio kit link (same as v1)
-                    proof = build_pitch_proof(creator, creator_id=creator.get('id'), brand_id=brand.get('id'))
-                    if proof.get('plain_line'):
-                        portfolio_line = proof['plain_line']
-                        _paragraphs = pitch_body.split('\n\n')
-                        _last = _paragraphs[-1] if _paragraphs else ''
-                        _last_lines = [l for l in _last.split('\n') if l.strip()]
-                        _is_signoff = (
-                            len(_last_lines) <= 3
-                            and all(len(l) <= 40 for l in _last_lines)
-                            and len(_paragraphs) > 1
-                        )
-                        already = (
-                            (proof.get('url') and proof['url'] in pitch_body)
-                            or (proof.get('at_handle') and proof['at_handle'] in pitch_body)
-                            or 'newcollab.co/kit/' in pitch_body
-                        )
-                        if not already:
-                            if _is_signoff:
-                                pitch_body = '\n\n'.join(_paragraphs[:-1]) + f"\n\n{portfolio_line}\n\n" + _last
-                            else:
-                                pitch_body += f"\n\n{portfolio_line}"
-                    pitch_body = ensure_pitch_has_social_handle(pitch_body, creator, html=False)
-                else:
-                    # V2 failed completely - use template
-                    print(f"[generate_pitch] Gemini V2 failed: {result.error}")
-                    pitch = generate_golden_template_pitch(brand, creator)
-                    pitch_body = pitch.get('body', '')
-                    pitch_subject = pitch.get('subject', '')
-                    pitch_source = 'template_fallback'
-
-            elif HAS_GEMINI:
-                # === PITCH ENGINE V1 (legacy) ===
-                gemini = get_gemini_generator()
-                result = gemini.generate(
-                    brand=dict(brand),
-                    creator=dict(creator),
-                    template_fallback_fn=generate_golden_template_pitch
-                )
-
-                if result.success:
-                    pitch_body = result.body_plain or ''
-                    pitch_subject = result.subject or ''
-                    pitch_source = result.source  # 'gemini' or 'template_fallback'
-
-                    # Strip any portfolio/URL lines the LLM snuck in despite the prompt rule.
-                    # Split by line, drop any line containing portfolio-related keywords or URLs.
-                    import re as _re
-                    _PORTFOLIO_KW = ("http", "portfolio", "media kit", "find my", "check out my work")
-                    _clean_lines = [
-                        l for l in pitch_body.split('\n')
-                        if not any(kw in l.lower() for kw in _PORTFOLIO_KW)
-                    ]
-                    pitch_body = _re.sub(r'\n{3,}', '\n\n', '\n'.join(_clean_lines)).strip()
-
-                    # Inject portfolio kit link OR social handle/profile when no kit.
-                    # The sign-off is the last \n\n-separated paragraph (e.g. "Best,\nMahery").
-                    proof = build_pitch_proof(creator, creator_id=creator.get('id'), brand_id=brand.get('id'))
-                    if proof.get('kind') == 'kit' and proof.get('kit_token'):
-                        try:
-                            cursor.execute('''
-                                UPDATE creator_pipeline
-                                SET kit_token = COALESCE(kit_token, %s), updated_at = NOW()
-                                WHERE creator_id = %s AND brand_id = %s
-                            ''', (proof['kit_token'], creator.get('id'), brand.get('id')))
-                        except Exception as kit_err:
-                            print(f"[generate_pitch] kit_token store skipped: {kit_err}")
-
-                    if proof.get('plain_line'):
-                        portfolio_line = proof['plain_line']
-                        _paragraphs = pitch_body.split('\n\n')
-                        _last = _paragraphs[-1] if _paragraphs else ''
-                        _last_lines = [l for l in _last.split('\n') if l.strip()]
-                        _is_signoff = (
-                            len(_last_lines) <= 3
-                            and all(len(l) <= 40 for l in _last_lines)
-                            and len(_paragraphs) > 1
-                        )
-                        already = (
-                            (proof.get('url') and proof['url'] in pitch_body)
-                            or (proof.get('at_handle') and proof['at_handle'] in pitch_body)
-                            or 'newcollab.co/kit/' in pitch_body
-                        )
-                        if not already:
-                            if _is_signoff:
-                                pitch_body = '\n\n'.join(_paragraphs[:-1]) + f"\n\n{portfolio_line}\n\n" + _last
-                            else:
-                                pitch_body += f"\n\n{portfolio_line}"
-                    pitch_body = ensure_pitch_has_social_handle(pitch_body, creator, html=False)
-                else:
-                    # Gemini failed completely - use template
-                    print(f"[generate_pitch] Gemini failed: {result.error}")
-                    pitch = generate_golden_template_pitch(brand, creator)
-                    pitch_body = pitch.get('body', '')
-                    pitch_subject = pitch.get('subject', '')
-                    pitch_source = 'template_fallback'
-            else:
-                # Gemini not available - use template
-                pitch = generate_golden_template_pitch(brand, creator)
-                pitch_body = pitch.get('body', '')
-                pitch_subject = pitch.get('subject', '')
-                pitch_source = 'template'
+            from services.irresistible_pitch import generate_irresistible_pitch
+            pitch = generate_irresistible_pitch(
+                dict(brand),
+                dict(creator),
+                city=(data.get('city') or '').strip(),
+                country=(data.get('country') or '').strip(),
+                proof_builder=build_pitch_proof,
+            )
+            pitch_body = pitch.get('body', '')
+            pitch_subject = pitch.get('subject', '')
+            pitch_source = pitch.get('source', 'irresistible_v1')
+            print(
+                f"[generate_pitch] Irresistible v1 product={pitch.get('product_name')} "
+                f"location={pitch.get('location_display')} kit={bool(pitch.get('media_kit_url'))}"
+            )
 
         # Build response with normalized structure
         # Template returns 'body', Gemini returns body_plain
@@ -4284,6 +4144,16 @@ def generate_pitch():
             'body': pitch_body,
             'source': pitch_source,
         }
+
+        if pitch_source == 'irresistible_v1' and not is_followup:
+            pitch_response['creator_stats'] = pitch.get('creator_stats')
+            pitch_response['kit_published'] = pitch.get('kit_published')
+            pitch_response['media_kit_url'] = pitch.get('media_kit_url')
+            pitch_response['product_name'] = pitch.get('product_name')
+            pitch_response['shipping_city'] = pitch.get('shipping_city')
+            pitch_response['shipping_country'] = pitch.get('shipping_country')
+            pitch_response['location_display'] = pitch.get('location_display')
+            pitch_response['needs_location'] = pitch.get('needs_location')
 
         # Add template-specific fields if using template
         if pitch_source in ('template', 'template_fallback') and not is_followup:
@@ -4329,10 +4199,121 @@ def generate_pitch():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@pr_crm.route('/pitch-location', methods=['POST'])
+def save_pitch_location():
+    """Save city/country for the gifted-PR pitch (shipping destination)."""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    try:
+        payload = request.get_json() or {}
+        city = (payload.get('city') or '').strip()[:80]
+        country = (payload.get('country') or '').strip()[:80]
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("""
+            ALTER TABLE creators
+            ADD COLUMN IF NOT EXISTS shipping_address JSONB
+        """)
+        cursor.execute(
+            "SELECT shipping_address FROM creators WHERE id = %s",
+            (creator_id,),
+        )
+        row = cursor.fetchone() or {}
+        addr = row.get('shipping_address') or {}
+        if isinstance(addr, str):
+            try:
+                addr = json.loads(addr)
+            except Exception:
+                addr = {}
+        if not isinstance(addr, dict):
+            addr = {}
+        addr['city'] = city
+        addr['country'] = country
+        cursor.execute(
+            "UPDATE creators SET shipping_address = %s WHERE id = %s",
+            (json.dumps(addr), creator_id),
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        from services.irresistible_pitch import format_location
+        display = format_location(city, country)
+        return jsonify({
+            'success': True,
+            'city': city,
+            'country': country,
+            'location_display': display,
+            'needs_location': not city or not country,
+        })
+    except Exception as e:
+        print(f"Error in save_pitch_location: {e}")
+        if 'conn' in locals():
+            conn.close()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 # ============================================
 # PR PACKAGE GENERATION (NEW PIVOT)
 # Complete PR Package: 3 pitches + timing + content ideas + follow-ups + prediction
 # ============================================
+
+def _attach_scraped_engagement(creator, cursor):
+    """Fill scraped_engagement_rate from creator_profile_data when the row is empty."""
+    if not creator or not cursor:
+        return creator
+    from services.irresistible_pitch import resolve_engagement
+    if resolve_engagement(creator):
+        return creator
+    user_id = creator.get('user_id')
+    if not user_id:
+        return creator
+    try:
+        cursor.execute(
+            'SELECT engagement_rate FROM creator_profile_data WHERE user_id = %s',
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        rate = (row or {}).get('engagement_rate') if row else None
+        if rate not in (None, '', 0, '0') and float(rate) > 0:
+            creator['scraped_engagement_rate'] = rate
+    except Exception as err:
+        print(f"[pitch] scraped engagement lookup skipped: {err}")
+    return creator
+
+
+def _irresistible_pr_package_pitches(brand, creator, city='', country='', cursor=None):
+    """Fill PR-package pitch slots with the gifted-PR template (no Gemini rewrite)."""
+    from services.irresistible_pitch import generate_irresistible_pitch, irresistible_package_slots
+    creator = _attach_scraped_engagement(dict(creator or {}), cursor)
+    pitch = generate_irresistible_pitch(
+        dict(brand or {}),
+        creator,
+        city=city or '',
+        country=country or '',
+        proof_builder=build_pitch_proof,
+    )
+    print(
+        f"[generate-pr-package] Irresistible v1 product={pitch.get('product_name')} "
+        f"location={pitch.get('location_display')} engagement={pitch.get('engagement')}"
+    )
+    return pitch, irresistible_package_slots(pitch)
+
+
+def _location_response_fields(pitch):
+    if not pitch:
+        return {}
+    return {
+        'shipping_city': pitch.get('shipping_city') or '',
+        'shipping_country': pitch.get('shipping_country') or '',
+        'location_display': pitch.get('location_display'),
+        'needs_location': pitch.get('needs_location'),
+        'product_name': pitch.get('product_name'),
+    }
+
 
 @pr_crm.route('/generate-pr-package', methods=['POST'])
 def generate_pr_package():
@@ -4360,6 +4341,8 @@ def generate_pr_package():
     slug = data.get('slug')
     regenerate = data.get('regenerate', False)
     is_for_you_match = data.get('is_for_you_match', False)  # Ensures min "almost" status
+    city = (data.get('city') or '').strip()
+    country = (data.get('country') or '').strip()
 
     if not brand_id and not slug:
         return jsonify({'success': False, 'error': 'brand_id or slug required'}), 400
@@ -4408,14 +4391,55 @@ def generate_pr_package():
                 # Get creator for media kit / social proof
                 cursor.execute(
                     '''
-                    SELECT username, kit_published, social_links
-                    FROM creators WHERE id = %s
+                    SELECT c.*, u.first_name, u.last_name, u.email, u.country
+                    FROM creators c
+                    JOIN users u ON c.user_id = u.id
+                    WHERE c.id = %s
                     ''',
                     (creator_id,),
                 )
                 cached_creator = cursor.fetchone() or {}
                 proof = build_pitch_proof(cached_creator, creator_id=creator_id, brand_id=brand_id)
                 cached_media_kit_url = proof.get('url') if proof.get('kind') == 'kit' else None
+
+                irresistible_pitch, pitch_slots = _irresistible_pr_package_pitches(
+                    brand, cached_creator, city=city, country=country, cursor=cursor
+                )
+                existing = dict(existing)
+                existing.update(pitch_slots)
+                try:
+                    cursor.execute('''
+                        UPDATE pr_packages SET
+                            pitch_short_subject = %s,
+                            pitch_short_body_html = %s,
+                            pitch_short_body_plain = %s,
+                            pitch_growing_subject = %s,
+                            pitch_growing_body_html = %s,
+                            pitch_growing_body_plain = %s,
+                            pitch_founder_subject = %s,
+                            pitch_founder_body_html = %s,
+                            pitch_founder_body_plain = %s,
+                            generated_by = %s,
+                            generation_reasoning = %s
+                        WHERE creator_id = %s AND brand_id = %s
+                    ''', (
+                        pitch_slots['pitch_short_subject'],
+                        pitch_slots['pitch_short_body_html'],
+                        pitch_slots['pitch_short_body_plain'],
+                        pitch_slots['pitch_growing_subject'],
+                        pitch_slots['pitch_growing_body_html'],
+                        pitch_slots['pitch_growing_body_plain'],
+                        pitch_slots['pitch_founder_subject'],
+                        pitch_slots['pitch_founder_body_html'],
+                        pitch_slots['pitch_founder_body_plain'],
+                        'irresistible_v1',
+                        'irresistible_v1',
+                        creator_id,
+                        brand_id,
+                    ))
+                    conn.commit()
+                except Exception as rewrite_err:
+                    print(f"[generate-pr-package CACHED] Pitch rewrite skipped: {rewrite_err}")
 
                 if proof.get('kind') == 'kit' and proof.get('kit_token'):
                     cursor.execute('''
@@ -4429,10 +4453,6 @@ def generate_pr_package():
 
                 # Return cached package
                 package_data = _format_pr_package_response(dict(existing), dict(brand))
-
-                # Inject kit or social proof into cached pitch bodies when missing
-                if proof.get('kind') and proof.get('plain_line'):
-                    _inject_pitch_proof(package_data, proof)
 
                 # Use stored AI coaching data from pr_packages (for consistency on revisit)
                 brand_name = brand.get('brand_name') or brand.get('name', 'Brand')
@@ -4520,6 +4540,7 @@ def generate_pr_package():
                         'total_unlocks': 1,
                         'fast_mode': False,
                         **unlock_fields,
+                        **_location_response_fields(irresistible_pitch),
                     })
 
                 else:
@@ -4609,11 +4630,12 @@ def generate_pr_package():
                         'total_unlocks': 1,
                         'fast_mode': False,
                         **unlock_fields,
+                        **_location_response_fields(irresistible_pitch),
                     })
 
         # Get creator data
         cursor.execute('''
-            SELECT c.*, u.first_name, u.last_name, u.email
+            SELECT c.*, u.first_name, u.last_name, u.email, u.country
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.id = %s
@@ -4654,84 +4676,44 @@ def generate_pr_package():
         ai_depth_future = executor.submit(run_ai_depth_async)
 
         # ============================================
-        # V2 PITCH GENERATION (single source of truth)
-        # One pitch for preview + send. No more 3 variants.
+        # IRRESISTIBLE PITCH (single source of truth)
+        # Proven gifted-PR template. No Gemini rewrite.
         # ============================================
-        if HAS_GEMINI_V2:
-            print("[generate-pr-package] Using V2 pitch generator")
-            generator_v2 = get_generator_v2()
-            v2_result = generator_v2.generate(
-                brand_dict,
-                creator_dict,
-                template_fallback_fn=generate_golden_template_pitch,
-            )
+        irresistible_pitch, pitch_slots = _irresistible_pr_package_pitches(
+            brand_dict, creator_dict, city=city, country=country, cursor=cursor
+        )
+        pitch_subject = irresistible_pitch.get('subject') or ''
+        pitch_body_plain = irresistible_pitch.get('body') or ''
+        pitch_body_html = pitch_slots['pitch_growing_body_html']
 
-            if not v2_result.success:
-                conn.close()
-                return jsonify({'success': False, 'error': v2_result.error or 'Generation failed'}), 500
-
-            # V2 returns single pitch - populate all 3 variant slots for backward compatibility
-            pitch_subject = v2_result.subject
-            pitch_body_plain = v2_result.body
-
-            # NOTE: Portfolio URL injection removed - creator's social handle in sig is the portfolio
-            # This improves deliverability and removes automated-looking patterns
-
-            # Convert plain text to HTML (preserve paragraph breaks)
-            pitch_body_html = '<p>' + '</p><p>'.join(
-                line for line in pitch_body_plain.split('\n\n') if line.strip()
-            ) + '</p>'
-
-            # Build package dict matching old format
-            package = {
-                'pitch_short_subject': pitch_subject,
-                'pitch_short_body_html': pitch_body_html,
-                'pitch_short_body_plain': pitch_body_plain,
-                'pitch_growing_subject': pitch_subject,
-                'pitch_growing_body_html': pitch_body_html,
-                'pitch_growing_body_plain': pitch_body_plain,
-                'pitch_founder_subject': pitch_subject,
-                'pitch_founder_body_html': pitch_body_html,
-                'pitch_founder_body_plain': pitch_body_plain,
-                # Deterministic timing (keep existing logic)
-                'optimal_send_day': 'Tuesday',
-                'optimal_send_time_range': '2-5pm ET',
-                'timing_sample_size': 0,
-                'timing_uplift_multiplier': 1.0,
-                # Empty content ideas/follow-ups (V2 focuses on pitch only)
-                'content_ideas': [],
-                'followup_day3_subject': '',
-                'followup_day3_body': '',
-                'followup_day8_subject': '',
-                'followup_day8_body': '',
-                'followup_day14_subject': '',
-                'followup_day14_body': '',
-                'reply_rate_brand_avg': None,
-                'reply_rate_personalized': None,
-                'reply_rate_confidence': None,
-                'generation_reasoning': f'V2 variants: G{v2_result.variant_ids.greeting_id}/O{v2_result.variant_ids.opener_id}/C{v2_result.variant_ids.close_id}/S{v2_result.variant_ids.subject_id}' if v2_result.variant_ids else 'V2',
-            }
-            result_source = 'gemini_v2'
-            result_scrub_failures = 0
-        else:
-            # Fallback to old generator if V2 not available
-            from services.pr_package_generator import get_pr_package_generator
-            print("[generate-pr-package] Falling back to legacy PR Package generator")
-            generator = get_pr_package_generator()
-            result = generator.generate(
-                creator=creator_dict,
-                brand=brand_dict,
-                cursor=cursor,
-                max_attempts=2
-            )
-
-            if not result.success:
-                conn.close()
-                return jsonify({'success': False, 'error': result.error or 'Generation failed'}), 500
-
-            package = result.package
-            result_source = result.source
-            result_scrub_failures = result.scrub_failures
+        package = {
+            'pitch_short_subject': pitch_subject,
+            'pitch_short_body_html': pitch_body_html,
+            'pitch_short_body_plain': pitch_body_plain,
+            'pitch_growing_subject': pitch_subject,
+            'pitch_growing_body_html': pitch_body_html,
+            'pitch_growing_body_plain': pitch_body_plain,
+            'pitch_founder_subject': pitch_subject,
+            'pitch_founder_body_html': pitch_body_html,
+            'pitch_founder_body_plain': pitch_body_plain,
+            'optimal_send_day': 'Tuesday',
+            'optimal_send_time_range': '2-5pm ET',
+            'timing_sample_size': 0,
+            'timing_uplift_multiplier': 1.0,
+            'content_ideas': [],
+            'followup_day3_subject': '',
+            'followup_day3_body': '',
+            'followup_day8_subject': '',
+            'followup_day8_body': '',
+            'followup_day14_subject': '',
+            'followup_day14_body': '',
+            'reply_rate_brand_avg': None,
+            'reply_rate_personalized': None,
+            'reply_rate_confidence': None,
+            'generation_reasoning': 'irresistible_v1',
+        }
+        result_source = 'irresistible_v1'
+        result_scrub_failures = 0
 
         # Replace {{PORTFOLIO_LINK}} with media kit URL, or social handle/profile when no kit
         proof = build_pitch_proof(creator, creator_id=creator_id, brand_id=brand_id)
@@ -4969,6 +4951,7 @@ def generate_pr_package():
             'profile_snapshot': fit_result.get('profile_snapshot'),
             'total_unlocks': 1,
             'fast_mode': False,
+            **_location_response_fields(irresistible_pitch),
         })
 
     except Exception as e:
@@ -5298,74 +5281,45 @@ def generate_pr_package_v2():
 
             # Not cached — generate a new pack
 
-            # STEP 2: PITCH WRITTEN (V2 Gemini generation)
-            # Single pitch - same one shown in preview and sent
+            # STEP 2: IRRESISTIBLE PITCH (no Gemini rewrite)
             # ========================================
-            if HAS_GEMINI_V2:
-                print("[generate-pr-package-v2] Using V2 pitch generator")
-                generator_v2 = get_generator_v2()
-                v2_result = generator_v2.generate(
-                    dict(brand),
-                    dict(creator),
-                    template_fallback_fn=generate_golden_template_pitch,
-                )
+            irresistible_pitch, pitch_slots = _irresistible_pr_package_pitches(
+                dict(brand), dict(creator),
+                city=(data.get('city') or '').strip(),
+                country=(data.get('country') or '').strip(),
+                cursor=cursor,
+            )
+            pitch_subject = irresistible_pitch.get('subject') or ''
+            pitch_body_plain = irresistible_pitch.get('body') or ''
+            pitch_body_html = pitch_slots['pitch_growing_body_html']
 
-                if not v2_result.success:
-                    yield send_event('error', {'error': v2_result.error or 'Generation failed'})
-                    return
-
-                # V2 returns single pitch - populate all variant slots
-                pitch_subject = v2_result.subject
-                pitch_body_plain = v2_result.body
-                pitch_body_html = '<p>' + '</p><p>'.join(
-                    line for line in pitch_body_plain.split('\n\n') if line.strip()
-                ) + '</p>'
-
-                package = {
-                    'pitch_short_subject': pitch_subject,
-                    'pitch_short_body_html': pitch_body_html,
-                    'pitch_short_body_plain': pitch_body_plain,
-                    'pitch_growing_subject': pitch_subject,
-                    'pitch_growing_body_html': pitch_body_html,
-                    'pitch_growing_body_plain': pitch_body_plain,
-                    'pitch_founder_subject': pitch_subject,
-                    'pitch_founder_body_html': pitch_body_html,
-                    'pitch_founder_body_plain': pitch_body_plain,
-                    'optimal_send_day': 'Tuesday',
-                    'optimal_send_time_range': '2-5pm ET',
-                    'timing_sample_size': 0,
-                    'timing_uplift_multiplier': 1.0,
-                    'content_ideas': [],
-                    'followup_day3_subject': '',
-                    'followup_day3_body': '',
-                    'followup_day8_subject': '',
-                    'followup_day8_body': '',
-                    'followup_day14_subject': '',
-                    'followup_day14_body': '',
-                    'reply_rate_brand_avg': None,
-                    'reply_rate_personalized': None,
-                    'reply_rate_confidence': None,
-                    'generation_reasoning': f'V2 variants: G{v2_result.variant_ids.greeting_id}/O{v2_result.variant_ids.opener_id}/C{v2_result.variant_ids.close_id}/S{v2_result.variant_ids.subject_id}' if v2_result.variant_ids else 'V2',
-                }
-                result_source = 'gemini_v2'
-            else:
-                # Fallback to legacy generator
-                from services.pr_package_generator import get_pr_package_generator
-                print("[generate-pr-package-v2] Falling back to legacy PR Package generator")
-                generator = get_pr_package_generator()
-                result = generator.generate(
-                    creator=dict(creator),
-                    brand=dict(brand),
-                    cursor=cursor,
-                    max_attempts=2
-                )
-
-                if not result.success:
-                    yield send_event('error', {'error': result.error or 'Generation failed'})
-                    return
-
-                package = result.package
-                result_source = result.source
+            package = {
+                'pitch_short_subject': pitch_subject,
+                'pitch_short_body_html': pitch_body_html,
+                'pitch_short_body_plain': pitch_body_plain,
+                'pitch_growing_subject': pitch_subject,
+                'pitch_growing_body_html': pitch_body_html,
+                'pitch_growing_body_plain': pitch_body_plain,
+                'pitch_founder_subject': pitch_subject,
+                'pitch_founder_body_html': pitch_body_html,
+                'pitch_founder_body_plain': pitch_body_plain,
+                'optimal_send_day': 'Tuesday',
+                'optimal_send_time_range': '2-5pm ET',
+                'timing_sample_size': 0,
+                'timing_uplift_multiplier': 1.0,
+                'content_ideas': [],
+                'followup_day3_subject': '',
+                'followup_day3_body': '',
+                'followup_day8_subject': '',
+                'followup_day8_body': '',
+                'followup_day14_subject': '',
+                'followup_day14_body': '',
+                'reply_rate_brand_avg': None,
+                'reply_rate_personalized': None,
+                'reply_rate_confidence': None,
+                'generation_reasoning': 'irresistible_v1',
+            }
+            result_source = 'irresistible_v1'
 
             yield send_event('pitch_written', {
                 'cached': False,

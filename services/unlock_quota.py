@@ -29,6 +29,69 @@ ALREADY_DELIVERED_SQL = '''
     LIMIT 1
 '''
 
+# Distinct PR brands ever delivered (admin hot-lead / at-limit metrics).
+DELIVERED_ALL_TIME_BY_CREATOR_SQL = '''
+    SELECT creator_id, COUNT(*) AS delivered FROM (
+        SELECT bu.creator_id, bu.brand_id
+        FROM brand_unlocks bu
+        WHERE EXISTS (SELECT 1 FROM pr_brands pb WHERE pb.id = bu.brand_id)
+        UNION
+        SELECT pp.creator_id, pp.brand_id
+        FROM pr_packages pp
+        WHERE pp.generated_at IS NOT NULL
+    ) delivered
+    GROUP BY creator_id
+'''
+
+DELIVERED_ALL_TIME_COUNT_SQL = '''
+    SELECT COUNT(*) AS n FROM (
+        SELECT bu.brand_id
+        FROM brand_unlocks bu
+        WHERE bu.creator_id = %s
+          AND EXISTS (SELECT 1 FROM pr_brands pb WHERE pb.id = bu.brand_id)
+        UNION
+        SELECT pp.brand_id
+        FROM pr_packages pp
+        WHERE pp.creator_id = %s
+          AND pp.generated_at IS NOT NULL
+    ) delivered
+'''
+
+# Founder-report at-limit: distinct PR brands delivered in the current calendar month.
+DELIVERED_THIS_MONTH_BY_CREATOR_SQL = '''
+    SELECT creator_id, COUNT(*) AS delivered FROM (
+        SELECT bu.creator_id, bu.brand_id
+        FROM brand_unlocks bu
+        WHERE bu.unlocked_at >= date_trunc('month', NOW())
+          AND bu.unlocked_at < date_trunc('month', NOW()) + interval '1 month'
+          AND EXISTS (SELECT 1 FROM pr_brands pb WHERE pb.id = bu.brand_id)
+        UNION
+        SELECT pp.creator_id, pp.brand_id
+        FROM pr_packages pp
+        WHERE pp.generated_at IS NOT NULL
+          AND pp.generated_at >= date_trunc('month', NOW())
+          AND pp.generated_at < date_trunc('month', NOW()) + interval '1 month'
+    ) delivered
+    GROUP BY creator_id
+'''
+
+DELIVERED_LAST_MONTH_BY_CREATOR_SQL = '''
+    SELECT creator_id, COUNT(*) AS delivered FROM (
+        SELECT bu.creator_id, bu.brand_id
+        FROM brand_unlocks bu
+        WHERE bu.unlocked_at >= date_trunc('month', NOW()) - interval '1 month'
+          AND bu.unlocked_at < date_trunc('month', NOW())
+          AND EXISTS (SELECT 1 FROM pr_brands pb WHERE pb.id = bu.brand_id)
+        UNION
+        SELECT pp.creator_id, pp.brand_id
+        FROM pr_packages pp
+        WHERE pp.generated_at IS NOT NULL
+          AND pp.generated_at >= date_trunc('month', NOW()) - interval '1 month'
+          AND pp.generated_at < date_trunc('month', NOW())
+    ) delivered
+    GROUP BY creator_id
+'''
+
 
 def usage_from_delivered(delivered, pack_credits=0):
     """used / free remaining / total remaining for the quota bar."""
@@ -36,6 +99,15 @@ def usage_from_delivered(delivered, pack_credits=0):
     remaining_free = max(0, FREE_UNLOCK_LIMIT - used)
     remaining = remaining_free + max(0, int(pack_credits or 0))
     return used, remaining_free, remaining
+
+
+def count_delivered_unlocks_all_time(cursor, creator_id):
+    """Distinct PR brands ever delivered for one creator."""
+    cursor.execute(DELIVERED_ALL_TIME_COUNT_SQL, (creator_id, creator_id))
+    row = cursor.fetchone() or {}
+    if isinstance(row, dict):
+        return int(row.get('n') or 0)
+    return int(row[0] if row else 0)
 
 
 def count_delivered_unlocks_this_month(cursor, creator_id):

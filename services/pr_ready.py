@@ -1548,6 +1548,11 @@ def enrich_scrape_posts_via_embeds(scrape: Dict, *, max_posts: int = 9) -> int:
         thumbs = [p.get("thumbnail_url") for p in recent if p.get("thumbnail_url")]
         if thumbs:
             scrape["recent_post_thumbnails"] = thumbs
+            try:
+                from media_proxy_routes import persist_profile_media
+                persist_profile_media(scrape)
+            except Exception as persist_err:
+                print(f"[pr-ready] thumbnail persist skipped: {persist_err}")
         print(f"[pr-ready] embed-enriched engagement/thumbs on {updated} posts")
     return updated
 
@@ -1610,6 +1615,11 @@ def recover_engagement_from_user_feed(scrape: Dict, *, limit: int = 9) -> int:
         thumbs = [p["thumbnail_url"] for p in recent if p.get("thumbnail_url")]
         if thumbs:
             scrape["recent_post_thumbnails"] = thumbs
+            try:
+                from media_proxy_routes import persist_profile_media
+                persist_profile_media(scrape)
+            except Exception as persist_err:
+                print(f"[pr-ready] feed-recover persist skipped: {persist_err}")
         print(f"[pr-ready] recovered engagement from user_feed ({len(recent)} posts)")
         return len(recent)
     except Exception as e:

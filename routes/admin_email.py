@@ -66,13 +66,15 @@ DEFAULT_FOLLOWUP_COOLDOWN_HOURS = 96  # 4 days between follow-ups unless overrid
 
 
 def _free_at_unlock_limit_sql(conn):
-    """Same definition as founder-dashboard at-limit: free, 0 unlocks, no pack credits."""
-    from services.pack_credits import pack_credits_column_exists
-    pack_sql = " AND COALESCE(c.pack_credits, 0) = 0" if pack_credits_column_exists(conn) else ""
+    """Same definition as founder-dashboard at-limit: free, all 3 free unlocks used this month."""
+    from services.unlock_quota import DELIVERED_THIS_MONTH_BY_CREATOR_SQL, FREE_UNLOCK_LIMIT
     return (
         " AND (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)"
-        " AND c.unlocks_remaining = 0"
-        f"{pack_sql}"
+        f" AND EXISTS ("
+        f"   SELECT 1 FROM ({DELIVERED_THIS_MONTH_BY_CREATOR_SQL}) delivered"
+        f"   WHERE delivered.creator_id = c.id"
+        f"   AND delivered.delivered >= {FREE_UNLOCK_LIMIT}"
+        f" )"
     )
 
 
