@@ -2291,6 +2291,204 @@ def check_social_handle():
 
 
 # ============================================================================
+# ONBOARDING SURVEY — segment / intent / pain (stored on creators.onboarding_survey)
+# ============================================================================
+
+ONBOARDING_SURVEY_VERSION = 1
+VALID_SURVEY_SEGMENTS = frozenset({
+    'just_starting', 'early_stage', 'growing', 'established', 'is_brand',
+})
+VALID_SURVEY_INTENTS = frozenset({
+    'gifted_pr', 'paid_ugc', 'retainer', 'simple_portfolio', 'discovery',
+    'sell_organic', 'learn', 'other',
+})
+VALID_SURVEY_PAINS = frozenset({
+    'no_replies', 'writing_pitches', 'finding_brands', 'no_portfolio',
+    'pricing', 'content_ideas', 'low_views', 'other',
+})
+
+
+def _ensure_onboarding_survey_column(cursor):
+    """Idempotent for environments that have not run the migration yet."""
+    cursor.execute("""
+        ALTER TABLE creators
+        ADD COLUMN IF NOT EXISTS onboarding_survey JSONB NOT NULL DEFAULT '{}'::jsonb
+    """)
+
+
+def _parse_onboarding_survey(raw):
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _get_or_create_creator_for_survey(cursor, user_id):
+    cursor.execute(
+        "SELECT id, onboarding_survey FROM creators WHERE user_id = %s",
+        (user_id,),
+    )
+    row = cursor.fetchone()
+    if row:
+        return row['id'], _parse_onboarding_survey(row.get('onboarding_survey'))
+
+    cursor.execute("SELECT email FROM users WHERE id = %s", (user_id,))
+    user_row = cursor.fetchone()
+    if not user_row:
+        return None, {}
+
+    temp_username = (user_row.get('email') or 'creator').split('@')[0][:50]
+    cursor.execute(
+        """
+        INSERT INTO creators (user_id, username)
+        VALUES (%s, %s)
+        RETURNING id
+        """,
+        (user_id, temp_username),
+    )
+    return cursor.fetchone()['id'], {}
+
+
+def _merge_onboarding_survey(existing, patch):
+    merged = dict(existing or {})
+    merged['version'] = ONBOARDING_SURVEY_VERSION
+
+    if 'segment' in patch:
+        seg = (patch.get('segment') or '').strip()
+        merged['segment'] = seg if seg in VALID_SURVEY_SEGMENTS else None
+
+    if 'intent' in patch:
+        intent = [v for v in (patch.get('intent') or []) if v in VALID_SURVEY_INTENTS]
+        merged['intent'] = intent[:3]
+
+    if 'intent_other' in patch:
+        merged['intent_other'] = (patch.get('intent_other') or '').strip()[:500]
+
+    if 'pain' in patch:
+        pain = [v for v in (patch.get('pain') or []) if v in VALID_SURVEY_PAINS]
+        merged['pain'] = pain[:3]
+
+    if 'pain_other' in patch:
+        merged['pain_other'] = (patch.get('pain_other') or '').strip()[:500]
+
+    if patch.get('skipped'):
+        merged['skipped'] = True
+        merged['skipped_at'] = datetime.datetime.utcnow().isoformat() + 'Z'
+        if patch.get('skipped_at_step'):
+            merged['skipped_at_step'] = int(patch['skipped_at_step'])
+
+    if patch.get('complete'):
+        merged['completed_at'] = datetime.datetime.utcnow().isoformat() + 'Z'
+        merged['skipped'] = False
+
+    return merged
+
+
+@app.route('/api/user/onboarding/survey', methods=['GET', 'POST', 'OPTIONS'])
+def onboarding_survey():
+    if request.method == 'OPTIONS':
+        return _cors_options_response()
+
+    if request.method == 'GET':
+        try:
+            user_id = session.get('user_id')
+            if not user_id:
+                return jsonify({'error': 'Not authenticated'}), 401
+
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            _ensure_onboarding_survey_column(cursor)
+            conn.commit()
+
+            cursor.execute(
+                """
+                SELECT c.onboarding_survey, u.first_name
+                FROM creators c
+                RIGHT JOIN users u ON u.id = c.user_id
+                WHERE u.id = %s
+                """,
+                (user_id,),
+            )
+            row = cursor.fetchone() or {}
+            survey = _parse_onboarding_survey(row.get('onboarding_survey'))
+            conn.close()
+
+            completed = bool(survey.get('completed_at'))
+            skipped = bool(survey.get('skipped'))
+            return jsonify({
+                'survey': survey,
+                'completed': completed,
+                'skipped': skipped,
+                'done': completed or skipped,
+                'first_name': row.get('first_name') or '',
+            }), 200
+        except Exception as e:
+            app.logger.error(f"Error loading onboarding survey: {e}")
+            if 'conn' in locals():
+                conn.close()
+            return jsonify({'error': str(e)}), 500
+
+    try:
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({'error': 'Not authenticated'}), 401
+
+        data = request.get_json() or {}
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        _ensure_onboarding_survey_column(cursor)
+
+        creator_id, existing = _get_or_create_creator_for_survey(cursor, user_id)
+        if not creator_id:
+            conn.close()
+            return jsonify({'error': 'User not found'}), 404
+
+        merged = _merge_onboarding_survey(existing, data)
+        cursor.execute(
+            "UPDATE creators SET onboarding_survey = %s WHERE id = %s",
+            (json.dumps(merged), creator_id),
+        )
+        conn.commit()
+
+        session['creator_id'] = creator_id
+        session.modified = True
+
+        cursor.execute("SELECT first_name FROM users WHERE id = %s", (user_id,))
+        user_row = cursor.fetchone()
+        conn.close()
+
+        return jsonify({
+            'ok': True,
+            'survey': merged,
+            'completed': bool(merged.get('completed_at')),
+            'skipped': bool(merged.get('skipped')),
+            'first_name': (user_row or {}).get('first_name') or '',
+        }), 200
+    except Exception as e:
+        app.logger.error(f"Error saving onboarding survey: {e}")
+        if 'conn' in locals():
+            conn.rollback()
+            conn.close()
+        return jsonify({'error': str(e)}), 500
+
+
+def _cors_options_response():
+    response = jsonify({'success': True})
+    response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    response.headers['Access-Control-Allow-Credentials'] = 'true'
+    return response, 200
+
+
+# ============================================================================
 # V4 ONBOARDING - Streamlined 2-step flow (replaces old 3-step)
 # ============================================================================
 
