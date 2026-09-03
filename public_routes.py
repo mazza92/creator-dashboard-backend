@@ -239,6 +239,8 @@ def _format_public_brand_list_item(b):
         },
         # New fields for quick wins
         'estimatedValue': estimated_value,
+        'heroProduct': b.get('hero_product'),
+        'collaborationType': b.get('collaboration_type') or 'gifted',
         'recentReplies': recent_replies,
     }
 
@@ -265,6 +267,8 @@ INDEXNOW_API_URL = 'https://api.indexnow.org/indexnow'
 # CORS Configuration for Public Routes
 ALLOWED_ORIGINS = [
     'http://localhost:3000',
+    'http://localhost:3001',
+    'https://app.newcollab.co',
     'https://newcollab.co',
     'https://www.newcollab.co',
     'https://api.newcollab.co'
@@ -277,7 +281,7 @@ def add_cors_headers(response):
     if origin in ALLOWED_ORIGINS:
         response.headers['Access-Control-Allow-Origin'] = origin
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-CSRF-Token, Accept, X-Admin-Token'
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         response.headers['Access-Control-Max-Age'] = '3600'
     if request.method == 'GET' and (request.path or '').startswith('/api/public/brands'):
@@ -362,6 +366,7 @@ def get_public_brands():
         activity = request.args.get('activity')  # 'new', 'active', 'responsive'
         contact_type = request.args.get('contact_type')  # 'application', 'email'
         region = request.args.get('region')  # 'Australia', 'US', 'UK', 'Canada', etc.
+        micro_friendly = str(request.args.get('micro_friendly') or '').lower() in ('1', 'true', 'yes')
         slug = request.args.get('slug')  # Exact slug match for fetching specific brand
         # Soft sort only (Discover): user-selected niches first — does not filter the feed
         prefer_niches = []
@@ -420,6 +425,9 @@ def get_public_brands():
                 b.avg_response_time_days,
                 b.is_featured,
                 b.has_application_form,
+                b.collaboration_type,
+                b.avg_product_value,
+                b.hero_product,
                 b.created_at,
                 CASE WHEN b.application_form_url IS NOT NULL THEN TRUE ELSE FALSE END as has_direct_link,
                 CASE WHEN b.contact_email IS NOT NULL THEN TRUE ELSE FALSE END as has_email_contact,
@@ -476,10 +484,18 @@ def get_public_brands():
             # Has a contact email
             query += " AND b.contact_email IS NOT NULL"
 
-        # Region filter (JSONB array contains)
+        if micro_friendly:
+            query += " AND COALESCE(b.micro_friendly, FALSE) = TRUE"
+
+        # Region filter (JSONB array contains). US matches common stored labels.
         if region:
-            query += " AND b.regions @> %s::jsonb"
-            params.append(f'["{region}"]')
+            region_aliases = {
+                'US': ['US', 'USA', 'United States', 'worldwide', 'Worldwide'],
+                'USA': ['US', 'USA', 'United States', 'worldwide', 'Worldwide'],
+            }
+            aliases = region_aliases.get(region, [region])
+            query += " AND (" + " OR ".join(["b.regions @> %s::jsonb"] * len(aliases)) + ")"
+            params.extend([f'["{alias}"]' for alias in aliases])
 
         # Order: prefer user niches (Discover soft sort), then featured / recency
         if activity == 'new':
@@ -560,10 +576,18 @@ def get_public_brands():
         elif contact_type == 'email':
             count_query += " AND contact_email IS NOT NULL"
 
+        if micro_friendly:
+            count_query += " AND COALESCE(micro_friendly, FALSE) = TRUE"
+
         # Region filter for count
         if region:
-            count_query += " AND regions @> %s::jsonb"
-            count_params.append(f'["{region}"]')
+            region_aliases = {
+                'US': ['US', 'USA', 'United States', 'worldwide', 'Worldwide'],
+                'USA': ['US', 'USA', 'United States', 'worldwide', 'Worldwide'],
+            }
+            aliases = region_aliases.get(region, [region])
+            count_query += " AND (" + " OR ".join(["regions @> %s::jsonb"] * len(aliases)) + ")"
+            count_params.extend([f'["{alias}"]' for alias in aliases])
 
         cursor.execute(count_query, count_params)
         total_count = cursor.fetchone()['total']

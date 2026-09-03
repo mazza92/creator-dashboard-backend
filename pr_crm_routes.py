@@ -3305,6 +3305,23 @@ def dashboard_init():
         saved_brand_ids = [r['brand_id'] for r in pipeline_rows]
         pitched_brand_ids = [r['brand_id'] for r in pipeline_rows if r['stage'] == 'pitched']
 
+        applied_brand_ids = []
+        apply_count = 0
+        try:
+            cursor.execute(
+                """
+                SELECT brand_id
+                FROM brand_pr_applications
+                WHERE creator_id = %s
+                ORDER BY applied_at DESC
+                """,
+                (creator_id,),
+            )
+            applied_brand_ids = [r['brand_id'] for r in (cursor.fetchall() or [])]
+            apply_count = len(applied_brand_ids)
+        except Exception:
+            conn.rollback()
+
         # 5. Parse user niches
         raw_niches = creator.get('creator_niches') or creator.get('niche') or []
         if isinstance(raw_niches, str):
@@ -3325,6 +3342,8 @@ def dashboard_init():
             'unlocked_brand_ids': unlocked_brand_ids,
             'saved_brand_ids': saved_brand_ids,
             'pitched_brand_ids': pitched_brand_ids,
+            'applied_brand_ids': applied_brand_ids,
+            'apply_count': apply_count,
             'user_niches': user_niches,
             'first_name': creator.get('first_name')
         })

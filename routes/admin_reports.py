@@ -2766,3 +2766,102 @@ def send_nudge_email():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+
+@admin_reports_bp.route('/apply-adoption', methods=['GET'])
+@admin_required
+def get_apply_adoption():
+    """Creator Apply-for-Brand-PR adoption. Use this before building the brand roster UI."""
+    days = int(request.args.get('days', 30))
+    start_date = datetime.now() - timedelta(days=days)
+
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cursor.execute("""
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'brand_pr_applications'
+        """)
+        if not cursor.fetchone():
+            return jsonify({
+                'success': True,
+                'days': days,
+                'applies': {'total': 0, 'today': 0, 'unique_creators': 0, 'by_source': {}},
+                'funnel': {},
+                'ready': False,
+            }), 200
+
+        cursor.execute("""
+            SELECT
+                COUNT(*)::int AS total,
+                COUNT(*) FILTER (WHERE applied_at >= CURRENT_DATE)::int AS today,
+                COUNT(DISTINCT creator_id)::int AS unique_creators
+            FROM brand_pr_applications
+            WHERE applied_at >= %s
+        """, (start_date,))
+        totals = cursor.fetchone() or {}
+
+        cursor.execute("""
+            SELECT COALESCE(source, 'unknown') AS source, COUNT(*)::int AS count
+            FROM brand_pr_applications
+            WHERE applied_at >= %s
+            GROUP BY 1
+            ORDER BY count DESC
+        """, (start_date,))
+        by_source = {row['source']: row['count'] for row in (cursor.fetchall() or [])}
+
+        cursor.execute("""
+            SELECT
+                COUNT(*)::int AS applies,
+                COUNT(*) / GREATEST(COUNT(DISTINCT creator_id), 1)::numeric AS avg_per_creator
+            FROM brand_pr_applications
+            WHERE applied_at >= %s
+        """, (start_date,))
+        avg_row = cursor.fetchone() or {}
+
+        funnel = {}
+        cursor.execute("""
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'brand_pr_events'
+        """)
+        if cursor.fetchone():
+            cursor.execute("""
+                SELECT event, COUNT(*)::int AS count, COUNT(DISTINCT creator_id)::int AS creators
+                FROM brand_pr_events
+                WHERE created_at >= %s
+                GROUP BY event
+            """, (start_date,))
+            funnel = {
+                row['event']: {'count': row['count'], 'creators': row['creators']}
+                for row in (cursor.fetchall() or [])
+            }
+
+        opened = (funnel.get('apply_opened') or {}).get('creators') or 0
+        submitted = int(totals.get('unique_creators') or 0)
+        views = (funnel.get('apply_home_view') or {}).get('creators') or 0
+
+        return jsonify({
+            'success': True,
+            'days': days,
+            'ready': True,
+            'applies': {
+                'total': int(totals.get('total') or 0),
+                'today': int(totals.get('today') or 0),
+                'unique_creators': submitted,
+                'avg_per_creator': float(avg_row.get('avg_per_creator') or 0),
+                'by_source': by_source,
+            },
+            'funnel': funnel,
+            'conversion': {
+                'view_to_open': round((opened / views) * 100, 1) if views else 0,
+                'open_to_apply': round((submitted / opened) * 100, 1) if opened else 0,
+                'view_to_apply': round((submitted / views) * 100, 1) if views else 0,
+            },
+        }), 200
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
