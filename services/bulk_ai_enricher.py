@@ -36,7 +36,16 @@ UNSPLASH_ACCESS_KEY = os.getenv('UNSPLASH_ACCESS_KEY', '')  # Optional: for cove
 try:
     from services.brand_image_scraper import is_broken_cover_url, scrape_brand_images
 except ImportError:
-    from brand_image_scraper import is_broken_cover_url, scrape_brand_images
+    try:
+        from brand_image_scraper import is_broken_cover_url, scrape_brand_images
+    except ImportError:
+        # Production may not have this module yet — enrich/social must still run.
+        def is_broken_cover_url(url):
+            return not (url or '').strip()
+
+        def scrape_brand_images(website):
+            return {}
+        print("[AI Enrich] brand_image_scraper unavailable; skipping logo/cover scrape")
 
 
 def generate_slug(brand_name: str) -> str:
@@ -511,6 +520,23 @@ def bulk_enrich_brands(
                         values.append(images['cover_image_url'])
                         print(f"[AI Enrich] Found cover: {images['cover_image_url'][:80]}")
 
+            # 2b. Social handles from website HTML (before AI — more reliable than guessing)
+            need_ig = not (brand.get('instagram_handle') or '').strip()
+            need_tt = not (brand.get('tiktok_handle') or '').strip()
+            scraped_social = {'instagram_handle': None, 'tiktok_handle': None}
+            if brand.get('website') and (need_ig or need_tt):
+                scraped_social = scrape_social_handles_from_website(brand['website'])
+                if need_ig and scraped_social.get('instagram_handle'):
+                    updates.append("instagram_handle = %s")
+                    values.append(scraped_social['instagram_handle'])
+                    need_ig = False
+                    print(f"[AI Enrich] Scraped Instagram: @{scraped_social['instagram_handle']}")
+                if need_tt and scraped_social.get('tiktok_handle'):
+                    updates.append("tiktok_handle = %s")
+                    values.append(scraped_social['tiktok_handle'])
+                    need_tt = False
+                    print(f"[AI Enrich] Scraped TikTok: @{scraped_social['tiktok_handle']}")
+
             # 3. AI enrichment for all fields (matching individual enrich endpoint)
             enriched = enrich_brand_with_ai(dict(brand))
 
@@ -546,22 +572,24 @@ def bulk_enrich_brands(
                     except (ValueError, TypeError):
                         pass
 
-                # Social handles - only if missing
-                if not brand.get('instagram_handle') and enriched.get('instagram_handle'):
+                # Social handles — fill any still missing after website scrape
+                if need_ig and enriched.get('instagram_handle'):
                     handle = str(enriched['instagram_handle']).strip().lstrip('@')
-                    if handle and handle.lower() not in ['null', 'none'] and len(handle) <= 100:
+                    if handle and handle.lower() not in _SOCIAL_FALSE_POSITIVES and len(handle) <= 100:
                         updates.append("instagram_handle = %s")
                         values.append(handle)
+                        need_ig = False
 
-                if not brand.get('tiktok_handle') and enriched.get('tiktok_handle'):
+                if need_tt and enriched.get('tiktok_handle'):
                     handle = str(enriched['tiktok_handle']).strip().lstrip('@')
-                    if handle and handle.lower() not in ['null', 'none'] and len(handle) <= 100:
+                    if handle and handle.lower() not in _SOCIAL_FALSE_POSITIVES and len(handle) <= 100:
                         updates.append("tiktok_handle = %s")
                         values.append(handle)
+                        need_tt = False
 
                 if not brand.get('youtube_handle') and enriched.get('youtube_handle'):
                     handle = str(enriched['youtube_handle']).strip().lstrip('@')
-                    if handle and handle.lower() not in ['null', 'none'] and len(handle) <= 100:
+                    if handle and handle.lower() not in _SOCIAL_FALSE_POSITIVES and len(handle) <= 100:
                         updates.append("youtube_handle = %s")
                         values.append(handle)
 

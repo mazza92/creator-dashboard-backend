@@ -1194,6 +1194,22 @@ def enrich_brand(brand_id):
         need_tiktok = not brand.get('tiktok_handle')
         need_youtube = not brand.get('youtube_handle')
 
+        # Prefer direct website scrape for social handles (more reliable than AI guess)
+        scraped_ig = None
+        scraped_tt = None
+        if need_instagram or need_tiktok:
+            try:
+                from services.bulk_ai_enricher import scrape_social_handles_from_website
+                scraped = scrape_social_handles_from_website(website)
+                scraped_ig = scraped.get('instagram_handle') if need_instagram else None
+                scraped_tt = scraped.get('tiktok_handle') if need_tiktok else None
+                if scraped_ig:
+                    print(f"[AI Enrich] Scraped Instagram: @{scraped_ig}")
+                if scraped_tt:
+                    print(f"[AI Enrich] Scraped TikTok: @{scraped_tt}")
+            except Exception as e:
+                print(f"[AI Enrich] Social scrape skipped: {e}")
+
         prompt = f"""You are extracting structured data from a brand's website content for a PR/influencer database.
 
 Brand: {brand['brand_name']}{category_hint}
@@ -1336,18 +1352,24 @@ JSON:"""
             except (ValueError, TypeError):
                 price_point = None
 
-        # Social handles - clean up and only use if currently empty
+        # Social handles - scrape first, AI as fallback; only fill if currently empty
         instagram_handle = None
-        if need_instagram and data.get('instagram_handle'):
-            handle = str(data['instagram_handle']).strip().lstrip('@')
-            if handle and handle.lower() != 'null' and len(handle) <= 100:
-                instagram_handle = handle
+        if need_instagram:
+            if scraped_ig:
+                instagram_handle = scraped_ig
+            elif data.get('instagram_handle'):
+                handle = str(data['instagram_handle']).strip().lstrip('@')
+                if handle and handle.lower() != 'null' and len(handle) <= 100:
+                    instagram_handle = handle
 
         tiktok_handle = None
-        if need_tiktok and data.get('tiktok_handle'):
-            handle = str(data['tiktok_handle']).strip().lstrip('@')
-            if handle and handle.lower() != 'null' and len(handle) <= 100:
-                tiktok_handle = handle
+        if need_tiktok:
+            if scraped_tt:
+                tiktok_handle = scraped_tt
+            elif data.get('tiktok_handle'):
+                handle = str(data['tiktok_handle']).strip().lstrip('@')
+                if handle and handle.lower() != 'null' and len(handle) <= 100:
+                    tiktok_handle = handle
 
         youtube_handle = None
         if need_youtube and data.get('youtube_handle'):
