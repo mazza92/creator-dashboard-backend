@@ -947,44 +947,138 @@ def scrape_opengraph():
 @admin_required
 def bulk_enrich_brands_endpoint():
     """
-    Bulk AI-enrich multiple brands at once
+    Bulk AI-enrich brands in small batches (proxy-safe).
 
     Request Body:
         {
             "ids": [1, 2, 3],
-            "only_missing_fields": true  // optional, defaults to true
+            "only_missing_fields": true,
+            "only_missing_social": false,
+            "mode": "full" | "social",   // social = scrape handles (+ AI fallback)
+            "batch_size": 3               // optional, capped server-side
         }
 
     Returns:
-        { "success": true, "enriched": 5, "total": 5 }
+        {
+          "success": true,
+          "enriched": 2,
+          "total": 20,
+          "processed": 3,
+          "remaining_ids": [...],
+          "mode": "social"
+        }
     """
     try:
-        data = request.get_json()
-        brand_ids = data.get('ids', [])
+        data = request.get_json() or {}
+        brand_ids = data.get('ids') or []
         only_missing = data.get('only_missing_fields', True)
+        only_missing_social = bool(data.get('only_missing_social', False))
+        mode = str(data.get('mode') or 'full').lower().strip()
+        if mode not in ('full', 'social'):
+            mode = 'full'
+
+        # Keep each HTTP call under proxy timeouts (~60–100s).
+        # Full AI can take ~45s/brand; social scrape is faster.
+        default_batch = 1 if mode == 'full' else 5
+        try:
+            batch_size = int(data.get('batch_size') or default_batch)
+        except (TypeError, ValueError):
+            batch_size = default_batch
+        max_batch = 1 if mode == 'full' else 8
+        batch_size = max(1, min(batch_size, max_batch))
 
         if not brand_ids:
             return jsonify({'success': False, 'error': 'No brand IDs provided'}), 400
 
-        # Import the bulk enrichment service
-        import sys
-        import os
-        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        from services.bulk_ai_enricher import bulk_enrich_brands
+        # Normalize + de-dupe while preserving order
+        seen = set()
+        normalized = []
+        for raw in brand_ids:
+            try:
+                bid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if bid in seen:
+                continue
+            seen.add(bid)
+            normalized.append(bid)
 
-        # Run bulk enrichment
-        enriched_count = bulk_enrich_brands(
-            brand_ids=brand_ids,
-            only_missing_fields=only_missing,
-            rate_limit_delay=0.5  # Faster for admin UI
-        )
+        if not normalized:
+            return jsonify({'success': False, 'error': 'No valid brand IDs provided'}), 400
+
+        batch = normalized[:batch_size]
+        remaining_ids = normalized[batch_size:]
+
+        from services.bulk_ai_enricher import bulk_enrich_brands, bulk_fill_social_handles
+
+        if mode == 'social':
+            stats = bulk_fill_social_handles(
+                batch,
+                rate_limit_delay=0.25,
+                use_ai_fallback=True,
+            )
+            enriched_count = int(stats.get('updated') or 0)
+            processed = int(stats.get('processed') or len(batch))
+        else:
+            enriched_count = bulk_enrich_brands(
+                brand_ids=batch,
+                only_missing_fields=only_missing,
+                only_missing_social=only_missing_social,
+                rate_limit_delay=0.35,
+            )
+            processed = len(batch)
 
         return jsonify({
             'success': True,
             'enriched': enriched_count,
-            'total': len(brand_ids)
+            'processed': processed,
+            'total': len(normalized),
+            'batch_size': batch_size,
+            'remaining_ids': remaining_ids,
+            'remaining': len(remaining_ids),
+            'mode': mode,
         }), 200
 
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@admin_brands_bp.route('/brands/missing-social', methods=['GET'])
+@admin_required
+def brands_missing_social():
+    """List brand IDs that have a website but no Instagram and no TikTok handle."""
+    try:
+        limit = min(int(request.args.get('limit', 5000)), 10000)
+        status_filter = request.args.get('status')  # optional: published|draft
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        query = """
+            SELECT id, brand_name as name, website, COALESCE(status, 'published') as status
+            FROM pr_brands
+            WHERE website IS NOT NULL AND TRIM(website) <> ''
+              AND (instagram_handle IS NULL OR TRIM(instagram_handle) = '')
+              AND (tiktok_handle IS NULL OR TRIM(tiktok_handle) = '')
+        """
+        params = []
+        if status_filter in ('published', 'draft'):
+            query += " AND COALESCE(status, 'published') = %s"
+            params.append(status_filter)
+        query += " ORDER BY id ASC LIMIT %s"
+        params.append(limit)
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        conn.close()
+
+        return jsonify({
+            'success': True,
+            'count': len(rows),
+            'ids': [r['id'] for r in rows],
+            'brands': rows,
+        }), 200
     except Exception as e:
         import traceback
         traceback.print_exc()

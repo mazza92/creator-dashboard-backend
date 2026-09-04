@@ -14,15 +14,29 @@ Fills in:
 - tone/voice (if missing)
 """
 import os
+import sys
 import json
 import requests
 import time
 from typing import Dict, List, Optional
 
+# Windows consoles default to cp1252 and crash on brand names like "ē"
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 CLAUDE_MODEL = 'claude-haiku-4-5-20251001'  # Same model as admin AI enricher
 UNSPLASH_ACCESS_KEY = os.getenv('UNSPLASH_ACCESS_KEY', '')  # Optional: for cover images
+
+try:
+    from services.brand_image_scraper import is_broken_cover_url, scrape_brand_images
+except ImportError:
+    from brand_image_scraper import is_broken_cover_url, scrape_brand_images
 
 
 def generate_slug(brand_name: str) -> str:
@@ -79,104 +93,6 @@ def generate_unique_slug(brand_name: str, cursor) -> str:
             # Fallback: append brand ID or timestamp
             import time
             return f"{base_slug}-{int(time.time())}"
-
-
-def get_cover_image_url_url(website: str, brand_name: str) -> Optional[str]:
-    """
-    Scrape brand's website for a high-quality lifestyle/hero image.
-    Looks for large images (hero sections, product photos, lifestyle shots).
-
-    Returns URL to a relevant cover image from the brand's own site.
-    """
-    try:
-        from bs4 import BeautifulSoup
-        from urllib.parse import urljoin, urlparse
-
-        # Fetch homepage
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        response = requests.get(website, headers=headers, timeout=10)
-        response.raise_for_status()
-
-        soup = BeautifulSoup(response.content, 'html.parser')
-
-        # Priority 1: Hero section images (usually large, high-quality)
-        hero_candidates = []
-
-        # Look for common hero/banner selectors
-        hero_sections = soup.select('section.hero img, div.hero img, .banner img, header img')
-        for img in hero_sections[:3]:  # Check first 3
-            src = img.get('src') or img.get('data-src')
-            if src:
-                full_url = urljoin(website, src)
-                if is_valid_image_url(full_url):
-                    hero_candidates.append(full_url)
-
-        if hero_candidates:
-            return hero_candidates[0]
-
-        # Priority 2: Large images (width/height attributes or style)
-        large_images = []
-        for img in soup.find_all('img', limit=20):
-            src = img.get('src') or img.get('data-src')
-            if not src:
-                continue
-
-            full_url = urljoin(website, src)
-            if not is_valid_image_url(full_url):
-                continue
-
-            # Check if image is large (by attributes or class names)
-            width = img.get('width', '')
-            style = img.get('style', '')
-            classes = ' '.join(img.get('class', []))
-
-            # Skip small images, icons, logos
-            if any(skip in classes.lower() for skip in ['icon', 'logo', 'avatar', 'thumb']):
-                continue
-
-            # Prefer images with width > 800 or hero/feature/product in class
-            if (
-                (width and int(width) > 800) or
-                ('hero' in classes.lower()) or
-                ('feature' in classes.lower()) or
-                ('product' in classes.lower()) or
-                ('lifestyle' in classes.lower())
-            ):
-                large_images.append(full_url)
-
-        if large_images:
-            return large_images[0]
-
-        # Priority 3: First decent-sized image
-        all_images = []
-        for img in soup.find_all('img', limit=15):
-            src = img.get('src') or img.get('data-src')
-            if src:
-                full_url = urljoin(website, src)
-                if is_valid_image_url(full_url):
-                    all_images.append(full_url)
-
-        if all_images:
-            return all_images[0]
-
-    except Exception as e:
-        print(f"[Cover Image] Error scraping {website}: {e}")
-
-    return None
-
-
-def is_valid_image_url(url: str) -> bool:
-    """Check if URL is likely a valid image (not icon, gif, svg)."""
-    url_lower = url.lower()
-    # Skip common non-cover-image patterns
-    if any(skip in url_lower for skip in ['.svg', '.gif', 'icon', 'logo', 'favicon', 'sprite']):
-        return False
-    # Must be an image extension
-    if any(ext in url_lower for ext in ['.jpg', '.jpeg', '.png', '.webp']):
-        return True
-    return False
 
 
 def enrich_brand_with_ai(brand: Dict) -> Optional[Dict]:
@@ -296,10 +212,183 @@ JSON:"""
         return None
 
 
+_SOCIAL_FALSE_POSITIVES = {
+    'p', 'reel', 'reels', 'stories', 'explore', 'accounts', 'share', 'tags',
+    'tv', 'live', 'direct', 'about', 'legal', 'privacy', 'help', 'login',
+    'signup', 'embed', 'static', 'directory', 'popular', 'trending', 'foryou',
+    'following', 'friends', 'music', 'discover', 'search', 'home', 'null', 'none',
+}
+
+
+def scrape_social_handles_from_website(website: str) -> Dict[str, Optional[str]]:
+    """
+    Fast HTML scrape for Instagram / TikTok handles from a brand website.
+    Prefer this over full AI when only social handles are missing.
+    """
+    import re
+
+    result = {'instagram_handle': None, 'tiktok_handle': None}
+    if not website:
+        return result
+
+    url = website if str(website).startswith('http') else f'https://{website}'
+    headers = {
+        'User-Agent': (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+            '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+        )
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=12, allow_redirects=True)
+        response.raise_for_status()
+        page = response.text
+    except Exception as e:
+        print(f"[Social Fill] Scrape failed for {url}: {e}")
+        return result
+
+    ig_patterns = [
+        r'instagram\.com/(?:@)?([A-Za-z0-9._]{2,40})/?',
+    ]
+    tt_patterns = [
+        r'tiktok\.com/@([A-Za-z0-9._]{2,40})/?',
+        r'tiktok\.com/([A-Za-z0-9._]{2,40})/?',
+    ]
+
+    for pattern in ig_patterns:
+        match = re.search(pattern, page, re.IGNORECASE)
+        if match:
+            handle = match.group(1).strip().lstrip('@')
+            if handle.lower() not in _SOCIAL_FALSE_POSITIVES and not handle.startswith('http'):
+                result['instagram_handle'] = handle
+                break
+
+    for pattern in tt_patterns:
+        match = re.search(pattern, page, re.IGNORECASE)
+        if match:
+            handle = match.group(1).strip().lstrip('@')
+            if handle.lower() not in _SOCIAL_FALSE_POSITIVES and not handle.startswith('http'):
+                result['tiktok_handle'] = handle
+                break
+
+    return result
+
+
+def bulk_fill_social_handles(
+    brand_ids: List[int],
+    *,
+    rate_limit_delay: float = 0.35,
+    use_ai_fallback: bool = True,
+) -> Dict[str, int]:
+    """
+    Fill missing Instagram/TikTok handles for brands that have a website.
+
+    Prefer website scrape (fast). Optionally fall back to Claude when scrape
+    finds nothing. Designed for small request batches so proxies don't time out.
+    """
+    try:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+    except ImportError:
+        print("[Social Fill] ERROR: psycopg2 not installed")
+        return {'processed': 0, 'updated': 0, 'skipped': 0}
+
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        print("[Social Fill] ERROR: DATABASE_URL not found")
+        return {'processed': 0, 'updated': 0, 'skipped': 0}
+
+    stats = {'processed': 0, 'updated': 0, 'skipped': 0}
+    conn = None
+
+    try:
+        conn = psycopg2.connect(db_url)
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("""
+            SELECT id, brand_name, website, description, category,
+                   instagram_handle, tiktok_handle
+            FROM pr_brands
+            WHERE id = ANY(%s)
+              AND website IS NOT NULL
+              AND TRIM(website) <> ''
+              AND (
+                instagram_handle IS NULL OR TRIM(instagram_handle) = ''
+                OR tiktok_handle IS NULL OR TRIM(tiktok_handle) = ''
+              )
+            ORDER BY id
+        """, (brand_ids,))
+        brands = cursor.fetchall()
+        print(f"[Social Fill] Processing {len(brands)} brands missing social handles...")
+
+        for i, brand in enumerate(brands):
+            stats['processed'] += 1
+            name = brand.get('brand_name') or brand['id']
+            need_ig = not (brand.get('instagram_handle') or '').strip()
+            need_tt = not (brand.get('tiktok_handle') or '').strip()
+            if not need_ig and not need_tt:
+                stats['skipped'] += 1
+                continue
+
+            scraped = scrape_social_handles_from_website(brand.get('website'))
+            ig = scraped.get('instagram_handle') if need_ig else None
+            tt = scraped.get('tiktok_handle') if need_tt else None
+
+            if use_ai_fallback and ((need_ig and not ig) or (need_tt and not tt)):
+                enriched = enrich_brand_with_ai(dict(brand))
+                if enriched:
+                    if need_ig and not ig and enriched.get('instagram_handle'):
+                        handle = str(enriched['instagram_handle']).strip().lstrip('@')
+                        if handle and handle.lower() not in _SOCIAL_FALSE_POSITIVES:
+                            ig = handle
+                    if need_tt and not tt and enriched.get('tiktok_handle'):
+                        handle = str(enriched['tiktok_handle']).strip().lstrip('@')
+                        if handle and handle.lower() not in _SOCIAL_FALSE_POSITIVES:
+                            tt = handle
+
+            updates = []
+            values = []
+            if need_ig and ig:
+                updates.append("instagram_handle = %s")
+                values.append(ig)
+            if need_tt and tt:
+                updates.append("tiktok_handle = %s")
+                values.append(tt)
+
+            if updates:
+                updates.append("updated_at = NOW()")
+                values.append(brand['id'])
+                cursor.execute(
+                    f"UPDATE pr_brands SET {', '.join(updates)} WHERE id = %s",
+                    values,
+                )
+                stats['updated'] += 1
+                print(f"[Social Fill] OK {name}: ig={ig or '-'} tt={tt or '-'}")
+            else:
+                stats['skipped'] += 1
+                print(f"[Social Fill] - No handles found for {name}")
+
+            if (i + 1) % 5 == 0:
+                conn.commit()
+            if i < len(brands) - 1:
+                time.sleep(rate_limit_delay)
+
+        conn.commit()
+        print(f"[Social Fill] Done: {stats}")
+    except Exception as e:
+        print(f"[Social Fill] Database error: {e}")
+        if conn:
+            conn.rollback()
+    finally:
+        if conn:
+            conn.close()
+
+    return stats
+
+
 def bulk_enrich_brands(
     brand_ids: List[int],
     *,
     only_missing_fields: bool = True,
+    only_missing_social: bool = False,
     rate_limit_delay: float = 1.0
 ) -> int:
     """
@@ -308,6 +397,7 @@ def bulk_enrich_brands(
     Args:
         brand_ids: List of pr_brands.id to enrich
         only_missing_fields: If True, only enrich brands with missing description/hero_product
+        only_missing_social: If True, only brands missing Instagram AND TikTok
         rate_limit_delay: Seconds to wait between API calls
 
     Returns:
@@ -326,6 +416,7 @@ def bulk_enrich_brands(
         return 0
 
     enriched_count = 0
+    conn = None
 
     try:
         conn = psycopg2.connect(db_url)
@@ -333,7 +424,20 @@ def bulk_enrich_brands(
 
         # Fetch brands with all fields we might enrich
         # IMPORTANT: Also fetch PR contact fields (application_form_url, contact_email) to preserve them
-        if only_missing_fields:
+        if only_missing_social:
+            cursor.execute("""
+                SELECT id, brand_name, website, description, hero_product, target_audience, tone, price_point,
+                       category, slug, cover_image_url, instagram_handle, tiktok_handle, youtube_handle,
+                       min_followers, collaboration_type, seo_title, seo_description, success_stories,
+                       response_rate, avg_response_time_days,
+                       application_form_url, contact_email, has_application_form, logo_url
+                FROM pr_brands
+                WHERE id = ANY(%s)
+                AND website IS NOT NULL AND TRIM(website) <> ''
+                AND (instagram_handle IS NULL OR TRIM(instagram_handle) = '')
+                AND (tiktok_handle IS NULL OR TRIM(tiktok_handle) = '')
+            """, (brand_ids,))
+        elif only_missing_fields:
             # Only enrich brands missing key fields
             cursor.execute("""
                 SELECT id, brand_name, website, description, hero_product, target_audience, tone, price_point,
@@ -380,7 +484,6 @@ def bulk_enrich_brands(
             # - application_form_url (PR Form URL)
             # - contact_email (PR Email)
             # - has_application_form (boolean flag)
-            # - logo_url (manually entered or Clearbit logo)
 
             # Update brand with enriched fields (only update fields that are null/empty)
             updates = []
@@ -393,13 +496,20 @@ def bulk_enrich_brands(
                 values.append(slug)
                 print(f"[AI Enrich] Generated slug: {slug}")
 
-            # 2. Scrape cover image from brand website if missing
-            if not brand.get('cover_image_url') and brand.get('website'):
-                cover_image_url = get_cover_image_url_url(brand['website'], brand['brand_name'])
-                if cover_image_url:
-                    updates.append("cover_image_url = %s")
-                    values.append(cover_image_url)
-                    print(f"[AI Enrich] Found cover image: {cover_image_url[:60]}...")
+            # 2. Logo + cover from homepage (OG/JSON-LD first, Shopify {width} normalized)
+            if brand.get('website'):
+                need_logo = not brand.get('logo_url')
+                need_cover = is_broken_cover_url(brand.get('cover_image_url'))
+                if need_logo or need_cover:
+                    images = scrape_brand_images(brand['website'])
+                    if need_logo and images.get('logo_url'):
+                        updates.append("logo_url = %s")
+                        values.append(images['logo_url'])
+                        print(f"[AI Enrich] Found logo: {images['logo_url'][:80]}")
+                    if need_cover and images.get('cover_image_url'):
+                        updates.append("cover_image_url = %s")
+                        values.append(images['cover_image_url'])
+                        print(f"[AI Enrich] Found cover: {images['cover_image_url'][:80]}")
 
             # 3. AI enrichment for all fields (matching individual enrich endpoint)
             enriched = enrich_brand_with_ai(dict(brand))
@@ -554,6 +664,10 @@ def bulk_enrich_brands(
         conn.commit()
         print(f"\n[AI Enrich] Successfully enriched {enriched_count}/{len(brands)} brands")
 
+    except UnicodeEncodeError as e:
+        print(f"[AI Enrich] Log encoding error (progress saved): {e}")
+        if conn:
+            conn.commit()
     except Exception as e:
         print(f"[AI Enrich] Database error: {e}")
         if conn:
