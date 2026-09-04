@@ -8752,7 +8752,17 @@ def get_for_you():
             WHERE creator_id = %s AND brand_id IS NOT NULL
         """, (creator_id,))
         already_seen = cursor.fetchall()
-        exclude_ids = [r['brand_id'] for r in already_seen] if already_seen else [0]
+        exclude_ids = [r['brand_id'] for r in already_seen] if already_seen else []
+        try:
+            cursor.execute("""
+                SELECT DISTINCT brand_id FROM brand_pr_applications
+                WHERE creator_id = %s AND brand_id IS NOT NULL
+            """, (creator_id,))
+            already_applied = cursor.fetchall() or []
+            exclude_ids.extend(r['brand_id'] for r in already_applied)
+        except Exception:
+            pass
+        exclude_ids = list({i for i in exclude_ids if i}) or [0]
 
         # ── Section 1: Most Contacted Brands ─────────────────────────────
         # Top brands by total creators who pitched (stage = 'pitched') in past 30 days
@@ -8988,7 +8998,13 @@ def get_for_you():
                 query_params.append(all_relevant_niches)
 
             query_params.append(rotation_salt)
+            hunger_order = (
+                "COALESCE(roster_demand.hunger, 0) DESC, "
+                if all_relevant_niches else
+                ""
+            )
 
+            from services.roster_demand import ROSTER_DEMAND_JOIN, ROSTER_DEMAND_SELECT
             cursor.execute(f"""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
@@ -8997,13 +9013,15 @@ def get_for_you():
                     b.has_application_form, b.hero_product,
                     (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
                     b.niches AS brand_niches, b.regions, b.avg_product_value,
-                    0 AS match_score
+                    0 AS match_score,
+                    {ROSTER_DEMAND_SELECT}
                 FROM pr_brands b
+                {ROSTER_DEMAND_JOIN}
                 WHERE b.slug IS NOT NULL
                   AND COALESCE(b.status, 'published') = 'published'
                   AND b.id != ALL(%s)
                   {brand_filter_sql}
-                ORDER BY md5(concat_ws(':', b.id::text, %s))
+                ORDER BY {hunger_order}md5(concat_ws(':', b.id::text, %s))
                 LIMIT 90
             """, tuple(query_params))
             matched = cursor.fetchall()
@@ -9011,6 +9029,7 @@ def get_for_you():
             # No profile yet — return variety of top brands with basic scoring
             # Default to showing smaller brands (safe for any creator size)
             default_max_followers = 50000  # Safe default for unknown creators
+            from services.roster_demand import ROSTER_DEMAND_JOIN, ROSTER_DEMAND_SELECT
             query = f"""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
@@ -9035,8 +9054,10 @@ def get_for_you():
                             -- DETERMINISTIC VARIANCE per brand (0-11 points)
                             + (b.id %% 12)
                         )
-                    )))::int AS match_score
+                    )))::int AS match_score,
+                    {ROSTER_DEMAND_SELECT}
                 FROM pr_brands b
+                {ROSTER_DEMAND_JOIN}
                 WHERE b.slug IS NOT NULL
                   AND COALESCE(b.status, 'published') = 'published'
                   AND b.id != ALL(%s)
@@ -9051,6 +9072,7 @@ def get_for_you():
         # Fallback: if 0 matched brands, return popular brands regardless of niche
         # Never leave user with an empty For You page
         if len(matched) == 0:
+            from services.roster_demand import ROSTER_DEMAND_JOIN, ROSTER_DEMAND_SELECT
             fallback_query = f"""
                 SELECT
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
@@ -9059,8 +9081,10 @@ def get_for_you():
                     b.has_application_form,
                     (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
                     b.regions, b.avg_product_value,
-                    65 AS match_score
+                    65 AS match_score,
+                    {ROSTER_DEMAND_SELECT}
                 FROM pr_brands b
+                {ROSTER_DEMAND_JOIN}
                 WHERE b.slug IS NOT NULL
                   AND COALESCE(b.status, 'published') = 'published'
                   AND b.id != ALL(%s)
@@ -9187,7 +9211,8 @@ def get_for_you():
                         f"retrying with pool={related_list[:12]}"
                     )
                     if related_list:
-                        cursor.execute("""
+                        from services.roster_demand import ROSTER_DEMAND_JOIN, ROSTER_DEMAND_SELECT
+                        cursor.execute(f"""
                             SELECT
                                 b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                                 b.description, b.category, b.response_rate, b.price_point,
@@ -9195,16 +9220,19 @@ def get_for_you():
                                 b.has_application_form, b.hero_product,
                                 (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
                                 b.niches AS brand_niches, b.regions, b.avg_product_value,
-                                0 AS match_score
+                                0 AS match_score,
+                                {ROSTER_DEMAND_SELECT}
                             FROM pr_brands b
+                            {ROSTER_DEMAND_JOIN}
                             WHERE b.slug IS NOT NULL
                               AND COALESCE(b.status, 'published') = 'published'
                               AND LOWER(b.category) = ANY(%s)
                               AND b.id != ALL(%s)
-                            ORDER BY md5(concat_ws(':', b.id::text, %s))
+                            ORDER BY COALESCE(roster_demand.hunger, 0) DESC, md5(concat_ws(':', b.id::text, %s))
                             LIMIT 90
                         """, (related_list, exclude_ids, f"{creator_id}:{datetime.utcnow().strftime('%G-%V')}"))
                         retry_rows = cursor.fetchall()
+                        matched = retry_rows
                         # Rank with prepared profile so inferred primary is used
                         try:
                             from services.mentor_matchmaker import (
@@ -9240,12 +9268,26 @@ def get_for_you():
                 except Exception:
                     filtered_matched = []
 
-        if filtered_matched:
+        if filtered_matched or matched:
+            from services.roster_demand import prefer_hungry_rosters
             prep = _prepare_for_you_profile(scrape_profile, interest_niches, followers or 0)
+            allowed_cats = {
+                str(c).lower()
+                for c in (_build_for_you_category_pool(prep, interest_niches) or [])
+            }
             filtered_matched = [
-                b for b in filtered_matched
+                b for b in (filtered_matched or [])
                 if not _for_you_should_skip_brand(b, interest_niches, prep)
+                and int(b.get('match_score') or 0) >= FOR_YOU_MIN_FIT_SCORE
+                and (b.get('fit_tier') or '') not in FOR_YOU_EXCLUDE_TIERS
+                and (
+                    not allowed_cats
+                    or str(b.get('category') or '').lower() in allowed_cats
+                )
             ]
+            filtered_matched = prefer_hungry_rosters(
+                filtered_matched, limit=8, max_hungry=4, min_fit=FOR_YOU_MIN_FIT_SCORE
+            )
 
         if filtered_matched:
             top_score = filtered_matched[0].get('match_score', 0)

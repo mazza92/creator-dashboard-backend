@@ -742,6 +742,11 @@ def submit_apply(brand_id):
             (creator_id, brand_id, Json(selected), Json(addr), _clean_source(payload.get("source"))),
         )
         app_row = cursor.fetchone()
+        try:
+            from brand_pr_roster_routes import ensure_active_roster_for_brand
+            ensure_active_roster_for_brand(cursor, brand_id)
+        except Exception as mint_err:
+            print(f"[brand-apply] auto-mint roster skipped: {mint_err}")
 
         if save_shipping:
             cursor.execute(

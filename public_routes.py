@@ -15,6 +15,7 @@ import requests
 from brand_stats_synthesis import resolve_brand_stats, resolve_pitch_social_proof
 from brand_categories import normalize_category, aggregate_category_counts, category_label
 from services.public_brand_guard import scraper_rate_limit
+from services.roster_demand import ROSTER_DEMAND_JOIN, ROSTER_DEMAND_SELECT
 
 public_bp = Blueprint('public', __name__, url_prefix='/api/public')
 
@@ -242,6 +243,8 @@ def _format_public_brand_list_item(b):
         'heroProduct': b.get('hero_product'),
         'collaborationType': b.get('collaboration_type') or 'gifted',
         'recentReplies': recent_replies,
+        'roster_hunger': int(b.get('roster_hunger') or 0),
+        'roster_open': int(b.get('roster_hunger') or 0) > 0,
     }
 
 
@@ -405,7 +408,7 @@ def get_public_brands():
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         # Build query with filters (includes pitch stats from creator_pipeline)
-        query = """
+        query = f"""
             SELECT
                 b.id,
                 b.slug,
@@ -432,7 +435,8 @@ def get_public_brands():
                 CASE WHEN b.application_form_url IS NOT NULL THEN TRUE ELSE FALSE END as has_direct_link,
                 CASE WHEN b.contact_email IS NOT NULL THEN TRUE ELSE FALSE END as has_email_contact,
                 COALESCE(ps.pitch_count, 0) as pitch_count,
-                COALESCE(ps.response_count, 0) as response_count
+                COALESCE(ps.response_count, 0) as response_count,
+                {ROSTER_DEMAND_SELECT}
             FROM pr_brands b
             LEFT JOIN (
                 SELECT
@@ -442,6 +446,7 @@ def get_public_brands():
                 FROM creator_pipeline
                 GROUP BY brand_id
             ) ps ON b.id = ps.brand_id
+            {ROSTER_DEMAND_JOIN}
             WHERE (COALESCE(b.status, 'published') = 'published')
         """
         params = []
@@ -497,7 +502,7 @@ def get_public_brands():
             query += " AND (" + " OR ".join(["b.regions @> %s::jsonb"] * len(aliases)) + ")"
             params.extend([f'["{alias}"]' for alias in aliases])
 
-        # Order: prefer user niches (Discover soft sort), then featured / recency
+        # Order: niche match first, then underfilled live rosters, then featured / recency
         if activity == 'new':
             # "Added recently" - sort by newest first, ignore featured
             if prefer_niches:
@@ -505,6 +510,7 @@ def get_public_brands():
                     ORDER BY
                         CASE WHEN LOWER(b.category) = ANY(%s) THEN 0 ELSE 1 END,
                         b.created_at DESC NULLS LAST,
+                        COALESCE(roster_demand.hunger, 0) DESC,
                         b.brand_name ASC
                     LIMIT %s OFFSET %s
                 """
@@ -513,6 +519,7 @@ def get_public_brands():
                 query += """
                     ORDER BY
                         b.created_at DESC NULLS LAST,
+                        COALESCE(roster_demand.hunger, 0) DESC,
                         b.brand_name ASC
                     LIMIT %s OFFSET %s
                 """
@@ -522,6 +529,7 @@ def get_public_brands():
                 query += """
                     ORDER BY
                         CASE WHEN LOWER(b.category) = ANY(%s) THEN 0 ELSE 1 END,
+                        COALESCE(roster_demand.hunger, 0) DESC,
                         b.is_featured DESC,
                         b.created_at DESC NULLS LAST,
                         b.brand_name ASC
@@ -529,9 +537,10 @@ def get_public_brands():
                 """
                 params.extend([prefer_niches, limit, offset])
             else:
-                # Default: Featured first, then most recently added
+                # Default: underfilled rosters, then featured, then most recently added
                 query += """
                     ORDER BY
+                        COALESCE(roster_demand.hunger, 0) DESC,
                         b.is_featured DESC,
                         b.created_at DESC NULLS LAST,
                         b.brand_name ASC
