@@ -636,15 +636,28 @@ def submit_apply(brand_id):
     save_shipping = payload.get("save_shipping", True)
 
     if not agreed:
-        return jsonify({"success": False, "error": "Agree to the content requests to apply."}), 400
+        return jsonify({"success": False, "error": "Agree to the gifted terms and 6-month UGC usage to apply."}), 400
     if not isinstance(posts, list) or len(posts) != 3:
         return jsonify({"success": False, "error": "Pick 3 posts."}), 400
 
+    full_name = (shipping.get("full_name") or "").strip()
     line1 = (shipping.get("address_line1") or "").strip()
     zip_code = (shipping.get("zip") or shipping.get("postal_code") or "").strip()
     city = (shipping.get("city") or "").strip()
-    if not line1 or not zip_code or not city:
-        return jsonify({"success": False, "error": "Add a full shipping address."}), 400
+    state = (shipping.get("state") or shipping.get("region") or "").strip()
+    country = (shipping.get("country") or "").strip()
+    phone = (shipping.get("phone") or "").strip()
+    phone_digits = "".join(ch for ch in phone if ch.isdigit())
+
+    if len(full_name) < 2 or not line1 or not zip_code or not city or not state or not country:
+        return jsonify({"success": False, "error": "Add a complete shipping address."}), 400
+    if len(phone_digits) < 8:
+        return jsonify({"success": False, "error": "Add a phone number so the courier can reach you."}), 400
+
+    from social_verification_routes import country_value_is_restricted
+
+    if country_value_is_restricted(country):
+        return jsonify({"success": False, "error": "We can only ship to countries Newcollab serves."}), 400
 
     selected = []
     for p in posts[:3]:
@@ -661,14 +674,14 @@ def submit_apply(brand_id):
         return jsonify({"success": False, "error": "Pick 3 posts."}), 400
 
     addr = {
-        "full_name": (shipping.get("full_name") or "").strip()[:120],
+        "full_name": full_name[:120],
         "address_line1": line1[:200],
         "address_line2": (shipping.get("address_line2") or "").strip()[:200],
         "city": city[:80],
-        "state": (shipping.get("state") or shipping.get("region") or "").strip()[:80],
+        "state": state[:80],
         "zip": zip_code[:20],
-        "country": (shipping.get("country") or "United States").strip()[:80],
-        "phone": (shipping.get("phone") or "").strip()[:40],
+        "country": country[:80],
+        "phone": phone[:40],
     }
 
     conn = get_db_connection()
