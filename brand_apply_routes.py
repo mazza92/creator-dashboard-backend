@@ -59,6 +59,12 @@ def _ensure_schema(cursor, conn=None):
         )
         cursor.execute(
             """
+            ALTER TABLE pr_brands
+            ADD COLUMN IF NOT EXISTS pr_social_profile JSONB
+            """
+        )
+        cursor.execute(
+            """
             ALTER TABLE creators
             ADD COLUMN IF NOT EXISTS shipping_address JSONB
             """
@@ -121,6 +127,7 @@ _SOURCES = frozenset({
     "card_credits",
     "done_last_credit",
     "submit_402",
+    "ugc_jobs",
 })
 
 
@@ -235,6 +242,158 @@ def _normalize_examples(raw, default_handle=None):
     return items
 
 
+def _parse_social(raw):
+    if not raw:
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return None
+    if not isinstance(raw, dict):
+        return None
+    try:
+        followers = int(raw.get("followers") or 0)
+    except (TypeError, ValueError):
+        followers = 0
+    handle = str(raw.get("handle") or "").lstrip("@").strip()
+    bio = str(raw.get("bio") or "").strip()
+    if followers <= 0 and not handle and not bio:
+        return None
+    return {
+        "platform": str(raw.get("platform") or "").lower()[:16],
+        "handle": handle,
+        "nickname": str(raw.get("nickname") or "")[:80],
+        "followers": followers,
+        "following": _safe_int(raw.get("following")),
+        "likes": _safe_int(raw.get("likes")),
+        "posts": _safe_int(raw.get("posts")),
+        "bio": bio[:280],
+        "verified": bool(raw.get("verified")),
+        "avatar_url": str(raw.get("avatar_url") or raw.get("avatarUrl") or "")[:500],
+    }
+
+
+def _safe_int(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _has_social_handles(brand):
+    return bool(
+        str(brand.get("tiktok_handle") or brand.get("tiktok") or "").strip()
+        or str(brand.get("instagram_handle") or brand.get("instagram") or "").strip()
+    )
+
+
+def _media_pending(brand, examples, social):
+    if not _has_social_handles(brand):
+        return False
+    has_examples = bool(examples)
+    has_stats = bool(social and _safe_int(social.get("followers")) > 0)
+    return not has_examples or not has_stats
+
+
+_ENRICH_LOCKS = {}
+_ENRICH_LOCKS_GUARD = threading.Lock()
+
+
+def _enrich_lock(brand_id):
+    with _ENRICH_LOCKS_GUARD:
+        lock = _ENRICH_LOCKS.get(brand_id)
+        if lock is None:
+            lock = threading.Lock()
+            _ENRICH_LOCKS[brand_id] = lock
+        return lock
+
+
+def _enrich_brand_media(brand):
+    """Scrape examples + social stats and persist. Own DB connection. Never invents counts."""
+    brand_id = brand.get("id")
+    if not brand_id:
+        return [], None
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+    from services.pr_example_enricher import (
+        collect_examples_and_social,
+        collect_social_overview,
+        social_overview_usable,
+    )
+    from psycopg2.extras import Json as PgJson
+
+    examples = _normalize_examples(
+        brand.get("pr_example_posts"),
+        brand.get("tiktok_handle") or brand.get("instagram_handle"),
+    )
+    social = _parse_social(brand.get("pr_social_profile"))
+    need_examples = not examples
+    need_social = not social or not (social.get("followers") or 0)
+    if not need_examples and not need_social:
+        return examples, social
+
+    scraped_examples = []
+    scraped_social = None
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            if need_examples:
+                fut = pool.submit(
+                    collect_examples_and_social,
+                    brand.get("instagram_handle"),
+                    brand.get("tiktok_handle"),
+                    3,
+                )
+            else:
+                fut = pool.submit(
+                    collect_social_overview,
+                    brand.get("tiktok_handle"),
+                    brand.get("instagram_handle"),
+                )
+            try:
+                scraped = fut.result(timeout=8)
+            except FuturesTimeout:
+                scraped = ([], None) if need_examples else None
+        if need_examples:
+            scraped_examples, scraped_social = scraped or ([], None)
+        else:
+            scraped_social = scraped
+    except Exception as enrich_err:
+        print(f"[brand-apply] media enrich scrape skipped: {enrich_err}")
+        return examples, social
+
+    parsed_social = _parse_social(scraped_social)
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        if scraped_examples:
+            cursor.execute(
+                "UPDATE pr_brands SET pr_example_posts = %s WHERE id = %s",
+                (PgJson(scraped_examples), brand_id),
+            )
+            examples = _normalize_examples(
+                scraped_examples,
+                brand.get("tiktok_handle") or brand.get("instagram_handle"),
+            )
+        if parsed_social and (social_overview_usable(parsed_social) or parsed_social.get("bio")):
+            cursor.execute(
+                "UPDATE pr_brands SET pr_social_profile = %s WHERE id = %s",
+                (PgJson(parsed_social), brand_id),
+            )
+            social = parsed_social
+        if scraped_examples or parsed_social:
+            conn.commit()
+    except Exception as save_err:
+        print(f"[brand-apply] media enrich save skipped: {save_err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        cursor.close()
+        conn.close()
+    return examples, social
+
+
 def _brand_card(row):
     if not row:
         return None
@@ -286,6 +445,7 @@ def _brand_card(row):
             "avg_response_time": row.get("avg_response_time_days") or row.get("avg_response_time"),
             "instagram": row.get("instagram_handle") or row.get("instagram"),
             "tiktok": row.get("tiktok_handle") or row.get("tiktok"),
+            "social": _parse_social(row.get("pr_social_profile") or row.get("social")),
         }
     )
 
@@ -359,7 +519,7 @@ def get_apply_pack(brand_id):
                    description, hero_product, niches, min_followers, micro_friendly,
                    regions, platforms, collaboration_type, avg_product_value, price_point,
                    has_application_form, response_rate, avg_response_time_days,
-                   pr_example_posts, application_form_url, instagram_handle, tiktok_handle,
+                   pr_example_posts, pr_social_profile, application_form_url, instagram_handle, tiktok_handle,
                    (contact_email IS NOT NULL AND TRIM(contact_email) != '') AS has_email_contact
             FROM pr_brands
             WHERE id = %s AND COALESCE(status, 'published') = 'published'
@@ -396,45 +556,24 @@ def get_apply_pack(brand_id):
             brand.get("pr_example_posts"),
             brand.get("tiktok_handle") or brand.get("instagram_handle"),
         )
-        if not examples:
-            try:
-                from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
-                from services.pr_example_enricher import collect_example_posts
-                from psycopg2.extras import Json as PgJson
+        social = _parse_social(brand.get("pr_social_profile"))
+        media_pending = _media_pending(brand, examples, social)
 
-                with ThreadPoolExecutor(max_workers=1) as pool:
-                    fut = pool.submit(
-                        collect_example_posts,
-                        brand.get("instagram_handle"),
-                        brand.get("tiktok_handle"),
-                        3,
-                    )
-                    try:
-                        scraped = fut.result(timeout=8) or []
-                    except FuturesTimeout:
-                        scraped = []
-                if scraped:
-                    cursor.execute(
-                        "UPDATE pr_brands SET pr_example_posts = %s WHERE id = %s",
-                        (PgJson(scraped), brand_id),
-                    )
-                    conn.commit()
-                    examples = _normalize_examples(
-                        scraped,
-                        brand.get("tiktok_handle") or brand.get("instagram_handle"),
-                    )
-            except Exception as enrich_err:
-                print(f"[brand-apply] example enrich skipped: {enrich_err}")
+        card = _brand_card(brand)
+        if card is not None and social:
+            card["social"] = social
 
         return jsonify(
             {
                 "success": True,
-                "brand": _brand_card(brand),
+                "brand": card,
+                "social": social,
                 "examples": examples,
                 "posts": posts or [],
                 "shipping": shipping,
                 "already_applied": bool(existing),
                 "apply_status": existing["status"] if existing else None,
+                "media_pending": media_pending,
             }
         )
     except Exception as e:
@@ -444,6 +583,44 @@ def get_apply_pack(brand_id):
     finally:
         cursor.close()
         conn.close()
+
+
+@brand_apply_bp.route("/apply-pack/<int:brand_id>/media", methods=["GET"])
+def get_apply_pack_media(brand_id):
+    """Slow path: scrape + cache last-PR examples and social stats. Step 1 does not wait on this."""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+
+    with _enrich_lock(brand_id):
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        try:
+            _ensure_schema(cursor, conn)
+            cursor.execute(
+                """
+                SELECT id, instagram_handle, tiktok_handle, pr_example_posts, pr_social_profile
+                FROM pr_brands
+                WHERE id = %s AND COALESCE(status, 'published') = 'published'
+                """,
+                (brand_id,),
+            )
+            brand = cursor.fetchone()
+        finally:
+            cursor.close()
+            conn.close()
+        if not brand:
+            return jsonify({"success": False, "error": "Brand not found"}), 404
+        examples, social = _enrich_brand_media(dict(brand))
+
+    return jsonify(
+        {
+            "success": True,
+            "examples": examples or [],
+            "social": social,
+            "media_pending": False,
+        }
+    )
 
 
 @brand_apply_bp.route("/brands/<int:brand_id>/apply", methods=["POST"])
