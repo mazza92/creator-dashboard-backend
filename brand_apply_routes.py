@@ -638,7 +638,7 @@ def submit_apply(brand_id):
     if not agreed:
         return jsonify({"success": False, "error": "Agree to the gifted terms and 6-month UGC usage to apply."}), 400
     if not isinstance(posts, list) or len(posts) != 3:
-        return jsonify({"success": False, "error": "Pick 3 posts."}), 400
+        return jsonify({"success": False, "error": "Select 3 posts to continue."}), 400
 
     full_name = (shipping.get("full_name") or "").strip()
     line1 = (shipping.get("address_line1") or "").strip()
@@ -671,7 +671,7 @@ def submit_apply(brand_id):
                 }
             )
     if len(selected) != 3:
-        return jsonify({"success": False, "error": "Pick 3 posts."}), 400
+        return jsonify({"success": False, "error": "Select 3 posts to continue."}), 400
 
     addr = {
         "full_name": full_name[:120],
