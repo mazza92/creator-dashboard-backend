@@ -87,6 +87,7 @@ class TestFocusAndMint(unittest.TestCase):
         self.assertIn('fill_count >= 3', sql)
         self.assertIn('ORDER BY fill_count DESC', sql)
         self.assertIn('rn <= 8', sql)
+        self.assertIn('slot_limit', sql)
 
     def test_mark_focus_picks_closest_to_full(self):
         rows = [

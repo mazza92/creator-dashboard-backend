@@ -28,6 +28,7 @@ LEFT JOIN (
         SELECT
             co.brand_id,
             co.fill_count,
+            COALESCE(c.slot_limit, 5) AS slot_limit,
             GREATEST(
                 COALESCE(c.slot_limit, 5) * 3,
                 COALESCE(c.slot_limit, 5) + 8
@@ -37,16 +38,18 @@ LEFT JOIN (
           ON c.brand_id = co.brand_id AND c.status = 'active'
     ),
     eligible AS (
-        SELECT brand_id, fill_count
+        SELECT brand_id, fill_count, slot_limit, target
         FROM targets
         WHERE fill_count >= 3
           AND fill_count < target
     )
-    SELECT brand_id, fill_count AS hunger
+    SELECT brand_id, fill_count AS hunger, fill_count, target, slot_limit
     FROM (
         SELECT
             brand_id,
             fill_count,
+            slot_limit,
+            target,
             ROW_NUMBER() OVER (ORDER BY fill_count DESC, brand_id) AS rn
         FROM eligible
     ) focused
@@ -55,7 +58,10 @@ LEFT JOIN (
 """
 
 ROSTER_DEMAND_SELECT = """
-COALESCE(roster_demand.hunger, 0) AS roster_hunger
+COALESCE(roster_demand.hunger, 0) AS roster_hunger,
+COALESCE(roster_demand.fill_count, 0) AS roster_fill_count,
+COALESCE(roster_demand.target, 0) AS roster_fill_target,
+COALESCE(roster_demand.slot_limit, 0) AS roster_slot_limit
 """
 
 
