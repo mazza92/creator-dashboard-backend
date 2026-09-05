@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from services.unlock_quota import (
+    CREDIT_USAGE_SQL,
     DELIVERED_THIS_MONTH_SQL,
     FREE_UNLOCK_LIMIT,
     count_delivered_unlocks_this_month,
@@ -64,14 +65,22 @@ class TestDeliveredCountQuery(unittest.TestCase):
         self.assertIn('pr_brands', sql)
         self.assertIn('pr_packages', sql)
         self.assertIn('brand_unlocks', sql)
+        self.assertIn('brand_pr_applications', sql)
         self.assertNotIn('COALESCE(generated_at', sql)
+
+    def test_credit_usage_sql_is_same_event_as_pre_pivot_unlocks(self):
+        sql = ' '.join(CREDIT_USAGE_SQL.split())
+        self.assertIn('brand_unlocks', sql)
+        self.assertIn('pr_packages', sql)
+        self.assertIn('brand_pr_applications', sql)
+        self.assertIn('GROUP BY creator_id, brand_id', sql)
 
     def test_count_reads_n(self):
         cursor = MagicMock()
         cursor.fetchone.return_value = {'n': 2}
         self.assertEqual(count_delivered_unlocks_this_month(cursor, 2848), 2)
         cursor.execute.assert_called_once()
-        self.assertEqual(cursor.execute.call_args[0][1], (2848, 2848))
+        self.assertEqual(cursor.execute.call_args[0][1], (2848, 2848, 2848))
 
     def test_free_unlock_usage_uses_delivered_not_counter(self):
         cursor = MagicMock()

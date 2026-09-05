@@ -16,6 +16,7 @@ from decimal import Decimal
 
 # Add parent directory for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from services.unlock_quota import CREDIT_USAGE_SQL
 
 
 # Create Blueprint
@@ -245,8 +246,8 @@ def _resolve_sort():
     sort = request.args.get('sort', 'signup').strip().lower()
     order = request.args.get('order', 'desc').strip().lower()
 
-    # Support both 'pitches' (legacy) and 'unlocks' for sorting
-    if sort not in ('signup', 'pitches', 'unlocks', 'followers'):
+    # Support pitches / unlocks / credits — same metric after the apply pivot
+    if sort not in ('signup', 'pitches', 'unlocks', 'credits', 'followers'):
         sort = 'signup'
     if order not in ('asc', 'desc'):
         order = 'desc'
@@ -254,25 +255,25 @@ def _resolve_sort():
     direction = 'ASC' if order == 'asc' else 'DESC'
     nulls = 'NULLS LAST' if order == 'desc' else 'NULLS FIRST'
 
-    if sort in ('pitches', 'unlocks'):
+    if sort in ('pitches', 'unlocks', 'credits'):
         return f"unlocks_count {direction} {nulls}, u.created_at DESC"
     if sort == 'followers':
         return f"c.followers_count {direction} {nulls}, u.created_at DESC"
     return f"u.created_at {direction} {nulls}"
 
 
-# Count from brand_unlocks table instead of creator_pipeline.pitched_at
-UNLOCK_STATS_SQL = """
+# Credits used = unlocks (same 3-free quota). Include Brand PR applies.
+UNLOCK_STATS_SQL = f"""
     (
         SELECT COUNT(*)::int
-        FROM brand_unlocks bu
-        WHERE bu.creator_id = c.id
+        FROM ({CREDIT_USAGE_SQL}) credits
+        WHERE credits.creator_id = c.id
     ) AS unlocks_count,
     (
         SELECT COUNT(*)::int
-        FROM brand_unlocks bu
-        WHERE bu.creator_id = c.id
-          AND bu.unlocked_at >= DATE_TRUNC('week', NOW())
+        FROM ({CREDIT_USAGE_SQL}) credits
+        WHERE credits.creator_id = c.id
+          AND credits.used_at >= DATE_TRUNC('week', NOW())
     ) AS unlocks_this_week
 """
 
@@ -430,8 +431,8 @@ def list_creators():
                 COUNT(DISTINCT c.id) FILTER (WHERE COALESCE(c.has_media_kit, false)) AS with_kit,
                 COUNT(DISTINCT c.id) FILTER (
                     WHERE EXISTS (
-                        SELECT 1 FROM brand_unlocks bu
-                        WHERE bu.creator_id = c.id
+                        SELECT 1 FROM ({CREDIT_USAGE_SQL}) credits
+                        WHERE credits.creator_id = c.id
                     )
                 ) AS unlocked
             FROM creators c
@@ -553,8 +554,8 @@ def get_creator_details(creator_id):
                     WHERE cp.creator_id = c.id
                 ) AS pipeline_saves,
                 (
-                    SELECT MAX(bu.unlocked_at) FROM brand_unlocks bu
-                    WHERE bu.creator_id = c.id
+                    SELECT MAX(credits.used_at) FROM ({CREDIT_USAGE_SQL}) credits
+                    WHERE credits.creator_id = c.id
                 ) AS last_unlocked_at
             FROM creators c
             JOIN users u ON c.user_id = u.id

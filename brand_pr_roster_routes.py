@@ -23,7 +23,7 @@ from psycopg2.extras import RealDictCursor, Json
 
 from pr_crm_routes import get_db_connection, convert_decimals
 from social_verification_routes import normalize_country_code
-from services.roster_demand import fill_target
+from services.roster_demand import fill_target, mark_focus
 
 brand_pr_roster_bp = Blueprint("brand_pr_roster", __name__, url_prefix="/api/brand-pr")
 
@@ -156,20 +156,28 @@ def _ensure_schema(cursor, conn=None):
         if conn:
             conn.commit()
         _SCHEMA_READY = True
-    try:
-        backfill_waiting_rosters(cursor)
-        if conn:
-            conn.commit()
-    except Exception:
-        traceback.print_exc()
 
 
 def _frontend_base():
-    return (
+    """Roster portal lives on the CRA app, not the marketing Next site."""
+    raw = (
         os.getenv("FRONTEND_URL")
         or os.getenv("REACT_APP_FRONTEND_URL")
-        or "http://localhost:3000"
+        or ""
     ).rstrip("/")
+    marketing = {
+        "https://newcollab.co",
+        "https://www.newcollab.co",
+        "http://newcollab.co",
+        "http://www.newcollab.co",
+    }
+    if raw in marketing:
+        return "https://app.newcollab.co"
+    if raw in ("http://localhost:3000", "http://127.0.0.1:3000"):
+        return "http://localhost:3001"
+    if raw:
+        return raw
+    return "http://localhost:3001"
 
 
 def _parse_json_list(raw):
@@ -263,6 +271,11 @@ def _insert_campaign(cursor, brand, slot_limit=DEFAULT_SLOT_LIMIT, title=None, h
         ),
     )
     campaign = cursor.fetchone()
+    _attach_open_apps(cursor, campaign["id"], brand["id"])
+    return campaign
+
+
+def _attach_open_apps(cursor, campaign_id, brand_id):
     cursor.execute(
         """
         UPDATE brand_pr_applications
@@ -271,13 +284,25 @@ def _insert_campaign(cursor, brand, slot_limit=DEFAULT_SLOT_LIMIT, title=None, h
           AND campaign_id IS NULL
           AND status IN ('review', 'ships', 'posted')
         """,
-        (campaign["id"], brand["id"]),
+        (campaign_id, brand_id),
     )
-    return campaign
 
 
-def ensure_active_roster_for_brand(cursor, brand_id, slot_limit=DEFAULT_SLOT_LIMIT):
-    """Mint an active roster if this brand has none in progress. Idempotent."""
+def _review_fill_count(cursor, brand_id):
+    cursor.execute(
+        """
+        SELECT COUNT(*)::int AS n
+        FROM brand_pr_applications
+        WHERE brand_id = %s AND status IN ('review', 'ships', 'posted')
+        """,
+        (brand_id,),
+    )
+    return int((cursor.fetchone() or {}).get("n") or 0)
+
+
+def maybe_mint_roster_for_brand(cursor, brand_id, slot_limit=DEFAULT_SLOT_LIMIT):
+    """Attach to a live roster, or mint once the list is worth sending."""
+    from services.roster_demand import ROSTER_MINT_MIN
     _ensure_schema(cursor)
     cursor.execute(
         """
@@ -291,6 +316,32 @@ def ensure_active_roster_for_brand(cursor, brand_id, slot_limit=DEFAULT_SLOT_LIM
     )
     existing = cursor.fetchone()
     if existing:
+        _attach_open_apps(cursor, existing["id"], brand_id)
+        return existing, False
+    if _review_fill_count(cursor, brand_id) < ROSTER_MINT_MIN:
+        return None, False
+    return ensure_active_roster_for_brand(cursor, brand_id, slot_limit=slot_limit)
+
+
+def ensure_active_roster_for_brand(cursor, brand_id, slot_limit=DEFAULT_SLOT_LIMIT):
+    """Mint an active roster if this brand has none in progress. Idempotent.
+
+    Admin / threshold mint only. First applicant must not call this.
+    """
+    _ensure_schema(cursor)
+    cursor.execute(
+        """
+        SELECT c.*
+        FROM brand_pr_campaigns c
+        WHERE c.brand_id = %s AND c.status IN ('active', 'locked')
+        ORDER BY CASE WHEN c.status = 'active' THEN 0 ELSE 1 END, c.created_at DESC
+        LIMIT 1
+        """,
+        (brand_id,),
+    )
+    existing = cursor.fetchone()
+    if existing:
+        _attach_open_apps(cursor, existing["id"], brand_id)
         return existing, False
 
     cursor.execute(
@@ -330,7 +381,8 @@ def ensure_active_roster_for_brand(cursor, brand_id, slot_limit=DEFAULT_SLOT_LIM
 
 
 def backfill_waiting_rosters(cursor):
-    """Mint a roster for every brand that already has applicants and no live link."""
+    """Manual only — do not call from schema init. Minting every waiting brand
+    creates a flood of 1-applicant lists that never fill."""
     cursor.execute(
         """
         SELECT DISTINCT a.brand_id
@@ -1418,11 +1470,13 @@ def admin_list_campaigns():
                 "fill_target": target,
                 "hunger": hunger,
                 "fill_ready": r.get("status") == "active" and hunger == 0,
+                "in_focus": False,
                 "portal_url": f"{_frontend_base()}/r/{r['token']}",
                 "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
                 "locked_at": r["locked_at"].isoformat() if r.get("locked_at") else None,
                 "shipped_at": r["shipped_at"].isoformat() if r.get("shipped_at") else None,
             }))
+        campaigns = mark_focus(campaigns)
         return jsonify({"success": True, "campaigns": campaigns}), 200
     except Exception as e:
         traceback.print_exc()

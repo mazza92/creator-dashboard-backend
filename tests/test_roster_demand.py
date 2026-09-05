@@ -6,7 +6,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from services.roster_demand import fill_target, prefer_hungry_rosters
+from services.roster_demand import (
+    ROSTER_DEMAND_JOIN,
+    ROSTER_FOCUS_CAP,
+    ROSTER_FOCUS_MIN,
+    ROSTER_MINT_MIN,
+    fill_target,
+    mark_focus,
+    prefer_hungry_rosters,
+)
 
 
 class TestFillTarget(unittest.TestCase):
@@ -58,6 +66,46 @@ class TestPreferHungryRosters(unittest.TestCase):
         ]
         out = prefer_hungry_rosters(ranked, pool=ranked, limit=8, max_hungry=4)
         self.assertEqual([b["id"] for b in out], [1, 2])
+
+    def test_closer_to_full_ranks_ahead_of_empty(self):
+        ranked = [
+            {"id": 1, "roster_hunger": 3, "match_score": 90},
+            {"id": 2, "roster_hunger": 11, "match_score": 80},
+        ]
+        out = prefer_hungry_rosters(ranked, limit=8, max_hungry=4)
+        self.assertEqual([b["id"] for b in out], [2, 1])
+
+
+class TestFocusAndMint(unittest.TestCase):
+    def test_thresholds(self):
+        self.assertEqual(ROSTER_FOCUS_MIN, 3)
+        self.assertEqual(ROSTER_FOCUS_CAP, 8)
+        self.assertEqual(ROSTER_MINT_MIN, 8)
+
+    def test_demand_sql_finishes_fuller_lists(self):
+        sql = ' '.join(ROSTER_DEMAND_JOIN.split())
+        self.assertIn('fill_count >= 3', sql)
+        self.assertIn('ORDER BY fill_count DESC', sql)
+        self.assertIn('rn <= 8', sql)
+
+    def test_mark_focus_picks_closest_to_full(self):
+        rows = [
+            {"id": 1, "status": "active", "fill_count": 1, "fill_target": 15},
+            {"id": 2, "status": "active", "fill_count": 11, "fill_target": 15},
+            {"id": 3, "status": "active", "fill_count": 4, "fill_target": 15},
+            {"id": 4, "status": "active", "fill_count": 15, "fill_target": 15},
+        ]
+        out = mark_focus(rows)
+        focused = {c["id"] for c in out if c["in_focus"]}
+        self.assertEqual(focused, {2, 3})
+
+    def test_mark_focus_caps_at_eight(self):
+        rows = [
+            {"id": i, "status": "active", "fill_count": 3 + i, "fill_target": 15}
+            for i in range(12)
+        ]
+        out = mark_focus(rows)
+        self.assertEqual(sum(1 for c in out if c["in_focus"]), 8)
 
 
 if __name__ == "__main__":

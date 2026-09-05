@@ -12,6 +12,7 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import psycopg2
+from services.unlock_quota import CREDIT_USAGE_SQL
 
 
 def get_db_connection():
@@ -2003,8 +2004,9 @@ def get_founder_dashboard():
             pack_stats['buyers_with_credits'] = int(cursor.fetchone()['count'] or 0)
 
         # ================== AT-LIMIT USERS (Hot Leads) ==================
-        # Free users who used all 3 free unlocks this calendar month vs last month.
+        # Free users who used all 3 free credits this calendar month vs last month.
         from services.unlock_quota import (
+            CREDIT_USAGE_SQL,
             DELIVERED_THIS_MONTH_BY_CREATOR_SQL,
             DELIVERED_LAST_MONTH_BY_CREATOR_SQL,
             FREE_UNLOCK_LIMIT,
@@ -2020,11 +2022,10 @@ def get_founder_dashboard():
                 c.niche,
                 d.delivered as unlocks_used,
                 (
-                    SELECT MAX(bu.unlocked_at)
-                    FROM brand_unlocks bu
-                    WHERE bu.creator_id = c.id
-                      AND bu.unlocked_at >= date_trunc('month', NOW())
-                      AND EXISTS (SELECT 1 FROM pr_brands pb WHERE pb.id = bu.brand_id)
+                    SELECT MAX(credits.used_at)
+                    FROM ({CREDIT_USAGE_SQL}) credits
+                    WHERE credits.creator_id = c.id
+                      AND credits.used_at >= date_trunc('month', NOW())
                 ) as last_unlock_at
             FROM creators c
             JOIN users u ON c.user_id = u.id
@@ -2039,8 +2040,10 @@ def get_founder_dashboard():
         at_limit_users = []
         for row in cursor.fetchall():
             days_since = None
-            if row['last_unlock_at']:
-                days_since = (datetime.now() - row['last_unlock_at']).days
+            last_unlock_at = row['last_unlock_at']
+            if last_unlock_at:
+                now = datetime.now(last_unlock_at.tzinfo) if getattr(last_unlock_at, 'tzinfo', None) else datetime.now()
+                days_since = (now - last_unlock_at).days
             unlocks_used = int(row['unlocks_used'] or FREE_UNLOCK_LIMIT)
             at_limit_users.append({
                 'creator_id': row['creator_id'],
@@ -2077,7 +2080,7 @@ def get_founder_dashboard():
         at_limit_last_month = int(cursor.fetchone()['count'] or 0)
         at_limit_change = at_limit_count - at_limit_last_month
 
-        # Near limit: 2 of 3 free unlocks used this month
+        # Near limit: 2 of 3 free credits used this month
         cursor.execute(f"""
             SELECT COUNT(*) as count
             FROM creators c
@@ -2117,28 +2120,27 @@ def get_founder_dashboard():
         """, (prev_start_date, prev_end_date))
         signups_last_period = cursor.fetchone()['count']
 
-        # Brand unlocks by day (selected period)
-        cursor.execute("""
+        # Credits used by day (selected period) — same metric as pre-pivot unlocks
+        cursor.execute(f"""
             SELECT
-                DATE(unlocked_at) as date,
+                DATE(used_at) as date,
                 COUNT(*) as count
-            FROM brand_unlocks
-            WHERE unlocked_at >= %s AND unlocked_at <= %s
-            GROUP BY DATE(unlocked_at)
+            FROM ({CREDIT_USAGE_SQL}) credits
+            WHERE used_at >= %s AND used_at <= %s
+            GROUP BY DATE(used_at)
             ORDER BY date ASC
         """, (start_date, end_date))
         pitches_daily = [{'date': str(row['date']), 'count': row['count']} for row in cursor.fetchall()]
 
-        # Current period vs previous period unlocks
-        cursor.execute("""
-            SELECT COUNT(*) as count FROM brand_unlocks
-            WHERE unlocked_at >= %s AND unlocked_at <= %s
+        cursor.execute(f"""
+            SELECT COUNT(*) as count FROM ({CREDIT_USAGE_SQL}) credits
+            WHERE used_at >= %s AND used_at <= %s
         """, (start_date, end_date))
         pitches_this_period = cursor.fetchone()['count']
 
-        cursor.execute("""
-            SELECT COUNT(*) as count FROM brand_unlocks
-            WHERE unlocked_at >= %s AND unlocked_at < %s
+        cursor.execute(f"""
+            SELECT COUNT(*) as count FROM ({CREDIT_USAGE_SQL}) credits
+            WHERE used_at >= %s AND used_at < %s
         """, (prev_start_date, prev_end_date))
         pitches_last_period = cursor.fetchone()['count']
 
@@ -2167,26 +2169,25 @@ def get_founder_dashboard():
         """, (prev_start_date, prev_end_date))
         active_last_period = cursor.fetchone()['count']
 
-        # ================== CREATOR ACTIVATION FUNNEL (All Time) ==================
-        # Credits fire on unlock (Get Brand PR), not on send.
+        # Credits fire on apply/unlock (Get Brand PR), not on send.
         # creator_pipeline.pitched_at is a leftover send/confirm flag and must
         # not be used as a funnel step — it undercounts post-migration users.
         cursor.execute("SELECT COUNT(*) as count FROM creators")
         total_signups = cursor.fetchone()['count']
 
-        cursor.execute("""
-            SELECT COUNT(DISTINCT creator_id) as count FROM brand_unlocks
+        cursor.execute(f"""
+            SELECT COUNT(DISTINCT creator_id) as count FROM ({CREDIT_USAGE_SQL}) credits
         """)
         unlocked_brand = cursor.fetchone()['count']
 
-        # Unlock is the activation event. Keep sent_pitch as an alias so older
+        # Unlock/credit is the activation event. Keep sent_pitch as an alias so older
         # clients do not invent an "unlocked but never pitched" gap.
         sent_pitch = unlocked_brand
 
-        # Over 2 brands unlocked = 3+ (paywall-adjacent on the free 3-unlock plan)
-        cursor.execute("""
+        # Over 2 brands = 3+ credits (paywall-adjacent on the free 3-credit plan)
+        cursor.execute(f"""
             SELECT COUNT(*) as count FROM (
-                SELECT creator_id FROM brand_unlocks
+                SELECT creator_id FROM ({CREDIT_USAGE_SQL}) credits
                 GROUP BY creator_id
                 HAVING COUNT(*) > 2
             ) as multi_unlock
@@ -2218,21 +2219,19 @@ def get_founder_dashboard():
         signups_last_month = int(cursor.fetchone()['count'] or 0)
         signups_month_change = signups_this_month - signups_last_month
 
-        cursor.execute("""
-            SELECT COUNT(*) as count FROM brand_unlocks
-            WHERE unlocked_at >= DATE_TRUNC('month', NOW())
+        cursor.execute(f"""
+            SELECT COUNT(*) as count FROM ({CREDIT_USAGE_SQL}) credits
+            WHERE used_at >= DATE_TRUNC('month', NOW())
         """)
         pitches_this_month = cursor.fetchone()['count']
 
-        cursor.execute("""
-            SELECT COUNT(DISTINCT creator_id) as count FROM brand_unlocks
+        cursor.execute(f"""
+            SELECT COUNT(DISTINCT creator_id) as count FROM ({CREDIT_USAGE_SQL}) credits
         """)
         unique_pitch_users = cursor.fetchone()['count']
 
-        # ================== TOP BRANDS BY UNLOCKS & PITCHES ==================
-        # Most unlocked + pitched brands - tracks actual engagement
-        # Use subqueries to avoid cross-product issues
-        cursor.execute("""
+        # Most credited + pitched brands - tracks actual engagement
+        cursor.execute(f"""
             SELECT
                 pb.id as brand_id,
                 pb.brand_name,
@@ -2246,7 +2245,7 @@ def get_founder_dashboard():
             FROM pr_brands pb
             LEFT JOIN (
                 SELECT brand_id, COUNT(*) as unlock_count
-                FROM brand_unlocks
+                FROM ({CREDIT_USAGE_SQL}) credits
                 GROUP BY brand_id
             ) unlocks ON unlocks.brand_id = pb.id
             LEFT JOIN (
@@ -2282,7 +2281,7 @@ def get_founder_dashboard():
         # ================== BRANDS BY CATEGORY ==================
         # Category breakdown for unlocks and pitches
         # Use subqueries to avoid cross-product issues
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT
                 pb.category,
                 COALESCE(unlocks.unlock_count, 0) as unlock_count,
@@ -2293,9 +2292,9 @@ def get_founder_dashboard():
                 SELECT
                     pb2.category,
                     COUNT(*) as unlock_count,
-                    COUNT(DISTINCT bu.creator_id) as unique_users
-                FROM brand_unlocks bu
-                JOIN pr_brands pb2 ON pb2.id = bu.brand_id
+                    COUNT(DISTINCT credits.creator_id) as unique_users
+                FROM ({CREDIT_USAGE_SQL}) credits
+                JOIN pr_brands pb2 ON pb2.id = credits.brand_id
                 GROUP BY pb2.category
             ) unlocks ON unlocks.category = pb.category
             LEFT JOIN (

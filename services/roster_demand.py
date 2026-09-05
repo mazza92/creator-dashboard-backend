@@ -1,36 +1,56 @@
 """
-Roster fill demand — push underfilled Brand PR campaigns in For You / Discover.
+Roster fill demand — finish a short list of gift rosters, then mint the next.
 
-Mechanic: once a roster is minted (status=active), keep boosting that brand
-until it has enough applicants for a real shortlist (3× slots, min slots+8).
-Then the boost turns off so the next roster can fill. Niche matching still
-filters who sees it.
+Do not boost every 1-applicant brand. That spreads creators across infinite
+thin lists and none ever become sendable.
+
+Hunger is fill progress (higher = closer to send), not emptiness.
+Only lists with ROSTER_FOCUS_MIN applicants enter the race, and only the
+ROSTER_FOCUS_CAP closest-to-full get a For You / Discover boost.
 """
 
 ROSTER_FILL_MULT = 3
 ROSTER_FILL_PAD = 8
+ROSTER_FOCUS_MIN = 3
+ROSTER_FOCUS_CAP = 8
+ROSTER_MINT_MIN = 8
 
 # SQL joined as roster_demand on pr_brands b
 ROSTER_DEMAND_JOIN = """
 LEFT JOIN (
-    SELECT
-        c.brand_id,
-        MAX(
+    WITH counts AS (
+        SELECT a.brand_id, COUNT(*)::int AS fill_count
+        FROM brand_pr_applications a
+        WHERE a.status IN ('review', 'ships', 'posted')
+        GROUP BY a.brand_id
+    ),
+    targets AS (
+        SELECT
+            co.brand_id,
+            co.fill_count,
             GREATEST(
-                0,
-                GREATEST(c.slot_limit * 3, c.slot_limit + 8)
-                - COALESCE((
-                    SELECT COUNT(*)::int
-                    FROM brand_pr_applications a
-                    WHERE a.brand_id = c.brand_id
-                      AND (a.campaign_id IS NULL OR a.campaign_id = c.id)
-                      AND a.status IN ('review', 'ships', 'posted')
-                ), 0)
-            )
-        ) AS hunger
-    FROM brand_pr_campaigns c
-    WHERE c.status = 'active'
-    GROUP BY c.brand_id
+                COALESCE(c.slot_limit, 5) * 3,
+                COALESCE(c.slot_limit, 5) + 8
+            ) AS target
+        FROM counts co
+        LEFT JOIN brand_pr_campaigns c
+          ON c.brand_id = co.brand_id AND c.status = 'active'
+    ),
+    eligible AS (
+        SELECT brand_id, fill_count
+        FROM targets
+        WHERE fill_count >= 3
+          AND fill_count < target
+    )
+    SELECT brand_id, fill_count AS hunger
+    FROM (
+        SELECT
+            brand_id,
+            fill_count,
+            ROW_NUMBER() OVER (ORDER BY fill_count DESC, brand_id) AS rn
+        FROM eligible
+    ) focused
+    WHERE rn <= 8
 ) roster_demand ON roster_demand.brand_id = b.id
 """
 
@@ -45,12 +65,27 @@ def fill_target(slot_limit):
     return max(n * ROSTER_FILL_MULT, n + ROSTER_FILL_PAD)
 
 
+def mark_focus(campaigns):
+    """Flag the closest-to-full active lists For You will actually push."""
+    rows = list(campaigns or [])
+    eligible = [
+        c for c in rows
+        if c.get("status") == "active"
+        and int(c.get("fill_count") or 0) >= ROSTER_FOCUS_MIN
+        and int(c.get("fill_count") or 0) < int(c.get("fill_target") or fill_target(c.get("slot_limit")))
+    ]
+    eligible.sort(key=lambda c: (-int(c.get("fill_count") or 0), int(c.get("id") or 0)))
+    focus_ids = {c.get("id") for c in eligible[:ROSTER_FOCUS_CAP]}
+    for c in rows:
+        c["in_focus"] = c.get("id") in focus_ids
+    return rows
+
+
 def prefer_hungry_rosters(ranked, pool=None, limit=8, max_hungry=4, min_fit=35):
     """Reorder underfilled rosters first — never invent off-niche or 0% cards.
 
     Hunger is a sort boost among brands that already passed niche + fit.
-    Unranked pool rows (match_score 0) stay out so a tech creator does not
-    see a hungry beauty roster at 0% fit.
+    Higher hunger = closer to a sendable list. Unranked / 0% stay out.
     """
     ranked_rows = [
         dict(r) for r in (ranked or [])
