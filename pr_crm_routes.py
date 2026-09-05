@@ -9268,8 +9268,9 @@ def get_for_you():
                 except Exception:
                     filtered_matched = []
 
+        open_lists = []
         if filtered_matched or matched:
-            from services.roster_demand import prefer_hungry_rosters
+            from services.roster_demand import pick_open_lists, prefer_hungry_rosters
             prep = _prepare_for_you_profile(scrape_profile, interest_niches, followers or 0)
             allowed_cats = {
                 str(c).lower()
@@ -9285,6 +9286,19 @@ def get_for_you():
                     or str(b.get('category') or '').lower() in allowed_cats
                 )
             ]
+            scored_by_id = {b.get('id'): b for b in filtered_matched}
+            open_pool = []
+            for row in (matched or []):
+                raw = dict(row)
+                fill = int(raw.get('roster_fill_count') or raw.get('roster_hunger') or 0)
+                if fill <= 0:
+                    continue
+                if _for_you_should_skip_brand(raw, interest_niches, prep):
+                    continue
+                if allowed_cats and str(raw.get('category') or '').lower() not in allowed_cats:
+                    continue
+                open_pool.append(scored_by_id.get(raw.get('id')) or raw)
+            open_lists = pick_open_lists(open_pool, limit=4, min_fit=0)
             filtered_matched = prefer_hungry_rosters(
                 filtered_matched, limit=8, max_hungry=4, min_fit=FOR_YOU_MIN_FIT_SCORE
             )
@@ -9307,6 +9321,7 @@ def get_for_you():
             'success': True,
             'hot': [dict(r) for r in hot],
             'matched': filtered_matched,
+            'open_lists': open_lists,
             'seasonal': [dict(r) for r in seasonal],
             'seasonal_reason': seasonal_reasons.get(month, ''),
             'seasonal_month': datetime.now().strftime('%B'),

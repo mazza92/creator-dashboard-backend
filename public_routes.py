@@ -244,7 +244,10 @@ def _format_public_brand_list_item(b):
         'collaborationType': b.get('collaboration_type') or 'gifted',
         'recentReplies': recent_replies,
         'roster_hunger': int(b.get('roster_hunger') or 0),
-        'roster_open': int(b.get('roster_hunger') or 0) > 0,
+        'roster_fill_count': int(b.get('roster_fill_count') or 0),
+        'roster_fill_target': int(b.get('roster_fill_target') or 0),
+        'roster_slot_limit': int(b.get('roster_slot_limit') or 0),
+        'roster_open': int(b.get('roster_fill_count') or b.get('roster_hunger') or 0) > 0,
     }
 
 

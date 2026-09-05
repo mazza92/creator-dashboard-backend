@@ -37,23 +37,22 @@ LEFT JOIN (
         LEFT JOIN brand_pr_campaigns c
           ON c.brand_id = co.brand_id AND c.status = 'active'
     ),
-    eligible AS (
-        SELECT brand_id, fill_count, slot_limit, target
+    focused AS (
+        SELECT brand_id
         FROM targets
         WHERE fill_count >= 3
           AND fill_count < target
+        ORDER BY fill_count DESC, brand_id
+        LIMIT 8
     )
-    SELECT brand_id, fill_count AS hunger, fill_count, target, slot_limit
-    FROM (
-        SELECT
-            brand_id,
-            fill_count,
-            slot_limit,
-            target,
-            ROW_NUMBER() OVER (ORDER BY fill_count DESC, brand_id) AS rn
-        FROM eligible
-    ) focused
-    WHERE rn <= 8
+    SELECT
+        t.brand_id,
+        CASE WHEN f.brand_id IS NOT NULL THEN t.fill_count ELSE 0 END AS hunger,
+        t.fill_count,
+        t.target,
+        t.slot_limit
+    FROM targets t
+    LEFT JOIN focused f ON f.brand_id = t.brand_id
 ) roster_demand ON roster_demand.brand_id = b.id
 """
 
@@ -85,6 +84,30 @@ def mark_focus(campaigns):
     for c in rows:
         c["in_focus"] = c.get("id") in focus_ids
     return rows
+
+
+def pick_open_lists(ranked, limit=4, min_fit=0):
+    """In-niche brands with a live gift list, closest-to-full first.
+
+    Used for the For You campaign desk. Does not invent off-niche cards.
+    Hunger can stay 0 here — fill_count is enough to show the list.
+    """
+    rows = []
+    seen = set()
+    for raw in ranked or []:
+        b = dict(raw or {})
+        if int(b.get("match_score") or 0) < int(min_fit or 0):
+            continue
+        fill = int(b.get("roster_fill_count") or b.get("roster_hunger") or 0)
+        if fill <= 0:
+            continue
+        bid = b.get("id")
+        if bid in seen:
+            continue
+        seen.add(bid)
+        rows.append(b)
+    rows.sort(key=lambda b: int(b.get("roster_fill_count") or b.get("roster_hunger") or 0), reverse=True)
+    return rows[: max(1, int(limit or 4))]
 
 
 def prefer_hungry_rosters(ranked, pool=None, limit=8, max_hungry=4, min_fit=35):

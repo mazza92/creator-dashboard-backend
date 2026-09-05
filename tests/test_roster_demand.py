@@ -13,6 +13,7 @@ from services.roster_demand import (
     ROSTER_MINT_MIN,
     fill_target,
     mark_focus,
+    pick_open_lists,
     prefer_hungry_rosters,
 )
 
@@ -86,8 +87,18 @@ class TestFocusAndMint(unittest.TestCase):
         sql = ' '.join(ROSTER_DEMAND_JOIN.split())
         self.assertIn('fill_count >= 3', sql)
         self.assertIn('ORDER BY fill_count DESC', sql)
-        self.assertIn('rn <= 8', sql)
+        self.assertIn('LIMIT 8', sql)
+        self.assertIn('t.fill_count', sql)
         self.assertIn('slot_limit', sql)
+
+    def test_pick_open_lists_uses_fill_not_just_hunger(self):
+        rows = [
+            {"id": 1, "roster_fill_count": 1, "roster_hunger": 0, "match_score": 70},
+            {"id": 2, "roster_fill_count": 6, "roster_hunger": 6, "match_score": 68},
+            {"id": 3, "roster_fill_count": 0, "roster_hunger": 0, "match_score": 90},
+        ]
+        out = pick_open_lists(rows, limit=4)
+        self.assertEqual([b["id"] for b in out], [2, 1])
 
     def test_mark_focus_picks_closest_to_full(self):
         rows = [
