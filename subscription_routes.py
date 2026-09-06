@@ -13,6 +13,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 from psycopg2.extras import RealDictCursor
+import json
 
 # GA4 Measurement Protocol configuration
 GA4_MEASUREMENT_ID = os.getenv('GA4_MEASUREMENT_ID', 'G-XXXXXXXXXX')  # e.g., G-ABC123XYZ
@@ -815,6 +816,36 @@ def stripe_webhook():
                 WHERE c.id = %s
             ''', (creator_id,))
             user_row = cursor.fetchone()
+
+            # AUTO-APPROVE PRO/ELITE SUBSCRIBERS (Skip the waitlist)
+            if tier in ['pro', 'elite']:
+                cursor.execute("""
+                    UPDATE creators
+                    SET approval_status = 'pro_approved',
+                        approved_at = NOW(),
+                        approved_by = NULL
+                    WHERE id = %s AND approval_status = 'pending'
+                    RETURNING id
+                """, (creator_id,))
+
+                was_pending = cursor.fetchone()
+
+                if was_pending:
+                    # Log to audit table
+                    cursor.execute("""
+                        INSERT INTO creator_approval_audit
+                        (creator_id, admin_user_id, previous_status, new_status, reason, metadata)
+                        VALUES (%s, NULL, 'pending', 'pro_approved', %s, %s)
+                    """, (
+                        creator_id,
+                        f'Auto-approved via {tier.upper()} subscription',
+                        json.dumps({
+                            "auto_approved": True,
+                            "tier": tier,
+                            "subscription_id": subscription_id
+                        })
+                    ))
+                    print(f"⚡ Creator {creator_id} auto-approved via {tier.upper()} subscription!")
 
             conn.commit()
             cursor.close()

@@ -66,6 +66,7 @@ from routes.admin_reports import admin_reports_bp
 from routes.admin_email import admin_email_bp
 from routes.admin_creators import admin_creators_bp
 from content_submission_routes import content_hub_bp
+from creator_approval_routes import creator_approval_bp, init_approval_routes
 
 # In-house social scrapers for profile image extraction
 try:
@@ -359,6 +360,7 @@ app.register_blueprint(admin_reports_bp)
 app.register_blueprint(admin_email_bp)
 app.register_blueprint(admin_creators_bp)
 app.register_blueprint(content_hub_bp)
+app.register_blueprint(creator_approval_bp)
 
 from media_proxy_routes import media_proxy, persist_social_avatar
 app.register_blueprint(media_proxy)
@@ -637,6 +639,8 @@ def release_db_connection(conn):
     except Exception as e:
         app.logger.error(f"🔥 Error closing database connection: {str(e)}")
 
+# Initialize creator approval routes with database connection
+init_approval_routes(get_db_connection)
 
 # Global error handler
 @app.errorhandler(Exception)
@@ -646,7 +650,7 @@ def handle_error(error):
     if isinstance(error, HTTPException):
         return error
 
-    app.logger.error(f"🔥 Unhandled error: {str(error)}", exc_info=True)
+    app.logger.error("Unhandled error on %s: %s", request.path, error, exc_info=True)
     response = jsonify({"error": "An unexpected error occurred. Please try again later."})
     origin = request.headers.get('Origin')
     allowed_origins = [
@@ -1674,6 +1678,7 @@ def get_profile():
 
             profile_data = {
                 **user_data,
+                'user_id': user_id,  # Ensure user_id is always present for frontend
                 'user_role': user_role,
                 'creator_id': creator_id,
                 'brand_id': brand_id
