@@ -46,8 +46,7 @@ def get_approval_status():
             SELECT c.approval_status, c.approval_queue_position, c.waitlist_joined_at,
                    c.rejection_reason
             FROM creators c
-            JOIN users u ON c.id = u.creator_id
-            WHERE u.id = %s
+            WHERE c.user_id = %s
         """, (user_id,))
 
         creator = cursor.fetchone()
@@ -90,12 +89,10 @@ def track_waitlist_view():
 
         # Only set if not already set
         cursor.execute("""
-            UPDATE creators c
+            UPDATE creators
             SET waitlist_joined_at = NOW()
-            FROM users u
-            WHERE u.id = %s
-              AND u.creator_id = c.id
-              AND c.waitlist_joined_at IS NULL
+            WHERE user_id = %s
+              AND waitlist_joined_at IS NULL
         """, (user_id,))
 
         conn.commit()
@@ -152,7 +149,7 @@ def get_approval_queue():
             SELECT c.id as creator_id, c.username, u.email, c.platform, c.follower_count,
                    c.niches, c.bio, c.created_at, c.approval_queue_position
             FROM creators c
-            JOIN users u ON c.id = u.creator_id
+            JOIN users u ON c.user_id = u.id
             WHERE c.approval_status = 'pending'
         """
 
@@ -250,7 +247,7 @@ def approve_creator(creator_id):
             cursor.execute("""
                 SELECT u.email, c.username
                 FROM creators c
-                JOIN users u ON c.id = u.creator_id
+                JOIN users u ON c.user_id = u.id
                 WHERE c.id = %s
             """, (creator_id,))
             creator = cursor.fetchone()
@@ -327,7 +324,7 @@ def reject_creator(creator_id):
             cursor.execute("""
                 SELECT u.email, c.username
                 FROM creators c
-                JOIN users u ON c.id = u.creator_id
+                JOIN users u ON c.user_id = u.id
                 WHERE c.id = %s
             """, (creator_id,))
             creator = cursor.fetchone()
