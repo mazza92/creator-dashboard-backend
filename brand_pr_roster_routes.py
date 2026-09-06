@@ -1477,6 +1477,12 @@ def admin_list_campaigns():
                 "shipped_at": r["shipped_at"].isoformat() if r.get("shipped_at") else None,
             }))
         campaigns = mark_focus(campaigns)
+        campaigns.sort(key=lambda c: c.get("created_at") or "", reverse=True)
+        campaigns.sort(key=lambda c: (
+            0 if c.get("fill_ready") else 1,
+            0 if c.get("in_focus") else 1,
+            -int(c.get("fill_count") or 0),
+        ))
         return jsonify({"success": True, "campaigns": campaigns}), 200
     except Exception as e:
         traceback.print_exc()
