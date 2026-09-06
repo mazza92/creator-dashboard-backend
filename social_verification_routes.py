@@ -29,6 +29,14 @@ except ImportError:
     fernet = None
 
 
+def _log(msg):
+    """ASCII-safe logging — Windows cp1252 consoles crash on emoji prints (→ 500)."""
+    try:
+        print(str(msg).encode('ascii', 'replace').decode('ascii'))
+    except Exception:
+        pass
+
+
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
@@ -85,10 +93,120 @@ INSTAGRAM_REDIRECT_URI = os.getenv('INSTAGRAM_REDIRECT_URI', 'https://api.newcol
 # TikTok OAuth (Login Kit)
 TIKTOK_CLIENT_KEY = os.getenv('TIKTOK_CLIENT_KEY')
 TIKTOK_CLIENT_SECRET = os.getenv('TIKTOK_CLIENT_SECRET')
-TIKTOK_REDIRECT_URI = os.getenv('TIKTOK_REDIRECT_URI', 'https://api.newcollab.co/api/social/callback/tiktok')
+TIKTOK_WEB_REDIRECT_URI = 'https://api.newcollab.co/api/social/callback/tiktok'
+TIKTOK_LOCAL_CALLBACK = 'http://localhost:5000/api/social/callback/tiktok'
+TIKTOK_REDIRECT_URI = os.getenv('TIKTOK_REDIRECT_URI', TIKTOK_WEB_REDIRECT_URI)
+
+
+def _is_local_dev_url(url):
+    host = (url or '').lower()
+    return 'localhost' in host or '127.0.0.1' in host
+
+
+def _decode_tiktok_oauth_state(state):
+    if not state:
+        return {}
+    try:
+        return json.loads(base64.urlsafe_b64decode(state.encode()).decode()) or {}
+    except Exception:
+        return {}
+
+
+def _bounce_tiktok_callback_to_local_if_needed():
+    """TikTok Web Login Kit rejects localhost hosts. Local Connect therefore
+    registers the production HTTPS redirect URI; production must hand the
+    unused code to local Flask before exchanging tokens (wrong secret)."""
+    if _is_local_dev_url(request.host_url):
+        return None
+    state_data = _decode_tiktok_oauth_state(request.args.get('state'))
+    if not _is_local_dev_url(state_data.get('return_url')):
+        return None
+    qs = request.query_string.decode('utf-8', errors='replace')
+    target = f'{TIKTOK_LOCAL_CALLBACK}?{qs}' if qs else TIKTOK_LOCAL_CALLBACK
+    _log('[tiktok] Bouncing callback to local Flask')
+    return redirect(target)
+
+
+def _tiktok_oauth_config(return_url=None):
+    """Read TikTok creds from this repo's .env first so OS/prod keys cannot leak into Sandbox."""
+    file_vals = {}
+    try:
+        from dotenv import dotenv_values
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+        file_vals = dotenv_values(env_path) or {}
+    except Exception:
+        file_vals = {}
+    key = (file_vals.get('TIKTOK_CLIENT_KEY') or os.getenv('TIKTOK_CLIENT_KEY') or TIKTOK_CLIENT_KEY or '').strip()
+    secret = (file_vals.get('TIKTOK_CLIENT_SECRET') or os.getenv('TIKTOK_CLIENT_SECRET') or TIKTOK_CLIENT_SECRET or '').strip()
+    redirect_uri = (
+        file_vals.get('TIKTOK_REDIRECT_URI')
+        or os.getenv('TIKTOK_REDIRECT_URI')
+        or TIKTOK_REDIRECT_URI
+        or TIKTOK_WEB_REDIRECT_URI
+    ).strip()
+    # Web Kit cannot callback on localhost. Use the registered HTTPS URI;
+    # production bounces the unused code here when return_url is local.
+    if _is_local_dev_url(return_url):
+        redirect_uri = TIKTOK_WEB_REDIRECT_URI
+    return key, secret, redirect_uri
+# Match Kora-style consent: profile, additional profile, stats, public videos.
+TIKTOK_SCOPES_FULL = 'user.info.basic,user.info.profile,user.info.stats,video.list'
+TIKTOK_SCOPES_BASE = 'user.info.basic,user.info.profile,user.info.stats'
+TIKTOK_USER_FIELDS = (
+    'open_id,union_id,avatar_url,display_name,'
+    'username,bio_description,profile_deep_link,is_verified,'
+    'follower_count,following_count,likes_count,video_count'
+)
 
 # Frontend URL for redirects
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://app.newcollab.co')
+
+
+def _ensure_tiktok_oauth_columns(cursor):
+    """Add open_id + video snapshot columns if missing (idempotent)."""
+    cursor.execute(
+        'ALTER TABLE creators ADD COLUMN IF NOT EXISTS social_open_id VARCHAR(128)'
+    )
+    cursor.execute(
+        'ALTER TABLE creators ADD COLUMN IF NOT EXISTS social_oauth_videos JSONB'
+    )
+
+
+def _fetch_tiktok_videos(access_token, max_count=20):
+    """Return a light list of public videos via video.list, or [] on failure."""
+    try:
+        resp = requests.post(
+            'https://open.tiktokapis.com/v2/video/list/',
+            headers={
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json',
+            },
+            params={'fields': 'id,title,cover_image_url,create_time,share_url'},
+            json={'max_count': max_count},
+            timeout=15,
+        )
+        payload = resp.json() if resp.content else {}
+        err = (payload.get('error') or {})
+        if err.get('code') and err.get('code') != 'ok':
+            _log(f"[tiktok] video.list error: {err}")
+            return []
+        videos = (payload.get('data') or {}).get('videos') or []
+        out = []
+        for v in videos:
+            if not isinstance(v, dict) or not v.get('id'):
+                continue
+            out.append({
+                'id': str(v.get('id')),
+                'title': v.get('title') or '',
+                'cover_image_url': v.get('cover_image_url') or '',
+                'create_time': v.get('create_time'),
+                'share_url': v.get('share_url') or '',
+                'url': v.get('share_url') or f"https://www.tiktok.com/@/video/{v.get('id')}",
+            })
+        return out
+    except Exception as e:
+        _log(f"[tiktok] video.list exception: {e}")
+        return []
 
 
 # ============================================================================
@@ -104,9 +222,19 @@ def get_db_connection():
     return psycopg2.connect(os.getenv('DATABASE_URL'), cursor_factory=RealDictCursor)
 
 
+def _session_get(key, default=None):
+    """Safe session read — Flask-Session can leave session as None after a Redis blip."""
+    try:
+        if session is None:
+            return default
+        return session.get(key, default)
+    except Exception:
+        return default
+
+
 def get_creator_id_from_session():
     """Get creator ID from session"""
-    return session.get('creator_id')
+    return _session_get('creator_id')
 
 
 def get_user_country_from_session():
@@ -114,16 +242,16 @@ def get_user_country_from_session():
     # TESTING: Allow override via query param or header (dev mode only)
     test_country = request.args.get('_test_country') or request.headers.get('X-Test-Country')
     if test_country:
-        print(f"🧪 TEST MODE: Using country override: {test_country}")
+        _log(f"🧪 TEST MODE: Using country override: {test_country}")
         return test_country.upper()
 
     # First try session cache
-    cached_country = session.get('user_country')
+    cached_country = _session_get('user_country')
     if cached_country:
         return cached_country
 
     # Try database
-    user_id = session.get('user_id')
+    user_id = _session_get('user_id')
     if user_id:
         try:
             conn = get_db_connection()
@@ -136,13 +264,13 @@ def get_user_country_from_session():
                 session['user_country'] = result['country']
                 return result['country']
         except Exception as e:
-            print(f"Error fetching user country from DB: {e}")
+            _log(f"Error fetching user country from DB: {e}")
 
     # Fallback: Try IP-based geolocation
     try:
         # Get client IP (handles proxies/load balancers)
         client_ip = request.headers.get('X-Forwarded-For', request.headers.get('X-Real-IP', request.remote_addr))
-        print(f"🌍 Client IP detected: {client_ip}")
+        _log(f"🌍 Client IP detected: {client_ip}")
 
         if client_ip:
             # Take first IP if multiple (X-Forwarded-For can be comma-separated)
@@ -157,12 +285,12 @@ def get_user_country_from_session():
                     country_code = geo_data.get('countryCode')
                     if country_code:
                         session['user_country'] = country_code
-                        print(f"🌍 IP geolocation: {client_ip} → {country_code}")
+                        _log(f"🌍 IP geolocation: {client_ip} → {country_code}")
                         return country_code
             else:
-                print(f"🌍 Skipping localhost/private IP: {client_ip}")
+                _log(f"🌍 Skipping localhost/private IP: {client_ip}")
     except Exception as e:
-        print(f"IP geolocation error: {e}")
+        _log(f"IP geolocation error: {e}")
 
     return None
 
@@ -186,7 +314,7 @@ def detect_country_from_ip(timeout=3):
             if geo_response.status_code == 200:
                 return geo_response.json().get('countryCode')
     except Exception as e:
-        print(f"⚠️ detect_country_from_ip error: {e}")
+        _log(f"⚠️ detect_country_from_ip error: {e}")
     return None
 
 
@@ -382,7 +510,7 @@ def log_verification_check(creator_id: int, check_type: str, platform: str,
         cursor.close()
         conn.close()
     except Exception as e:
-        print(f"Error logging verification check: {e}")
+        _log(f"Error logging verification check: {e}")
 
 
 def update_creator_verification(creator_id: int, platform: str, data: dict,
@@ -392,8 +520,11 @@ def update_creator_verification(creator_id: int, platform: str, data: dict,
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        _ensure_tiktok_oauth_columns(cursor)
 
         status = 'verified' if result['passed'] else f"failed_{result['failure_reason']}"
+        videos = data.get('oauth_videos')
+        videos_json = json.dumps(videos) if videos is not None else None
 
         cursor.execute('''
             UPDATE creators SET
@@ -409,7 +540,9 @@ def update_creator_verification(creator_id: int, platform: str, data: dict,
                 social_verification_status = %s,
                 social_oauth_token = %s,
                 social_oauth_refresh_token = %s,
-                social_token_expires_at = %s
+                social_token_expires_at = %s,
+                social_open_id = COALESCE(%s, social_open_id),
+                social_oauth_videos = COALESCE(%s::jsonb, social_oauth_videos)
             WHERE id = %s
         ''', (
             platform,
@@ -423,6 +556,8 @@ def update_creator_verification(creator_id: int, platform: str, data: dict,
             encrypt_token(access_token),
             encrypt_token(refresh_token),
             expires_at,
+            data.get('open_id'),
+            videos_json,
             creator_id
         ))
 
@@ -431,7 +566,7 @@ def update_creator_verification(creator_id: int, platform: str, data: dict,
         conn.close()
         return True
     except Exception as e:
-        print(f"Error updating creator verification: {e}")
+        _log(f"Error updating creator verification: {e}")
         return False
 
 
@@ -455,7 +590,7 @@ def check_region():
     if not user_country:
         user_country = detect_country_from_ip()
         if user_country:
-            print(f"🌍 Region check - IP detection: {user_country}")
+            _log(f"🌍 Region check - IP detection: {user_country}")
 
     country_code = (user_country or '').upper().strip()
 
@@ -472,7 +607,7 @@ def check_region():
         }
         log_verification_check(creator_id, 'region_precheck', None, result, country_code)
     elif not is_allowed:
-        print(f"🚫 Region check blocked: {country_code} (no creator_id yet)")
+        _log(f"🚫 Region check blocked: {country_code} (no creator_id yet)")
 
     return jsonify({
         'allowed': is_allowed,
@@ -609,7 +744,7 @@ def verify_handle():
         }), 404
 
     except Exception as e:
-        print(f"Error verifying handle: {e}")
+        _log(f"Error verifying handle: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({
@@ -643,7 +778,7 @@ def connect_instagram():
         return redirect(f"{return_url}?social=failed&reason=restricted_region")
 
     if not INSTAGRAM_APP_ID:
-        print("❌ INSTAGRAM_APP_ID not configured")
+        _log("❌ INSTAGRAM_APP_ID not configured")
         return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
     # Encode user info in state to survive cross-subdomain redirect
@@ -660,7 +795,7 @@ def connect_instagram():
     # Also store in session as backup (works for same-domain)
     session['instagram_oauth_state'] = csrf_token
 
-    print(f"📤 Instagram Connect: user_id={user_id}, creator_id={creator_id}, state={state[:20]}...")
+    _log(f"📤 Instagram Connect: user_id={user_id}, creator_id={creator_id}, state={state[:20]}...")
 
     # Instagram Business Login OAuth URL (new API)
     scopes = 'instagram_business_basic,instagram_business_manage_insights'
@@ -696,16 +831,16 @@ def callback_instagram():
             creator_id = state_data.get('creator_id')
             return_url = state_data.get('return_url', return_url)
         except Exception as e:
-            print(f"⚠️ Failed to decode state: {e}")
+            _log(f"⚠️ Failed to decode state: {e}")
 
     # Fallback to session (works for same-domain)
     stored_csrf = session.pop('instagram_oauth_state', None)
 
-    print(f"📥 Instagram Callback: user_id={user_id}, creator_id={creator_id}, csrf_valid={csrf_token == stored_csrf if stored_csrf else 'no_session'}")
+    _log(f"📥 Instagram Callback: user_id={user_id}, creator_id={creator_id}, csrf_valid={csrf_token == stored_csrf if stored_csrf else 'no_session'}")
 
     # Validate we have user_id (required for the flow to work)
     if not user_id:
-        print("❌ Instagram OAuth: No user_id in state - session may have expired")
+        _log("❌ Instagram OAuth: No user_id in state - session may have expired")
         return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
     # Check for errors
@@ -713,7 +848,7 @@ def callback_instagram():
     error_reason = request.args.get('error_reason')
     error_description = request.args.get('error_description')
     if error:
-        print(f"❌ Instagram OAuth error: {error} - {error_reason} - {error_description}")
+        _log(f"❌ Instagram OAuth error: {error} - {error_reason} - {error_description}")
         return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
     code = request.args.get('code')
@@ -722,7 +857,7 @@ def callback_instagram():
 
     try:
         # Exchange code for short-lived access token (Instagram Business Login API)
-        print(f"📤 Exchanging code for token...")
+        _log(f"📤 Exchanging code for token...")
         token_response = requests.post(
             'https://api.instagram.com/oauth/access_token',
             data={
@@ -735,21 +870,21 @@ def callback_instagram():
             timeout=15
         )
         token_data = token_response.json()
-        print(f"📥 Token response: {token_data}")
+        _log(f"📥 Token response: {token_data}")
 
         if 'error_type' in token_data or 'error' in token_data:
-            print(f"❌ Instagram token error: {token_data}")
+            _log(f"❌ Instagram token error: {token_data}")
             return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
         access_token = token_data.get('access_token')
         user_id = token_data.get('user_id')
 
         if not access_token:
-            print("❌ No access token in response")
+            _log("❌ No access token in response")
             return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
         # Get user profile using Instagram Graph API
-        print(f"📤 Fetching user profile for user_id: {user_id}")
+        _log(f"📤 Fetching user profile for user_id: {user_id}")
         profile_response = requests.get(
             f'https://graph.instagram.com/v22.0/me',
             params={
@@ -759,10 +894,10 @@ def callback_instagram():
             timeout=10
         )
         profile_data_raw = profile_response.json()
-        print(f"📥 Profile response: {profile_data_raw}")
+        _log(f"📥 Profile response: {profile_data_raw}")
 
         if 'error' in profile_data_raw:
-            print(f"❌ Instagram profile error: {profile_data_raw}")
+            _log(f"❌ Instagram profile error: {profile_data_raw}")
             return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
         # Note: Instagram Business/Creator accounts connected via OAuth are inherently public
@@ -783,7 +918,7 @@ def callback_instagram():
             'is_private': not is_public_account,  # Business/Creator accounts are always public
         }
         api_response = profile_data_raw
-        print(f"✅ Instagram account found: @{profile_data['username']} - {profile_data['follower_count']} followers, {profile_data['media_count']} posts")
+        _log(f"✅ Instagram account found: @{profile_data['username']} - {profile_data['follower_count']} followers, {profile_data['media_count']} posts")
 
         # Get user country - try fresh IP detection in callback
         user_country = get_user_country_from_session()
@@ -792,7 +927,7 @@ def callback_instagram():
         if not user_country:
             user_country = detect_country_from_ip()
             if user_country:
-                print(f"🌍 Fresh IP detection in callback: {user_country}")
+                _log(f"🌍 Fresh IP detection in callback: {user_country}")
                 # Store in database for future reference
                 if user_id:
                     try:
@@ -804,10 +939,10 @@ def callback_instagram():
                         cursor.close()
                         conn.close()
                     except Exception as e:
-                        print(f"⚠️ Failed to store country in DB: {e}")
+                        _log(f"⚠️ Failed to store country in DB: {e}")
 
         user_country = user_country or ''
-        print(f"🌍 Final country for verification: '{user_country}' (restricted: {not region_code_is_allowed(user_country)})")
+        _log(f"🌍 Final country for verification: '{user_country}' (restricted: {not region_code_is_allowed(user_country)})")
 
         # Run 5-gate verification
         result = validate_social_gates(profile_data, 'instagram', user_country)
@@ -835,7 +970,7 @@ def callback_instagram():
             return redirect(f"{return_url}?social=failed&reason={result['failure_reason']}&platform=instagram")
 
     except Exception as e:
-        print(f"❌ Instagram OAuth exception: {e}")
+        _log(f"❌ Instagram OAuth exception: {e}")
         import traceback
         traceback.print_exc()
         return redirect(f"{return_url}?social=failed&reason=oauth_error")
@@ -848,69 +983,84 @@ def callback_instagram():
 @social_verification_bp.route('/connect/tiktok', methods=['GET'])
 def connect_tiktok():
     """Initiate TikTok OAuth flow via Login Kit"""
-    # For onboarding, we may not have creator_id yet - just need user_id
-    user_id = session.get('user_id')
-    creator_id = get_creator_id_from_session()
-
-    # Get return_url from query params (allows flexible redirect back to any frontend)
     return_url = request.args.get('return_url', f"{FRONTEND_URL}/onboarding")
+    try:
+        # For onboarding, we may not have creator_id yet - just need user_id
+        user_id = _session_get('user_id')
+        creator_id = get_creator_id_from_session()
 
-    if not user_id:
-        return redirect(f"{FRONTEND_URL}/login?redirect=/onboarding")
+        if not user_id:
+            return redirect(f"{FRONTEND_URL}/login?redirect=/onboarding")
 
-    # Check region first
-    user_country = get_user_country_from_session()
-    if user_country and not region_code_is_allowed(user_country):
-        return redirect(f"{return_url}?social=failed&reason=restricted_region")
+        # Check region first
+        user_country = get_user_country_from_session()
+        if user_country and not region_code_is_allowed(user_country):
+            return redirect(f"{return_url}?social=failed&reason=restricted_region")
 
-    if not TIKTOK_CLIENT_KEY:
-        print("❌ TIKTOK_CLIENT_KEY not configured")
-        return redirect(f"{return_url}?social=failed&reason=oauth_error")
+        client_key, _secret, redirect_uri = _tiktok_oauth_config(return_url)
 
-    # Generate code verifier for PKCE
-    code_verifier = secrets.token_urlsafe(64)
+        if not client_key:
+            _log("[tiktok] TIKTOK_CLIENT_KEY not configured")
+            return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
-    # Create code challenge (SHA256 hash, base64url encoded)
-    code_challenge = base64.urlsafe_b64encode(
-        hashlib.sha256(code_verifier.encode()).digest()
-    ).decode().rstrip('=')
+        # Generate code verifier for PKCE
+        code_verifier = secrets.token_urlsafe(64)
 
-    # Encode user info and code_verifier in state to survive cross-subdomain redirect
-    csrf_token = secrets.token_urlsafe(16)
-    state_data = {
-        'csrf': csrf_token,
-        'user_id': user_id,
-        'creator_id': creator_id,
-        'code_verifier': code_verifier,
-        'return_url': return_url
-    }
-    state = base64.urlsafe_b64encode(json.dumps(state_data).encode()).decode()
+        # Create code challenge (SHA256 hash, base64url encoded)
+        code_challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(code_verifier.encode()).digest()
+        ).decode().rstrip('=')
 
-    # Also store in session as backup
-    session['tiktok_oauth_csrf'] = csrf_token
+        # Prefer full Kora-style scopes; allow base-only retry when portal rejects video.list
+        use_base = request.args.get('scopes') == 'base'
+        scopes = TIKTOK_SCOPES_BASE if use_base else TIKTOK_SCOPES_FULL
 
-    print(f"📤 TikTok Connect: user_id={user_id}, creator_id={creator_id}")
+        # Encode user info and code_verifier in state to survive cross-subdomain redirect
+        csrf_token = secrets.token_urlsafe(16)
+        state_data = {
+            'csrf': csrf_token,
+            'user_id': user_id,
+            'creator_id': creator_id,
+            'code_verifier': code_verifier,
+            'return_url': return_url,
+            'scopes': 'base' if use_base else 'full',
+            'redirect_uri': redirect_uri,
+        }
+        state = base64.urlsafe_b64encode(json.dumps(state_data, default=str).encode()).decode()
 
-    # TikTok OAuth URL
-    scopes = 'user.info.basic,user.info.profile,user.info.stats'
+        try:
+            session['tiktok_oauth_csrf'] = csrf_token
+        except Exception:
+            pass
 
-    auth_url = (
-        f"https://www.tiktok.com/v2/auth/authorize/?"
-        f"client_key={TIKTOK_CLIENT_KEY}"
-        f"&redirect_uri={quote(TIKTOK_REDIRECT_URI)}"
-        f"&scope={scopes}"
-        f"&state={state}"
-        f"&response_type=code"
-        f"&code_challenge={code_challenge}"
-        f"&code_challenge_method=S256"
-    )
+        _log(f"[tiktok] Connect user_id={user_id} creator_id={creator_id} scopes={scopes} key={client_key[:8]}...")
 
-    return redirect(auth_url)
+        auth_url = (
+            f"https://www.tiktok.com/v2/auth/authorize/?"
+            f"client_key={client_key}"
+            f"&redirect_uri={quote(redirect_uri)}"
+            f"&scope={scopes}"
+            f"&state={state}"
+            f"&response_type=code"
+            f"&code_challenge={code_challenge}"
+            f"&code_challenge_method=S256"
+        )
+
+        return redirect(auth_url)
+    except Exception as e:
+        _log(f"[tiktok] Connect exception: {e}")
+        import traceback
+        traceback.print_exc()
+        return redirect(f"{return_url}?social=failed&reason=oauth_error&platform=tiktok")
 
 
 @social_verification_bp.route('/callback/tiktok', methods=['GET'])
 def callback_tiktok():
     """Handle TikTok OAuth callback"""
+    bounced = _bounce_tiktok_callback_to_local_if_needed()
+    if bounced:
+        return bounced
+
     state = request.args.get('state')
 
     # Decode state to get user info and code_verifier (survives cross-subdomain redirect)
@@ -919,6 +1069,7 @@ def callback_tiktok():
     code_verifier = None
     csrf_token = None
     return_url = f"{FRONTEND_URL}/onboarding"  # Default fallback
+    scopes_mode = 'full'
 
     if state:
         try:
@@ -928,80 +1079,124 @@ def callback_tiktok():
             creator_id = state_data.get('creator_id')
             code_verifier = state_data.get('code_verifier')
             return_url = state_data.get('return_url', return_url)
+            scopes_mode = state_data.get('scopes') or 'full'
         except Exception as e:
-            print(f"⚠️ Failed to decode TikTok state: {e}")
+            _log(f"⚠️ Failed to decode TikTok state: {e}")
 
     # Fallback to session (works for same-domain)
     stored_csrf = session.pop('tiktok_oauth_csrf', None)
 
-    print(f"📥 TikTok Callback: user_id={user_id}, creator_id={creator_id}, has_verifier={bool(code_verifier)}")
+    _log(f"📥 TikTok Callback: user_id={user_id}, creator_id={creator_id}, has_verifier={bool(code_verifier)}")
 
     # Validate we have required data
     if not user_id or not code_verifier:
-        print("❌ TikTok OAuth: Missing user_id or code_verifier in state")
+        _log("❌ TikTok OAuth: Missing user_id or code_verifier in state")
         return redirect(f"{return_url}?social=failed&reason=oauth_error")
 
-    # Check for errors
+    # Check for errors from TikTok
     error = request.args.get('error')
+    error_desc = (request.args.get('error_description') or '').lower()
     if error:
-        print(f"❌ TikTok OAuth error: {error}")
-        return redirect(f"{return_url}?social=failed&reason=oauth_error")
+        _log(f"❌ TikTok OAuth error: {error} {error_desc}")
+        # Unapproved video.list → retry once without it (clear fail, no silent scrape)
+        if scopes_mode != 'base' and (
+            error == 'invalid_scope'
+            or 'scope' in error_desc
+            or 'video.list' in error_desc
+        ):
+            retry = (
+                f"/api/social/connect/tiktok?scopes=base"
+                f"&return_url={quote(return_url)}"
+            )
+            _log(f"↩️ Retrying TikTok connect without video.list → {retry}")
+            return redirect(retry)
+        return redirect(f"{return_url}?social=failed&reason=oauth_error&platform=tiktok")
 
     code = request.args.get('code')
     if not code:
-        return redirect(f"{return_url}?social=failed&reason=oauth_error")
+        return redirect(f"{return_url}?social=failed&reason=oauth_error&platform=tiktok")
 
     try:
         # Exchange code for access token
+        client_key, client_secret, redirect_uri = _tiktok_oauth_config(return_url)
+        if state:
+            try:
+                stored_redirect = json.loads(base64.urlsafe_b64decode(state.encode()).decode()).get('redirect_uri')
+                if stored_redirect:
+                    redirect_uri = stored_redirect
+            except Exception:
+                pass
         token_response = requests.post(
             'https://open.tiktokapis.com/v2/oauth/token/',
             headers={'Content-Type': 'application/x-www-form-urlencoded'},
             data={
-                'client_key': TIKTOK_CLIENT_KEY,
-                'client_secret': TIKTOK_CLIENT_SECRET,
+                'client_key': client_key,
+                'client_secret': client_secret,
                 'code': code,
                 'grant_type': 'authorization_code',
-                'redirect_uri': TIKTOK_REDIRECT_URI,
+                'redirect_uri': redirect_uri,
                 'code_verifier': code_verifier
             },
             timeout=10
         )
         token_data = token_response.json()
 
-        if 'error' in token_data:
-            print(f"❌ TikTok token error: {token_data}")
-            return redirect(f"{return_url}?social=failed&reason=oauth_error")
+        if 'error' in token_data and token_data.get('error') not in (None, '', 'ok'):
+            _log(f"❌ TikTok token error: {token_data}")
+            err_msg = str(token_data.get('error_description') or token_data.get('error') or '').lower()
+            if scopes_mode != 'base' and 'scope' in err_msg:
+                return redirect(
+                    f"/api/social/connect/tiktok?scopes=base&return_url={quote(return_url)}"
+                )
+            return redirect(f"{return_url}?social=failed&reason=oauth_error&platform=tiktok")
 
         access_token = token_data.get('access_token')
         refresh_token = token_data.get('refresh_token')
         expires_in = token_data.get('expires_in', 86400)
         expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
 
-        # Get user info with stats
+        if not access_token:
+            _log(f"❌ TikTok token missing access_token: {token_data}")
+            return redirect(f"{return_url}?social=failed&reason=oauth_error&platform=tiktok")
+
+        # Get user info with profile + stats fields
         user_response = requests.get(
             'https://open.tiktokapis.com/v2/user/info/',
             headers={'Authorization': f'Bearer {access_token}'},
-            params={'fields': 'open_id,union_id,avatar_url,display_name,follower_count,following_count,likes_count,video_count,is_verified'},
+            params={'fields': TIKTOK_USER_FIELDS},
             timeout=10
         )
         user_data = user_response.json()
 
-        if 'error' in user_data:
-            print(f"❌ TikTok user info error: {user_data}")
-            return redirect(f"{return_url}?social=failed&reason=oauth_error")
+        err = (user_data.get('error') or {})
+        if err.get('code') and err.get('code') != 'ok':
+            _log(f"❌ TikTok user info error: {user_data}")
+            return redirect(f"{return_url}?social=failed&reason=oauth_error&platform=tiktok")
 
-        user_info = user_data.get('data', {}).get('user', {})
+        user_info = user_data.get('data', {}).get('user', {}) or {}
 
-        # Build profile data for verification
-        # Note: TikTok API v2 doesn't directly expose privacy_level
-        # We'll assume public unless we can determine otherwise
+        # Prefer unique @username; display_name is not a handle
+        handle = (
+            (user_info.get('username') or '').strip().lstrip('@')
+            or (user_info.get('display_name') or '').strip().lstrip('@')
+        )
+        open_id = user_info.get('open_id')
+
+        oauth_videos = []
+        if scopes_mode != 'base':
+            oauth_videos = _fetch_tiktok_videos(access_token)
+
         profile_data = {
             'access_token': access_token,
-            'username': user_info.get('display_name'),
-            'follower_count': user_info.get('follower_count', 0),
-            'media_count': user_info.get('video_count', 0),
+            'username': handle,
+            'open_id': open_id,
+            'follower_count': user_info.get('follower_count', 0) or 0,
+            'media_count': user_info.get('video_count', 0) or 0,
             'account_type': 'creator',
             'is_private': False,  # TikTok API v2 - assume public for now
+            'bio_description': user_info.get('bio_description') or '',
+            'profile_deep_link': user_info.get('profile_deep_link') or '',
+            'oauth_videos': oauth_videos,
         }
 
         # Get user country - try fresh IP detection in callback
@@ -1011,22 +1206,27 @@ def callback_tiktok():
         if not user_country:
             user_country = detect_country_from_ip()
             if user_country:
-                print(f"🌍 Fresh IP detection in TikTok callback: {user_country}")
+                _log(f"🌍 Fresh IP detection in TikTok callback: {user_country}")
                 # Store in database for future reference
                 if user_id:
                     try:
                         conn = get_db_connection()
                         cursor = conn.cursor()
-                        cursor.execute('UPDATE users SET country = %s WHERE id = %s AND country IS NULL',
-                                      (user_country, user_id))
+                        cursor.execute(
+                            'UPDATE users SET country = %s WHERE id = %s AND country IS NULL',
+                            (user_country, user_id)
+                        )
                         conn.commit()
                         cursor.close()
                         conn.close()
                     except Exception as e:
-                        print(f"⚠️ Failed to store country in DB: {e}")
+                        _log(f"⚠️ Failed to store country in DB: {e}")
 
         user_country = user_country or ''
-        print(f"🌍 Final country for TikTok verification: '{user_country}' (restricted: {not region_code_is_allowed(user_country)})")
+        _log(
+            f"🌍 Final country for TikTok verification: '{user_country}' "
+            f"(restricted: {not region_code_is_allowed(user_country)})"
+        )
 
         # Run 5-gate verification
         result = validate_social_gates(profile_data, 'tiktok', user_country)
@@ -1046,20 +1246,23 @@ def callback_tiktok():
 
         if result['passed']:
             # Include follower/post counts in URL for frontend (since creator_id may not exist yet)
+            handle_q = quote(str(profile_data['username'] or ''))
             return redirect(
                 f"{return_url}?social=success&platform=tiktok"
-                f"&handle={profile_data['username']}"
+                f"&handle={handle_q}"
                 f"&followers={profile_data['follower_count']}"
                 f"&posts={profile_data['media_count']}"
             )
         else:
-            return redirect(f"{return_url}?social=failed&reason={result['failure_reason']}&platform=tiktok")
+            return redirect(
+                f"{return_url}?social=failed&reason={result['failure_reason']}&platform=tiktok"
+            )
 
     except Exception as e:
-        print(f"❌ TikTok OAuth exception: {e}")
+        _log(f"❌ TikTok OAuth exception: {e}")
         import traceback
         traceback.print_exc()
-        return redirect(f"{return_url}?social=failed&reason=oauth_error")
+        return redirect(f"{return_url}?social=failed&reason=oauth_error&platform=tiktok")
 
 
 # ============================================================================
@@ -1119,11 +1322,12 @@ def get_verification_status():
             'connected_at': creator['social_connected_at'].isoformat() if creator['social_connected_at'] else None,
             'last_checked_at': creator['social_last_checked_at'].isoformat() if creator['social_last_checked_at'] else None,
             'grandfathered': is_grandfathered,
-            'grandfathered_until': creator['social_verification_required_by'].isoformat() if creator['social_verification_required_by'] else None
+            'grandfathered_until': creator['social_verification_required_by'].isoformat() if creator['social_verification_required_by'] else None,
+            'connected': bool(creator['social_platform'] and creator['social_handle']),
         })
 
     except Exception as e:
-        print(f"Error getting verification status: {e}")
+        _log(f"Error getting verification status: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -1166,7 +1370,7 @@ def recheck_verification():
             return jsonify({'error': 'TikTok recheck not implemented yet'}), 501
 
     except Exception as e:
-        print(f"Error during recheck: {e}")
+        _log(f"Error during recheck: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -1205,7 +1409,7 @@ def disconnect_social():
         return jsonify({'success': True, 'message': 'Social account disconnected'})
 
     except Exception as e:
-        print(f"Error disconnecting social: {e}")
+        _log(f"Error disconnecting social: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -1269,7 +1473,7 @@ def check_requires_verification():
         return jsonify({'requires_verification': True, 'reason': 'not_verified'})
 
     except Exception as e:
-        print(f"Error checking verification requirement: {e}")
+        _log(f"Error checking verification requirement: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -1298,22 +1502,22 @@ def instagram_webhook():
         token = request.args.get('hub.verify_token')
         challenge = request.args.get('hub.challenge')
 
-        print(f"📥 Instagram Webhook Verification: mode={mode}, token={token}, challenge={challenge}")
+        _log(f"📥 Instagram Webhook Verification: mode={mode}, token={token}, challenge={challenge}")
 
         if mode == 'subscribe' and token == INSTAGRAM_WEBHOOK_VERIFY_TOKEN:
-            print("✅ Instagram Webhook Verified Successfully!")
+            _log("✅ Instagram Webhook Verified Successfully!")
             # Must return the challenge as plain text, not JSON
             return challenge, 200
         else:
-            print(f"❌ Instagram Webhook Verification Failed: token mismatch (expected: {INSTAGRAM_WEBHOOK_VERIFY_TOKEN})")
+            _log(f"❌ Instagram Webhook Verification Failed: token mismatch (expected: {INSTAGRAM_WEBHOOK_VERIFY_TOKEN})")
             return 'Forbidden', 403
 
     elif request.method == 'POST':
         # Receive webhook events from Instagram
         try:
             data = request.get_json()
-            print(f"📨 Instagram Webhook Event Received:")
-            print(json.dumps(data, indent=2))
+            _log(f"📨 Instagram Webhook Event Received:")
+            _log(json.dumps(data, indent=2))
 
             # Process different event types
             object_type = data.get('object')
@@ -1329,13 +1533,13 @@ def instagram_webhook():
                     for change in changes:
                         field = change.get('field')
                         value = change.get('value')
-                        print(f"  📌 Field: {field}, Value: {value}")
+                        _log(f"  📌 Field: {field}, Value: {value}")
 
             # Always return 200 to acknowledge receipt
             return jsonify({'status': 'received'}), 200
 
         except Exception as e:
-            print(f"❌ Error processing Instagram webhook: {e}")
+            _log(f"❌ Error processing Instagram webhook: {e}")
             import traceback
             traceback.print_exc()
             # Still return 200 to prevent Meta from retrying
