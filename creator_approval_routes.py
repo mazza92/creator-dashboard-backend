@@ -43,27 +43,42 @@ def get_approval_status():
 
         # Get creator's approval data
         cursor.execute("""
-            SELECT c.approval_status, c.approval_queue_position, c.waitlist_joined_at,
-                   c.rejection_reason
+            SELECT c.id, c.approval_status, c.approval_queue_position, c.waitlist_joined_at,
+                   c.rejection_reason, c.created_at
             FROM creators c
             WHERE c.user_id = %s
         """, (user_id,))
 
         creator = cursor.fetchone()
+
+        if not creator:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Creator not found"}), 404
+
+        # Calculate queue position dynamically if pending
+        queue_position = creator['approval_queue_position']
+        if creator['approval_status'] == 'pending':
+            cursor.execute("""
+                SELECT COUNT(*) + 1 as position
+                FROM creators
+                WHERE approval_status = 'pending'
+                  AND created_at < %s
+            """, (creator['created_at'],))
+            result = cursor.fetchone()
+            queue_position = result['position'] if result else 1
+
         cursor.close()
         conn.close()
 
-        if not creator:
-            return jsonify({"error": "Creator not found"}), 404
-
         # Calculate estimated wait (20 approvals per day)
         estimated_days = 0
-        if creator['approval_queue_position']:
-            estimated_days = max(1, creator['approval_queue_position'] // 20)
+        if queue_position:
+            estimated_days = max(1, queue_position // 20)
 
         return jsonify({
             "status": creator['approval_status'],
-            "queue_position": creator['approval_queue_position'],
+            "queue_position": queue_position,
             "estimated_wait_days": estimated_days,
             "waitlist_joined_at": creator['waitlist_joined_at'].isoformat() if creator['waitlist_joined_at'] else None,
             "can_skip_with_pro": creator['approval_status'] == 'pending',

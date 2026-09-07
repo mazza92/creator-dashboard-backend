@@ -1689,6 +1689,9 @@ def get_profile():
                 creator_data = cursor.fetchone() or {}
                 profile_data.update(creator_data)
 
+                # Log approval status for debugging
+                app.logger.info(f"🔍 Creator approval_status: {creator_data.get('approval_status')} for user_id={user_id}")
+
                 # Add computed media kit fields
                 if creator_data:
                     creator_id_val = creator_data.get('id')
@@ -2652,11 +2655,13 @@ def onboarding_step1():
                 )
         else:
             # Insert new creator record with scraped avatar
+            # Set approval_status = 'pending' for new creators (waitlist system)
             cursor.execute(
                 '''
                 INSERT INTO creators (user_id, username, followers_count, platforms, social_links,
-                                      social_platform, social_handle, social_follower_count, social_verified, image_profile)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                      social_platform, social_handle, social_follower_count, social_verified, image_profile,
+                                      approval_status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
                 RETURNING id
                 ''',
                 (user_id, username, followers, json.dumps(platforms_list), json.dumps(social_links),
