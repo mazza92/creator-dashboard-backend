@@ -9291,16 +9291,17 @@ def get_for_you():
             for row in (matched or []):
                 raw = dict(row)
                 fill = int(raw.get('roster_fill_count') or raw.get('roster_hunger') or 0)
-                if fill <= 0:
+                is_open = int(raw.get('roster_is_open') or 0)
+                if fill <= 0 and not is_open:
                     continue
                 if _for_you_should_skip_brand(raw, interest_niches, prep):
                     continue
                 if allowed_cats and str(raw.get('category') or '').lower() not in allowed_cats:
                     continue
                 open_pool.append(scored_by_id.get(raw.get('id')) or raw)
-            open_lists = pick_open_lists(open_pool, limit=4, min_fit=0)
+            open_lists = pick_open_lists(open_pool, limit=8, min_fit=0)
             filtered_matched = prefer_hungry_rosters(
-                filtered_matched, limit=8, max_hungry=4, min_fit=FOR_YOU_MIN_FIT_SCORE
+                filtered_matched, limit=8, max_hungry=6, min_fit=FOR_YOU_MIN_FIT_SCORE
             )
 
         if filtered_matched:

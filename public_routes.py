@@ -247,7 +247,8 @@ def _format_public_brand_list_item(b):
         'roster_fill_count': int(b.get('roster_fill_count') or 0),
         'roster_fill_target': int(b.get('roster_fill_target') or 0),
         'roster_slot_limit': int(b.get('roster_slot_limit') or 0),
-        'roster_open': int(b.get('roster_fill_count') or b.get('roster_hunger') or 0) > 0,
+        'roster_is_open': int(b.get('roster_is_open') or 0),
+        'roster_open': int(b.get('roster_is_open') or b.get('roster_fill_count') or b.get('roster_hunger') or 0) > 0,
     }
 
 
@@ -531,8 +532,8 @@ def get_public_brands():
             if prefer_niches:
                 query += """
                     ORDER BY
-                        CASE WHEN LOWER(b.category) = ANY(%s) THEN 0 ELSE 1 END,
                         COALESCE(roster_demand.hunger, 0) DESC,
+                        CASE WHEN LOWER(b.category) = ANY(%s) THEN 0 ELSE 1 END,
                         b.is_featured DESC,
                         b.created_at DESC NULLS LAST,
                         b.brand_name ASC

@@ -14,6 +14,12 @@ from datetime import datetime, timedelta, date
 import re
 import requests
 
+from services.opportunity_gifted_pr import (
+    gifted_pr_payload_for_opportunity,
+    is_brand_submission,
+    push_opportunity_to_gifted_pr,
+)
+
 opportunities_bp = Blueprint('opportunities', __name__, url_prefix='/api/opportunities')
 
 
@@ -610,6 +616,9 @@ def list_opportunities():
         creator_tokens |= _tokenize_niche_blob(creator.get('niche'))
         is_pro = creator.get('subscription_tier') in ['pro', 'elite']
 
+        from services.opportunity_gifted_pr import ensure_opportunity_gifted_pr_columns
+        ensure_opportunity_gifted_pr_columns(cursor)
+
         # Get all live opportunities
         cursor.execute('''
             SELECT
@@ -623,6 +632,7 @@ def list_opportunities():
             WHERE status = 'live'
               AND (closes_at IS NULL OR closes_at > NOW())
               AND spots_filled < spots_total
+              AND pr_brand_id IS NULL
             ORDER BY created_at DESC
         ''')
         all_opps = cursor.fetchall()
@@ -952,21 +962,21 @@ def admin_list():
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         status = request.args.get('status', 'pending')
 
+        from services.opportunity_gifted_pr import ensure_opportunity_gifted_pr_columns
+        ensure_opportunity_gifted_pr_columns(cursor)
         cursor.execute('''
             SELECT
                 id, brand_name, brand_email, brand_website, brand_category,
                 brand_logo_url, product_name, campaign_description, pr_value_usd,
                 creator_count_range, shipping_regions, follower_ranges,
                 content_types, creator_niches, additional_notes, application_deadline,
-                spots_total, spots_filled, status, created_at, published_at, closes_at
+                spots_total, spots_filled, status, created_at, published_at, closes_at,
+                pr_brand_id
             FROM opportunities
             WHERE status = %s
             ORDER BY created_at DESC
         ''', (status,))
         opps = cursor.fetchall()
-
-        cursor.close()
-        conn.close()
 
         # Convert datetime objects to strings
         opportunities = []
@@ -1000,8 +1010,14 @@ def admin_list():
                 'status': opp['status'],
                 'created_at': opp['created_at'].isoformat() if opp['created_at'] else None,
                 'published_at': opp['published_at'].isoformat() if opp['published_at'] else None,
-                'closes_at': opp['closes_at'].isoformat() if opp['closes_at'] else None
+                'closes_at': opp['closes_at'].isoformat() if opp['closes_at'] else None,
+                'is_brand_submission': is_brand_submission(opp),
+                **gifted_pr_payload_for_opportunity(cursor, opp),
             })
+
+        conn.commit()
+        cursor.close()
+        conn.close()
 
         return jsonify({
             'success': True,
@@ -1062,15 +1078,17 @@ def admin_update(opp_id):
 @opportunities_bp.route('/admin/<int:opp_id>/publish', methods=['PATCH'])
 @admin_required
 def admin_publish(opp_id):
-    """Admin publishes an opportunity"""
+    """Admin publishes an opportunity. Brand submissions go live as Gifted PR."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         data = request.get_json() or {}
         days_open = data.get('days_open', 14)
 
-        # Get opportunity for email and application_deadline
-        cursor.execute('SELECT brand_email, brand_name, product_name, application_deadline FROM opportunities WHERE id = %s', (opp_id,))
+        from services.opportunity_gifted_pr import ensure_opportunity_gifted_pr_columns
+        ensure_opportunity_gifted_pr_columns(cursor)
+
+        cursor.execute('SELECT * FROM opportunities WHERE id = %s', (opp_id,))
         opp = cursor.fetchone()
 
         if not opp:
@@ -1096,11 +1114,29 @@ def admin_publish(opp_id):
                 WHERE id = %s
             ''', (days_open, opp_id))
 
+        gifted = None
+        if is_brand_submission(opp):
+            gifted = push_opportunity_to_gifted_pr(cursor, opp)
+
         conn.commit()
         cursor.close()
         conn.close()
 
-        # Notify brand
+        if gifted:
+            roster_line = (
+                f'\nCreators apply in-app. Your roster:\n{gifted.get("roster_url")}\n'
+                if gifted.get('roster_url') else '\n'
+            )
+            send_email_notification(
+                opp['brand_email'],
+                f'Your Newcollab gift list is live',
+                f'Your gifted PR list for {opp["product_name"]} is live on Newcollab.\n'
+                f'{roster_line}'
+                f'Creators will start applying within the next 24 hours.\n\n'
+                f'Best,\nNewcollab Team'
+            )
+            return jsonify({'success': True, 'gifted_pr': gifted})
+
         send_email_notification(
             opp['brand_email'],
             f'Your Newcollab listing is live',
@@ -1109,10 +1145,37 @@ def admin_publish(opp_id):
             f'Best,\nNewcollab Team'
         )
 
-        return jsonify({'success': True})
+        return jsonify({'success': True, 'gifted_pr': None})
 
     except Exception as e:
         print(f"Error in admin_publish: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@opportunities_bp.route('/admin/<int:opp_id>/push-gifted-pr', methods=['POST'])
+@admin_required
+def admin_push_gifted_pr(opp_id):
+    """Attach an already-live brand submission to Gifted PR + mint a roster."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        from services.opportunity_gifted_pr import ensure_opportunity_gifted_pr_columns
+        ensure_opportunity_gifted_pr_columns(cursor)
+        cursor.execute('SELECT * FROM opportunities WHERE id = %s', (opp_id,))
+        opp = cursor.fetchone()
+        if not opp:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Opportunity not found'}), 404
+        if not is_brand_submission(opp):
+            conn.close()
+            return jsonify({'success': False, 'error': 'Scanner gigs stay on Open gigs'}), 400
+
+        gifted = push_opportunity_to_gifted_pr(cursor, opp)
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'gifted_pr': gifted})
+    except Exception as e:
+        print(f"Error in admin_push_gifted_pr: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -1471,6 +1534,14 @@ def admin_reopen(opp_id):
         data = request.get_json() or {}
         days_open = data.get('days_open', 14)
 
+        from services.opportunity_gifted_pr import ensure_opportunity_gifted_pr_columns
+        ensure_opportunity_gifted_pr_columns(cursor)
+        cursor.execute('SELECT * FROM opportunities WHERE id = %s', (opp_id,))
+        opp = cursor.fetchone()
+        if not opp:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Opportunity not found'}), 404
+
         cursor.execute('''
             UPDATE opportunities
             SET status = 'live',
@@ -1478,11 +1549,15 @@ def admin_reopen(opp_id):
             WHERE id = %s
         ''', (days_open, opp_id))
 
+        gifted = None
+        if is_brand_submission(opp):
+            gifted = push_opportunity_to_gifted_pr(cursor, opp)
+
         conn.commit()
         cursor.close()
         conn.close()
 
-        return jsonify({'success': True})
+        return jsonify({'success': True, 'gifted_pr': gifted})
 
     except Exception as e:
         print(f"Error in admin_reopen: {str(e)}")

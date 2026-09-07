@@ -24,33 +24,53 @@ LEFT JOIN (
         WHERE a.status IN ('review', 'ships', 'posted')
         GROUP BY a.brand_id
     ),
+    inbound_ids AS (
+        SELECT DISTINCT c.brand_id
+        FROM brand_pr_campaigns c
+        JOIN pr_brands b ON b.id = c.brand_id
+        WHERE c.status = 'active'
+          AND b.source_opportunity_id IS NOT NULL
+    ),
+    keys AS (
+        SELECT brand_id FROM counts
+        UNION
+        SELECT brand_id FROM inbound_ids
+    ),
     targets AS (
         SELECT
-            co.brand_id,
-            co.fill_count,
+            k.brand_id,
+            COALESCE(co.fill_count, 0) AS fill_count,
             COALESCE(c.slot_limit, 5) AS slot_limit,
             GREATEST(
                 COALESCE(c.slot_limit, 5) * 3,
                 COALESCE(c.slot_limit, 5) + 8
-            ) AS target
-        FROM counts co
+            ) AS target,
+            CASE WHEN i.brand_id IS NOT NULL THEN 1 ELSE 0 END AS inbound
+        FROM keys k
+        LEFT JOIN counts co ON co.brand_id = k.brand_id
+        LEFT JOIN inbound_ids i ON i.brand_id = k.brand_id
         LEFT JOIN brand_pr_campaigns c
-          ON c.brand_id = co.brand_id AND c.status = 'active'
+          ON c.brand_id = k.brand_id AND c.status = 'active'
     ),
     focused AS (
         SELECT brand_id
         FROM targets
-        WHERE fill_count >= 3
+        WHERE (fill_count >= 3 OR inbound = 1)
           AND fill_count < target
-        ORDER BY fill_count DESC, brand_id
+        ORDER BY inbound DESC, fill_count DESC, brand_id
         LIMIT 8
     )
     SELECT
         t.brand_id,
-        CASE WHEN f.brand_id IS NOT NULL THEN t.fill_count ELSE 0 END AS hunger,
+        CASE
+            WHEN t.inbound = 1 THEN GREATEST(t.fill_count, 1)
+            WHEN f.brand_id IS NOT NULL THEN t.fill_count
+            ELSE 0
+        END AS hunger,
         t.fill_count,
         t.target,
-        t.slot_limit
+        t.slot_limit,
+        CASE WHEN t.inbound = 1 OR t.fill_count > 0 THEN 1 ELSE 0 END AS is_open
     FROM targets t
     LEFT JOIN focused f ON f.brand_id = t.brand_id
 ) roster_demand ON roster_demand.brand_id = b.id
@@ -60,7 +80,8 @@ ROSTER_DEMAND_SELECT = """
 COALESCE(roster_demand.hunger, 0) AS roster_hunger,
 COALESCE(roster_demand.fill_count, 0) AS roster_fill_count,
 COALESCE(roster_demand.target, 0) AS roster_fill_target,
-COALESCE(roster_demand.slot_limit, 0) AS roster_slot_limit
+COALESCE(roster_demand.slot_limit, 0) AS roster_slot_limit,
+COALESCE(roster_demand.is_open, 0) AS roster_is_open
 """
 
 
@@ -99,7 +120,8 @@ def pick_open_lists(ranked, limit=4, min_fit=0):
         if int(b.get("match_score") or 0) < int(min_fit or 0):
             continue
         fill = int(b.get("roster_fill_count") or b.get("roster_hunger") or 0)
-        if fill <= 0:
+        is_open = int(b.get("roster_is_open") or b.get("roster_open") or 0)
+        if fill <= 0 and not is_open:
             continue
         bid = b.get("id")
         if bid in seen:

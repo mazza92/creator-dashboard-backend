@@ -18,7 +18,7 @@ import traceback
 from datetime import datetime, timezone
 from functools import wraps
 
-from flask import Blueprint, Response, jsonify, request, session
+from flask import Blueprint, Response, current_app, jsonify, request, session
 from psycopg2.extras import RealDictCursor, Json
 
 from pr_crm_routes import get_db_connection, convert_decimals
@@ -541,20 +541,120 @@ def _socials_public(row):
     return [found[p] for p in order if p in found]
 
 
-def _engagement(row):
-    raw = row.get("engagement_rate")
-    if raw in (None, ""):
-        raw = row.get("avg_engagement_rate")
+def _as_int(value):
+    """Ints, decimals, and compact strings like 1.2K / 3,400."""
+    if value is None or value is False:
+        return 0
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)):
+        try:
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            return 0
+    text = str(value).strip().upper().replace(",", "").replace(" ", "")
+    if not text:
+        return 0
+    match = re.match(r"^([\d.]+)([KMB])?$", text)
+    if match:
+        try:
+            number = float(match.group(1))
+        except (TypeError, ValueError):
+            return 0
+        unit = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}.get(match.group(2) or "", 1)
+        return int(number * unit)
     try:
-        n = float(raw)
+        return int(float(text))
     except (TypeError, ValueError):
-        return None, None
-    if n <= 0:
+        return 0
+
+
+def _format_engagement(n):
+    if n is None or n <= 0:
         return None, None
     if n > 100:
         n = 99.9
     label = f"{n:.1f}".rstrip("0").rstrip(".") + "%"
     return n, label
+
+
+def _as_post_list(raw):
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return []
+    return raw if isinstance(raw, list) else []
+
+
+def _first_present(mapping, *keys):
+    if not isinstance(mapping, dict):
+        return None
+    for key in keys:
+        if mapping.get(key) not in (None, ""):
+            return mapping.get(key)
+    return None
+
+
+def _post_stat(post, *keys):
+    """Read a count from a post or its nested stats object."""
+    if not isinstance(post, dict):
+        return 0
+    nested = post.get("stats") or post.get("statistics") or post.get("authorStats") or {}
+    raw = _first_present(post, *keys)
+    if raw is None:
+        raw = _first_present(nested, *keys)
+    return _as_int(raw)
+
+
+def _engagement_from_recent_posts(row):
+    """Avg (likes+comments+shares) / followers — same formula as the scraper."""
+    posts = (
+        _as_post_list(row.get("recent_posts"))
+        + _as_post_list(row.get("social_oauth_videos"))
+        + _as_post_list(row.get("portfolio_posts"))
+        + _as_post_list(row.get("selected_posts"))
+    )
+    followers = 0
+    for key in ("followers_count", "scrape_followers", "follower_count", "social_follower_count"):
+        followers = _as_int(row.get(key))
+        if followers > 0:
+            break
+    if followers <= 0:
+        return None, None
+    total = 0
+    counted = 0
+    for p in posts[:12]:
+        if not isinstance(p, dict):
+            continue
+        likes = _post_stat(p, "likes", "likesCount", "diggCount", "likeCount", "like_count", "heartCount")
+        comments = _post_stat(p, "comments", "commentsCount", "commentCount", "comment_count")
+        shares = _post_stat(p, "shares", "shareCount", "share_count")
+        if likes or comments or shares:
+            counted += 1
+        total += likes + comments + shares
+    if counted > 0 and total > 0:
+        return _format_engagement((total / counted / followers) * 100)
+    posts_n = _as_int(row.get("total_posts") or row.get("social_media_count"))
+    likes = _as_int(row.get("total_likes") or row.get("heart_count") or row.get("likes_count"))
+    comments = _as_int(row.get("total_comments"))
+    shares = _as_int(row.get("total_shares"))
+    if posts_n > 0 and (likes or comments or shares):
+        return _format_engagement(((likes + comments + shares) / posts_n / followers) * 100)
+    return None, None
+
+
+def _engagement(row):
+    """Stored rate first; if missing (common on TikTok), compute from recent posts."""
+    from services.irresistible_pitch import _parse_engagement_pct, resolve_engagement
+
+    label = resolve_engagement(row)
+    if label:
+        n = _parse_engagement_pct(label)
+        formatted = _format_engagement(n)
+        if formatted[0] is not None:
+            return formatted
+    return _engagement_from_recent_posts(row)
 
 
 def _creator_country(row, addr):
@@ -564,11 +664,11 @@ def _creator_country(row, addr):
 
 
 def _followers(row):
-    try:
-        n = int(row.get("followers_count") or 0)
-        return n if n > 0 else 0
-    except (TypeError, ValueError):
-        return 0
+    for key in ("followers_count", "social_follower_count", "scrape_followers"):
+        n = _as_int(row.get(key))
+        if n > 0:
+            return n
+    return 0
 
 
 def _fmt_followers(n):
@@ -698,11 +798,40 @@ def _fetch_applications(cursor, campaign):
             c.social_platform,
             c.engagement_rate,
             c.avg_engagement_rate,
+            c.total_likes,
+            c.total_comments,
+            c.total_shares,
+            c.total_views,
+            c.total_posts,
+            c.social_oauth_videos,
+            c.social_follower_count,
+            c.social_media_count,
+            cpd.engagement_rate AS scraped_engagement_rate,
+            cpd.follower_count AS scrape_followers,
+            cpd.recent_posts,
+            mk.engagement_rate AS media_kit_engagement,
+            (
+                SELECT COALESCE(
+                    jsonb_agg(
+                        jsonb_build_object(
+                            'likes', COALESCE(pp.likes, 0),
+                            'comments', COALESCE(pp.comments, 0),
+                            'shares', COALESCE(pp.shares, 0)
+                        )
+                    ),
+                    '[]'::jsonb
+                )
+                FROM portfolio_posts pp
+                WHERE pp.creator_id = c.id
+                  AND COALESCE(pp.likes, 0) + COALESCE(pp.comments, 0) > 0
+            ) AS portfolio_posts,
             u.first_name,
             u.country AS user_country
         FROM brand_pr_applications a
         JOIN creators c ON c.id = a.creator_id
         JOIN users u ON u.id = c.user_id
+        LEFT JOIN creator_profile_data cpd ON cpd.user_id = c.user_id
+        LEFT JOIN media_kits mk ON mk.creator_id = c.id
         WHERE a.brand_id = %s
           AND (a.campaign_id IS NULL OR a.campaign_id = %s)
           AND a.status IN ('review', 'ships', 'posted', 'declined')
@@ -820,6 +949,31 @@ def _build_roster_response(cursor, campaign):
         )
         for row in rows
     ]
+    with_rate = sum(1 for c in cards if c.get("engagement_label"))
+    current_app.logger.info("[roster] engagement %s/%s cards have a rate", with_rate, len(cards))
+    for row, card in zip(rows, cards):
+        if card.get("engagement_label"):
+            continue
+        posts = _as_post_list(row.get("recent_posts"))
+        sample = next((p for p in posts if isinstance(p, dict)), None) or {}
+        like_sum = sum(
+            _post_stat(p, "likes", "likesCount", "diggCount", "likeCount", "like_count", "heartCount")
+            for p in posts
+            if isinstance(p, dict)
+        )
+        current_app.logger.info(
+            "[roster] missing engagement handle=%s er=%s scraped=%s recent_posts=%s "
+            "portfolio=%s likes=%s posts=%s like_sum=%s post0_keys=%s",
+            card.get("handle"),
+            row.get("engagement_rate"),
+            row.get("scraped_engagement_rate"),
+            len(posts),
+            len(_as_post_list(row.get("portfolio_posts"))),
+            row.get("total_likes"),
+            row.get("total_posts"),
+            like_sum,
+            list(sample.keys())[:12],
+        )
     return _campaign_public(campaign, cards)
 
 

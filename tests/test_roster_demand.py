@@ -86,10 +86,13 @@ class TestFocusAndMint(unittest.TestCase):
     def test_demand_sql_finishes_fuller_lists(self):
         sql = ' '.join(ROSTER_DEMAND_JOIN.split())
         self.assertIn('fill_count >= 3', sql)
-        self.assertIn('ORDER BY fill_count DESC', sql)
+        self.assertIn('ORDER BY inbound DESC, fill_count DESC', sql)
         self.assertIn('LIMIT 8', sql)
         self.assertIn('t.fill_count', sql)
         self.assertIn('slot_limit', sql)
+        self.assertIn('source_opportunity_id', sql)
+        self.assertIn('GREATEST(t.fill_count, 1)', sql)
+        self.assertIn('is_open', sql)
 
     def test_pick_open_lists_uses_fill_not_just_hunger(self):
         rows = [
@@ -99,6 +102,14 @@ class TestFocusAndMint(unittest.TestCase):
         ]
         out = pick_open_lists(rows, limit=4)
         self.assertEqual([b["id"] for b in out], [2, 1])
+
+    def test_pick_open_lists_includes_inbound_zero_fill(self):
+        rows = [
+            {"id": 4, "roster_fill_count": 0, "roster_hunger": 1, "roster_is_open": 1, "match_score": 60},
+            {"id": 3, "roster_fill_count": 0, "roster_hunger": 0, "match_score": 90},
+        ]
+        out = pick_open_lists(rows, limit=4)
+        self.assertEqual([b["id"] for b in out], [4])
 
     def test_mark_focus_picks_closest_to_full(self):
         rows = [
