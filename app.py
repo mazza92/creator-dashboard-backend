@@ -1531,10 +1531,11 @@ def login():
         cursor.execute("UPDATE users SET last_login = NOW() WHERE id = %s", (user_id,))
         conn.commit()
 
-        cursor.execute("SELECT id, username, niche FROM creators WHERE user_id = %s", (user_id,))
+        cursor.execute("SELECT id, username, niche, approval_status FROM creators WHERE user_id = %s", (user_id,))
         creator = cursor.fetchone()
         creator_id = creator['id'] if creator else None
-        app.logger.info(f"🟢 Retrieved Creator ID: {creator_id}")
+        approval_status = creator.get('approval_status') if creator else None
+        app.logger.info(f"🟢 Retrieved Creator ID: {creator_id}, approval_status: {approval_status}")
         cursor.execute("SELECT id FROM brands WHERE user_id = %s", (user_id,))
         brand = cursor.fetchone()
         brand_id = brand['id'] if brand else None
@@ -1564,6 +1565,7 @@ def login():
             'user_role': user_role,
             'creator_id': creator_id,
             'brand_id': brand_id,
+            'approval_status': approval_status,
             'onboarding_complete': onboarding_complete,
             'redirect_url': redirect_url
         }
@@ -1716,10 +1718,12 @@ def get_profile():
                 brand_data = cursor.fetchone() or {}
                 profile_data.update(brand_data)
 
+            # Log approval status being returned
+            app.logger.info(f"🔍 Profile response includes approval_status: {profile_data.get('approval_status')}")
+
             response = jsonify(profile_data)
             response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
             response.headers['Access-Control-Allow-Credentials'] = 'true'
-            app.logger.info(f"🟢 Profile response headers: {response.headers}")
             return response, 200
 
         except OperationalError as e:
