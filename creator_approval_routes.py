@@ -3,8 +3,7 @@ Creator Approval System Routes
 Handles waitlist, approval queue, and admin approval workflow
 """
 
-from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
+from flask import Blueprint, request, jsonify, session
 from psycopg2.extras import RealDictCursor
 import json
 from datetime import datetime
@@ -30,14 +29,16 @@ def init_approval_routes(db_connection_func):
 # =============================================================================
 
 @creator_approval_bp.route('/api/user/approval-status', methods=['GET'])
-@jwt_required()
 def get_approval_status():
     """
     Get creator's current approval status and queue position.
     Called by Waitlist.js every 30 seconds to check for approval.
     """
     try:
-        user_id = get_jwt_identity()
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({"error": "Not authenticated"}), 401
+
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -91,14 +92,16 @@ def get_approval_status():
 
 
 @creator_approval_bp.route('/api/user/track-waitlist-view', methods=['POST'])
-@jwt_required()
 def track_waitlist_view():
     """
     Track when a creator first views the waitlist page.
     Sets waitlist_joined_at timestamp for analytics.
     """
     try:
-        user_id = get_jwt_identity()
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({"error": "Not authenticated"}), 401
+
         conn = get_db_connection()
         cursor = conn.cursor()
 
@@ -126,7 +129,6 @@ def track_waitlist_view():
 # =============================================================================
 
 @creator_approval_bp.route('/api/admin/approval-queue', methods=['GET'])
-@jwt_required()
 def get_approval_queue():
     """
     Get pending creators for admin review.
@@ -139,7 +141,10 @@ def get_approval_queue():
     - filter_niche: Filter by niche (optional)
     """
     try:
-        user_id = get_jwt_identity()
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({"error": "Not authenticated"}), 401
+
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -205,7 +210,6 @@ def get_approval_queue():
 
 
 @creator_approval_bp.route('/api/admin/approve-creator/<int:creator_id>', methods=['POST'])
-@jwt_required()
 def approve_creator(creator_id):
     """
     Approve a creator from the pending queue.
@@ -215,7 +219,10 @@ def approve_creator(creator_id):
     - note: string (optional admin note)
     """
     try:
-        admin_user_id = get_jwt_identity()
+        admin_user_id = session.get('user_id')
+        if not admin_user_id:
+            return jsonify({"error": "Not authenticated"}), 401
+
         data = request.get_json() or {}
         send_email = data.get('send_email', True)
         note = data.get('note', '')
@@ -282,7 +289,6 @@ def approve_creator(creator_id):
 
 
 @creator_approval_bp.route('/api/admin/reject-creator/<int:creator_id>', methods=['POST'])
-@jwt_required()
 def reject_creator(creator_id):
     """
     Reject a creator from the pending queue.
@@ -292,7 +298,10 @@ def reject_creator(creator_id):
     - send_email: bool (default True)
     """
     try:
-        admin_user_id = get_jwt_identity()
+        admin_user_id = session.get('user_id')
+        if not admin_user_id:
+            return jsonify({"error": "Not authenticated"}), 401
+
         data = request.get_json() or {}
         reason = data.get('reason', 'Application does not meet our criteria')
         send_email = data.get('send_email', True)
