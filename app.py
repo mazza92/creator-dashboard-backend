@@ -1025,9 +1025,10 @@ def google_signup():
             role = user['role']
             creator_id = None
             onboarding_complete = True
+            approval_status = None
 
             if role == 'creator':
-                cursor.execute('SELECT id, username, niche FROM creators WHERE user_id = %s', (user_id,))
+                cursor.execute('SELECT id, username, niche, approval_status FROM creators WHERE user_id = %s', (user_id,))
                 creator = cursor.fetchone()
                 if creator:
                     creator_id = creator['id']
@@ -1036,6 +1037,7 @@ def google_signup():
                         creator.get('username') and
                         creator.get('niche')
                     )
+                    approval_status = creator.get('approval_status')
                 else:
                     app.logger.error(f"No creator record found for user_id: {user_id}")
                     conn.close()
@@ -1049,7 +1051,12 @@ def google_signup():
 
             # Determine redirect URL based on role and onboarding status
             if role == 'creator':
-                redirect_url = '/creator/dashboard/for-you' if onboarding_complete else '/onboarding'
+                if not onboarding_complete:
+                    redirect_url = '/onboarding'
+                elif approval_status in ('pending', 'rejected'):
+                    redirect_url = '/creator/waitlist'
+                else:
+                    redirect_url = '/creator/dashboard/for-you'
             else:
                 redirect_url = '/brand/dashboard/overview'
 
@@ -1061,6 +1068,7 @@ def google_signup():
                 'user_id': user_id,
                 'user_role': role,
                 'creator_id': creator_id,
+                'approval_status': approval_status,
                 'onboarding_complete': onboarding_complete,
                 'needs_onboarding': not onboarding_complete,
                 'redirect_url': redirect_url
@@ -1096,8 +1104,8 @@ def google_signup():
             # Create creator profile (minimal - they'll update in onboarding)
             cursor.execute(
                 '''
-                INSERT INTO creators (user_id, username)
-                VALUES (%s, %s)
+                INSERT INTO creators (user_id, username, approval_status)
+                VALUES (%s, %s, 'pending')
                 RETURNING id
                 ''',
                 (user_id, temp_username)
@@ -1115,6 +1123,7 @@ def google_signup():
                 'user_id': user_id,
                 'user_role': 'creator',
                 'creator_id': creator_id,
+                'approval_status': 'pending',
                 'onboarding_complete': False,
                 'needs_onboarding': True,
                 'redirect_url': '/onboarding'
@@ -1555,7 +1564,12 @@ def login():
 
         # Determine redirect URL based on role and onboarding status
         if user_role == 'creator':
-            redirect_url = '/creator/dashboard/for-you' if onboarding_complete else '/onboarding'
+            if not onboarding_complete:
+                redirect_url = '/onboarding'
+            elif approval_status in ('pending', 'rejected'):
+                redirect_url = '/creator/waitlist'
+            else:
+                redirect_url = '/creator/dashboard/for-you'
         else:
             redirect_url = '/brand/dashboard/overview'
 
@@ -7345,6 +7359,7 @@ def verify_email():
 
         # Get profile completion data
         username = None
+        approval_status = None
         if user['role'] == 'brand':
             cursor.execute("SELECT id FROM brands WHERE user_id = %s", (user['id'],))
             brand = cursor.fetchone()
@@ -7352,10 +7367,11 @@ def verify_email():
             creator_id = None
             onboarding_completed = brand is not None
         else:  # creator
-            cursor.execute("SELECT id, username, niche FROM creators WHERE user_id = %s", (user['id'],))
+            cursor.execute("SELECT id, username, niche, approval_status FROM creators WHERE user_id = %s", (user['id'],))
             creator = cursor.fetchone()
             creator_id = creator['id'] if creator else None
             username = creator['username'] if creator else None
+            approval_status = creator.get('approval_status') if creator else None
             brand_id = None
             # v4: onboarding complete requires username AND niche
             onboarding_completed = bool(
@@ -7377,9 +7393,11 @@ def verify_email():
 
         base_url = os.getenv('BASE_URL', 'https://newcollab.co')
 
-        # Redirect to onboarding if not completed, otherwise to dashboard
+        # Redirect to onboarding if not completed, otherwise waitlist or dashboard
         if not onboarding_completed:
             redirect_url = '/onboarding' if user['role'] == 'creator' else '/brand/onboarding'
+        elif user['role'] == 'creator' and approval_status in ('pending', 'rejected'):
+            redirect_url = '/creator/waitlist'
         else:
             redirect_url = '/creator/dashboard/for-you' if user['role'] == 'creator' else '/brand/dashboard/overview'
 

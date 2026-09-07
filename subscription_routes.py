@@ -846,6 +846,14 @@ def stripe_webhook():
                         })
                     ))
                     print(f"⚡ Creator {creator_id} auto-approved via {tier.upper()} subscription!")
+                    if user_row and user_row.get('email'):
+                        from waitlist_emails import send_waitlist_email
+                        send_waitlist_email(
+                            'approved',
+                            email=user_row.get('email'),
+                            name=updated_creator.get('username') if updated_creator else 'there',
+                            as_pro=True,
+                        )
 
             conn.commit()
             cursor.close()

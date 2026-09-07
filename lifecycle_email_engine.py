@@ -480,6 +480,13 @@ def get_eligible_emails(creator_id: int) -> List[Dict[str, Any]]:
         if not creator:
             return []
 
+        if creator.get('approval_status') in ('pending', 'rejected'):
+            logging.info(
+                f"[ELIGIBLE] Creator {creator_id}: skipped waitlist gate "
+                f"({creator.get('approval_status')})"
+            )
+            return []
+
         # Update state
         state = update_creator_state(creator_id)
         creator['lifecycle_state'] = state
@@ -498,6 +505,10 @@ def get_eligible_emails(creator_id: int) -> List[Dict[str, Any]]:
 
         for template in templates:
             slug = template['slug']
+
+            if slug == 'welcome_manager' and creator.get('waitlist_joined_at'):
+                skip_reasons['trigger'].append(f"{slug}(waitlist_approved_covers_intro)")
+                continue
 
             # Debug max_quota_hit specifically
             if slug == 'max_quota_hit':
@@ -1715,13 +1726,28 @@ def build_brand_email_context(creator_id: int, brand_id: int) -> Dict[str, Any]:
 # ============================================
 
 def trigger_welcome_email(creator_id: int, email: str, first_name: str = None):
-    """Trigger welcome email immediately after verification."""
+    """Trigger welcome email after the creator is allowed into the product."""
     if not is_feature_enabled('email_onboarding_v2'):
         return False, "Feature disabled"
 
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("""
+            SELECT approval_status, waitlist_joined_at
+            FROM creators WHERE id = %s
+        """, (creator_id,))
+        row = cursor.fetchone() or {}
+    finally:
+        conn.close()
+
+    status = row.get('approval_status')
+    if status in ('pending', 'rejected'):
+        return False, "Waitlisted — welcome sends after approval"
+
     context = {
         'first_name': first_name or 'there',
-        'cta_url': f"{FRONTEND_URL}/creator/dashboard/pr-ready",
+        'cta_url': f"{FRONTEND_URL}/creator/dashboard/for-you",
     }
 
     return send_lifecycle_email(

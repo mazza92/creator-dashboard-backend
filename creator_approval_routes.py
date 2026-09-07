@@ -6,12 +6,7 @@ Handles waitlist, approval queue, and admin approval workflow
 from flask import Blueprint, request, jsonify, session
 from psycopg2.extras import RealDictCursor
 import json
-from datetime import datetime
 import os
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from jinja2 import Environment, FileSystemLoader
 
 creator_approval_bp = Blueprint('creator_approval', __name__)
 
@@ -103,21 +98,41 @@ def track_waitlist_view():
             return jsonify({"error": "Not authenticated"}), 401
 
         conn = get_db_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Only set if not already set
         cursor.execute("""
             UPDATE creators
             SET waitlist_joined_at = NOW()
             WHERE user_id = %s
               AND waitlist_joined_at IS NULL
+              AND COALESCE(approval_status, 'pending') = 'pending'
+            RETURNING id, username, user_id
         """, (user_id,))
+        joined = cursor.fetchone()
+        emailed = False
+        if joined:
+            cursor.execute("SELECT email, first_name FROM users WHERE id = %s", (user_id,))
+            user = cursor.fetchone() or {}
+            conn.commit()
+            from waitlist_emails import send_waitlist_email
+            emailed = send_waitlist_email(
+                'joined',
+                email=user.get('email'),
+                name=user.get('first_name') or joined.get('username'),
+                user_id=user_id,
+            )
+            if emailed:
+                cursor.execute("""
+                    UPDATE creators SET last_any_email_sent = NOW() WHERE id = %s
+                """, (joined['id'],))
+                conn.commit()
+        else:
+            conn.commit()
 
-        conn.commit()
         cursor.close()
         conn.close()
 
-        return jsonify({"success": True}), 200
+        return jsonify({"success": True, "emailed": emailed}), 200
 
     except Exception as e:
         print(f"Error tracking waitlist view: {e}")
@@ -128,11 +143,33 @@ def track_waitlist_view():
 # ADMIN ENDPOINTS - Approval Queue Management
 # =============================================================================
 
+ADMIN_TOKEN = 'pr-hunter-admin-2026'
+
+
+def _admin_authorized():
+    """Same gate as /api/admin/creators: X-Admin-Token or team@ session."""
+    if request.headers.get('X-Admin-Token') == ADMIN_TOKEN:
+        return True
+    user_id = session.get('user_id')
+    if not user_id or not get_db_connection:
+        return False
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    cursor.execute("SELECT email, user_role FROM users WHERE id = %s", (user_id,))
+    user = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    if not user:
+        return False
+    email = (user.get('email') or '').lower()
+    return email == 'team@newcollab.co' or user.get('user_role') == 'admin'
+
+
 @creator_approval_bp.route('/api/admin/approval-queue', methods=['GET'])
 def get_approval_queue():
     """
     Get pending creators for admin review.
-    Requires admin role.
+    Requires admin token or admin session.
 
     Query params:
     - limit: Number of results (default 50)
@@ -141,21 +178,11 @@ def get_approval_queue():
     - filter_niche: Filter by niche (optional)
     """
     try:
-        user_id = session.get('user_id')
-        if not user_id:
-            return jsonify({"error": "Not authenticated"}), 401
+        if not _admin_authorized():
+            return jsonify({"error": "Unauthorized - admin access required"}), 403
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        # Check if user is admin
-        cursor.execute("SELECT user_role FROM users WHERE id = %s", (user_id,))
-        user = cursor.fetchone()
-
-        if not user or user['user_role'] != 'admin':
-            cursor.close()
-            conn.close()
-            return jsonify({"error": "Unauthorized - admin access required"}), 403
 
         # Get query parameters
         limit = int(request.args.get('limit', 50))
@@ -163,11 +190,13 @@ def get_approval_queue():
         sort = request.args.get('sort', 'oldest')
         filter_niche = request.args.get('filter_niche')
 
-        order = 'created_at ASC' if sort == 'oldest' else 'created_at DESC'
+        order = 'c.created_at ASC' if sort == 'oldest' else 'c.created_at DESC'
 
         query = """
-            SELECT c.id as creator_id, c.username, u.email, c.platform, c.follower_count,
-                   c.niches, c.bio, c.created_at, c.approval_queue_position
+            SELECT c.id as creator_id, c.username, u.email, u.first_name,
+                   c.social_platform, c.social_handle, c.followers_count,
+                   c.social_follower_count, c.niche, c.bio, c.image_profile,
+                   c.created_at, c.waitlist_joined_at, c.approval_queue_position
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.approval_status = 'pending'
@@ -175,8 +204,8 @@ def get_approval_queue():
 
         params = []
         if filter_niche:
-            query += " AND %s = ANY(c.niches)"
-            params.append(filter_niche)
+            query += " AND COALESCE(c.niche, '') ILIKE %s"
+            params.append(f'%{filter_niche}%')
 
         query += f" ORDER BY {order} LIMIT %s OFFSET %s"
         params.extend([limit, offset])
@@ -187,8 +216,8 @@ def get_approval_queue():
         # Get total count
         count_query = "SELECT COUNT(*) as total FROM creators WHERE approval_status = 'pending'"
         if filter_niche:
-            count_query += " AND %s = ANY(niches)"
-            cursor.execute(count_query, (filter_niche,))
+            count_query += " AND COALESCE(niche, '') ILIKE %s"
+            cursor.execute(count_query, (f'%{filter_niche}%',))
         else:
             cursor.execute(count_query)
 
@@ -219,25 +248,20 @@ def approve_creator(creator_id):
     - note: string (optional admin note)
     """
     try:
-        admin_user_id = session.get('user_id')
-        if not admin_user_id:
-            return jsonify({"error": "Not authenticated"}), 401
-
         data = request.get_json() or {}
         send_email = data.get('send_email', True)
         note = data.get('note', '')
 
+        if not _admin_authorized():
+            return jsonify({"error": "Unauthorized - admin access required"}), 403
+
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        # Check if user is admin
-        cursor.execute("SELECT user_role FROM users WHERE id = %s", (admin_user_id,))
-        user = cursor.fetchone()
-
-        if not user or user['user_role'] != 'admin':
-            cursor.close()
-            conn.close()
-            return jsonify({"error": "Unauthorized - admin access required"}), 403
+        admin_user_id = session.get('user_id')
+        if not admin_user_id:
+            cursor.execute("SELECT id FROM users WHERE LOWER(email) = 'team@newcollab.co' LIMIT 1")
+            row = cursor.fetchone()
+            admin_user_id = row['id'] if row else None
 
         # Update creator approval status
         cursor.execute("""
@@ -298,25 +322,20 @@ def reject_creator(creator_id):
     - send_email: bool (default True)
     """
     try:
-        admin_user_id = session.get('user_id')
-        if not admin_user_id:
-            return jsonify({"error": "Not authenticated"}), 401
-
         data = request.get_json() or {}
         reason = data.get('reason', 'Application does not meet our criteria')
         send_email = data.get('send_email', True)
 
+        if not _admin_authorized():
+            return jsonify({"error": "Unauthorized - admin access required"}), 403
+
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        # Check if user is admin
-        cursor.execute("SELECT user_role FROM users WHERE id = %s", (admin_user_id,))
-        user = cursor.fetchone()
-
-        if not user or user['user_role'] != 'admin':
-            cursor.close()
-            conn.close()
-            return jsonify({"error": "Unauthorized - admin access required"}), 403
+        admin_user_id = session.get('user_id')
+        if not admin_user_id:
+            cursor.execute("SELECT id FROM users WHERE LOWER(email) = 'team@newcollab.co' LIMIT 1")
+            row = cursor.fetchone()
+            admin_user_id = row['id'] if row else None
 
         # Update creator approval status
         cursor.execute("""
@@ -371,109 +390,17 @@ def reject_creator(creator_id):
 # EMAIL FUNCTIONS
 # =============================================================================
 
-def send_approval_email(email, username):
-    """Send approval notification email to creator"""
-    try:
-        smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
-        smtp_port = int(os.getenv('SMTP_PORT', 587))
-        smtp_username = os.getenv('SMTP_USERNAME')
-        smtp_password = os.getenv('SMTP_PASSWORD')
-
-        if not smtp_username or not smtp_password:
-            print("⚠️  SMTP credentials not set, skipping approval email")
-            return False
-
-        subject = "🎉 You're approved! Welcome to Newcollab"
-
-        html_content = f"""
-        <html>
-        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 20px; max-width: 600px;">
-            <h2 style="color: #10b981;">🎉 You're in!</h2>
-            <p>Hi {username},</p>
-            <p>Great news — your creator profile has been approved!</p>
-            <p>You now have full access to browse 2,000+ gifting brands, submit PR requests, and land your first free product.</p>
-            <p style="margin: 30px 0;">
-                <a href="https://app.newcollab.co/creator/dashboard/for-you"
-                   style="background: linear-gradient(135deg, #ec4899 0%, #db2777 100%); color: white; padding: 14px 28px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: 600;">
-                    Start browsing brands →
-                </a>
-            </p>
-            <p style="color: #6b7280; font-size: 14px;">
-                Need help getting started? Reply to this email or reach out to team@newcollab.co
-            </p>
-        </body>
-        </html>
-        """
-
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = subject
-        msg['From'] = smtp_username
-        msg['To'] = email
-        msg.attach(MIMEText(html_content, 'html'))
-
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.starttls()
-            server.login(smtp_username, smtp_password)
-            server.send_message(msg)
-
-        print(f"✅ Approval email sent to {email}")
-        return True
-
-    except Exception as e:
-        print(f"❌ Error sending approval email: {e}")
-        return False
+def send_approval_email(email, username, user_id=None, as_pro=False):
+    """Send approval notification using the shared waitlist template."""
+    from waitlist_emails import send_waitlist_email
+    return send_waitlist_email(
+        'approved', email, username, user_id=user_id, as_pro=as_pro,
+    )
 
 
-def send_rejection_email(email, username, reason):
-    """Send rejection notification email to creator"""
-    try:
-        smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
-        smtp_port = int(os.getenv('SMTP_PORT', 587))
-        smtp_username = os.getenv('SMTP_USERNAME')
-        smtp_password = os.getenv('SMTP_PASSWORD')
-
-        if not smtp_username or not smtp_password:
-            print("⚠️  SMTP credentials not set, skipping rejection email")
-            return False
-
-        subject = "Update on your Newcollab application"
-
-        html_content = f"""
-        <html>
-        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 20px; max-width: 600px;">
-            <h2 style="color: #374151;">Update on your application</h2>
-            <p>Hi {username},</p>
-            <p>Thank you for your interest in Newcollab. After reviewing your profile, we're unable to approve your creator account at this time.</p>
-            <p style="background: #fef2f2; border-left: 3px solid #ef4444; padding: 15px; margin: 20px 0;">
-                <strong>Reason:</strong><br>
-                {reason}
-            </p>
-            <p>We maintain high standards to ensure quality matches between brands and creators. We encourage you to continue growing your content and audience.</p>
-            <p style="margin: 30px 0;">
-                Questions? <a href="mailto:team@newcollab.co" style="color: #ec4899; text-decoration: none; font-weight: 600;">Reach out to our team</a>
-            </p>
-            <p style="color: #6b7280; font-size: 14px;">
-                Best,<br>
-                The Newcollab Team
-            </p>
-        </body>
-        </html>
-        """
-
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = subject
-        msg['From'] = smtp_username
-        msg['To'] = email
-        msg.attach(MIMEText(html_content, 'html'))
-
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.starttls()
-            server.login(smtp_username, smtp_password)
-            server.send_message(msg)
-
-        print(f"✅ Rejection email sent to {email}")
-        return True
-
-    except Exception as e:
-        print(f"❌ Error sending rejection email: {e}")
-        return False
+def send_rejection_email(email, username, reason, user_id=None):
+    """Send rejection notification using the shared waitlist template."""
+    from waitlist_emails import send_waitlist_email
+    return send_waitlist_email(
+        'rejected', email, username, user_id=user_id, reason=reason,
+    )
