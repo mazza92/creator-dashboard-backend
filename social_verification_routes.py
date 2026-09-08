@@ -11,7 +11,8 @@ import secrets
 import hashlib
 import base64
 from datetime import datetime, timedelta
-from urllib.parse import urlencode, quote
+from urllib.parse import urlencode, quote, unquote
+import re
 from psycopg2.extras import RealDictCursor
 
 # Import public profile fetcher
@@ -112,6 +113,101 @@ def _decode_tiktok_oauth_state(state):
         return {}
 
 
+def _tiktok_handle_from_user_info(user_info):
+    """Real @username only. display_name is not a handle."""
+    user_info = user_info or {}
+    handle = (user_info.get('username') or '').strip().lstrip('@')
+    if handle:
+        return handle
+    link = user_info.get('profile_deep_link') or ''
+    match = re.search(r'tiktok\.com/@([^/?#]+)', str(link), re.I)
+    if match:
+        return unquote(match.group(1)).strip().lstrip('@')
+    return ''
+
+
+def _store_onboarding_oauth_proof(platform, profile_data, result, tokens=None):
+    """Scrape already writes this; OAuth must too or step1 returns 400."""
+    try:
+        if session is None:
+            _log('[oauth] No session — cannot store onboarding proof')
+            return
+        handle = (profile_data.get('username') or '').strip().lstrip('@')
+        followers = int(profile_data.get('follower_count', 0) or 0)
+        session['social_verification_result'] = {
+            'verified': bool(result.get('passed')),
+            'platform': platform,
+            'profile': {
+                'username': handle,
+                'follower_count': followers,
+                'media_count': int(profile_data.get('media_count') or 0),
+                'likes_count': int(profile_data.get('likes_count') or 0),
+                'open_id': profile_data.get('open_id'),
+            },
+            'failure_reason': result.get('failure_reason'),
+        }
+        session['onboarding_quality'] = {
+            'handle': handle.lower(),
+            'platform': platform,
+            'followers': followers,
+        }
+        expires_at = (tokens or {}).get('expires_at')
+        if hasattr(expires_at, 'isoformat'):
+            expires_at = expires_at.isoformat()
+        session['pending_oauth'] = {
+            'platform': platform,
+            'username': handle,
+            'open_id': profile_data.get('open_id'),
+            'follower_count': followers,
+            'media_count': int(profile_data.get('media_count') or 0),
+            'likes_count': int(profile_data.get('likes_count') or 0),
+            'avatar_url': profile_data.get('avatar_url') or '',
+            'oauth_videos': profile_data.get('oauth_videos') or [],
+            'access_token': (tokens or {}).get('access_token'),
+            'refresh_token': (tokens or {}).get('refresh_token'),
+            'expires_at': expires_at,
+            'verified': bool(result.get('passed')),
+        }
+        session.modified = True
+    except Exception as e:
+        _log(f'[oauth] Failed to store onboarding proof: {e}')
+
+
+def apply_pending_oauth_to_creator(creator_id):
+    """Write OAuth tokens/videos/stats after step1 creates the creator row."""
+    pending = session.get('pending_oauth') if session is not None else None
+    if not pending or not creator_id:
+        return False
+    expires_at = pending.get('expires_at')
+    if isinstance(expires_at, str):
+        try:
+            expires_at = datetime.fromisoformat(expires_at)
+        except Exception:
+            expires_at = None
+    update_creator_verification(
+        creator_id=int(creator_id),
+        platform=pending.get('platform') or 'tiktok',
+        data={
+            'username': pending.get('username'),
+            'open_id': pending.get('open_id'),
+            'follower_count': pending.get('follower_count') or 0,
+            'media_count': pending.get('media_count') or 0,
+            'likes_count': pending.get('likes_count') or 0,
+            'avatar_url': pending.get('avatar_url') or '',
+            'account_type': 'creator',
+            'oauth_videos': pending.get('oauth_videos') or [],
+        },
+        result={'passed': pending.get('verified'), 'gates': {'account_public': True}},
+        access_token=pending.get('access_token'),
+        refresh_token=pending.get('refresh_token'),
+        expires_at=expires_at,
+    )
+    session.pop('pending_oauth', None)
+    session.modified = True
+    _log(f"[oauth] Persisted pending OAuth snapshot on creator {creator_id}")
+    return True
+
+
 def _bounce_tiktok_callback_to_local_if_needed():
     """TikTok Web Login Kit rejects localhost hosts. Local Connect therefore
     registers the production HTTPS redirect URI; production must hand the
@@ -173,40 +269,48 @@ def _ensure_tiktok_oauth_columns(cursor):
 
 
 def _fetch_tiktok_videos(access_token, max_count=20):
-    """Return a light list of public videos via video.list, or [] on failure."""
-    try:
-        resp = requests.post(
-            'https://open.tiktokapis.com/v2/video/list/',
-            headers={
-                'Authorization': f'Bearer {access_token}',
-                'Content-Type': 'application/json',
-            },
-            params={'fields': 'id,title,cover_image_url,create_time,share_url'},
-            json={'max_count': max_count},
-            timeout=15,
-        )
-        payload = resp.json() if resp.content else {}
-        err = (payload.get('error') or {})
-        if err.get('code') and err.get('code') != 'ok':
-            _log(f"[tiktok] video.list error: {err}")
-            return []
-        videos = (payload.get('data') or {}).get('videos') or []
-        out = []
-        for v in videos:
-            if not isinstance(v, dict) or not v.get('id'):
+    """Return public videos via video.list, including stats when the scope allows."""
+    fields_full = 'id,title,cover_image_url,create_time,share_url,like_count,comment_count,share_count,view_count'
+    fields_base = 'id,title,cover_image_url,create_time,share_url'
+    for fields in (fields_full, fields_base):
+        try:
+            resp = requests.post(
+                'https://open.tiktokapis.com/v2/video/list/',
+                headers={
+                    'Authorization': f'Bearer {access_token}',
+                    'Content-Type': 'application/json',
+                },
+                params={'fields': fields},
+                json={'max_count': max_count},
+                timeout=15,
+            )
+            payload = resp.json() if resp.content else {}
+            err = (payload.get('error') or {})
+            if err.get('code') and err.get('code') != 'ok':
+                _log(f"[tiktok] video.list error ({fields}): {err}")
                 continue
-            out.append({
-                'id': str(v.get('id')),
-                'title': v.get('title') or '',
-                'cover_image_url': v.get('cover_image_url') or '',
-                'create_time': v.get('create_time'),
-                'share_url': v.get('share_url') or '',
-                'url': v.get('share_url') or f"https://www.tiktok.com/@/video/{v.get('id')}",
-            })
-        return out
-    except Exception as e:
-        _log(f"[tiktok] video.list exception: {e}")
-        return []
+            videos = (payload.get('data') or {}).get('videos') or []
+            out = []
+            for v in videos:
+                if not isinstance(v, dict) or not v.get('id'):
+                    continue
+                out.append({
+                    'id': str(v.get('id')),
+                    'title': v.get('title') or '',
+                    'cover_image_url': v.get('cover_image_url') or '',
+                    'create_time': v.get('create_time'),
+                    'share_url': v.get('share_url') or '',
+                    'url': v.get('share_url') or f"https://www.tiktok.com/@/video/{v.get('id')}",
+                    'likes': int(v.get('like_count') or 0),
+                    'comments': int(v.get('comment_count') or 0),
+                    'shares': int(v.get('share_count') or 0),
+                    'views': int(v.get('view_count') or 0),
+                })
+            _log(f"[tiktok] video.list returned {len(out)} videos")
+            return out
+        except Exception as e:
+            _log(f"[tiktok] video.list exception: {e}")
+    return []
 
 
 # ============================================================================
@@ -522,9 +626,15 @@ def update_creator_verification(creator_id: int, platform: str, data: dict,
         cursor = conn.cursor()
         _ensure_tiktok_oauth_columns(cursor)
 
-        status = 'verified' if result['passed'] else f"failed_{result['failure_reason']}"
+        status = 'verified' if result['passed'] else f"failed_{result.get('failure_reason')}"
         videos = data.get('oauth_videos')
         videos_json = json.dumps(videos) if videos is not None else None
+        handle = (data.get("username") or data.get("handle") or "").strip().lstrip("@")
+        followers = int(data.get("follower_count") or 0)
+        media_count = int(data.get("media_count") or 0)
+        likes_count = int(data.get("likes_count") or 0)
+        avatar_url = (data.get("avatar_url") or "").strip()
+        gates = result.get("gates") or {}
 
         cursor.execute('''
             UPDATE creators SET
@@ -542,22 +652,30 @@ def update_creator_verification(creator_id: int, platform: str, data: dict,
                 social_oauth_refresh_token = %s,
                 social_token_expires_at = %s,
                 social_open_id = COALESCE(%s, social_open_id),
-                social_oauth_videos = COALESCE(%s::jsonb, social_oauth_videos)
+                social_oauth_videos = COALESCE(%s::jsonb, social_oauth_videos),
+                followers_count = CASE WHEN %s > 0 THEN %s ELSE followers_count END,
+                total_likes = CASE WHEN %s > 0 THEN %s ELSE total_likes END,
+                total_posts = CASE WHEN %s > 0 THEN %s ELSE total_posts END,
+                image_profile = COALESCE(NULLIF(%s, ''), image_profile)
             WHERE id = %s
         ''', (
             platform,
-            data.get("username") or data.get("handle"),
-            data.get("follower_count", 0),
-            data.get("media_count", 0),
-            result['gates'].get("account_public", False),
+            handle,
+            followers,
+            media_count,
+            gates.get("account_public", False),
             data.get("account_type"),
-            result['passed'],
+            result.get('passed'),
             status,
             encrypt_token(access_token),
             encrypt_token(refresh_token),
             expires_at,
             data.get('open_id'),
             videos_json,
+            followers, followers,
+            likes_count, likes_count,
+            media_count, media_count,
+            avatar_url,
             creator_id
         ))
 
@@ -946,6 +1064,7 @@ def callback_instagram():
 
         # Run 5-gate verification
         result = validate_social_gates(profile_data, 'instagram', user_country)
+        _store_onboarding_oauth_proof('instagram', profile_data, result)
 
         # Log and update DB only if creator_id exists (skip for direct URL testing)
         if creator_id:
@@ -1044,6 +1163,7 @@ def connect_tiktok():
             f"&response_type=code"
             f"&code_challenge={code_challenge}"
             f"&code_challenge_method=S256"
+            f"&disable_auto_auth=1"
         )
 
         return redirect(auth_url)
@@ -1175,12 +1295,14 @@ def callback_tiktok():
 
         user_info = user_data.get('data', {}).get('user', {}) or {}
 
-        # Prefer unique @username; display_name is not a handle
-        handle = (
-            (user_info.get('username') or '').strip().lstrip('@')
-            or (user_info.get('display_name') or '').strip().lstrip('@')
-        )
+        # DEBUG: Log raw TikTok API response
+        _log(f"🔍 TikTok user_info: {json.dumps(user_info, indent=2)}")
+
+        handle = _tiktok_handle_from_user_info(user_info)
         open_id = user_info.get('open_id')
+        if not handle:
+            _log(f"❌ TikTok user.info missing username: keys={list(user_info.keys())}")
+            return redirect(f"{return_url}?social=failed&reason=no_username&platform=tiktok")
 
         oauth_videos = []
         if scopes_mode != 'base':
@@ -1192,12 +1314,21 @@ def callback_tiktok():
             'open_id': open_id,
             'follower_count': user_info.get('follower_count', 0) or 0,
             'media_count': user_info.get('video_count', 0) or 0,
+            'likes_count': user_info.get('likes_count', 0) or 0,
+            'avatar_url': user_info.get('avatar_url') or '',
             'account_type': 'creator',
             'is_private': False,  # TikTok API v2 - assume public for now
             'bio_description': user_info.get('bio_description') or '',
             'profile_deep_link': user_info.get('profile_deep_link') or '',
             'oauth_videos': oauth_videos,
         }
+
+        # DEBUG: Log constructed profile_data
+        _log(
+            f"🔍 TikTok profile_data: handle={profile_data['username']} "
+            f"followers={profile_data['follower_count']} videos={profile_data['media_count']} "
+            f"likes={profile_data['likes_count']} oauth_videos={len(oauth_videos)}"
+        )
 
         # Get user country - try fresh IP detection in callback
         user_country = get_user_country_from_session()
@@ -1230,6 +1361,20 @@ def callback_tiktok():
 
         # Run 5-gate verification
         result = validate_social_gates(profile_data, 'tiktok', user_country)
+
+        # DEBUG: Log validation result
+        _log(f"🔍 TikTok validation result: passed={result['passed']}, reason={result.get('failure_reason')}, gates={json.dumps(result.get('gates', {}))}")
+
+        _store_onboarding_oauth_proof(
+            'tiktok',
+            profile_data,
+            result,
+            tokens={
+                'access_token': access_token,
+                'refresh_token': refresh_token,
+                'expires_at': expires_at,
+            },
+        )
 
         # Log and update DB only if creator_id exists (skip for new onboarding users)
         if creator_id:
