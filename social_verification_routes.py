@@ -91,12 +91,18 @@ INSTAGRAM_APP_ID = os.getenv('INSTAGRAM_APP_ID')
 INSTAGRAM_APP_SECRET = os.getenv('INSTAGRAM_APP_SECRET')
 INSTAGRAM_REDIRECT_URI = os.getenv('INSTAGRAM_REDIRECT_URI', 'https://api.newcollab.co/api/social/callback/instagram')
 
-# TikTok OAuth (Login Kit)
+# TikTok OAuth (Login Kit). Off until TikTok approves the production app.
+# Local sandbox: set TIKTOK_OAUTH_ENABLED=1. Do not set this in Vercel prod.
 TIKTOK_CLIENT_KEY = os.getenv('TIKTOK_CLIENT_KEY')
 TIKTOK_CLIENT_SECRET = os.getenv('TIKTOK_CLIENT_SECRET')
 TIKTOK_WEB_REDIRECT_URI = 'https://api.newcollab.co/api/social/callback/tiktok'
 TIKTOK_LOCAL_CALLBACK = 'http://localhost:5000/api/social/callback/tiktok'
 TIKTOK_REDIRECT_URI = os.getenv('TIKTOK_REDIRECT_URI', TIKTOK_WEB_REDIRECT_URI)
+
+
+def _tiktok_oauth_enabled():
+    flag = (os.getenv('TIKTOK_OAUTH_ENABLED') or '').strip().lower()
+    return flag in ('1', 'true', 'yes', 'on')
 
 
 def _is_local_dev_url(url):
@@ -1101,8 +1107,11 @@ def callback_instagram():
 
 @social_verification_bp.route('/connect/tiktok', methods=['GET'])
 def connect_tiktok():
-    """Initiate TikTok OAuth flow via Login Kit"""
+    """Initiate TikTok OAuth flow via Login Kit. Disabled until TikTok approves us."""
     return_url = request.args.get('return_url', f"{FRONTEND_URL}/onboarding")
+    if not _tiktok_oauth_enabled():
+        _log("[tiktok] Connect blocked: TIKTOK_OAUTH_ENABLED is off")
+        return redirect(f"{return_url}?social=failed&reason=oauth_error&platform=tiktok")
     try:
         # For onboarding, we may not have creator_id yet - just need user_id
         user_id = _session_get('user_id')
