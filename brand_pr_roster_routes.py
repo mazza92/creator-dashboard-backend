@@ -24,6 +24,11 @@ from psycopg2.extras import RealDictCursor, Json
 from pr_crm_routes import get_db_connection, convert_decimals
 from social_verification_routes import normalize_country_code
 from services.roster_demand import fill_target, mark_focus
+from services.brand_billing import (
+    billing_public_summary,
+    can_mint_campaign,
+    mark_free_campaign_consumed,
+)
 
 brand_pr_roster_bp = Blueprint("brand_pr_roster", __name__, url_prefix="/api/brand-pr")
 
@@ -33,7 +38,7 @@ _TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 
 DEFAULT_DEAL_CHIPS = [
     "Organic posts",
-    "UGC files you own",
+    "UGC reuse for 6 months",
     "No platform fee",
 ]
 DEFAULT_HEADLINE = "Pick creators. Ship product. Keep the content."
@@ -327,6 +332,8 @@ def ensure_active_roster_for_brand(cursor, brand_id, slot_limit=DEFAULT_SLOT_LIM
     """Mint an active roster if this brand has none in progress. Idempotent.
 
     Admin / threshold mint only. First applicant must not call this.
+    Honors Gifted UGC billing: first campaign free, then requires active sub
+    (unless admin force path bypasses via can_mint check skipped upstream).
     """
     _ensure_schema(cursor)
     cursor.execute(
@@ -343,6 +350,10 @@ def ensure_active_roster_for_brand(cursor, brand_id, slot_limit=DEFAULT_SLOT_LIM
     if existing:
         _attach_open_apps(cursor, existing["id"], brand_id)
         return existing, False
+
+    allowed, _summary, _reason = can_mint_campaign(cursor, brand_id)
+    if not allowed:
+        return None, False
 
     cursor.execute(
         "SELECT id, brand_name, slug FROM pr_brands WHERE id = %s",
@@ -974,7 +985,13 @@ def _build_roster_response(cursor, campaign):
             like_sum,
             list(sample.keys())[:12],
         )
-    return _campaign_public(campaign, cards)
+    payload = _campaign_public(campaign, cards)
+    try:
+        payload["billing"] = billing_public_summary(cursor, campaign["brand_id"])
+    except Exception:
+        current_app.logger.exception("[roster] billing summary failed")
+        payload["billing"] = None
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -1387,6 +1404,10 @@ def mark_shipped(token):
             brand_id=campaign["brand_id"],
             meta={"campaign_id": campaign["id"]},
         )
+        try:
+            mark_free_campaign_consumed(cursor, campaign["brand_id"])
+        except Exception:
+            current_app.logger.exception("[roster] mark_free_campaign_consumed failed")
         conn.commit()
         campaign = _load_campaign(cursor, token)
         payload = _build_roster_response(cursor, campaign)
@@ -1458,6 +1479,7 @@ def admin_create_campaign():
         if not brand_id:
             return jsonify({"success": False, "error": "brand_id required"}), 400
 
+        force = bool(data.get("force"))
         slot_limit = int(data.get("slot_limit") or 5)
         slot_limit = max(1, min(slot_limit, 50))
         title = (data.get("title") or "").strip()
@@ -1481,7 +1503,53 @@ def admin_create_campaign():
             conn.close()
             return jsonify({"success": False, "error": "Brand not found"}), 404
 
-        existing, created = ensure_active_roster_for_brand(cursor, brand_id, slot_limit=slot_limit)
+        # Reuse live roster without billing gate
+        cursor.execute(
+            """
+            SELECT c.*
+            FROM brand_pr_campaigns c
+            WHERE c.brand_id = %s AND c.status IN ('active', 'locked')
+            ORDER BY CASE WHEN c.status = 'active' THEN 0 ELSE 1 END, c.created_at DESC
+            LIMIT 1
+            """,
+            (brand_id,),
+        )
+        live = cursor.fetchone()
+        if live:
+            existing, created = live, False
+            _attach_open_apps(cursor, live["id"], brand_id)
+        else:
+            allowed, billing, reason = can_mint_campaign(cursor, brand_id)
+            if not allowed and not force:
+                conn.commit()
+                conn.close()
+                return jsonify({
+                    "success": False,
+                    "error": reason or "Brand billing required for next campaign",
+                    "code": "billing_required",
+                    "billing": billing,
+                }), 402
+            existing, created = ensure_active_roster_for_brand(
+                cursor, brand_id, slot_limit=slot_limit
+            ) if allowed else (None, False)
+            if not allowed and force:
+                # Bypass billing gate for admin override
+                existing = _insert_campaign(
+                    cursor, brand, slot_limit=slot_limit,
+                    title=title or None, headline=headline, lede=lede,
+                    sku_note=sku_note or None, chips=chips,
+                )
+                created = True
+                try:
+                    _record_roster_event(
+                        cursor,
+                        "roster_force_minted",
+                        brand_id=brand_id,
+                        meta={"campaign_id": existing["id"], "token": existing.get("token")},
+                    )
+                except Exception:
+                    pass
+
         if existing and not created:
             conn.commit()
             conn.close()
@@ -1501,7 +1569,7 @@ def admin_create_campaign():
             }), 200
 
         # Just auto-minted with defaults — if admin passed a custom title/SKU, patch it.
-        if existing and created and (title or sku_note):
+        if existing and created and (title or sku_note) and not force:
             if not title:
                 title = existing.get("title") or f"{brand['brand_name']} · PR roster"
             cursor.execute(
@@ -1523,6 +1591,14 @@ def admin_create_campaign():
                 ),
             )
             existing = cursor.fetchone() or existing
+
+        if not existing:
+            conn.close()
+            return jsonify({
+                "success": False,
+                "error": "Could not mint campaign (billing gate or race)",
+                "code": "mint_failed",
+            }), 400
 
         conn.commit()
         conn.close()

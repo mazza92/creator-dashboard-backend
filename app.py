@@ -45,6 +45,7 @@ from subscription_routes import subscription_bp
 from pr_crm_routes import pr_crm
 from brand_apply_routes import brand_apply_bp
 from brand_pr_roster_routes import brand_pr_roster_bp, admin_brand_pr_bp
+from brand_billing_routes import brand_billing_bp
 from opportunities_routes import opportunities_bp
 from media_kit_routes import media_kit_bp
 from portfolio_routes import portfolio_bp
@@ -59,6 +60,7 @@ from social_verification_routes import (
     social_verification_bp,
     should_block_auth_for_region,
     is_request_from_restricted_region,
+    apply_pending_oauth_to_creator,
 )
 from routes.admin_pr_hunter import admin_pr_hunter_bp
 from routes.admin_brands import admin_brands_bp
@@ -334,6 +336,7 @@ app.register_blueprint(pr_crm)
 app.register_blueprint(brand_apply_bp)
 app.register_blueprint(brand_pr_roster_bp)
 app.register_blueprint(admin_brand_pr_bp)
+app.register_blueprint(brand_billing_bp)
 app.register_blueprint(opportunities_bp)
 app.register_blueprint(media_kit_bp)
 app.register_blueprint(portfolio_bp)
@@ -1016,7 +1019,10 @@ def google_signup():
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         # Check if user exists
-        cursor.execute('SELECT id, email, role FROM users WHERE email = %s', (email,))
+        cursor.execute(
+            'SELECT id, email, role FROM users WHERE LOWER(email) = LOWER(%s)',
+            (email,),
+        )
         user = cursor.fetchone()
 
         if user:
@@ -1147,14 +1153,17 @@ def forgot_password():
             app.logger.error("Missing email in forgot password request")
             return jsonify({'error': 'Email is required'}), 400
 
-        email = data['email']
+        email = (data['email'] or '').strip()
 
         # Connect to database
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         # Check if user exists and has a password
-        cursor.execute('SELECT id, email, password FROM users WHERE email = %s', (email,))
+        cursor.execute(
+            'SELECT id, email, password FROM users WHERE LOWER(email) = LOWER(%s)',
+            (email,),
+        )
         user = cursor.fetchone()
         conn.close()
 
@@ -1476,7 +1485,7 @@ def login():
         return response, 200
 
     data = request.get_json()
-    email = data.get('email')
+    email = (data.get('email') or '').strip()
     password = data.get('password')
     app.logger.info("🟢 Login Attempt: email=REDACTED")  # Redact email
 
@@ -1497,7 +1506,10 @@ def login():
 
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
-        cursor.execute("SELECT id, password, role, country FROM users WHERE email = %s", (email,))
+        cursor.execute(
+            "SELECT id, password, role, country FROM users WHERE LOWER(email) = LOWER(%s)",
+            (email,),
+        )
         user = cursor.fetchone()
         app.logger.info(f"🟢 User Query Result: {user.get('id') if user else None}")
 
@@ -2691,6 +2703,10 @@ def onboarding_step1():
 
         # Update session with creator_id
         session['creator_id'] = creator_id
+        try:
+            apply_pending_oauth_to_creator(creator_id)
+        except Exception as oauth_err:
+            app.logger.warning(f"⚠️ Could not persist OAuth snapshot for creator {creator_id}: {oauth_err}")
         # Clear consumed session data
         session.pop('social_verification_result', None)
         session.pop('scraped_avatar_url', None)

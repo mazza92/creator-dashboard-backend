@@ -779,7 +779,7 @@ def stripe_webhook():
         if event['type'] == 'checkout.session.completed':
             session = event['data']['object']
             meta = session.get('metadata') or {}
-            if meta.get('product') == 'packs' or not meta.get('tier'):
+            if meta.get('product') in ('packs', 'brand_gifted_ugc') or not meta.get('tier'):
                 print("Skipping non-subscription checkout in subscription webhook")
                 return jsonify({'success': True}), 200
 
