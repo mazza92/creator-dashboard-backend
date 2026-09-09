@@ -326,8 +326,12 @@ def _load_lead(cur, lead_id):
 
 
 def _send_one(cur, conn, lead, subject, html_content, allow_followup, min_hours):
-    if not lead.get("contact_email"):
+    email = (lead.get("contact_email") or "").strip().lower()
+    if not email:
         return False, "no_email", 400
+    from services.tiktok_ugc_profile_scraper import is_usable_contact_email
+    if not is_usable_contact_email(email):
+        return False, "placeholder_email", 400
     status = (lead.get("last_response_status") or "").lower()
     if status in BLOCKED_OUTREACH_STATUSES:
         return False, f"blocked_status:{status}", 409

@@ -62,6 +62,17 @@ class TestTikTokUgcQualifier(unittest.TestCase):
         self.assertFalse(flags["has_min_followers"])
         self.assertFalse(flags["qualified"])
 
+    def test_placeholder_email_fails(self):
+        flags = qualify_profile(
+            handle="fakeugc",
+            nickname="Sam | UGC creator",
+            signature="UGC creator beauty example@example.com",
+            followers=5000,
+        )
+        self.assertTrue(flags["has_ugc"])
+        self.assertIsNone(flags["contact_email"])
+        self.assertFalse(flags["qualified"])
+
     def test_missing_email_fails(self):
         flags = qualify_profile(
             handle="hannahs.ugccorner",

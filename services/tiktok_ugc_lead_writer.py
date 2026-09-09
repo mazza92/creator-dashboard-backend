@@ -7,6 +7,8 @@ import os
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
+from services.tiktok_ugc_profile_scraper import is_usable_contact_email
+
 OUTREACH_TAG = "UGC_SUPPLY_OUTREACH"
 SOURCE = "tiktok_ugc_search"
 
@@ -121,7 +123,10 @@ def insert_leads(
     batch_date = batch_date or datetime.now(timezone.utc).date().isoformat()
     rows = [r for r in records if r.get("handle")]
     if only_qualified:
-        rows = [r for r in rows if r.get("qualified")]
+        rows = [
+            r for r in rows
+            if r.get("qualified") and is_usable_contact_email(r.get("contact_email"))
+        ]
     stats = {"inserted": 0, "skipped": 0, "errors": 0, "considered": len(rows)}
     if dry_run:
         stats["inserted"] = len(rows)

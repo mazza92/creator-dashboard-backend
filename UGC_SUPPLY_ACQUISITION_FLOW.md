@@ -9,6 +9,36 @@ Goal: find Hannah-shaped TikTok UGC creators → store in `ugc_supply` → cold 
 
 ---
 
+## STOP — crawl command (the only one)
+
+Do **not** write a scraper. Do **not** INSERT rows yourself. Do **not** invent emails.
+
+If `scripts/crawl_tiktok_ugc.py` is missing: `git pull origin main`. Then run **exactly**:
+
+```bash
+cd /home/hermes/apps/creator_dashboard
+source venv/bin/activate
+export PYTHONUNBUFFERED=1
+mkdir -p logs
+python -u scripts/crawl_tiktok_ugc.py --daily --save-to-db \
+  --quota 15 --max-handles 400 --serp-pages 5 --workers 4 \
+  -o logs/tiktok_ugc_$(date -u +%Y%m%d_%H%M).json
+```
+
+Success looks like:
+
+```
+[TikTokUGC] Q @handle email=real@gmail.com niche=beauty followers=1234
+[TikTokUGC] done: N profiles, 15 qualified
+Database insert: 15 inserted, 0 skipped, 0 errors
+```
+
+`example@example.com` = you did not run this script. Stop and rerun the command above.
+
+Or: `bash scripts/run_ugc_supply_crawl.sh 15`
+
+---
+
 ## Pipeline overview (2× daily)
 
 ```
@@ -43,7 +73,9 @@ No Hunter step. These creators already have a public email in bio.
 - **Never** use `/home/mazza/` paths
 - **Never** send mail via SMTP / smtplib / Gmail from Hermes
 - **Never** write these rows into `pr_brands`
-- **Never** invent follower counts, brand counts, or SKUs
+- **Never** invent follower counts, brand counts, SKUs, or emails (`example@example.com` is not a lead)
+- **Never** write custom inserts. Only `scripts/crawl_tiktok_ugc.py --save-to-db` or `POST /ingest` with crawler JSON
+- Qualified means a **real** public email. No email → not qualified. Do not invent a TikTok API.
 - **Never** promise perpetual copyright / “yours forever”
 
 ### Backend repo (crawler + API)

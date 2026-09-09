@@ -61,6 +61,26 @@ DEFAULT_MAX_HANDLES = 2000
 DEFAULT_WORKERS = 4
 DEFAULT_SERP_PAGES = 10
 
+_JUNK_EMAIL_MARKERS = (
+    "example.com",
+    "email.com",
+    "domain.com",
+    "yoursite.com",
+    "yourdomain.com",
+    "test.com",
+    "placeholder",
+    "noreply",
+    "no-reply",
+)
+
+
+def is_usable_contact_email(email: Optional[str]) -> bool:
+    el = (email or "").strip().lower()
+    if "@" not in el or "." not in el.split("@")[-1]:
+        return False
+    return not any(marker in el for marker in _JUNK_EMAIL_MARKERS)
+
+
 DEFAULT_NICHES = [
     "hairstylist",
     "hair",
@@ -328,6 +348,8 @@ def qualify_profile(
 ) -> Dict[str, Any]:
     blob = _blob(handle, nickname, signature, bio_link)
     email = _pick_contact_email(emails or _extract_emails(blob))
+    if email and not is_usable_contact_email(email):
+        email = None
     ugc = has_ugc_signal(blob)
     niche = detect_niche(blob, niches)
     location = detect_location(blob)
