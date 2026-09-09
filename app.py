@@ -67,6 +67,7 @@ from routes.admin_brands import admin_brands_bp
 from routes.admin_reports import admin_reports_bp
 from routes.admin_email import admin_email_bp
 from routes.admin_creators import admin_creators_bp
+from routes.ugc_supply import ugc_supply_bp
 from content_submission_routes import content_hub_bp
 from creator_approval_routes import creator_approval_bp, init_approval_routes
 
@@ -362,6 +363,7 @@ app.register_blueprint(admin_brands_bp)
 app.register_blueprint(admin_reports_bp)
 app.register_blueprint(admin_email_bp)
 app.register_blueprint(admin_creators_bp)
+app.register_blueprint(ugc_supply_bp)
 app.register_blueprint(content_hub_bp)
 app.register_blueprint(creator_approval_bp)
 
