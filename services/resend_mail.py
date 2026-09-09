@@ -8,6 +8,20 @@ import requests
 RESEND_API_URL = 'https://api.resend.com/emails'
 DEFAULT_FROM_EMAIL = 'team@newcollab.co'
 DEFAULT_FROM_NAME = 'Newcollab'
+TRANSIENT_ERROR_MARKERS = (
+    'connection unexpectedly closed',
+    'connection reset',
+    'connection aborted',
+    'remote end closed',
+    'timed out',
+    'timeout',
+    '429',
+    'rate limit',
+    'too many requests',
+    'temporarily unavailable',
+    'sending worker interrupted',
+    'server disconnected',
+)
 _UNSUBSCRIBE_HREF_RE = re.compile(
     r'href=["\'](https?://[^"\']+/api/public/unsubscribe[^"\']+)["\']',
     re.IGNORECASE,
@@ -16,6 +30,12 @@ _UNSUBSCRIBE_HREF_RE = re.compile(
 
 def resend_configured():
     return bool((os.getenv('RESEND_API_KEY') or '').strip())
+
+
+def is_transient_send_error(error):
+    """True when a failed send should be retried, not marked permanent."""
+    text = str(error or '').lower()
+    return any(marker in text for marker in TRANSIENT_ERROR_MARKERS)
 
 
 def campaign_from_header():

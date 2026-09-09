@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 from services.resend_mail import (
     campaign_from_header,
     extract_unsubscribe_url,
+    is_transient_send_error,
     send_resend_email,
 )
 
@@ -60,6 +61,12 @@ class TestResendMail(unittest.TestCase):
             result = send_resend_email('creator@example.com', 'Hi', '<p>Hi</p>')
         self.assertFalse(result['success'])
         self.assertTrue(result['retryable'])
+
+    def test_gmail_disconnect_is_transient(self):
+        self.assertTrue(is_transient_send_error('Connection unexpectedly closed'))
+        self.assertTrue(is_transient_send_error('Rate limit exceeded'))
+        self.assertFalse(is_transient_send_error('Invalid `to` field'))
+        self.assertFalse(is_transient_send_error('RESEND_API_KEY not set'))
 
 
 if __name__ == '__main__':

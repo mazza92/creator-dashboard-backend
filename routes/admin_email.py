@@ -28,7 +28,7 @@ from services.outreach_image_gen import (
     get_showcase_creators,
     init as init_outreach_image_gen,
 )
-from services.resend_mail import send_resend_email
+from services.resend_mail import is_transient_send_error, send_resend_email
 # Initialise schema + seed on first import (idempotent)
 try:
     init_outreach_image_gen()
@@ -42,9 +42,9 @@ GMAIL_APP_PASSWORD = os.getenv('SMTP_PASSWORD')
 
 
 def _campaign_mailer_ready():
-    """Resend in production; Gmail SMTP is enough for local campaign tests."""
+    """Bulk campaigns must go through Resend. Gmail cannot send 2k+ emails."""
     from services.resend_mail import resend_configured
-    return resend_configured() or bool(GMAIL_APP_PASSWORD)
+    return resend_configured()
 
 
 def get_db_connection():
@@ -811,6 +811,42 @@ def _recipient_counts(cursor, campaign_id):
     return cursor.fetchone()
 
 
+def _requeue_transient_failures(cursor, campaign_id=None):
+    """Turn Gmail disconnects / timeouts back into pending so Resend can retry."""
+    where = [
+        "status = 'failed_perm'",
+        "("
+        " last_error ILIKE %s OR last_error ILIKE %s OR last_error ILIKE %s"
+        " OR last_error ILIKE %s OR last_error ILIKE %s OR last_error ILIKE %s"
+        " OR last_error ILIKE %s"
+        ")",
+    ]
+    params = [
+        '%Connection unexpectedly closed%',
+        '%429%',
+        '%rate limit%',
+        '%timeout%',
+        '%timed out%',
+        '%Sending worker interrupted%',
+        '%Connection aborted%',
+    ]
+    if campaign_id is not None:
+        where.insert(0, 'campaign_id = %s')
+        params.insert(0, campaign_id)
+    cursor.execute(
+        f"""
+        UPDATE email_campaign_recipients
+        SET status = 'pending',
+            attempt_count = 0,
+            last_error = 'Requeued after transient send error',
+            updated_at = NOW()
+        WHERE {' AND '.join(where)}
+        """,
+        params,
+    )
+    return cursor.rowcount or 0
+
+
 def _refresh_campaign_totals_from_recipients(cursor, campaign_id, final=False):
     """Sync campaign counters from recipient state table."""
     counts = _recipient_counts(cursor, campaign_id)
@@ -905,7 +941,7 @@ def _send_campaign_email(to_email, subject, html_content, recipient=None):
     return {
         'success': False,
         'message_id': None,
-        'error': 'RESEND_API_KEY not set (and no SMTP_PASSWORD for fallback)',
+        'error': 'RESEND_API_KEY not set',
         'retryable': False,
     }
 
@@ -1288,8 +1324,26 @@ def cron_process_campaigns():
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         recovered = _recover_orphaned_sending(cursor)
+        requeued = _requeue_transient_failures(cursor)
+        if requeued > 0:
+            cursor.execute(
+                """
+                UPDATE email_campaigns ec
+                SET status = 'sending'
+                WHERE status = 'failed'
+                  AND EXISTS (
+                      SELECT 1 FROM email_campaign_recipients ecr
+                      WHERE ecr.campaign_id = ec.id
+                        AND ecr.status IN ('pending', 'failed_temp')
+                        AND ecr.attempt_count < %s
+                  )
+                """,
+                (MAX_SEND_ATTEMPTS,),
+            )
+            print(f"[Cron] Requeued {requeued} transient failures")
         if recovered > 0:
             print(f"[Cron] Recovered {recovered} stuck recipients")
+        if recovered > 0 or requeued > 0:
             conn.commit()
 
         cursor.execute(
@@ -1298,7 +1352,7 @@ def cron_process_campaigns():
                    et.subject as template_subject, et.html_content as template_html_content
             FROM email_campaigns ec
             LEFT JOIN campaign_templates et ON ec.template_id = et.id
-            WHERE ec.status = 'sending'
+            WHERE ec.status IN ('sending', 'failed')
               AND EXISTS (
                   SELECT 1 FROM email_campaign_recipients ecr
                   WHERE ecr.campaign_id = ec.id
@@ -1449,6 +1503,7 @@ def continue_campaign(campaign_id):
         marked_sent = _mark_already_logged_sent(cursor, campaign_id)
         recovered = 0
         reset_exhausted = 0
+        requeued = _requeue_transient_failures(cursor, campaign_id)
 
         counts = _recipient_counts(cursor, campaign_id)
         retryable = counts['retryable'] or 0
@@ -1479,7 +1534,7 @@ def continue_campaign(campaign_id):
             conn.commit()
             conn.close()
             return jsonify({
-                'error': 'No email sender configured. Set RESEND_API_KEY or SMTP_PASSWORD.',
+                'error': 'RESEND_API_KEY is not set. Bulk campaigns must send through Resend, not Gmail.',
                 'is_complete': False,
                 'remaining': retryable,
                 'sending': sending_count,
@@ -1490,12 +1545,16 @@ def continue_campaign(campaign_id):
             cursor.execute(
                 """
                 UPDATE email_campaign_recipients
-                SET attempt_count = 0,
+                SET status = 'pending',
+                    attempt_count = 0,
                     last_error = 'Retry limit reset by Continue action',
                     updated_at = NOW()
                 WHERE campaign_id = %s
-                  AND status IN ('failed_temp', 'pending')
-                  AND attempt_count >= %s
+                  AND status IN ('failed_temp', 'failed_perm', 'pending')
+                  AND (
+                    attempt_count >= %s
+                    OR status = 'failed_perm'
+                  )
                 """,
                 (campaign_id, MAX_SEND_ATTEMPTS)
             )
@@ -1514,6 +1573,7 @@ def continue_campaign(campaign_id):
                 'failed_this_batch': 0,
                 'recovered_stuck': recovered,
                 'reset_exhausted': reset_exhausted,
+                'requeued_transient': requeued,
                 'total_sent': summary['sent'],
                 'total_recipients': summary['total'],
                 'remaining': 0,
@@ -1569,6 +1629,7 @@ def continue_campaign(campaign_id):
             'failed_this_batch': failed,
             'recovered_stuck': recovered,
             'reset_exhausted': reset_exhausted,
+            'requeued_transient': requeued,
             'total_sent': summary['sent'],
             'total_recipients': summary['total'],
             'remaining': pending,
@@ -1607,7 +1668,7 @@ def send_campaign(campaign_id):
 
         if not _campaign_mailer_ready():
             conn.close()
-            return jsonify({'error': 'No email sender configured. Set RESEND_API_KEY or SMTP_PASSWORD.'}), 503
+            return jsonify({'error': 'RESEND_API_KEY is not set. Bulk campaigns must send through Resend, not Gmail.'}), 503
 
         # Only block if fully sent — 'sending' may be a stuck/crashed thread, allow resume
         if campaign['status'] == 'sent':
@@ -1963,7 +2024,12 @@ def send_email_gmail_with_meta(to_email, subject, html_content):
     """Send email via Gmail SMTP and return transport metadata."""
     if not GMAIL_APP_PASSWORD:
         print(f"Warning: SMTP_PASSWORD not set. GMAIL_USER={GMAIL_USER}")
-        return {"success": False, "error": "SMTP_PASSWORD not set", "message_id": None}
+        return {
+            "success": False,
+            "error": "SMTP_PASSWORD not set",
+            "message_id": None,
+            "retryable": False,
+        }
 
     try:
         msg = MIMEMultipart('alternative')
@@ -1982,13 +2048,18 @@ def send_email_gmail_with_meta(to_email, subject, html_content):
             server.sendmail(GMAIL_USER, to_email, msg.as_string())
 
         print(f"Email sent successfully to {to_email}")
-        return {"success": True, "message_id": msg.get("Message-ID")}
+        return {"success": True, "message_id": msg.get("Message-ID"), "retryable": False}
 
     except Exception as e:
         print(f"Email send error: {e}")
         import traceback
         traceback.print_exc()
-        return {"success": False, "error": str(e), "message_id": None}
+        return {
+            "success": False,
+            "error": str(e),
+            "message_id": None,
+            "retryable": is_transient_send_error(str(e)),
+        }
 
 
 def send_email_gmail(to_email, subject, html_content):
