@@ -32,8 +32,8 @@ BLOCKED_OUTREACH_STATUSES = {
     "reply",
 }
 
-SIGNUP_URL = "https://app.newcollab.co/signup"
-DEFAULT_SUBJECT = "{{display_name}} — brands are booking UGC on Newcollab"
+SIGNUP_URL = "https://app.newcollab.co/register/creator"
+DEFAULT_SUBJECT = "PR / gifting campaigns — @{{handle}}"
 DEFAULT_FOLLOWUP_HOURS = 96
 
 
@@ -103,16 +103,15 @@ def personalize(text, lead):
     return out
 
 
-def default_onboarding_html(lead):
-    name = lead.get("display_name") or f"@{lead.get('handle')}"
-    niche = lead.get("niche") or "your niche"
-    handle = lead.get("handle") or ""
-    return f"""
-<p>Hi {name},</p>
-<p>I found your TikTok (@{handle}) — {niche} UGC with a public collab email, which is exactly the creator shape brands on Newcollab hire.</p>
-<p>Newcollab is where brands send gifted PR / paid UGC briefs. You pick what fits, ship content, and keep the terms you agree to (including UGC reuse in ads for 6 months).</p>
-<p><a href="{SIGNUP_URL}">Create your free creator account</a> and we will match you with briefs in {niche}.</p>
-<p>Mahery<br>Newcollab</p>
+def default_onboarding_html(lead=None):
+    """Match invite, not unpaid-work pitch — avoids 'I only do fixed rate' replies."""
+    return """
+<p>Hey,</p>
+<p>Saw your TikTok (@{{handle}}).</p>
+<p>We have brands running PR / gifting campaigns, and your profile could be a good match.</p>
+<p>If you're interested, you can sign up and apply here:<br><a href="{{signup_url}}">{{signup_url}}</a></p>
+<p>Worth a look?</p>
+<p>Mazza<br>Founder, Newcollab</p>
 """
 
 

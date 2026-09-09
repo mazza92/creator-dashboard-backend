@@ -29,16 +29,22 @@ class TestTikTokUgcLeadsApiHelpers(unittest.TestCase):
         row = _json_ready({"handle": "hannahs.ugccorner", "profile_url": None})
         self.assertEqual(row["profile_url"], "https://www.tiktok.com/@hannahs.ugccorner")
 
-    def test_default_html_has_signup_and_no_perpetual_copyright(self):
-        html = default_onboarding_html({
-            "display_name": "Hannah | UGC creator",
+    def test_default_html_is_match_invite_not_unpaid_brief(self):
+        html = personalize(default_onboarding_html(), {
             "handle": "hannahs.ugccorner",
             "niche": "hairstylist",
         })
         self.assertIn(SIGNUP_URL, html)
-        self.assertIn("hairstylist", html)
+        self.assertIn("@hannahs.ugccorner", html)
+        self.assertIn("PR / gifting campaigns", html)
+        self.assertIn("good match", html)
+        self.assertIn("If you're interested", html)
+        self.assertIn("Worth a look?", html)
+        self.assertIn("Mazza", html)
+        self.assertNotIn("1 organic", html.lower())
         self.assertNotIn("forever", html.lower())
-        self.assertIn("6 months", html.lower())
+        self.assertNotIn("perpetual", html.lower())
+        self.assertNotIn("6 months", html.lower())
 
 
 if __name__ == "__main__":
