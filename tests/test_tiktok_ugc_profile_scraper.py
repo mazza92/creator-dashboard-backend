@@ -11,6 +11,7 @@ from services.tiktok_ugc_profile_scraper import (
     extract_tiktok_handles,
     has_ugc_signal,
     qualify_profile,
+    tiktok_profile_url,
     unwrap_ddg_url,
 )
 
@@ -89,7 +90,16 @@ class TestTikTokUgcQualifier(unittest.TestCase):
         self.assertFalse(flags["has_ugc"])
         self.assertFalse(flags["qualified"])
 
-    def test_handle_extract(self):
+    def test_tiktok_profile_url(self):
+        self.assertEqual(
+            tiktok_profile_url("hannahs.ugccorner"),
+            "https://www.tiktok.com/@hannahs.ugccorner",
+        )
+        self.assertEqual(
+            tiktok_profile_url("@Hannahs.UgcCorner"),
+            "https://www.tiktok.com/@hannahs.ugccorner",
+        )
+        self.assertEqual(tiktok_profile_url(""), "")
         self.assertEqual(
             extract_tiktok_handles("https://www.tiktok.com/@hannahs.ugccorner"),
             ["hannahs.ugccorner"],

@@ -41,6 +41,7 @@ def _print(records):
     for rec in records:
         q = "YES" if rec.get("qualified") else "no "
         print(f"  [Q:{q}] @{rec.get('handle')}  {rec.get('display_name') or ''}")
+        print(f"      {rec.get('profile_url') or ''}")
         print(
             f"      ugc={rec.get('has_ugc')} niche={rec.get('niche')} "
             f"followers={rec.get('followers')} email={rec.get('contact_email')}"

@@ -77,6 +77,11 @@ def _json_ready(row):
     for key, val in list(out.items()):
         if isinstance(val, datetime):
             out[key] = val.isoformat()
+    handle = (out.get("handle") or "").lstrip("@").strip()
+    if handle:
+        out["profile_url"] = (out.get("profile_url") or "").strip() or (
+            f"https://www.tiktok.com/@{handle}"
+        )
     return out
 
 
@@ -86,7 +91,9 @@ def personalize(text, lead):
         "{{handle}}": lead.get("handle") or "",
         "{{niche}}": lead.get("niche") or "UGC",
         "{{email}}": lead.get("contact_email") or "",
-        "{{profile_url}}": lead.get("profile_url") or "",
+        "{{profile_url}}": lead.get("profile_url") or (
+            f"https://www.tiktok.com/@{lead['handle']}" if lead.get("handle") else ""
+        ),
         "{{followers}}": str(lead.get("followers") or 0),
         "{{signup_url}}": SIGNUP_URL,
     }

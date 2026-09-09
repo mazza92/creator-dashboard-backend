@@ -197,6 +197,11 @@ def unwrap_ddg_url(href: str) -> str:
     return href
 
 
+def tiktok_profile_url(handle: str) -> str:
+    h = (handle or "").lstrip("@").strip().lower()
+    return f"https://www.tiktok.com/@{h}" if h else ""
+
+
 def extract_tiktok_handles(text: str) -> List[str]:
     seen: Set[str] = set()
     out: List[str] = []
@@ -716,8 +721,9 @@ def enrich_handle(
         m for m in _mentions_from_profile(profile, bio_link)
         if m != handle
     ]
+    resolved = (profile.get("uniqueId") or handle).lstrip("@").lower()
     record = {
-        "handle": (profile.get("uniqueId") or handle).lstrip("@").lower(),
+        "handle": resolved,
         "display_name": nickname,
         "bio": signature,
         "bio_link": bio_link or None,
@@ -726,7 +732,7 @@ def enrich_handle(
         "video_count": int(profile.get("videoCount") or 0),
         "avatar_url": profile.get("avatarUrl") or None,
         "source": SOURCE,
-        "profile_url": f"https://www.tiktok.com/@{handle}",
+        "profile_url": tiktok_profile_url(resolved),
         "mentioned_handles": mentions,
         **flags,
     }
