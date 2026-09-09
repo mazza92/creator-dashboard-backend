@@ -751,6 +751,50 @@ def _load_campaign_by_id(cursor, campaign_id, *, allow_closed=True, skip_expiry=
     )
 
 
+def _clean_social_handle(raw):
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    text = text.lstrip("@")
+    low = text.lower()
+    if "instagram.com/" in low:
+        text = text.split("instagram.com/", 1)[1]
+    elif "tiktok.com/" in low:
+        text = text.split("tiktok.com/", 1)[1]
+    text = text.lstrip("@")
+    return text.split("/")[0].split("?")[0].strip()
+
+
+def _regions_public(raw):
+    if isinstance(raw, list):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(x).strip() for x in parsed if str(x).strip()]
+        except Exception:
+            pass
+        return [p.strip() for p in raw.split(",") if p.strip()]
+    return []
+
+
+def _brand_public(campaign):
+    return {
+        "id": campaign["brand_id"],
+        "name": campaign.get("brand_name"),
+        "logo": campaign.get("logo_url") or "",
+        "slug": campaign.get("brand_slug") or "",
+        "category": campaign.get("brand_category") or "",
+        "hero_product": campaign.get("hero_product") or "",
+        "website": (campaign.get("website") or "").strip(),
+        "instagram": _clean_social_handle(campaign.get("instagram_handle")),
+        "tiktok": _clean_social_handle(campaign.get("tiktok_handle")),
+        "cover_image": campaign.get("cover_image_url") or "",
+        "regions": _regions_public(campaign.get("brand_regions")),
+    }
+
+
 def _load_campaign_row(cursor, where_sql, params, *, allow_closed=False, skip_expiry=False):
     cursor.execute(
         f"""
@@ -760,7 +804,12 @@ def _load_campaign_row(cursor, where_sql, params, *, allow_closed=False, skip_ex
             b.logo_url,
             b.slug AS brand_slug,
             b.category AS brand_category,
-            b.hero_product
+            b.hero_product,
+            b.website,
+            b.instagram_handle,
+            b.tiktok_handle,
+            b.cover_image_url,
+            b.regions AS brand_regions
         FROM brand_pr_campaigns c
         JOIN pr_brands b ON b.id = c.brand_id
         WHERE {where_sql}
@@ -929,14 +978,7 @@ def _campaign_public(campaign, cards):
                 "status": campaign.get("status"),
                 "locked_at": campaign.get("locked_at").isoformat() if campaign.get("locked_at") else None,
                 "shipped_at": campaign.get("shipped_at").isoformat() if campaign.get("shipped_at") else None,
-                "brand": {
-                    "id": campaign["brand_id"],
-                    "name": campaign.get("brand_name"),
-                    "logo": campaign.get("logo_url"),
-                    "slug": campaign.get("brand_slug"),
-                    "category": campaign.get("brand_category"),
-                    "hero_product": campaign.get("hero_product"),
-                },
+                "brand": _brand_public(campaign),
                 "selected_application_ids": selected_ids,
                 "selected_count": len(selected_ids),
                 "can_lock": campaign.get("status") == "active" and len(selected_ids) == slot_limit,

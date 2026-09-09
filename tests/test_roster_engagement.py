@@ -100,3 +100,28 @@ class TestRosterEngagement(unittest.TestCase):
         # avg 1000 eng / 10000 followers = 10%
         self.assertEqual(n, 10.0)
         self.assertEqual(label, "10%")
+
+    def test_brand_public_maps_website_and_socials(self):
+        from brand_pr_roster_routes import _brand_public
+
+        out = _brand_public(
+            {
+                "brand_id": 9,
+                "brand_name": "Harbor & Co.",
+                "logo_url": "https://cdn.example/logo.png",
+                "brand_slug": "harbor-co",
+                "brand_category": "Lifestyle",
+                "hero_product": "Everyday tote",
+                "website": "https://www.harborandco.com",
+                "instagram_handle": "@harborandco",
+                "tiktok_handle": "https://www.tiktok.com/@harborandco",
+                "cover_image_url": "https://cdn.example/tote.jpg",
+                "brand_regions": ["US", "UK", "AU"],
+            }
+        )
+        self.assertEqual(out["website"], "https://www.harborandco.com")
+        self.assertEqual(out["instagram"], "harborandco")
+        self.assertEqual(out["tiktok"], "harborandco")
+        self.assertEqual(out["cover_image"], "https://cdn.example/tote.jpg")
+        self.assertEqual(out["regions"], ["US", "UK", "AU"])
+        self.assertEqual(out["hero_product"], "Everyday tote")
