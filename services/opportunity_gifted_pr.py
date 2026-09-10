@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from datetime import datetime
 
 from psycopg2.extras import Json
+
+_GIFTED_PR_COLUMNS_READY = False
+_GIFTED_PR_COLUMNS_LOCK = threading.Lock()
 
 
 def is_brand_submission(opp) -> bool:
@@ -119,15 +123,57 @@ def apply_url_for_brand(slug: str) -> str:
     return f"https://app.newcollab.co/creator/dashboard/for-you?brand={slug}"
 
 
+def _gifted_pr_columns_exist(cursor) -> bool:
+    cursor.execute(
+        """
+        SELECT
+          EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'opportunities'
+              AND column_name = 'pr_brand_id'
+          )
+          AND EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'pr_brands'
+              AND column_name = 'source_opportunity_id'
+          )
+        """
+    )
+    row = cursor.fetchone()
+    if not row:
+        return False
+    if isinstance(row, dict):
+        return bool(next(iter(row.values())))
+    return bool(row[0])
+
+
 def ensure_opportunity_gifted_pr_columns(cursor):
-    cursor.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS pr_brand_id INTEGER")
-    cursor.execute("ALTER TABLE pr_brands ADD COLUMN IF NOT EXISTS source_opportunity_id INTEGER")
-    cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_opportunities_pr_brand_id ON opportunities(pr_brand_id)"
-    )
-    cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pr_brands_source_opportunity ON pr_brands(source_opportunity_id)"
-    )
+    """Idempotent. Never ALTER on the hot list path once columns exist.
+
+    ADD COLUMN / CREATE INDEX take ACCESS EXCLUSIVE locks. Two concurrent
+    /api/opportunities/list requests were deadlocking pr_brands vs opportunities.
+    """
+    global _GIFTED_PR_COLUMNS_READY
+    if _GIFTED_PR_COLUMNS_READY:
+        return
+    with _GIFTED_PR_COLUMNS_LOCK:
+        if _GIFTED_PR_COLUMNS_READY:
+            return
+        if _gifted_pr_columns_exist(cursor):
+            _GIFTED_PR_COLUMNS_READY = True
+            return
+        cursor.execute("SET LOCAL lock_timeout = '2s'")
+        cursor.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS pr_brand_id INTEGER")
+        cursor.execute("ALTER TABLE pr_brands ADD COLUMN IF NOT EXISTS source_opportunity_id INTEGER")
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_opportunities_pr_brand_id ON opportunities(pr_brand_id)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pr_brands_source_opportunity ON pr_brands(source_opportunity_id)"
+        )
+        _GIFTED_PR_COLUMNS_READY = True
 
 
 def _unique_slug(cursor, base: str, existing_id=None) -> str:
