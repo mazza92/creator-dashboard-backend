@@ -596,7 +596,15 @@ def send_first_pitch_nudge():
             WHERE u.is_verified = true
               AND u.unsubscribed_at IS NULL
               AND c.first_pitch_sent_at IS NULL
-              AND c.created_at < NOW() - INTERVAL '24 hours'
+              AND (
+                c.created_at < NOW() - INTERVAL '24 hours'
+                OR (
+                  c.subscription_tier IN ('pro', 'elite')
+                  AND c.subscription_started_at IS NOT NULL
+                  AND c.subscription_started_at < NOW() - INTERVAL '24 hours'
+                  AND c.subscription_started_at > NOW() - INTERVAL '14 days'
+                )
+              )
               AND (
                 c.last_reminder_sent IS NULL
                 OR c.last_reminder_sent < NOW() - INTERVAL '48 hours'

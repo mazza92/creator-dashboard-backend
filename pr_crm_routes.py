@@ -8190,13 +8190,17 @@ def log_reply(pipeline_id):
 
         # Verify ownership
         cursor.execute(
-            "SELECT id FROM creator_pipeline WHERE id = %s AND creator_id = %s",
+            "SELECT id, brand_id, stage FROM creator_pipeline WHERE id = %s AND creator_id = %s",
             (pipeline_id, creator_id)
         )
-        if not cursor.fetchone():
+        pipeline_row = cursor.fetchone()
+        if not pipeline_row:
             cursor.close()
             conn.close()
             return jsonify({'success': False, 'error': 'Not found'}), 404
+
+        previous_stage = pipeline_row.get('stage')
+        brand_id = pipeline_row.get('brand_id')
 
         # Update with stage-specific timestamps
         if new_stage == 'won':
@@ -8219,9 +8223,19 @@ def log_reply(pipeline_id):
                 WHERE id = %s AND creator_id = %s
             """, (new_stage, reply_type, pipeline_id, creator_id))
 
+        from services.subscription_retention import increment_replies_received
+        increment_replies_received(cursor, creator_id, previous_stage, new_stage)
+
         conn.commit()
         cursor.close()
         conn.close()
+
+        if new_stage in ('replied', 'won') and brand_id:
+            try:
+                from lifecycle_email_engine import trigger_reply_celebration
+                trigger_reply_celebration(creator_id, brand_id)
+            except Exception as cele_err:
+                print(f"[retention] reply celebration skipped: {cele_err}")
 
         return jsonify({
             'success': True,
