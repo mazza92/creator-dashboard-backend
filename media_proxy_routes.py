@@ -11,9 +11,10 @@ import os
 import re
 import json
 import hashlib
+from html import unescape
 from io import BytesIO
 from typing import Iterable, List, Optional, Tuple
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import requests
 from flask import Blueprint, abort, has_request_context, request, send_file
@@ -99,6 +100,26 @@ def _fetch_cdn_bytes(url: str, timeout: int = 10) -> Optional[Tuple[bytes, str]]
 def _already_hosted(url: str) -> bool:
     raw = (url or "").lower()
     return "supabase" in raw or "/storage/v1/object/public/" in raw
+
+
+def _storage_public_base() -> Tuple[str, str]:
+    supabase_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+    bucket = os.getenv("SUPABASE_BUCKET", "creators")
+    return supabase_url, bucket
+
+
+def _existing_public_thumb(filename: str) -> str:
+    supabase_url, bucket = _storage_public_base()
+    if not supabase_url or not filename:
+        return ""
+    url = f"{supabase_url}/storage/v1/object/public/{bucket}/{filename}"
+    try:
+        resp = requests.head(url, timeout=5, allow_redirects=True)
+        if resp.status_code == 200:
+            return url
+    except Exception:
+        return ""
+    return ""
 
 
 def _host_allowed(host: str) -> bool:
@@ -255,7 +276,11 @@ def format_snapshot_posts(profile: Optional[dict], limit: int = 9) -> List[dict]
     return posts
 
 
-def rehost_social_image(image_url: str, dest_prefix: str = "avatars") -> Optional[str]:
+def rehost_social_image(
+    image_url: str,
+    dest_prefix: str = "avatars",
+    dest_filename: Optional[str] = None,
+) -> Optional[str]:
     """
     Download a social CDN image (with Instagram/TikTok Referer) and upload to Supabase.
     Profile <img> tags cannot hotlink scontent URLs (CORP + signed query expiry).
@@ -268,9 +293,8 @@ def rehost_social_image(image_url: str, dest_prefix: str = "avatars") -> Optiona
     if not is_social_cdn_url(raw):
         return None
 
-    supabase_url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+    supabase_url, bucket = _storage_public_base()
     supabase_key = os.getenv("SUPABASE_KEY") or ""
-    bucket = os.getenv("SUPABASE_BUCKET", "creators")
     if not supabase_url or not supabase_key:
         return None
 
@@ -279,17 +303,23 @@ def rehost_social_image(image_url: str, dest_prefix: str = "avatars") -> Optiona
         if not fetched:
             return None
         content, content_type = fetched
-        if "png" in content_type:
-            ext = "png"
-        elif "webp" in content_type:
-            ext = "webp"
-        else:
-            ext = "jpg"
+        if dest_filename:
+            filename = dest_filename.strip().lstrip("/")
             content_type = "image/jpeg"
-
-        prefix = (dest_prefix or "avatars").strip("/")
-        stem = hashlib.sha1(urlparse(raw).path.encode("utf-8")).hexdigest()[:16]
-        filename = f"{prefix}/{stem}.{ext}"
+        else:
+            if "png" in content_type:
+                ext = "png"
+            elif "webp" in content_type:
+                ext = "webp"
+            else:
+                ext = "jpg"
+                content_type = "image/jpeg"
+            prefix = (dest_prefix or "avatars").strip("/")
+            stem = hashlib.sha1(urlparse(raw).path.encode("utf-8")).hexdigest()[:16]
+            filename = f"{prefix}/{stem}.{ext}"
+        existing = _existing_public_thumb(filename)
+        if existing:
+            return existing
         upload = requests.post(
             f"{supabase_url}/storage/v1/object/{bucket}/{filename}",
             headers={
@@ -324,34 +354,87 @@ def persist_social_thumbnails(urls: Optional[Iterable[str]], dest_prefix: str = 
 
 
 def persist_profile_media(profile: Optional[dict]) -> Optional[dict]:
-    """Rehost scrape thumbnails in-place. Safe to call on every scrape."""
-    if not profile or not isinstance(profile, dict):
-        return profile
-    handle = str(profile.get("handle") or "unknown").lstrip("@")[:40] or "unknown"
-    prefix = f"thumbs/{handle}"
-    mapping = {}
-
-    def persist_one(url):
-        raw = str(url or "").strip()
-        if not raw:
-            return raw
-        if raw in mapping:
-            return mapping[raw]
-        hosted = persist_social_thumbnails([raw], dest_prefix=prefix)
-        mapping[raw] = hosted[0] if hosted else raw
-        return mapping[raw]
-
-    thumbs = profile.get("recent_post_thumbnails")
-    if isinstance(thumbs, list) and thumbs:
-        profile["recent_post_thumbnails"] = [persist_one(u) for u in thumbs if u]
-
-    for post in profile.get("recent_posts") or []:
-        if not isinstance(post, dict):
-            continue
-        thumb = post.get("thumbnail_url") or post.get("displayUrl")
-        if thumb:
-            post["thumbnail_url"] = persist_one(thumb)
+    """Leave scrape galleries on the CDN. Roster cards use media-proxy, not storage."""
     return profile
+
+
+def unwrap_proxied_media_url(url: Optional[str]) -> str:
+    """Return the inner CDN URL if this is an /api/media-proxy wrapper."""
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    if "/api/media-proxy" not in raw:
+        return raw
+    try:
+        parsed = urlparse(raw)
+        inner = (parse_qs(parsed.query).get("url") or [""])[0]
+        return unquote(inner).strip() if inner else raw
+    except Exception:
+        return raw
+
+
+def fresh_thumb_from_post_url(post_url: Optional[str]) -> str:
+    """Mint a live still from the public post page when signed CDN thumbs have expired."""
+    url = str(post_url or "").strip()
+    if not url.startswith("http"):
+        return ""
+    try:
+        if "tiktok.com" in url:
+            resp = requests.get(f"https://www.tiktok.com/oembed?url={url}", timeout=10)
+            if resp.status_code == 200:
+                return str((resp.json() or {}).get("thumbnail_url") or "").strip()
+        if "instagram.com" in url:
+            match = re.search(r"instagram\.com/(?:p|reel|reels)/([^/?#]+)", url, re.I)
+            if not match:
+                return ""
+            code = match.group(1)
+            resp = requests.get(
+                f"https://www.instagram.com/p/{code}/",
+                headers={
+                    "User-Agent": (
+                        "facebookexternalhit/1.1 "
+                        "(+http://www.facebook.com/externalhit_uatext.php)"
+                    ),
+                    "Accept": "text/html",
+                },
+                timeout=12,
+            )
+            if resp.status_code != 200 or not resp.text:
+                return ""
+            og = re.search(
+                r'property="og:image"[^>]+content="([^"]+)"',
+                resp.text,
+            ) or re.search(
+                r'content="([^"]+)"[^>]+property="og:image"',
+                resp.text,
+            )
+            return unescape(og.group(1)).strip() if og else ""
+    except Exception as exc:
+        print(f"[thumb-recover] {exc}")
+    return ""
+
+
+def persist_post_thumbnail(
+    thumb: Optional[str],
+    post_url: Optional[str] = "",
+    dest_prefix: str = "thumbs",
+) -> str:
+    """Display URL for a post still. Never uploads to storage.
+
+    Signed CDN links expire; we wrap them in /api/media-proxy and, when needed,
+    mint a fresh og:image / oEmbed URL from the public post page.
+    """
+    del dest_prefix  # leftover from the storage-rehost path
+    raw = unwrap_proxied_media_url(thumb)
+    if _already_hosted(raw):
+        return raw
+    fresh = fresh_thumb_from_post_url(post_url)
+    candidate = fresh or raw
+    if not candidate:
+        return ""
+    if _already_hosted(candidate):
+        return candidate
+    return to_proxied_media_url(candidate)
 
 
 def persist_social_avatar(image_url: str, dest_prefix: str = "avatars") -> str:

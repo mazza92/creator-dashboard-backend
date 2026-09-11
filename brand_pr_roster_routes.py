@@ -581,8 +581,15 @@ def _socials_public(row):
         if url:
             found[platform] = {"platform": platform, "url": url}
 
-    for post in _posts_public(row.get("selected_posts")):
-        url = post.get("post_url") or ""
+    for raw_post in _parse_json_list(row.get("selected_posts")) + _parse_json_list(
+        row.get("recent_posts")
+    ):
+        if isinstance(raw_post, dict):
+            url = raw_post.get("post_url") or raw_post.get("url") or ""
+        elif isinstance(raw_post, str):
+            url = raw_post
+        else:
+            continue
         if "tiktok.com" in url and "tiktok" not in found:
             m = re.search(r"tiktok\.com/@([^/?]+)", url)
             if m:
@@ -754,19 +761,192 @@ def _niche_label(row):
     return ""
 
 
-def _posts_public(raw):
-    posts = _parse_json_list(raw)
+def _thumb_from_post(post):
+    if isinstance(post, str):
+        return post.strip()
+    if not isinstance(post, dict):
+        return ""
+    for key in (
+        "thumbnail_url",
+        "thumb",
+        "displayUrl",
+        "display_url",
+        "cover_image_url",
+        "cover",
+    ):
+        value = str(post.get(key) or "").strip()
+        if value:
+            try:
+                from media_proxy_routes import unwrap_proxied_media_url
+
+                value = unwrap_proxied_media_url(value) or value
+            except Exception:
+                pass
+            return value
+    return ""
+
+
+def _is_storage_thumb(url):
+    low = str(url or "").lower()
+    return "supabase.co" in low or "/storage/v1/object/public/" in low
+
+
+def _public_thumb(url):
+    """Browser-safe <img src>. Proxies social CDNs. Never uploads a file."""
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    try:
+        from media_proxy_routes import is_social_cdn_url, to_proxied_media_url, unwrap_proxied_media_url
+
+        inner = unwrap_proxied_media_url(raw) or raw
+        if _is_storage_thumb(inner):
+            return inner
+        if is_social_cdn_url(inner) or "/api/media-proxy" in raw.lower():
+            return to_proxied_media_url(inner if is_social_cdn_url(inner) else raw)
+    except Exception:
+        return raw
+    return raw if raw.startswith("http") else ""
+
+
+def _usable_thumb(url):
+    return bool(_public_thumb(url) or str(url or "").startswith("http"))
+
+
+def _posts_public(*sources):
+    """Apply picks first, then scrape / OAuth / portfolio. Proxy CDNs; do not rehost."""
     out = []
-    for p in posts[:3]:
-        if not isinstance(p, dict):
-            continue
-        out.append(
-            {
-                "post_url": p.get("post_url") or p.get("url") or "",
-                "thumbnail_url": p.get("thumbnail_url") or p.get("thumb") or "",
-            }
-        )
+    seen = set()
+    for raw in sources:
+        for post in _parse_json_list(raw):
+            thumb = _public_thumb(_thumb_from_post(post))
+            if not thumb:
+                continue
+            key = thumb.split("?", 1)[0]
+            if key in seen:
+                continue
+            seen.add(key)
+            post_url = ""
+            if isinstance(post, dict):
+                post_url = post.get("post_url") or post.get("url") or ""
+            out.append({"post_url": post_url, "thumbnail_url": thumb})
+            if len(out) >= 3:
+                return out
     return out
+
+
+def _post_key(post):
+    if isinstance(post, dict):
+        return str(post.get("post_url") or post.get("url") or "").split("?", 1)[0].rstrip("/")
+    return ""
+
+
+def _hydrate_selected_thumbs(row, *, recover=False):
+    """Copy stills onto apply picks. Refresh empty thumbs from the post page — no storage upload."""
+    selected = [p for p in _parse_json_list(row.get("selected_posts")) if isinstance(p, dict)]
+    if not selected:
+        return False
+    extras = (
+        _parse_json_list(row.get("recent_posts"))
+        + _parse_json_list(row.get("social_oauth_videos"))
+        + _parse_json_list(row.get("portfolio_posts"))
+    )
+    extra_thumbs = {}
+    for post in extras:
+        thumb = _thumb_from_post(post)
+        key = _post_key(post)
+        if key and _usable_thumb(thumb):
+            extra_thumbs[key] = thumb
+
+    changed = False
+    refresh_thumb = None
+    if recover:
+        try:
+            from media_proxy_routes import persist_post_thumbnail as refresh_thumb
+        except Exception:
+            refresh_thumb = None
+
+    for post in selected:
+        thumb = _thumb_from_post(post)
+        if _usable_thumb(thumb):
+            continue
+        copied = extra_thumbs.get(_post_key(post))
+        if copied:
+            post["thumbnail_url"] = _public_thumb(copied) or copied
+            changed = True
+            continue
+        if not refresh_thumb:
+            continue
+        refreshed = refresh_thumb(
+            thumb,
+            post.get("post_url") or post.get("url") or "",
+        )
+        if _usable_thumb(refreshed):
+            post["thumbnail_url"] = refreshed
+            changed = True
+
+    if changed:
+        row["selected_posts"] = selected
+    return changed
+
+
+def _write_selected_posts(cursor, row):
+    cursor.execute(
+        "UPDATE brand_pr_applications SET selected_posts = %s WHERE id = %s",
+        (Json(row.get("selected_posts") or []), row.get("application_id")),
+    )
+
+
+def _persist_hydrated_thumbs(cursor, rows):
+    for row in rows:
+        if not _hydrate_selected_thumbs(row, recover=False):
+            continue
+        try:
+            _write_selected_posts(cursor, row)
+        except Exception:
+            current_app.logger.exception(
+                "[roster] thumb persist failed application_id=%s",
+                row.get("application_id"),
+            )
+
+
+def _needs_thumb_recovery(row):
+    for post in _parse_json_list(row.get("selected_posts")):
+        if isinstance(post, dict) and not _usable_thumb(_thumb_from_post(post)):
+            return True
+    return False
+
+
+def _recover_thumbs_background(rows):
+    pending = [
+        {
+            "application_id": row.get("application_id"),
+            "username": row.get("username"),
+            "social_handle": row.get("social_handle"),
+            "selected_posts": _parse_json_list(row.get("selected_posts")),
+            "recent_posts": row.get("recent_posts"),
+            "social_oauth_videos": row.get("social_oauth_videos"),
+            "portfolio_posts": row.get("portfolio_posts"),
+        }
+        for row in rows
+        if _needs_thumb_recovery(row)
+    ]
+    if not pending:
+        return
+
+    def run():
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            for row in pending:
+                if _hydrate_selected_thumbs(row, recover=True):
+                    _write_selected_posts(cursor, row)
+            conn.commit()
+            conn.close()
+        except Exception:
+            traceback.print_exc()
+
+    threading.Thread(target=run, daemon=True, name="roster-thumb-recover").start()
 
 
 def _load_campaign(cursor, token, *, allow_closed=False, skip_expiry=False):
@@ -920,14 +1100,19 @@ def _fetch_applications(cursor, campaign):
                         jsonb_build_object(
                             'likes', COALESCE(pp.likes, 0),
                             'comments', COALESCE(pp.comments, 0),
-                            'shares', COALESCE(pp.shares, 0)
+                            'shares', COALESCE(pp.shares, 0),
+                            'thumbnail_url', COALESCE(pp.thumbnail_url, ''),
+                            'post_url', COALESCE(pp.post_url, '')
                         )
                     ),
                     '[]'::jsonb
                 )
                 FROM portfolio_posts pp
                 WHERE pp.creator_id = c.id
-                  AND COALESCE(pp.likes, 0) + COALESCE(pp.comments, 0) > 0
+                  AND (
+                    COALESCE(pp.likes, 0) + COALESCE(pp.comments, 0) > 0
+                    OR COALESCE(pp.thumbnail_url, '') <> ''
+                  )
             ) AS portfolio_posts,
             u.first_name,
             u.country AS user_country
@@ -975,7 +1160,12 @@ def _card_from_row(row, *, reveal_shipping, selected_ids, campaign_status):
         "engagement_label": engagement_label,
         "niche": _niche_label(row),
         "socials": _socials_public(row),
-        "posts": _posts_public(row.get("selected_posts")),
+        "posts": _posts_public(
+            row.get("selected_posts"),
+            row.get("recent_posts"),
+            row.get("social_oauth_videos"),
+            row.get("portfolio_posts"),
+        ),
         "applied_at": row.get("applied_at").isoformat() if row.get("applied_at") else None,
         "shipped_at": row.get("shipped_at").isoformat() if row.get("shipped_at") else None,
         "kit_slug": row.get("kit_slug") or "",
@@ -1035,6 +1225,8 @@ def _campaign_public(campaign, cards):
 
 def _build_roster_response(cursor, campaign):
     rows = _fetch_applications(cursor, campaign)
+    _persist_hydrated_thumbs(cursor, rows)
+    _recover_thumbs_background(rows)
     reveal = campaign.get("status") in ("locked", "shipped")
     selected_ids = _selected_ids(campaign)
     cards = [

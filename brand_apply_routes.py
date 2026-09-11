@@ -693,16 +693,22 @@ def submit_apply(brand_id):
         return jsonify({"success": False, "error": "We can only ship to countries Newcollab serves."}), 400
 
     selected = []
+    try:
+        from media_proxy_routes import to_proxied_media_url
+    except Exception:
+        to_proxied_media_url = lambda url: url or ""
     for p in posts[:3]:
         if isinstance(p, str):
-            selected.append({"post_url": p})
+            item = {"post_url": p, "thumbnail_url": ""}
         elif isinstance(p, dict) and (p.get("post_url") or p.get("url")):
-            selected.append(
-                {
-                    "post_url": p.get("post_url") or p.get("url"),
-                    "thumbnail_url": p.get("thumbnail_url") or "",
-                }
-            )
+            item = {
+                "post_url": p.get("post_url") or p.get("url"),
+                "thumbnail_url": p.get("thumbnail_url") or "",
+            }
+        else:
+            continue
+        item["thumbnail_url"] = to_proxied_media_url(item.get("thumbnail_url") or "")
+        selected.append(item)
     if len(selected) != 3:
         return jsonify({"success": False, "error": "Select 3 posts to continue."}), 400
 

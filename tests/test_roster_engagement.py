@@ -125,3 +125,76 @@ class TestRosterEngagement(unittest.TestCase):
         self.assertEqual(out["cover_image"], "https://cdn.example/tote.jpg")
         self.assertEqual(out["regions"], ["US", "UK", "AU"])
         self.assertEqual(out["hero_product"], "Everyday tote")
+
+    def test_posts_public_proxies_selected_cdn(self):
+        from brand_pr_roster_routes import _posts_public
+
+        selected = [
+            {
+                "post_url": "https://www.tiktok.com/@nisha/video/1",
+                "thumbnail_url": "https://p16-common-sign.tiktokcdn-us.com/x.jpg",
+            }
+        ]
+        recent = [
+            {
+                "post_url": "https://www.tiktok.com/@nisha/video/2",
+                "thumbnail_url": "https://kyawgtojxoglvlhzsotm.supabase.co/storage/v1/object/public/creators/thumbs/nisha/a.jpg",
+            }
+        ]
+        out = _posts_public(selected, recent)
+        self.assertEqual(len(out), 2)
+        self.assertIn("/api/media-proxy?url=", out[0]["thumbnail_url"])
+        self.assertIn("tiktokcdn-us.com", out[0]["thumbnail_url"])
+        self.assertIn("supabase.co", out[1]["thumbnail_url"])
+        self.assertNotIn("media-proxy", out[1]["thumbnail_url"])
+
+    def test_posts_public_unwraps_hosted_proxy(self):
+        from urllib.parse import quote
+        from brand_pr_roster_routes import _posts_public
+
+        hosted = "https://xyz.supabase.co/storage/v1/object/public/creators/thumbs/a.jpg"
+        wrapped = "https://api.newcollab.co/api/media-proxy?url=" + quote(hosted, safe="")
+        out = _posts_public(
+            [{"post_url": "https://www.tiktok.com/@x/video/1", "thumbnail_url": wrapped}]
+        )
+        self.assertEqual(out[0]["thumbnail_url"], hosted)
+
+    def test_socials_read_proxy_selected_posts(self):
+        from brand_pr_roster_routes import _socials_public
+
+        out = _socials_public(
+            {
+                "selected_posts": [
+                    {
+                        "post_url": "https://www.tiktok.com/@nisha.agr/video/1",
+                        "thumbnail_url": "https://api.newcollab.co/api/media-proxy?url=https%3A%2F%2Fcdn.example%2Fx.jpg",
+                    }
+                ]
+            }
+        )
+        self.assertEqual(out[0]["platform"], "tiktok")
+        self.assertIn("nisha.agr", out[0]["url"])
+
+    def test_hydrate_copies_recent_still_without_storage(self):
+        from brand_pr_roster_routes import _hydrate_selected_thumbs
+
+        row = {
+            "username": "yany_pavon",
+            "selected_posts": [
+                {
+                    "post_url": "https://www.instagram.com/p/DcZy6hsvAJu/",
+                    "thumbnail_url": "",
+                }
+            ],
+            "recent_posts": [
+                {
+                    "post_url": "https://www.instagram.com/p/DcZy6hsvAJu/",
+                    "thumbnail_url": "https://scontent.cdninstagram.com/v/t51.2885-15/x.jpg",
+                }
+            ],
+        }
+        self.assertTrue(_hydrate_selected_thumbs(row, recover=False))
+        thumb = row["selected_posts"][0]["thumbnail_url"]
+        self.assertIn("/api/media-proxy?url=", thumb)
+        self.assertIn("cdninstagram.com", thumb)
+        self.assertNotIn("supabase.co", thumb)

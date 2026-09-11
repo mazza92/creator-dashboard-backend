@@ -1,12 +1,14 @@
-"""Social CDN media proxy + thumbnail rehost."""
+"""Social CDN media proxy. Post stills are not uploaded to storage."""
 
 import unittest
 from unittest.mock import patch
 
 from media_proxy_routes import (
+    persist_post_thumbnail,
     persist_profile_media,
     persist_social_thumbnails,
     to_proxied_media_url,
+    unwrap_proxied_media_url,
 )
 
 
@@ -22,6 +24,43 @@ class TestToProxiedMediaUrl(unittest.TestCase):
         self.assertIn("tiktokcdn-eu.com", proxied)
 
 
+class TestUnwrapAndRecoverThumbs(unittest.TestCase):
+    def test_unwraps_media_proxy(self):
+        from urllib.parse import quote
+
+        inner = "https://p16-common-sign.tiktokcdn-us.com/tos/x.jpg?x-expires=1"
+        wrapped = "https://api.newcollab.co/api/media-proxy?url=" + quote(inner, safe="")
+        self.assertEqual(unwrap_proxied_media_url(wrapped), inner)
+        self.assertEqual(unwrap_proxied_media_url(inner), inner)
+
+    def test_persist_proxies_fresh_cdn_and_does_not_upload(self):
+        fresh = "https://p16-common-sign.tiktokcdn-us.com/fresh.jpg"
+        with patch("media_proxy_routes.rehost_social_image") as rh, patch(
+            "media_proxy_routes.fresh_thumb_from_post_url",
+            return_value=fresh,
+        ):
+            out = persist_post_thumbnail(
+                "https://api.newcollab.co/api/media-proxy?url=https%3A%2F%2Fp16-common-sign.tiktokcdn-us.com%2Fold.jpg",
+                "https://www.tiktok.com/@nisha/video/1",
+            )
+        rh.assert_not_called()
+        self.assertIn("/api/media-proxy?url=", out)
+        self.assertIn("fresh.jpg", out)
+
+    def test_persist_leaves_existing_storage_url(self):
+        existing = "https://xyz.supabase.co/storage/v1/object/public/creators/thumbs/posts/abc.jpg"
+        with patch("media_proxy_routes.rehost_social_image") as rh, patch(
+            "media_proxy_routes.fresh_thumb_from_post_url"
+        ) as fresh:
+            out = persist_post_thumbnail(
+                existing,
+                "https://www.tiktok.com/@nisha/video/1",
+            )
+        rh.assert_not_called()
+        fresh.assert_not_called()
+        self.assertEqual(out, existing)
+
+
 class TestPersistThumbnails(unittest.TestCase):
     def test_skips_already_hosted(self):
         hosted = "https://xyz.supabase.co/storage/v1/object/public/creators/thumbs/a.jpg"
@@ -30,21 +69,18 @@ class TestPersistThumbnails(unittest.TestCase):
         rh.assert_not_called()
         self.assertEqual(out, [hosted])
 
-    def test_profile_media_rewrites_thumbs_and_posts(self):
+    def test_profile_media_does_not_rehost_galleries(self):
+        cdn = "https://p16-common-sign.tiktokcdn-eu.com/tos/cover1.image?x-expires=1"
         profile = {
             "handle": "yasia_a",
-            "recent_post_thumbnails": [
-                "https://p16-common-sign.tiktokcdn-eu.com/tos/cover1.image?x-expires=1",
-            ],
-            "recent_posts": [
-                {"thumbnail_url": "https://p16-common-sign.tiktokcdn-eu.com/tos/cover1.image?x-expires=1"},
-            ],
+            "recent_post_thumbnails": [cdn],
+            "recent_posts": [{"thumbnail_url": cdn}],
         }
-        durable = "https://xyz.supabase.co/storage/v1/object/public/creators/thumbs/yasia_a/abc.jpg"
-        with patch("media_proxy_routes.rehost_social_image", return_value=durable):
+        with patch("media_proxy_routes.rehost_social_image") as rh:
             persist_profile_media(profile)
-        self.assertEqual(profile["recent_post_thumbnails"], [durable])
-        self.assertEqual(profile["recent_posts"][0]["thumbnail_url"], durable)
+        rh.assert_not_called()
+        self.assertEqual(profile["recent_post_thumbnails"], [cdn])
+        self.assertEqual(profile["recent_posts"][0]["thumbnail_url"], cdn)
 
 
 class TestCoercePostUrl(unittest.TestCase):
