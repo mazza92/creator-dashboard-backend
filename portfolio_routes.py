@@ -72,6 +72,11 @@ def get_creator_id_from_session():
 
 
 from media_proxy_routes import to_proxied_media_url
+from services.public_kit import (
+    build_public_socials,
+    parse_kit_niches,
+    serialize_public_recent_posts,
+)
 
 FREE_POST_LIMIT = 3
 
@@ -880,9 +885,14 @@ def get_public_kit(slug):
         try:
             cursor.execute('''
                 SELECT
-                    c.id, c.username, c.username as first_name, c.image_profile as avatar_url,
-                    COALESCE(c.kit_tagline, '') as tagline, c.niche as niches,
-                    c.followers_count as follower_count, c.engagement_rate,
+                    c.id, c.user_id, c.username,
+                    NULLIF(BTRIM(COALESCE(u.first_name, '')), '') as first_name,
+                    c.image_profile as avatar_url,
+                    COALESCE(NULLIF(BTRIM(COALESCE(c.kit_tagline, '')), ''), NULLIF(BTRIM(COALESCE(c.bio, '')), '')) as tagline,
+                    c.bio,
+                    c.niche as niches,
+                    COALESCE(c.followers_count, c.social_follower_count, 0) as follower_count,
+                    c.engagement_rate,
                     COALESCE(c.kit_published, false) as kit_published,
                     COALESCE(c.rates_reel, 0) as rates_reel,
                     COALESCE(c.rates_tiktok, 0) as rates_tiktok,
@@ -892,7 +902,11 @@ def get_public_kit(slug):
                     COALESCE(c.primary_age_range, '') as primary_age_range,
                     COALESCE(c.subscription_tier, 'free') as subscription_tier,
                     COALESCE(c.social_links, '[]') as social_links,
-                    u.email AS user_email
+                    c.social_handle,
+                    c.social_platform,
+                    c.social_follower_count,
+                    c.social_oauth_videos,
+                    c.platforms
                 FROM creators c
                 LEFT JOIN users u ON u.id = c.user_id
                 WHERE c.username = %s OR c.kit_slug = %s
@@ -905,9 +919,11 @@ def get_public_kit(slug):
             conn.rollback()  # Reset the failed transaction
             cursor.execute('''
                 SELECT
-                    c.id, c.username, c.username as first_name, c.image_profile as avatar_url,
-                    '' as tagline, c.niche as niches,
-                    c.followers_count as follower_count, c.engagement_rate,
+                    c.id, c.user_id, c.username,
+                    NULLIF(BTRIM(COALESCE(u.first_name, '')), '') as first_name,
+                    c.image_profile as avatar_url,
+                    COALESCE(c.bio, '') as tagline, c.bio, c.niche as niches,
+                    COALESCE(c.followers_count, 0) as follower_count, c.engagement_rate,
                     false as kit_published,
                     0 as rates_reel,
                     0 as rates_tiktok,
@@ -916,7 +932,10 @@ def get_public_kit(slug):
                     COALESCE(c.regions, '[]') as regions,
                     COALESCE(c.primary_age_range, '') as primary_age_range,
                     COALESCE(c.social_links, '[]') as social_links,
-                    u.email AS user_email
+                    c.social_handle,
+                    c.social_platform,
+                    NULL as social_oauth_videos,
+                    c.platforms
                 FROM creators c
                 LEFT JOIN users u ON u.id = c.user_id
                 WHERE c.username = %s
@@ -1073,22 +1092,60 @@ def get_public_kit(slug):
             print(f"[KIT_VIEW] Error logging view: {view_err}")
             pass  # Don't fail if view logging fails
 
+        scrape_items = creator.get('social_oauth_videos')
+        scrape_thumbs = None
+        scrape_platform = creator.get('social_platform')
+        if not posts:
+            try:
+                scrape_row = None
+                user_id = creator.get('user_id')
+                handle = (creator.get('social_handle') or creator.get('username') or '').strip().lstrip('@')
+                # Onboarding scrape is keyed by users.id, not creators.id.
+                if user_id:
+                    cursor.execute('''
+                        SELECT recent_posts, recent_post_thumbnails, primary_platform
+                        FROM creator_profile_data
+                        WHERE user_id = %s
+                        LIMIT 1
+                    ''', (user_id,))
+                    scrape_row = cursor.fetchone()
+                if not scrape_row and handle:
+                    cursor.execute('''
+                        SELECT recent_posts, recent_post_thumbnails, primary_platform
+                        FROM creator_profile_data
+                        WHERE LOWER(handle) = LOWER(%s)
+                        ORDER BY scraped_at DESC NULLS LAST
+                        LIMIT 1
+                    ''', (handle,))
+                    scrape_row = cursor.fetchone()
+                if scrape_row:
+                    extra = scrape_row.get('recent_posts')
+                    if extra:
+                        if isinstance(scrape_items, list) and isinstance(extra, list):
+                            scrape_items = scrape_items + extra
+                        elif not scrape_items:
+                            scrape_items = extra
+                    scrape_thumbs = scrape_row.get('recent_post_thumbnails')
+                    scrape_platform = scrape_row.get('primary_platform') or scrape_platform
+            except Exception as scrape_err:
+                print(f"[PUBLIC_KIT] scrape posts lookup: {scrape_err}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
         cursor.close()
         conn.close()
 
-        # Parse niches (could be string or array)
-        niches = creator['niches']
-        if isinstance(niches, str):
-            niches = [n.strip() for n in niches.split(',') if n.strip()]
-        elif not niches:
-            niches = []
+        # Parse niches (JSON array or comma string)
+        niches = parse_kit_niches(creator.get('niches'))
 
         # Parse regions (stored as JSON array)
         regions = creator.get('regions', '[]')
         if isinstance(regions, str):
             try:
                 regions = json.loads(regions)
-            except:
+            except Exception:
                 regions = []
         if not regions:
             regions = []
@@ -1097,42 +1154,37 @@ def get_public_kit(slug):
         tier = creator.get('subscription_tier', 'free') or 'free'
         is_pro = tier in ('pro', 'elite')
 
-        # Parse social links from JSON array
-        socials = {}
-        social_links_raw = creator.get('social_links', '[]')
-        if isinstance(social_links_raw, str):
-            try:
-                social_links_list = json.loads(social_links_raw)
-            except:
-                social_links_list = []
-        else:
-            social_links_list = social_links_raw or []
+        socials, social_profiles = build_public_socials(
+            creator.get('social_links'),
+            social_handle=creator.get('social_handle'),
+            social_platform=creator.get('social_platform'),
+            username=creator.get('username'),
+        )
 
-        for link in social_links_list:
-            platform = (link.get('platform') or '').lower()
-            url = link.get('url')
-            if platform and url:
-                # Normalize platform names
-                if platform in ('instagram', 'ig'):
-                    socials['instagram'] = url
-                elif platform in ('tiktok', 'tik tok'):
-                    socials['tiktok'] = url
-                elif platform in ('youtube', 'yt'):
-                    socials['youtube'] = url
-                elif platform == 'linkedin':
-                    socials['linkedin'] = url
-                elif platform in ('twitter', 'x'):
-                    socials['twitter'] = url
+        serialized_posts = [serialize_post(p) for p in posts]
+        posts_source = 'portfolio' if serialized_posts else None
+        if not serialized_posts:
+            serialized_posts = serialize_public_recent_posts(
+                scrape_items,
+                thumbnails=scrape_thumbs,
+                default_platform=scrape_platform,
+            )
+            for post in serialized_posts:
+                if post.get('thumbnail_url'):
+                    post['thumbnail_url'] = to_proxied_media_url(post['thumbnail_url'])
+            if serialized_posts:
+                posts_source = 'scrape'
 
-        # Mailto CTA uses account email from users table only (never bio/scrape)
-        contact_email = (creator.get('user_email') or '').strip() or None
+        bio = (creator.get('bio') or '').strip() or None
+        display_name = (creator.get('first_name') or '').strip() or creator['username']
 
         return jsonify({
-            'creator_id': creator['id'],  # For interaction tracking
+            'creator_id': creator['id'],
             'username': creator['username'],
-            'first_name': creator['first_name'],
+            'first_name': display_name,
             'avatar_url': creator['avatar_url'],
-            'tagline': creator['tagline'],
+            'tagline': creator['tagline'] or '',
+            'bio': bio,
             'niches': niches,
             'follower_count': creator['follower_count'],
             'engagement_rate': float(creator['engagement_rate']) if creator.get('engagement_rate') else 0,
@@ -1142,11 +1194,12 @@ def get_public_kit(slug):
             'rates_tiktok': creator['rates_tiktok'],
             'rates_photo': creator['rates_photo'],
             'rates_gifted': creator['rates_gifted'],
-            'kit_views': kit_views if is_pro else None,  # Only show views for Pro creators
+            'kit_views': kit_views if is_pro else None,
             'is_pro': is_pro,
             'socials': socials,
-            'contact_email': contact_email,
-            'posts': [serialize_post(p) for p in posts],
+            'social_profiles': social_profiles,
+            'posts': serialized_posts,
+            'posts_source': posts_source,
         })
 
     except Exception as e:

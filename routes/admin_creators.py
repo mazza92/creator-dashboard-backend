@@ -10,6 +10,7 @@ import os
 import sys
 import json
 import html as html_lib
+import re
 import time
 from datetime import date, datetime
 from decimal import Decimal
@@ -338,13 +339,187 @@ def _resume_onboarding_email_context(recipient):
     }
 
 
-def _build_where_clause():
-    q = request.args.get('q', '').strip()
-    niche = request.args.get('niche', '').strip() or None
-    region = request.args.get('region', '').strip() or None
-    tier = request.args.get('tier', '').strip() or None
-    verified_raw = request.args.get('verified', '').strip().lower()
-    kit_raw = request.args.get('kit', '').strip().lower()
+_HANDLE_URL_RE = re.compile(
+    r'(?:https?://)?(?:www\.)?(?:instagram\.com|tiktok\.com|x\.com|twitter\.com|youtube\.com)/@?([^/?#]+)',
+    re.I,
+)
+
+# Quoted JSON tokens so "US" does not match AUSTRALIA.
+_REGION_ALIASES = {
+    'us': ['US', 'USA', 'United States'],
+    'usa': ['US', 'USA', 'United States'],
+    'united states': ['US', 'USA', 'United States'],
+    'uk': ['UK', 'GB', 'United Kingdom'],
+    'gb': ['UK', 'GB', 'United Kingdom'],
+    'united kingdom': ['UK', 'GB', 'United Kingdom'],
+    'canada': ['Canada', 'CA'],
+    'ca': ['Canada', 'CA'],
+    'australia': ['AU', 'Australia'],
+    'au': ['AU', 'Australia'],
+    'europe': ['Europe', 'EU'],
+    'eu': ['Europe', 'EU'],
+    'latam': ['LATAM', 'Latin America'],
+    'latin america': ['LATAM', 'Latin America'],
+    'mena': ['MENA', 'Middle East', 'Middle East & Africa'],
+    'asia': ['Asia', 'Asia Pacific', 'ASIA'],
+    'asia pacific': ['Asia', 'Asia Pacific', 'ASIA'],
+    'global': ['Global', 'Worldwide', 'GLOBAL', 'WW'],
+    'worldwide': ['Global', 'Worldwide', 'GLOBAL', 'WW'],
+}
+
+_HANDLE_SQL = "LOWER(BTRIM(BOTH '@' FROM COALESCE({col}, '')))"
+
+
+def _arg_get(src, key, default=''):
+    val = src.get(key, default) if src is not None else default
+    if val is None:
+        return default
+    return str(val).strip() if default == '' or isinstance(val, str) else val
+
+
+def _split_csv(raw):
+    if not raw:
+        return []
+    return [part.strip() for part in str(raw).split(',') if part.strip()]
+
+
+def _safe_like_fragment(value):
+    """Strip LIKE wildcards so admin search is literal."""
+    return re.sub(r'[%_\\]+', '', str(value or ''))
+
+
+def normalize_search_token(raw):
+    """Turn @handle, profile URL, or pasted email into a single lookup token."""
+    q = (raw or '').strip()
+    if not q:
+        return ''
+    if ' ' not in q and '/' not in q and '@' in q and '.' in q.rsplit('@', 1)[-1]:
+        return q
+    url_match = _HANDLE_URL_RE.search(q)
+    if url_match:
+        return url_match.group(1).lstrip('@').strip()
+    if q.startswith('@'):
+        return q[1:].strip()
+    return q
+
+
+def _int_arg(src, key):
+    raw = _arg_get(src, key, '')
+    if raw == '':
+        return None
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _niche_needles(raw):
+    needles = []
+    seen = set()
+    try:
+        from brand_categories import CATEGORY_LABELS, normalize_category, raw_values_for_canonical
+    except Exception:
+        normalize_category = None
+        raw_values_for_canonical = None
+        CATEGORY_LABELS = {}
+
+    for item in _split_csv(raw):
+        candidates = [item]
+        if normalize_category:
+            slug = normalize_category(item)
+            if slug and slug != 'other':
+                candidates.extend(raw_values_for_canonical(slug) or [slug])
+                label = CATEGORY_LABELS.get(slug)
+                if label:
+                    candidates.append(label)
+            elif slug == 'other':
+                candidates.append(item)
+        for cand in candidates:
+            key = str(cand).strip()
+            if not key:
+                continue
+            low = key.lower()
+            if low in seen:
+                continue
+            seen.add(low)
+            needles.append(key)
+    return needles
+
+
+def _region_needles(raw):
+    needles = []
+    seen = set()
+    for item in _split_csv(raw):
+        aliases = _REGION_ALIASES.get(item.strip().lower(), [item.strip()])
+        for alias in aliases:
+            key = alias.strip()
+            if not key:
+                continue
+            low = key.lower()
+            if low in seen:
+                continue
+            seen.add(low)
+            needles.append(key)
+    return needles
+
+
+def _search_match_sql(token):
+    """Match email, name, username, social handle, kit slug, and social_links JSON."""
+    safe = _safe_like_fragment(token)
+    if not safe:
+        return None, []
+    exact = safe.lower()
+    contains = f'%{safe}%'
+    username_sql = _HANDLE_SQL.format(col='c.username')
+    social_sql = _HANDLE_SQL.format(col='c.social_handle')
+    sql = f"""(
+        LOWER(u.email) = %s
+        OR {username_sql} = %s
+        OR {social_sql} = %s
+        OR LOWER(COALESCE(c.kit_slug, '')) = %s
+        OR u.email ILIKE %s
+        OR COALESCE(u.first_name, '') ILIKE %s
+        OR {username_sql} ILIKE %s
+        OR {social_sql} ILIKE %s
+        OR COALESCE(c.kit_slug, '') ILIKE %s
+        OR COALESCE(c.social_links::text, '') ILIKE %s
+    )"""
+    params = [
+        exact, exact, exact, exact,
+        contains, contains, contains, contains, contains, contains,
+    ]
+    return sql, params
+
+
+def _search_rank_sql(token):
+    safe = _safe_like_fragment(token)
+    if not safe:
+        return '', []
+    exact = safe.lower()
+    prefix = f'{safe.lower()}%'
+    username_sql = _HANDLE_SQL.format(col='c.username')
+    social_sql = _HANDLE_SQL.format(col='c.social_handle')
+    sql = f"""CASE
+        WHEN LOWER(u.email) = %s THEN 0
+        WHEN {username_sql} = %s THEN 0
+        WHEN {social_sql} = %s THEN 0
+        WHEN LOWER(COALESCE(c.kit_slug, '')) = %s THEN 1
+        WHEN {username_sql} LIKE %s THEN 2
+        WHEN {social_sql} LIKE %s THEN 2
+        ELSE 3
+    END"""
+    return sql, [exact, exact, exact, exact, prefix, prefix]
+
+
+def _build_where_clause(args=None):
+    src = args if args is not None else request.args
+    q = normalize_search_token(_arg_get(src, 'q'))
+    niche = _arg_get(src, 'niche')
+    region = _arg_get(src, 'region')
+    tier = _arg_get(src, 'tier')
+    platform = _arg_get(src, 'platform').lower()
+    verified_raw = _arg_get(src, 'verified').lower()
+    kit_raw = _arg_get(src, 'kit').lower()
 
     verified = None
     if verified_raw in ('true', 'false'):
@@ -357,30 +532,50 @@ def _build_where_clause():
     where_clauses = ["1=1"]
     params = []
 
-    # Optional filter: unsubscribed=true shows only unsubscribed, false hides them, default shows all
-    unsub_raw = request.args.get('unsubscribed', '').strip().lower()
+    unsub_raw = _arg_get(src, 'unsubscribed').lower()
     if unsub_raw == 'true':
         where_clauses.append("u.unsubscribed_at IS NOT NULL")
     elif unsub_raw == 'false':
         where_clauses.append("u.unsubscribed_at IS NULL")
-    # default (empty): show everyone
 
-    if q:
-        where_clauses.append("(u.email ILIKE %s OR u.first_name ILIKE %s OR c.username ILIKE %s)")
-        like = f'%{q}%'
-        params.extend([like, like, like])
+    search_sql, search_params = _search_match_sql(q)
+    if search_sql:
+        where_clauses.append(search_sql)
+        params.extend(search_params)
 
-    if niche:
-        where_clauses.append("COALESCE(c.niche, '') ILIKE %s")
-        params.append(f'%{niche}%')
+    niche_needles = _niche_needles(niche)
+    if niche_needles:
+        niche_parts = []
+        for needle in niche_needles:
+            niche_parts.append("LOWER(COALESCE(c.niche::text, '')) LIKE %s")
+            params.append(f"%{_safe_like_fragment(needle).lower()}%")
+        where_clauses.append(f"({' OR '.join(niche_parts)})")
 
-    if region:
-        where_clauses.append("COALESCE(c.regions::text, '') ILIKE %s")
-        params.append(f'%{region}%')
+    region_needles = _region_needles(region)
+    if region_needles:
+        region_parts = []
+        for needle in region_needles:
+            # Quoted JSON token first; also allow a bare exact region string.
+            region_parts.append("LOWER(COALESCE(c.regions::text, '')) LIKE %s")
+            params.append(f'%"{_safe_like_fragment(needle).lower()}"%')
+            region_parts.append("LOWER(BTRIM(COALESCE(c.regions::text, ''))) = %s")
+            params.append(_safe_like_fragment(needle).lower())
+        where_clauses.append(f"({' OR '.join(region_parts)})")
 
     if tier:
         where_clauses.append("COALESCE(c.subscription_tier, 'free') = %s")
         params.append(tier)
+
+    if platform in ('instagram', 'tiktok', 'youtube'):
+        like = f'%{platform}%'
+        where_clauses.append(
+            "("
+            "LOWER(COALESCE(c.social_platform, '')) = %s "
+            "OR LOWER(COALESCE(c.platforms::text, '')) LIKE %s "
+            "OR LOWER(COALESCE(c.social_links::text, '')) LIKE %s"
+            ")"
+        )
+        params.extend([platform, like, like])
 
     if verified is not None:
         where_clauses.append("COALESCE(u.is_verified, false) = %s")
@@ -390,19 +585,29 @@ def _build_where_clause():
         where_clauses.append("COALESCE(c.has_media_kit, false) = %s")
         params.append(kit)
 
-    approval = request.args.get('approval_status', '').strip().lower()
+    approval = _arg_get(src, 'approval_status').lower()
     if approval in APPROVAL_STATUSES:
         where_clauses.append("COALESCE(c.approval_status, 'approved') = %s")
         params.append(approval)
 
-    return " AND ".join(where_clauses), params
+    min_followers = _int_arg(src, 'min_followers')
+    max_followers = _int_arg(src, 'max_followers')
+    follower_expr = "GREATEST(COALESCE(c.followers_count, 0), COALESCE(c.social_follower_count, 0))"
+    if min_followers is not None:
+        where_clauses.append(f"{follower_expr} >= %s")
+        params.append(min_followers)
+    if max_followers is not None:
+        where_clauses.append(f"{follower_expr} <= %s")
+        params.append(max_followers)
+
+    return " AND ".join(where_clauses), params, q
 
 
-def _resolve_sort():
-    sort = request.args.get('sort', 'signup').strip().lower()
-    order = request.args.get('order', 'desc').strip().lower()
+def _resolve_sort(args=None, search_token=''):
+    src = args if args is not None else request.args
+    sort = _arg_get(src, 'sort', 'signup').lower()
+    order = _arg_get(src, 'order', 'desc').lower()
 
-    # Support pitches / unlocks / credits — same metric after the apply pivot
     if sort not in ('signup', 'pitches', 'unlocks', 'credits', 'followers'):
         sort = 'signup'
     if order not in ('asc', 'desc'):
@@ -412,10 +617,16 @@ def _resolve_sort():
     nulls = 'NULLS LAST' if order == 'desc' else 'NULLS FIRST'
 
     if sort in ('pitches', 'unlocks', 'credits'):
-        return f"unlocks_count {direction} {nulls}, u.created_at DESC"
-    if sort == 'followers':
-        return f"c.followers_count {direction} {nulls}, u.created_at DESC"
-    return f"u.created_at {direction} {nulls}"
+        base = f"unlocks_count {direction} {nulls}, u.created_at DESC"
+    elif sort == 'followers':
+        base = f"c.followers_count {direction} {nulls}, u.created_at DESC"
+    else:
+        base = f"u.created_at {direction} {nulls}"
+
+    rank_sql, rank_params = _search_rank_sql(search_token)
+    if rank_sql:
+        return f"{rank_sql} ASC, {base}", rank_params
+    return base, []
 
 
 # Credits used = unlocks (same 3-free quota). Include Brand PR applies.
@@ -565,8 +776,8 @@ def list_creators():
     Scan/search all creators for admin workflows.
     """
     try:
-        where_sql, params = _build_where_clause()
-        order_sql = _resolve_sort()
+        where_sql, params, search_token = _build_where_clause()
+        order_sql, rank_params = _resolve_sort(search_token=search_token)
 
         limit = int(request.args.get('limit', 25))
         offset = int(request.args.get('offset', 0))
@@ -646,7 +857,7 @@ def list_creators():
         cursor.execute(stats_sql, tuple(params))
         stats_row = cursor.fetchone()
 
-        cursor.execute(select_sql, tuple(params + [limit, offset]))
+        cursor.execute(select_sql, tuple(params + rank_params + [limit, offset]))
         creators = cursor.fetchall()
 
         for c in creators:
