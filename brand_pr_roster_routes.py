@@ -29,11 +29,20 @@ from services.brand_billing import (
     can_mint_campaign,
     mark_free_campaign_consumed,
 )
+from services.pg_hotpath_schema import (
+    public_column_exists,
+    public_column_is_nullable,
+    public_columns_exist,
+    public_constraint_exists,
+    public_index_exists,
+    public_table_exists,
+)
 
 brand_pr_roster_bp = Blueprint("brand_pr_roster", __name__, url_prefix="/api/brand-pr")
 
 _SCHEMA_READY = False
 _SCHEMA_LOCK = threading.Lock()
+_ROSTER_APP_COLUMNS = ("campaign_id", "declined_at", "shipped_at")
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 
 DEFAULT_DEAL_CHIPS = [
@@ -73,94 +82,129 @@ def _admin_required(f):
     return decorated
 
 
+def _roster_schema_present(cursor) -> bool:
+    return (
+        public_table_exists(cursor, "brand_pr_campaigns")
+        and public_columns_exist(cursor, "brand_pr_applications", _ROSTER_APP_COLUMNS)
+        and public_column_is_nullable(cursor, "brand_pr_events", "creator_id")
+    )
+
+
 def _ensure_schema(cursor, conn=None):
+    """Idempotent. Never ALTER applications/events on the hot roster path once ready."""
     global _SCHEMA_READY
     if _SCHEMA_READY:
         return
     with _SCHEMA_LOCK:
         if _SCHEMA_READY:
             return
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS brand_pr_campaigns (
-                id SERIAL PRIMARY KEY,
-                brand_id INTEGER NOT NULL REFERENCES pr_brands(id) ON DELETE CASCADE,
-                token VARCHAR(64) NOT NULL UNIQUE,
-                title VARCHAR(255) NOT NULL,
-                headline TEXT,
-                lede TEXT,
-                deal_chips JSONB NOT NULL DEFAULT '[]'::jsonb,
-                slot_limit INTEGER NOT NULL DEFAULT 5,
-                sku_note TEXT,
-                status VARCHAR(32) NOT NULL DEFAULT 'active',
-                selected_application_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
-                locked_at TIMESTAMPTZ,
-                shipped_at TIMESTAMPTZ,
-                expires_at TIMESTAMPTZ,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-            """
-        )
-        cursor.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_brand_pr_campaigns_brand
-            ON brand_pr_campaigns(brand_id, created_at DESC)
-            """
-        )
-        cursor.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_brand_pr_campaigns_token
-            ON brand_pr_campaigns(token)
-            """
-        )
-        for stmt in (
-            "ALTER TABLE brand_pr_applications ADD COLUMN IF NOT EXISTS campaign_id INTEGER",
-            "ALTER TABLE brand_pr_applications ADD COLUMN IF NOT EXISTS declined_at TIMESTAMPTZ",
-            "ALTER TABLE brand_pr_applications ADD COLUMN IF NOT EXISTS shipped_at TIMESTAMPTZ",
-        ):
-            cursor.execute(stmt)
-        # FK may already exist — ignore failures on re-run
         try:
-            cursor.execute(
-                """
-                DO $$ BEGIN
-                  ALTER TABLE brand_pr_applications
-                    ADD CONSTRAINT brand_pr_applications_campaign_id_fkey
-                    FOREIGN KEY (campaign_id) REFERENCES brand_pr_campaigns(id)
-                    ON DELETE SET NULL;
-                EXCEPTION WHEN duplicate_object THEN NULL;
-                END $$;
-                """
-            )
-        except Exception:
-            pass
-        cursor.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_brand_pr_applications_campaign
-            ON brand_pr_applications(campaign_id)
-            WHERE campaign_id IS NOT NULL
-            """
-        )
-        try:
-            cursor.execute(
-                "ALTER TABLE brand_pr_events ALTER COLUMN creator_id DROP NOT NULL"
-            )
-        except Exception:
-            pass
-        try:
-            cursor.execute(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS uniq_brand_pr_one_live_roster
-                ON brand_pr_campaigns(brand_id)
-                WHERE status IN ('active', 'locked')
-                """
-            )
-        except Exception:
-            pass
-        if conn:
-            conn.commit()
-        _SCHEMA_READY = True
+            if _roster_schema_present(cursor):
+                _SCHEMA_READY = True
+                return
+            cursor.execute("SET LOCAL lock_timeout = '2s'")
+            if not public_table_exists(cursor, "brand_pr_campaigns"):
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS brand_pr_campaigns (
+                        id SERIAL PRIMARY KEY,
+                        brand_id INTEGER NOT NULL REFERENCES pr_brands(id) ON DELETE CASCADE,
+                        token VARCHAR(64) NOT NULL UNIQUE,
+                        title VARCHAR(255) NOT NULL,
+                        headline TEXT,
+                        lede TEXT,
+                        deal_chips JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        slot_limit INTEGER NOT NULL DEFAULT 5,
+                        sku_note TEXT,
+                        status VARCHAR(32) NOT NULL DEFAULT 'active',
+                        selected_application_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        locked_at TIMESTAMPTZ,
+                        shipped_at TIMESTAMPTZ,
+                        expires_at TIMESTAMPTZ,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+            if not public_index_exists(cursor, "idx_brand_pr_campaigns_brand"):
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_brand_pr_campaigns_brand
+                    ON brand_pr_campaigns(brand_id, created_at DESC)
+                    """
+                )
+            if not public_index_exists(cursor, "idx_brand_pr_campaigns_token"):
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_brand_pr_campaigns_token
+                    ON brand_pr_campaigns(token)
+                    """
+                )
+            for col, ddl in (
+                ("campaign_id", "INTEGER"),
+                ("declined_at", "TIMESTAMPTZ"),
+                ("shipped_at", "TIMESTAMPTZ"),
+            ):
+                if not public_column_exists(cursor, "brand_pr_applications", col):
+                    cursor.execute(
+                        f"ALTER TABLE brand_pr_applications ADD COLUMN IF NOT EXISTS {col} {ddl}"
+                    )
+            if not public_constraint_exists(cursor, "brand_pr_applications_campaign_id_fkey"):
+                try:
+                    cursor.execute(
+                        """
+                        DO $$ BEGIN
+                          ALTER TABLE brand_pr_applications
+                            ADD CONSTRAINT brand_pr_applications_campaign_id_fkey
+                            FOREIGN KEY (campaign_id) REFERENCES brand_pr_campaigns(id)
+                            ON DELETE SET NULL;
+                        EXCEPTION WHEN duplicate_object THEN NULL;
+                        END $$;
+                        """
+                    )
+                except Exception:
+                    pass
+            if not public_index_exists(cursor, "idx_brand_pr_applications_campaign"):
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_brand_pr_applications_campaign
+                    ON brand_pr_applications(campaign_id)
+                    WHERE campaign_id IS NOT NULL
+                    """
+                )
+            if not public_column_is_nullable(cursor, "brand_pr_events", "creator_id"):
+                try:
+                    cursor.execute(
+                        "ALTER TABLE brand_pr_events ALTER COLUMN creator_id DROP NOT NULL"
+                    )
+                except Exception:
+                    pass
+            if not public_index_exists(cursor, "uniq_brand_pr_one_live_roster"):
+                try:
+                    cursor.execute(
+                        """
+                        CREATE UNIQUE INDEX IF NOT EXISTS uniq_brand_pr_one_live_roster
+                        ON brand_pr_campaigns(brand_id)
+                        WHERE status IN ('active', 'locked')
+                        """
+                    )
+                except Exception:
+                    pass
+            if conn:
+                conn.commit()
+            _SCHEMA_READY = True
+        except Exception as exc:
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            print(f"[brand-pr-roster] schema ensure skipped: {exc}")
+            try:
+                if _roster_schema_present(cursor):
+                    _SCHEMA_READY = True
+            except Exception:
+                pass
 
 
 def _frontend_base():

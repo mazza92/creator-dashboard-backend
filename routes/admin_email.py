@@ -140,19 +140,33 @@ def _has_recent_contact(last_contacted_at, min_hours: int = DEFAULT_FOLLOWUP_COO
         return False
 
 
+_MESSAGE_ID_READY = False
+_MESSAGE_ID_LOCK = threading.Lock()
+
+
 def _ensure_brand_outreach_log_message_id_column(cursor) -> None:
-    """
-    Ensure brand_outreach_log has message_id for accurate bounce reconciliation.
-    Safe to call repeatedly.
-    """
-    cursor.execute("""
-        ALTER TABLE brand_outreach_log
-        ADD COLUMN IF NOT EXISTS message_id TEXT
-    """)
-    cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_brand_outreach_log_message_id
-        ON brand_outreach_log(message_id)
-    """)
+    """Skip ALTER once message_id exists — exclusive locks deadlock other reads."""
+    global _MESSAGE_ID_READY
+    if _MESSAGE_ID_READY:
+        return
+    from services.pg_hotpath_schema import public_column_exists
+
+    with _MESSAGE_ID_LOCK:
+        if _MESSAGE_ID_READY:
+            return
+        if public_column_exists(cursor, "brand_outreach_log", "message_id"):
+            _MESSAGE_ID_READY = True
+            return
+        cursor.execute("SET LOCAL lock_timeout = '2s'")
+        cursor.execute("""
+            ALTER TABLE brand_outreach_log
+            ADD COLUMN IF NOT EXISTS message_id TEXT
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_brand_outreach_log_message_id
+            ON brand_outreach_log(message_id)
+        """)
+        _MESSAGE_ID_READY = True
 
 
 # ============================================================================

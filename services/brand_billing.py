@@ -8,6 +8,8 @@ from typing import Any, Optional, Tuple
 
 from psycopg2.extras import RealDictCursor
 
+from services.pg_hotpath_schema import public_table_exists
+
 PLAN_GIFTED_UGC_299 = "gifted_ugc_299"
 PRODUCT_META = "brand_gifted_ugc"
 
@@ -16,51 +18,68 @@ _SCHEMA_LOCK = threading.Lock()
 
 
 def ensure_brand_billing_schema(cursor, conn=None) -> None:
-    """Idempotent schema bootstrap (mirrors roster _ensure_schema)."""
+    """Idempotent. CREATE TABLE REFERENCES pr_brands locks pr_brands — skip once present."""
     global _SCHEMA_READY
     if _SCHEMA_READY:
         return
     with _SCHEMA_LOCK:
         if _SCHEMA_READY:
             return
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS brand_billing (
-                id SERIAL PRIMARY KEY,
-                brand_id INTEGER NOT NULL UNIQUE REFERENCES pr_brands(id) ON DELETE CASCADE,
-                email TEXT,
-                plan VARCHAR(64) NOT NULL DEFAULT 'gifted_ugc_299',
-                status VARCHAR(32) NOT NULL DEFAULT 'none',
-                free_campaigns_used INTEGER NOT NULL DEFAULT 0,
-                stripe_customer_id VARCHAR(255),
-                stripe_subscription_id VARCHAR(255),
-                current_period_end TIMESTAMPTZ,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                CONSTRAINT brand_billing_status_check CHECK (
-                    status IN ('none', 'trial_used', 'active', 'past_due', 'canceled')
-                ),
-                CONSTRAINT brand_billing_free_campaigns_check CHECK (free_campaigns_used >= 0)
+        try:
+            if public_table_exists(cursor, "brand_billing"):
+                _SCHEMA_READY = True
+                return
+            cursor.execute("SET LOCAL lock_timeout = '2s'")
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS brand_billing (
+                    id SERIAL PRIMARY KEY,
+                    brand_id INTEGER NOT NULL UNIQUE REFERENCES pr_brands(id) ON DELETE CASCADE,
+                    email TEXT,
+                    plan VARCHAR(64) NOT NULL DEFAULT 'gifted_ugc_299',
+                    status VARCHAR(32) NOT NULL DEFAULT 'none',
+                    free_campaigns_used INTEGER NOT NULL DEFAULT 0,
+                    stripe_customer_id VARCHAR(255),
+                    stripe_subscription_id VARCHAR(255),
+                    current_period_end TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CONSTRAINT brand_billing_status_check CHECK (
+                        status IN ('none', 'trial_used', 'active', 'past_due', 'canceled')
+                    ),
+                    CONSTRAINT brand_billing_free_campaigns_check CHECK (free_campaigns_used >= 0)
+                )
+                """
             )
-            """
-        )
-        cursor.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_brand_billing_stripe_customer
-                ON brand_billing(stripe_customer_id)
-                WHERE stripe_customer_id IS NOT NULL
-            """
-        )
-        cursor.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_brand_billing_stripe_subscription
-                ON brand_billing(stripe_subscription_id)
-                WHERE stripe_subscription_id IS NOT NULL
-            """
-        )
-        if conn is not None:
-            conn.commit()
-        _SCHEMA_READY = True
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_brand_billing_stripe_customer
+                    ON brand_billing(stripe_customer_id)
+                    WHERE stripe_customer_id IS NOT NULL
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_brand_billing_stripe_subscription
+                    ON brand_billing(stripe_subscription_id)
+                    WHERE stripe_subscription_id IS NOT NULL
+                """
+            )
+            if conn is not None:
+                conn.commit()
+            _SCHEMA_READY = True
+        except Exception as exc:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            print(f"[brand-billing] schema ensure skipped: {exc}")
+            try:
+                if public_table_exists(cursor, "brand_billing"):
+                    _SCHEMA_READY = True
+            except Exception:
+                pass
 
 
 def _shipped_count(cursor, brand_id: int) -> int:

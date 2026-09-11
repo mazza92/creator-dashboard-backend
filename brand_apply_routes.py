@@ -19,6 +19,12 @@ from pr_crm_routes import (
     get_creator_unlock_balance,
     convert_decimals,
 )
+from services.pg_hotpath_schema import (
+    columns_ready,
+    public_column_exists,
+    public_table_exists,
+    tables_ready,
+)
 
 brand_apply_bp = Blueprint("brand_apply", __name__, url_prefix="/api/pr-crm")
 
@@ -26,89 +32,112 @@ _TIKTOK_ID_RE = re.compile(r"(?:video|player/v1)/(\d{8,})")
 _IG_CODE_RE = re.compile(r"instagram\.com/(?:p|reel|tv)/([A-Za-z0-9_-]+)")
 _SCHEMA_READY = False
 _SCHEMA_LOCK = threading.Lock()
+_APPLY_TABLES = ("brand_pr_applications", "brand_pr_events")
+_APPLY_COLUMNS = (
+    ("pr_brands", "pr_example_posts"),
+    ("pr_brands", "pr_social_profile"),
+    ("creators", "shipping_address"),
+    ("brand_pr_applications", "source"),
+)
+
+
+def _apply_schema_present(cursor) -> bool:
+    return tables_ready(cursor, _APPLY_TABLES) and columns_ready(cursor, _APPLY_COLUMNS)
 
 
 def _ensure_schema(cursor, conn=None):
+    """Idempotent. Never ALTER pr_brands/creators on the hot apply path once columns exist."""
     global _SCHEMA_READY
     if _SCHEMA_READY:
         return
     with _SCHEMA_LOCK:
         if _SCHEMA_READY:
             return
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS brand_pr_applications (
-                id SERIAL PRIMARY KEY,
-                creator_id INTEGER NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
-                brand_id INTEGER NOT NULL REFERENCES pr_brands(id) ON DELETE CASCADE,
-                status VARCHAR(32) NOT NULL DEFAULT 'review',
-                selected_posts JSONB NOT NULL DEFAULT '[]'::jsonb,
-                shipping_address JSONB,
-                agreed_at TIMESTAMPTZ,
-                applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                UNIQUE (creator_id, brand_id)
+        try:
+            if _apply_schema_present(cursor):
+                _SCHEMA_READY = True
+                return
+            cursor.execute("SET LOCAL lock_timeout = '2s'")
+            if not public_table_exists(cursor, "brand_pr_applications"):
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS brand_pr_applications (
+                        id SERIAL PRIMARY KEY,
+                        creator_id INTEGER NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
+                        brand_id INTEGER NOT NULL REFERENCES pr_brands(id) ON DELETE CASCADE,
+                        status VARCHAR(32) NOT NULL DEFAULT 'review',
+                        selected_posts JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        shipping_address JSONB,
+                        agreed_at TIMESTAMPTZ,
+                        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE (creator_id, brand_id)
+                    )
+                    """
+                )
+            if not public_column_exists(cursor, "pr_brands", "pr_example_posts"):
+                cursor.execute(
+                    "ALTER TABLE pr_brands ADD COLUMN IF NOT EXISTS pr_example_posts JSONB"
+                )
+            if not public_column_exists(cursor, "pr_brands", "pr_social_profile"):
+                cursor.execute(
+                    "ALTER TABLE pr_brands ADD COLUMN IF NOT EXISTS pr_social_profile JSONB"
+                )
+            if not public_column_exists(cursor, "creators", "shipping_address"):
+                cursor.execute(
+                    "ALTER TABLE creators ADD COLUMN IF NOT EXISTS shipping_address JSONB"
+                )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_brand_pr_applications_creator
+                ON brand_pr_applications(creator_id, applied_at DESC)
+                """
             )
-            """
-        )
-        cursor.execute(
-            """
-            ALTER TABLE pr_brands
-            ADD COLUMN IF NOT EXISTS pr_example_posts JSONB
-            """
-        )
-        cursor.execute(
-            """
-            ALTER TABLE pr_brands
-            ADD COLUMN IF NOT EXISTS pr_social_profile JSONB
-            """
-        )
-        cursor.execute(
-            """
-            ALTER TABLE creators
-            ADD COLUMN IF NOT EXISTS shipping_address JSONB
-            """
-        )
-        cursor.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_brand_pr_applications_creator
-            ON brand_pr_applications(creator_id, applied_at DESC)
-            """
-        )
-        cursor.execute(
-            """
-            ALTER TABLE brand_pr_applications
-            ADD COLUMN IF NOT EXISTS source VARCHAR(32)
-            """
-        )
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS brand_pr_events (
-                id SERIAL PRIMARY KEY,
-                creator_id INTEGER NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
-                brand_id INTEGER,
-                event VARCHAR(64) NOT NULL,
-                source VARCHAR(32),
-                meta JSONB NOT NULL DEFAULT '{}'::jsonb,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            if not public_column_exists(cursor, "brand_pr_applications", "source"):
+                cursor.execute(
+                    "ALTER TABLE brand_pr_applications ADD COLUMN IF NOT EXISTS source VARCHAR(32)"
+                )
+            if not public_table_exists(cursor, "brand_pr_events"):
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS brand_pr_events (
+                        id SERIAL PRIMARY KEY,
+                        creator_id INTEGER NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
+                        brand_id INTEGER,
+                        event VARCHAR(64) NOT NULL,
+                        source VARCHAR(32),
+                        meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_brand_pr_events_event
+                ON brand_pr_events(event, created_at DESC)
+                """
             )
-            """
-        )
-        cursor.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_brand_pr_events_event
-            ON brand_pr_events(event, created_at DESC)
-            """
-        )
-        cursor.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_brand_pr_events_creator
-            ON brand_pr_events(creator_id, created_at DESC)
-            """
-        )
-        if conn:
-            conn.commit()
-        _SCHEMA_READY = True
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_brand_pr_events_creator
+                ON brand_pr_events(creator_id, created_at DESC)
+                """
+            )
+            if conn:
+                conn.commit()
+            _SCHEMA_READY = True
+        except Exception as exc:
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            print(f"[brand-apply] schema ensure skipped: {exc}")
+            try:
+                if _apply_schema_present(cursor):
+                    _SCHEMA_READY = True
+            except Exception:
+                pass
 
 
 _CLIENT_EVENTS = frozenset({
@@ -493,6 +522,10 @@ def list_applications():
             apps.append(card)
         return jsonify({"success": True, "applications": apps})
     except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         print(f"[brand-apply] list error: {e}")
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500

@@ -4263,10 +4263,15 @@ def save_pitch_location():
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("""
-            ALTER TABLE creators
-            ADD COLUMN IF NOT EXISTS shipping_address JSONB
-        """)
+        from services.pg_hotpath_schema import public_column_exists
+        if not public_column_exists(cursor, "creators", "shipping_address"):
+            cursor.execute("SET LOCAL lock_timeout = '2s'")
+            cursor.execute(
+                """
+                ALTER TABLE creators
+                ADD COLUMN IF NOT EXISTS shipping_address JSONB
+                """
+            )
         cursor.execute(
             "SELECT shipping_address FROM creators WHERE id = %s",
             (creator_id,),
