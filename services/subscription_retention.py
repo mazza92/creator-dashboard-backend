@@ -301,6 +301,42 @@ def get_or_create_retention_coupon(stripe_client):
     return created.id if hasattr(created, "id") else coupon_id
 
 
+def qualifies_for_winback_coupon(creator):
+    """Same people as the canceled_pro email segment: paid Pro, then canceled."""
+    if not creator:
+        return False
+    tier = (creator.get("subscription_tier") or "free").strip().lower()
+    if tier in ("pro", "elite"):
+        return False
+    status = (creator.get("subscription_status") or "").strip().lower()
+    if status != "canceled":
+        return False
+    return bool(creator.get("stripe_subscription_id"))
+
+
+def stripe_checkout_promo_kwargs(offer, creator, coupon_id=None):
+    """Stripe rejects discounts + allow_promotion_codes on the same Checkout session."""
+    if (
+        offer == "winback"
+        and coupon_id
+        and qualifies_for_winback_coupon(creator)
+    ):
+        return {"discounts": [{"coupon": coupon_id}]}
+    return {"allow_promotion_codes": True}
+
+
+def stripe_checkout_customer_kwargs(offer, creator):
+    """Reuse the canceled customer's Stripe id so the $12 coupon lands on the same account."""
+    if (
+        offer == "winback"
+        and qualifies_for_winback_coupon(creator)
+        and creator.get("stripe_customer_id")
+    ):
+        return {"customer": creator["stripe_customer_id"]}
+    email = (creator or {}).get("email")
+    return {"customer_email": email} if email else {}
+
+
 def talent_manager_creator_email_html(name):
     who = name or "there"
     url = discover_url()

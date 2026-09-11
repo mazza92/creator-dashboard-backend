@@ -5,8 +5,11 @@ from services.subscription_retention import (
     increment_replies_received,
     invoice_subscription_id,
     offer_for_reason,
+    qualifies_for_winback_coupon,
     should_downgrade_on_status,
     should_send_dunning,
+    stripe_checkout_customer_kwargs,
+    stripe_checkout_promo_kwargs,
     subscription_period_end_ts,
     subscription_price_snapshot,
 )
@@ -99,6 +102,52 @@ class SubscriptionRetentionTests(unittest.TestCase):
         )
         self.assertEqual(amount, 1900)
         self.assertEqual(interval, "month")
+
+    def test_winback_coupon_only_for_canceled_pro(self):
+        canceled = {
+            "subscription_tier": "free",
+            "subscription_status": "canceled",
+            "stripe_subscription_id": "sub_123",
+            "stripe_customer_id": "cus_123",
+            "email": "a@b.com",
+        }
+        self.assertTrue(qualifies_for_winback_coupon(canceled))
+        self.assertFalse(
+            qualifies_for_winback_coupon({**canceled, "subscription_tier": "pro", "subscription_status": "active"})
+        )
+        self.assertFalse(
+            qualifies_for_winback_coupon({**canceled, "stripe_subscription_id": None})
+        )
+        self.assertFalse(
+            qualifies_for_winback_coupon(
+                {
+                    "subscription_tier": "free",
+                    "subscription_status": "free",
+                    "stripe_subscription_id": None,
+                    "email": "never@paid.com",
+                }
+            )
+        )
+        self.assertEqual(
+            stripe_checkout_promo_kwargs("winback", canceled, "pro_retention_12_3mo"),
+            {"discounts": [{"coupon": "pro_retention_12_3mo"}]},
+        )
+        self.assertEqual(
+            stripe_checkout_promo_kwargs("winback", {**canceled, "subscription_tier": "pro"}, "pro_retention_12_3mo"),
+            {"allow_promotion_codes": True},
+        )
+        self.assertEqual(
+            stripe_checkout_promo_kwargs(None, canceled, "pro_retention_12_3mo"),
+            {"allow_promotion_codes": True},
+        )
+        self.assertEqual(
+            stripe_checkout_customer_kwargs("winback", canceled),
+            {"customer": "cus_123"},
+        )
+        self.assertEqual(
+            stripe_checkout_customer_kwargs(None, canceled),
+            {"customer_email": "a@b.com"},
+        )
 
 
 if __name__ == "__main__":

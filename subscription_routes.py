@@ -313,8 +313,10 @@ def create_checkout_session():
         if not creator_id:
             return jsonify({'error': 'Not authenticated'}), 401
 
-        tier = request.json.get('tier')  # 'pro' or 'elite'
-        interval = request.json.get('interval', 'monthly')  # 'monthly' or 'yearly'
+        body = request.json or {}
+        tier = body.get('tier')  # 'pro' or 'elite'
+        interval = body.get('interval', 'monthly')  # 'monthly' or 'yearly'
+        offer = (body.get('offer') or '').strip().lower()
 
         if tier not in ['pro', 'elite']:
             return jsonify({'error': 'Invalid tier'}), 400
@@ -326,7 +328,9 @@ def create_checkout_session():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute('''
-            SELECT u.email, c.username as name
+            SELECT u.email, c.username as name,
+                   c.subscription_tier, c.subscription_status,
+                   c.stripe_subscription_id, c.stripe_customer_id
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.id = %s
@@ -337,6 +341,21 @@ def create_checkout_session():
 
         if not creator:
             return jsonify({'error': 'Creator not found'}), 404
+
+        from services.subscription_retention import (
+            get_or_create_retention_coupon,
+            qualifies_for_winback_coupon,
+            stripe_checkout_customer_kwargs,
+            stripe_checkout_promo_kwargs,
+        )
+
+        apply_winback = (
+            offer == 'winback'
+            and tier == 'pro'
+            and qualifies_for_winback_coupon(creator)
+        )
+        if apply_winback:
+            interval = 'monthly'
 
         # Get price ID from environment based on tier and interval
         if tier == 'pro':
@@ -362,9 +381,17 @@ def create_checkout_session():
 
         # Create Stripe Checkout Session
         frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000').rstrip('/')
+        coupon_id = get_or_create_retention_coupon(stripe) if apply_winback else None
+        metadata = {
+            'creator_id': str(creator_id),
+            'tier': tier,
+            'interval': interval,
+            'creator_name': creator.get('name', ''),
+        }
+        if apply_winback:
+            metadata['offer'] = 'winback'
 
         checkout_session = stripe.checkout.Session.create(
-            customer_email=creator['email'],
             payment_method_types=['card'],
             line_items=[{
                 'price': price_id,
@@ -373,13 +400,9 @@ def create_checkout_session():
             mode='subscription',
             success_url=f"{frontend_url}/creator/dashboard/subscription/success?session_id={{CHECKOUT_SESSION_ID}}",
             cancel_url=f"{frontend_url}/creator/dashboard/subscription/cancel",
-            metadata={
-                'creator_id': str(creator_id),
-                'tier': tier,
-                'interval': interval,
-                'creator_name': creator.get('name', '')
-            },
-            allow_promotion_codes=True,
+            metadata=metadata,
+            **stripe_checkout_customer_kwargs(offer if apply_winback else None, creator),
+            **stripe_checkout_promo_kwargs(offer if apply_winback else None, creator, coupon_id),
         )
 
         print(f"✅ Created checkout session for creator {creator_id} - {tier} tier")
