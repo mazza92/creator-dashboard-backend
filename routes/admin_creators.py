@@ -367,7 +367,7 @@ _REGION_ALIASES = {
     'worldwide': ['Global', 'Worldwide', 'GLOBAL', 'WW'],
 }
 
-_HANDLE_SQL = "LOWER(BTRIM(BOTH '@' FROM COALESCE({col}, '')))"
+_HANDLE_SQL = "LOWER(BTRIM(COALESCE({col}, ''), '@'))"
 
 
 def _arg_get(src, key, default=''):

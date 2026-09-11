@@ -49,6 +49,8 @@ class TestCreatorDirectoryFilters(unittest.TestCase):
         self.assertEqual(token, 'GrowGlow')
         self.assertIn('c.social_handle', sql)
         self.assertIn('c.kit_slug', sql)
+        self.assertIn("BTRIM(COALESCE(c.username, ''), '@')", sql)
+        self.assertNotIn('BOTH', sql)
         self.assertTrue(any(p == 'growglow' for p in params))
         self.assertFalse(any(p == '%@GrowGlow%' for p in params))
 
