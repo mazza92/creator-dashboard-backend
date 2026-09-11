@@ -65,6 +65,15 @@ BLOCKED_OUTREACH_STATUSES = {
 DEFAULT_FOLLOWUP_COOLDOWN_HOURS = 96  # 4 days between follow-ups unless overridden
 
 
+def _canceled_pro_sql():
+    """Creators who paid Pro, then canceled. stripe id remains; tier is free."""
+    return (
+        " AND COALESCE(c.subscription_tier, 'free') = 'free'"
+        " AND LOWER(COALESCE(c.subscription_status, '')) = 'canceled'"
+        " AND c.stripe_subscription_id IS NOT NULL"
+    )
+
+
 def _free_at_unlock_limit_sql(conn):
     """Same definition as founder-dashboard at-limit: free, all 3 free unlocks used this month."""
     from services.unlock_quota import DELIVERED_THIS_MONTH_BY_CREATOR_SQL, FREE_UNLOCK_LIMIT
@@ -424,6 +433,22 @@ def get_segments():
             'highlight': True
         })
 
+        cursor.execute(f"""
+            SELECT COUNT(DISTINCT c.id) as count
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE u.unsubscribed_at IS NULL
+            {_canceled_pro_sql()}
+        """)
+        segments.append({
+            'id': 'canceled_pro',
+            'name': 'Canceled Pro (winback)',
+            'description': 'Paid Pro, then canceled. $12 for 3 months retention offer.',
+            'count': cursor.fetchone()['count'],
+            'icon': 'undo',
+            'highlight': True
+        })
+
         # Dormant
         cursor.execute("""
             SELECT COUNT(DISTINCT c.id) as count
@@ -596,6 +621,8 @@ def preview_segment():
             base_query += " AND COALESCE(c.pitches_sent_total, 0) >= 5"
         elif segment_id == 'at_quota_limit':
             base_query += _free_at_unlock_limit_sql(conn)
+        elif segment_id == 'canceled_pro':
+            base_query += _canceled_pro_sql()
         elif segment_id == 'dormant':
             base_query += """
                 AND c.id NOT IN (
@@ -1722,6 +1749,8 @@ def send_campaign(campaign_id):
             """
         elif segment_id == 'at_quota_limit':
             recipient_query += _free_at_unlock_limit_sql(conn)
+        elif segment_id == 'canceled_pro':
+            recipient_query += _canceled_pro_sql()
         elif segment_id == 'dormant':
             recipient_query += """
                 AND c.id NOT IN (
@@ -2911,7 +2940,7 @@ def render_brand_outreach():
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("""
             SELECT id, brand_name, category, description, contact_email,
-                   website, niches, logo
+                   website, niches
             FROM pr_brands WHERE id = %s
         """, (brand_id,))
         brand = cursor.fetchone()
