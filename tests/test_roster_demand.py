@@ -13,6 +13,7 @@ from services.roster_demand import (
     ROSTER_MINT_MIN,
     fill_target,
     mark_focus,
+    merge_spotlighted_open_lists,
     pick_open_lists,
     prefer_hungry_rosters,
 )
@@ -86,13 +87,15 @@ class TestFocusAndMint(unittest.TestCase):
     def test_demand_sql_finishes_fuller_lists(self):
         sql = ' '.join(ROSTER_DEMAND_JOIN.split())
         self.assertIn('fill_count >= 3', sql)
-        self.assertIn('ORDER BY inbound DESC, fill_count DESC', sql)
+        self.assertIn('ORDER BY spotlighted DESC, inbound DESC, fill_count DESC', sql)
         self.assertIn('LIMIT 8', sql)
         self.assertIn('t.fill_count', sql)
         self.assertIn('slot_limit', sql)
         self.assertIn('source_opportunity_id', sql)
+        self.assertIn('creator_spotlighted_at', sql)
         self.assertIn('GREATEST(t.fill_count, 1)', sql)
         self.assertIn('is_open', sql)
+        self.assertIn('spotlighted', sql)
 
     def test_pick_open_lists_uses_fill_not_just_hunger(self):
         rows = [
@@ -110,6 +113,27 @@ class TestFocusAndMint(unittest.TestCase):
         ]
         out = pick_open_lists(rows, limit=4)
         self.assertEqual([b["id"] for b in out], [4])
+
+    def test_pick_open_lists_puts_spotlighted_first(self):
+        rows = [
+            {"id": 1, "roster_fill_count": 9, "roster_hunger": 9, "roster_is_open": 1, "match_score": 70},
+            {
+                "id": 2,
+                "roster_fill_count": 0,
+                "roster_hunger": 1,
+                "roster_is_open": 1,
+                "roster_spotlighted": 1,
+                "match_score": 40,
+            },
+        ]
+        out = pick_open_lists(rows, limit=4)
+        self.assertEqual([b["id"] for b in out], [2, 1])
+
+    def test_merge_spotlighted_open_lists_dedupes_and_caps(self):
+        open_lists = [{"id": 1, "name": "Warm"}, {"id": 2, "name": "Also"}]
+        spotlighted = [{"id": 9, "name": "Pushed"}, {"id": 1, "name": "Warm again"}]
+        out = merge_spotlighted_open_lists(open_lists, spotlighted, limit=8)
+        self.assertEqual([b["id"] for b in out], [9, 1, 2])
 
     def test_mark_focus_picks_closest_to_full(self):
         rows = [
@@ -129,6 +153,15 @@ class TestFocusAndMint(unittest.TestCase):
         ]
         out = mark_focus(rows)
         self.assertEqual(sum(1 for c in out if c["in_focus"]), 8)
+
+    def test_mark_focus_always_includes_spotlighted(self):
+        rows = [
+            {"id": 1, "status": "active", "fill_count": 0, "fill_target": 15, "spotlighted": True},
+            {"id": 2, "status": "active", "fill_count": 11, "fill_target": 15},
+        ]
+        out = mark_focus(rows)
+        focused = {c["id"] for c in out if c["in_focus"]}
+        self.assertEqual(focused, {1, 2})
 
 
 if __name__ == "__main__":

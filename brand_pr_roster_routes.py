@@ -23,7 +23,7 @@ from psycopg2.extras import RealDictCursor, Json
 
 from pr_crm_routes import get_db_connection, convert_decimals
 from social_verification_routes import normalize_country_code
-from services.roster_demand import fill_target, mark_focus
+from services.roster_demand import fill_target, mark_focus, ensure_campaign_spotlight_column
 from services.brand_billing import (
     billing_public_summary,
     can_mint_campaign,
@@ -1909,6 +1909,7 @@ def admin_list_campaigns():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         _ensure_schema(cursor, conn)
+        ensure_campaign_spotlight_column(cursor, conn)
         clauses = []
         params = []
         if brand_id:
@@ -1927,7 +1928,8 @@ def admin_list_campaigns():
             SELECT
                 c.id, c.brand_id, c.token, c.title, c.slot_limit, c.status, c.sku_note,
                 c.selected_application_ids, c.created_at, c.locked_at, c.shipped_at,
-                b.brand_name, b.slug AS brand_slug, b.logo_url,
+                c.creator_spotlighted_at,
+                b.brand_name, b.slug AS brand_slug, b.logo_url, b.category, b.hero_product,
                 COUNT(a.id) FILTER (
                     WHERE a.status IN ('review', 'ships', 'posted', 'declined')
                 ) AS applicant_count,
@@ -1959,12 +1961,15 @@ def admin_list_campaigns():
             target = fill_target(r.get("slot_limit"))
             fill_count = int(r["review_count"] or 0) + int(r.get("shipped_picks") or 0)
             hunger = max(0, target - fill_count) if r.get("status") == "active" else 0
+            spotlighted_at = r.get("creator_spotlighted_at")
             campaigns.append(convert_decimals({
                 "id": r["id"],
                 "brand_id": r["brand_id"],
                 "brand_name": r["brand_name"],
                 "brand_slug": r["brand_slug"],
                 "logo_url": r.get("logo_url"),
+                "category": r.get("category") or "",
+                "hero_product": r.get("hero_product") or "",
                 "token": r["token"],
                 "title": r["title"],
                 "slot_limit": r["slot_limit"],
@@ -1979,6 +1984,8 @@ def admin_list_campaigns():
                 "hunger": hunger,
                 "fill_ready": r.get("status") == "active" and hunger == 0,
                 "in_focus": False,
+                "spotlighted": bool(spotlighted_at),
+                "spotlighted_at": spotlighted_at.isoformat() if spotlighted_at else None,
                 "portal_url": f"{_frontend_base()}/r/{r['token']}",
                 "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
                 "locked_at": r["locked_at"].isoformat() if r.get("locked_at") else None,
@@ -1987,11 +1994,93 @@ def admin_list_campaigns():
         campaigns = mark_focus(campaigns)
         campaigns.sort(key=lambda c: c.get("created_at") or "", reverse=True)
         campaigns.sort(key=lambda c: (
+            0 if c.get("spotlighted") else 1,
             0 if c.get("fill_ready") else 1,
             0 if c.get("in_focus") else 1,
             -int(c.get("fill_count") or 0),
         ))
         return jsonify({"success": True, "campaigns": campaigns}), 200
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@brand_pr_roster_bp.route("/admin/campaigns/spotlight", methods=["POST"])
+@_admin_required
+def admin_spotlight_campaigns():
+    """Push selected active rosters onto the creator Live now desk (and off again)."""
+    try:
+        body = request.get_json(silent=True) or {}
+        raw_ids = body.get("campaign_ids") or body.get("ids") or []
+        if not isinstance(raw_ids, list):
+            raw_ids = [raw_ids]
+        campaign_ids = []
+        for item in raw_ids:
+            try:
+                n = int(item)
+            except (TypeError, ValueError):
+                continue
+            if n > 0:
+                campaign_ids.append(n)
+        campaign_ids = list(dict.fromkeys(campaign_ids))
+        if not campaign_ids:
+            return jsonify({"success": False, "error": "Select at least one roster"}), 400
+        spotlight = body.get("spotlight", True)
+        if isinstance(spotlight, str):
+            spotlight = spotlight.strip().lower() in ("1", "true", "yes", "on")
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        _ensure_schema(cursor, conn)
+        ensure_campaign_spotlight_column(cursor, conn)
+        if spotlight:
+            cursor.execute(
+                """
+                UPDATE brand_pr_campaigns
+                SET creator_spotlighted_at = NOW(), updated_at = NOW()
+                WHERE id = ANY(%s) AND status = 'active'
+                RETURNING id, brand_id
+                """,
+                (campaign_ids,),
+            )
+        else:
+            cursor.execute(
+                """
+                UPDATE brand_pr_campaigns
+                SET creator_spotlighted_at = NULL, updated_at = NOW()
+                WHERE id = ANY(%s)
+                RETURNING id, brand_id
+                """,
+                (campaign_ids,),
+            )
+        updated = cursor.fetchall() or []
+        brand_ids = [r["brand_id"] for r in updated if r.get("brand_id")]
+        if spotlight and brand_ids:
+            cursor.execute(
+                """
+                UPDATE pr_brands
+                SET accepting_pr = TRUE,
+                    open_pr_featured = TRUE,
+                    status = 'published'
+                WHERE id = ANY(%s)
+                """,
+                (brand_ids,),
+            )
+        for row in updated:
+            _record_roster_event(
+                cursor,
+                "roster_spotlight_on" if spotlight else "roster_spotlight_off",
+                brand_id=row.get("brand_id"),
+                meta={"campaign_id": row.get("id")},
+            )
+        conn.commit()
+        conn.close()
+        return jsonify({
+            "success": True,
+            "spotlight": bool(spotlight),
+            "updated": len(updated),
+            "campaign_ids": [r["id"] for r in updated],
+        }), 200
     except Exception as e:
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
@@ -2093,7 +2182,7 @@ def admin_revoke_campaign(campaign_id):
         cursor.execute(
             """
             UPDATE brand_pr_campaigns
-            SET status = 'closed', updated_at = NOW()
+            SET status = 'closed', creator_spotlighted_at = NULL, updated_at = NOW()
             WHERE id = %s
             RETURNING id, token, brand_id
             """,
@@ -2131,6 +2220,12 @@ def admin_create_campaign_alias():
 @_admin_required
 def admin_list_campaigns_alias():
     return admin_list_campaigns()
+
+
+@admin_brand_pr_bp.route("/campaigns/spotlight", methods=["POST"])
+@_admin_required
+def admin_spotlight_campaigns_alias():
+    return admin_spotlight_campaigns()
 
 
 @admin_brand_pr_bp.route("/campaigns/<int:campaign_id>", methods=["GET"])

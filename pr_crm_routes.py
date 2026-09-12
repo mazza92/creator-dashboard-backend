@@ -8689,6 +8689,8 @@ def get_for_you():
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
+        from services.roster_demand import ensure_campaign_spotlight_column
+        ensure_campaign_spotlight_column(cursor, conn)
 
         # Get creator subscription status and profile
         is_pro = get_subscription_status(creator_id) in ['pro', 'elite']
@@ -9322,6 +9324,16 @@ def get_for_you():
             filtered_matched = prefer_hungry_rosters(
                 filtered_matched, limit=8, max_hungry=6, min_fit=FOR_YOU_MIN_FIT_SCORE
             )
+
+        try:
+            from services.roster_demand import (
+                fetch_spotlighted_brand_rows,
+                merge_spotlighted_open_lists,
+            )
+            spotlighted = fetch_spotlighted_brand_rows(cursor, exclude_ids, limit=8)
+            open_lists = merge_spotlighted_open_lists(open_lists, spotlighted, limit=8)
+        except Exception as spotlight_err:
+            print(f"[ForYou] Spotlight merge skipped: {spotlight_err}")
 
         if filtered_matched:
             top_score = filtered_matched[0].get('match_score', 0)

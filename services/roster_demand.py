@@ -7,13 +7,21 @@ thin lists and none ever become sendable.
 Hunger is fill progress (higher = closer to send), not emptiness.
 Only lists with ROSTER_FOCUS_MIN applicants enter the race, and only the
 ROSTER_FOCUS_CAP closest-to-full get a For You / Discover boost.
+
+Admin can also spotlight cold-emailed rosters so they skip the 3-applicant
+gate and show on the Live now desk immediately.
 """
+
+import threading
 
 ROSTER_FILL_MULT = 3
 ROSTER_FILL_PAD = 8
 ROSTER_FOCUS_MIN = 3
 ROSTER_FOCUS_CAP = 8
 ROSTER_MINT_MIN = 8
+
+_SPOTLIGHT_COL_READY = False
+_SPOTLIGHT_COL_LOCK = threading.Lock()
 
 # SQL joined as roster_demand on pr_brands b
 ROSTER_DEMAND_JOIN = """
@@ -31,10 +39,18 @@ LEFT JOIN (
         WHERE c.status = 'active'
           AND b.source_opportunity_id IS NOT NULL
     ),
+    spotlight_ids AS (
+        SELECT DISTINCT brand_id
+        FROM brand_pr_campaigns
+        WHERE status = 'active'
+          AND creator_spotlighted_at IS NOT NULL
+    ),
     keys AS (
         SELECT brand_id FROM counts
         UNION
         SELECT brand_id FROM inbound_ids
+        UNION
+        SELECT brand_id FROM spotlight_ids
     ),
     targets AS (
         SELECT
@@ -45,32 +61,35 @@ LEFT JOIN (
                 COALESCE(c.slot_limit, 5) * 3,
                 COALESCE(c.slot_limit, 5) + 8
             ) AS target,
-            CASE WHEN i.brand_id IS NOT NULL THEN 1 ELSE 0 END AS inbound
+            CASE WHEN i.brand_id IS NOT NULL THEN 1 ELSE 0 END AS inbound,
+            CASE WHEN s.brand_id IS NOT NULL THEN 1 ELSE 0 END AS spotlighted
         FROM keys k
         LEFT JOIN counts co ON co.brand_id = k.brand_id
         LEFT JOIN inbound_ids i ON i.brand_id = k.brand_id
+        LEFT JOIN spotlight_ids s ON s.brand_id = k.brand_id
         LEFT JOIN brand_pr_campaigns c
           ON c.brand_id = k.brand_id AND c.status = 'active'
     ),
     focused AS (
         SELECT brand_id
         FROM targets
-        WHERE (fill_count >= 3 OR inbound = 1)
+        WHERE (fill_count >= 3 OR inbound = 1 OR spotlighted = 1)
           AND fill_count < target
-        ORDER BY inbound DESC, fill_count DESC, brand_id
+        ORDER BY spotlighted DESC, inbound DESC, fill_count DESC, brand_id
         LIMIT 8
     )
     SELECT
         t.brand_id,
         CASE
-            WHEN t.inbound = 1 THEN GREATEST(t.fill_count, 1)
+            WHEN t.spotlighted = 1 OR t.inbound = 1 THEN GREATEST(t.fill_count, 1)
             WHEN f.brand_id IS NOT NULL THEN t.fill_count
             ELSE 0
         END AS hunger,
         t.fill_count,
         t.target,
         t.slot_limit,
-        CASE WHEN t.inbound = 1 OR t.fill_count > 0 THEN 1 ELSE 0 END AS is_open
+        CASE WHEN t.spotlighted = 1 OR t.inbound = 1 OR t.fill_count > 0 THEN 1 ELSE 0 END AS is_open,
+        t.spotlighted
     FROM targets t
     LEFT JOIN focused f ON f.brand_id = t.brand_id
 ) roster_demand ON roster_demand.brand_id = b.id
@@ -81,8 +100,49 @@ COALESCE(roster_demand.hunger, 0) AS roster_hunger,
 COALESCE(roster_demand.fill_count, 0) AS roster_fill_count,
 COALESCE(roster_demand.target, 0) AS roster_fill_target,
 COALESCE(roster_demand.slot_limit, 0) AS roster_slot_limit,
-COALESCE(roster_demand.is_open, 0) AS roster_is_open
+COALESCE(roster_demand.is_open, 0) AS roster_is_open,
+COALESCE(roster_demand.spotlighted, 0) AS roster_spotlighted
 """
+
+
+def ensure_campaign_spotlight_column(cursor, conn=None):
+    """Once per process. Adds creator_spotlighted_at if this DB is behind."""
+    global _SPOTLIGHT_COL_READY
+    if _SPOTLIGHT_COL_READY:
+        return
+    with _SPOTLIGHT_COL_LOCK:
+        if _SPOTLIGHT_COL_READY:
+            return
+        try:
+            from services.pg_hotpath_schema import public_column_exists, public_index_exists
+            if public_column_exists(cursor, "brand_pr_campaigns", "creator_spotlighted_at"):
+                _SPOTLIGHT_COL_READY = True
+                return
+            cursor.execute("SET LOCAL lock_timeout = '2s'")
+            cursor.execute(
+                """
+                ALTER TABLE brand_pr_campaigns
+                ADD COLUMN IF NOT EXISTS creator_spotlighted_at TIMESTAMPTZ
+                """
+            )
+            if not public_index_exists(cursor, "idx_brand_pr_campaigns_spotlight"):
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_brand_pr_campaigns_spotlight
+                    ON brand_pr_campaigns (creator_spotlighted_at DESC)
+                    WHERE creator_spotlighted_at IS NOT NULL AND status = 'active'
+                    """
+                )
+            if conn:
+                conn.commit()
+            _SPOTLIGHT_COL_READY = True
+        except Exception as exc:
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            print(f"[roster_demand] spotlight column ensure skipped: {exc}")
 
 
 def fill_target(slot_limit):
@@ -92,18 +152,23 @@ def fill_target(slot_limit):
 
 
 def mark_focus(campaigns):
-    """Flag the closest-to-full active lists For You will actually push."""
+    """Flag spotlighted lists plus the closest-to-full active lists For You will push."""
     rows = list(campaigns or [])
+    spotlight_ids = {
+        c.get("id") for c in rows
+        if c.get("status") == "active" and c.get("spotlighted")
+    }
     eligible = [
         c for c in rows
         if c.get("status") == "active"
+        and c.get("id") not in spotlight_ids
         and int(c.get("fill_count") or 0) >= ROSTER_FOCUS_MIN
         and int(c.get("fill_count") or 0) < int(c.get("fill_target") or fill_target(c.get("slot_limit")))
     ]
     eligible.sort(key=lambda c: (-int(c.get("fill_count") or 0), int(c.get("id") or 0)))
     focus_ids = {c.get("id") for c in eligible[:ROSTER_FOCUS_CAP]}
     for c in rows:
-        c["in_focus"] = c.get("id") in focus_ids
+        c["in_focus"] = c.get("id") in focus_ids or c.get("id") in spotlight_ids
     return rows
 
 
@@ -128,8 +193,59 @@ def pick_open_lists(ranked, limit=4, min_fit=0):
             continue
         seen.add(bid)
         rows.append(b)
-    rows.sort(key=lambda b: int(b.get("roster_fill_count") or b.get("roster_hunger") or 0), reverse=True)
+    rows.sort(key=lambda b: (
+        0 if int(b.get("roster_spotlighted") or 0) else 1,
+        -int(b.get("roster_fill_count") or b.get("roster_hunger") or 0),
+    ))
     return rows[: max(1, int(limit or 4))]
+
+
+def merge_spotlighted_open_lists(open_lists, spotlighted, limit=8):
+    """Put admin-pushed rosters first on the Live now desk, then hunger-ranked lists."""
+    seen = set()
+    out = []
+    for raw in list(spotlighted or []) + list(open_lists or []):
+        row = dict(raw or {})
+        bid = row.get("id")
+        if bid is None or bid in seen:
+            continue
+        seen.add(bid)
+        out.append(row)
+        if len(out) >= max(1, int(limit or 8)):
+            break
+    return out
+
+
+def fetch_spotlighted_brand_rows(cursor, exclude_ids=None, limit=8):
+    """Published brands whose active roster was pushed from admin."""
+    ensure_campaign_spotlight_column(cursor)
+    ids = list(exclude_ids or []) or [0]
+    cursor.execute(
+        f"""
+        SELECT
+            b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
+            b.description, b.category, b.response_rate, b.price_point,
+            b.min_followers, b.max_followers, b.micro_friendly, b.website,
+            b.application_form_url, b.has_application_form, b.hero_product,
+            (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
+            b.niches AS brand_niches, b.regions, b.avg_product_value,
+            0 AS match_score,
+            {ROSTER_DEMAND_SELECT}
+        FROM pr_brands b
+        {ROSTER_DEMAND_JOIN}
+        JOIN brand_pr_campaigns c
+          ON c.brand_id = b.id
+         AND c.status = 'active'
+         AND c.creator_spotlighted_at IS NOT NULL
+        WHERE b.slug IS NOT NULL
+          AND COALESCE(b.status, 'published') = 'published'
+          AND b.id != ALL(%s)
+        ORDER BY c.creator_spotlighted_at DESC NULLS LAST, b.id
+        LIMIT %s
+        """,
+        (ids, max(1, int(limit or 8))),
+    )
+    return [dict(r) for r in (cursor.fetchall() or [])]
 
 
 def prefer_hungry_rosters(ranked, pool=None, limit=8, max_hungry=4, min_fit=35):

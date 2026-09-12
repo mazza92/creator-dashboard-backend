@@ -410,6 +410,8 @@ def get_public_brands():
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
+        from services.roster_demand import ensure_campaign_spotlight_column
+        ensure_campaign_spotlight_column(cursor, conn)
 
         # Build query with filters (includes pitch stats from creator_pipeline)
         query = f"""
