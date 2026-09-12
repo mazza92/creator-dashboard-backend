@@ -245,8 +245,8 @@ INSERT INTO lifecycle_email_templates (
      'lifecycle/15_doubter_5pitch.html', 'state_based', '{"days_after_previous": 4, "requires_previous": "doubter_sarah"}', false, false, 50, ARRAY['doubter'], ARRAY['pro', 'elite'], 'email_doubter_series_v2'),
 
     -- MAXIMIZER PRO CONVERSION (Emails 16-18)
-    ('max_quota_hit', 16, 'Quota resets in N days', 'maximizer',
-     '{{ first_name }}, you''re maxed out for {{ month }}', 'Here''s what to do until your quota resets.',
+    ('max_quota_hit', 16, 'Your 3 are out', 'maximizer',
+     '{{ first_name }}, you''re maxed out for {{ month }}', 'Your 3 are out. Pro guarantees 1 gifting campaign a month.',
      'lifecycle/16_max_quota_hit.html', 'action_based', '{"trigger": "quota_3_3", "one_time_per_month": true}', false, false, 75, ARRAY['maximizer'], ARRAY['pro', 'elite'], 'email_maximizer_pro_v2'),
 
     ('max_3things', 17, 'What Pro creators do differently', 'maximizer',

@@ -3,21 +3,23 @@
 {% block content %}
 <p>Hi {{ first_name or "there" }},</p>
 
-<p>You've used all 3 unlocks this month. Most creators never use all 3. That means you're pitching, which is the hard part.</p>
+<p><strong>Your 3 are out.</strong> You used all 3 free credits this month. Most people never do.</p>
 
-<p>Your quota resets on {{ reset_date }}. That's {{ days_until_reset }} days from now.</p>
+<p>Waiting until {{ reset_date }} does not get you a box. Sending more cold pitches from here is how people stall. That is not what Pro is for anymore.</p>
 
-<p>Here's what I recommend doing in the meantime, and honestly, this is where the biggest wins come from:</p>
+<p>If you go Pro today ($19/mo), you get <strong>1 gifting campaign guaranteed each month</strong>. We put you on a live gifted roster. The brand ships product. You post. You do not send a pitch.</p>
 
-<p><strong>Follow up on the 3 pitches you sent.</strong> 67% of replies come after a follow-up. Your fresh pitches are hitting inboxes right now, and the brands that were going to reply, will reply to a follow-up in the next 7 to 10 days.</p>
+<ol class="numbered-list">
+    <li><strong>One campaign, guaranteed.</strong> Every paid month we place you on a live gifted roster that fits your niche.</li>
+    <li><strong>The brand ships. You post.</strong> You never send a pitch. We vet you. The brand picks from the roster.</li>
+    <li><strong>If we miss, I make it right.</strong> Reply that month. I put you on the next campaign or refund the invoice.</li>
+</ol>
 
-<p><strong>Refresh your portfolio.</strong> Add 1 or 2 new pieces. Brands who checked you out and passed will re-check when you bump your profile.</p>
+<p>Unlimited credits sit on top of that, so you can keep applying while the campaign runs.</p>
 
-<p><strong>Post 1 piece of content in your niche this week.</strong> Brands review your last 9 posts before replying. Keep them fresh.</p>
+<p>Your 3 credits come back on {{ reset_date }} if you'd rather wait. That's {{ days_until_reset }} days from now.</p>
 
-<p>If you want to keep pitching without waiting, Pro removes the cap and adds weekly coaching. I'll send you a note about that in a couple days if it makes sense for you.</p>
+<a href="{{ cta_url }}" class="cta-button">Go Pro · 1 gifting campaign / month</a>
 
-<p>For now, the follow-up game is where you can move the needle.</p>
-
-<a href="{{ cta_url }}" class="cta-button">Check my follow-ups</a>
+<p style="text-align: center; margin-top: 8px; color: #6b7280; font-size: 14px;">$19/mo. Cancel anytime.</p>
 {% endblock %}

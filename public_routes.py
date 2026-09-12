@@ -248,7 +248,8 @@ def _format_public_brand_list_item(b):
         'roster_fill_target': int(b.get('roster_fill_target') or 0),
         'roster_slot_limit': int(b.get('roster_slot_limit') or 0),
         'roster_is_open': int(b.get('roster_is_open') or 0),
-        'roster_open': int(b.get('roster_is_open') or b.get('roster_fill_count') or b.get('roster_hunger') or 0) > 0,
+        'roster_spotlighted': int(b.get('roster_spotlighted') or 0),
+        'roster_open': int(b.get('roster_is_open') or b.get('roster_fill_count') or b.get('roster_hunger') or b.get('roster_spotlighted') or 0) > 0,
     }
 
 
@@ -357,6 +358,8 @@ def get_public_brands():
     - limit: int (default 24, max 100)
     - category: filter by category
     - niche: filter by niche
+    - micro_friendly: only brands marked micro-friendly
+    - recruiting: only brands with an admin-pushed live gift roster
     - search: search brand names
     - activity: filter by brand activity ('new', 'active', 'responsive')
     - contact_type: filter by contact availability ('application', 'email')
@@ -374,6 +377,7 @@ def get_public_brands():
         contact_type = request.args.get('contact_type')  # 'application', 'email'
         region = request.args.get('region')  # 'Australia', 'US', 'UK', 'Canada', etc.
         micro_friendly = str(request.args.get('micro_friendly') or '').lower() in ('1', 'true', 'yes')
+        recruiting = str(request.args.get('recruiting') or '').lower() in ('1', 'true', 'yes')
         slug = request.args.get('slug')  # Exact slug match for fetching specific brand
         # Soft sort only (Discover): user-selected niches first — does not filter the feed
         prefer_niches = []
@@ -498,6 +502,17 @@ def get_public_brands():
         if micro_friendly:
             query += " AND COALESCE(b.micro_friendly, FALSE) = TRUE"
 
+        if recruiting:
+            # Live gift lists currently taking applicants — admin-pushed
+            # (spotlighted) plus organic open/inbound rosters. Matches the
+            # Directory "Actively recruiting" filter to the live desk.
+            query += """
+                AND (
+                    COALESCE(roster_demand.spotlighted, 0) = 1
+                    OR COALESCE(roster_demand.is_open, 0) = 1
+                )
+            """
+
         # Region filter (JSONB array contains). US matches common stored labels.
         if region:
             region_aliases = {
@@ -534,6 +549,7 @@ def get_public_brands():
             if prefer_niches:
                 query += """
                     ORDER BY
+                        COALESCE(roster_demand.spotlighted, 0) DESC,
                         COALESCE(roster_demand.hunger, 0) DESC,
                         CASE WHEN LOWER(b.category) = ANY(%s) THEN 0 ELSE 1 END,
                         b.is_featured DESC,
@@ -546,6 +562,7 @@ def get_public_brands():
                 # Default: underfilled rosters, then featured, then most recently added
                 query += """
                     ORDER BY
+                        COALESCE(roster_demand.spotlighted, 0) DESC,
                         COALESCE(roster_demand.hunger, 0) DESC,
                         b.is_featured DESC,
                         b.created_at DESC NULLS LAST,
@@ -593,6 +610,30 @@ def get_public_brands():
 
         if micro_friendly:
             count_query += " AND COALESCE(micro_friendly, FALSE) = TRUE"
+
+        if recruiting:
+            count_query += """
+                AND (
+                    EXISTS (
+                        SELECT 1 FROM brand_pr_campaigns c
+                        WHERE c.brand_id = pr_brands.id
+                          AND c.status = 'active'
+                          AND c.creator_spotlighted_at IS NOT NULL
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM brand_pr_campaigns c
+                        JOIN pr_brands pb ON pb.id = c.brand_id
+                        WHERE c.brand_id = pr_brands.id
+                          AND c.status = 'active'
+                          AND pb.source_opportunity_id IS NOT NULL
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM brand_pr_applications a
+                        WHERE a.brand_id = pr_brands.id
+                          AND a.status IN ('review', 'ships', 'posted')
+                    )
+                )
+            """
 
         # Region filter for count
         if region:

@@ -96,6 +96,7 @@ class TestFocusAndMint(unittest.TestCase):
         self.assertIn('GREATEST(t.fill_count, 1)', sql)
         self.assertIn('is_open', sql)
         self.assertIn('spotlighted', sql)
+        self.assertIn('DISTINCT ON (t.brand_id)', sql)
 
     def test_pick_open_lists_uses_fill_not_just_hunger(self):
         rows = [

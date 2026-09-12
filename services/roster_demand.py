@@ -78,7 +78,7 @@ LEFT JOIN (
         ORDER BY spotlighted DESC, inbound DESC, fill_count DESC, brand_id
         LIMIT 8
     )
-    SELECT
+    SELECT DISTINCT ON (t.brand_id)
         t.brand_id,
         CASE
             WHEN t.spotlighted = 1 OR t.inbound = 1 THEN GREATEST(t.fill_count, 1)
@@ -92,6 +92,7 @@ LEFT JOIN (
         t.spotlighted
     FROM targets t
     LEFT JOIN focused f ON f.brand_id = t.brand_id
+    ORDER BY t.brand_id, t.spotlighted DESC
 ) roster_demand ON roster_demand.brand_id = b.id
 """
 
@@ -233,19 +234,28 @@ def fetch_spotlighted_brand_rows(cursor, exclude_ids=None, limit=8):
             {ROSTER_DEMAND_SELECT}
         FROM pr_brands b
         {ROSTER_DEMAND_JOIN}
-        JOIN brand_pr_campaigns c
-          ON c.brand_id = b.id
-         AND c.status = 'active'
-         AND c.creator_spotlighted_at IS NOT NULL
+        JOIN (
+            SELECT brand_id, MAX(creator_spotlighted_at) AS spotlighted_at
+            FROM brand_pr_campaigns
+            WHERE status = 'active'
+              AND creator_spotlighted_at IS NOT NULL
+            GROUP BY brand_id
+        ) c ON c.brand_id = b.id
         WHERE b.slug IS NOT NULL
           AND COALESCE(b.status, 'published') = 'published'
           AND b.id != ALL(%s)
-        ORDER BY c.creator_spotlighted_at DESC NULLS LAST, b.id
+        ORDER BY c.spotlighted_at DESC NULLS LAST, b.id
         LIMIT %s
         """,
         (ids, max(1, int(limit or 8))),
     )
-    return [dict(r) for r in (cursor.fetchall() or [])]
+    rows = []
+    for raw in cursor.fetchall() or []:
+        b = dict(raw)
+        b["roster_spotlighted"] = 1
+        b["roster_is_open"] = 1
+        rows.append(b)
+    return rows
 
 
 def prefer_hungry_rosters(ranked, pool=None, limit=8, max_hungry=4, min_fit=35):

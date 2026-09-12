@@ -9325,15 +9325,21 @@ def get_for_you():
                 filtered_matched, limit=8, max_hungry=6, min_fit=FOR_YOU_MIN_FIT_SCORE
             )
 
+        recruiting = []
         try:
-            from services.roster_demand import (
-                fetch_spotlighted_brand_rows,
-                merge_spotlighted_open_lists,
-            )
-            spotlighted = fetch_spotlighted_brand_rows(cursor, exclude_ids, limit=8)
-            open_lists = merge_spotlighted_open_lists(open_lists, spotlighted, limit=8)
+            from services.roster_demand import fetch_spotlighted_brand_rows
+            recruiting = fetch_spotlighted_brand_rows(cursor, exclude_ids, limit=8)
+            score_map = {b.get("id"): b for b in (filtered_matched or [])}
+            for b in recruiting:
+                scored = score_map.get(b.get("id"))
+                if scored and int(scored.get("match_score") or 0) > 0:
+                    b["match_score"] = scored.get("match_score")
+                    if scored.get("fit_tier"):
+                        b["fit_tier"] = scored.get("fit_tier")
+            recruit_ids = {b.get("id") for b in recruiting if b.get("id") is not None}
+            open_lists = [b for b in open_lists if b.get("id") not in recruit_ids]
         except Exception as spotlight_err:
-            print(f"[ForYou] Spotlight merge skipped: {spotlight_err}")
+            print(f"[ForYou] Recruiting lists skipped: {spotlight_err}")
 
         if filtered_matched:
             top_score = filtered_matched[0].get('match_score', 0)
@@ -9354,6 +9360,7 @@ def get_for_you():
             'hot': [dict(r) for r in hot],
             'matched': filtered_matched,
             'open_lists': open_lists,
+            'recruiting': recruiting,
             'seasonal': [dict(r) for r in seasonal],
             'seasonal_reason': seasonal_reasons.get(month, ''),
             'seasonal_month': datetime.now().strftime('%B'),
