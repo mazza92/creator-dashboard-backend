@@ -126,6 +126,23 @@ class TestRosterEngagement(unittest.TestCase):
         self.assertEqual(out["regions"], ["US", "UK", "AU"])
         self.assertEqual(out["hero_product"], "Everyday tote")
 
+    def test_roster_preview_brand_is_splash_only(self):
+        from brand_pr_roster_routes import _roster_preview_brand
+
+        out = _roster_preview_brand(
+            {
+                "brand_id": 9,
+                "brand_name": "Harbor & Co.",
+                "logo_url": "https://cdn.example/logo.png",
+                "cover_image_url": "https://cdn.example/tote.jpg",
+                "website": "https://www.harborandco.com",
+            }
+        )
+        self.assertEqual(out["name"], "Harbor & Co.")
+        self.assertEqual(out["logo"], "https://cdn.example/logo.png")
+        self.assertEqual(out["cover_image"], "https://cdn.example/tote.jpg")
+        self.assertNotIn("website", out)
+
     def test_posts_public_proxies_selected_cdn(self):
         from brand_pr_roster_routes import _posts_public
 

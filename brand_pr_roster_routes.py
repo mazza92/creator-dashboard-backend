@@ -1019,6 +1019,15 @@ def _brand_public(campaign):
     }
 
 
+def _roster_preview_brand(campaign):
+    brand = _brand_public(campaign)
+    return {
+        "name": brand.get("name") or "",
+        "logo": brand.get("logo") or "",
+        "cover_image": brand.get("cover_image") or "",
+    }
+
+
 def _load_campaign_row(cursor, where_sql, params, *, allow_closed=False, skip_expiry=False):
     cursor.execute(
         f"""
@@ -1275,6 +1284,27 @@ def _build_roster_response(cursor, campaign):
 # ---------------------------------------------------------------------------
 # Public roster endpoints
 # ---------------------------------------------------------------------------
+
+
+@brand_pr_roster_bp.route("/r/<token>/preview", methods=["GET"])
+def get_roster_preview(token):
+    """Brand name + logo only — paints the roster splash before the full list loads."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        campaign = _load_campaign(cursor, token)
+        if not campaign:
+            conn.close()
+            return jsonify({"success": False, "error": "Roster link not found or expired"}), 404
+        payload = convert_decimals({
+            "success": True,
+            "brand": _roster_preview_brand(campaign),
+        })
+        conn.close()
+        return jsonify(payload), 200
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @brand_pr_roster_bp.route("/r/<token>", methods=["GET"])
