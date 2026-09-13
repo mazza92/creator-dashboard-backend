@@ -160,12 +160,18 @@ def _review_flags(row):
     flags = []
     bio = (row.get('bio') or '').strip()
     niche_raw = row.get('niche')
+    extra_niches = row.get('creator_niches') or []
     niche_text = ''
     if isinstance(niche_raw, list):
         niche_text = ','.join(str(n) for n in niche_raw if n)
     elif niche_raw is not None:
         niche_text = str(niche_raw).strip()
-    if niche_text.lower() in ('', '[]', 'null', 'none', '""'):
+    if isinstance(extra_niches, str):
+        extra_niches = [extra_niches] if extra_niches.strip() else []
+    has_creator_niches = isinstance(extra_niches, (list, tuple)) and any(
+        str(n).strip() for n in extra_niches
+    )
+    if niche_text.lower() in ('', '[]', 'null', 'none', '""') and not has_creator_niches:
         flags.append('missing_niche')
     if not bio:
         flags.append('missing_bio')
@@ -210,21 +216,24 @@ def _admin_actor_id(cursor):
 
 
 def _approval_snapshot(cursor):
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT
-            COUNT(*) FILTER (WHERE approval_status = 'pending')::int AS pending,
+            COUNT(*) FILTER (WHERE c.approval_status = 'pending')::int AS pending,
             COUNT(*) FILTER (
-                WHERE approval_status IN ('approved', 'pro_approved')
-                  AND approved_at >= CURRENT_DATE
+                WHERE c.approval_status = 'pending' AND {_is_ready_profile_sql()}
+            )::int AS pending_ready,
+            COUNT(*) FILTER (
+                WHERE c.approval_status IN ('approved', 'pro_approved')
+                  AND c.approved_at >= CURRENT_DATE
             )::int AS approved_today,
             COUNT(*) FILTER (
-                WHERE approval_status = 'rejected'
-                  AND rejected_at >= CURRENT_DATE
+                WHERE c.approval_status = 'rejected'
+                  AND c.rejected_at >= CURRENT_DATE
             )::int AS rejected_today
-        FROM creators
+        FROM creators c
     """)
     return _serialize_row(cursor.fetchone()) or {
-        'pending': 0, 'approved_today': 0, 'rejected_today': 0,
+        'pending': 0, 'pending_ready': 0, 'approved_today': 0, 'rejected_today': 0,
     }
 
 
@@ -233,6 +242,10 @@ def _enrich_review_row(row):
     row['regions'] = _parse_json_maybe(row.get('regions'), [])
     row['platforms'] = _parse_json_maybe(row.get('platforms'), [])
     row['social_links'] = _parse_json_maybe(row.get('social_links'), [])
+    niches = row.get('creator_niches')
+    if isinstance(niches, tuple):
+        niches = list(niches)
+    row['creator_niches'] = _parse_json_maybe(niches, [])
     row['recent_posts'] = _public_review_posts(row.pop('social_oauth_videos', None))
     platform, handle = _primary_social(row)
     row['display_platform'] = platform
@@ -273,15 +286,28 @@ def _resume_onboarding_login_urls():
     )
 
 
-def _is_incomplete_onboarding_sql():
-    """Match login: onboarding is incomplete without username or niche."""
+def _is_ready_profile_sql():
+    """Username plus a niche in either niche column or creator_niches."""
     return """
         (
-            NULLIF(BTRIM(COALESCE(c.username::text, '')), '') IS NULL
-            OR c.niche IS NULL
-            OR BTRIM(c.niche::text) IN ('', '[]', 'null', 'None', '""')
+            NULLIF(BTRIM(COALESCE(c.username::text, '')), '') IS NOT NULL
+            AND (
+                (
+                    c.niche IS NOT NULL
+                    AND BTRIM(c.niche::text) NOT IN ('', '[]', 'null', 'None', '""')
+                )
+                OR (
+                    c.creator_niches IS NOT NULL
+                    AND cardinality(c.creator_niches) > 0
+                )
+            )
         )
     """
+
+
+def _is_incomplete_onboarding_sql():
+    """Match login: onboarding is incomplete without username or niche."""
+    return f"(NOT {_is_ready_profile_sql()})"
 
 
 def _fetch_resume_onboarding_cohort(cursor, since_date, until_date, include_sent=False):
@@ -986,6 +1012,7 @@ REVIEW_QUEUE_SELECT = """
                 c.social_oauth_videos,
                 c.platforms,
                 c.niche,
+                c.creator_niches,
                 c.regions,
                 c.primary_age_range,
                 c.total_likes,
@@ -1007,23 +1034,20 @@ REVIEW_QUEUE_SELECT = """
 def get_approval_queue():
     """
     FIFO review queue for pending creators.
-    Complete profiles surface first; incomplete signups stay at the bottom.
+    Complete profiles surface first when sorting oldest; newest sort is join-date only.
     """
     try:
-        limit = max(1, min(int(request.args.get('limit', 50)), 100))
+        limit = max(1, min(int(request.args.get('limit', 50)), 500))
         offset = max(0, int(request.args.get('offset', 0)))
         ready_only = request.args.get('ready_only', '').strip().lower() in ('1', 'true', 'yes')
+        newest_first = request.args.get('sort', '').strip().lower() in ('newest', 'desc', 'new')
         niche = (request.args.get('niche') or request.args.get('filter_niche') or '').strip()
         q = request.args.get('q', '').strip()
 
         where = ["c.approval_status = 'pending'"]
         params = []
         if ready_only:
-            where.append("""
-                NULLIF(BTRIM(COALESCE(c.username::text, '')), '') IS NOT NULL
-                AND c.niche IS NOT NULL
-                AND BTRIM(c.niche::text) NOT IN ('', '[]', 'null', 'None', '""')
-            """)
+            where.append(_is_ready_profile_sql())
         if niche:
             where.append("COALESCE(c.niche, '') ILIKE %s")
             params.append(f'%{niche}%')
@@ -1033,15 +1057,17 @@ def get_approval_queue():
             params.extend([like, like, like, like])
 
         where_sql = " AND ".join(where)
-        order_sql = """
-            CASE
-                WHEN NULLIF(BTRIM(COALESCE(c.username::text, '')), '') IS NOT NULL
-                 AND c.niche IS NOT NULL
-                 AND BTRIM(c.niche::text) NOT IN ('', '[]', 'null', 'None', '""')
-                THEN 0 ELSE 1
-            END,
-            COALESCE(c.waitlist_joined_at, c.created_at, u.created_at) ASC
-        """
+        wait_dir = 'DESC' if newest_first else 'ASC'
+        # Newest-first is join date only so fresh signups are not buried under older complete profiles.
+        if newest_first:
+            order_sql = f"""
+                COALESCE(c.waitlist_joined_at, c.created_at, u.created_at) {wait_dir}
+            """
+        else:
+            order_sql = f"""
+                CASE WHEN {_is_ready_profile_sql()} THEN 0 ELSE 1 END,
+                COALESCE(c.waitlist_joined_at, c.created_at, u.created_at) {wait_dir}
+            """
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)

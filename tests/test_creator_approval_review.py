@@ -66,6 +66,21 @@ class TestCreatorApprovalReview(unittest.TestCase):
         self.assertIn('low_followers', flags)
         self.assertIn('pro_pending', flags)
 
+    def test_creator_niches_count_as_ready(self):
+        flags = _review_flags({
+            'username': 'newcreator',
+            'social_handle': 'newcreator',
+            'social_platform': 'instagram',
+            'bio': 'Lifestyle',
+            'niche': '',
+            'creator_niches': ['fashion', 'beauty'],
+            'followers_count': 1200,
+            'tier': 'free',
+            'approval_status': 'pending',
+        })
+        self.assertNotIn('missing_niche', flags)
+        self.assertNotIn('incomplete_profile', flags)
+
     def test_complete_profile_has_no_incomplete_flag(self):
         flags = _review_flags({
             'username': 'cdcparis',
