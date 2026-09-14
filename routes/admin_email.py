@@ -32,8 +32,9 @@ from services.outreach_image_gen import (
 
 def _safe_print(msg):
     """Windows consoles are often cp1252 — never crash campaign create on emoji."""
+    text = str(msg).encode('ascii', 'replace').decode('ascii')
     try:
-        print(str(msg).encode("ascii", "replace").decode("ascii"))
+        print(text, flush=True)
     except Exception:
         pass
 from services.resend_mail import is_transient_send_error, send_resend_email
@@ -741,7 +742,7 @@ def create_campaign():
             data['name'],
             template_id,
             data.get('subject_override'),
-            data.get('html_content_override'),
+            data.get('html_content_override') or '',
             data.get('segment_type', 'all_active'),
             json.dumps(data.get('segment_filters', {})),
             'draft',
@@ -757,7 +758,7 @@ def create_campaign():
 
     except Exception as e:
         import traceback
-        _safe_print(f"[CREATE_CAMPAIGN] Error: {e}")
+        _safe_print(f"[CREATE_CAMPAIGN] Error: {type(e).__name__}")
         _safe_print(traceback.format_exc())
         return jsonify({'error': 'Could not create campaign'}), 500
 

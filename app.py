@@ -1,6 +1,17 @@
 import os
+import sys
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
+
+def _reconfigure_stdio():
+    """Windows cp1252 consoles crash on emoji in request logs (💡 in campaign HTML)."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
+
+_reconfigure_stdio()
 
 import psycopg2
 from psycopg2 import OperationalError
@@ -655,7 +666,11 @@ def handle_error(error):
     if isinstance(error, HTTPException):
         return error
 
-    app.logger.error("Unhandled error on %s: %s", request.path, error, exc_info=True)
+    app.logger.error(
+        "Unhandled error on %s: %s",
+        request.path,
+        str(error).encode('ascii', 'replace').decode('ascii'),
+    )
     response = jsonify({"error": "An unexpected error occurred. Please try again later."})
     origin = request.headers.get('Origin')
     allowed_origins = [
