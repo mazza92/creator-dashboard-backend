@@ -183,6 +183,18 @@ def _public_social_profiles(rows):
     return out, socials, counts
 
 
+def _as_theme_dict(raw) -> dict:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw) or {}
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
 def _sanitize_kit_theme(raw) -> dict:
     src = raw if isinstance(raw, dict) else {}
     if isinstance(raw, str):
@@ -216,7 +228,7 @@ def _sanitize_kit_theme(raw) -> dict:
         platform = profiles[0].get('platform') or platform
         handle = profiles[0].get('handle') or handle
     example_posts = _merge_example_posts(src.get('example_posts'), src.get('examples'))
-    return {
+    theme = {
         'look': look,
         'font': font,
         'accent': accent,
@@ -233,7 +245,28 @@ def _sanitize_kit_theme(raw) -> dict:
         'examples': [row['url'] for row in example_posts],
         'example_posts': example_posts,
         'brand_logos': _sanitize_brand_logos(src.get('brand_logos')),
+        'testimonials': _sanitize_testimonials(src.get('testimonials')),
     }
+    return theme
+
+
+def _sanitize_testimonials(raw) -> list:
+    rows = raw if isinstance(raw, list) else []
+    out = []
+    for item in rows[:6]:
+        if not isinstance(item, dict):
+            continue
+        quote = str(item.get('quote') or item.get('text') or '').strip()[:320]
+        if len(quote) < 2:
+            continue
+        name = str(item.get('name') or '').strip()[:60]
+        role = str(item.get('role') or item.get('brand') or item.get('title') or '').strip()[:80]
+        out.append({
+            'quote': quote,
+            'name': name,
+            'role': role,
+        })
+    return out
 
 
 def _example_media_key(url: str) -> str:
@@ -496,6 +529,10 @@ def _free_portfolio_public(row):
         except Exception:
             payload = {}
     theme = _sanitize_kit_theme(payload.get('kit_theme'))
+    raw_theme = payload.get('kit_theme') if isinstance(payload.get('kit_theme'), dict) else {}
+    quotes = _sanitize_testimonials(raw_theme.get('testimonials') or theme.get('testimonials'))
+    if quotes:
+        theme['testimonials'] = quotes
     social_profiles, socials, profile_counts = _public_social_profiles(theme.get('social_profiles'))
     followers = payload.get('followers')
     try:
@@ -831,8 +868,20 @@ def update_kit_settings():
 
         if 'kit_theme' in data:
             _ensure_kit_theme_column(cursor, conn)
-            theme = _sanitize_kit_theme(data.get('kit_theme'))
-            updates.append("kit_theme = %s")
+            incoming = data.get('kit_theme') if isinstance(data.get('kit_theme'), dict) else {}
+            theme = _sanitize_kit_theme(incoming)
+            quotes = _sanitize_testimonials(incoming.get('testimonials'))
+            if quotes:
+                theme['testimonials'] = quotes
+            else:
+                cursor.execute('SELECT kit_theme FROM creators WHERE id = %s', (creator_id,))
+                existing = cursor.fetchone() or {}
+                kept = _sanitize_testimonials(_as_theme_dict(existing.get('kit_theme')).get('testimonials'))
+                if kept:
+                    theme['testimonials'] = kept
+                else:
+                    theme['testimonials'] = []
+            updates.append("kit_theme = COALESCE(kit_theme, '{}'::jsonb) || %s::jsonb")
             values.append(Json(theme))
         else:
             theme = None
@@ -1443,6 +1492,9 @@ def publish_free_portfolio():
         _ensure_free_portfolios_table(cursor, conn)
 
         theme = _sanitize_kit_theme(data.get('kit_theme'))
+        incoming_theme = data.get('kit_theme') if isinstance(data.get('kit_theme'), dict) else {}
+        quotes = _sanitize_testimonials(incoming_theme.get('testimonials') or theme.get('testimonials'))
+        theme['testimonials'] = quotes
         if name and not theme.get('display_name'):
             theme['display_name'] = name
         email = _normalize_portfolio_email(theme.get('email') or data.get('email'))
@@ -1797,6 +1849,7 @@ def get_public_kit(slug):
             username=creator.get('username'),
         )
         theme = _sanitize_kit_theme(creator.get('kit_theme'))
+        public_theme = theme
         theme_profiles, theme_socials, theme_counts = _public_social_profiles(theme.get('social_profiles'))
         if theme_profiles:
             seen = {item.get('platform') for item in theme_profiles}
@@ -1827,7 +1880,11 @@ def get_public_kit(slug):
                 posts_source = 'scrape'
 
         bio = (creator.get('bio') or '').strip() or None
-        theme = creator.get('kit_theme') if isinstance(creator.get('kit_theme'), dict) else {}
+        theme = public_theme if isinstance(public_theme, dict) else {}
+        raw_theme = _as_theme_dict(creator.get('kit_theme'))
+        quotes = _sanitize_testimonials(raw_theme.get('testimonials') or theme.get('testimonials'))
+        if quotes:
+            theme['testimonials'] = quotes
         theme_name = str((theme or {}).get('display_name') or '').strip()
         if theme_name.lower() == 'your name':
             theme_name = ''

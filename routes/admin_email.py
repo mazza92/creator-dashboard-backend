@@ -28,6 +28,14 @@ from services.outreach_image_gen import (
     get_showcase_creators,
     init as init_outreach_image_gen,
 )
+
+
+def _safe_print(msg):
+    """Windows consoles are often cp1252 — never crash campaign create on emoji."""
+    try:
+        print(str(msg).encode("ascii", "replace").decode("ascii"))
+    except Exception:
+        pass
 from services.resend_mail import is_transient_send_error, send_resend_email
 # Initialise schema + seed on first import (idempotent)
 try:
@@ -709,7 +717,12 @@ def create_campaign():
     """Create a new campaign"""
     try:
         data = request.get_json()
-        print(f"[CREATE_CAMPAIGN] Received data: {data}")
+        _safe_print(f"[CREATE_CAMPAIGN] Received data keys: {list((data or {}).keys())}")
+        _safe_print(
+            f"[CREATE_CAMPAIGN] name={((data or {}).get('name') or '')[:80]!r} "
+            f"segment={(data or {}).get('segment_type')!r} "
+            f"html_len={len((data or {}).get('html_content_override') or '')}"
+        )
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -739,14 +752,14 @@ def create_campaign():
         conn.commit()
         conn.close()
 
-        print(f"[CREATE_CAMPAIGN] Created campaign with id: {campaign_id}")
+        _safe_print(f"[CREATE_CAMPAIGN] Created campaign with id: {campaign_id}")
         return jsonify({'id': campaign_id, 'message': 'Campaign created'})
 
     except Exception as e:
         import traceback
-        print(f"[CREATE_CAMPAIGN] Error: {e}")
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        _safe_print(f"[CREATE_CAMPAIGN] Error: {e}")
+        _safe_print(traceback.format_exc())
+        return jsonify({'error': 'Could not create campaign'}), 500
 
 
 @admin_email_bp.route('/campaigns/<int:campaign_id>', methods=['GET'])
