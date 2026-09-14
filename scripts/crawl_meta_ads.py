@@ -27,11 +27,16 @@ load_dotenv()
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from services.brand_db_writer import insert_brands_to_pr_brands, insert_from_json
+from services.brand_db_writer import (
+    insert_brands_to_pr_brands,
+    insert_from_json,
+    load_existing_domains,
+)
 from services.meta_ads_library_scraper import (
-    DEFAULT_DAILY_KEYWORDS,
     discover_ads,
     discover_and_enrich,
+    select_run_country,
+    select_run_keywords,
 )
 
 
@@ -66,7 +71,7 @@ def main():
     parser.add_argument(
         "--daily",
         action="store_true",
-        help="Use the default beauty/DTC keyword set and stop at --quota qualified brands",
+        help="Rotate 12 keywords from the DTC pool and stop at --quota qualified brands",
     )
     parser.add_argument(
         "--quota",
@@ -76,8 +81,8 @@ def main():
     )
     parser.add_argument(
         "--country",
-        default="US",
-        help="ISO country code (default: US). Examples: GB, CA, AU",
+        default=None,
+        help="ISO country code. Default: rotate US/GB/CA/AU on --daily, else US",
     )
     parser.add_argument(
         "--max-ads",
@@ -135,7 +140,13 @@ def main():
 
     args = parser.parse_args()
     headless = not args.headful
-    keywords = args.keywords or (list(DEFAULT_DAILY_KEYWORDS) if args.daily else None)
+    if args.keywords:
+        keywords = args.keywords
+    elif args.daily:
+        keywords = select_run_keywords(12)
+    else:
+        keywords = None
+    country = args.country or (select_run_country() if args.daily else "US")
 
     if args.load_json:
         if not args.save_to_db and not args.dry_run:
@@ -152,6 +163,8 @@ def main():
         print("ERROR: pass --keywords ... or --daily")
         return
 
+    print(f"[Run] country={country} keywords={keywords}")
+
     if args.discover_only:
         print("[Mode] Discovery only (no enrichment)")
         all_ads = []
@@ -160,7 +173,7 @@ def main():
             print(f"\n=== Searching for '{keyword}' ===")
             ads = discover_ads(
                 keyword,
-                country=args.country,
+                country=country,
                 max_ads=args.max_ads,
                 max_scroll=args.max_scroll,
                 headless=headless,
@@ -190,19 +203,21 @@ def main():
             if len(all_ads) > 15:
                 print(f"  ... and {len(all_ads) - 15} more")
     else:
+        exclude = load_existing_domains() if args.save_to_db else set()
         print(
-            f"[Mode] Full pipeline (quota {args.quota} qualified, "
-            f"{len(keywords)} keywords)"
+            f"[Mode] Full pipeline (quota {args.quota} new qualified, "
+            f"country={country}, keywords={keywords}, skip_known={len(exclude)})"
         )
         brands = discover_and_enrich(
             keywords,
-            country=args.country,
+            country=country,
             max_ads_per_keyword=args.max_ads,
             max_scroll=args.max_scroll,
             quota=args.quota,
             headless=headless,
             cdp_url=args.cdp,
             debug_dump=args.debug,
+            exclude_domains=exclude,
         )
         if args.output:
             with open(args.output, "w", encoding="utf-8") as f:
@@ -218,6 +233,11 @@ def main():
                 f"Database insert {'preview' if args.dry_run else 'complete'}: "
                 f"{stats['inserted']} inserted, {stats['skipped']} skipped, "
                 f"{stats['errors']} errors"
+            )
+            print(
+                "RESULT_SCRAPE "
+                f"inserted={stats['inserted']} skipped={stats['skipped']} "
+                f"errors={stats['errors']}"
             )
 
     print("\nDone!")

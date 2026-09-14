@@ -23,10 +23,25 @@
         </tr>
         <tr>
             <td style="padding: 4px 0;">
-                <span style="color: #6b7280; font-size: 13px;">Unlocks:</span>
+                <span style="color: #6b7280; font-size: 13px;">Credits:</span>
             </td>
             <td style="padding: 4px 0; text-align: right;">
+                {% if is_pro %}
+                <span style="color: #15161a; font-weight: 600;">Unlimited</span>
+                {% elif credits_remaining is not none %}
+                <span style="color: #15161a; font-weight: 600;">{{ credits_remaining }} left</span>
+                <span style="color: #6b7280; font-size: 13px;">({{ credits_used }} used of {{ credits_quota }} this month{% if pack_credits and pack_credits > 0 %}, +{{ pack_credits }} pack{% endif %})</span>
+                {% else %}
                 <span style="color: #15161a; font-weight: 600;">{{ unlocks_used }} used of {{ unlocks_quota }}</span>
+                {% endif %}
+            </td>
+        </tr>
+        <tr>
+            <td style="padding: 4px 0;">
+                <span style="color: #6b7280; font-size: 13px;">Applications this week:</span>
+            </td>
+            <td style="padding: 4px 0; text-align: right;">
+                <span style="color: #15161a; font-weight: 600;">{{ applications_this_week or 0 }}</span>
             </td>
         </tr>
     </table>
@@ -42,12 +57,25 @@
 <p>{{ weekly_theme_body }}</p>
 {% endif %}
 
-<p style="margin: 24px 0 8px 0; font-size: 13px; color: #6b7280;">NEW BRANDS IN YOUR MATCH LIST</p>
+{% if live_campaigns and live_campaigns|length > 0 %}
+<p style="margin: 24px 0 8px 0; font-size: 13px; color: #6b7280;">OPEN BRAND PR CAMPAIGNS</p>
+<div class="brand-list">
+{% for campaign in live_campaigns %}
+    <div class="brand-item">
+        <span class="brand-name">{{ campaign.name }}</span>
+        {% if campaign.reason %}<span class="brand-meta"> — {{ campaign.reason }}</span>{% endif %}
+        {% if campaign.spots %}<span class="brand-meta"> · {{ campaign.spots }} spots left</span>{% endif %}
+    </div>
+{% endfor %}
+</div>
+{% endif %}
+
+<p style="margin: 24px 0 8px 0; font-size: 13px; color: #6b7280;">FOR YOU THIS WEEK</p>
 <div class="brand-list">
 {% for brand in new_brands %}
     <div class="brand-item">
         <span class="brand-name">{{ brand.name }}</span>
-        {% if brand.description %}<span class="brand-meta"> — {{ brand.description }}</span>{% endif %}
+        {% if brand.reason %}<span class="brand-meta"> — {{ brand.reason }}</span>{% elif brand.description %}<span class="brand-meta"> — {{ brand.description }}</span>{% endif %}
     </div>
 {% endfor %}
 </div>
@@ -59,5 +87,5 @@
 </div>
 {% endif %}
 
-<a href="{{ cta_url }}" class="cta-button">See my full plan</a>
+<a href="{{ cta_url }}" class="cta-button">See live campaigns</a>
 {% endblock %}

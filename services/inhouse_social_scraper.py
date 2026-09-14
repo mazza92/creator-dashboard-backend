@@ -61,13 +61,20 @@ _IG_SESSION_COOKIE = (
 #   http://USERNAME:PASSWORD@brd.superproxy.io:22225
 # Do NOT paste the documentation placeholder (user:pass@residential-proxy:port).
 _IG_PROXY_RAW = (os.getenv("IG_PROXY") or "").strip().strip('"').strip("'")
+# TikTok UGC / profile scrape: prefer shop proxy (often US residential), else IG_PROXY.
+_TT_PROXY_RAW = (
+    (os.getenv("TIKTOK_SHOP_PROXY") or os.getenv("IG_PROXY") or "")
+    .strip()
+    .strip('"')
+    .strip("'")
+)
 
 
 class InHouseScrapeError(Exception):
     """Raised when in-house scrape cannot produce usable profile data."""
 
 
-def _normalize_proxy_url(raw: str) -> Optional[str]:
+def _normalize_proxy_url(raw: str, *, label: str = "IG_PROXY") -> Optional[str]:
     """Validate proxy URL; ignore docs placeholders so scrapes don't all fail."""
     raw = (raw or "").strip().strip('"').strip("'")
     if not raw:
@@ -88,7 +95,7 @@ def _normalize_proxy_url(raw: str) -> Optional[str]:
         )
     ):
         print(
-            "[InHouse/IG] IG_PROXY looks like a placeholder "
+            f"[InHouse] {label} looks like a placeholder "
             "(e.g. user:pass@residential-proxy:port) — ignoring. "
             "Set a real residential proxy URL from your provider."
         )
@@ -96,38 +103,108 @@ def _normalize_proxy_url(raw: str) -> Optional[str]:
     if "://" not in raw:
         raw = "http://" + raw
     try:
-        from urllib.parse import urlparse
-
         parsed = urlparse(raw)
         if parsed.scheme not in ("http", "https", "socks5", "socks5h", "socks4"):
-            print(f"[InHouse/IG] unsupported proxy scheme={parsed.scheme!r} — ignoring")
+            print(f"[InHouse] unsupported proxy scheme={parsed.scheme!r} ({label}) — ignoring")
             return None
         if not parsed.hostname:
-            print("[InHouse/IG] IG_PROXY missing hostname — ignoring")
+            print(f"[InHouse] {label} missing hostname — ignoring")
             return None
         if parsed.hostname in ("residential-proxy", "host", "example", "localhost"):
-            print(f"[InHouse/IG] placeholder proxy host={parsed.hostname} — ignoring")
+            print(f"[InHouse] placeholder proxy host={parsed.hostname} ({label}) — ignoring")
             return None
         # "port" as the port number means someone left the template literal
         if parsed.port is None and raw.rstrip("/").endswith(":port"):
-            print("[InHouse/IG] IG_PROXY has literal ':port' — ignoring")
+            print(f"[InHouse] {label} has literal ':port' — ignoring")
             return None
         return raw
     except Exception as e:
-        print(f"[InHouse/IG] IG_PROXY parse failed: {e} — ignoring")
+        print(f"[InHouse] {label} parse failed: {e} — ignoring")
         return None
 
 
-_IG_PROXY = _normalize_proxy_url(_IG_PROXY_RAW)
+_IG_PROXY = _normalize_proxy_url(_IG_PROXY_RAW, label="IG_PROXY")
+_TT_PROXY = _normalize_proxy_url(
+    _TT_PROXY_RAW,
+    label="TIKTOK_SHOP_PROXY" if (os.getenv("TIKTOK_SHOP_PROXY") or "").strip() else "IG_PROXY",
+)
+
+
+def _proxies_for(proxy_url: Optional[str]) -> Optional[Dict[str, str]]:
+    if not proxy_url:
+        return None
+    return {"http": proxy_url, "https": proxy_url}
 
 
 def _proxies() -> Optional[Dict[str, str]]:
-    if not _IG_PROXY:
+    return _proxies_for(_IG_PROXY)
+
+
+def _tt_proxies() -> Optional[Dict[str, str]]:
+    return _proxies_for(_TT_PROXY)
+
+
+def _playwright_proxy_config(proxy_url: Optional[str]) -> Optional[Dict[str, str]]:
+    """Playwright launch proxy dict from a normalized proxy URL."""
+    if not proxy_url:
         return None
-    return {"http": _IG_PROXY, "https": _IG_PROXY}
+    parsed = urlparse(proxy_url)
+    if not parsed.hostname:
+        return None
+    cfg: Dict[str, str] = {
+        "server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port or 80}"
+    }
+    if parsed.username:
+        cfg["username"] = parsed.username
+    if parsed.password:
+        cfg["password"] = parsed.password
+    return cfg
 
 
-def _session() -> requests.Session:
+def _tt_playwright_proxy() -> Optional[Dict[str, str]]:
+    return _playwright_proxy_config(_TT_PROXY)
+
+
+def _log_proxy_enabled(proxy_url: str, tag: str) -> None:
+    try:
+        host = urlparse(proxy_url).hostname or "unknown"
+        port = urlparse(proxy_url).port
+        print(f"{tag} proxy enabled host={host}:{port or 'default'}")
+    except Exception:
+        print(f"{tag} proxy enabled")
+
+
+_PROXY_TLS_LOGGED = False
+
+
+def _relax_proxy_tls(session: requests.Session, *, tag: str) -> None:
+    """Residential HTTP proxies often MITM HTTPS with a self-signed cert."""
+    global _PROXY_TLS_LOGGED
+    session.verify = False
+    if _PROXY_TLS_LOGGED:
+        return
+    _PROXY_TLS_LOGGED = True
+    try:
+        import urllib3
+
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    except Exception:
+        pass
+    print(f"{tag} TLS verify disabled (proxy MITM / self-signed)")
+
+
+def _tiktok_playwright_context_kwargs() -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {
+        "user_agent": _UA_POOL[0],
+        "locale": "en-US",
+        "viewport": {"width": 1280, "height": 900},
+    }
+    if _TT_PROXY:
+        kwargs["ignore_https_errors"] = True
+    return kwargs
+
+
+def _session(*, for_tiktok: bool = False) -> requests.Session:
     s = requests.Session()
     s.headers.update({
         "User-Agent": random.choice(_UA_POOL),
@@ -135,21 +212,17 @@ def _session() -> requests.Session:
         "Accept-Encoding": "gzip, deflate",
         "Connection": "keep-alive",
     })
-    proxies = _proxies()
-    if proxies:
+    proxy_url = _TT_PROXY if for_tiktok else _IG_PROXY
+    proxies = _proxies_for(proxy_url)
+    tag = "[InHouse/TT]" if for_tiktok else "[InHouse/IG]"
+    raw = _TT_PROXY_RAW if for_tiktok else _IG_PROXY_RAW
+    if proxies and proxy_url:
         s.proxies.update(proxies)
-        # Log host only — never credentials
-        try:
-            from urllib.parse import urlparse
-
-            host = urlparse(_IG_PROXY).hostname or "unknown"
-            port = urlparse(_IG_PROXY).port
-            print(f"[InHouse/IG] proxy enabled host={host}:{port or 'default'}")
-        except Exception:
-            print("[InHouse/IG] proxy enabled")
-    elif _IG_PROXY_RAW:
+        _log_proxy_enabled(proxy_url, tag)
+        _relax_proxy_tls(s, tag=tag)
+    elif raw:
         # Invalid proxy was set — continue without it (better than total failure)
-        print("[InHouse/IG] continuing without proxy")
+        print(f"{tag} continuing without proxy")
     return s
 
 
@@ -2414,7 +2487,7 @@ def scrape_tiktok(handle: str, results_limit: int = 12) -> Dict[str, Any]:
     if not handle:
         raise InHouseScrapeError("TikTok handle is required")
 
-    session = _session()
+    session = _session(for_tiktok=True)
     limit = max(1, min(int(results_limit or 12), 50))
 
     html_profile, items = _tt_from_profile_html(session, handle, limit)
@@ -2422,7 +2495,13 @@ def scrape_tiktok(handle: str, results_limit: int = 12) -> Dict[str, Any]:
         # Embed can still yield posts + author bio when SSR is blocked
         embed_videos, embed_profile = _tt_from_embed(session, handle, limit)
         if not embed_videos:
-            raise InHouseScrapeError(f"No TikTok data for @{handle}")
+            hint = ""
+            if not _TT_PROXY:
+                hint = (
+                    " TikTok may be blocking this server IP — set TIKTOK_SHOP_PROXY "
+                    "or IG_PROXY (residential) and retry."
+                )
+            raise InHouseScrapeError(f"No TikTok data for @{handle}.{hint}")
         print(f"[InHouse/TT] @{handle} via embed-only ({len(embed_videos)} videos)")
         profile = {
             "uniqueId": handle,
@@ -2485,6 +2564,151 @@ def scrape_tiktok(handle: str, results_limit: int = 12) -> Dict[str, Any]:
     return profile
 
 
+def scrape_tiktok_from_html(handle: str, html: str, results_limit: int = 12) -> Dict[str, Any]:
+    """Build a scrape_tiktok-shaped profile from already-fetched HTML (Playwright)."""
+    handle = _clean_handle(handle)
+    if not handle or not html:
+        raise InHouseScrapeError("TikTok HTML is required")
+    limit = max(1, min(int(results_limit or 12), 50))
+    # Parse first — challenge pages often contain "couldn't find this account" in JS bundles.
+    html_profile, items = _tt_parse_html_blob(html, handle, limit)
+    if not html_profile:
+        low = html.lower()
+        challenge = any(
+            tok in low
+            for tok in ("captcha", "verify to continue", "tt-captcha", "arkose", "please wait")
+        )
+        missing = (
+            "couldn't find this account" in low
+            or "couldn’t find this account" in low
+            or "cannot find this account" in low
+        )
+        if missing and not challenge and len(html) < 200_000:
+            raise InHouseScrapeError(f"TikTok account @{handle} not found")
+        raise InHouseScrapeError(f"No TikTok data for @{handle}")
+    videos = [_tt_item_to_video(it) for it in items[:limit]]
+    videos = [v for v in videos if (v.get("text") or "") != "" or v.get("videoMeta", {}).get("coverUrl")]
+    print(f"[InHouse/TT] @{handle} via playwright ({len(videos)} videos)")
+    return {
+        "uniqueId": html_profile.get("uniqueId") or handle,
+        "nickname": html_profile.get("nickname") or "",
+        "signature": html_profile.get("signature") or "",
+        "followerCount": int(html_profile.get("followerCount") or 0),
+        "followingCount": int(html_profile.get("followingCount") or 0),
+        "videoCount": int(html_profile.get("videoCount") or len(videos) or 0),
+        "heartCount": int(html_profile.get("heartCount") or 0),
+        "verified": bool(html_profile.get("verified")),
+        "privateAccount": bool(html_profile.get("privateAccount")),
+        "avatarUrl": html_profile.get("avatarUrl") or "",
+        "bioLink": html_profile.get("bioLink") or "",
+        "latestVideos": videos,
+    }
+
+
+def _tt_parse_html_blob(
+    html: str, handle: str, limit: int
+) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Parse TikTok profile + items from a profile page HTML blob."""
+    profile: Dict[str, Any] = {}
+    items: List[Dict[str, Any]] = []
+    if not html:
+        return None, []
+
+    m = re.search(
+        r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>([^<]+)</script>',
+        html,
+    )
+    if m:
+        try:
+            data = json.loads(m.group(1))
+            scope = data.get("__DEFAULT_SCOPE__") or {}
+            user_detail = scope.get("webapp.user-detail") or {}
+            user_info = user_detail.get("userInfo") or {}
+            user = user_info.get("user") or {}
+            stats = user_info.get("stats") or {}
+            if user:
+                profile = _tt_user_stats_to_profile(user, stats)
+            items = _tt_collect_items_from_obj(scope, limit) or _tt_collect_items_from_obj(data, limit)
+        except json.JSONDecodeError as e:
+            print(f"[InHouse/TT] rehydration JSON error: {e}")
+
+    if not profile:
+        nxt = re.search(r'<script id="__NEXT_DATA__"[^>]*>([^<]+)</script>', html)
+        if nxt:
+            try:
+                data = json.loads(nxt.group(1))
+                items = _tt_collect_items_from_obj(data, limit)
+                users = _tt_collect_user_from_obj(data)
+                if users:
+                    user, stats = users
+                    profile = _tt_user_stats_to_profile(user, stats)
+            except Exception as e:
+                print(f"[InHouse/TT] NEXT_DATA error: {e}")
+
+    if not profile:
+        sigi = re.search(r'<script id="SIGI_STATE"[^>]*>([^<]+)</script>', html)
+        if sigi:
+            try:
+                data = json.loads(sigi.group(1))
+                user_mod = data.get("UserModule") or {}
+                users = user_mod.get("users") or {}
+                stats_mod = user_mod.get("stats") or {}
+                user = users.get(handle) or (next(iter(users.values()), {}) if users else {})
+                stats = stats_mod.get(handle) or stats_mod.get(user.get("id", ""), {}) if user else {}
+                if user:
+                    profile = _tt_user_stats_to_profile(user, stats or {})
+                item_mod = data.get("ItemModule") or {}
+                if isinstance(item_mod, dict):
+                    items = list(item_mod.values())[:limit]
+            except Exception as e:
+                print(f"[InHouse/TT] SIGI_STATE error: {e}")
+
+    if not profile:
+        followers = _re_int(html, r'"followerCount"\s*:\s*(\d+)')
+        videos = _re_int(html, r'"videoCount"\s*:\s*(\d+)')
+        if followers or videos:
+            profile = {
+                "uniqueId": handle,
+                "nickname": _re_str(html, r'"nickname"\s*:\s*"((?:\\.|[^"\\])*)"') or "",
+                "signature": _re_str(html, r'"signature"\s*:\s*"((?:\\.|[^"\\])*)"') or "",
+                "followerCount": followers,
+                "followingCount": _re_int(html, r'"followingCount"\s*:\s*(\d+)'),
+                "videoCount": videos,
+                "heartCount": _re_int(html, r'"heartCount"\s*:\s*(\d+)'),
+                "verified": bool(re.search(r'"verified"\s*:\s*true', html)),
+                "privateAccount": bool(re.search(r'"privateAccount"\s*:\s*true', html)),
+                "avatarUrl": "",
+                "bioLink": _re_str(html, r'"bioLink"\s*:\s*\{\s*"link"\s*:\s*"((?:\\.|[^"\\])*)"')
+                or _re_str(html, r'"link"\s*:\s*"(https?://[^"\\]+)"')
+                or "",
+                "secUid": _re_str(html, r'"secUid"\s*:\s*"((?:\\.|[^"\\])*)"') or "",
+            }
+
+    return (profile or None), (items or [])
+
+
+def _tt_collect_user_from_obj(obj: Any) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    found: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+
+    def walk(node: Any, depth: int = 0) -> None:
+        if found or depth > 8:
+            return
+        if isinstance(node, dict):
+            user = node.get("user")
+            stats = node.get("stats") or node.get("statsV2") or {}
+            if isinstance(user, dict) and (user.get("uniqueId") or user.get("unique_id")):
+                found.append((user, stats if isinstance(stats, dict) else {}))
+                return
+            for v in node.values():
+                walk(v, depth + 1)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v, depth + 1)
+
+    walk(obj)
+    return found[0] if found else None
+
+
 def _tt_from_profile_html(
     session: requests.Session, handle: str, limit: int
 ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -2492,6 +2716,10 @@ def _tt_from_profile_html(
     headers = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Referer": "https://www.tiktok.com/",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Upgrade-Insecure-Requests": "1",
     }
     try:
         resp = session.get(url, headers=headers, timeout=15, allow_redirects=True)
@@ -2501,78 +2729,94 @@ def _tt_from_profile_html(
         if resp.status_code != 200:
             return None, []
         html = resp.text
-
-        profile: Dict[str, Any] = {}
-        items: List[Dict[str, Any]] = []
-
-        # Universal rehydration blob
-        m = re.search(
-            r'<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>([^<]+)</script>',
-            html,
-        )
-        if m:
-            try:
-                data = json.loads(m.group(1))
-                scope = data.get("__DEFAULT_SCOPE__") or {}
-                user_detail = scope.get("webapp.user-detail") or {}
-                user_info = user_detail.get("userInfo") or {}
-                user = user_info.get("user") or {}
-                stats = user_info.get("stats") or {}
-                if user:
-                    profile = _tt_user_stats_to_profile(user, stats)
-
-                # Item lists appear under several keys depending on TikTok build
-                items = _tt_collect_items_from_obj(scope, limit) or _tt_collect_items_from_obj(data, limit)
-            except json.JSONDecodeError as e:
-                print(f"[InHouse/TT] rehydration JSON error: {e}")
-
+        profile, items = _tt_parse_html_blob(html, handle, limit)
         if not profile:
-            # SIGI_STATE fallback
-            sigi = re.search(r'<script id="SIGI_STATE"[^>]*>([^<]+)</script>', html)
-            if sigi:
-                try:
-                    data = json.loads(sigi.group(1))
-                    user_mod = data.get("UserModule") or {}
-                    users = user_mod.get("users") or {}
-                    stats_mod = user_mod.get("stats") or {}
-                    user = users.get(handle) or (next(iter(users.values()), {}) if users else {})
-                    stats = stats_mod.get(handle) or stats_mod.get(user.get("id", ""), {}) if user else {}
-                    if user:
-                        profile = _tt_user_stats_to_profile(user, stats or {})
-                    item_mod = data.get("ItemModule") or {}
-                    if isinstance(item_mod, dict):
-                        items = list(item_mod.values())[:limit]
-                except Exception as e:
-                    print(f"[InHouse/TT] SIGI_STATE error: {e}")
-
-        if not profile:
-            # Regex best-effort
-            followers = _re_int(html, r'"followerCount"\s*:\s*(\d+)')
-            videos = _re_int(html, r'"videoCount"\s*:\s*(\d+)')
-            if followers or videos:
-                profile = {
-                    "uniqueId": handle,
-                    "nickname": _re_str(html, r'"nickname"\s*:\s*"((?:\\.|[^"\\])*)"') or "",
-                    "signature": _re_str(html, r'"signature"\s*:\s*"((?:\\.|[^"\\])*)"') or "",
-                    "followerCount": followers,
-                    "followingCount": _re_int(html, r'"followingCount"\s*:\s*(\d+)'),
-                    "videoCount": videos,
-                    "heartCount": _re_int(html, r'"heartCount"\s*:\s*(\d+)'),
-                    "verified": bool(re.search(r'"verified"\s*:\s*true', html)),
-                    "privateAccount": bool(re.search(r'"privateAccount"\s*:\s*true', html)),
-                    "avatarUrl": "",
-                    "bioLink": _re_str(html, r'"bioLink"\s*:\s*\{\s*"link"\s*:\s*"((?:\\.|[^"\\])*)"')
-                    or _re_str(html, r'"link"\s*:\s*"(https?://[^"\\]+)"')
-                    or "",
-                    "secUid": _re_str(html, r'"secUid"\s*:\s*"((?:\\.|[^"\\])*)"') or "",
-                }
-
-        return (profile or None), (items or [])
+            print(f"[InHouse/TT] profile html empty bytes={len(html)}")
+        return profile, items
     except InHouseScrapeError:
         raise
     except Exception as e:
         print(f"[InHouse/TT] profile html error: {e}")
         return None, []
+
+
+def fetch_tiktok_html_playwright(
+    handle: str,
+    timeout_ms: int = 25000,
+    page=None,
+) -> Optional[str]:
+    """Load a profile in Chromium. Pass `page` to reuse a browser."""
+    handle = _clean_handle(handle)
+    if not handle:
+        return None
+    url = f"https://www.tiktok.com/@{handle}"
+    try:
+        if page is not None:
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            page.wait_for_timeout(1500)
+            title = ""
+            try:
+                title = page.title() or ""
+            except Exception:
+                title = ""
+            # Only treat short/clean titles as missing — challenge pages reuse similar copy.
+            title_l = title.lower()
+            if title_l.strip() in (
+                "couldn't find this account",
+                "couldn’t find this account",
+                "find this account",
+            ) or title_l.startswith("couldn't find this account"):
+                print(f"[InHouse/TT] playwright missing @{handle} title={title!r}")
+                return None
+            page.wait_for_timeout(2500)
+            html = page.content()
+            print(f"[InHouse/TT] playwright html bytes={len(html or '')} @{handle}")
+            return html
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            launch_kwargs: Dict[str, Any] = {
+                "headless": True,
+                "args": ["--disable-blink-features=AutomationControlled"],
+            }
+            pw_proxy = _tt_playwright_proxy()
+            if pw_proxy:
+                launch_kwargs["proxy"] = pw_proxy
+                print(f"[InHouse/TT] playwright proxy {pw_proxy['server']}")
+            browser = p.chromium.launch(**launch_kwargs)
+            context = browser.new_context(**_tiktok_playwright_context_kwargs())
+            inner = context.new_page()
+            try:
+                inner.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                inner.wait_for_timeout(3500)
+                html = inner.content()
+            finally:
+                browser.close()
+        print(f"[InHouse/TT] playwright html bytes={len(html or '')} @{handle}")
+        return html
+    except ImportError:
+        print("[InHouse/TT] playwright not installed")
+        return None
+    except Exception as e:
+        print(f"[InHouse/TT] playwright error @{handle}: {e}")
+        return None
+
+
+def open_tiktok_playwright_page():
+    """Yield a reusable Playwright page. Caller must close the returned tuple."""
+    from playwright.sync_api import sync_playwright
+    p = sync_playwright().start()
+    launch_kwargs: Dict[str, Any] = {
+        "headless": True,
+        "args": ["--disable-blink-features=AutomationControlled"],
+    }
+    pw_proxy = _tt_playwright_proxy()
+    if pw_proxy:
+        launch_kwargs["proxy"] = pw_proxy
+        print(f"[InHouse/TT] playwright proxy {pw_proxy['server']}")
+    browser = p.chromium.launch(**launch_kwargs)
+    context = browser.new_context(**_tiktok_playwright_context_kwargs())
+    page = context.new_page()
+    return p, browser, page
 
 
 def _tt_user_stats_to_profile(user: Dict[str, Any], stats: Dict[str, Any]) -> Dict[str, Any]:
@@ -2687,7 +2931,13 @@ def _tt_from_embed(
         resp = session.get(url, headers=headers, timeout=15)
         print(f"[InHouse/TT] embed status={resp.status_code}")
         if resp.status_code != 200:
-            return [], {}
+            # Rotating residential: one retry on a fresh exit IP often clears 400s.
+            _jitter(0.8, 1.6)
+            session2 = _session(for_tiktok=True)
+            resp = session2.get(url, headers=headers, timeout=15)
+            print(f"[InHouse/TT] embed retry status={resp.status_code}")
+            if resp.status_code != 200:
+                return [], {}
 
         m = re.search(
             r'<script id="__FRONTITY_CONNECT_STATE__"[^>]*>([^<]+)</script>',

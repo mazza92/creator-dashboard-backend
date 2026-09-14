@@ -2,11 +2,16 @@
 import unittest
 
 from services.meta_ads_library_scraper import (
+    KEYWORD_POOL,
     detect_creator_program_from_html,
     extract_candidate_domain,
     is_qualified_brand,
     is_skip_landing_host,
+    registrable_domain,
+    select_run_country,
+    select_run_keywords,
     unwrap_landing_url,
+    _is_known_host,
 )
 
 
@@ -67,6 +72,30 @@ class TestMetaAdsScraper(unittest.TestCase):
         self.assertTrue(is_qualified_brand({"instagram_handle": "brand"}))
         self.assertFalse(is_qualified_brand({"tiktok_handle": "brand"}))
         self.assertFalse(is_qualified_brand({}))
+
+    def test_root_domain_skip_known_subdomain(self):
+        self.assertEqual(registrable_domain("try.vegamour.com"), "vegamour.com")
+        self.assertTrue(
+            _is_known_host("try.vegamour.com", set(), {"vegamour.com"})
+        )
+        self.assertFalse(
+            _is_known_host("newbrand.co", {"vegamour.com"}, {"vegamour.com"})
+        )
+
+    def test_keyword_rotation_uses_pool_and_changes_by_slot(self):
+        from datetime import datetime, timezone
+
+        self.assertGreaterEqual(len(KEYWORD_POOL), 30)
+        morning = datetime(2026, 9, 10, 9, 0, tzinfo=timezone.utc)
+        evening = datetime(2026, 9, 10, 17, 0, tzinfo=timezone.utc)
+        k_am = select_run_keywords(12, now=morning)
+        k_pm = select_run_keywords(12, now=evening)
+        self.assertEqual(len(k_am), 12)
+        self.assertEqual(len(k_pm), 12)
+        self.assertNotEqual(k_am, k_pm)
+        self.assertTrue(set(k_am).issubset(set(KEYWORD_POOL)))
+        self.assertEqual(select_run_country(now=morning), "GB")
+        self.assertIn(select_run_country(), ("US", "GB", "CA", "AU"))
 
 
 if __name__ == "__main__":

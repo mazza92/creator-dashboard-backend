@@ -215,3 +215,61 @@ class TestRosterEngagement(unittest.TestCase):
         self.assertIn("/api/media-proxy?url=", thumb)
         self.assertIn("cdninstagram.com", thumb)
         self.assertNotIn("supabase.co", thumb)
+
+    def test_hidden_card_is_not_skipped(self):
+        from brand_pr_roster_routes import PUBLIC_APP_STATUSES, _card_from_row
+
+        card = _card_from_row(
+            {
+                "application_id": 11,
+                "creator_id": 22,
+                "status": "hidden",
+                "selected_posts": [],
+                "shipping_address": None,
+                "applied_at": None,
+                "shipped_at": None,
+                "username": "lowqual",
+                "first_name": "Low",
+                "image_profile": "",
+                "followers_count": 80,
+                "niche": "",
+                "kit_slug": "",
+                "social_links": [],
+            },
+            reveal_shipping=False,
+            selected_ids=[],
+            campaign_status="active",
+        )
+        self.assertTrue(card["hidden"])
+        self.assertFalse(card["skipped"])
+        self.assertNotIn("hidden", PUBLIC_APP_STATUSES)
+
+    def test_card_includes_tracked_kit_url(self):
+        from brand_pr_roster_routes import _card_from_row
+        from services.kit_view_tracking import generate_kit_token
+
+        card = _card_from_row(
+            {
+                "application_id": 11,
+                "creator_id": 22,
+                "brand_id": 33,
+                "status": "review",
+                "selected_posts": [],
+                "shipping_address": None,
+                "applied_at": None,
+                "shipped_at": None,
+                "username": "smartstylenatasharosemills",
+                "first_name": "Natasha",
+                "image_profile": "",
+                "followers_count": 5960,
+                "niche": "",
+                "kit_slug": "smartstylenatasharosemills",
+                "social_links": [],
+            },
+            reveal_shipping=False,
+            selected_ids=[],
+            campaign_status="active",
+        )
+        token = generate_kit_token(22, 33)
+        self.assertIn("/kit/smartstylenatasharosemills", card["kit_url"])
+        self.assertIn(f"?ref={token}", card["kit_url"])

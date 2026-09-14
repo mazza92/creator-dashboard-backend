@@ -24,13 +24,19 @@ import re
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 import requests
 
 try:
-    from services.inhouse_social_scraper import InHouseScrapeError, scrape_tiktok
+    from services.inhouse_social_scraper import (
+        InHouseScrapeError,
+        fetch_tiktok_html_playwright,
+        open_tiktok_playwright_page,
+        scrape_tiktok,
+        scrape_tiktok_from_html,
+    )
     from services.tiktok_shop_scraper import (
         _LINK_IN_BIO_HOSTS,
         _UA,
@@ -38,7 +44,13 @@ try:
         _pick_contact_email,
     )
 except ImportError:
-    from inhouse_social_scraper import InHouseScrapeError, scrape_tiktok
+    from inhouse_social_scraper import (
+        InHouseScrapeError,
+        fetch_tiktok_html_playwright,
+        open_tiktok_playwright_page,
+        scrape_tiktok,
+        scrape_tiktok_from_html,
+    )
     from tiktok_shop_scraper import (
         _LINK_IN_BIO_HOSTS,
         _UA,
@@ -425,7 +437,7 @@ def _serpapi_search(
     *,
     start: int = 0,
     engine: str = "google",
-    timeout: int = 30,
+    timeout: int = 60,
 ) -> Dict[str, Any]:
     key = (os.getenv("SERPAPI_API_KEY") or "").strip()
     if not key:
@@ -702,12 +714,16 @@ def enrich_handle(
     niches: Optional[Iterable[str]] = None,
     fetch_bio_link: bool = True,
     min_followers: int = MIN_FOLLOWERS,
+    html: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     handle = (handle or "").lstrip("@").strip().lower()
     if not handle:
         return None
     try:
-        profile = scrape_tiktok(handle, results_limit=8)
+        if html:
+            profile = scrape_tiktok_from_html(handle, html, results_limit=8)
+        else:
+            profile = scrape_tiktok(handle, results_limit=8)
     except InHouseScrapeError as exc:
         print(f"[TikTokUGC] skip @{handle}: {exc}")
         return None
@@ -821,6 +837,8 @@ def discover_and_enrich(
     serp_pages: int = DEFAULT_SERP_PAGES,
     ignore_seen: bool = False,
     expand_graph: bool = True,
+    on_batch: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> List[Dict[str, Any]]:
     niches = list(niches or DEFAULT_NICHES)
     queries = list(queries or default_search_queries(niches))
@@ -847,6 +865,7 @@ def discover_and_enrich(
 
     out: List[Dict[str, Any]] = []
     qualified = 0
+    pw_used = 0
     batch_size = max(workers * 2, 4)
 
     while queue and len(out) < max_handles and qualified < quota:
@@ -865,6 +884,57 @@ def discover_and_enrich(
             min_followers=min_followers,
             workers=workers,
         )
+        got = {(rec.get("handle") or "").lower() for rec in records}
+        missed = [h for h in batch if h.lower() not in got]
+        pw_budget = int(os.environ.get("UGC_PLAYWRIGHT_MAX", "80"))
+        take: List[str] = []
+        # Never drain the whole seed queue on one bad HTTP batch — keep trying rotating
+        # residential IPs on remaining handles; only playwright-fallback this batch's misses.
+        if missed and qualified < quota and pw_used < pw_budget:
+            cap = min(len(missed), pw_budget - pw_used, max(quota - qualified, 1) * 6)
+            take = missed[:cap]
+            label = "batch HTTP miss" if not records else "partial miss"
+            print(
+                f"[TikTokUGC] playwright fallback ({label}) {len(take)} handles "
+                f"(budget {pw_used}/{pw_budget})"
+            )
+        if take:
+            pw = browser = page = None
+            try:
+                pw, browser, page = open_tiktok_playwright_page()
+                for handle in take:
+                    if qualified >= quota:
+                        break
+                    pw_used += 1
+                    html = fetch_tiktok_html_playwright(handle, page=page)
+                    if not html:
+                        continue
+                    rec = enrich_handle(
+                        handle,
+                        niches=niches,
+                        fetch_bio_link=fetch_bio_link,
+                        min_followers=min_followers,
+                        html=html,
+                    )
+                    if rec:
+                        records.append(rec)
+                        if rec.get("qualified") and (
+                            qualified + sum(1 for r in records if r.get("qualified"))
+                        ) >= quota:
+                            break
+            except Exception as exc:
+                print(f"[TikTokUGC] playwright session error: {exc}")
+            finally:
+                if browser is not None:
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
+                if pw is not None:
+                    try:
+                        pw.stop()
+                    except Exception:
+                        pass
         for rec in records:
             hid = (rec.get("handle") or "").lower()
             if hid:
@@ -888,6 +958,14 @@ def discover_and_enrich(
         )
         _write_checkpoint(out)
         _save_seen(seen_state)
+        if on_batch:
+            try:
+                on_batch(records)
+            except Exception as exc:
+                print(f"[TikTokUGC] on_batch error: {exc}")
+        if should_stop and should_stop():
+            print("[TikTokUGC] stop requested, ending crawl early")
+            break
         if qualified >= quota or len(out) >= max_handles:
             break
 

@@ -679,14 +679,9 @@ def _rank_for_you_with_mentor(matched_rows, creator_profile_dict, niches=None, f
 
 
 def generate_kit_token(creator_id, brand_id):
-    """
-    Generate a deterministic, unique kit tracking token for a creator/brand pair.
-    Used to track which brand viewed which creator's kit after receiving a pitch.
-    """
-    import hashlib
-    secret = os.getenv('SECRET_KEY', 'fallback-secret-key-change-me')
-    raw = f"{creator_id}-{brand_id}-{secret}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:12]
+    """Deterministic kit tracking token for a creator/brand pair."""
+    from services.kit_view_tracking import generate_kit_token as _generate_kit_token
+    return _generate_kit_token(creator_id, brand_id)
 
 
 def resolve_creator_social(creator: dict) -> dict:
@@ -1572,7 +1567,7 @@ def compute_fit_with_ai_depth(creator, brand, user_id, cursor, conn, is_for_you_
                         print(f"[AIDepth] Attempting live scrape of @{handle} on {primary_platform}")
 
                         if primary_platform == 'tiktok':
-                            raw_scrape = scraper.scrape_tiktok_profile(handle)
+                            raw_scrape = scraper.scrape_tiktok_profile(handle, user_id=user_id)
                         else:
                             raw_scrape = scraper.scrape_instagram_profile(handle)
 

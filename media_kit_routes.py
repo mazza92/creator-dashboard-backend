@@ -596,6 +596,7 @@ def get_public_media_kit(username):
 
         cursor.execute('''
             SELECT
+                mk.creator_id,
                 mk.display_name,
                 mk.username,
                 mk.tagline,
@@ -642,61 +643,29 @@ def get_public_media_kit(username):
             FROM media_kits WHERE username = %s
         ''', (viewer_ip, referrer, username))
 
-        # Check for tracking token (ref) from pitch-generated URL
         ref_token = request.args.get('ref')
         print(f"[KIT_VIEW] Tracking ref token: {ref_token} for username: {username}")
         if ref_token:
-            import hashlib
-            from datetime import date
-
-            # Look up the pipeline entry for this token to get brand attribution
-            cursor.execute('''
-                SELECT cp.id as pipeline_id, cp.creator_id, cp.brand_id, pb.brand_name
-                FROM creator_pipeline cp
-                JOIN pr_brands pb ON pb.id = cp.brand_id
-                WHERE cp.kit_token = %s
-            ''', (ref_token,))
-            pipeline = cursor.fetchone()
-            print(f"[KIT_VIEW] Pipeline lookup result: {pipeline}")
-
-            if pipeline:
-                # Generate IP hash for dedupe (same day)
-                ip_hash = hashlib.sha256(
-                    f"{viewer_ip}-{date.today()}".encode()
-                ).hexdigest()
-
-                # Check for existing view today from same IP
-                cursor.execute('''
-                    SELECT id, view_count FROM kit_views
-                    WHERE pipeline_id = %s AND ip_hash = %s
-                ''', (pipeline['pipeline_id'], ip_hash))
-                existing = cursor.fetchone()
-
-                if existing:
-                    # Increment view count for repeat view
-                    cursor.execute('''
-                        UPDATE kit_views SET view_count = view_count + 1
-                        WHERE id = %s
-                    ''', (existing['id'],))
-                    print(f"[KIT_VIEW] Updated existing view count for view_id: {existing['id']}")
-                else:
-                    # New view - insert with brand attribution
-                    cursor.execute('''
-                        INSERT INTO kit_views (creator_id, brand_id, pipeline_id, ip_hash, referrer, viewed_at, view_count)
-                        VALUES (%s, %s, %s, %s, %s, NOW(), 1)
-                    ''', (pipeline['creator_id'], pipeline['brand_id'], pipeline['pipeline_id'], ip_hash, referrer))
-                    print(f"[KIT_VIEW] Inserted new kit_view: creator={pipeline['creator_id']}, brand={pipeline['brand_id']}, brand_name={pipeline['brand_name']}")
-
-                    # Mark pipeline entry as "opened" - brand viewed the media kit
-                    cursor.execute('''
-                        UPDATE creator_pipeline
-                        SET email_opened = true,
-                            email_opened_at = COALESCE(email_opened_at, NOW()),
-                            email_open_count = COALESCE(email_open_count, 0) + 1,
-                            updated_at = NOW()
-                        WHERE id = %s
-                    ''', (pipeline['pipeline_id'],))
-                    print(f"[KIT_VIEW] Marked pipeline {pipeline['pipeline_id']} as opened")
+            from services.kit_view_tracking import (
+                record_brand_profile_view,
+                resolve_brand_from_kit_ref,
+            )
+            attribution = resolve_brand_from_kit_ref(
+                cursor, ref_token, creator_id=media_kit.get('creator_id')
+            )
+            print(f"[KIT_VIEW] Attribution lookup result: {attribution}")
+            if attribution:
+                record_brand_profile_view(
+                    cursor,
+                    creator_id=attribution['creator_id'],
+                    brand_id=attribution['brand_id'],
+                    brand_name=attribution.get('brand_name'),
+                    brand_category=attribution.get('brand_category'),
+                    viewer_ip=viewer_ip,
+                    referrer=referrer,
+                    pipeline_id=attribution.get('pipeline_id'),
+                    notify=True,
+                )
 
         conn.commit()
         cursor.close()

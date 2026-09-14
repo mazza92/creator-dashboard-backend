@@ -554,7 +554,7 @@ def test_send_email():
             context = {
                 'first_name': data.get('first_name', 'Test'),
                 'verify_url': f"{FRONTEND_URL}/verify?token=test123",
-                'cta_url': f"{FRONTEND_URL}/creator/dashboard/pr-ready",
+                'cta_url': f"{FRONTEND_URL}/creator/dashboard/for-you",
                 'preferences_url': f"{FRONTEND_URL}/creator/dashboard/settings",
                 'unsubscribe_url': f"{FRONTEND_URL}/unsubscribe",
                 'preheader': 'Test email from Newcollab',
@@ -564,6 +564,11 @@ def test_send_email():
                 'unlocks_used': 2,
                 'unlocks_quota': 3,
                 'unlocks_available': 1,
+                'credits_used': 2,
+                'credits_remaining': 1,
+                'credits_quota': 3,
+                'pack_credits': 0,
+                'applications_this_week': 1,
                 'pitches_sent': 4,
                 'replies_count': 1,
                 'reset_date': 'August 1',
@@ -600,6 +605,10 @@ def test_send_email():
                 'new_brands': [
                     {'name': 'Rhode Skin', 'category': 'Skincare', 'reason': 'New this week'},
                     {'name': 'Tower 28', 'category': 'Beauty', 'reason': 'Matches your niche'},
+                ],
+                'live_campaigns': [
+                    {'name': 'Summer Fridays', 'category': 'Skincare', 'reason': 'Gifted PR · open now', 'spots': 3},
+                    {'name': 'Tower 28', 'category': 'Beauty', 'reason': 'Pick creators this week', 'spots': 2},
                 ],
                 'win_story': {
                     'handle': '@skincarebyjess',

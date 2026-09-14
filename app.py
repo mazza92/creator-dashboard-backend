@@ -2760,17 +2760,26 @@ def onboarding_scrape():
 
         app.logger.info(f"📱 Onboarding scrape starting for @{handle} on {platform}")
 
-        # Import scraper
         from services.creator_profile_scraper import scrape_and_enrich_creator
 
-        # Get database connection for saving profile data
         conn = get_db_connection()
+        oauth_profile = None
+        access_token = None
+        pending = session.get('pending_oauth') if session is not None else None
+        if platform == 'tiktok' and isinstance(pending, dict) and pending.get('platform') == 'tiktok':
+            oauth_profile = pending
+            access_token = pending.get('access_token')
+            handle = (pending.get('username') or handle or '').lstrip('@')
 
-        # Run the scrape (in-house social scrape + Gemini analysis)
-        # skip_minimums=True skips the legacy 5-post check.
-        # Quality bar: 500 followers/subscribers, 12 posts/videos, recent activity.
-        # Visual Gemini is not a reject. Instagram covers are too thin to judge UGC on.
-        profile, vision_data = scrape_and_enrich_creator(user_id, handle, platform, db_conn=conn, skip_minimums=True)
+        profile, vision_data = scrape_and_enrich_creator(
+            user_id,
+            handle,
+            platform,
+            db_conn=conn,
+            skip_minimums=True,
+            oauth_profile=oauth_profile,
+            access_token=access_token,
+        )
 
         # Close connection after scrape completes
         try:

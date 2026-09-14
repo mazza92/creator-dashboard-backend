@@ -14,7 +14,7 @@ import os
 import re
 import time
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 from urllib.parse import urlparse
 
 OUTREACH_TAG = "META_ADS_OUTREACH"
@@ -32,6 +32,30 @@ def _normalize_domain(url: str) -> Optional[str]:
         return domain if domain else None
     except Exception:
         return None
+
+
+def load_existing_domains() -> Set[str]:
+    """Domains already in pr_brands so scrape quota can mean new brands."""
+    try:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+    except ImportError:
+        return set()
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        return set()
+    conn = psycopg2.connect(db_url)
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT website FROM pr_brands WHERE website IS NOT NULL")
+        out: Set[str] = set()
+        for row in cursor.fetchall():
+            domain = _normalize_domain(row.get("website") or "")
+            if domain:
+                out.add(domain)
+        return out
+    finally:
+        conn.close()
 
 
 def create_slug(brand_name: str) -> str:

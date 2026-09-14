@@ -13,7 +13,9 @@ Usage:
 import argparse
 import json
 import os
+import signal
 import sys
+import threading
 
 from dotenv import load_dotenv
 
@@ -21,7 +23,7 @@ load_dotenv()
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from services.tiktok_ugc_lead_writer import insert_leads
+from services.tiktok_ugc_lead_writer import IncrementalInserter
 from services.tiktok_ugc_profile_scraper import (
     DEFAULT_MAX_HANDLES,
     DEFAULT_NICHES,
@@ -107,10 +109,29 @@ def main():
     args = parser.parse_args()
 
     niches = args.niches or list(DEFAULT_NICHES)
+    stop = threading.Event()
+    inserter = None
+    if args.save_to_db or args.dry_run:
+        inserter = IncrementalInserter(
+            dry_run=args.dry_run,
+            only_qualified=not args.include_unqualified,
+        )
 
+    def _on_signal(signum, _frame):
+        print(f"[TikTokUGC] signal {signum}, flushing after current batch")
+        stop.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _on_signal)
+        except Exception:
+            pass
+
+    records = []
     if args.handles:
-        records = []
         for handle in args.handles:
+            if stop.is_set():
+                break
             rec = enrich_handle(
                 handle.lstrip("@"),
                 niches=niches,
@@ -118,6 +139,8 @@ def main():
             )
             if rec:
                 records.append(rec)
+                if inserter:
+                    inserter.add([rec])
     else:
         queries = args.queries or (default_search_queries(niches) if args.daily else None)
         if not queries:
@@ -133,6 +156,8 @@ def main():
             serp_pages=args.serp_pages,
             ignore_seen=args.ignore_seen,
             expand_graph=not args.no_graph,
+            on_batch=inserter.add if inserter else None,
+            should_stop=stop.is_set,
         )
 
     if args.output:
@@ -142,17 +167,9 @@ def main():
     else:
         _print(records)
 
-    if args.save_to_db or args.dry_run:
-        stats = insert_leads(
-            records,
-            dry_run=args.dry_run,
-            only_qualified=not args.include_unqualified,
-        )
-        print(
-            f"Database {'preview' if args.dry_run else 'insert'}: "
-            f"{stats['inserted']} inserted, {stats['skipped']} skipped, "
-            f"{stats['errors']} errors"
-        )
+    if inserter:
+        # Idempotent: mid-loop batches already counted; leftovers still insert.
+        inserter.add(records)
 
 
 if __name__ == "__main__":

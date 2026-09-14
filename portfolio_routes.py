@@ -3,13 +3,17 @@ Portfolio Builder Routes for Creator Dashboard
 API endpoints for the new media kit portfolio builder - posts CRUD, settings, public kit, views tracking
 """
 
-from flask import Blueprint, request, jsonify, session
+from io import BytesIO
+from urllib.parse import parse_qs, urlparse, quote
+
+from flask import Blueprint, request, jsonify, session, abort, send_file
 from flask_jwt_extended import jwt_required, get_jwt_identity
 import psycopg2
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import Json, RealDictCursor
 import os
 import re
 import json
+import secrets
 import requests
 import uuid
 import smtplib
@@ -18,6 +22,7 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 import threading
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import HTTPException
 from supabase import create_client, Client
 from jinja2 import Environment, FileSystemLoader
 
@@ -71,78 +76,472 @@ def get_creator_id_from_session():
     return None
 
 
-from media_proxy_routes import to_proxied_media_url
+from media_proxy_routes import fetch_post_preview_bytes, to_proxied_media_url
 from services.public_kit import (
     build_public_socials,
     parse_kit_niches,
     serialize_public_recent_posts,
+    social_kit_stats,
 )
 
-FREE_POST_LIMIT = 3
+_KIT_LAYOUT_READY = False
+_KIT_THEME_READY = False
+_KIT_LOOKS = {'ivory', 'blush', 'ink', 'gallery', 'sage'}
+_KIT_FONTS = {'playfair', 'cormorant', 'fraunces', 'instrument', 'syne'}
+_KIT_LAYOUTS = {'maison', 'gallery', 'ratecard', 'editorial', 'studio'}
 
 
 def _is_pro_tier(tier) -> bool:
     return (tier or "free").lower() in ("pro", "elite")
 
 
-def enforce_free_kit_limits(cursor, creator_id: int, *, commit_conn=None) -> dict:
-    """
-    Free kits: max 3 posts (keep highest engagement).
-    Does NOT gate publish — My Kit publish stays free; Pro is kit views / more posts / PR-Ready artifacts.
-    """
-    cursor.execute(
-        "SELECT subscription_tier FROM creators WHERE id = %s",
-        (creator_id,),
+def _normalize_kit_layout(raw) -> str:
+    aliases = {
+        'editorial': 'maison',
+        'studio': 'gallery',
+        'maison': 'maison',
+        'gallery': 'gallery',
+        'ratecard': 'ratecard',
+    }
+    return aliases.get(str(raw or '').lower().strip(), 'maison')
+
+
+def _social_profile_url(platform, handle):
+    handle = re.sub(r'[^a-zA-Z0-9._]', '', str(handle or '').lstrip('@'))[:40]
+    if not handle:
+        return ''
+    if platform == 'instagram':
+        return f'https://instagram.com/{handle}'
+    if platform == 'tiktok':
+        return f'https://tiktok.com/@{handle}'
+    if platform == 'youtube':
+        return f'https://youtube.com/@{handle}'
+    return ''
+
+
+def _sanitize_social_profiles(raw, fallback_platform='', fallback_handle=''):
+    seen = set()
+    out = []
+    rows = raw if isinstance(raw, list) else []
+    for item in rows[:3]:
+        if not isinstance(item, dict):
+            continue
+        platform = str(item.get('platform') or '').strip().lower()
+        if platform not in ('instagram', 'tiktok', 'youtube') or platform in seen:
+            continue
+        handle = re.sub(r'[^a-zA-Z0-9._]', '', str(item.get('handle') or '').lstrip('@'))[:40]
+        if not handle:
+            continue
+        seen.add(platform)
+        followers_raw = re.sub(r'[^\d]', '', str(item.get('followers') or ''))[:10]
+        try:
+            followers = int(followers_raw) if followers_raw else None
+        except Exception:
+            followers = None
+        row = {
+            'platform': platform,
+            'handle': handle,
+            'url': _social_profile_url(platform, handle),
+        }
+        if followers:
+            row['followers'] = followers
+        out.append(row)
+    if not out:
+        platform = str(fallback_platform or '').strip().lower()
+        handle = re.sub(r'[^a-zA-Z0-9._]', '', str(fallback_handle or '').lstrip('@'))[:40]
+        if handle and platform in ('instagram', 'tiktok', 'youtube'):
+            out.append({
+                'platform': platform,
+                'handle': handle,
+                'url': _social_profile_url(platform, handle),
+            })
+    return out
+
+
+def _public_social_profiles(rows):
+    out = []
+    socials = {}
+    counts = []
+    for item in rows or []:
+        platform = item.get('platform') or ''
+        handle = item.get('handle') or ''
+        url = item.get('url') or _social_profile_url(platform, handle)
+        row = {
+            'platform': platform,
+            'handle': f'@{handle}' if handle and not str(handle).startswith('@') else (handle or None),
+            'url': url,
+        }
+        if item.get('followers'):
+            try:
+                row['followers'] = int(item['followers'])
+                counts.append(row['followers'])
+            except (TypeError, ValueError):
+                pass
+        out.append(row)
+        if platform and url:
+            socials[platform] = url
+    return out, socials, counts
+
+
+def _sanitize_kit_theme(raw) -> dict:
+    src = raw if isinstance(raw, dict) else {}
+    if isinstance(raw, str):
+        try:
+            src = json.loads(raw) or {}
+        except Exception:
+            src = {}
+    look = src.get('look') if src.get('look') in _KIT_LOOKS else 'ivory'
+    font = src.get('font') if src.get('font') in _KIT_FONTS else 'playfair'
+    accent = str(src.get('accent') or '')
+    if not re.match(r'^#[0-9A-Fa-f]{6}$', accent):
+        accent = ''
+    services = []
+    for row in (src.get('services') or [])[:12]:
+        if not isinstance(row, dict):
+            continue
+        title = str(row.get('title') or '')[:48]
+        body = str(row.get('body') or '')[:160]
+        sid = str(row.get('id') or '')[:32]
+        if title:
+            services.append({'id': sid, 'title': title, 'body': body})
+    email = str(src.get('email') or '').strip()[:120]
+    if email and not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+        email = ''
+    platform = str(src.get('social_platform') or '').strip().lower()
+    if platform not in ('instagram', 'tiktok', 'youtube'):
+        platform = ''
+    handle = re.sub(r'[^a-zA-Z0-9._]', '', str(src.get('social_handle') or src.get('handle') or '').lstrip('@'))[:40]
+    profiles = _sanitize_social_profiles(src.get('social_profiles'), platform, handle)
+    if profiles:
+        platform = profiles[0].get('platform') or platform
+        handle = profiles[0].get('handle') or handle
+    example_posts = _merge_example_posts(src.get('example_posts'), src.get('examples'))
+    return {
+        'look': look,
+        'font': font,
+        'accent': accent,
+        'cover_url': str(src.get('cover_url') or '')[:500],
+        'display_name': str(src.get('display_name') or '')[:80],
+        'headline': str(src.get('headline') or '')[:140],
+        'about': str(src.get('about') or '')[:600],
+        'location': str(src.get('location') or '')[:80],
+        'email': email,
+        'social_platform': platform,
+        'social_handle': handle,
+        'social_profiles': profiles,
+        'services': services,
+        'examples': [row['url'] for row in example_posts],
+        'example_posts': example_posts,
+        'brand_logos': _sanitize_brand_logos(src.get('brand_logos')),
+    }
+
+
+def _example_media_key(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return str(url or '').lower()
+    host = (parsed.hostname or '').lower()
+    if host.startswith('www.'):
+        host = host[4:]
+    path = (parsed.path or '').rstrip('/').lower()
+    tiktok = re.search(r'/video/(\d+)', path)
+    if host.endswith('tiktok.com') and tiktok:
+        return f'tiktok:{tiktok.group(1)}'
+    instagram = re.search(r'/(?:p|reel|reels|tv)/([^/]+)', path)
+    if (host.endswith('instagram.com') or host == 'instagr.am') and instagram:
+        return f'instagram:{instagram.group(1)}'
+    youtube = (parse_qs(parsed.query).get('v') or [None])[0]
+    if not youtube:
+        match = re.search(r'/(?:embed|shorts|live)/([^/]+)', path)
+        youtube = match.group(1) if match else (path.lstrip('/').split('/')[0] if host == 'youtu.be' else '')
+    if youtube and (host.endswith('youtube.com') or host == 'youtu.be' or host.endswith('youtube-nocookie.com')):
+        return f'youtube:{youtube}'
+    return f'{host}{path}'
+
+
+def _sanitize_example_posts(raw) -> list:
+    rows = raw if isinstance(raw, list) else []
+    out = []
+    seen = {}
+    for item in rows[:24]:
+        if isinstance(item, dict):
+            url = item.get('url') or item.get('post_url') or ''
+            title = str(item.get('title') or '')[:80]
+            description = str(item.get('description') or item.get('body') or '')[:200]
+        else:
+            url = item
+            title = ''
+            description = ''
+        urls = _sanitize_example_urls([url])
+        if not urls:
+            continue
+        clean = urls[0]
+        key = _example_media_key(clean)
+        existing = seen.get(key)
+        if not existing:
+            row = {'url': clean, 'title': title, 'description': description}
+            seen[key] = row
+            out.append(row)
+            continue
+        if not existing.get('title') and title:
+            existing['title'] = title
+        if not existing.get('description') and description:
+            existing['description'] = description
+    return out
+
+
+def _merge_example_posts(posts, examples) -> list:
+    return _sanitize_example_posts(
+        (posts if isinstance(posts, list) else []) + (examples if isinstance(examples, list) else [])
     )
-    creator = cursor.fetchone() or {}
-    if _is_pro_tier(creator.get("subscription_tier")):
-        return {"trimmed": 0, "unpublished": False}
 
-    changed = False
-    trimmed = 0
 
+def _sanitize_example_urls(raw) -> list:
+    allowed_hosts = (
+        'instagram.com',
+        'instagr.am',
+        'tiktok.com',
+        'youtube.com',
+        'youtu.be',
+        'youtube-nocookie.com',
+    )
+    rows = raw if isinstance(raw, list) else []
+    out = []
+    seen = set()
+    for item in rows[:24]:
+        url = str(item or '').strip()[:300]
+        if not url:
+            continue
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            continue
+        if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+            continue
+        host = (parsed.hostname or '').lower()
+        if host.startswith('www.'):
+            host = host[4:]
+        if not any(host == allowed or host.endswith('.' + allowed) for allowed in allowed_hosts):
+            continue
+        clean = parsed.geturl()
+        if clean in seen:
+            continue
+        seen.add(clean)
+        out.append(clean)
+    return out
+
+
+def _sanitize_brand_logos(raw) -> list:
+    rows = raw if isinstance(raw, list) else []
+    out = []
+    seen = set()
+    for item in rows[:12]:
+        if isinstance(item, str):
+            name = ''
+            url = item
+        elif isinstance(item, dict):
+            name = str(item.get('name') or '')[:40]
+            url = str(item.get('logo_url') or item.get('url') or '')
+        else:
+            continue
+        url = url.strip()[:500]
+        if not url:
+            continue
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            continue
+        if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+            continue
+        clean = parsed.geturl()
+        if clean in seen:
+            continue
+        seen.add(clean)
+        out.append({'name': name, 'logo_url': clean})
+    return out
+
+
+def _ensure_kit_layout_column(cursor, conn=None):
+    global _KIT_LAYOUT_READY
+    if _KIT_LAYOUT_READY:
+        return
     cursor.execute(
         """
-        SELECT id,
-               COALESCE(views,0) AS views, COALESCE(likes,0) AS likes,
-               COALESCE(comments,0) AS comments, COALESCE(shares,0) AS shares,
-               COALESCE(saves,0) AS saves
-        FROM portfolio_posts WHERE creator_id = %s
-        """,
-        (creator_id,),
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'creators' AND column_name = 'kit_layout'
+        LIMIT 1
+        """
     )
-    rows = list(cursor.fetchall())
-    if len(rows) > FREE_POST_LIMIT:
-        ranked = sorted(
-            rows,
-            key=lambda r: (
-                int(r["views"] or 0)
-                + int(r["likes"] or 0)
-                + int(r["comments"] or 0) * 5
-                + int(r["shares"] or 0) * 3
-                + int(r["saves"] or 0) * 3
-            ),
-            reverse=True,
+    if not cursor.fetchone():
+        cursor.execute("ALTER TABLE creators ADD COLUMN kit_layout VARCHAR(32) DEFAULT 'editorial'")
+        if conn is not None:
+            conn.commit()
+    _KIT_LAYOUT_READY = True
+
+
+def _ensure_kit_theme_column(cursor, conn=None):
+    global _KIT_THEME_READY
+    if _KIT_THEME_READY:
+        return
+    cursor.execute(
+        """
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'creators' AND column_name = 'kit_theme'
+        LIMIT 1
+        """
+    )
+    if not cursor.fetchone():
+        cursor.execute("ALTER TABLE creators ADD COLUMN kit_theme JSONB DEFAULT '{}'::jsonb")
+        if conn is not None:
+            conn.commit()
+    _KIT_THEME_READY = True
+
+
+_FREE_PORTFOLIOS_READY = False
+_RESERVED_PORTFOLIO_SLUGS = {
+    'admin', 'api', 'app', 'brand', 'brands', 'c', 'contact', 'directory',
+    'kit', 'login', 'media-kit', 'portfolio', 'register', 'static', 'www',
+}
+
+
+def _normalize_portfolio_email(raw):
+    return str(raw or '').strip().lower()[:120]
+
+
+def _ensure_free_portfolios_table(cursor, conn=None):
+    global _FREE_PORTFOLIOS_READY
+    if _FREE_PORTFOLIOS_READY:
+        return
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS free_portfolios (
+            id SERIAL PRIMARY KEY,
+            slug VARCHAR(80) UNIQUE NOT NULL,
+            email VARCHAR(255),
+            edit_token VARCHAR(64) UNIQUE NOT NULL,
+            payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+            view_count INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
-        keep_ids = {r["id"] for r in ranked[:FREE_POST_LIMIT]}
-        drop_ids = [r["id"] for r in ranked if r["id"] not in keep_ids]
-        if drop_ids:
-            cursor.execute(
-                "DELETE FROM portfolio_posts WHERE creator_id = %s AND id = ANY(%s)",
-                (creator_id, drop_ids),
-            )
-            trimmed = len(drop_ids)
-            changed = True
-            for order, rid in enumerate(r["id"] for r in ranked[:FREE_POST_LIMIT]):
-                cursor.execute(
-                    "UPDATE portfolio_posts SET display_order = %s, is_featured = %s WHERE id = %s",
-                    (order, order < 3, rid),
-                )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS free_portfolios_email_lower_uidx
+        ON free_portfolios (lower(btrim(email)))
+        WHERE email IS NOT NULL AND btrim(email) <> ''
+        """
+    )
+    if conn is not None:
+        conn.commit()
+    _FREE_PORTFOLIOS_READY = True
 
-    if changed and commit_conn is not None:
-        commit_conn.commit()
 
-    return {"trimmed": trimmed, "unpublished": False}
+def _free_portfolio_by_token(cursor, token):
+    token = str(token or '').strip()
+    if not token:
+        return None
+    cursor.execute('SELECT * FROM free_portfolios WHERE edit_token = %s LIMIT 1', (token,))
+    return cursor.fetchone()
+
+
+def _free_portfolio_by_email(cursor, email):
+    email = _normalize_portfolio_email(email)
+    if not email:
+        return None
+    cursor.execute(
+        'SELECT * FROM free_portfolios WHERE lower(btrim(email)) = %s LIMIT 1',
+        (email,),
+    )
+    return cursor.fetchone()
+
+
+def _slugify_portfolio(handle, name):
+    raw = str(handle or name or 'portfolio').lstrip('@').lower()
+    slug = re.sub(r'[^a-z0-9]+', '', raw)[:40]
+    return slug or 'portfolio'
+
+
+def _unique_portfolio_slug(cursor, desired, keep_slug=None):
+    base = desired if desired not in _RESERVED_PORTFOLIO_SLUGS else 'portfolio'
+    slug = base
+    n = 2
+    while True:
+        if keep_slug and slug == keep_slug:
+            return slug
+        cursor.execute(
+            "SELECT 1 FROM creators WHERE username = %s OR kit_slug = %s LIMIT 1",
+            (slug, slug),
+        )
+        taken_creator = cursor.fetchone()
+        cursor.execute("SELECT 1 FROM free_portfolios WHERE slug = %s LIMIT 1", (slug,))
+        taken_free = cursor.fetchone()
+        if not taken_creator and not taken_free:
+            return slug
+        slug = f"{base}{n}"[:80]
+        n += 1
+
+
+def _free_portfolio_public(row):
+    payload = row.get('payload') or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload) or {}
+        except Exception:
+            payload = {}
+    theme = _sanitize_kit_theme(payload.get('kit_theme'))
+    social_profiles, socials, profile_counts = _public_social_profiles(theme.get('social_profiles'))
+    followers = payload.get('followers')
+    try:
+        follower_count = int(re.sub(r'[^\d]', '', str(followers or '')) or 0)
+    except Exception:
+        follower_count = 0
+    if profile_counts:
+        follower_count = max(profile_counts)
+    niche = str(payload.get('niche') or '').strip()
+    email = theme.get('email') or str(payload.get('email') or '').strip()
+    handle = theme.get('social_handle') or str(payload.get('handle') or '').lstrip('@')
+    platform = theme.get('social_platform') or str(payload.get('social_platform') or '').strip().lower()
+    if not social_profiles and handle and platform:
+        url = _social_profile_url(platform, handle)
+        if url:
+            social_profiles = [{'platform': platform, 'handle': f'@{handle}', 'url': url}]
+            socials = {platform: url}
+    return {
+        'username': row['slug'],
+        'first_name': theme.get('display_name') or row['slug'],
+        'display_name': theme.get('display_name') or row['slug'],
+        'avatar_url': '',
+        'tagline': theme.get('headline') or '',
+        'bio': theme.get('about') or '',
+        'niches': [niche] if niche else [],
+        'follower_count': follower_count,
+        'email': email,
+        'engagement_rate': 0,
+        'regions': [],
+        'primary_age_range': '',
+        'rates_reel': payload.get('rates_reel') or 0,
+        'rates_tiktok': payload.get('rates_tiktok') or 0,
+        'rates_photo': payload.get('rates_photo') or 0,
+        'rates_gifted': payload.get('rates_gifted') if payload.get('rates_gifted') is not None else True,
+        'kit_layout': _normalize_kit_layout(payload.get('layout')),
+        'kit_theme': theme,
+        'kit_views': None,
+        'is_pro': False,
+        'is_free_portfolio': True,
+        'social_handle': handle,
+        'social_platform': platform,
+        'socials': socials,
+        'social_profiles': social_profiles,
+        'posts': [],
+        'posts_source': None,
+    }
 
 
 def serialize_post(post):
@@ -185,9 +584,6 @@ def get_portfolio_posts():
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        # Correct legacy free kits that auto-filled past the 3-post / publish rules
-        enforce_free_kit_limits(cursor, creator_id, commit_conn=conn)
 
         cursor.execute('''
             SELECT * FROM portfolio_posts
@@ -233,29 +629,6 @@ def create_portfolio_post():
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        # Enforce free post cap (same as My Kit UI)
-        cursor.execute(
-            "SELECT subscription_tier FROM creators WHERE id = %s",
-            (creator_id,),
-        )
-        creator = cursor.fetchone() or {}
-        tier = (creator.get("subscription_tier") or "free").lower()
-        is_pro = tier in ("pro", "elite")
-        if not is_pro:
-            cursor.execute(
-                "SELECT COUNT(*) AS c FROM portfolio_posts WHERE creator_id = %s",
-                (creator_id,),
-            )
-            count = int(cursor.fetchone()["c"] or 0)
-            if count >= FREE_POST_LIMIT:
-                cursor.close()
-                conn.close()
-                return jsonify({
-                    "error": f"Free kits include {FREE_POST_LIMIT} posts. Upgrade to Pro to add more.",
-                    "upgrade_required": True,
-                    "code": "post_limit",
-                }), 403
 
         cursor.execute('''
             INSERT INTO portfolio_posts (
@@ -450,8 +823,44 @@ def update_kit_settings():
             updates.append("rates_gifted = %s")
             values.append(data['rates_gifted'])
 
-        # Handle publish action (My Kit — available on free; Pro adds kit views + more posts)
+        if 'kit_layout' in data:
+            layout = _normalize_kit_layout(data.get('kit_layout'))
+            _ensure_kit_layout_column(cursor, conn)
+            updates.append("kit_layout = %s")
+            values.append(layout)
+
+        if 'kit_theme' in data:
+            _ensure_kit_theme_column(cursor, conn)
+            theme = _sanitize_kit_theme(data.get('kit_theme'))
+            updates.append("kit_theme = %s")
+            values.append(Json(theme))
+        else:
+            theme = None
+
+        # Publish stays free. Pro unlocks brand view tracking.
         if data.get('publish'):
+            if theme is None:
+                _ensure_kit_theme_column(cursor, conn)
+                cursor.execute('SELECT kit_theme FROM creators WHERE id = %s', (creator_id,))
+                existing = cursor.fetchone() or {}
+                theme = _sanitize_kit_theme(existing.get('kit_theme'))
+            email = theme.get('email') or ''
+            if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+                cursor.close()
+                conn.close()
+                return jsonify({'error': 'Add an email so brands can reach you from this portfolio'}), 400
+            if not theme.get('social_platform') or not theme.get('social_handle'):
+                cursor.close()
+                conn.close()
+                return jsonify({'error': 'Add your Instagram, TikTok, or YouTube handle'}), 400
+            if len(str(theme.get('about') or '').strip()) < 150:
+                cursor.close()
+                conn.close()
+                return jsonify({'error': 'About you needs at least 150 characters so a brand can brief you'}), 400
+            if not theme.get('examples'):
+                cursor.close()
+                conn.close()
+                return jsonify({'error': 'Add at least one Instagram, TikTok, or YouTube post'}), 400
             cursor.execute(
                 "SELECT kit_slug, username FROM creators WHERE id = %s",
                 (creator_id,),
@@ -503,25 +912,80 @@ def get_kit_settings():
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        # Free users cannot keep a live public kit (closes the auto-fill publish loophole)
-        enforce_free_kit_limits(cursor, creator_id, commit_conn=conn)
+        _ensure_kit_layout_column(cursor, conn)
+        _ensure_kit_theme_column(cursor, conn)
 
         cursor.execute('''
             SELECT
                 kit_tagline, kit_published, kit_published_at, kit_slug,
                 rates_reel, rates_tiktok, rates_photo, rates_gifted,
-                username, subscription_tier
+                COALESCE(kit_layout, 'editorial') AS kit_layout,
+                COALESCE(kit_theme, '{}'::jsonb) AS kit_theme,
+                username, subscription_tier, user_id,
+                social_platform, social_handle,
+                social_follower_count, followers_count,
+                social_media_count, total_likes, engagement_rate, social_oauth_videos,
+                bio, image_profile
             FROM creators
             WHERE id = %s
         ''', (creator_id,))
 
         creator = cursor.fetchone()
+        if not creator:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Creator not found'}), 404
+
+        recent_posts = None
+        scrape_row = {}
+        scrape_name = ''
+        scrape_bio = ''
+        user_id = creator.get('user_id')
+        if user_id:
+            try:
+                cursor.execute(
+                    '''
+                    SELECT recent_posts, full_name, raw_bio, engagement_rate, post_count
+                    FROM creator_profile_data
+                    WHERE user_id = %s
+                    LIMIT 1
+                    ''',
+                    (user_id,),
+                )
+                scrape_row = cursor.fetchone() or {}
+                recent_posts = scrape_row.get('recent_posts')
+                scrape_name = (scrape_row.get('full_name') or '').strip()
+                scrape_bio = (scrape_row.get('raw_bio') or '').strip()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
         cursor.close()
         conn.close()
 
-        if not creator:
-            return jsonify({'error': 'Creator not found'}), 404
+        platform = (creator.get('social_platform') or '').strip().lower()
+        handle = (creator.get('social_handle') or '').strip().lstrip('@')
+        follower_count = int(creator.get('social_follower_count') or 0) or int(creator.get('followers_count') or 0)
+        stats = social_kit_stats(
+            creator=creator,
+            scrape={
+                'full_name': scrape_name,
+                'raw_bio': scrape_bio,
+                'engagement_rate': scrape_row.get('engagement_rate') if scrape_row else None,
+                'post_count': scrape_row.get('post_count') if scrape_row else None,
+                'recent_posts': recent_posts,
+            },
+            oauth_videos=creator.get('social_oauth_videos') if platform == 'tiktok' else None,
+            handle=handle,
+        )
+        likes_count = stats['likes_count']
+        video_count = stats['video_count']
+        avg_views = stats['avg_views']
+        tiktok_videos = stats['tiktok_videos'] if platform == 'tiktok' else []
+        display_name = stats['display_name'] or scrape_name or handle
+        bio = (creator.get('bio') or '').strip() or scrape_bio
 
         return jsonify({
             'kit_tagline': creator['kit_tagline'],
@@ -532,7 +996,21 @@ def get_kit_settings():
             'rates_tiktok': creator['rates_tiktok'],
             'rates_photo': creator['rates_photo'],
             'rates_gifted': creator['rates_gifted'],
+            'kit_layout': _normalize_kit_layout(creator.get('kit_layout')),
+            'kit_theme': _sanitize_kit_theme(creator.get('kit_theme')),
             'is_pro': _is_pro_tier(creator.get('subscription_tier')),
+            'social_platform': platform or None,
+            'social_handle': handle or None,
+            'follower_count': follower_count,
+            'social_follower_count': int(creator.get('social_follower_count') or 0),
+            'likes_count': likes_count,
+            'video_count': video_count,
+            'avg_views': avg_views,
+            'engagement_rate': float(stats.get('engagement_rate') or 0),
+            'display_name': display_name or None,
+            'bio': bio or None,
+            'avatar_url': (creator.get('image_profile') or '').strip() or None,
+            'tiktok_videos': tiktok_videos,
         })
 
     except Exception as e:
@@ -805,6 +1283,87 @@ def fetch_oembed():
         })
 
 
+@portfolio_bp.route('/media-preview', methods=['GET'])
+def media_preview():
+    """Public poster lookup for kit studio / published video cards. No auth.
+
+    JSON: { thumbnail_url, platform }
+    ?as=img streams the still so <img> can use this URL directly.
+    """
+    url = str(request.args.get('url') or '').strip()[:300]
+    as_img = str(request.args.get('as') or '').lower() in ('img', 'image', '1')
+    if not url:
+        if as_img:
+            abort(400)
+        return jsonify({'thumbnail_url': None, 'platform': 'unknown'}), 400
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        if as_img:
+            abort(400)
+        return jsonify({'thumbnail_url': None, 'platform': 'unknown'}), 400
+    host = (parsed.hostname or '').lower()
+    if host.startswith('www.'):
+        host = host[4:]
+    allowed = ('instagram.com', 'instagr.am', 'tiktok.com', 'youtube.com', 'youtu.be', 'youtube-nocookie.com')
+    if not any(host == item or host.endswith('.' + item) for item in allowed):
+        if as_img:
+            abort(400)
+        return jsonify({'thumbnail_url': None, 'platform': 'unknown'}), 400
+
+    thumbnail_url = None
+    platform = 'unknown'
+    try:
+        if 'tiktok.com' in host:
+            platform = 'tiktok'
+            if as_img:
+                fetched = fetch_post_preview_bytes(url)
+                if not fetched:
+                    abort(404)
+                content, content_type = fetched
+                img_io = BytesIO(content)
+                img_io.seek(0)
+                response = send_file(img_io, mimetype=content_type or 'image/jpeg', max_age=3600)
+                response.headers['Cross-Origin-Resource-Policy'] = 'cross-origin'
+                response.headers['Cache-Control'] = 'public, max-age=3600'
+                return response
+            thumbnail_url = f"{request.host_url.rstrip('/')}/api/portfolio/media-preview?url={quote(url, safe='')}&as=img"
+        elif 'youtu' in host:
+            platform = 'youtube'
+            video_id = None
+            if 'youtu.be' in host:
+                match = re.search(r'youtu\.be/([a-zA-Z0-9_-]+)', url)
+                video_id = match.group(1) if match else None
+            else:
+                match = re.search(r'/shorts/([a-zA-Z0-9_-]+)', url) or re.search(r'[?&]v=([a-zA-Z0-9_-]+)', url)
+                video_id = match.group(1) if match else None
+            if video_id:
+                thumbnail_url = f'https://i.ytimg.com/vi/{video_id}/hqdefault.jpg'
+                if as_img:
+                    return jsonify({}), 302, {'Location': thumbnail_url}
+        elif 'instagram' in host or host == 'instagr.am':
+            platform = 'instagram'
+            if as_img:
+                fetched = fetch_post_preview_bytes(url)
+                if not fetched:
+                    abort(404)
+                content, content_type = fetched
+                img_io = BytesIO(content)
+                img_io.seek(0)
+                response = send_file(img_io, mimetype=content_type or 'image/jpeg', max_age=3600)
+                response.headers['Cross-Origin-Resource-Policy'] = 'cross-origin'
+                return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching media preview: {e}")
+        if as_img:
+            abort(404)
+    return jsonify({'thumbnail_url': thumbnail_url, 'platform': platform})
+
+
 # ============================================
 # THUMBNAIL UPLOAD
 # ============================================
@@ -866,6 +1425,125 @@ def upload_thumbnail():
 # PUBLIC KIT ENDPOINT (No auth required)
 # ============================================
 
+@portfolio_bp.route('/free', methods=['POST'])
+def publish_free_portfolio():
+    """Guest UGC portfolio publish — no account required."""
+    data = request.get_json(silent=True) or {}
+    name = str(data.get('name') or '').strip()[:80]
+    handle = str(data.get('handle') or '').strip()[:80]
+    if not name and not handle:
+        return jsonify({'error': 'Add a name or handle'}), 400
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        _ensure_kit_theme_column(cursor, conn)
+        _ensure_kit_layout_column(cursor, conn)
+        _ensure_free_portfolios_table(cursor, conn)
+
+        theme = _sanitize_kit_theme(data.get('kit_theme'))
+        if name and not theme.get('display_name'):
+            theme['display_name'] = name
+        email = _normalize_portfolio_email(theme.get('email') or data.get('email'))
+        if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email or ''):
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Add an email so brands can reach you from this portfolio'}), 400
+        edit_token = str(data.get('edit_token') or '').strip()
+        row = _free_portfolio_by_token(cursor, edit_token)
+        if row:
+            owned = _free_portfolio_by_email(cursor, email)
+            if owned and owned['id'] != row['id']:
+                cursor.close()
+                conn.close()
+                return jsonify({
+                    'error': 'This email already has a published portfolio.',
+                    'code': 'email_in_use',
+                    'slug': owned['slug'],
+                }), 409
+        else:
+            owned = _free_portfolio_by_email(cursor, email)
+            if owned:
+                cursor.close()
+                conn.close()
+                return jsonify({
+                    'error': 'This email already has a published portfolio. Update it from the browser that published it.',
+                    'code': 'email_in_use',
+                    'slug': owned['slug'],
+                }), 409
+
+        desired = _slugify_portfolio(handle, name)
+        slug = row['slug'] if row else _unique_portfolio_slug(cursor, desired)
+        if not theme.get('social_platform') or not theme.get('social_handle'):
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Add your Instagram, TikTok, or YouTube handle'}), 400
+        if len(str(theme.get('about') or '').strip()) < 150:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'About you needs at least 150 characters so a brand can brief you'}), 400
+        if not theme.get('examples'):
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Add at least one Instagram, TikTok, or YouTube post'}), 400
+        payload = {
+            'name': name,
+            'handle': handle,
+            'social_platform': theme.get('social_platform') or str(data.get('social_platform') or '').strip().lower(),
+            'email': email,
+            'niche': str(data.get('niche') or '').strip()[:40],
+            'followers': str(data.get('followers') or '').strip()[:20],
+            'layout': _normalize_kit_layout(data.get('layout')),
+            'kit_theme': theme,
+            'rates_reel': data.get('rates_reel') or 0,
+            'rates_tiktok': data.get('rates_tiktok') or 0,
+            'rates_photo': data.get('rates_photo') or 0,
+            'rates_gifted': data.get('rates_gifted') if data.get('rates_gifted') is not None else True,
+        }
+
+        if row:
+            cursor.execute(
+                """
+                UPDATE free_portfolios
+                SET slug = %s, email = %s, payload = %s, updated_at = NOW()
+                WHERE id = %s
+                RETURNING slug, edit_token
+                """,
+                (slug, email or None, Json(payload), row['id']),
+            )
+        else:
+            token = secrets.token_urlsafe(24)
+            cursor.execute(
+                """
+                INSERT INTO free_portfolios (slug, email, edit_token, payload)
+                VALUES (%s, %s, %s, %s)
+                RETURNING slug, edit_token
+                """,
+                (slug, email or None, token, Json(payload)),
+            )
+        saved = cursor.fetchone()
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        frontend = os.getenv('FRONTEND_URL', 'https://newcollab.co').rstrip('/')
+        if 'app.newcollab.co' in frontend:
+            frontend = 'https://newcollab.co'
+        return jsonify({
+            'ok': True,
+            'slug': saved['slug'],
+            'edit_token': saved['edit_token'],
+            'url': f"{frontend}/kit/{saved['slug']}",
+        })
+    except Exception as e:
+        if conn:
+            conn.rollback()
+            conn.close()
+        print(f"Error publishing free portfolio: {e}")
+        return jsonify({'error': 'Failed to publish portfolio'}), 500
+
+
 @portfolio_bp.route('/public/<slug>', methods=['GET'])
 def get_public_kit(slug):
     """
@@ -877,6 +1555,8 @@ def get_public_kit(slug):
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
+        _ensure_kit_layout_column(cursor, conn)
+        _ensure_kit_theme_column(cursor, conn)
 
         # Try to find creator - use basic columns first, then try kit columns
         creator = None
@@ -898,6 +1578,8 @@ def get_public_kit(slug):
                     COALESCE(c.rates_tiktok, 0) as rates_tiktok,
                     COALESCE(c.rates_photo, 0) as rates_photo,
                     COALESCE(c.rates_gifted, true) as rates_gifted,
+                    COALESCE(c.kit_layout, 'editorial') as kit_layout,
+                    COALESCE(c.kit_theme, '{}'::jsonb) as kit_theme,
                     COALESCE(c.regions, '[]') as regions,
                     COALESCE(c.primary_age_range, '') as primary_age_range,
                     COALESCE(c.subscription_tier, 'free') as subscription_tier,
@@ -905,6 +1587,8 @@ def get_public_kit(slug):
                     c.social_handle,
                     c.social_platform,
                     c.social_follower_count,
+                    c.social_media_count,
+                    c.total_likes,
                     c.social_oauth_videos,
                     c.platforms
                 FROM creators c
@@ -929,6 +1613,8 @@ def get_public_kit(slug):
                     0 as rates_tiktok,
                     0 as rates_photo,
                     true as rates_gifted,
+                    'editorial' as kit_layout,
+                    '{}'::jsonb as kit_theme,
                     COALESCE(c.regions, '[]') as regions,
                     COALESCE(c.primary_age_range, '') as primary_age_range,
                     COALESCE(c.social_links, '[]') as social_links,
@@ -943,6 +1629,22 @@ def get_public_kit(slug):
             creator = cursor.fetchone()
 
         if not creator:
+            _ensure_free_portfolios_table(cursor, conn)
+            cursor.execute('SELECT * FROM free_portfolios WHERE slug = %s LIMIT 1', (slug,))
+            free_row = cursor.fetchone()
+            if free_row:
+                try:
+                    cursor.execute(
+                        'UPDATE free_portfolios SET view_count = view_count + 1 WHERE id = %s',
+                        (free_row['id'],),
+                    )
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                public = _free_portfolio_public(free_row)
+                cursor.close()
+                conn.close()
+                return jsonify(public)
             cursor.close()
             conn.close()
             return jsonify({'error': 'Creator not found'}), 404
@@ -985,97 +1687,30 @@ def get_public_kit(slug):
             print(f"[KIT_VIEW] Portfolio route - ref token: {ref_token}, username: {slug}")
 
             if ref_token:
-                # Look up the pipeline entry for this token to get brand attribution
-                cursor.execute('''
-                    SELECT cp.id as pipeline_id, cp.creator_id, cp.brand_id,
-                           pb.brand_name, pb.category as brand_category
-                    FROM creator_pipeline cp
-                    JOIN pr_brands pb ON pb.id = cp.brand_id
-                    WHERE cp.kit_token = %s
-                ''', (ref_token,))
-                pipeline = cursor.fetchone()
-                print(f"[KIT_VIEW] Pipeline lookup result: {pipeline}")
+                from services.kit_view_tracking import (
+                    record_brand_profile_view,
+                    resolve_brand_from_kit_ref,
+                )
+                attribution = resolve_brand_from_kit_ref(
+                    cursor, ref_token, creator_id=creator['id']
+                )
+                print(f"[KIT_VIEW] Attribution lookup result: {attribution}")
 
-                if pipeline:
-                    # Check for existing view from this pipeline today (dedupe)
-                    cursor.execute('''
-                        SELECT id FROM kit_views
-                        WHERE pipeline_id = %s AND viewer_ip = %s
-                        AND viewed_at > NOW() - INTERVAL '1 day'
-                    ''', (pipeline['pipeline_id'], viewer_ip))
-                    existing = cursor.fetchone()
-
-                    if existing:
-                        print(f"[KIT_VIEW] Duplicate view within 24h, skipping: pipeline={pipeline['pipeline_id']}")
-                    else:
-                        # New view - insert with brand attribution
-                        cursor.execute('''
-                            INSERT INTO kit_views (creator_id, brand_id, pipeline_id, viewer_ip, referrer, viewed_at)
-                            VALUES (%s, %s, %s, %s, %s, NOW())
-                        ''', (pipeline['creator_id'], pipeline['brand_id'], pipeline['pipeline_id'], viewer_ip, referrer))
-                        print(f"[KIT_VIEW] Inserted new kit_view: creator={pipeline['creator_id']}, brand={pipeline['brand_id']}, brand_name={pipeline['brand_name']}")
-
-                        # Mark pipeline entry as "opened" - brand viewed the media kit
-                        cursor.execute('''
-                            UPDATE creator_pipeline
-                            SET email_opened = true,
-                                email_opened_at = COALESCE(email_opened_at, NOW()),
-                                email_open_count = COALESCE(email_open_count, 0) + 1,
-                                updated_at = NOW()
-                            WHERE id = %s
-                        ''', (pipeline['pipeline_id'],))
-                        print(f"[KIT_VIEW] Marked pipeline {pipeline['pipeline_id']} as opened")
-
-                        # Send brand view notification email (Pro upgrade CTA for free users)
-                        try:
-                            # Get creator email and subscription tier
-                            cursor.execute('''
-                                SELECT c.username, c.subscription_tier, c.brand_view_email_sent_at,
-                                       u.email
-                                FROM creators c
-                                JOIN users u ON c.user_id = u.id
-                                WHERE c.id = %s
-                            ''', (pipeline['creator_id'],))
-                            creator_info = cursor.fetchone()
-
-                            if creator_info and creator_info['email']:
-                                # Rate limit: Don't send more than 1 brand view email per hour
-                                last_sent = creator_info.get('brand_view_email_sent_at')
-                                should_send = True
-                                if last_sent:
-                                    time_since = datetime.now() - last_sent
-                                    if time_since < timedelta(hours=1):
-                                        should_send = False
-                                        print(f"[BRAND_VIEW_EMAIL] Skipping - sent {int(time_since.total_seconds()/60)} mins ago")
-
-                                if should_send:
-                                    tier = creator_info.get('subscription_tier', 'free') or 'free'
-                                    is_pro = tier in ('pro', 'elite')
-
-                                    # Update last sent timestamp
-                                    cursor.execute('''
-                                        UPDATE creators SET brand_view_email_sent_at = NOW() WHERE id = %s
-                                    ''', (pipeline['creator_id'],))
-
-                                    # Send email in background thread
-                                    def send_async():
-                                        send_brand_view_notification(
-                                            to_email=creator_info['email'],
-                                            creator_name=creator_info['username'],
-                                            brand_name=pipeline['brand_name'],
-                                            brand_category=pipeline.get('brand_category'),
-                                            is_pro=is_pro,
-                                            viewed_at=datetime.now()
-                                        )
-                                    threading.Thread(target=send_async, daemon=True).start()
-                                    print(f"[BRAND_VIEW_EMAIL] Queued for {creator_info['email']} (Pro: {is_pro}, Category: {pipeline.get('brand_category')})")
-                        except Exception as email_err:
-                            print(f"[BRAND_VIEW_EMAIL] Error: {email_err}")
-                            pass  # Don't fail the request if email fails
-
+                if attribution:
+                    record_brand_profile_view(
+                        cursor,
+                        creator_id=attribution['creator_id'],
+                        brand_id=attribution['brand_id'],
+                        brand_name=attribution.get('brand_name'),
+                        brand_category=attribution.get('brand_category'),
+                        viewer_ip=viewer_ip,
+                        referrer=referrer,
+                        pipeline_id=attribution.get('pipeline_id'),
+                        notify=True,
+                    )
                     conn.commit()
                 else:
-                    # No pipeline found for token, log basic view
+                    # No brand match for token, log basic view
                     cursor.execute('''
                         INSERT INTO kit_views (creator_id, viewer_ip, viewer_ua, referrer)
                         VALUES (%s, %s, %s, %s)
@@ -1095,44 +1730,45 @@ def get_public_kit(slug):
         scrape_items = creator.get('social_oauth_videos')
         scrape_thumbs = None
         scrape_platform = creator.get('social_platform')
-        if not posts:
+        scrape_row = None
+        try:
+            user_id = creator.get('user_id')
+            handle = (creator.get('social_handle') or creator.get('username') or '').strip().lstrip('@')
+            # Onboarding scrape is keyed by users.id, not creators.id.
+            if user_id:
+                cursor.execute('''
+                    SELECT recent_posts, recent_post_thumbnails, primary_platform,
+                           full_name, engagement_rate, post_count
+                    FROM creator_profile_data
+                    WHERE user_id = %s
+                    LIMIT 1
+                ''', (user_id,))
+                scrape_row = cursor.fetchone()
+            if not scrape_row and handle:
+                cursor.execute('''
+                    SELECT recent_posts, recent_post_thumbnails, primary_platform,
+                           full_name, engagement_rate, post_count
+                    FROM creator_profile_data
+                    WHERE LOWER(handle) = LOWER(%s)
+                    ORDER BY scraped_at DESC NULLS LAST
+                    LIMIT 1
+                ''', (handle,))
+                scrape_row = cursor.fetchone()
+            if scrape_row:
+                extra = scrape_row.get('recent_posts')
+                if extra and not posts:
+                    if isinstance(scrape_items, list) and isinstance(extra, list):
+                        scrape_items = scrape_items + extra
+                    elif not scrape_items:
+                        scrape_items = extra
+                scrape_thumbs = scrape_row.get('recent_post_thumbnails')
+                scrape_platform = scrape_row.get('primary_platform') or scrape_platform
+        except Exception as scrape_err:
+            print(f"[PUBLIC_KIT] scrape posts lookup: {scrape_err}")
             try:
-                scrape_row = None
-                user_id = creator.get('user_id')
-                handle = (creator.get('social_handle') or creator.get('username') or '').strip().lstrip('@')
-                # Onboarding scrape is keyed by users.id, not creators.id.
-                if user_id:
-                    cursor.execute('''
-                        SELECT recent_posts, recent_post_thumbnails, primary_platform
-                        FROM creator_profile_data
-                        WHERE user_id = %s
-                        LIMIT 1
-                    ''', (user_id,))
-                    scrape_row = cursor.fetchone()
-                if not scrape_row and handle:
-                    cursor.execute('''
-                        SELECT recent_posts, recent_post_thumbnails, primary_platform
-                        FROM creator_profile_data
-                        WHERE LOWER(handle) = LOWER(%s)
-                        ORDER BY scraped_at DESC NULLS LAST
-                        LIMIT 1
-                    ''', (handle,))
-                    scrape_row = cursor.fetchone()
-                if scrape_row:
-                    extra = scrape_row.get('recent_posts')
-                    if extra:
-                        if isinstance(scrape_items, list) and isinstance(extra, list):
-                            scrape_items = scrape_items + extra
-                        elif not scrape_items:
-                            scrape_items = extra
-                    scrape_thumbs = scrape_row.get('recent_post_thumbnails')
-                    scrape_platform = scrape_row.get('primary_platform') or scrape_platform
-            except Exception as scrape_err:
-                print(f"[PUBLIC_KIT] scrape posts lookup: {scrape_err}")
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
+                conn.rollback()
+            except Exception:
+                pass
 
         cursor.close()
         conn.close()
@@ -1160,6 +1796,21 @@ def get_public_kit(slug):
             social_platform=creator.get('social_platform'),
             username=creator.get('username'),
         )
+        theme = _sanitize_kit_theme(creator.get('kit_theme'))
+        theme_profiles, theme_socials, theme_counts = _public_social_profiles(theme.get('social_profiles'))
+        if theme_profiles:
+            seen = {item.get('platform') for item in theme_profiles}
+            for item in social_profiles:
+                if item.get('platform') not in seen:
+                    theme_profiles.append(item)
+            social_profiles = theme_profiles
+            socials = {**(theme_socials or {}), **socials}
+            for item in social_profiles:
+                if item.get('platform') and item.get('url'):
+                    socials[item['platform']] = item['url']
+        follower_count = creator['follower_count'] or 0
+        if not follower_count and theme_counts:
+            follower_count = max(theme_counts)
 
         serialized_posts = [serialize_post(p) for p in posts]
         posts_source = 'portfolio' if serialized_posts else None
@@ -1176,24 +1827,48 @@ def get_public_kit(slug):
                 posts_source = 'scrape'
 
         bio = (creator.get('bio') or '').strip() or None
-        display_name = (creator.get('first_name') or '').strip() or creator['username']
+        theme = creator.get('kit_theme') if isinstance(creator.get('kit_theme'), dict) else {}
+        theme_name = str((theme or {}).get('display_name') or '').strip()
+        if theme_name.lower() == 'your name':
+            theme_name = ''
+        stats = social_kit_stats(
+            creator=creator,
+            scrape=scrape_row or {},
+            oauth_videos=creator.get('social_oauth_videos'),
+            handle=(creator.get('social_handle') or creator.get('username') or ''),
+        )
+        display_name = (
+            theme_name
+            or stats.get('display_name')
+            or (creator.get('first_name') or '').strip()
+            or creator['username']
+        )
+        likes_count = stats['likes_count']
+        video_count = stats['video_count']
+        avg_views = stats['avg_views']
 
         return jsonify({
             'creator_id': creator['id'],
             'username': creator['username'],
             'first_name': display_name,
+            'display_name': display_name,
             'avatar_url': creator['avatar_url'],
             'tagline': creator['tagline'] or '',
             'bio': bio,
             'niches': niches,
-            'follower_count': creator['follower_count'],
-            'engagement_rate': float(creator['engagement_rate']) if creator.get('engagement_rate') else 0,
+            'follower_count': follower_count,
+            'likes_count': likes_count,
+            'video_count': video_count,
+            'avg_views': avg_views,
+            'engagement_rate': float(stats.get('engagement_rate') or 0),
             'regions': regions,
             'primary_age_range': creator.get('primary_age_range', ''),
             'rates_reel': creator['rates_reel'],
             'rates_tiktok': creator['rates_tiktok'],
             'rates_photo': creator['rates_photo'],
             'rates_gifted': creator['rates_gifted'],
+            'kit_layout': _normalize_kit_layout(creator.get('kit_layout')),
+            'kit_theme': theme,
             'kit_views': kit_views if is_pro else None,
             'is_pro': is_pro,
             'socials': socials,
@@ -1215,9 +1890,8 @@ def get_public_kit(slug):
 
 def send_brand_view_notification(to_email, creator_name, brand_name, brand_category, is_pro, viewed_at=None):
     """
-    Send a brand view notification email when a brand clicks a tracked ref link.
-    For free users: Shows brand category (taste of value) + upgrade CTA
-    For Pro users: Brand name revealed with follow-up CTA
+    Notify a creator that a brand reviewed their gifted PR application / kit.
+    Free users: brand category + upgrade CTA. Pro users: brand name.
 
     Returns (success: bool, error_message: str or None)
     """
@@ -1253,38 +1927,38 @@ def send_brand_view_notification(to_email, creator_name, brand_name, brand_categ
                 category_display = f"{article} {cat_lower} brand"
 
         if is_pro:
-            subject = f"{brand_name} just viewed your media kit"
-            preheader = f"They checked out your profile {time_ago}. Follow up now."
-            headline = f"{brand_name} viewed your kit"
-            subtitle = f"They checked out your profile {time_ago}. Now is the perfect time to follow up."
+            subject = f"{brand_name} just reviewed your application"
+            preheader = f"They opened your profile {time_ago}."
+            headline = f"{brand_name} reviewed your application"
+            subtitle = f"They opened your profile on their gifted PR list {time_ago}."
             body_html = f"""
                 <p style="margin: 0 0 16px 0; font-size: 15px; color: #374151; line-height: 1.7;">
                     Hey {creator_name},
                 </p>
                 <p style="margin: 0 0 24px 0; font-size: 15px; color: #374151; line-height: 1.7;">
-                    <strong>{brand_name}</strong> clicked through to your media kit {time_ago}. This means they are actively evaluating you for a potential collab.
+                    <strong>{brand_name}</strong> is reviewing creators for gifted PR and opened your profile {time_ago}.
                 </p>
                 <p style="margin: 0 0 24px 0; font-size: 15px; color: #374151; line-height: 1.7;">
-                    Follow up while they are engaged. Most replies happen in the first 24 hours.
+                    Keep your kit and shipping details up to date so you are ready if they add you to the gift list.
                 </p>
             """
-            cta_label = "Send Follow-Up Now"
-            cta_url = f"{frontend_url}/creator/dashboard/pr-pipeline?utm_source=email&utm_medium=brand_view"
+            cta_label = "See who's reviewing you"
+            cta_url = f"{frontend_url}/creator/dashboard/for-you?utm_source=email&utm_medium=brand_view"
             urgency_box = ""
             features_html = ""
             footer_note = ""
         else:
             # Free users get brand category (taste of value) but not identity
-            subject = f"{category_display} just viewed your media kit"
-            preheader = f"See who it was and follow up while they are still interested."
-            headline = f"{category_display} viewed your kit"
-            subtitle = f"They checked out your profile {time_ago}. See who and follow up while they are still engaged."
+            subject = f"{category_display} just reviewed your application"
+            preheader = "See which brand is reviewing you."
+            headline = f"{category_display} reviewed your application"
+            subtitle = f"They opened your profile {time_ago}. Upgrade to see which brand."
             body_html = f"""
                 <p style="margin: 0 0 16px 0; font-size: 15px; color: #374151; line-height: 1.7;">
                     Hey {creator_name},
                 </p>
                 <p style="margin: 0 0 24px 0; font-size: 15px; color: #374151; line-height: 1.7;">
-                    {category_display} just clicked through to view your media kit. They are checking you out right now.
+                    {category_display} is reviewing gifted PR applications and opened your profile {time_ago}.
                 </p>
             """
             urgency_box = """
@@ -1297,10 +1971,10 @@ def send_brand_view_notification(to_email, creator_name, brand_name, brand_categ
                                     <td style="padding: 20px 24px; text-align: center;">
                                         <p style="margin: 0 0 8px 0; font-size: 24px;">🔥</p>
                                         <p style="margin: 0 0 6px 0; font-size: 16px; font-weight: 700; color: #92400e;">
-                                            Strike while it is hot
+                                            Brands are reviewing now
                                         </p>
                                         <p style="margin: 0; font-size: 14px; color: #a16207; line-height: 1.5;">
-                                            Follow up while they are engaged. Most replies happen in the first 24 hours.
+                                            See which brand opened your profile, and apply to more gifted PR lists.
                                         </p>
                                     </td>
                                 </tr>
@@ -1317,18 +1991,17 @@ def send_brand_view_notification(to_email, creator_name, brand_name, brand_categ
                                 With Pro you can:
                             </p>
                             <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
-                                <tr><td style="padding: 0 0 10px 0; font-size: 14px; color: #374151;">&#128065; <strong>See exactly which brand</strong> viewed your kit</td></tr>
-                                <tr><td style="padding: 0 0 10px 0; font-size: 14px; color: #374151;">&#128231; <strong>Send a follow-up pitch</strong> while they are engaged</td></tr>
-                                <tr><td style="padding: 0 0 10px 0; font-size: 14px; color: #374151;">&#128230; <strong>Unlimited pitches</strong> to any brand, every month</td></tr>
+                                <tr><td style="padding: 0 0 10px 0; font-size: 14px; color: #374151;">&#128065; <strong>See exactly which brand</strong> reviewed you</td></tr>
+                                <tr><td style="padding: 0 0 10px 0; font-size: 14px; color: #374151;">&#127873; <strong>Apply to more gifted PR lists</strong> on For You</td></tr>
+                                <tr><td style="padding: 0 0 10px 0; font-size: 14px; color: #374151;">&#9889; <strong>Priority placement</strong> when brands are picking</td></tr>
                             </table>
                         </td>
                     </tr>
                 </table>
             """
-            cta_label = "See Who and Follow Up - $19/mo"
-            # Link to for-you page with upgrade param to trigger upgrade modal -> Stripe checkout
+            cta_label = "See which brand — $19/mo"
             cta_url = f"{frontend_url}/creator/dashboard/for-you?upgrade=kit_views&utm_source=email&utm_medium=brand_view"
-            footer_note = '<p style="margin: 14px 0 0 0; font-size: 12px; color: #9ca3af;">Cancel anytime. One PR package pays for a year of Pro.</p>'
+            footer_note = '<p style="margin: 14px 0 0 0; font-size: 12px; color: #9ca3af;">Cancel anytime. One gifted PR collab pays for a year of Pro.</p>'
 
         # Preheader padding to prevent email client from pulling body text
         preheader_padding = '&nbsp;' * 100
@@ -1385,7 +2058,7 @@ def send_brand_view_notification(to_email, creator_name, brand_name, brand_categ
         <!-- Footer -->
         <div style="text-align: center; padding: 28px 24px;">
             <p style="margin: 0 0 10px 0; font-size: 13px; color: #6b7280;">
-                You are receiving this because a brand clicked your tracked kit link.
+                You are receiving this because a brand reviewed your gifted PR application.
             </p>
             <p style="margin: 0; font-size: 12px; color: #d1d5db;">
                 2026 Newcollab. All rights reserved.

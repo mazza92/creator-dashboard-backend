@@ -1072,6 +1072,56 @@ def _get_niche_to_category_map() -> Dict[str, List[str]]:
     }
 
 
+def get_live_campaigns_for_email(cursor, limit: int = 3) -> List[Dict]:
+    """Active gifted-PR rosters creators can apply to this week."""
+    try:
+        cursor.execute(
+            """
+            SELECT
+                pb.brand_name AS name,
+                pb.category,
+                COALESCE(NULLIF(BTRIM(c.headline), ''), NULLIF(BTRIM(c.title), ''), 'Gifted PR') AS reason,
+                COALESCE(c.slot_limit, 5) AS slot_limit,
+                (
+                    SELECT COUNT(*)::int
+                    FROM brand_pr_applications a
+                    WHERE a.brand_id = c.brand_id
+                      AND a.status IN ('review', 'ships', 'posted')
+                ) AS fill_count
+            FROM brand_pr_campaigns c
+            JOIN pr_brands pb ON pb.id = c.brand_id
+            WHERE c.status = 'active'
+              AND COALESCE(pb.status, 'published') = 'published'
+            ORDER BY c.creator_spotlighted_at DESC NULLS LAST, c.created_at DESC
+            LIMIT %s
+            """,
+            (max(1, int(limit or 3)),),
+        )
+        out = []
+        for raw in cursor.fetchall() or []:
+            row = dict(raw)
+            slots = max(1, int(row.get("slot_limit") or 5))
+            fill = int(row.get("fill_count") or 0)
+            remaining = max(0, slots - fill)
+            reason = row.get("reason") or "Gifted PR"
+            if remaining:
+                reason = f"{reason} · open now"
+            out.append({
+                "name": row.get("name") or "Brand",
+                "category": row.get("category") or "",
+                "reason": reason,
+                "spots": remaining,
+            })
+        return out
+    except Exception as err:
+        print(f"[WEEKLY DIGEST] live campaigns skipped: {err}")
+        try:
+            cursor.connection.rollback()
+        except Exception:
+            pass
+        return []
+
+
 def get_for_you_brands_for_email(creator_id: int, cursor, limit: int = 3) -> List[Dict]:
     """
     Get For You brand recommendations for email.
@@ -1523,10 +1573,14 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
+        from services.pack_credits import pack_credits_of, pack_credits_select_sql
+        pack_sql = pack_credits_select_sql(conn)
+
         # Get full creator data including user_id for scrape lookup
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT c.id, c.username, c.user_id, u.email, u.first_name,
                    c.daily_unlocks_used, c.unlocks_remaining,
+                   {pack_sql},
                    c.pitches_sent_this_week, c.subscription_tier,
                    c.bio, c.image_profile, c.niche, c.creator_niches,
                    c.kit_published, c.total_pitches_sent, c.total_replies_received,
@@ -1546,13 +1600,36 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
         is_pro = subscription_tier in ('pro', 'elite')
 
         from services.unlock_quota import FREE_UNLOCK_LIMIT, count_delivered_unlocks_this_month, usage_from_delivered
+        pack_credits = int(pack_credits_of(creator) or 0)
         if is_pro:
-            unlocks_used = 0
-            unlocks_quota = '∞'
+            credits_used = 0
+            credits_remaining = None
+            credits_quota = 'unlimited'
+            pack_credits = 0
         else:
             delivered = count_delivered_unlocks_this_month(cursor, creator_id)
-            unlocks_used, _remaining_free, _remaining = usage_from_delivered(delivered, 0)
-            unlocks_quota = FREE_UNLOCK_LIMIT
+            credits_used, _remaining_free, credits_remaining = usage_from_delivered(delivered, pack_credits)
+            credits_quota = FREE_UNLOCK_LIMIT
+
+        applications_this_week = 0
+        try:
+            cursor.execute(
+                """
+                SELECT COUNT(*)::int AS n
+                FROM brand_pr_applications
+                WHERE creator_id = %s
+                  AND applied_at >= date_trunc('week', NOW())
+                """,
+                (creator_id,),
+            )
+            row = cursor.fetchone() or {}
+            applications_this_week = int(row.get('n') or 0)
+        except Exception:
+            applications_this_week = 0
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
         # === REPLY CHANCE SCORE: Use AI Manager score ===
         reply_chance = 0
@@ -1654,8 +1731,6 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
         # Get clean primary niche for display (first niche, capitalized)
         primary_niche_display = all_niches[0].title() if all_niches else 'content'
 
-        # === NEW BRANDS: Use the For You matching logic ===
-        # This ensures email recommendations match what creators see in the app
         try:
             new_brands = get_for_you_brands_for_email(creator_id, cursor, limit=3)
             print(f"[WEEKLY DIGEST] For You brands for email: {[b['name'] for b in new_brands]}")
@@ -1663,25 +1738,35 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
             print(f"[WEEKLY DIGEST] Error getting For You brands: {e}")
             new_brands = []
 
-        # Build context
+        live_campaigns = get_live_campaigns_for_email(cursor, limit=3)
+
         context = {
             'first_name': creator.get('first_name') or creator.get('username') or 'there',
             'current_score': reply_chance,
             'score_label': 'Reply Chance',
             'score_delta': score_delta,
-            'unlocks_used': unlocks_used,
-            'unlocks_quota': unlocks_quota,
+            'unlocks_used': credits_used,
+            'unlocks_quota': credits_quota,
+            'credits_used': credits_used,
+            'credits_remaining': credits_remaining,
+            'credits_quota': credits_quota,
+            'pack_credits': pack_credits,
+            'is_pro': is_pro,
+            'applications_this_week': applications_this_week,
             'replies_count': creator.get('total_replies_received') or 0,
-            # Use pending plans from AI Manager, or fallback to static theme
-            'weekly_theme_title': pending_plans[0]['title'] if pending_plans else 'Optimize your profile',
-            'weekly_theme_body': f"Your manager found {len(pending_plans)} improvements. Start with #{pending_plans[0]['number']}." if pending_plans else 'Visit your AI Manager for personalized tips.',
+            'weekly_theme_title': pending_plans[0]['title'] if pending_plans else 'Keep your kit ready',
+            'weekly_theme_body': (
+                f"Your manager found {len(pending_plans)} improvements. Start with #{pending_plans[0]['number']}."
+                if pending_plans else
+                'Apply to open gifted PR lists and keep your media kit published.'
+            ),
             'pending_plans': pending_plans,
-            # Use For You brands - already formatted with accurate match reasons
             'new_brands': new_brands if new_brands else [
-                {'name': 'Explore brands', 'category': 'Various', 'reason': 'Browse the directory'}
+                {'name': 'Explore For You', 'category': 'Gifted PR', 'reason': 'Open lists this week'}
             ],
+            'live_campaigns': live_campaigns,
             'win_story': None,
-            'cta_url': f"{FRONTEND_URL}/creator/dashboard/pr-ready",
+            'cta_url': f"{FRONTEND_URL}/creator/dashboard/for-you",
         }
 
         return context

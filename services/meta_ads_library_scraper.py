@@ -21,6 +21,7 @@ import os
 import random
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
@@ -57,7 +58,68 @@ DEFAULT_DAILY_KEYWORDS = [
     "scalp treatment",
     "lip treatment",
     "face mask",
+    "makeup",
+    "jewelry",
+    "fashion",
+    "perfume",
+    "lipstick",
 ]
+
+# Rotated each run so 09:00 / 17:00 UTC and successive days are not the same 15 queries.
+KEYWORD_POOL = DEFAULT_DAILY_KEYWORDS + [
+    "hair growth oil",
+    "retinol cream",
+    "collagen peptides",
+    "teeth whitening",
+    "natural deodorant",
+    "brow serum",
+    "eyelash serum",
+    "self tanner",
+    "acne treatment",
+    "niacinamide serum",
+    "hyaluronic acid",
+    "dry shampoo",
+    "hair mask",
+    "beard oil",
+    "body scrub",
+    "gold necklace",
+    "hoop earrings",
+    "loungewear",
+    "activewear",
+    "yoga set",
+    "silk pillowcase",
+    "protein powder",
+    "greens powder",
+    "mushroom coffee",
+    "sleep gummies",
+    "electrolyte drink",
+    "collagen powder",
+    "ashwagandha",
+    "baby skincare",
+    "pet shampoo",
+    "candle brand",
+    "protein bar",
+]
+
+COUNTRY_ROTATION = ("US", "GB", "CA", "AU")
+
+
+def select_run_keywords(count: int = 12, now: Optional[datetime] = None) -> List[str]:
+    """Slice KEYWORD_POOL so consecutive cron slots are not identical."""
+    pool = list(KEYWORD_POOL)
+    count = max(1, min(int(count), len(pool)))
+    if now is None:
+        now = datetime.now(timezone.utc)
+    slot = 0 if now.hour < 14 else 1
+    offset = ((now.toordinal() * 2 + slot) * count) % len(pool)
+    doubled = pool + pool
+    return doubled[offset : offset + count]
+
+
+def select_run_country(now: Optional[datetime] = None) -> str:
+    if now is None:
+        now = datetime.now(timezone.utc)
+    return COUNTRY_ROTATION[now.toordinal() % len(COUNTRY_ROTATION)]
 
 # Hosts that look like ads but are never a DTC brand site.
 _SKIP_HOST_SUFFIXES = (
@@ -287,6 +349,32 @@ def _host_of(url: str) -> str:
     return (urlparse(url).hostname or "").lower().removeprefix("www.")
 
 
+_MULTI_PART_TLDS = {
+    "co.uk", "org.uk", "com.au", "net.au", "co.nz", "co.za", "com.br", "co.jp",
+}
+
+
+def registrable_domain(host: str) -> str:
+    """vegamour.com from try.vegamour.com / www.vegamour.com."""
+    host = (host or "").lower().removeprefix("www.")
+    parts = [p for p in host.split(".") if p]
+    if len(parts) < 2:
+        return host
+    last2 = ".".join(parts[-2:])
+    if last2 in _MULTI_PART_TLDS and len(parts) >= 3:
+        return ".".join(parts[-3:])
+    return last2
+
+
+def _is_known_host(host: str, known_hosts: Set[str], known_roots: Set[str]) -> bool:
+    host = (host or "").lower().removeprefix("www.")
+    if not host:
+        return False
+    if host in known_hosts:
+        return True
+    return registrable_domain(host) in known_roots
+
+
 def is_skip_landing_host(host: str) -> bool:
     host = (host or "").lower().removeprefix("www.")
     if not host:
@@ -313,8 +401,17 @@ def _extract_shopify_domain(landing_url: str) -> Optional[str]:
     return extract_candidate_domain(landing_url)
 
 
-def _collect_from_raw_ads(raw_ads: List[Dict], *, max_ads: int, seen_domains: Set[str]) -> List[Dict]:
+def _collect_from_raw_ads(
+    raw_ads: List[Dict],
+    *,
+    max_ads: int,
+    seen_domains: Set[str],
+    known_hosts: Optional[Set[str]] = None,
+    known_roots: Optional[Set[str]] = None,
+) -> List[Dict]:
     ads_data: List[Dict] = []
+    known_hosts = known_hosts or set()
+    known_roots = known_roots or set()
     for ad in raw_ads:
         if len(ads_data) >= max_ads:
             break
@@ -322,6 +419,9 @@ def _collect_from_raw_ads(raw_ads: List[Dict], *, max_ads: int, seen_domains: Se
         real = unwrap_landing_url(wrapped) if wrapped else None
         domain = extract_candidate_domain(wrapped or "")
         if not domain or domain in seen_domains:
+            continue
+        if _is_known_host(domain, known_hosts, known_roots):
+            seen_domains.add(domain)
             continue
         seen_domains.add(domain)
         ads_data.append({
@@ -342,6 +442,8 @@ def _discover_on_page(
     max_scroll: int,
     max_ads: int,
     seen_domains: Set[str],
+    known_hosts: Optional[Set[str]] = None,
+    known_roots: Optional[Set[str]] = None,
 ) -> List[Dict]:
     url = _ads_library_url(keyword, country)
     print(f"[MetaAds] searching for '{keyword}' in {country}...")
@@ -356,7 +458,13 @@ def _discover_on_page(
     print("[MetaAds] extracting ad data...")
     raw_ads = page.evaluate(_EXTRACT_ADS_JS) or []
     print(f"[MetaAds] extracted {len(raw_ads)} raw landing links")
-    ads_data = _collect_from_raw_ads(raw_ads, max_ads=max_ads, seen_domains=seen_domains)
+    ads_data = _collect_from_raw_ads(
+        raw_ads,
+        max_ads=max_ads,
+        seen_domains=seen_domains,
+        known_hosts=known_hosts,
+        known_roots=known_roots,
+    )
     print(f"[MetaAds] {len(ads_data)} unique DTC-looking domains for '{keyword}'")
     return ads_data
 
@@ -623,17 +731,26 @@ def discover_and_enrich(
     headless: bool = True,
     cdp_url: Optional[str] = None,
     debug_dump: Optional[str] = None,
+    exclude_domains: Optional[Set[str]] = None,
 ) -> List[Dict]:
     """
     One browser session across keywords. Enrich until `quota` qualified
     Shopify brands (email or Instagram) or keywords run out.
+
+    exclude_domains: already in pr_brands — skip so quota means new brands.
     """
     from playwright.sync_api import sync_playwright
 
     all_brands: List[Dict] = []
-    seen_domains: Set[str] = set()
+    known_hosts = {(d or "").lower().removeprefix("www.") for d in (exclude_domains or set()) if d}
+    known_roots = {registrable_domain(h) for h in known_hosts}
+    seen_domains: Set[str] = set(known_hosts)
     enriched_domains: Set[str] = set()
     discovered: List[Dict] = []
+    if known_hosts:
+        print(
+            f"[MetaAds] skipping {len(known_hosts)} hosts / {len(known_roots)} root domains already in pr_brands"
+        )
 
     with sync_playwright() as p:
         browser, context, owns = _open_browser(p, headless=headless, cdp_url=cdp_url)
@@ -649,6 +766,8 @@ def discover_and_enrich(
                     max_scroll=max_scroll,
                     max_ads=max_ads_per_keyword,
                     seen_domains=seen_domains,
+                    known_hosts=known_hosts,
+                    known_roots=known_roots,
                 )
                 discovered.extend(ads)
                 time.sleep(random.uniform(1.0, 2.0))
@@ -672,6 +791,10 @@ def discover_and_enrich(
             break
         domain = ad.get("shopify_domain")
         if not domain or domain in enriched_domains:
+            continue
+        host = domain.lower().removeprefix("www.")
+        if _is_known_host(host, known_hosts, known_roots):
+            print(f"[MetaAds] skip known {host}")
             continue
         enriched_domains.add(domain)
         brand = enrich_shopify_brand(ad, verify_shopify=True)

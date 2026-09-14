@@ -21,10 +21,10 @@ Goal: discover Shopify brands running Meta ads → enrich emails → cold outrea
 | 1 | Scrape Meta Ad Library → Shopify DTC | `creator_dashboard` Python scripts |
 | 2 | Insert `status=draft` + `[META_ADS_OUTREACH]` notes | `pr_brands` (production Supabase) |
 | 3 | Hunter domain-search + verify | `hunter_draft_enricher.py` |
-| 4 | Send UGC outreach emails | `brand_outreach_api.send_ugc_outreach_email` |
+| 4 | Send locked PR + UGC swap emails | `run_meta_ads_outreach_send.py` → `send_outreach_email` |
 
 **Cron cadence:** 2 runs/day (suggested: **09:00 UTC** and **17:00 UTC**).
-Each run: scrape (quota 50) → Hunter → outreach send (cap per run).
+Each run: scrape (quota 50) → Hunter → outreach send (cap 50). Daily objective: **100 new brands**.
 
 ---
 
@@ -111,8 +111,8 @@ LIMIT 40;
 
 **Important:** `/api/admin/email/brands-for-outreach` only returns `status=published`.
 For this flow, **do not** use `get_brands_for_outreach()` alone.
-Select Meta Ads drafts via SQL (python + `DATABASE_URL`) or a small helper, then send by `brand_id` with `send_ugc_outreach_email(brand_id)`.
-The send endpoint accepts drafts as long as `contact_email` is set.
+Select Meta Ads drafts via SQL (python + `DATABASE_URL`) or `run_meta_ads_outreach_send.py`, then send with `send_outreach_email` and the locked PR + UGC swap body.
+The send endpoint accepts drafts as long as `contact_email` is set. Do not use `/brand-outreach/render`. Do not use `send_bulk_b2b_inventory_outreach`.
 
 ---
 
@@ -299,23 +299,27 @@ ids = brand_ids[:MAX_SEND]
 # from brand_outreach_api import render_outreach_email
 # print(render_outreach_email(ids[0]))
 
-results = send_bulk_ugc_outreach(brand_ids=ids, delay_seconds=2.0)
-print(results)
+python /home/hermes/.hermes/profiles/brand-acquisition/skills/run_meta_ads_outreach_send.py --limit 50
 ```
+
+Prefer the script (no agent code). Body is locked. Subject is a variation of `PR + UGC swap for {brand}?`.
 
 Rules:
 
-- **Only** `send_ugc_outreach_email` / `send_bulk_ugc_outreach`
+- **Only** `run_meta_ads_outreach_send.py` + `send_outreach_email`
+- Do **not** call `render_outreach_email` or `/brand-outreach/render` from this cron
 - Cap **≤ 25** emails per cron run (adjust with Mahery if volume grows)
 - `delay_seconds ≥ 1.5` (prefer 2.0)
 - If send returns `success: False` → log error, do not invent another channel
 - Duplicate protection is already on the backend (`brand_outreach_tracking`)
 
-Pitch product (what the email should sell): gifted product → 1 organic + 1 UGC file, 6‑month usage — same as roster / For Brands gifted PR. Use the existing UGC render path; do not invent follower counts or fake SKUs.
+Locked email: Mazza’s **PR + UGC swap** note (5 organic + 5 UGC, no platform fee). Subject is only `PR + UGC swap for {brand}?`. Do not use excess-inventory B2B or the “Free UGC / 3 creators” HTML.
 
 ---
 
 ## Suggested cron (2× daily)
+
+Hermes must **not** improvise this pipeline. The agent either runs the wrapper or summarizes wrapper stdout. No repo edits.
 
 Put a shell wrapper on the VPS, e.g. `/home/hermes/apps/creator_dashboard/scripts/run_meta_ads_acquisition.sh`:
 
@@ -341,12 +345,8 @@ python scripts/crawl_meta_ads.py --daily --quota 50 --save-to-db \
 echo "[2/3] hunter enrich/verify"
 python scripts/hunter_draft_enricher.py --meta-ads-outreach --verify --replace --limit 80
 
-echo "[3/3] outreach send via Hermes skill / API"
-# Prefer invoking the brand-acquisition Hermes turn here, OR a small python
-# that imports brand_outreach_api and sends ≤25 ready leads (see Step 4).
-# Example if a local runner exists:
-#   hermes -p brand-acquisition run --prompt "Run META_ADS_OUTREACH send: fetch ready leads, send_bulk_ugc_outreach max 25"
-python /home/hermes/.hermes/profiles/brand-acquisition/skills/run_meta_ads_outreach_send.py || true
+echo "[3/3] outreach send (locked PR + UGC swap template)"
+python /home/hermes/.hermes/profiles/brand-acquisition/skills/run_meta_ads_outreach_send.py --limit 50
 
 echo "===== DONE $STAMP ====="
 ```
@@ -369,8 +369,8 @@ Make executable: `chmod +x .../run_meta_ads_acquisition.sh`
 2. Confirm scrape log shows inserts / or today’s `META_ADS_OUTREACH` count > 0  
 3. Run Hunter `--meta-ads-outreach --verify --replace`  
 4. Fetch ready IDs (email + not contacted)  
-5. Send ≤ 25 via `send_bulk_ugc_outreach`  
-6. Report to Mahery: scraped N / hunter enriched M / sent K / errors  
+5. Send ≤ 50 via `run_meta_ads_outreach_send.py` (locked PR + UGC swap only)  
+6. Report to Mahery: scraped N / hunter enriched M / sent K / errors. Do not edit backend code.  
 
 ---
 
@@ -417,4 +417,4 @@ Brand-acquisition Hermes already has:
 
 ## One-liner for Hermes memory
 
-> Twice daily: `crawl_meta_ads.py --daily --save-to-db` → `hunter_draft_enricher.py --meta-ads-outreach --verify --replace` → SQL-select `[META_ADS_OUTREACH]` drafts with good emails → `send_bulk_ugc_outreach` (max 25) via backend API.
+> Twice daily: run `scripts/run_meta_ads_acquisition.sh` only. That is scrape → Hunter → `run_meta_ads_outreach_send.py` (locked PR + UGC swap, max 50). Do not call `/brand-outreach/render`. Do not send B2B excess-inventory. Do not edit backend code mid-job.

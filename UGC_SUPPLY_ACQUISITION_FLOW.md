@@ -20,8 +20,11 @@ cd /home/hermes/apps/creator_dashboard
 source venv/bin/activate
 export PYTHONUNBUFFERED=1
 mkdir -p logs
+# If VPS IP is TikTok-blocked, set one of these in .env before crawling:
+#   TIKTOK_SHOP_PROXY=http://USER:PASS@host:port
+#   IG_PROXY=http://USER:PASS@host:port
 python -u scripts/crawl_tiktok_ugc.py --daily --save-to-db \
-  --quota 15 --max-handles 400 --serp-pages 5 --workers 4 \
+  --quota 20 --max-handles 500 --serp-pages 5 --workers 2 \
   -o logs/tiktok_ugc_$(date -u +%Y%m%d_%H%M).json
 ```
 
@@ -33,13 +36,23 @@ Success looks like:
 Database insert: 15 inserted, 0 skipped, 0 errors
 ```
 
+Qualified rows are inserted **after each enrich batch**, not only at the end. If cron hits GNU `timeout` (`crawl_exit=124`), already-qualified creators must still be in `ugc_supply`. `inserted=0` with `qualified>0` in the progress lines means the crawler never flushed — that is a bug, not “no creators found.”
+
+If logs show `[InHouse/TT] embed status=400` / `profile html empty` / `No TikTok data` for almost every handle: **TikTok is blocking this server IP**. Waiting alone often fails while 5×/day crawls keep hammering. Fix:
+
+1. Set `TIKTOK_SHOP_PROXY` or `IG_PROXY` (residential) in `/home/hermes/apps/creator_dashboard/.env`
+2. Confirm crawl logs print `[InHouse/TT] proxy enabled host=...` or `playwright proxy http://...`
+3. If you also see `SSL: CERTIFICATE_VERIFY_FAILED` / `self-signed certificate` through the proxy, the HTTP scraper must disable TLS verify on that session (shipped). Confirm logs print `TLS verify disabled (proxy MITM / self-signed)`.
+4. Rerun the crawl command above (prefer `--workers 2` with a working proxy)
+5. Until proxy works: set `UGC_SKIP_CRAWL=1` for cron, or pause the cron — SerpAPI + empty enrich wastes money and worsens the ban
+
 `example@example.com` = you did not run this script. Stop and rerun the command above.
 
 Or: `bash scripts/run_ugc_supply_crawl.sh 15`
 
 ---
 
-## Pipeline overview (2× daily)
+## Pipeline overview (5× daily)
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐     ┌──────────────────┐
@@ -55,8 +68,8 @@ Or: `bash scripts/run_ugc_supply_crawl.sh 15`
 | 3 | List ready creators | `GET /api/admin/ugc-supply/for-outreach` |
 | 4 | Send signup / apply emails | `POST /api/admin/ugc-supply/outreach/bulk` |
 
-**Cron cadence:** 2 runs/day (suggested: **09:30 UTC** and **17:30 UTC**, offset from brand Meta Ads).
-Each run: crawl (quota 50) → send ready leads (cap 25).
+**Cron cadence:** 5 runs/day at **07:30 / 10:30 / 13:30 / 16:30 / 19:30 UTC** (offset from Meta Ads 09:00 / 17:00).
+Each run: crawl quota **20** qualified → send ≤20. Daily objective: **100 new creator prospects**.
 
 No Hunter step. These creators already have a public email in bio.
 
@@ -172,7 +185,7 @@ DATABASE_URL=postgresql://...
 SERPAPI_API_KEY=...
 ```
 
-Expected runtime: ~8–15 minutes for quota 50.
+Expected runtime: ~8–15 minutes for quota 50. Cron wraps the crawl in `timeout --kill-after=60 2400` (40 minutes). Do not treat `crawl_exit=124` as “zero creators” — check `RESULT_CRAWL inserted=` and whether `Database insert:` printed before the timeout.
 
 ---
 
@@ -273,7 +286,7 @@ requests.patch(
 
 ---
 
-## Suggested cron (2× daily)
+## Suggested cron (5× daily)
 
 `/home/hermes/apps/creator_dashboard/scripts/run_ugc_supply_acquisition.sh`:
 
@@ -306,9 +319,12 @@ echo "===== DONE $STAMP ====="
 Crontab (as user `hermes`):
 
 ```cron
-# UGC creator acquisition — 2x daily UTC (offset from Meta Ads 09:00 / 17:00)
-30 9 * * * /home/hermes/apps/creator_dashboard/scripts/run_ugc_supply_acquisition.sh
-30 17 * * * /home/hermes/apps/creator_dashboard/scripts/run_ugc_supply_acquisition.sh
+# UGC creator acquisition — 5x daily UTC (offset from Meta Ads 09:00 / 17:00)
+30 7 * * * /home/hermes/apps/creator_dashboard/scripts/run_ugc_supply_acquisition.sh
+30 10 * * * /home/hermes/apps/creator_dashboard/scripts/run_ugc_supply_acquisition.sh
+30 13 * * * /home/hermes/apps/creator_dashboard/scripts/run_ugc_supply_acquisition.sh
+30 16 * * * /home/hermes/apps/creator_dashboard/scripts/run_ugc_supply_acquisition.sh
+30 19 * * * /home/hermes/apps/creator_dashboard/scripts/run_ugc_supply_acquisition.sh
 ```
 
 ---
@@ -328,6 +344,7 @@ Crontab (as user `hermes`):
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
 | 0 seeds | SerpAPI key / credits / timeout | Check `SERPAPI_API_KEY`; retry |
+| 0 profiles / embed `400` / empty HTML | TikTok blocking VPS IP | Set `TIKTOK_SHOP_PROXY` or `IG_PROXY` (residential); confirm proxy log line; `--workers 1`; pause crawl until fixed |
 | 0 qualified | Email-in-bio is scarce | Normal; raise `--max-handles`, do not loosen email or 1k floor |
 | Inserts all skipped | Handle already in `ugc_supply` | Normal; do not `--ignore-seen` on cron |
 | `for-outreach` empty | All emailed or none qualified | Wait for next crawl; do not follow up same day |
@@ -339,8 +356,10 @@ Crontab (as user `hermes`):
 ## Files Mahery should sync to the VPS
 
 - `scripts/crawl_tiktok_ugc.py`
+- `scripts/run_ugc_supply_acquisition.sh`
 - `services/tiktok_ugc_profile_scraper.py`
 - `services/tiktok_ugc_lead_writer.py`
+- `services/inhouse_social_scraper.py` (TikTok HTTP + Playwright proxy)
 - `routes/ugc_supply.py`
 - This file: `UGC_SUPPLY_ACQUISITION_FLOW.md`
 

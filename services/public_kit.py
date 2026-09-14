@@ -227,3 +227,100 @@ def serialize_public_recent_posts(raw_items, thumbnails=None, default_platform=N
         if len(out) >= limit:
             break
     return out
+
+
+def serialize_tiktok_picker_videos(*sources, handle='', limit=40):
+    """Kit-studio picker rows from Login Kit / scrape payloads. No tokens."""
+    handle = str(handle or '').strip().lstrip('@')
+    out = []
+    seen = set()
+    cap = max(1, min(int(limit or 40), 60))
+    for source in sources:
+        for post in _as_list(source):
+            if not isinstance(post, dict):
+                continue
+            vid = str(post.get('id') or post.get('shortCode') or post.get('videoId') or '').strip()
+            url = (
+                post.get('share_url')
+                or post.get('post_url')
+                or post.get('url')
+                or post.get('webVideoUrl')
+                or ''
+            )
+            url = str(url or '').strip()
+            if not url and vid:
+                url = f'https://www.tiktok.com/@{handle}/video/{vid}' if handle else f'https://www.tiktok.com/@/video/{vid}'
+            if not url:
+                continue
+            key = f"id:{vid}" if vid else url.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            cover = (
+                post.get('cover_image_url')
+                or post.get('thumbnail_url')
+                or post.get('coverUrl')
+                or ((post.get('videoMeta') or {}).get('coverUrl') if isinstance(post.get('videoMeta'), dict) else '')
+                or ''
+            )
+            title = str(post.get('title') or post.get('text') or post.get('caption') or '').strip()[:80]
+            description = str(post.get('description') or post.get('caption') or post.get('text') or '').strip()[:200]
+            item = {
+                'id': vid or None,
+                'url': url,
+                'title': title,
+                'description': description,
+                'cover_url': str(cover or '').strip() or None,
+            }
+            for key_name, value in (
+                ('likes', post.get('likes') if post.get('likes') is not None else post.get('like_count') or post.get('diggCount')),
+                ('views', post.get('views') if post.get('views') is not None else post.get('view_count') or post.get('playCount')),
+                ('comments', post.get('comments') if post.get('comments') is not None else post.get('comment_count') or post.get('commentCount')),
+            ):
+                try:
+                    if value not in (None, ''):
+                        item[key_name] = int(value)
+                except (TypeError, ValueError):
+                    pass
+            out.append(item)
+            if len(out) >= cap:
+                return out
+    return out
+
+
+def social_kit_stats(creator=None, scrape=None, oauth_videos=None, handle=''):
+    """Likes / video count / avg views / display name from Login Kit + scrape."""
+    creator = creator or {}
+    scrape = scrape or {}
+    likes = int(creator.get('total_likes') or scrape.get('like_count') or 0)
+    video_count = int(
+        creator.get('social_media_count')
+        or creator.get('total_posts')
+        or scrape.get('post_count')
+        or 0
+    )
+    picker = serialize_tiktok_picker_videos(
+        oauth_videos,
+        scrape.get('recent_posts'),
+        handle=handle or creator.get('social_handle') or '',
+        limit=40,
+    )
+    view_vals = [int(v.get('views') or 0) for v in picker if int(v.get('views') or 0) > 0]
+    avg_views = int(round(sum(view_vals) / len(view_vals))) if view_vals else 0
+    display_name = (
+        str(scrape.get('full_name') or '').strip()
+        or str(creator.get('display_name') or '').strip()
+        or str(creator.get('first_name') or '').strip()
+    )
+    try:
+        engagement = float(creator.get('engagement_rate') or 0) or float(scrape.get('engagement_rate') or 0)
+    except (TypeError, ValueError):
+        engagement = 0.0
+    return {
+        'likes_count': likes,
+        'video_count': video_count,
+        'avg_views': avg_views,
+        'display_name': display_name or None,
+        'engagement_rate': engagement,
+        'tiktok_videos': picker,
+    }

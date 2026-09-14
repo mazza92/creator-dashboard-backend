@@ -185,3 +185,42 @@ def insert_leads(
     finally:
         conn.close()
     return stats
+
+
+class IncrementalInserter:
+    """Insert qualified leads after each crawl batch so a timeout cannot drop them."""
+
+    def __init__(self, *, dry_run: bool = False, only_qualified: bool = True):
+        self.dry_run = dry_run
+        self.only_qualified = only_qualified
+        self.seen: set = set()
+        self.totals = {"inserted": 0, "skipped": 0, "errors": 0, "considered": 0}
+
+    def add(self, records: List[Dict]) -> Dict[str, int]:
+        fresh: List[Dict] = []
+        for rec in records or []:
+            handle = (rec.get("handle") or "").lstrip("@").strip().lower()
+            if not handle or handle in self.seen:
+                continue
+            self.seen.add(handle)
+            fresh.append(rec)
+        if not fresh:
+            return {"inserted": 0, "skipped": 0, "errors": 0, "considered": 0}
+        stats = insert_leads(
+            fresh,
+            dry_run=self.dry_run,
+            only_qualified=self.only_qualified,
+        )
+        for key in self.totals:
+            self.totals[key] += int(stats.get(key) or 0)
+        print(
+            f"Database {'preview' if self.dry_run else 'insert'}: "
+            f"{self.totals['inserted']} inserted, {self.totals['skipped']} skipped, "
+            f"{self.totals['errors']} errors"
+        )
+        print(
+            "RESULT_CRAWL "
+            f"inserted={self.totals['inserted']} skipped={self.totals['skipped']} "
+            f"errors={self.totals['errors']}"
+        )
+        return stats

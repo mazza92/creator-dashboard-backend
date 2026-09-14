@@ -32,6 +32,9 @@ _ALLOWED_HOST_SUFFIXES = (
     "tiktokcdn-us.com",
     "tiktokcdn-eu.com",
     "tiktokcdn-i18n.com",
+    "tiktokcdn-in.com",
+    "tiktokcdn-row.com",
+    "tiktokv.com",
     "ttlivecdn.com",
     "ibyteimg.com",
     "muscdn.com",
@@ -373,6 +376,21 @@ def unwrap_proxied_media_url(url: Optional[str]) -> str:
         return raw
 
 
+def _og_image_from_html(html: str) -> str:
+    if not html:
+        return ""
+    og = re.search(
+        r'property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+        html,
+        re.I,
+    ) or re.search(
+        r'content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
+        html,
+        re.I,
+    )
+    return unescape(og.group(1)).strip() if og else ""
+
+
 def fresh_thumb_from_post_url(post_url: Optional[str]) -> str:
     """Mint a live still from the public post page when signed CDN thumbs have expired."""
     url = str(post_url or "").strip()
@@ -380,9 +398,26 @@ def fresh_thumb_from_post_url(post_url: Optional[str]) -> str:
         return ""
     try:
         if "tiktok.com" in url:
-            resp = requests.get(f"https://www.tiktok.com/oembed?url={url}", timeout=10)
+            resp = requests.get(
+                f"https://www.tiktok.com/oembed?url={url}",
+                headers={"User-Agent": _UA, "Accept": "application/json"},
+                timeout=10,
+            )
             if resp.status_code == 200:
-                return str((resp.json() or {}).get("thumbnail_url") or "").strip()
+                thumb = str((resp.json() or {}).get("thumbnail_url") or "").strip()
+                if thumb:
+                    return thumb
+            page = requests.get(
+                url,
+                headers={
+                    "User-Agent": _UA,
+                    "Accept": "text/html",
+                    "Referer": "https://www.tiktok.com/",
+                },
+                timeout=12,
+            )
+            if page.status_code == 200:
+                return _og_image_from_html(page.text)
         if "instagram.com" in url:
             match = re.search(r"instagram\.com/(?:p|reel|reels)/([^/?#]+)", url, re.I)
             if not match:
@@ -401,17 +436,33 @@ def fresh_thumb_from_post_url(post_url: Optional[str]) -> str:
             )
             if resp.status_code != 200 or not resp.text:
                 return ""
-            og = re.search(
-                r'property="og:image"[^>]+content="([^"]+)"',
-                resp.text,
-            ) or re.search(
-                r'content="([^"]+)"[^>]+property="og:image"',
-                resp.text,
-            )
-            return unescape(og.group(1)).strip() if og else ""
+            return _og_image_from_html(resp.text)
     except Exception as exc:
         print(f"[thumb-recover] {exc}")
     return ""
+
+
+def fetch_post_preview_bytes(post_url: Optional[str]) -> Optional[Tuple[bytes, str]]:
+    """Download a fresh still for a public TikTok / Instagram post URL."""
+    url = str(post_url or "").strip()
+    if not url.startswith("http"):
+        return None
+    thumb = fresh_thumb_from_post_url(url)
+    if not thumb:
+        return None
+    fetched = _fetch_cdn_bytes(thumb, timeout=12)
+    if fetched and fetched[0] and len(fetched[0]) > 800:
+        return fetched
+    try:
+        parsed = urlparse(thumb)
+        resp = requests.get(thumb, headers=_cdn_headers(parsed.netloc), timeout=12)
+        if resp.status_code == 200 and resp.content and len(resp.content) > 800:
+            content_type = resp.headers.get("Content-Type") or "image/jpeg"
+            if content_type.startswith("image/") or "octet-stream" in content_type:
+                return resp.content, content_type.split(";")[0] or "image/jpeg"
+    except Exception as exc:
+        print(f"[post-preview] {exc}")
+    return None
 
 
 def persist_post_thumbnail(

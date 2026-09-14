@@ -584,11 +584,9 @@ class TestInhouseScraperWithApifyFallback(unittest.TestCase):
             "latestVideos": [{"text": "hi", "createTime": 1784400000, "diggCount": 1}],
         }
         scraper = CreatorProfileScraper()
-        with patch.object(scraper, "_apify_scrape_tiktok") as mock_apify:
-            result = scraper.scrape_tiktok_profile("ttuser")
-            self.assertEqual(result["uniqueId"], "ttuser")
-            mock_diy.assert_called_once()
-            mock_apify.assert_not_called()
+        result = scraper.scrape_tiktok_profile("ttuser")
+        self.assertEqual(result["uniqueId"], "ttuser")
+        mock_diy.assert_called_once()
 
 
 if __name__ == "__main__":

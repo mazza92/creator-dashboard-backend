@@ -46,9 +46,69 @@ class CreatorProfileScraper:
             return profile
         raise ValueError(f"In-house Instagram scrape thin for @{handle}")
 
-    def scrape_tiktok_profile(self, handle: str) -> Dict[str, Any]:
-        """Scrape TikTok profile via in-house scraper (no Apify fallback)."""
+    def scrape_tiktok_profile(
+        self,
+        handle: str,
+        *,
+        user_id=None,
+        access_token: Optional[str] = None,
+        oauth_profile: Optional[Dict[str, Any]] = None,
+        allow_html_fallback: bool = True,
+    ) -> Dict[str, Any]:
+        """TikTok profile for a signed-in creator.
+
+        Prefer official Login Kit (user.info + video.list). HTML scrape is only
+        a fallback for legacy accounts that never connected Login Kit.
+        """
+        from services.tiktok_login_kit import (
+            TikTokLoginKitError,
+            fetch_raw_scrape,
+            oauth_profile_to_raw_scrape,
+            resolve_access_token,
+        )
+
         handle = handle.lstrip('@').strip()
+        if oauth_profile:
+            profile = oauth_profile_to_raw_scrape(oauth_profile)
+            if diy_scrape_is_acceptable(profile, 'tiktok'):
+                print(f"[Scrape] tt @{handle} via login-kit snapshot")
+                return profile
+            print(f"[Scrape] tt @{handle} login-kit snapshot thin, fetching live")
+
+        token = access_token
+        stored = None
+        if not token:
+            from services.tiktok_login_kit import load_tiktok_credentials
+            client_key, client_secret = load_tiktok_credentials()
+            token, stored = resolve_access_token(
+                self.db_conn,
+                user_id=user_id,
+                handle=handle,
+                access_token=access_token,
+                client_key=client_key,
+                client_secret=client_secret,
+            )
+        if token:
+            try:
+                profile = fetch_raw_scrape(token, handle_hint=handle)
+                if diy_scrape_is_acceptable(profile, 'tiktok'):
+                    print(f"[Scrape] tt @{handle} via login-kit")
+                    return profile
+                raise TikTokLoginKitError(f"Login Kit profile thin for @{handle}")
+            except TikTokLoginKitError as exc:
+                print(f"[Scrape] tt @{handle} login-kit failed ({exc}); not using HTML for connected users")
+                raise ValueError(
+                    f"Could not refresh TikTok via Login Kit for @{handle}. Reconnect TikTok and try again."
+                ) from exc
+
+        if stored:
+            raise ValueError(
+                f"TikTok Login Kit token expired for @{handle}. Reconnect TikTok and try again."
+            )
+
+        if not allow_html_fallback:
+            raise ValueError(f"Connect TikTok with Login Kit to load @{handle}")
+
         profile = diy_scrape_tiktok(handle, results_limit=12)
         if diy_scrape_is_acceptable(profile, 'tiktok'):
             print(f"[Scrape] tt @{handle} via diy")
@@ -210,7 +270,10 @@ class CreatorProfileScraper:
                     or ''
                 )
                 vid = str(p.get('id') or p.get('videoId') or '').strip()
-                post_url = f"https://www.tiktok.com/@{raw_scrape.get('uniqueId') or ''}/video/{vid}" if vid else None
+                post_url = (
+                    p.get('share_url')
+                    or (f"https://www.tiktok.com/@{raw_scrape.get('uniqueId') or ''}/video/{vid}" if vid else None)
+                )
                 likes = int(p.get('diggCount') or p.get('likesCount') or 0)
                 comments = int(p.get('commentCount') or p.get('commentsCount') or 0)
                 views = int(p.get('playCount') or p.get('videoViewCount') or 0)
@@ -248,6 +311,7 @@ class CreatorProfileScraper:
                 or raw_scrape.get('videoCount')
                 or 0
             ),
+            'like_count': int(raw_scrape.get('heartCount') or raw_scrape.get('likesCount') or 0),
             'is_verified': raw_scrape.get('isVerified') or raw_scrape.get('verified', False),
             'is_public': not (raw_scrape.get('isPrivate') or raw_scrape.get('privateAccount', False)),
             'is_business_account': raw_scrape.get('isBusinessAccount', False),
@@ -942,6 +1006,39 @@ Analyze and return JSON only.'''
                 profile_data.get('next_refresh_at'),
             ))
 
+            followers = int(profile_data.get('follower_count') or 0)
+            likes = int(profile_data.get('like_count') or 0)
+            posts = int(profile_data.get('post_count') or 0)
+            handle = (profile_data.get('handle') or '').strip().lstrip('@')
+            platform = (profile_data.get('primary_platform') or '').strip().lower() or None
+            cur2 = self.db_conn.cursor()
+            cur2.execute(
+                """
+                UPDATE creators SET
+                    followers_count = CASE WHEN %s > 0 THEN %s ELSE followers_count END,
+                    social_follower_count = CASE WHEN %s > 0 THEN %s ELSE social_follower_count END,
+                    social_handle = COALESCE(NULLIF(%s, ''), social_handle),
+                    social_platform = COALESCE(NULLIF(social_platform, ''), %s),
+                    engagement_rate = CASE WHEN %s > 0 THEN %s ELSE engagement_rate END,
+                    total_likes = CASE WHEN %s > 0 THEN %s ELSE total_likes END,
+                    social_media_count = CASE WHEN %s > 0 THEN %s ELSE social_media_count END,
+                    total_posts = CASE WHEN %s > 0 THEN %s ELSE total_posts END
+                WHERE user_id = %s
+                """,
+                (
+                    followers, followers,
+                    followers, followers,
+                    handle or None,
+                    platform,
+                    float(profile_data.get('engagement_rate') or 0),
+                    float(profile_data.get('engagement_rate') or 0),
+                    likes, likes,
+                    posts, posts,
+                    posts, posts,
+                    user_id,
+                ),
+            )
+
             self.db_conn.commit()
             return True
 
@@ -1000,7 +1097,9 @@ Analyze and return JSON only.'''
 
 def scrape_and_enrich_creator(user_id, handle: str, platform: str,
                               db_conn=None, skip_minimums: bool = False,
-                              skip_follower_floor: bool = False) -> Tuple[Dict, Optional[Dict]]:
+                              skip_follower_floor: bool = False,
+                              oauth_profile: Optional[Dict[str, Any]] = None,
+                              access_token: Optional[str] = None) -> Tuple[Dict, Optional[Dict]]:
     """
     Full pipeline: scrape profile, process, run text analysis, save.
 
@@ -1011,6 +1110,8 @@ def scrape_and_enrich_creator(user_id, handle: str, platform: str,
         db_conn: Database connection
         skip_minimums: Skip the legacy 5-post check (onboarding uses the 12-post quality bar)
         skip_follower_floor: Skip the full quality bar (kit refresh only)
+        oauth_profile: TikTok Login Kit snapshot (skips HTML scrape)
+        access_token: Live TikTok Login Kit token
     """
     scraper = CreatorProfileScraper(db_conn)
     platform = (platform or '').lower()
@@ -1019,7 +1120,13 @@ def scrape_and_enrich_creator(user_id, handle: str, platform: str,
     if platform == 'instagram':
         raw_scrape = scraper.scrape_instagram_profile(handle)
     elif platform == 'tiktok':
-        raw_scrape = scraper.scrape_tiktok_profile(handle)
+        raw_scrape = scraper.scrape_tiktok_profile(
+            handle,
+            user_id=user_id,
+            access_token=access_token,
+            oauth_profile=oauth_profile,
+            allow_html_fallback=not bool(access_token or oauth_profile),
+        )
     elif platform == 'youtube':
         raw_scrape = scraper.scrape_youtube_profile(handle)
     else:

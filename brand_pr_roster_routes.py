@@ -24,6 +24,7 @@ from psycopg2.extras import RealDictCursor, Json
 from pr_crm_routes import get_db_connection, convert_decimals
 from social_verification_routes import normalize_country_code
 from services.roster_demand import fill_target, mark_focus, ensure_campaign_spotlight_column
+from services.kit_view_tracking import public_kit_url, record_brand_profile_view
 from services.brand_billing import (
     billing_public_summary,
     can_mint_campaign,
@@ -44,6 +45,8 @@ _SCHEMA_READY = False
 _SCHEMA_LOCK = threading.Lock()
 _ROSTER_APP_COLUMNS = ("campaign_id", "declined_at", "shipped_at")
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
+PUBLIC_APP_STATUSES = ("review", "ships", "posted", "declined")
+ADMIN_APP_STATUSES = PUBLIC_APP_STATUSES + ("hidden",)
 
 DEFAULT_DEAL_CHIPS = [
     "Organic posts",
@@ -1065,11 +1068,13 @@ def _load_campaign_row(cursor, where_sql, params, *, allow_closed=False, skip_ex
     return campaign
 
 
-def _fetch_applications(cursor, campaign):
+def _fetch_applications(cursor, campaign, *, include_hidden=False):
     brand_id = campaign["brand_id"]
     campaign_id = campaign["id"]
+    statuses = ADMIN_APP_STATUSES if include_hidden else PUBLIC_APP_STATUSES
+    status_sql = ", ".join(f"'{s}'" for s in statuses)
     cursor.execute(
-        """
+        f"""
         SELECT
             a.id AS application_id,
             a.creator_id,
@@ -1132,7 +1137,7 @@ def _fetch_applications(cursor, campaign):
         LEFT JOIN media_kits mk ON mk.creator_id = c.id
         WHERE a.brand_id = %s
           AND (a.campaign_id IS NULL OR a.campaign_id = %s)
-          AND a.status IN ('review', 'ships', 'posted', 'declined')
+          AND a.status IN ({status_sql})
         ORDER BY a.applied_at DESC
         """,
         (brand_id, campaign_id),
@@ -1157,6 +1162,7 @@ def _card_from_row(row, *, reveal_shipping, selected_ids, campaign_status):
         "status": status,
         "selected": is_selected,
         "skipped": status == "declined",
+        "hidden": status == "hidden",
         "name": _display_name(row),
         "handle": _handle(row),
         "avatar_url": avatar,
@@ -1178,6 +1184,11 @@ def _card_from_row(row, *, reveal_shipping, selected_ids, campaign_status):
         "applied_at": row.get("applied_at").isoformat() if row.get("applied_at") else None,
         "shipped_at": row.get("shipped_at").isoformat() if row.get("shipped_at") else None,
         "kit_slug": row.get("kit_slug") or "",
+        "kit_url": public_kit_url(
+            row.get("kit_slug") or row.get("username"),
+            row.get("creator_id"),
+            row.get("brand_id"),
+        ),
     }
     if reveal_shipping and is_selected and status != "declined":
         card["shipping_address"] = {
@@ -1232,8 +1243,8 @@ def _campaign_public(campaign, cards):
     )
 
 
-def _build_roster_response(cursor, campaign):
-    rows = _fetch_applications(cursor, campaign)
+def _build_roster_response(cursor, campaign, *, include_hidden=False):
+    rows = _fetch_applications(cursor, campaign, include_hidden=include_hidden)
     _persist_hydrated_thumbs(cursor, rows)
     _recover_thumbs_background(rows)
     reveal = campaign.get("status") in ("locked", "shipped")
@@ -1327,6 +1338,67 @@ def get_roster(token):
         conn.commit()
         conn.close()
         return jsonify(payload), 200
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@brand_pr_roster_bp.route("/r/<token>/view", methods=["POST"])
+def record_roster_profile_view(token):
+    """Brand opened a creator drawer on the private roster — treat as a profile view."""
+    try:
+        data = request.get_json(silent=True) or {}
+        app_id = int(data.get("application_id") or 0)
+        if not app_id:
+            return jsonify({"success": False, "error": "application_id required"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        _ensure_schema(cursor, conn)
+        campaign = _load_campaign(cursor, token)
+        if not campaign:
+            conn.close()
+            return jsonify({"success": False, "error": "Roster link not found or expired"}), 404
+
+        cursor.execute(
+            """
+            SELECT a.id, a.status, a.creator_id, a.brand_id,
+                   pb.brand_name, pb.category AS brand_category
+            FROM brand_pr_applications a
+            JOIN pr_brands pb ON pb.id = a.brand_id
+            WHERE a.id = %s AND a.brand_id = %s
+              AND (a.campaign_id IS NULL OR a.campaign_id = %s)
+            """,
+            (app_id, campaign["brand_id"], campaign["id"]),
+        )
+        app = cursor.fetchone()
+        if not app or app.get("status") == "hidden":
+            conn.close()
+            return jsonify({"success": False, "error": "Application not found"}), 404
+
+        viewer_ip = (request.headers.get("X-Forwarded-For") or request.remote_addr or "")[:45]
+        referrer = (request.headers.get("Referer") or "")[:500]
+        result = record_brand_profile_view(
+            cursor,
+            creator_id=app["creator_id"],
+            brand_id=app["brand_id"],
+            brand_name=app.get("brand_name"),
+            brand_category=app.get("brand_category"),
+            viewer_ip=viewer_ip,
+            referrer=referrer,
+            notify=True,
+        )
+        if result.get("recorded"):
+            _record_roster_event(
+                cursor,
+                "roster_profile_view",
+                brand_id=app["brand_id"],
+                creator_id=app["creator_id"],
+                meta={"campaign_id": campaign["id"], "application_id": app_id},
+            )
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, **result}), 200
     except Exception as e:
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
@@ -2127,9 +2199,96 @@ def admin_get_campaign(campaign_id):
         if not campaign:
             conn.close()
             return jsonify({"success": False, "error": "Campaign not found"}), 404
-        payload = _build_roster_response(cursor, campaign)
+        payload = _build_roster_response(cursor, campaign, include_hidden=True)
         conn.close()
         return jsonify(payload), 200
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _admin_toggle_hidden(campaign_id, *, hide):
+    data = request.get_json(silent=True) or {}
+    try:
+        app_id = int(data.get("application_id") or 0)
+    except (TypeError, ValueError):
+        app_id = 0
+    if not app_id:
+        return jsonify({"success": False, "error": "application_id required"}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    _ensure_schema(cursor, conn)
+    campaign = _load_campaign_by_id(cursor, campaign_id)
+    if not campaign:
+        conn.close()
+        return jsonify({"success": False, "error": "Campaign not found"}), 404
+    if campaign.get("status") != "active":
+        conn.close()
+        return jsonify({"success": False, "error": "Picks are locked for this roster"}), 400
+
+    if hide:
+        cursor.execute(
+            """
+            UPDATE brand_pr_applications
+            SET status = 'hidden', updated_at = NOW()
+            WHERE id = %s AND brand_id = %s
+              AND (campaign_id IS NULL OR campaign_id = %s)
+              AND status IN ('review', 'declined', 'hidden')
+            RETURNING id, creator_id
+            """,
+            (app_id, campaign["brand_id"], campaign["id"]),
+        )
+    else:
+        cursor.execute(
+            """
+            UPDATE brand_pr_applications
+            SET status = 'review', declined_at = NULL, updated_at = NOW()
+            WHERE id = %s AND brand_id = %s
+              AND (campaign_id IS NULL OR campaign_id = %s)
+              AND status = 'hidden'
+            RETURNING id, creator_id
+            """,
+            (app_id, campaign["brand_id"], campaign["id"]),
+        )
+    app = cursor.fetchone()
+    if not app:
+        conn.close()
+        return jsonify({"success": False, "error": "Application not found"}), 404
+
+    if hide:
+        selected = [i for i in _selected_ids(campaign) if i != app_id]
+        _save_selected(cursor, campaign["id"], selected)
+    _record_roster_event(
+        cursor,
+        "roster_hide" if hide else "roster_unhide",
+        brand_id=campaign["brand_id"],
+        creator_id=app["creator_id"],
+        meta={"campaign_id": campaign["id"], "application_id": app_id},
+    )
+    conn.commit()
+    campaign = _load_campaign_by_id(cursor, campaign_id)
+    payload = _build_roster_response(cursor, campaign, include_hidden=True)
+    conn.close()
+    return jsonify(payload), 200
+
+
+@brand_pr_roster_bp.route("/admin/campaigns/<int:campaign_id>/hide", methods=["POST"])
+@_admin_required
+def admin_hide_applicant(campaign_id):
+    """Remove a low-quality applicant from the brand roster. Brands never see them."""
+    try:
+        return _admin_toggle_hidden(campaign_id, hide=True)
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@brand_pr_roster_bp.route("/admin/campaigns/<int:campaign_id>/unhide", methods=["POST"])
+@_admin_required
+def admin_unhide_applicant(campaign_id):
+    try:
+        return _admin_toggle_hidden(campaign_id, hide=False)
     except Exception as e:
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
@@ -2268,6 +2427,18 @@ def admin_get_campaign_alias(campaign_id):
 @_admin_required
 def admin_revoke_campaign_alias(campaign_id):
     return admin_revoke_campaign(campaign_id)
+
+
+@admin_brand_pr_bp.route("/campaigns/<int:campaign_id>/hide", methods=["POST"])
+@_admin_required
+def admin_hide_applicant_alias(campaign_id):
+    return admin_hide_applicant(campaign_id)
+
+
+@admin_brand_pr_bp.route("/campaigns/<int:campaign_id>/unhide", methods=["POST"])
+@_admin_required
+def admin_unhide_applicant_alias(campaign_id):
+    return admin_unhide_applicant(campaign_id)
 
 
 @admin_brand_pr_bp.route("/queue", methods=["GET"])

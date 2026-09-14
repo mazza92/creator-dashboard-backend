@@ -11,6 +11,7 @@ from services.public_kit import (
     build_public_socials,
     parse_kit_niches,
     serialize_public_recent_posts,
+    serialize_tiktok_picker_videos,
 )
 
 
@@ -88,6 +89,59 @@ class TestSerializeRecentPosts(unittest.TestCase):
         self.assertEqual(posts[0]['platform'], 'instagram')
         self.assertEqual(posts[0]['thumbnail_url'], 'https://cdn/ig.jpg')
         self.assertEqual(posts[0]['post_url'], 'https://www.instagram.com/p/abc/')
+
+
+class TestTikTokPickerVideos(unittest.TestCase):
+    def test_maps_login_kit_snapshot(self):
+        from services.public_kit import serialize_tiktok_picker_videos
+
+        rows = serialize_tiktok_picker_videos(
+            [{
+                'id': '123',
+                'title': 'GRWM',
+                'cover_image_url': 'https://cdn/cover.jpg',
+                'share_url': 'https://www.tiktok.com/@cdcparis/video/123',
+                'likes': 40,
+                'views': 900,
+            }],
+            handle='cdcparis',
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['url'], 'https://www.tiktok.com/@cdcparis/video/123')
+        self.assertEqual(rows[0]['title'], 'GRWM')
+        self.assertEqual(rows[0]['likes'], 40)
+        self.assertEqual(rows[0]['views'], 900)
+
+    def test_builds_url_from_id_and_dedupes(self):
+        from services.public_kit import serialize_tiktok_picker_videos
+
+        rows = serialize_tiktok_picker_videos(
+            [{'id': '9', 'title': 'one'}],
+            [{'id': '9', 'post_url': 'https://www.tiktok.com/@cdcparis/video/9', 'caption': 'one'}],
+            handle='cdcparis',
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertIn('/video/9', rows[0]['url'])
+
+
+class TestSocialKitStats(unittest.TestCase):
+    def test_uses_login_kit_totals_and_avg_views(self):
+        from services.public_kit import social_kit_stats
+
+        stats = social_kit_stats(
+            creator={'total_likes': 109195, 'social_media_count': 153, 'first_name': 'Tesdt'},
+            scrape={'full_name': 'CDC', 'engagement_rate': 0.51, 'post_count': 153},
+            oauth_videos=[
+                {'id': '1', 'views': 1000, 'share_url': 'https://www.tiktok.com/@cdcparis/video/1'},
+                {'id': '2', 'views': 2000, 'share_url': 'https://www.tiktok.com/@cdcparis/video/2'},
+            ],
+            handle='cdcparis',
+        )
+        self.assertEqual(stats['likes_count'], 109195)
+        self.assertEqual(stats['video_count'], 153)
+        self.assertEqual(stats['avg_views'], 1500)
+        self.assertEqual(stats['display_name'], 'CDC')
+        self.assertEqual(stats['engagement_rate'], 0.51)
 
 
 if __name__ == '__main__':

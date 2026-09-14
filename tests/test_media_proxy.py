@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from media_proxy_routes import (
+    fetch_post_preview_bytes,
     persist_post_thumbnail,
     persist_profile_media,
     persist_social_thumbnails,
@@ -118,6 +119,24 @@ class TestCoercePostUrl(unittest.TestCase):
             "recent_post_thumbnails": ["https://example.com/thumb.jpg"],
         })
         self.assertEqual(posts, [])
+
+
+class TestFetchPostPreviewBytes(unittest.TestCase):
+    def test_downloads_tiktok_oembed_still(self):
+        post = "https://www.tiktok.com/@you/video/123"
+        thumb = "https://p16-sign.tiktokcdn-us.com/cover.jpg"
+        with patch("media_proxy_routes.fresh_thumb_from_post_url", return_value=thumb), patch(
+            "media_proxy_routes._fetch_cdn_bytes",
+            return_value=(b"\xff\xd8" + b"x" * 900, "image/jpeg"),
+        ):
+            out = fetch_post_preview_bytes(post)
+        self.assertIsNotNone(out)
+        self.assertEqual(out[1], "image/jpeg")
+        self.assertGreater(len(out[0]), 800)
+
+    def test_returns_none_without_thumb(self):
+        with patch("media_proxy_routes.fresh_thumb_from_post_url", return_value=""):
+            self.assertIsNone(fetch_post_preview_bytes("https://www.tiktok.com/@you/video/1"))
 
 
 if __name__ == "__main__":
