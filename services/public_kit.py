@@ -288,6 +288,50 @@ def serialize_tiktok_picker_videos(*sources, handle='', limit=40):
     return out
 
 
+_PORTFOLIO_NAME_PLACEHOLDERS = frozenset({'your name', 'untitled'})
+
+
+def _norm_person_name(value):
+    return ' '.join(str(value or '').strip().split()).lower()
+
+
+def public_portfolio_name(theme=None, username='', first_name='', last_name='', scrape_name=''):
+    """Public kits show username unless the creator typed a portfolio Name."""
+    username = str(username or '').strip().lstrip('@')
+    typed = ''
+    if isinstance(theme, dict):
+        typed = str(theme.get('display_name') or '').strip()
+    if _norm_person_name(typed) in _PORTFOLIO_NAME_PLACEHOLDERS:
+        typed = ''
+    aliases = {
+        _norm_person_name(first_name),
+        _norm_person_name(last_name),
+        _norm_person_name(
+            ' '.join(part for part in [str(first_name or '').strip(), str(last_name or '').strip()] if part)
+        ),
+        _norm_person_name(scrape_name),
+    }
+    aliases.discard('')
+    if typed and _norm_person_name(typed) not in aliases:
+        return typed
+    return username
+
+
+def typed_portfolio_name(theme=None, username='', first_name='', last_name='', scrape_name=''):
+    """Name the creator actually typed on the portfolio. Empty means show username publicly."""
+    username = str(username or '').strip().lstrip('@')
+    name = public_portfolio_name(
+        theme,
+        username=username,
+        first_name=first_name,
+        last_name=last_name,
+        scrape_name=scrape_name,
+    )
+    if _norm_person_name(name) == _norm_person_name(username):
+        return ''
+    return name
+
+
 def social_kit_stats(creator=None, scrape=None, oauth_videos=None, handle=''):
     """Likes / video count / avg views / display name from Login Kit + scrape."""
     creator = creator or {}

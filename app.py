@@ -4015,7 +4015,7 @@ def public_creator_profile(username):
         profile = {
             'id': creator_id,
             'username': creator['username'],
-            'display_name': f"{creator.get('first_name','')} {creator.get('last_name','')}",
+            'display_name': creator['username'],
             'bio': creator['bio'],
             'image_profile': creator['image_profile'],
             'followers_count': creator['followers_count'],

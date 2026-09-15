@@ -10,8 +10,10 @@ if str(ROOT) not in sys.path:
 from services.public_kit import (
     build_public_socials,
     parse_kit_niches,
+    public_portfolio_name,
     serialize_public_recent_posts,
     serialize_tiktok_picker_videos,
+    typed_portfolio_name,
 )
 
 
@@ -142,6 +144,52 @@ class TestSocialKitStats(unittest.TestCase):
         self.assertEqual(stats['avg_views'], 1500)
         self.assertEqual(stats['display_name'], 'CDC')
         self.assertEqual(stats['engagement_rate'], 0.51)
+
+
+class TestPublicPortfolioName(unittest.TestCase):
+    def test_username_when_name_was_never_typed(self):
+        self.assertEqual(
+            public_portfolio_name({}, username='coolkidzz', first_name='Brytnii'),
+            'coolkidzz',
+        )
+
+    def test_ignores_google_or_scrape_name_copied_into_theme(self):
+        self.assertEqual(
+            public_portfolio_name(
+                {'display_name': 'Brytnii'},
+                username='coolkidzz',
+                first_name='Brytnii',
+            ),
+            'coolkidzz',
+        )
+        self.assertEqual(
+            public_portfolio_name(
+                {'display_name': 'CDC'},
+                username='cdcparis',
+                scrape_name='CDC',
+            ),
+            'cdcparis',
+        )
+
+    def test_keeps_name_typed_on_the_portfolio(self):
+        self.assertEqual(
+            public_portfolio_name(
+                {'display_name': 'Studio Maya'},
+                username='coolkidzz',
+                first_name='Brytnii',
+            ),
+            'Studio Maya',
+        )
+
+    def test_typed_name_empty_when_public_name_is_username(self):
+        self.assertEqual(
+            typed_portfolio_name({'display_name': 'Brytnii'}, username='coolkidzz', first_name='Brytnii'),
+            '',
+        )
+        self.assertEqual(
+            typed_portfolio_name({'display_name': 'Studio Maya'}, username='coolkidzz', first_name='Brytnii'),
+            'Studio Maya',
+        )
 
 
 if __name__ == '__main__':

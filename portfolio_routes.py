@@ -80,6 +80,8 @@ from media_proxy_routes import fetch_post_preview_bytes, to_proxied_media_url
 from services.public_kit import (
     build_public_socials,
     parse_kit_niches,
+    public_portfolio_name,
+    typed_portfolio_name,
     serialize_public_recent_posts,
     social_kit_stats,
 )
@@ -550,10 +552,13 @@ def _free_portfolio_public(row):
         if url:
             social_profiles = [{'platform': platform, 'handle': f'@{handle}', 'url': url}]
             socials = {platform: url}
+    public_name = public_portfolio_name(theme, username=row['slug'])
+    theme = dict(theme or {})
+    theme['display_name'] = public_name
     return {
         'username': row['slug'],
-        'first_name': theme.get('display_name') or row['slug'],
-        'display_name': theme.get('display_name') or row['slug'],
+        'first_name': public_name,
+        'display_name': public_name,
         'avatar_url': '',
         'tagline': theme.get('headline') or '',
         'bio': theme.get('about') or '',
@@ -966,17 +971,20 @@ def get_kit_settings():
 
         cursor.execute('''
             SELECT
-                kit_tagline, kit_published, kit_published_at, kit_slug,
-                rates_reel, rates_tiktok, rates_photo, rates_gifted,
-                COALESCE(kit_layout, 'editorial') AS kit_layout,
-                COALESCE(kit_theme, '{}'::jsonb) AS kit_theme,
-                username, subscription_tier, user_id,
-                social_platform, social_handle,
-                social_follower_count, followers_count,
-                social_media_count, total_likes, engagement_rate, social_oauth_videos,
-                bio, image_profile
-            FROM creators
-            WHERE id = %s
+                c.kit_tagline, c.kit_published, c.kit_published_at, c.kit_slug,
+                c.rates_reel, c.rates_tiktok, c.rates_photo, c.rates_gifted,
+                COALESCE(c.kit_layout, 'editorial') AS kit_layout,
+                COALESCE(c.kit_theme, '{}'::jsonb) AS kit_theme,
+                c.username, c.subscription_tier, c.user_id,
+                c.social_platform, c.social_handle,
+                c.social_follower_count, c.followers_count,
+                c.social_media_count, c.total_likes, c.engagement_rate, c.social_oauth_videos,
+                c.bio, c.image_profile,
+                NULLIF(BTRIM(COALESCE(u.first_name, '')), '') AS first_name,
+                NULLIF(BTRIM(COALESCE(u.last_name, '')), '') AS last_name
+            FROM creators c
+            LEFT JOIN users u ON u.id = c.user_id
+            WHERE c.id = %s
         ''', (creator_id,))
 
         creator = cursor.fetchone()
@@ -1033,7 +1041,16 @@ def get_kit_settings():
         video_count = stats['video_count']
         avg_views = stats['avg_views']
         tiktok_videos = stats['tiktok_videos'] if platform == 'tiktok' else []
-        display_name = stats['display_name'] or scrape_name or handle
+        theme = _sanitize_kit_theme(creator.get('kit_theme'))
+        display_name = typed_portfolio_name(
+            theme,
+            username=creator.get('username') or handle,
+            first_name=creator.get('first_name') or '',
+            last_name=creator.get('last_name') or '',
+            scrape_name=scrape_name,
+        )
+        theme = dict(theme or {})
+        theme['display_name'] = display_name
         bio = (creator.get('bio') or '').strip() or scrape_bio
 
         return jsonify({
@@ -1046,7 +1063,7 @@ def get_kit_settings():
             'rates_photo': creator['rates_photo'],
             'rates_gifted': creator['rates_gifted'],
             'kit_layout': _normalize_kit_layout(creator.get('kit_layout')),
-            'kit_theme': _sanitize_kit_theme(creator.get('kit_theme')),
+            'kit_theme': theme,
             'is_pro': _is_pro_tier(creator.get('subscription_tier')),
             'social_platform': platform or None,
             'social_handle': handle or None,
@@ -1619,6 +1636,7 @@ def get_public_kit(slug):
                 SELECT
                     c.id, c.user_id, c.username,
                     NULLIF(BTRIM(COALESCE(u.first_name, '')), '') as first_name,
+                    NULLIF(BTRIM(COALESCE(u.last_name, '')), '') as last_name,
                     c.image_profile as avatar_url,
                     COALESCE(NULLIF(BTRIM(COALESCE(c.kit_tagline, '')), ''), NULLIF(BTRIM(COALESCE(c.bio, '')), '')) as tagline,
                     c.bio,
@@ -1657,6 +1675,7 @@ def get_public_kit(slug):
                 SELECT
                     c.id, c.user_id, c.username,
                     NULLIF(BTRIM(COALESCE(u.first_name, '')), '') as first_name,
+                    NULLIF(BTRIM(COALESCE(u.last_name, '')), '') as last_name,
                     c.image_profile as avatar_url,
                     COALESCE(c.bio, '') as tagline, c.bio, c.niche as niches,
                     COALESCE(c.followers_count, 0) as follower_count, c.engagement_rate,
@@ -1885,21 +1904,22 @@ def get_public_kit(slug):
         quotes = _sanitize_testimonials(raw_theme.get('testimonials') or theme.get('testimonials'))
         if quotes:
             theme['testimonials'] = quotes
-        theme_name = str((theme or {}).get('display_name') or '').strip()
-        if theme_name.lower() == 'your name':
-            theme_name = ''
         stats = social_kit_stats(
             creator=creator,
             scrape=scrape_row or {},
             oauth_videos=creator.get('social_oauth_videos'),
             handle=(creator.get('social_handle') or creator.get('username') or ''),
         )
-        display_name = (
-            theme_name
-            or stats.get('display_name')
-            or (creator.get('first_name') or '').strip()
-            or creator['username']
+        display_name = public_portfolio_name(
+            theme,
+            username=creator.get('username') or '',
+            first_name=creator.get('first_name') or '',
+            last_name=creator.get('last_name') or '',
+            scrape_name=str((scrape_row or {}).get('full_name') or ''),
         )
+        if isinstance(theme, dict):
+            theme = dict(theme)
+            theme['display_name'] = display_name
         likes_count = stats['likes_count']
         video_count = stats['video_count']
         avg_views = stats['avg_views']
