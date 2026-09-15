@@ -83,6 +83,14 @@ def _canceled_pro_sql():
     )
 
 
+def _active_pro_sql():
+    """Currently on Pro/Elite. Canceled accounts are moved back to free."""
+    return (
+        " AND LOWER(COALESCE(c.subscription_tier, 'free')) IN ('pro', 'elite')"
+        " AND LOWER(COALESCE(c.subscription_status, 'active')) NOT IN ('canceled', 'cancelled')"
+    )
+
+
 def _free_at_unlock_limit_sql(conn):
     """Same definition as founder-dashboard at-limit: free, all 3 free unlocks used this month."""
     from services.unlock_quota import DELIVERED_THIS_MONTH_BY_CREATOR_SQL, FREE_UNLOCK_LIMIT
@@ -458,6 +466,22 @@ def get_segments():
             'highlight': True
         })
 
+        cursor.execute(f"""
+            SELECT COUNT(DISTINCT c.id) as count
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE u.unsubscribed_at IS NULL
+            {_active_pro_sql()}
+        """)
+        segments.append({
+            'id': 'pro_tier',
+            'name': 'Pro users (check-in)',
+            'description': 'Currently paying Pro or Elite. Founder check-in — not a sales blast.',
+            'count': cursor.fetchone()['count'],
+            'icon': 'star',
+            'highlight': True
+        })
+
         # Dormant
         cursor.execute("""
             SELECT COUNT(DISTINCT c.id) as count
@@ -632,6 +656,8 @@ def preview_segment():
             base_query += _free_at_unlock_limit_sql(conn)
         elif segment_id == 'canceled_pro':
             base_query += _canceled_pro_sql()
+        elif segment_id == 'pro_tier':
+            base_query += _active_pro_sql()
         elif segment_id == 'dormant':
             base_query += """
                 AND c.id NOT IN (
@@ -1765,6 +1791,8 @@ def send_campaign(campaign_id):
             recipient_query += _free_at_unlock_limit_sql(conn)
         elif segment_id == 'canceled_pro':
             recipient_query += _canceled_pro_sql()
+        elif segment_id == 'pro_tier':
+            recipient_query += _active_pro_sql()
         elif segment_id == 'dormant':
             recipient_query += """
                 AND c.id NOT IN (
