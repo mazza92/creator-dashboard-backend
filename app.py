@@ -73,6 +73,7 @@ from social_verification_routes import (
     is_request_from_restricted_region,
     apply_pending_oauth_to_creator,
 )
+from account_routes import account_bp
 from routes.admin_pr_hunter import admin_pr_hunter_bp
 from routes.admin_brands import admin_brands_bp
 from routes.admin_reports import admin_reports_bp
@@ -343,6 +344,7 @@ CORS(app, resources={
 })
 
 # Register blueprints
+app.register_blueprint(account_bp)
 app.register_blueprint(subscription_bp)
 app.register_blueprint(pr_crm)
 app.register_blueprint(brand_apply_bp)
