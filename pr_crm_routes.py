@@ -168,7 +168,9 @@ def get_min_follower_cap(creator_followers):
     Prevents showing brands with high requirements to micro-creators.
     Uses min_followers (brand's creator requirement) as proxy for brand accessibility.
     """
-    if not creator_followers or creator_followers < 5000:
+    if not creator_followers or creator_followers < 1000:
+        return 5000  # 200-follower micros: brands that actually accept micros
+    if creator_followers < 5000:
         return 10000  # Show brands that accept creators under 10K
     elif creator_followers < 20000:
         return 50000  # Show brands that accept creators under 50K
@@ -220,11 +222,11 @@ FOR_YOU_RELATED_NICHES = {
     'kids': ['parenting', 'baby', 'family', 'home', 'lifestyle'],
     'family': ['parenting', 'home', 'lifestyle', 'food', 'beauty'],
     'mom': ['parenting', 'family', 'home', 'lifestyle', 'beauty', 'skincare'],
-    'fitness': ['athleisure', 'activewear', 'sports', 'wellness'],
-    'activewear': ['fitness', 'athleisure', 'sports', 'wellness'],
+    'fitness': ['athleisure', 'activewear', 'sports'],  # NOT wellness
+    'activewear': ['fitness', 'athleisure', 'sports'],
     'athleisure': ['fitness', 'activewear', 'sports'],
     'sports': ['fitness', 'activewear', 'athleisure'],
-    'wellness': ['fitness', 'supplements', 'self-care', 'beauty', 'skincare'],
+    'wellness': ['skincare', 'supplements', 'self-care', 'beauty'],  # NOT fitness
     'supplements': ['wellness', 'fitness'],
     'food': ['lifestyle', 'kitchen', 'beverages', 'food & beverage', 'home'],
     'food & beverage': ['food', 'beverages', 'lifestyle', 'kitchen'],
@@ -571,7 +573,7 @@ def _creator_is_hair_focused(niches, profile=None) -> bool:
 
 
 def _for_you_should_skip_brand(brand, niches, profile=None) -> bool:
-    """Drop fashion/CBD for parenting creators, optical, and wig/haircare without hair proof."""
+    """Drop fashion/CBD for parenting creators, optical, wig/haircare, and gender-mismatched brands."""
     cat = (brand.get('category') or '').lower().strip()
     name = ' '.join(str(brand.get(k) or '') for k in ('name', 'brand_name', 'description', 'hero_product'))
     if _creator_is_parenting_focused(niches, profile):
@@ -586,6 +588,12 @@ def _for_you_should_skip_brand(brand, niches, profile=None) -> bool:
         return True
     if _WIG_BRAND_RE.search(name) and not hair_focused:
         return True
+    try:
+        from services.audience_fit import audience_mismatch
+        if audience_mismatch(brand, profile, niches):
+            return True
+    except Exception:
+        pass
     return False
 
 
@@ -1267,8 +1275,8 @@ def get_better_brand_matches(creator, current_brand_id, cursor, limit=3):
         'skincare': ['skincare', 'beauty', 'wellness'],
         'haircare': ['haircare', 'beauty'],
         'fashion': ['fashion', 'apparel', 'clothing', 'accessories'],
-        'fitness': ['fitness', 'activewear', 'sports', 'wellness', 'health'],
-        'wellness': ['wellness', 'health', 'fitness', 'skincare'],
+        'fitness': ['fitness', 'activewear', 'sports', 'health'],
+        'wellness': ['wellness', 'health', 'skincare'],
         'food': ['food', 'beverage', 'restaurant', 'snacks'],
         'tech': ['tech', 'electronics', 'gaming', 'software', 'saas'],
         'gaming': ['gaming', 'tech', 'electronics'],
@@ -6958,6 +6966,7 @@ FOLLOW-UP REQUIREMENTS:
 HARD RULES:
 - DO NOT apologize for following up
 - DO NOT repeat the full original pitch
+- DO NOT restate the original trade offer (post counts, UGC files, usage rights, gifted trial)
 - DO NOT sound desperate
 - DO NOT use phrases like "I know you're busy" or "Sorry to bother you"
 - Keep it confident and value-focused
@@ -9026,7 +9035,7 @@ def get_for_you():
                     b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                     b.description, b.category, b.response_rate, b.price_point,
                     b.min_followers, b.max_followers, b.micro_friendly, b.website, b.application_form_url,
-                    b.has_application_form, b.hero_product,
+                    b.has_application_form, b.hero_product, b.target_audience,
                     (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
                     b.niches AS brand_niches, b.regions, b.avg_product_value,
                     0 AS match_score,
@@ -9233,7 +9242,7 @@ def get_for_you():
                                 b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
                                 b.description, b.category, b.response_rate, b.price_point,
                                 b.min_followers, b.max_followers, b.micro_friendly, b.website, b.application_form_url,
-                                b.has_application_form, b.hero_product,
+                                b.has_application_form, b.hero_product, b.target_audience,
                                 (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
                                 b.niches AS brand_niches, b.regions, b.avg_product_value,
                                 0 AS match_score,
@@ -9331,6 +9340,30 @@ def get_for_you():
                     b["match_score"] = scored.get("match_score")
                     if scored.get("fit_tier"):
                         b["fit_tier"] = scored.get("fit_tier")
+            recruit_prep = _prepare_for_you_profile(
+                scrape_profile, interest_niches, followers or 0
+            )
+            recruit_cats = {
+                str(c).lower()
+                for c in (_build_for_you_category_pool(recruit_prep, interest_niches) or [])
+            }
+            kept_recruiting = []
+            for b in recruiting:
+                cat = str(b.get("category") or "").lower()
+                if recruit_cats and cat and cat not in recruit_cats:
+                    continue
+                if _for_you_should_skip_brand(b, interest_niches, recruit_prep):
+                    continue
+                try:
+                    from services.audience_fit import opportunity_mismatch
+                    if opportunity_mismatch(
+                        b, recruit_prep, interest_niches, recruit_cats
+                    ):
+                        continue
+                except Exception:
+                    pass
+                kept_recruiting.append(b)
+            recruiting = kept_recruiting
             recruit_ids = {b.get("id") for b in recruiting if b.get("id") is not None}
             open_lists = [b for b in open_lists if b.get("id") not in recruit_ids]
         except Exception as spotlight_err:

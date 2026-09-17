@@ -94,7 +94,70 @@ def resolve_brand_from_kit_ref(cursor, ref_token, creator_id=None):
                 "brand_name": row.get("brand_name"),
                 "brand_category": row.get("brand_category"),
             }
+    return _resolve_from_creator_brands(cursor, token, creator_id)
+
+
+def _token_match_row(token, creator_id, row, pipeline_id=None):
+    row = _as_dict(row) or {}
+    bid = row.get("brand_id")
+    if bid is None:
+        return None
+    if generate_kit_token(creator_id, bid) != token:
+        return None
+    return {
+        "pipeline_id": pipeline_id if pipeline_id is not None else row.get("pipeline_id"),
+        "creator_id": creator_id,
+        "brand_id": bid,
+        "brand_name": row.get("brand_name"),
+        "brand_category": row.get("brand_category"),
+    }
+
+
+def _resolve_from_creator_brands(cursor, token, creator_id):
+    """Match a deterministic token against brands this creator already pitched."""
+    queries = (
+        """
+        SELECT DISTINCT cp.id AS pipeline_id, cp.brand_id,
+               pb.brand_name, pb.category AS brand_category
+        FROM creator_pipeline cp
+        JOIN pr_brands pb ON pb.id = cp.brand_id
+        WHERE cp.creator_id = %s
+        """,
+        """
+        SELECT DISTINCT t.brand_id, pb.brand_name, pb.category AS brand_category
+        FROM polly_tasks t
+        JOIN pr_brands pb ON pb.id = t.brand_id
+        WHERE t.creator_id = %s AND t.brand_id IS NOT NULL
+        """,
+        """
+        SELECT DISTINCT e.brand_id, pb.brand_name, pb.category AS brand_category
+        FROM polly_timeline_events e
+        JOIN pr_brands pb ON pb.id = e.brand_id
+        WHERE e.creator_id = %s AND e.brand_id IS NOT NULL
+        """,
+    )
+    for sql in queries:
+        rows = _safe_fetchall(cursor, sql, (creator_id,))
+        for raw in rows:
+            hit = _token_match_row(token, creator_id, raw)
+            if hit:
+                return hit
     return None
+
+
+def _safe_fetchall(cursor, sql, params):
+    try:
+        cursor.execute("SAVEPOINT polly_kit_ref")
+        cursor.execute(sql, params)
+        rows = list(cursor.fetchall() or [])
+        cursor.execute("RELEASE SAVEPOINT polly_kit_ref")
+        return rows
+    except Exception:
+        try:
+            cursor.execute("ROLLBACK TO SAVEPOINT polly_kit_ref")
+        except Exception:
+            pass
+        return []
 
 
 def _hours_since(ts):
@@ -222,6 +285,8 @@ def record_brand_profile_view(
         f"brand={brand_id}, brand_name={brand_name}"
     )
 
+    _notify_polly_portfolio_view(cursor, creator_id, brand_id, brand_name)
+
     if pipeline_id:
         cursor.execute(
             """
@@ -245,3 +310,22 @@ def record_brand_profile_view(
             print(f"[BRAND_VIEW_EMAIL] Error: {email_err}")
 
     return {"recorded": True, "emailed": emailed}
+
+
+def _notify_polly_portfolio_view(cursor, creator_id, brand_id, brand_name):
+    """Write the view onto Polly's brand timeline and chat thread."""
+    try:
+        conn = getattr(cursor, "connection", None)
+        if conn is None:
+            return
+        from services.polly_tracker import record_portfolio_viewed
+
+        record_portfolio_viewed(
+            conn,
+            creator_id,
+            brand_id,
+            brand_name=brand_name,
+            source="kit_ref",
+        )
+    except Exception as err:
+        print(f"[KIT_VIEW] Polly tracker skip: {err}")

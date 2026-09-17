@@ -592,6 +592,13 @@ def get_apply_pack(brand_id):
         social = _parse_social(brand.get("pr_social_profile"))
         media_pending = _media_pending(brand, examples, social)
 
+        from services.apply_transparency import fetch_apply_transparency
+        try:
+            transparency = fetch_apply_transparency(cursor, brand_id)
+        except Exception as stats_err:
+            print(f"[brand-apply] pack transparency skipped: {stats_err}")
+            transparency = None
+
         card = _brand_card(brand)
         if card is not None and social:
             card["social"] = social
@@ -607,6 +614,7 @@ def get_apply_pack(brand_id):
                 "already_applied": bool(existing),
                 "apply_status": existing["status"] if existing else None,
                 "media_pending": media_pending,
+                "transparency": transparency,
             }
         )
     except Exception as e:
@@ -807,7 +815,31 @@ def submit_apply(brand_id):
             source=payload.get("source"),
             meta={"application_id": app_row["id"]},
         )
+        from services.apply_transparency import fetch_apply_transparency, resolve_apply_transparency
+        try:
+            transparency = fetch_apply_transparency(cursor, brand_id)
+        except Exception as stats_err:
+            print(f"[brand-apply] transparency skipped: {stats_err}")
+            transparency = resolve_apply_transparency({"applicants": 1, "in_review": 1})
         conn.commit()
+        try:
+            from services.polly_tracker import record_campaign_applied
+            cursor.execute(
+                "SELECT brand_name FROM pr_brands WHERE id = %s",
+                (brand_id,),
+            )
+            brand_row = cursor.fetchone() or {}
+            record_campaign_applied(
+                conn,
+                creator_id,
+                {
+                    "id": brand_id,
+                    "name": brand_row.get("brand_name"),
+                    "application_id": app_row["id"],
+                },
+            )
+        except Exception as track_err:
+            print(f"[brand-apply] timeline log skipped: {track_err}")
         balance = get_creator_unlock_balance(creator_id)
         return jsonify(
             {
@@ -818,6 +850,7 @@ def submit_apply(brand_id):
                 "source": _clean_source(payload.get("source")),
                 "unlock": unlock,
                 "quota": balance,
+                "transparency": transparency,
             }
         )
     except Exception as e:

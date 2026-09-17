@@ -8,6 +8,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+class TestSettingsReturn(unittest.TestCase):
+    def test_settings_source_and_path(self):
+        from social_verification_routes import _is_settings_return
+        self.assertTrue(_is_settings_return('', 'settings'))
+        self.assertTrue(_is_settings_return(
+            'http://localhost:3000/creator/dashboard/settings', ''
+        ))
+        self.assertFalse(_is_settings_return('https://app.newcollab.co/onboarding', ''))
+
+
 class TestTikTokHandle(unittest.TestCase):
     def test_prefers_username(self):
         from social_verification_routes import _tiktok_handle_from_user_info

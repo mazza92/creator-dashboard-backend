@@ -15,7 +15,7 @@ from services.pitch_identity import resolve_pitch_identity
 LOCATION_PLACEHOLDER = "[CITY, COUNTRY]"
 GENERIC_PRODUCTS = {"your product", "pr sample", "product", "products"}
 # Subject stays generic so long SKU names do not get cut off in the inbox.
-IRRESISTIBLE_SUBJECT = "3 posts + 1 UGC file for a PR/gifting sample · gifted trial"
+IRRESISTIBLE_SUBJECT = "1 post + 2 UGC files for a PR/gifting sample · gifted trial"
 
 _ProofBuilder = Callable[..., dict]
 
@@ -313,7 +313,7 @@ def generate_irresistible_pitch(
         intro += f" with {engagement} engagement"
     intro += f". My audience is {demographic}."
 
-    box_line = f"Trade offer for a {product} PR box:"
+    box_line = f"In exchange I'm happy to deliver for {brand_name}:"
 
     location_line = f"No fee. Just product + shipping to {shipping['display']}."
 
@@ -324,9 +324,9 @@ def generate_irresistible_pitch(
         "",
         box_line,
         "",
-        f"• 3 organic posts to my {platform} within 21 days",
-        "• 1 raw UGC video file (yours to run as paid ads, 6-month rights)",
-        "• 30-day performance report (views, saves, CTR, DMs)",
+        f"• 1 organic post to my {platform} within 5 days",
+        "• 2 raw UGC video files (yours to run as paid ads, 6-month rights)",
+        "• performance stats (views, saves, CTR, DMs) if needed",
         "",
         location_line,
         "",

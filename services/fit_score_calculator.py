@@ -509,6 +509,8 @@ def check_brand_context_mismatch(creator_profile: Dict, brand: Optional[Dict]) -
         brand.get('name'),
         brand.get('brand_name'),
         brand.get('description'),
+        brand.get('hero_product'),
+        brand.get('target_audience'),
         brand.get('category'),
     )
 
@@ -565,6 +567,13 @@ def check_brand_context_mismatch(creator_profile: Dict, brand: Optional[Dict]) -
     )):
         return True, "CBD/cannabis brand does not fit this creator's content"
 
+    try:
+        from services.audience_fit import audience_mismatch
+        if audience_mismatch(brand, creator_profile):
+            return True, "Brand targets a different audience than this creator's content"
+    except Exception:
+        pass
+
     return False, ''
 
 
@@ -574,8 +583,8 @@ PRIMARY_NICHE_ADJACENCY = {
     'skincare': {'beauty', 'skincare', 'makeup', 'wellness'},
     'makeup': {'beauty', 'skincare', 'makeup'},
     'haircare': {'haircare', 'beauty'},
-    'wellness': {'wellness', 'beauty', 'skincare', 'fitness', 'supplements'},
-    'fitness': {'fitness', 'activewear', 'athleisure', 'sports', 'wellness'},
+    'wellness': {'wellness', 'beauty', 'skincare', 'supplements'},
+    'fitness': {'fitness', 'activewear', 'athleisure', 'sports'},
     'fashion': {'fashion', 'accessories', 'activewear', 'athleisure', 'luxury'},
     'lifestyle': {'lifestyle', 'home', 'food', 'wellness', 'beauty'},
     'food': {'food', 'beverage', 'beverages', 'home', 'lifestyle', 'kitchen'},
@@ -853,6 +862,7 @@ def score_brand_for_creator(
         brand.get('description'),
         brand.get('hero_product'),
         brand.get('product_sku_name'),
+        brand.get('target_audience'),
     )
 
     overlap = _meaningful_tokens(creator_blob) & _meaningful_tokens(brand_text)

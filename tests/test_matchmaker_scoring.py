@@ -213,6 +213,15 @@ class TestPrepareForYouProfile(unittest.TestCase):
             ['beauty', 'travel', 'lifestyle'],
             prep,
         ))
+        self.assertTrue(_for_you_should_skip_brand(
+            {
+                'name': 'Benji Mens',
+                'description': "We're looking for men 35-55 to talk about our face wash.",
+                'category': 'skincare',
+            },
+            interests,
+            prep,
+        ))
         self.assertNotIn('haircare', pool)
 
 

@@ -101,6 +101,25 @@ class TestResolveBrandFromKitRef(unittest.TestCase):
         self.assertEqual(out["brand_id"], 20)
         self.assertIsNone(out["pipeline_id"])
 
+    def test_falls_back_to_pipeline_brands_without_stored_token(self):
+        with patch.dict(os.environ, {"SECRET_KEY": "test-secret"}):
+            token = generate_kit_token(10, 77)
+            cursor = ScriptedCursor(
+                fetchone=[None],
+                fetchall=[
+                    [],
+                    [{
+                        "pipeline_id": 3,
+                        "brand_id": 77,
+                        "brand_name": "IONIQ Skincare US",
+                        "brand_category": "skincare",
+                    }],
+                ],
+            )
+            out = resolve_brand_from_kit_ref(cursor, token, creator_id=10)
+        self.assertEqual(out["brand_id"], 77)
+        self.assertEqual(out["brand_name"], "IONIQ Skincare US")
+
 
 class TestRecordBrandProfileView(unittest.TestCase):
     def test_inserts_when_no_recent_view(self):

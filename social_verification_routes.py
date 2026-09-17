@@ -275,6 +275,13 @@ TIKTOK_USER_FIELDS = (
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://app.newcollab.co')
 
 
+def _is_settings_return(return_url: str = '', source: str = '') -> bool:
+    if (source or '').strip().lower() == 'settings':
+        return True
+    low = unquote(return_url or '').lower()
+    return '/dashboard/settings' in low
+
+
 def _ensure_tiktok_oauth_columns(cursor):
     """Add open_id + video snapshot columns if missing (idempotent)."""
     cursor.execute(
@@ -282,6 +289,9 @@ def _ensure_tiktok_oauth_columns(cursor):
     )
     cursor.execute(
         'ALTER TABLE creators ADD COLUMN IF NOT EXISTS social_oauth_videos JSONB'
+    )
+    cursor.execute(
+        'ALTER TABLE creators ADD COLUMN IF NOT EXISTS tiktok_handle VARCHAR(100)'
     )
 
 
@@ -635,6 +645,8 @@ def update_creator_verification(creator_id: int, platform: str, data: dict,
                 social_open_id = COALESCE(%s, social_open_id),
                 social_oauth_videos = COALESCE(%s::jsonb, social_oauth_videos),
                 followers_count = CASE WHEN %s > 0 THEN %s ELSE followers_count END,
+                creator_followers = CASE WHEN %s > 0 THEN %s ELSE creator_followers END,
+                tiktok_handle = COALESCE(NULLIF(%s, ''), tiktok_handle),
                 total_likes = CASE WHEN %s > 0 THEN %s ELSE total_likes END,
                 total_posts = CASE WHEN %s > 0 THEN %s ELSE total_posts END,
                 image_profile = COALESCE(NULLIF(%s, ''), image_profile),
@@ -655,6 +667,8 @@ def update_creator_verification(creator_id: int, platform: str, data: dict,
             data.get('open_id'),
             videos_json,
             followers, followers,
+            followers, followers,
+            handle,
             likes_count, likes_count,
             media_count, media_count,
             avatar_url,
@@ -1140,6 +1154,7 @@ def connect_tiktok():
             'return_url': return_url,
             'scopes': 'base' if use_base else 'full',
             'redirect_uri': redirect_uri,
+            'source': (request.args.get('source') or '').strip().lower(),
         }
         state = base64.urlsafe_b64encode(json.dumps(state_data, default=str).encode()).decode()
 
@@ -1186,6 +1201,7 @@ def callback_tiktok():
     csrf_token = None
     return_url = f"{FRONTEND_URL}/onboarding"  # Default fallback
     scopes_mode = 'full'
+    oauth_source = ''
 
     if state:
         try:
@@ -1196,6 +1212,7 @@ def callback_tiktok():
             code_verifier = state_data.get('code_verifier')
             return_url = state_data.get('return_url', return_url)
             scopes_mode = state_data.get('scopes') or 'full'
+            oauth_source = state_data.get('source') or ''
         except Exception as e:
             _log(f"⚠️ Failed to decode TikTok state: {e}")
 
@@ -1376,6 +1393,7 @@ def callback_tiktok():
 
         # Persist official Login Kit stats/videos into creator_profile_data
         # (same table the HTML scraper used to fill).
+        from_settings = _is_settings_return(return_url, oauth_source)
         try:
             from services.creator_profile_scraper import scrape_and_enrich_creator
             from services.profile_quality import ProfileQualityError
@@ -1386,6 +1404,7 @@ def callback_tiktok():
                 'tiktok',
                 db_conn=conn,
                 skip_minimums=True,
+                skip_follower_floor=from_settings,
                 oauth_profile=profile_data,
                 access_token=access_token,
             )
@@ -1395,27 +1414,29 @@ def callback_tiktok():
                 pass
         except ProfileQualityError as qe:
             _log(f"[tiktok] Login Kit quality bar failed: {qe.code}")
-            try:
-                session.pop('pending_oauth', None)
-                session.modified = True
-            except Exception:
-                pass
-            reason = {
-                'below_follower_min': 'below_follower_min',
-                'below_post_min': 'below_post_min',
-                'inactive': 'inactive',
-            }.get(qe.code, 'below_post_min')
-            return redirect(
-                f"{return_url}?social=failed&reason={reason}&platform=tiktok"
-            )
+            if not from_settings:
+                try:
+                    session.pop('pending_oauth', None)
+                    session.modified = True
+                except Exception:
+                    pass
+                reason = {
+                    'below_follower_min': 'below_follower_min',
+                    'below_post_min': 'below_post_min',
+                    'inactive': 'inactive',
+                }.get(qe.code, 'below_post_min')
+                return redirect(
+                    f"{return_url}?social=failed&reason={reason}&platform=tiktok"
+                )
         except Exception as scrape_err:
             _log(f"[tiktok] Login Kit profile persist failed: {scrape_err}")
-            try:
-                session.pop('pending_oauth', None)
-                session.modified = True
-            except Exception:
-                pass
-            return redirect(f"{return_url}?social=failed&reason=oauth_error&platform=tiktok")
+            if not from_settings:
+                try:
+                    session.pop('pending_oauth', None)
+                    session.modified = True
+                except Exception:
+                    pass
+                return redirect(f"{return_url}?social=failed&reason=oauth_error&platform=tiktok")
 
         # Log and update DB only if creator_id exists (skip for new onboarding users)
         if creator_id:
@@ -1430,7 +1451,7 @@ def callback_tiktok():
                 expires_at=expires_at
             )
 
-        if result['passed']:
+        if result['passed'] or from_settings:
             # Include follower/post counts in URL for frontend (since creator_id may not exist yet)
             handle_q = quote(str(profile_data['username'] or ''))
             return redirect(

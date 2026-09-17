@@ -2864,3 +2864,31 @@ def get_apply_adoption():
     finally:
         cursor.close()
         conn.close()
+
+
+@admin_reports_bp.route('/polly', methods=['GET'])
+@admin_required
+def get_polly_beta():
+    """Polly beta scorecard: opens, chats, LLM mix, pitches, applies, pain."""
+    period = (request.args.get('period') or request.args.get('days') or '7d').strip().lower()
+    days_map = {'7d': 7, '14d': 14, '30d': 30, '90d': 90, '180d': 180}
+    try:
+        days = int(period) if period.isdigit() else days_map.get(period, 7)
+    except ValueError:
+        days = 7
+    if period == 'all':
+        days = 4000
+
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        from services.polly_usage import polly_beta_snapshot
+        data = polly_beta_snapshot(cursor, days=days)
+        return jsonify({'success': True, **data}), 200
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
