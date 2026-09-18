@@ -1722,11 +1722,22 @@ def morning_brief(context: Optional[Dict], first_name: Optional[str] = None) -> 
         return None
     name = (first_name or "").strip() or "there"
     watched = []
+    seen_watch = set()
     for e in views[:3]:
-        watched.append(f"{e.get('brand_name') or 'A brand'} — viewed your portfolio")
+        line = f"{e.get('brand_name') or 'A brand'} — viewed your portfolio"
+        key = line.lower()
+        if key in seen_watch:
+            continue
+        seen_watch.add(key)
+        watched.append(line)
     for t in (due + active)[:5]:
         label = t.get("brand_name") or "a brand"
-        watched.append(f"{label} — {t.get('type', '').replace('_', ' ')}")
+        line = f"{label} — {t.get('type', '').replace('_', ' ')}"
+        key = line.lower()
+        if key in seen_watch:
+            continue
+        seen_watch.add(key)
+        watched.append(line)
     if views:
         hot = views[0]
         p_name = hot.get("brand_name") or "a brand"

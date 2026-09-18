@@ -22,6 +22,10 @@ class PollyUsageTests(unittest.TestCase):
     def test_log_usage_noop_without_conn(self):
         log_usage(None, 1, "open")
 
+    def test_gemini_flash_cost_is_not_zero(self):
+        from services.polly_llm_cost import estimate_usd
+        self.assertGreater(estimate_usd("gemini", "gemini-2.5-flash", 2000, 200), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

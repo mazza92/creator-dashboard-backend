@@ -315,6 +315,14 @@ class HeuristicIntentTests(unittest.TestCase):
         self.assertNotIn("pitch is out", say.lower())
         self.assertIn("Sentix", say)
 
+    def test_logged_hint_is_not_duplicated(self):
+        from services.polly_persona import say_already_logged
+        self.assertTrue(say_already_logged(
+            "Brilliant, Iza! I've logged that Naturium pitch for you."
+        ))
+        self.assertTrue(say_already_logged("Logged. **Naturium** is on the board."))
+        self.assertFalse(say_already_logged("Right, here's your pitch for Naturium."))
+
     def test_draft_is_not_already_pitched(self):
         from services.polly import drop_pitched, mark_draft_pending, mark_pitched
         notes = mark_draft_pending({}, {"id": 1, "name": "Grace & Stella"})
@@ -380,6 +388,74 @@ class HeuristicIntentTests(unittest.TestCase):
         )
         self.assertEqual(d["intent"], "generate_pitch")
 
+    def test_named_brand_outside_match_list(self):
+        from services.polly import looks_like_brand_request, requested_brand_name
+        history = [{
+            "role": "assistant",
+            "content": "I've got **Rare Beauty**, The Body Shop, and Thrive Causemetics.",
+        }]
+        d = classify_intent_heuristic("Rare Beauty", history=history)
+        self.assertEqual(d["intent"], "generate_pitch")
+        self.assertEqual(d["brand_name"], "Rare Beauty")
+        self.assertTrue(looks_like_brand_request("Rare Beauty", history))
+        self.assertEqual(requested_brand_name("Rare Beauty", history=history), "Rare Beauty")
+        self.assertFalse(looks_like_brand_request("Continue setup", history))
+        self.assertFalse(looks_like_brand_request("Coquitlam bc Canada", history + [{
+            "role": "assistant",
+            "content": "could you tell me where you're based?",
+        }]))
+
+    def test_hit_up_named_brand(self):
+        d = classify_intent_heuristic("Let's hit up Grace & Stella")
+        self.assertEqual(d["intent"], "generate_pitch")
+        self.assertIn("Grace", d.get("brand_name") or "")
+
+    def test_i_want_dell_is_a_brand_ask(self):
+        from services.polly import requested_brand_name, strip_brand_ask
+        from services.polly_persona import persona_park_draft
+        self.assertEqual(strip_brand_ask("I want DELL"), "DELL")
+        self.assertEqual(requested_brand_name("I want DELL"), "DELL")
+        self.assertEqual(
+            requested_brand_name("i want DELL", brand_name="Squarespace"),
+            "DELL",
+        )
+        d = classify_intent_heuristic("I want DELL")
+        self.assertEqual(d["intent"], "generate_pitch")
+        self.assertEqual(d["brand_name"], "DELL")
+        parked = persona_park_draft("Squarespace", "DELL")
+        self.assertIn("Squarespace", parked)
+        self.assertIn("unsent draft", parked.lower())
+        self.assertEqual(persona_park_draft("DELL", "DELL"), "")
+
+    def test_similar_brand_ties_do_not_crash_sort(self):
+        ranked = [
+            (-2, 0, 0, {"id": 1, "name": "Elgato"}),
+            (-2, 0, 1, {"id": 2, "name": "Logitech G"}),
+        ]
+        ranked.sort()
+        self.assertEqual(ranked[0][-1]["name"], "Elgato")
+
+    def test_fin_dell_is_a_brand_ask_not_more_brands(self):
+        from services.polly import asked_brand_query, looks_like_brand_request, requested_brand_name, strip_brand_ask
+        history = [{
+            "role": "assistant",
+            "content": "**Squarespace** is still a draft. Elgato is my top pick.",
+            "brands": [{"id": 1, "name": "Elgato"}, {"id": 2, "name": "Grow Fit Club"}],
+            "pitch": {"brand_id": 9, "brand_name": "Squarespace"},
+        }]
+        suggested = [{"id": 1, "name": "Elgato"}, {"id": 2, "name": "Grow Fit Club"}]
+        for text in ("fin Dell", "find Dell", "Dell"):
+            self.assertTrue(looks_like_brand_request(text, history), text)
+            self.assertEqual(asked_brand_query(text).lower(), "dell")
+            self.assertEqual(
+                requested_brand_name(text, suggested, history, brand_name="Squarespace").lower(),
+                "dell",
+            )
+            d = classify_intent_heuristic(text, suggested, history=history)
+            self.assertEqual(d["intent"], "generate_pitch", text)
+            self.assertEqual((d.get("brand_name") or "").lower(), "dell", text)
+        self.assertEqual(strip_brand_ask("find Dell"), "Dell")
+
 
 class PersonaTests(unittest.TestCase):
     def test_greeting_does_not_use_handle_as_name(self):
@@ -408,6 +484,34 @@ class PersonaTests(unittest.TestCase):
             "Morning, quick one.",
         )
         self.assertIn("love to", scrub_polly_voice("I'd love to draft that pitch.").lower())
+
+    def test_profile_audit_is_not_kit_only(self):
+        from services.polly_persona import persona_ask_brand, persona_profile_audit
+        say = persona_profile_audit(
+            "Primary niche: beauty",
+            kit={"found": True, "published": True, "has_rates": False, "gaps": [], "bio_missing_kit_url": True, "url": "https://newcollab.co/kit/jined"},
+            scrape={"primary_niche": "beauty"},
+            notes={"active_pain": {"code": "no_replies"}},
+        )
+        self.assertIn("reply", say.lower())
+        self.assertIn("rates", say.lower())
+        ask = persona_ask_brand()
+        self.assertIn("Name the brand", ask)
+
+    def test_off_match_and_unknown_brand_copy(self):
+        from services.polly_persona import persona_off_match_pitch, persona_unknown_brand
+        stretch = persona_off_match_pitch("Rare Beauty")
+        self.assertIn("not a strong match", stretch.lower())
+        self.assertIn("here's the pitch", stretch.lower())
+        self.assertIn("Rare Beauty", stretch)
+        missing = persona_unknown_brand("Rare Beauty", [
+            {"name": "Pixi Beauty"},
+            {"name": "Grace & Stella"},
+        ])
+        self.assertIn("isn't in our directory", missing.lower())
+        self.assertIn("Pixi Beauty", missing)
+        self.assertNotIn("next screen", missing.lower())
+        self.assertNotIn("Pitches", missing)
 
     def test_strips_embedded_pitch_when_card_exists(self):
         from services.polly_persona import strip_embedded_pitch
@@ -484,6 +588,24 @@ class PersonaTests(unittest.TestCase):
 
 
 class KitReviewTests(unittest.TestCase):
+    def test_strip_kit_editor_paths(self):
+        from services.polly_kit import strip_kit_editor_paths
+        raw = (
+            "Can you open your kit and publish it? "
+            "Here's the link: __/creator/dashboard/my-kit__"
+        )
+        out = strip_kit_editor_paths(raw)
+        self.assertNotIn("/creator/dashboard/my-kit", out)
+        self.assertNotIn("Here's the link", out)
+        self.assertIn("open your kit", out.lower())
+
+    def test_kit_actions_uses_portfolio_button(self):
+        from services.polly_kit import kit_actions
+        actions = kit_actions({"published": False})
+        self.assertEqual(actions[0]["label"], "My portfolio")
+        self.assertEqual(actions[0]["href"], "/creator/dashboard/my-kit")
+        self.assertFalse(actions[0]["external"])
+
     def test_unpublished_review_sends_them_to_my_kit(self):
         from services.polly_kit import persona_kit_review
         text = persona_kit_review({

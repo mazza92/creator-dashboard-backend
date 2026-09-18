@@ -312,6 +312,70 @@ def merge_notes_patch(notes: Optional[Dict], patch: Any) -> Dict[str, Any]:
     return out
 
 
+SETUP_CHIP_LABELS = frozenset({
+    "continue setup",
+    "get me set up",
+    "keep going on my kit",
+    "help me land my first brand deal",
+})
+SETUP_CHIP_IDS = frozenset({"continue_setup", "get_set_up", "first_deal"})
+CHIP_NON_ANSWERS = SETUP_CHIP_LABELS | {
+    "skip for now",
+    "skip, show me brands",
+    "line up brands for me today",
+    "next brand to pitch",
+    "i sent it",
+    "more brands",
+    "what is newcollab?",
+    "i published my kit",
+    "review my kit",
+    "find me 3 brands to pitch today",
+    "write a pitch for a brand i name",
+    "help me get more replies from brands",
+}
+
+
+def is_setup_chip_tap(user_text: str = "", starter: str = "", action: str = "") -> bool:
+    label = (user_text or "").strip().lower()
+    chip = (starter or "").strip().lower()
+    if chip in SETUP_CHIP_IDS:
+        return True
+    return label in SETUP_CHIP_LABELS
+
+
+def is_non_answer_chip(user_text: str = "") -> bool:
+    return (user_text or "").strip().lower() in CHIP_NON_ANSWERS
+
+
+def bump_setup_continues(
+    notes: Optional[Dict] = None,
+    user_text: str = "",
+    starter: str = "",
+    action: str = "",
+) -> Dict[str, Any]:
+    out = dict(notes or {})
+    if not is_setup_chip_tap(user_text, starter, action):
+        return out
+    try:
+        n = int(out.get("setup_continues") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    out["setup_continues"] = n + 1
+    out["updated_at"] = utc_now()
+    return out
+
+
+def should_auto_skip_setup(notes: Optional[Dict] = None) -> bool:
+    notes = notes or {}
+    if discovery_complete(notes):
+        return False
+    try:
+        n = int(notes.get("setup_continues") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    return n >= 2
+
+
 def skip_discovery(notes: Optional[Dict] = None) -> Dict[str, Any]:
     out = dict(notes or {})
     out["discovery_skipped_at"] = utc_now()
@@ -321,17 +385,11 @@ def skip_discovery(notes: Optional[Dict] = None) -> Dict[str, Any]:
 
 def opener(first_name: Optional[str] = None) -> str:
     name = (first_name or "").strip()
-    hello = f"Hey {name}, welcome 👋" if name else "Hey, welcome 👋"
+    hello = f"Hey {name}," if name else "Hey,"
     return (
-        f"{hello}\n\n"
-        "I'm Polly. I'll be your manager while you're on Newcollab, so anything you need — "
-        "landing brand deals, writing pitches, getting **My Kit** live — you just message me here.\n\n"
-        "Before I start finding you brands, I want to make sure I actually get you right. "
-        "Mind if I ask you a few quick things about where you're at? It'll take 2 minutes and "
-        "everything I do from now on will be shaped around your answers.\n\n"
-        "Everything you tell me stays here between us. I use it to work smarter for you, not to "
-        "profile you or sell to you. Fair?\n\n"
-        "Ready?"
+        f"{hello} I'm Polly. I will be your Creator Assistant to help you unlock "
+        "brand PR and paid UGC deals.\n\n"
+        "What do you want to land first?"
     )
 
 
@@ -473,16 +531,54 @@ def notes_context(notes: Optional[Dict] = None) -> str:
 
 def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) -> List[Dict[str, Any]]:
     notes = notes or {}
+    pending = notes.get("pending_pitch") if isinstance(notes.get("pending_pitch"), dict) else None
+    pending_name = str((pending or {}).get("name") or (pending or {}).get("brand_name") or "").strip()
+    if pending_name:
+        return [
+            {
+                "id": "i_sent_it",
+                "label": "I sent it",
+                "action": "chat",
+                "brand_id": pending.get("id") or pending.get("brand_id"),
+                "brand_name": pending_name,
+            },
+            {"id": "more_brands", "label": "More brands", "action": "suggest_brands"},
+            {"id": "portfolio", "label": "Review my kit", "action": "coach_portfolio"},
+        ]
+    continues = 0
+    try:
+        continues = int(notes.get("setup_continues") or 0)
+    except (TypeError, ValueError):
+        continues = 0
     if not discovery_complete(notes):
-        if discovery_started(notes):
+        skip_chip = {
+            "id": "skip_setup",
+            "label": "Skip, show me brands",
+            "action": "suggest_brands",
+            "skip_discovery": True,
+        }
+        kit_chip = {"id": "kit_done", "label": "I published my kit", "action": "coach_portfolio"}
+        if continues >= 2 or notes.get("wants_matches"):
+            return [skip_chip, kit_chip]
+        if continues >= 1 or discovery_started(notes):
             return [
-                {"id": "continue_setup", "label": "Continue setup", "action": "discovery"},
-                {"id": "skip_setup", "label": "Skip for now", "action": "suggest_brands", "skip_discovery": True},
+                skip_chip,
+                kit_chip,
+                {"id": "continue_setup", "label": "Keep going on my kit", "action": "discovery"},
             ]
         return [
-            {"id": "get_set_up", "label": "Get me set up", "action": "discovery"},
-            {"id": "what_is_nc", "label": "What is Newcollab?", "action": "explain_newcollab"},
-            {"id": "first_deal", "label": "Help me land my first brand deal", "action": "discovery"},
+            {
+                "id": "line_up",
+                "label": "Find me 3 brands to pitch today",
+                "action": "suggest_brands",
+                "skip_discovery": True,
+            },
+            {"id": "name_a_brand", "label": "Write a pitch for a brand I name", "action": "ask_brand"},
+            {
+                "id": "more_replies",
+                "label": "Help me get more replies from brands",
+                "action": "coach_profile",
+            },
         ]
     chips = [
         {"id": "line_up", "label": "Line up brands for me today", "action": "suggest_brands"},
@@ -497,6 +593,8 @@ def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) 
             {"id": "rates", "label": "Set my rates", "action": "coach_rates"},
             {"id": "portfolio", "label": "Review my kit", "action": "coach_portfolio"},
         ]
+    if notes.get("pitched_brand_names"):
+        chips[0] = {"id": "line_up", "label": "Next brand to pitch", "action": "suggest_brands"}
     if top_brand:
         pitched = {str(n).strip().lower() for n in (notes.get("pitched_brand_names") or []) if n}
         if top_brand.strip().lower() in pitched:
@@ -531,6 +629,10 @@ def advance(
         notes["discovery_step"] = 1
         notes["updated_at"] = utc_now()
         return notes, question_for(next_field(notes) or field, first_name), False
+
+    if is_non_answer_chip(user_text):
+        nxt = next_field(notes) or field
+        return notes, question_for(nxt, first_name), False
 
     notes = apply_answer(notes, field, user_text)
     nxt = next_field(notes)

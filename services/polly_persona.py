@@ -36,7 +36,7 @@ FORMAT (chat UI renders Markdown like ChatGPT / Claude):
 - Short paragraphs with a blank line between them
 - **bold** the one action they must take
 - *italics* for asides
-- __underline__ the exact kit URL they should copy (renders as underline)
+- __underline__ the live public kit URL they should copy (https://newcollab.co/kit/slug). Never underline or paste /creator/dashboard/my-kit — the UI shows a My portfolio button.
 - Numbered lists for 2–5 concrete steps; bullets for short checklists
 - Do not write a wall of unformatted prose. Do not wrap every sentence in bold.
 
@@ -64,12 +64,13 @@ NEWCOLLAB KIT (not a generic portfolio):
   Canva PDFs, or a random landing page unless they bring that up themselves.
 - You are given a live snapshot of their kit. You have already opened it. Review
   those facts — do not ask if they "have a portfolio link".
-- If unpublished: get them into My Kit (/creator/dashboard/my-kit), fill the gaps,
-  hit publish.
+- If unpublished: tell them to tap **My portfolio**, fill the gaps, hit publish.
+  Never paste the editor path.
 - If published: critique the actual name, about, posts, rates, then get the exact
   live URL (https://newcollab.co/kit/SLUG) into their TikTok bio. Not newcollab.co
   homepage. Not a Linktree.
-- End kit coaching with the underlined URL to copy, plus "open My Kit" as the move.
+- End unpublished kit coaching by pointing at the My portfolio button. When the
+  kit is live, underline the public URL to copy.
 
 BAD: "Here are brands from our pool that fit your profile."
 GOOD: "I've got **three** worth pitching this week. Beauty Pie is my top pick —
@@ -282,6 +283,104 @@ def persona_pitch_intro(brand_name: str, has_mailto: bool = True) -> str:
     return (
         f"Right, here's your pitch for **{name}**. Copy it from the card and send from your usual mail. "
         "Tell me when it's out — I won't log it until you do."
+    )
+
+
+def persona_low_effort_skip() -> str:
+    return (
+        "You're tapping through — that's fine. I'll line up brands now "
+        "and we can tidy the kit later if you want."
+    )
+
+
+def say_already_logged(say: Optional[str] = None) -> bool:
+    return bool(re.search(r"\blogged\b|\bon the board\b|\bon your timeline\b", say or "", re.I))
+
+
+def persona_ask_brand() -> str:
+    return (
+        "Name the brand. If it's in our directory I'll draft the pitch — "
+        "and I'll tell you if it's a stretch. If we don't have it, I'll suggest close alternatives."
+    )
+
+
+def persona_profile_audit(
+    profile_context: str = "",
+    kit: Optional[Dict[str, Any]] = None,
+    scrape: Optional[Dict[str, Any]] = None,
+    notes: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Whole-profile reply-rate audit — kit, bio, rates, follow-ups — not kit-only."""
+    kit = kit or {}
+    scrape = scrape or {}
+    notes = notes or {}
+    bits = parse_profile_bits(profile_context)
+    niche = bits.get("niche") or (scrape.get("primary_niche") or "").strip() or "your"
+    moves = []
+    if kit.get("found"):
+        if not kit.get("published"):
+            moves.append("Publish **My Kit** — brands have nothing to open until it's live.")
+        gaps = [g for g in (kit.get("gaps") or []) if g][:2]
+        for gap in gaps:
+            if gap not in moves and len(moves) < 3:
+                moves.append(gap)
+        url = kit.get("url")
+        if url and kit.get("bio_missing_kit_url") and len(moves) < 3:
+            moves.append(f"Put this exact kit URL in your TikTok bio: __{url}__")
+    else:
+        moves.append("Build **My Kit** so a PR team has a page to click from the pitch.")
+    if not kit.get("has_rates") and len(moves) < 3:
+        moves.append("Put rates on the kit so paid asks don't die in the first reply.")
+    pain = notes.get("active_pain") if isinstance(notes.get("active_pain"), dict) else {}
+    if (pain.get("code") or "") in ("no_replies", "unopened_or_bounce") and len(moves) < 3:
+        moves.append("Follow up anything quiet past day 4 — silence is usually unopened mail, not a no.")
+    if not moves:
+        moves.append("I'll line up in-niche brands with a real shot at a reply, then we send tight pitches.")
+    steps = "\n".join(f"{i}. {item}" for i, item in enumerate(moves[:3], 1))
+    return (
+        f"Reply rate is a profile problem, not a luck problem. For {niche} content, "
+        "brands bounce when the page, bio, or follow-up is sloppy.\n\n"
+        f"I'd fix this order:\n{steps}\n\n"
+        "Want me to line up 3 brands after that, or name one and I'll draft the pitch?"
+    )
+
+
+def persona_park_draft(pending_name: str, new_name: str = "") -> str:
+    pending = (pending_name or "").strip()
+    nxt = (new_name or "").strip()
+    if not pending:
+        return ""
+    if nxt and pending.lower() == nxt.lower():
+        return ""
+    return f"**{pending}** is still an unsent draft if you want it later.\n\n"
+
+
+def persona_off_match_pitch(brand_name: str, has_mailto: bool = True) -> str:
+    name = brand_name or "them"
+    warn = (
+        f"**{name}** is in our directory, but it's not a strong match for you — "
+        "I'd treat this as a stretch, not the highest-odds first move. You asked though, so here's the pitch."
+    )
+    return warn + "\n\n" + persona_pitch_intro(name, has_mailto=has_mailto)
+
+
+def persona_unknown_brand(asked_name: str, alternatives: Optional[List[Dict[str, Any]]] = None) -> str:
+    asked = (asked_name or "that brand").strip() or "that brand"
+    alts = [
+        str(b.get("name") or "").strip()
+        for b in (alternatives or [])
+        if isinstance(b, dict) and b.get("name")
+    ][:3]
+    if alts:
+        labeled = ", ".join(f"**{name}**" for name in alts)
+        return (
+            f"**{asked}** isn't in our directory, so I can't draft a real pitch for them. "
+            f"Closest we do have, same-ish niche/product: {labeled}. "
+            "Pick one and I'll write it."
+        )
+    return (
+        f"**{asked}** isn't in our directory, so I can't draft that pitch. "
+        "Tell me the niche or another brand and I'll find something close."
     )
 
 

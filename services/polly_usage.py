@@ -113,6 +113,13 @@ def polly_beta_snapshot(cursor, days: int = 7) -> Dict[str, Any]:
         "errors": 0,
         "llm": {},
         "intents": {},
+        "cost": {
+            "usd": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "priced_turns": 0,
+            "source": "gemini_anthropic_usage",
+        },
     }
     if _table_exists(cursor, "polly_usage_events"):
         cursor.execute(
@@ -156,6 +163,36 @@ def polly_beta_snapshot(cursor, days: int = 7) -> Dict[str, Any]:
             (start,),
         )
         usage["intents"] = _count_map(cursor.fetchall() or [], "intent")
+        try:
+            cursor.execute(
+                """
+                SELECT
+                    COALESCE(SUM(NULLIF(meta->>'usd', '')::numeric), 0)::float AS usd,
+                    COALESCE(SUM(NULLIF(meta->>'input_tokens', '')::int), 0)::int AS input_tokens,
+                    COALESCE(SUM(NULLIF(meta->>'output_tokens', '')::int), 0)::int AS output_tokens,
+                    COUNT(*) FILTER (
+                        WHERE COALESCE(NULLIF(meta->>'usd', '')::numeric, 0) > 0
+                           OR COALESCE(NULLIF(meta->>'input_tokens', '')::int, 0) > 0
+                    )::int AS priced_turns
+                FROM polly_usage_events
+                WHERE created_at >= %s AND event = 'chat'
+                """,
+                (start,),
+            )
+            cost_row = cursor.fetchone() or {}
+            usage["cost"] = {
+                "usd": round(float(cost_row.get("usd") or 0), 6),
+                "input_tokens": int(cost_row.get("input_tokens") or 0),
+                "output_tokens": int(cost_row.get("output_tokens") or 0),
+                "priced_turns": int(cost_row.get("priced_turns") or 0),
+                "source": "gemini_anthropic_usage",
+            }
+        except Exception as err:
+            print(f"[Polly usage] cost rollup skipped: {err}")
+            try:
+                cursor.connection.rollback()
+            except Exception:
+                pass
 
     threads = {"creators": 0, "active": 0}
     if _table_exists(cursor, "polly_threads"):
@@ -244,6 +281,13 @@ def polly_beta_snapshot(cursor, days: int = 7) -> Dict[str, Any]:
             "error_rate": round((errors / turns) * 100, 1) if turns else 0,
         },
         "llm": usage.get("llm") or {},
+        "cost": usage.get("cost") or {
+            "usd": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "priced_turns": 0,
+            "source": "gemini_anthropic_usage",
+        },
         "intents": usage.get("intents") or {},
         "outcomes": outcomes,
         "applies": applies,

@@ -240,13 +240,13 @@ def kit_context(snapshot: Optional[Dict[str, Any]]) -> str:
         return (
             "NEWCOLLAB KIT (ground truth):\n"
             "Could not load My Kit. Do not invent a portfolio. "
-            "Send them to /creator/dashboard/my-kit to build the Newcollab kit. "
-            "Never coach Linktree or a generic landing page."
+            "Tell them to tap My portfolio to build the Newcollab kit. "
+            "Never paste the editor path. Never coach Linktree or a generic landing page."
         )
     lines = [
         "NEWCOLLAB KIT (this is THEIR media kit — you have already opened it. Speak from these facts only.):",
         f"Published: {'yes' if kit.get('published') else 'NO — still a draft'}",
-        f"Editor: {KIT_EDITOR_PATH} (in-app My Kit)",
+        "Editor: in-app My Kit — the UI shows a My portfolio button. Do not paste a path.",
     ]
     if kit.get("url"):
         lines.append(f"Live URL brands should open: {kit['url']}")
@@ -300,7 +300,7 @@ def kit_reply_grounded(say: Optional[str], snapshot: Optional[Dict[str, Any]] = 
 def kit_actions(snapshot: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     kit = snapshot or {}
     actions = [{
-        "label": "Open My Kit" if not kit.get("published") else "Edit my kit",
+        "label": "My portfolio",
         "href": KIT_EDITOR_PATH,
         "external": False,
     }]
@@ -311,6 +311,22 @@ def kit_actions(snapshot: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "external": True,
         })
     return actions
+
+
+_KIT_EDITOR_PATH_RE = re.compile(
+    r"(?i)(?:here's the link:?\s*)?(?:https?://[^\s)]+)?/?creator/dashboard/my-kit"
+)
+
+
+def strip_kit_editor_paths(text: Optional[str] = None) -> str:
+    """Drop raw /creator/dashboard/my-kit — the My portfolio button carries that."""
+    s = text or ""
+    s = re.sub(r"(?i)_{1,2}\s*/?creator/dashboard/my-kit\s*_{1,2}", "", s)
+    s = _KIT_EDITOR_PATH_RE.sub("", s)
+    s = re.sub(r"(?i)here'?s the link:?\s*", "", s)
+    s = re.sub(r"[ \t]+\n", "\n", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
 
 
 def persona_kit_review(snapshot: Optional[Dict[str, Any]] = None, first_name: Optional[str] = None) -> str:
@@ -335,7 +351,7 @@ def persona_kit_review(snapshot: Optional[Dict[str, Any]] = None, first_name: Op
             f"{hey} I opened **My Kit** — this is the Newcollab page brands review, not a random portfolio.\n\n"
             "It's **not live yet**, so a PR team has nothing to click.\n\n"
             f"**Fix these, then hit publish:**\n{steps}\n\n"
-            "Open **My Kit** in the sidebar, make those edits, publish, then paste this in your TikTok bio:\n\n"
+            "Tap **My portfolio**, make those edits, publish, then paste this in your TikTok bio:\n\n"
             f"__{url}__\n\n"
             "Tell me when it's live and I'll go through the page with you. ✨"
         )

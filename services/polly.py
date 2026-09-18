@@ -37,12 +37,34 @@ _MODEL_FALLBACKS = (
 DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5"
 _GEMINI_DEPLETED = False
 _LAST_BRAIN = {"provider": None, "model": None}
+_TURN_COSTS = []
 
 _AFFIRM_RE = re.compile(
     r"^(y|yes|yeah|yep|yup|sure|ok|okay|please|go ahead|do it|show me|sounds good)[\s!.]*$",
     re.I,
 )
 
+_BRAND_ASK_PREFIX_RE = re.compile(
+    r"(?i)^(i\s+(?:want|wanna|need)|can\s+(?:i|we)\s+(?:get|do|pitch|try)|"
+    r"please\s+(?:pitch|draft|do)|how\s+about|what\s+about|maybe|"
+    r"let'?s\s+(?:hit up|pitch|try|do)|hit up|pitch|contact|reach out to|"
+    r"find(?:ing)?|fin|search(?:ing)?(?:\s+for)?|look(?:ing)?(?:\s+for)?)\s+"
+)
+_ASK_FILLER = frozenset({
+    "fin", "find", "finding", "search", "searching", "look", "looking",
+    "want", "wanna", "need", "get", "show", "give", "me", "us", "a", "an",
+    "the", "for", "up", "to", "please", "can", "i", "we", "try", "pitch",
+    "contact", "about", "maybe", "how", "what", "brand", "brands",
+})
+_CHIP_SKIP_LABELS = frozenset({
+    "continue setup", "skip", "skip for now", "not now", "later",
+    "edit my kit", "view live kit", "get me set up", "keep going on my kit",
+    "help me land my first brand deal", "skip, show me brands",
+    "line up brands for me today", "what is newcollab?", "i published my kit",
+    "review my kit", "more brands", "i sent it", "next brand to pitch",
+    "find me 3 brands to pitch today", "write a pitch for a brand i name",
+    "help me get more replies from brands",
+})
 _CONTACT_RE = re.compile(
     r"\b(contact|pitch|email|reach out|write to|mailto|message|send (it|this|the pitch)|open (the )?mail)\b",
     re.I,
@@ -54,6 +76,10 @@ _SUGGEST_RE = re.compile(
 )
 _EXPLAIN_RE = re.compile(r"\bwhat('?s| is) newcollab\b", re.I)
 _COACH_WEEK_RE = re.compile(r"\b(this week|what should i do|action plan)\b", re.I)
+_COACH_PROFILE_RE = re.compile(
+    r"\b(more replies|get more replies|profile audit|why (don'?t|do not) brands reply)\b",
+    re.I,
+)
 _COACH_KIT_RE = re.compile(
     r"\b(portfolio|my kit|media kit|review my (kit|portfolio)|ugc kit)\b|newcollab\.co/kit/",
     re.I,
@@ -379,6 +405,151 @@ def resolve_brand(
     return None
 
 
+def strip_brand_ask(text: str) -> str:
+    """Turn 'I want DELL' / 'Let's hit up Grace & Stella' into the brand name."""
+    raw = (text or "").strip()
+    cleaned = _BRAND_ASK_PREFIX_RE.sub("", raw).strip(" .!,")
+    return cleaned or raw
+
+
+def asked_brand_query(text: str) -> str:
+    """Drop find/fin/want filler so 'fin Dell' looks up Dell."""
+    stripped = strip_brand_ask(text)
+    parts = [
+        part.strip(" .!,")
+        for part in stripped.split()
+        if part.strip(" .!,").lower() not in _ASK_FILLER
+    ]
+    cleaned = " ".join(parts).strip(" .!,")
+    return cleaned or stripped
+
+
+def brand_lookup_names(text: str) -> List[str]:
+    asked = asked_brand_query(text)
+    names = []
+    for item in (asked, strip_brand_ask(text), (text or "").strip()):
+        val = (item or "").strip(" .!,")
+        if val and val.lower() not in {n.lower() for n in names}:
+            names.append(val)
+    parts = asked.split()
+    if len(parts) > 1:
+        last = parts[-1].strip(" .!,")
+        if last and last.lower() not in {n.lower() for n in names} and len(last) >= 2:
+            names.append(last)
+    return names
+
+
+def brand_in_suggested(suggested: Optional[List[Dict]], brand: Optional[Dict]) -> bool:
+    if not brand:
+        return False
+    return resolve_brand(
+        suggested,
+        brand_id=brand.get("id") or brand.get("brand_id"),
+        brand_name=brand.get("name") or brand.get("brand_name"),
+    ) is not None
+
+
+def names_mentioned_by_assistant(history: Optional[List[Dict]]) -> List[Dict[str, Any]]:
+    """Brand cards, pitch cards, and **Name** mentions from recent assistant turns."""
+    found: List[Dict[str, Any]] = []
+    seen = set()
+    for msg in reversed(history or []):
+        if (msg.get("role") or "").lower() != "assistant":
+            continue
+        rows = list(msg.get("brands") or [])
+        pitch = msg.get("pitch")
+        if isinstance(pitch, dict) and (pitch.get("brand_name") or pitch.get("name")):
+            rows.append({
+                "id": pitch.get("brand_id") or pitch.get("id"),
+                "name": pitch.get("brand_name") or pitch.get("name"),
+            })
+        for match in re.finditer(r"\*\*([^*]{2,48})\*\*", msg.get("content") or ""):
+            rows.append({"name": match.group(1).strip()})
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or row.get("brand_name") or "").strip()
+            key = name.lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            found.append(row)
+        if len(found) >= 8:
+            break
+    return found
+
+
+def looks_like_brand_request(text: str, history: Optional[List[Dict]] = None) -> bool:
+    """True when the user is naming / asking for a specific brand, not answering discovery."""
+    raw = (text or "").strip()
+    if not raw or is_done_turn(raw) or is_more_brands_turn(raw):
+        return False
+    if _AFFIRM_RE.match(raw):
+        return False
+    if _EXPLAIN_RE.search(raw) or _COACH_KIT_RE.search(raw) or _COACH_RATES_RE.search(raw) or _COACH_WEEK_RE.search(raw):
+        return False
+    last_assistant = ""
+    for msg in reversed(history or []):
+        if (msg.get("role") or "").lower() == "assistant":
+            last_assistant = (msg.get("content") or "").lower()
+            break
+    if any(hint in last_assistant for hint in (
+        "where you're based", "where are you based", "country + city",
+        "hoping to achieve", "30 days", "biggest frustration", "what's your niche",
+        "ugc journey", "dreaming of working",
+    )):
+        return False
+    if raw.lower() in _CHIP_SKIP_LABELS:
+        return False
+    words = raw.split()
+    if len(words) > 8 or len(raw) > 60:
+        return False
+    if resolve_brand(None, brand_name=raw):
+        return True
+    needle = strip_brand_ask(raw).lower()
+    for row in names_mentioned_by_assistant(history):
+        name = str(row.get("name") or "").strip().lower()
+        if name and (needle == name or name in needle or needle in name):
+            return True
+    if _CONTACT_RE.search(raw) or re.search(r"\b(hit up|let'?s (try|do|pitch)|pitch|i want)\b", raw, re.I):
+        return True
+    if 1 <= len(words) <= 5 and not raw.endswith("?"):
+        return True
+    return False
+
+
+def requested_brand_name(
+    text: str,
+    suggested: Optional[List[Dict]] = None,
+    history: Optional[List[Dict]] = None,
+    brand_id: Any = None,
+    brand_name: Optional[str] = None,
+) -> Optional[str]:
+    raw = (text or "").strip()
+    typed = asked_brand_query(raw) if looks_like_brand_request(raw, history) else ""
+    typed = (typed or "").strip()
+    # What they typed wins over the model (which often repeats the pending draft brand).
+    needle = typed or (brand_name or "").strip() or raw
+    resolved = resolve_brand(suggested, brand_id=None if typed else brand_id, brand_name=needle)
+    if not resolved:
+        for candidate in brand_lookup_names(needle):
+            resolved = resolve_brand(suggested, brand_name=candidate) or resolve_brand(
+                names_mentioned_by_assistant(history),
+                brand_name=candidate,
+            )
+            if resolved:
+                break
+    if resolved and resolved.get("name"):
+        if typed and strip_brand_ask(resolved["name"]).lower() != typed.lower() and typed.lower() not in str(resolved.get("name") or "").lower():
+            return typed
+        return str(resolved.get("name"))
+    if typed:
+        return typed
+    if (brand_name or "").strip():
+        return strip_brand_ask(str(brand_name).strip())
+    return None
+
+
 def build_mailto(email: str, subject: str, body: str, bcc: str = POLLY_BCC) -> Optional[str]:
     email = (email or "").strip()
     if not email or "@" not in email:
@@ -519,13 +690,30 @@ def llm_available() -> bool:
     return bool(get_gemini_key() or get_anthropic_key())
 
 
-def remember_polly_brain(provider: Optional[str], model: Optional[str] = None) -> None:
-    global _LAST_BRAIN
+def begin_polly_turn() -> None:
+    global _LAST_BRAIN, _TURN_COSTS
+    _LAST_BRAIN = {"provider": None, "model": None}
+    _TURN_COSTS = []
+
+
+def remember_polly_brain(
+    provider: Optional[str],
+    model: Optional[str] = None,
+    usage: Optional[Dict[str, Any]] = None,
+) -> None:
+    global _LAST_BRAIN, _TURN_COSTS
     _LAST_BRAIN = {"provider": provider, "model": model}
+    if isinstance(usage, dict) and usage:
+        _TURN_COSTS.append(usage)
 
 
 def last_polly_brain() -> Dict[str, Optional[str]]:
     return dict(_LAST_BRAIN)
+
+
+def last_polly_cost() -> Dict[str, Any]:
+    from services.polly_llm_cost import rollup_usage
+    return rollup_usage(_TURN_COSTS)
 
 
 def _history_lines(history: Optional[List[Dict]]) -> List[str]:
@@ -822,15 +1010,20 @@ def classify_intent_heuristic(
             return {"intent": "suggest_brands", "say": "", "brand_id": None, "brand_name": None}
     if _EXPLAIN_RE.search(raw):
         return {"intent": "explain_newcollab", "say": "", "brand_id": None, "brand_name": None}
+    if _COACH_PROFILE_RE.search(raw):
+        return {"intent": "coach_profile", "say": "", "brand_id": None, "brand_name": None}
     if _COACH_RATES_RE.search(raw):
         return {"intent": "coach_rates", "say": "", "brand_id": None, "brand_name": None}
     if _COACH_KIT_RE.search(raw):
         return {"intent": "coach_portfolio", "say": "", "brand_id": None, "brand_name": None}
     if _COACH_WEEK_RE.search(raw):
         return {"intent": "coach_week", "say": "", "brand_id": None, "brand_name": None}
-    if _SUGGEST_RE.search(raw) and not _CONTACT_RE.search(raw):
+    if raw.lower() in ("write a pitch for a brand i name",):
+        return {"intent": "ask_brand", "say": "", "brand_id": None, "brand_name": None}
+    generic_pool = bool(_SUGGEST_RE.search(raw)) and not looks_like_brand_request(raw, history)
+    if generic_pool and not _CONTACT_RE.search(raw):
         return {"intent": "suggest_brands", "say": "", "brand_id": None, "brand_name": None}
-    if _CONTACT_RE.search(raw):
+    if _CONTACT_RE.search(raw) or looks_like_brand_request(raw, history):
         resolved = resolve_brand(suggested_brands, brand_name=raw)
         if not resolved:
             for brand in suggested_brands or []:
@@ -838,6 +1031,8 @@ def classify_intent_heuristic(
                 if name and name.lower() in raw.lower():
                     resolved = brand
                     break
+        if not resolved:
+            resolved = resolve_brand(names_mentioned_by_assistant(history), brand_name=raw)
         if resolved:
             return {
                 "intent": "generate_pitch",
@@ -845,14 +1040,22 @@ def classify_intent_heuristic(
                 "brand_id": resolved.get("id"),
                 "brand_name": resolved.get("name"),
             }
-        if suggested_brands:
+        asked = requested_brand_name(raw, suggested_brands, history)
+        if asked and not re.search(r"\b(matches|one of|who should|suggest|recommend)\b", raw, re.I):
             return {
                 "intent": "generate_pitch",
                 "say": "",
                 "brand_id": None,
-                "brand_name": None,
+                "brand_name": asked,
             }
-        return {"intent": "suggest_brands", "say": "", "brand_id": None, "brand_name": None}
+        if suggested_brands or re.search(r"\b(matches|suggest|recommend)\b", raw, re.I):
+            return {"intent": "suggest_brands", "say": "", "brand_id": None, "brand_name": None}
+        return {
+            "intent": "generate_pitch",
+            "say": "",
+            "brand_id": None,
+            "brand_name": asked,
+        }
     if _SUGGEST_RE.search(raw):
         return {"intent": "suggest_brands", "say": "", "brand_id": None, "brand_name": None}
     return {"intent": "chat", "say": "", "brand_id": None, "brand_name": None}
@@ -917,8 +1120,14 @@ def _gemini_generate_json(system_prompt: str, user_prompt: str, history: Optiona
             .get("text", "")
         )
         parsed = _parse_json_text(text)
-        print(f"[Polly] brain=gemini model={model}")
-        remember_polly_brain("gemini", model)
+        from services.polly_llm_cost import usage_from_gemini
+        usage = usage_from_gemini(data, model)
+        print(
+            f"[Polly] brain=gemini model={model} "
+            f"in={usage.get('input_tokens')} out={usage.get('output_tokens')} "
+            f"usd={usage.get('usd')}"
+        )
+        remember_polly_brain("gemini", model, usage)
         return parsed
     raise ValueError(_redact_secrets(last_err))
 
@@ -957,8 +1166,14 @@ def _anthropic_generate_json(system_prompt: str, user_prompt: str, history: Opti
     parts = data.get("content") or []
     text = "".join(part.get("text") or "" for part in parts if isinstance(part, dict))
     parsed = _parse_json_text(text)
-    print(f"[Polly] brain=anthropic model={model}")
-    remember_polly_brain("anthropic", model)
+    from services.polly_llm_cost import usage_from_anthropic
+    usage = usage_from_anthropic(data, model)
+    print(
+        f"[Polly] brain=anthropic model={model} "
+        f"in={usage.get('input_tokens')} out={usage.get('output_tokens')} "
+        f"usd={usage.get('usd')}"
+    )
+    remember_polly_brain("anthropic", model, usage)
     return parsed
 
 
@@ -986,7 +1201,8 @@ def _brain_extra(discovery_hint: str = "", force_intent: Optional[str] = None) -
         "You are the brain of this conversation. Write the reply in `say` using Markdown.\n"
         "Return JSON only:\n"
         '{"intent":"suggest_brands|generate_pitch|discovery|explain_newcollab|'
-        'coach_week|coach_portfolio|coach_rates|chat","say":"user-facing reply in Polly\'s voice",'
+        'coach_week|coach_portfolio|coach_rates|coach_profile|ask_brand|chat",'
+        '"say":"user-facing reply in Polly\'s voice",'
         '"brand_id":null,"brand_name":null,'
         '"notes_patch":{"goal_30d":null,"stage":null,"niche":null,"location":null,'
         '"biggest_challenge":null,"dream_brands":null}}\n'
@@ -999,14 +1215,22 @@ def _brain_extra(discovery_hint: str = "", force_intent: Optional[str] = None) -
         "- Prefer brands this creator can actually get a reply from: in-niche, recruiting, "
         "micro-friendly. Never push household athletic/luxury names (Nike, On Running, "
         "Sephora-scale) to aspiring micros. Reply chance beats famous logos.\n"
-        "- Stay on the assigned creator track in manager memory. Do not restart discovery.\n"
+        "- If they tap the same chip twice (Continue setup, Get me set up) or send 1-3 words "
+        "with no new info: do not repeat the previous lecture. One next action, or skip to "
+        "brands. Never stack a second question (no kit steps plus 'what's your biggest challenge').\n"
         "- Tone: professional-friendly startup manager. No pet names "
         "(love, darling, hun, honey, babe, superstar, sweetie).\n"
         "- Drafting a pitch is not sending it. Never treat a drafted brand as already pitched "
         "and do not mention Timeline until they say they sent it.\n"
         "- After a pitch card, wait. If they say more / another / next, intent=suggest_brands "
         "(show cards). Do not auto-generate the next pitch. Only generate_pitch when they "
-        "name a brand or tap Contact.\n"
+        "name a brand or tap Contact — even if that brand is not in suggested_brands.\n"
+        "- If they name a brand not on their match cards: still intent=generate_pitch. "
+        "Say if it's a weak fit, then still give the pitch. Never invent a Pitches tab, "
+        "next screen, Send Pitch button, or Directory contact button. The card appears "
+        "in this chat or it does not exist.\n"
+        "- If they name a brand we do not have: say it is not in the directory and offer "
+        "similar in-niche alternatives. Never pretend a draft is ready.\n"
         "- More brands is NOT confirmation. Never write that the pitch is out, sent, logged, "
         "or on Timeline unless they tapped I sent it or said they sent it.\n"
         "- 'done' / 'sent' / 'I sent it' means that brand is finished. Then you may line up "
@@ -1019,9 +1243,15 @@ def _brain_extra(discovery_hint: str = "", force_intent: Optional[str] = None) -
         "- If CHECK-IN DUE or ACTIVE PAIN is set, ask the pulse or do that one fix. "
         "Do not dump new brand cards unless they asked or the fix is lining up in-niche matches.\n"
         "- Replies, rejections, bounces, and 'never sent' are facts to log, not small talk.\n"
-        "- Only name brands from suggested_brands or tool_brands. Never invent brands or emails.\n"
-        "- Portfolio / kit / media kit = the Newcollab My Kit snapshot in context. "
-        "intent=coach_portfolio. Never ask about Linktree. Review the snapshot you were given.\n"
+        "- Only name directory brands (suggested_brands, tool_brands, or a brand they asked "
+        "for that the server will look up). Never invent brands, emails, or UI screens.\n"
+        "- If they tap Help me get more replies from brands: intent=coach_profile. "
+        "Audit kit + bio + rates + follow-up habits + niche clarity. Not kit-only. "
+        "Do not invent follower counts.\n"
+        "- If they tap Write a pitch for a brand I name: intent=ask_brand. "
+        "Ask for the brand name only. Do not draft until they name one.\n"
+        "- Never paste /creator/dashboard/my-kit or a raw editor path. "
+        "Tell them to tap **My portfolio**. The UI already shows that button.\n"
         "- notes_patch: fill fields you just learned. Leave null if unknown.\n"
         f"- Manager memory: {discovery_hint or 'none yet.'}\n"
         f"{force}"
@@ -1075,11 +1305,16 @@ def classify_intent(
     allowed = {
         "suggest_brands", "generate_pitch", "chat", "discovery",
         "explain_newcollab", "coach_week", "coach_portfolio", "coach_rates",
+        "coach_profile", "ask_brand",
     }
     if intent not in allowed:
         intent = heuristic["intent"]
     if force_intent in allowed:
         intent = force_intent
+    elif heuristic["intent"] == "generate_pitch" and looks_like_brand_request(text, history):
+        intent = "generate_pitch"
+        if heuristic.get("brand_name") and not parsed.get("brand_name"):
+            parsed["brand_name"] = heuristic.get("brand_name")
     elif heuristic["intent"] in ("suggest_brands", "generate_pitch") and intent == "chat":
         intent = heuristic["intent"]
     if is_done_turn(text) and intent == "suggest_brands" and not force_intent:
@@ -1088,6 +1323,16 @@ def classify_intent(
         intent = "suggest_brands"
     parsed_id = parsed.get("brand_id")
     parsed_name = parsed.get("brand_name")
+    if intent == "generate_pitch" and looks_like_brand_request(text, history):
+        asked = requested_brand_name(
+            text,
+            suggested_brands,
+            history,
+            brand_name=heuristic.get("brand_name") or parsed_name,
+        )
+        if asked:
+            parsed_name = asked
+            parsed_id = None
     resolved = resolve_brand(suggested_brands, brand_id=parsed_id or brand_id, brand_name=parsed_name)
     say = (parsed.get("say") or "").strip()
     return {
@@ -1211,7 +1456,7 @@ def narrate_kit_review(
             _brain_extra(discovery_hint, force_intent="coach_portfolio")
             + "\nYou already opened their Newcollab My Kit. Review THAT page.\n"
             "Never mention Linktree or a generic landing page.\n"
-            "If unpublished: get them to customize + publish in My Kit.\n"
+            "If unpublished: tell them to tap My portfolio. Never paste an editor path.\n"
             "If published: specific notes from kit_snapshot, then the exact live URL "
             "underlined for their TikTok bio — not newcollab.co homepage.\n"
             + kit_context(kit)
