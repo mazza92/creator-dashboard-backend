@@ -65,12 +65,19 @@ NEWCOLLAB KIT (not a generic portfolio):
 - You are given a live snapshot of their kit. You have already opened it. Review
   those facts — do not ask if they "have a portfolio link".
 - If unpublished: tell them to tap **My portfolio**, fill the gaps, hit publish.
-  Never paste the editor path.
-- If published: critique the actual name, about, posts, rates, then get the exact
-  live URL (https://newcollab.co/kit/SLUG) into their TikTok bio. Not newcollab.co
+  Never paste the editor path. Keep lining up brands in the same turn — publishing
+  is high-leverage, not a hard stop on mentoring.
+- If published: critique the actual name, about, posts, rates, then offer the exact
+  live URL (https://newcollab.co/kit/SLUG) for TikTok/IG bio. Not newcollab.co
   homepage. Not a Linktree.
+- Kit-in-bio is a conversion lever, never a blocker. Pitching continues either way.
+  Brands already get the kit from the pitch; if they can add a bio link, they should,
+  because brands click it and we can see who viewed the kit. Low-follower accounts
+  often cannot add a link in bio yet — say that's fine, keep going, try when the
+  app unlocks the link slot. Never call a missing bio link an immediate 'no',
+  something they must do today, or a reason to pause pitches, rates, or follow-ups.
 - End unpublished kit coaching by pointing at the My portfolio button. When the
-  kit is live, underline the public URL to copy.
+  kit is live, underline the public URL to copy — then keep mentoring.
 
 BAD: "Here are brands from our pool that fit your profile."
 GOOD: "I've got **three** worth pitching this week. Beauty Pie is my top pick —
@@ -96,8 +103,10 @@ MANAGER SKILLS (use when they ask — never dump a lecture):
 - Ladder: gifted → paid within 30 days → retainer. Tie the current action to the next step.
 
 CREATOR TRACKS (stay consistent once assigned — do not flip mid-thread):
-- Aspiring (default, ~80%): quality profile first. Publish My Kit, kit URL in TikTok bio,
-  pitch live PR rosters / gifted, lift content from real briefs, then paid UGC.
+- Aspiring (default, ~80%): quality profile helps replies. Publish My Kit when you
+  can, offer the kit URL for bio if they have a link slot, pitch live PR rosters /
+  gifted, lift content from real briefs, then paid UGC. Do not stall pitches because
+  the bio link is missing.
   Winning hack: brands with an open roster reply more than cold directory spray.
 - Established (growing / several paid collabs): volume + bigger brands + retainers.
   Kit is a closer. Follow-ups, packages, paid conversion.
@@ -107,6 +116,9 @@ over generic pool matches. Say that clearly when it's true.
 
 TASK TRACKER (you are a manager with a memory, not a chatbot):
 - When they confirm a pitch went out, log it. Follow up day 4, last bump day 10, drop day 14.
+- 24 hours after a pitch, ask if they heard back — before the day-4 follow-up.
+  One short question: "Got any reply from **Brand** since you contacted them?"
+  Do not draft a follow-up yet unless they ask or day 4 has hit.
 - When a brand replies (yes / no / question), update the relationship and tell them the next move.
 - When PR ships, arrives, or content goes live, climb the ladder: gifted → content → paid ask.
 - Reference real open tasks from context. Never invent a collab that is not in the tracker.
@@ -178,7 +190,11 @@ def persona_greeting(profile_context: str, first_name: Optional[str] = None) -> 
     )
 
 
-def persona_brand_intro(brands: Optional[List[Dict[str, Any]]], profile_context: str = "") -> str:
+def persona_brand_intro(
+    brands: Optional[List[Dict[str, Any]]],
+    profile_context: str = "",
+    deal_intent: Optional[str] = None,
+) -> str:
     rows = [b for b in (brands or []) if b.get("name")]
     if not rows:
         return (
@@ -192,10 +208,16 @@ def persona_brand_intro(brands: Optional[List[Dict[str, Any]]], profile_context:
     why = (top.get("description") or top.get("why") or "").strip().rstrip(".")
     if re.search(r"already sit in", why, re.I):
         why = ""
-    lead = (
-        f"Ok so I've got {min(3, len(rows))} you should actually go after this week. "
-        f"{top_name} is my top pick"
-    )
+    if deal_intent == "paid":
+        lead = (
+            f"I've lined up {min(3, len(rows))} for a **paid** UGC ask — not a gifted trial. "
+            f"**{top_name}** is my top pick"
+        )
+    else:
+        lead = (
+            f"Ok so I've got {min(3, len(rows))} you should actually go after this week. "
+            f"{top_name} is my top pick"
+        )
     if why and len(why) <= 140:
         lead += f" — {why}."
     elif cat:
@@ -212,7 +234,10 @@ def persona_brand_intro(brands: Optional[List[Dict[str, Any]]], profile_context:
             lead += f" {extras[0]} is a strong second."
         else:
             lead += f" {extras[0]} is a strong second, and {extras[1]} if you want a warmer brand."
-    lead += " Which one feels right? I'll draft the pitch."
+    if deal_intent == "paid":
+        lead += " Which one feels right? I'll draft a **paid** pitch, not a gifted trial."
+    else:
+        lead += " Which one feels right? I'll draft the pitch."
     return lead
 
 
@@ -228,9 +253,10 @@ def persona_week_plan(profile_context: str = "", notes: Optional[Dict[str, Any]]
             "Want me to pull the roster-first list now?"
         )
     return (
-        f"Three things this week. First, get **My Kit** live and the kit URL in your TikTok bio — "
-        "that's the page brands actually open. Second, I'll line up brands that are actively "
-        f"recruiting in {niche}, not a cold spray. Third, we send one tight gifted pitch. "
+        f"Three things this week. First, I'll line up in-niche brands that actually recruit. "
+        "Second, get **My Kit** live when you can — that's the page brands open from a pitch, "
+        "and we can see who viewed it. Third, if TikTok/IG has already unlocked a bio link, "
+        f"paste the kit URL there; if not (common under the follower threshold), skip it and keep pitching. "
         f"That serves {goal}. Want me to pull those rosters now?"
     )
 
@@ -273,15 +299,16 @@ def persona_more_brands_intro(
     return intro
 
 
-def persona_pitch_intro(brand_name: str, has_mailto: bool = True) -> str:
+def persona_pitch_intro(brand_name: str, has_mailto: bool = True, paid: bool = False) -> str:
     name = brand_name or "them"
+    kind = "paid pitch" if paid else "pitch"
     if has_mailto:
         return (
-            f"Right, here's your pitch for **{name}**. Open your mail and send it — "
+            f"Right, here's your {kind} for **{name}**. Open your mail and send it — "
             "tell me when it's out, or tap **I sent it**. I won't log it until you do."
         )
     return (
-        f"Right, here's your pitch for **{name}**. Copy it from the card and send from your usual mail. "
+        f"Right, here's your {kind} for **{name}**. Copy it from the card and send from your usual mail. "
         "Tell me when it's out — I won't log it until you do."
     )
 
@@ -326,7 +353,10 @@ def persona_profile_audit(
                 moves.append(gap)
         url = kit.get("url")
         if url and kit.get("bio_missing_kit_url") and len(moves) < 3:
-            moves.append(f"Put this exact kit URL in your TikTok bio: __{url}__")
+            moves.append(
+                f"If you have a bio link slot, paste __{url}__ — brands click it from the pitch "
+                "and we can see who viewed the kit. If IG/TikTok hasn't unlocked links yet, skip it."
+            )
     else:
         moves.append("Build **My Kit** so a PR team has a page to click from the pitch.")
     if not kit.get("has_rates") and len(moves) < 3:
@@ -341,7 +371,7 @@ def persona_profile_audit(
         f"Reply rate is a profile problem, not a luck problem. For {niche} content, "
         "brands bounce when the page, bio, or follow-up is sloppy.\n\n"
         f"I'd fix this order:\n{steps}\n\n"
-        "Want me to line up 3 brands after that, or name one and I'll draft the pitch?"
+        "None of this pauses pitching. Want me to line up 3 brands now, or name one and I'll draft?"
     )
 
 

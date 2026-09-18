@@ -456,6 +456,39 @@ class HeuristicIntentTests(unittest.TestCase):
             self.assertEqual((d.get("brand_name") or "").lower(), "dell", text)
         self.assertEqual(strip_brand_ask("find Dell"), "Dell")
 
+    def test_paid_collaborations_is_not_a_brand_name(self):
+        from services.polly import (
+            apply_paid_ask_to_pitch,
+            asked_brand_query,
+            classify_intent_heuristic,
+            deal_search_kind,
+            looks_like_brand_request,
+        )
+        text = "find me paid collaborations"
+        self.assertEqual(deal_search_kind(text), "paid")
+        self.assertFalse(looks_like_brand_request(text))
+        self.assertEqual(asked_brand_query(text), "")
+        d = classify_intent_heuristic(text)
+        self.assertEqual(d["intent"], "suggest_brands")
+        self.assertFalse(d.get("brand_name"))
+        self.assertTrue(looks_like_brand_request("Let's hit up Joya Mia (US)"))
+        gifted = {
+            "subject": "1 post + 2 UGC files for a PR/gifting sample · gifted trial",
+            "body": (
+                "Hi Joya Mia (US),\n\n"
+                "I create beauty content on TikTok.\n\n"
+                "No fee. Just product + shipping to Toronto, Canada.\n\n"
+                "Worth a look?"
+            ),
+            "email": "info@joyamia.com",
+        }
+        paid = apply_paid_ask_to_pitch(gifted, scrape={"followers": 89900})
+        self.assertNotIn("No fee", paid["body"])
+        self.assertNotIn("gifted", paid["subject"].lower())
+        self.assertIn("Rate:", paid["body"])
+        self.assertIn("Paid UGC", paid["subject"])
+        self.assertEqual(paid["deal_type"], "paid")
+
 
 class PersonaTests(unittest.TestCase):
     def test_greeting_does_not_use_handle_as_name(self):
@@ -495,6 +528,7 @@ class PersonaTests(unittest.TestCase):
         )
         self.assertIn("reply", say.lower())
         self.assertIn("rates", say.lower())
+        self.assertNotIn("after that", say.lower())
         ask = persona_ask_brand()
         self.assertIn("Name the brand", ask)
 
@@ -619,6 +653,7 @@ class KitReviewTests(unittest.TestCase):
         self.assertIn("https://newcollab.co/kit/mahery", text)
         self.assertNotIn("Linktree", text)
         self.assertNotIn("love", text.lower())
+        self.assertNotRegex(text.lower(), r"immediate ['’]no['’]")
 
     def test_generic_bio_link_is_called_out(self):
         from services.polly_kit import persona_kit_review
@@ -637,6 +672,8 @@ class KitReviewTests(unittest.TestCase):
         self.assertIn("newcollab.co/kit/mahery", text)
         self.assertIn("newcollab.co", text.lower())
         self.assertNotIn("Linktree", text)
+        self.assertIn("track", text.lower())
+        self.assertNotIn("that's the whole point", text.lower())
 
     def test_kit_url_classifies_as_portfolio(self):
         d = classify_intent_heuristic("https://newcollab.co/kit/mahery")

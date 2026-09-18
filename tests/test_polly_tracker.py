@@ -144,6 +144,33 @@ class LifecycleIntentTests(unittest.TestCase):
         self.assertIn("checkin_bounced", ids)
         self.assertIn("checkin_not_sent", ids)
 
+    def test_morning_brief_asks_24h_after_pitch(self):
+        from datetime import datetime, timedelta, timezone
+        from services.polly_tracker import morning_brief
+        now = datetime.now(timezone.utc)
+        brief = morning_brief({
+            "recent_timeline": [],
+            "checkin_due": {
+                "brand_id": 9,
+                "brand_name": "CertaPet",
+                "task_id": 51,
+                "early": True,
+            },
+            "active_tasks": [{
+                "id": 51,
+                "type": "follow_up_due",
+                "brand_name": "CertaPet",
+                "brand_id": 9,
+                "created_at": (now - timedelta(hours=25)).isoformat(),
+                "due_at": (now + timedelta(days=3)).isoformat(),
+            }],
+            "due_soon": [],
+        }, first_name="Mahery")
+        self.assertIsNotNone(brief)
+        self.assertIn("Got any reply from **CertaPet**", brief["summary"])
+        self.assertEqual(brief["chips"][0]["id"], "checkin_quiet")
+        self.assertEqual(brief["chips"][0]["label"], "Still quiet")
+
     def test_portfolio_view_alert_copy(self):
         from services.polly_tracker import portfolio_view_alert
         alert = portfolio_view_alert("Rhode", 9)

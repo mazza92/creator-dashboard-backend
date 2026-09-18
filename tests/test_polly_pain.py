@@ -119,6 +119,61 @@ class PainDiagnosisTests(unittest.TestCase):
         self.assertIsNotNone(pulse)
         self.assertEqual(pulse["brand_name"], "Sentix Cosmetics (US)")
         self.assertEqual(pulse["task_id"], 44)
+        self.assertFalse(pulse["early"])
+
+    def test_checkin_due_24h_before_follow_up_deadline(self):
+        now = datetime.now(timezone.utc)
+        pulse = checkin_due({
+            "active_tasks": [{
+                "id": 51,
+                "type": "follow_up_due",
+                "brand_name": "CertaPet",
+                "brand_id": 9,
+                "created_at": (now - timedelta(hours=25)).isoformat(),
+                "due_at": (now + timedelta(days=3)).isoformat(),
+                "metadata": {"wave": 4, "brand_name": "CertaPet"},
+            }],
+        })
+        self.assertIsNotNone(pulse)
+        self.assertEqual(pulse["brand_name"], "CertaPet")
+        self.assertTrue(pulse["early"])
+
+    def test_checkin_due_not_before_24h(self):
+        now = datetime.now(timezone.utc)
+        pulse = checkin_due({
+            "active_tasks": [{
+                "id": 52,
+                "type": "follow_up_due",
+                "brand_name": "CertaPet",
+                "brand_id": 9,
+                "created_at": (now - timedelta(hours=6)).isoformat(),
+                "due_at": (now + timedelta(days=4)).isoformat(),
+                "metadata": {"wave": 4},
+            }],
+        })
+        self.assertIsNone(pulse)
+
+    def test_checkin_skips_day10_wave(self):
+        now = datetime.now(timezone.utc)
+        pulse = checkin_due({
+            "active_tasks": [{
+                "id": 53,
+                "type": "follow_up_due",
+                "brand_name": "CertaPet",
+                "brand_id": 9,
+                "created_at": (now - timedelta(hours=30)).isoformat(),
+                "due_at": (now + timedelta(days=9)).isoformat(),
+                "metadata": {"wave": 10},
+            }],
+        })
+        self.assertIsNone(pulse)
+
+    def test_checkin_ask_copy(self):
+        from services.polly_pain import checkin_ask
+        self.assertEqual(
+            checkin_ask("CertaPet"),
+            "Got any reply from **CertaPet** since you contacted them?",
+        )
 
 
 if __name__ == "__main__":

@@ -80,6 +80,10 @@ EVENT_ICONS = {
 }
 
 NUDGE_COPY = {
+    "checkin_24h": (
+        "Got any reply from **{brand}** since you contacted them? "
+        "Tap what happened and I'll take the next step."
+    ),
     "follow_up_d4": (
         "Quick pulse on **{brand}** — it's been a few days. "
         "Any reply, a bounce, or still quiet? Tap what happened and I'll take the next step."
@@ -108,6 +112,13 @@ NUDGE_COPY = {
 }
 
 NUDGE_CHIPS = {
+    "checkin_24h": [
+        {"id": "checkin_quiet", "label": "Still quiet", "action": "task_act"},
+        {"id": "checkin_replied", "label": "They replied", "action": "task_act"},
+        {"id": "checkin_bounced", "label": "Email bounced", "action": "task_act"},
+        {"id": "checkin_passed", "label": "They passed", "action": "task_act"},
+        {"id": "checkin_not_sent", "label": "I never sent it", "action": "task_act"},
+    ],
     "follow_up_d4": [
         {"id": "checkin_quiet", "label": "Still quiet — draft follow-up", "action": "task_act"},
         {"id": "checkin_replied", "label": "They replied", "action": "task_act"},
@@ -450,10 +461,12 @@ def session_context_text(context: Optional[Dict] = None) -> str:
         )
     due_check = context.get("checkin_due")
     if isinstance(due_check, dict) and due_check.get("brand_name"):
+        from services.polly_pain import checkin_ask
         bits.insert(
             0,
-            f"CHECK-IN DUE: pulse {due_check.get('brand_name')} "
-            "(replied / quiet / bounced / passed / never sent). Do not assume it was sent.",
+            f"CHECK-IN DUE: {checkin_ask(due_check.get('brand_name'))} "
+            "(replied / quiet / bounced / passed / never sent). Do not assume it was sent. "
+            "Do not draft a follow-up unless they ask or the day-4 deadline has hit.",
         )
     if not bits:
         return "No open brand relationships yet."
@@ -957,7 +970,10 @@ def apply_lifecycle_intent(
         close_tasks(conn, creator_id, ["portfolio_incomplete"], None, outcome="success")
         add_event(conn, creator_id, "milestone", "My Kit published")
         action = "kit_live"
-        say_hint = "Kit's live. Next: that URL in your TikTok bio, then we pitch a live roster."
+        say_hint = (
+            "Kit's live. If you have a bio link slot, paste that URL — brands click it and we can "
+            "see who viewed the kit. If not, keep pitching; it's already in the email."
+        )
     elif intent == "offer_paid_deal":
         action = "paid_pitch"
         say_hint = f"We'll pitch **{name}** paid — I'll draft it with your proof, not vibes."
@@ -1097,6 +1113,7 @@ def _public_tasks(rows: List[Dict]) -> List[Dict[str, Any]]:
             "logo": t.get("logo_url"),
             "category": t.get("category"),
             "due_at": due.isoformat() if due else None,
+            "created_at": t.get("created_at").isoformat() if t.get("created_at") else None,
             "nudge_count": t.get("polly_nudge_count") or 0,
             "metadata": t.get("metadata") or {},
         })
@@ -1554,6 +1571,25 @@ def apply_task_chip(
             "unmark_pitched": True,
         }
     if chip_id == "checkin_quiet":
+        due = task.get("due_at") if task else None
+        if due and getattr(due, "tzinfo", None) is None:
+            due = due.replace(tzinfo=timezone.utc)
+        early = bool(due and due > utc_now())
+        if early:
+            return {
+                "ok": True,
+                "route": "chat",
+                "say": (
+                    f"Too soon to chase **{name}** — most PR inboxes need a few days. "
+                    "I'll nudge you on day 4 if they're still quiet. "
+                    "Want me to line up the next brand in the meantime?"
+                ),
+                "chips": [
+                    {"id": "line_up", "label": "Line up brands", "action": "suggest_brands"},
+                ],
+                "brand_id": brand_id,
+                "brand_name": name,
+            }
         result = apply_lifecycle_intent(
             conn, creator_id,
             {"intent": "still_quiet", "brand_id": brand_id, "brand": name, "confidence": 1},
@@ -1711,6 +1747,60 @@ def maybe_bootstrap_nudge(conn, creator_id: int) -> Optional[Dict[str, Any]]:
     return nudges[0]
 
 
+def maybe_deliver_login_checkin(
+    conn,
+    creator_id: int,
+    context: Optional[Dict] = None,
+) -> Optional[Dict[str, Any]]:
+    """On login, ask for a pitch update 24h in — before the day-4 follow-up deadline."""
+    from services.polly_pain import checkin_ask, checkin_chips
+
+    pulse = (context or {}).get("checkin_due") or {}
+    name = (pulse.get("brand_name") or "").strip()
+    task_id = pulse.get("task_id")
+    if not name or not task_id:
+        return None
+
+    cur = _cursor(conn)
+    cur.execute(
+        """
+        SELECT due_at, polly_last_nudge_at, polly_nudge_count, metadata
+        FROM polly_tasks
+        WHERE id = %s AND creator_id = %s
+        """,
+        (task_id, creator_id),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    last = row.get("polly_last_nudge_at")
+    now = utc_now()
+    if last:
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        if now - last < timedelta(hours=20):
+            return None
+    if int(row.get("polly_nudge_count") or 0) >= 3:
+        return None
+
+    early = bool(pulse.get("early"))
+    key = "checkin_24h" if early else "follow_up_d4"
+    payload = {
+        "task_id": task_id,
+        "brand_id": pulse.get("brand_id"),
+        "brand_name": name,
+        "key": key,
+        "message": (checkin_ask(name) if early else NUDGE_COPY[key].format(brand=name)),
+        "chips": checkin_chips(
+            {"id": pulse.get("brand_id"), "name": name},
+            task_id=task_id,
+            early=early,
+        ),
+    }
+    deliver_nudge(conn, creator_id, payload)
+    return payload
+
+
 def morning_brief(context: Optional[Dict], first_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
     context = context or {}
     active = context.get("active_tasks") or []
@@ -1759,15 +1849,22 @@ def morning_brief(context: Optional[Dict], first_name: Optional[str] = None) -> 
             }
         ]
     elif pulse and pulse.get("brand_name"):
+        from services.polly_pain import checkin_ask
         p_name = pulse.get("brand_name")
         p_type = "check-in"
+        early = bool(pulse.get("early"))
         summary = (
-            f"Quick pulse on **{p_name}**. "
-            "Reply, bounce, passed, still quiet, or never sent — tap it and I'll move."
+            checkin_ask(p_name)
+            if early
+            else (
+                f"Quick pulse on **{p_name}**. "
+                "Reply, bounce, passed, still quiet, or never sent — tap it and I'll move."
+            )
         )
         chips = checkin_chips(
             {"id": pulse.get("brand_id"), "name": p_name},
             task_id=pulse.get("task_id"),
+            early=early,
         )
     else:
         if not (due or active):

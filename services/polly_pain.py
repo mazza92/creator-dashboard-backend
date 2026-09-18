@@ -43,8 +43,18 @@ FIX_LABELS = {
     FIX_POST: "post something this week so the profile looks active",
 }
 
+CHECKIN_AFTER = timedelta(hours=24)
+
 CHECKIN_CHIPS = [
     {"id": "checkin_quiet", "label": "Still quiet — draft follow-up", "action": "task_act"},
+    {"id": "checkin_replied", "label": "They replied", "action": "task_act"},
+    {"id": "checkin_bounced", "label": "Email bounced", "action": "task_act"},
+    {"id": "checkin_passed", "label": "They passed", "action": "task_act"},
+    {"id": "checkin_not_sent", "label": "I never sent it", "action": "task_act"},
+]
+
+CHECKIN_CHIPS_EARLY = [
+    {"id": "checkin_quiet", "label": "Still quiet", "action": "task_act"},
     {"id": "checkin_replied", "label": "They replied", "action": "task_act"},
     {"id": "checkin_bounced", "label": "Email bounced", "action": "task_act"},
     {"id": "checkin_passed", "label": "They passed", "action": "task_act"},
@@ -74,15 +84,25 @@ def _as_dt(value: Any) -> Optional[datetime]:
     return None
 
 
-def checkin_chips(brand: Optional[Dict] = None, task_id: Any = None) -> List[Dict[str, Any]]:
+def checkin_ask(brand_name: Optional[str] = None) -> str:
+    name = (brand_name or "them").strip() or "them"
+    return f"Got any reply from **{name}** since you contacted them?"
+
+
+def checkin_chips(
+    brand: Optional[Dict] = None,
+    task_id: Any = None,
+    early: bool = False,
+) -> List[Dict[str, Any]]:
     brand = brand or {}
     bid = brand.get("id") or brand.get("brand_id")
     name = brand.get("name") or brand.get("brand_name")
     out = []
-    for chip in CHECKIN_CHIPS:
+    for chip in (CHECKIN_CHIPS_EARLY if early else CHECKIN_CHIPS):
         item = dict(chip)
         item["brand_id"] = bid
         item["brand_name"] = name
+        item["early"] = bool(early)
         if task_id:
             item["task_id"] = task_id
         out.append(item)
@@ -291,24 +311,31 @@ def pain_context(notes: Optional[Dict] = None) -> str:
 
 
 def checkin_due(context: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
-    """Stale outreach that needs a pulse, not a new logo dump."""
+    """Pulse 24h after a pitch, even before the day-4 follow-up is due."""
+    seen = set()
     for task in (_tasks(context) + list((context or {}).get("due_soon") or [])):
         kind = task.get("type") or ""
         if kind not in ("follow_up_due", "pitch_sent"):
             continue
+        wave = str((task.get("metadata") or {}).get("wave") or "")
+        if wave in ("10", "14"):
+            continue
+        key = task.get("id") or (task.get("brand_id"), kind, wave)
+        if key in seen:
+            continue
+        seen.add(key)
         due = _as_dt(task.get("due_at"))
         created = _as_dt(task.get("created_at"))
-        stale = False
-        if due and due <= utc_now():
-            stale = True
-        elif created and utc_now() - created >= timedelta(days=3):
-            stale = True
-        if not stale:
+        overdue = bool(due and due <= utc_now())
+        aged = bool(created and utc_now() - created >= CHECKIN_AFTER)
+        if not overdue and not aged:
             continue
         return {
             "brand_id": task.get("brand_id"),
             "brand_name": task.get("brand_name") or (task.get("metadata") or {}).get("brand_name"),
             "task_id": task.get("id"),
             "type": kind,
+            "early": bool(aged and not overdue),
+            "due_at": due.isoformat() if due else None,
         }
     return None

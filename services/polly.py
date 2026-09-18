@@ -71,9 +71,31 @@ _CONTACT_RE = re.compile(
 )
 _SUGGEST_RE = re.compile(
     r"\b(suggest|recommend|match|for you|who should|find brand|show me brand|"
-    r"line up|hit up|brands? to (reach|pitch|contact)|which brand|what brand)\b",
+    r"line up|hit up|brands? to (reach|pitch|contact)|which brand|what brand|"
+    r"find me|paid collab|paid ugc|paid deals?|gifted collab|pr packages?|"
+    r"brand deals?)\b",
     re.I,
 )
+_DEAL_SEARCH_RE = re.compile(
+    r"(?i)(?:"
+    r"(?:find(?:\s+me)?|show\s+me|line\s+up|get\s+me|looking\s+for|i\s+want|i\s+need)\s+"
+    r"(?:some\s+|a\s+|3\s+)?"
+    r"(?:paid\s+|gifted\s+|pr\s+|ugc\s+|brand\s+)?"
+    r"(?:collab(?:oration)?s?|deals?|packages?|brands?|ugc)|"
+    r"\bpaid\s+(?:collab(?:oration)?s?|ugc|deals?|work|partnerships?|gigs?)\b|"
+    r"\bgifted\s+(?:collab(?:oration)?s?|pr|deals?|packages?)\b|"
+    r"\bpr\s+packages?\b|"
+    r"\bbrand\s+deals?\b"
+    r")"
+)
+_GENERIC_BRAND_ASK = frozenset({
+    "paid", "collaboration", "collaborations", "collab", "collabs",
+    "deal", "deals", "ugc", "gifted", "brand", "brands", "package", "packages",
+    "pr", "work", "partnership", "partnerships", "gig", "gigs",
+    "paid collaborations", "paid collaboration", "paid collabs", "paid collab",
+    "paid ugc", "paid deals", "paid deal", "gifted collabs", "gifted collab",
+    "pr packages", "pr package", "brand deals", "brand deal",
+})
 _EXPLAIN_RE = re.compile(r"\bwhat('?s| is) newcollab\b", re.I)
 _COACH_WEEK_RE = re.compile(r"\b(this week|what should i do|action plan)\b", re.I)
 _COACH_PROFILE_RE = re.compile(
@@ -412,8 +434,27 @@ def strip_brand_ask(text: str) -> str:
     return cleaned or raw
 
 
+def deal_search_kind(text: str) -> Optional[str]:
+    """'find me paid collaborations' is an outcome search, not a brand name."""
+    raw = (text or "").strip()
+    if not raw or not _DEAL_SEARCH_RE.search(raw):
+        return None
+    low = raw.lower()
+    if re.search(r"\bpaid\b", low):
+        return "paid"
+    if re.search(r"\b(gifted|pr package)\b", low):
+        return "gifted"
+    return "brands"
+
+
+def is_deal_search(text: str) -> bool:
+    return deal_search_kind(text) is not None
+
+
 def asked_brand_query(text: str) -> str:
     """Drop find/fin/want filler so 'fin Dell' looks up Dell."""
+    if is_deal_search(text):
+        return ""
     stripped = strip_brand_ask(text)
     parts = [
         part.strip(" .!,")
@@ -421,7 +462,10 @@ def asked_brand_query(text: str) -> str:
         if part.strip(" .!,").lower() not in _ASK_FILLER
     ]
     cleaned = " ".join(parts).strip(" .!,")
-    return cleaned or stripped
+    leftover = cleaned or stripped
+    if leftover.strip().lower() in _GENERIC_BRAND_ASK:
+        return ""
+    return leftover
 
 
 def brand_lookup_names(text: str) -> List[str]:
@@ -482,7 +526,7 @@ def names_mentioned_by_assistant(history: Optional[List[Dict]]) -> List[Dict[str
 def looks_like_brand_request(text: str, history: Optional[List[Dict]] = None) -> bool:
     """True when the user is naming / asking for a specific brand, not answering discovery."""
     raw = (text or "").strip()
-    if not raw or is_done_turn(raw) or is_more_brands_turn(raw):
+    if not raw or is_done_turn(raw) or is_more_brands_turn(raw) or is_deal_search(raw):
         return False
     if _AFFIRM_RE.match(raw):
         return False
@@ -584,6 +628,67 @@ def pitch_from_package_response(data: Optional[Dict]) -> Optional[Dict[str, Any]
         "mailto": mailto,
         "application_form_url": data.get("application_form_url"),
     }
+
+
+def paid_rate_phrase(kit: Optional[Dict] = None, scrape: Optional[Dict] = None) -> str:
+    kit = kit or {}
+    rates = kit.get("rates") if isinstance(kit.get("rates"), dict) else {}
+    for key in ("tiktok", "reel", "ugc", "video"):
+        val = rates.get(key)
+        if val not in (None, "", 0, "0"):
+            text = str(val).strip()
+            if text[:1].isdigit() and not text.startswith("$"):
+                return f"${text}"
+            return text
+    scrape = scrape or {}
+    raw = scrape.get("followers") or scrape.get("follower_count") or scrape.get("tiktok_followers")
+    try:
+        n = int(float(raw or 0))
+    except (TypeError, ValueError):
+        n = 0
+    if n >= 25000:
+        return "$250–$500"
+    if n >= 10000:
+        return "$150–$250"
+    if n >= 2000:
+        return "$80–$150"
+    if n > 0:
+        return "$50–$100"
+    return "a paid fee"
+
+
+def apply_paid_ask_to_pitch(
+    pitch: Optional[Dict[str, Any]],
+    kit: Optional[Dict] = None,
+    scrape: Optional[Dict] = None,
+) -> Optional[Dict[str, Any]]:
+    """If they asked for paid collabs, do not send a gifted 'no fee' trial."""
+    if not pitch:
+        return pitch
+    out = dict(pitch)
+    subject = str(out.get("subject") or "")
+    body = str(out.get("body") or "")
+    blob = f"{subject}\n{body}"
+    if not re.search(r"no fee|gifted trial|pr/gifting|gifting sample", blob, re.I):
+        return out
+    rate = paid_rate_phrase(kit, scrape)
+    loc = ""
+    loc_m = re.search(r"shipping to ([^\n.]+)", body, re.I)
+    if loc_m:
+        loc = loc_m.group(1).strip()
+    paid_line = (
+        f"Rate: {rate} for 1 organic post + 2 UGC files (6-month paid usage)"
+        + (f", plus product shipping to {loc} if you want it in-shot." if loc else ".")
+    )
+    body = re.sub(r"No fee\. Just product \+ shipping to [^\n.]+.?", paid_line, body, flags=re.I)
+    if re.search(r"no fee", body, re.I):
+        body = re.sub(r"No fee[^\n]*", paid_line, body, flags=re.I)
+    out["subject"] = "Paid UGC — 1 post + 2 raw files"
+    out["body"] = body
+    if out.get("email"):
+        out["mailto"] = build_mailto(out.get("email"), out["subject"], body)
+    out["deal_type"] = "paid"
+    return out
 
 
 def pitch_from_followup_response(
@@ -1020,6 +1125,8 @@ def classify_intent_heuristic(
         return {"intent": "coach_week", "say": "", "brand_id": None, "brand_name": None}
     if raw.lower() in ("write a pitch for a brand i name",):
         return {"intent": "ask_brand", "say": "", "brand_id": None, "brand_name": None}
+    if is_deal_search(raw):
+        return {"intent": "suggest_brands", "say": "", "brand_id": None, "brand_name": None}
     generic_pool = bool(_SUGGEST_RE.search(raw)) and not looks_like_brand_request(raw, history)
     if generic_pool and not _CONTACT_RE.search(raw):
         return {"intent": "suggest_brands", "say": "", "brand_id": None, "brand_name": None}
@@ -1235,12 +1342,18 @@ def _brain_extra(discovery_hint: str = "", force_intent: Optional[str] = None) -
         "or on Timeline unless they tapped I sent it or said they sent it.\n"
         "- 'done' / 'sent' / 'I sent it' means that brand is finished. Then you may line up "
         "the next unpitched brands as cards, not an auto-draft.\n"
+        "- After they confirm a pitch went out: log it, then keep mentoring (next brands, "
+        "follow-ups, rates). Kit-in-bio is a side note, not a lecture and not a gate. "
+        "Brands already get the kit from the pitch; we can see who viewed it. "
+        "If they cannot add a bio link yet (low followers), say that's fine.\n"
         "- If intent=generate_pitch: `say` is 1-2 short sentences. Never write Subject, "
         "the email body, or 'Hey team'. The UI already shows the pitch card.\n"
         "- Never recommend a brand in already_pitched.\n"
         "- If TASK TRACKER mentions a kit view, that brand opened the pitch link. "
         "Treat it as a hot lead and offer a follow-up. Do not ignore it.\n"
-        "- If CHECK-IN DUE or ACTIVE PAIN is set, ask the pulse or do that one fix. "
+        "- If CHECK-IN DUE or ACTIVE PAIN is set, ask the pulse first: "
+        "Got any reply from that brand since they contacted them? "
+        "Do not draft a follow-up until day 4 or they ask. "
         "Do not dump new brand cards unless they asked or the fix is lining up in-niche matches.\n"
         "- Replies, rejections, bounces, and 'never sent' are facts to log, not small talk.\n"
         "- Only name directory brands (suggested_brands, tool_brands, or a brand they asked "
@@ -1250,6 +1363,9 @@ def _brain_extra(discovery_hint: str = "", force_intent: Optional[str] = None) -
         "Do not invent follower counts.\n"
         "- If they tap Write a pitch for a brand I name: intent=ask_brand. "
         "Ask for the brand name only. Do not draft until they name one.\n"
+        "- If they ask for paid collabs, paid UGC, or brand deals: intent=suggest_brands. "
+        "Never treat 'paid collaborations' (or gifted/PR packages) as a brand name. "
+        "Line up directory brands, then draft a paid ask — not a gifted 'no fee' trial.\n"
         "- Never paste /creator/dashboard/my-kit or a raw editor path. "
         "Tell them to tap **My portfolio**. The UI already shows that button.\n"
         "- notes_patch: fill fields you just learned. Leave null if unknown.\n"
@@ -1321,6 +1437,10 @@ def classify_intent(
         intent = "chat"
     if is_more_brands_turn(text) and not force_intent:
         intent = "suggest_brands"
+    if is_deal_search(text) and not force_intent:
+        intent = "suggest_brands"
+        parsed["brand_id"] = None
+        parsed["brand_name"] = None
     parsed_id = parsed.get("brand_id")
     parsed_name = parsed.get("brand_name")
     if intent == "generate_pitch" and looks_like_brand_request(text, history):
@@ -1456,9 +1576,11 @@ def narrate_kit_review(
             _brain_extra(discovery_hint, force_intent="coach_portfolio")
             + "\nYou already opened their Newcollab My Kit. Review THAT page.\n"
             "Never mention Linktree or a generic landing page.\n"
-            "If unpublished: tell them to tap My portfolio. Never paste an editor path.\n"
-            "If published: specific notes from kit_snapshot, then the exact live URL "
-            "underlined for their TikTok bio — not newcollab.co homepage.\n"
+            "If unpublished: tell them to tap My portfolio. Never paste an editor path. "
+            "Keep pitching either way.\n"
+            "If published: specific notes from kit_snapshot, then offer the exact live URL "
+            "for bio if they have a link slot — not newcollab.co homepage. "
+            "Missing bio link is not an immediate no. Low-follower accounts often cannot add one yet.\n"
             + kit_context(kit)
         ),
     )

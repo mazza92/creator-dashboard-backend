@@ -277,14 +277,16 @@ def kit_context(snapshot: Optional[Dict[str, Any]]) -> str:
     if kit.get("bio_has_kit_url"):
         lines.append("Bio already includes the live kit URL.")
     elif kit.get("bio_has_generic_newcollab"):
-        lines.append("Bio links to newcollab.co generally — NOT the /kit/slug URL. Brands bounce.")
+        lines.append("Bio links to newcollab.co generally — NOT the /kit/slug URL. Suggest the exact kit URL if they have a bio link slot.")
     else:
-        lines.append("Bio does not include the kit URL yet.")
+        lines.append("Bio does not include the kit URL yet. Not a blocker — many micros cannot add a bio link until the platform unlocks it.")
     if kit.get("gaps"):
         lines.append("Gaps to fix: " + " | ".join(kit["gaps"]))
     lines.append(
-        "Coaching rule: this is the Newcollab kit, not Linktree. Get it customized, published, "
-        "then the exact live URL into TikTok (and IG) bio. Never tell them to use newcollab.co without /kit/slug."
+        "Coaching rule: Newcollab kit, not Linktree. Publish when you can. Offer the exact "
+        "/kit/slug URL for bio because brands click it from the pitch and we track views. "
+        "If they cannot add a bio link yet (low followers), say that's fine and keep pitching. "
+        "Never treat a missing bio link as an immediate no or a reason to pause mentoring."
     )
     return "\n".join(lines)
 
@@ -339,8 +341,9 @@ def persona_kit_review(snapshot: Optional[Dict[str, Any]] = None, first_name: Op
             f"{hey} I need **My Kit** open in front of me before I can coach this properly.\n\n"
             "That's your Newcollab media kit — the page brands actually click from a pitch. "
             f"Go to **My Kit**, build it there, then come back and I'll review the live page.\n\n"
-            "When it's published, the only link that belongs in your TikTok bio is the kit URL, "
-            f"like __{url}__ — not the Newcollab homepage."
+            "When it's published, if they have a bio link slot, the kit URL belongs there "
+            f"(__{url}__) — not the Newcollab homepage. If they don't (common on smaller accounts), "
+            "that's fine; brands still get the kit from the pitch and we can see who viewed it."
         )
 
     gaps = kit.get("gaps") or []
@@ -351,9 +354,10 @@ def persona_kit_review(snapshot: Optional[Dict[str, Any]] = None, first_name: Op
             f"{hey} I opened **My Kit** — this is the Newcollab page brands review, not a random portfolio.\n\n"
             "It's **not live yet**, so a PR team has nothing to click.\n\n"
             f"**Fix these, then hit publish:**\n{steps}\n\n"
-            "Tap **My portfolio**, make those edits, publish, then paste this in your TikTok bio:\n\n"
+            "Tap **My portfolio**, make those edits, publish. If IG/TikTok already lets you add a "
+            "bio link, paste this so brands land on the kit and we can track views:\n\n"
             f"__{url}__\n\n"
-            "Tell me when it's live and I'll go through the page with you. ✨"
+            "If you don't have a bio link slot yet, skip it — keep pitching. The kit URL is already in the email."
         )
 
     notes = []
@@ -375,7 +379,10 @@ def persona_kit_review(snapshot: Optional[Dict[str, Any]] = None, first_name: Op
             "Brands land on the homepage and bounce."
         )
     elif kit.get("bio_missing_kit_url"):
-        notes.append("The kit is live but it is **not** in your TikTok bio yet. That's the whole point.")
+        notes.append(
+            "If you have a bio link slot, paste the kit URL there — brands click through from the pitch "
+            "and we can see who viewed it. If IG/TikTok hasn't unlocked links yet, that's fine."
+        )
     if not notes:
         notes.append("Solid start. Next job is keeping the first three posts as your best work, with a number on each.")
 
@@ -383,7 +390,7 @@ def persona_kit_review(snapshot: Optional[Dict[str, Any]] = None, first_name: Op
     bio_line = (
         "Bio already has the kit URL — nice. Keep it as the only link."
         if kit.get("bio_has_kit_url")
-        else f"Copy this into your TikTok bio (the link field, not a comment):\n\n__{url}__"
+        else f"If you can add a link in bio, paste this (link field, not a comment). Brands click it and we track kit views. No slot yet? Skip — keep pitching:\n\n__{url}__"
     )
     return (
         f"{hey} I looked at your live kit: **{url}**\n\n"

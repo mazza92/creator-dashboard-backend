@@ -23,6 +23,9 @@ from services.polly import (
     brand_lookup_names,
     asked_brand_query,
     strip_brand_ask,
+    is_deal_search,
+    deal_search_kind,
+    apply_paid_ask_to_pitch,
     mark_draft_pending,
     mark_pitched,
     unmark_pitched,
@@ -96,6 +99,7 @@ from services.polly_tracker import (
     log_intent,
     lookup_brand,
     maybe_bootstrap_nudge,
+    maybe_deliver_login_checkin,
     morning_brief,
     process_due_nudges,
     record_pitch_sent,
@@ -658,6 +662,11 @@ def bootstrap():
                 top_name = row.get("name")
                 break
         brief = morning_brief(tracker, first)
+        try:
+            if maybe_deliver_login_checkin(conn, creator_id, tracker):
+                thread = load_thread(conn, creator_id)
+        except Exception as err:
+            print(f"[Polly] login checkin skipped: {err}")
         nudge = None
         try:
             nudge = maybe_bootstrap_nudge(conn, creator_id)
@@ -735,7 +744,13 @@ def chat():
             looks_like_brand_request(user_text, messages)
             and not is_more_brands_turn(user_text)
             and not is_setup_chip_tap(user_text, chip_id, explicit_action)
+            and not is_deal_search(user_text)
         )
+        deal_kind = deal_search_kind(user_text)
+        if deal_kind in ("paid", "gifted"):
+            notes["deal_intent"] = deal_kind
+            if deal_kind == "paid" and not notes.get("goal_30d"):
+                notes["goal_30d"] = "paid UGC"
         if should_auto_skip_setup(notes) and not named_ask:
             skip_flag = True
             data["_repeat_skip"] = True
@@ -845,6 +860,11 @@ def chat():
             f"[Polly] brand-ask typed={typed_ask!r} asked={asked_brand!r} "
             f"intent={intent} pending={pending_label!r} action={explicit_action!r}"
         )
+        if is_deal_search(user_text) and not explicit_brand_id:
+            intent = "suggest_brands"
+            asked_brand = None
+            decision["brand_name"] = None
+            decision["brand_id"] = None
         if skip_flag and not named_ask:
             notes = skip_discovery(notes)
             if intent in ("discovery", "chat") or data.get("_repeat_skip"):
@@ -1032,7 +1052,9 @@ def chat():
                     fallback_say = persona_more_brands_intro(brands, pending_name, profile_context)
                     say = fallback_say
                 else:
-                    fallback_say = persona_brand_intro(brands, profile_context)
+                    fallback_say = persona_brand_intro(
+                        brands, profile_context, deal_intent=notes.get("deal_intent"),
+                    )
                     llm_say = decision.get("say") if not is_robotic(decision.get("say")) else ""
                     say = narrate_tool_result(
                         profile_context,
@@ -1042,11 +1064,11 @@ def chat():
                         fallback=llm_say or fallback_say,
                         discovery_hint=discovery_brief(notes),
                     )
-                    if is_robotic(say) or say_claims_unconfirmed_send(say):
+                    if is_robotic(say) or say_claims_unconfirmed_send(say) or "isn't in our directory" in (say or "").lower():
                         say = fallback_say
             except Exception as err:
                 print(f"[Polly] suggest narrate skipped: {err}")
-                say = persona_more_brands_intro(brands, pending_name, profile_context) if pending_name else persona_brand_intro(brands, profile_context)
+                say = persona_more_brands_intro(brands, pending_name, profile_context) if pending_name else persona_brand_intro(brands, profile_context, deal_intent=notes.get("deal_intent"))
             if not brands and not say:
                 say = (
                     "I couldn't pull a fresh list just now. Tap again in a second, "
@@ -1124,6 +1146,8 @@ def chat():
                         pitch = pitch_from_followup_response(pkg, resolved)
                     else:
                         pitch = pitch_from_package_response(pkg)
+                    if pitch and notes.get("deal_intent") == "paid" and not wants_followup:
+                        pitch = apply_paid_ask_to_pitch(pitch, kit=kit, scrape=scrape)
                     if pitch:
                         pitch["brand_id"] = pitch.get("brand_id") or resolved.get("id")
                         pitch["brand_name"] = pitch.get("brand_name") or resolved.get("name")
@@ -1145,7 +1169,9 @@ def chat():
                         )
                     else:
                         fallback_say = persona_pitch_intro(
-                            brand_name, has_mailto=bool(pitch and pitch.get("mailto"))
+                            brand_name,
+                            has_mailto=bool(pitch and pitch.get("mailto")),
+                            paid=notes.get("deal_intent") == "paid",
                         )
                     say = persona_park_draft(prior_draft, brand_name) + fallback_say
                     data["_keep_pitch_say"] = True

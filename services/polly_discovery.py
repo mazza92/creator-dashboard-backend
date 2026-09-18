@@ -121,9 +121,10 @@ def track_playbook(notes: Optional[Dict] = None) -> str:
         )
     return (
         "CREATOR TRACK (locked unless discovery later upgrades them): aspiring. "
-        "Objective: become a quality profile brands actually reply to. Order: publish My Kit → "
-        "put the kit URL in TikTok bio → pitch live PR rosters / gifted collabs → improve "
-        "content quality from real briefs → then paid UGC. Do not skip kit/bio to spray pitches. "
+        "Objective: become a quality profile brands actually reply to. Publish My Kit when you can, "
+        "offer the kit URL for bio if they have a link slot (low-follower accounts often cannot — "
+        "that's fine), pitch live PR rosters / gifted collabs, improve content from real briefs, "
+        "then paid UGC. Never stall pitches because the bio link is missing. "
         "Lead with brands that gift micros and are actively recruiting in-niche. "
         "Relevance and reply chance beat famous logos — never pitch Nike / On Running / "
         "Sephora-scale names to a new micro. Live PR rosters still have to match the niche."
