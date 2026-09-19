@@ -34,11 +34,52 @@ class CreatorProfileScraper:
     def __init__(self, db_conn=None):
         self.db_conn = db_conn
 
-    def scrape_instagram_profile(self, handle: str) -> Dict[str, Any]:
-        """Scrape Instagram profile via in-house scraper (no Apify fallback)."""
+    def scrape_instagram_profile(
+        self,
+        handle: str,
+        *,
+        user_id=None,
+        access_token: Optional[str] = None,
+        oauth_profile: Optional[Dict[str, Any]] = None,
+        allow_html_fallback: bool = True,
+    ) -> Dict[str, Any]:
+        """Instagram profile for a signed-in creator.
+
+        Prefer official Instagram Login (me + media). HTML scrape is only
+        a fallback for accounts that never connected Login.
+        """
+        from services.instagram_login_kit import (
+            InstagramLoginKitError,
+            fetch_raw_scrape,
+            oauth_profile_to_raw_scrape,
+        )
+
         handle = handle.lstrip('@').strip()
+        if oauth_profile:
+            profile = oauth_profile_to_raw_scrape(oauth_profile)
+            if diy_scrape_is_acceptable(profile, 'instagram'):
+                print(f"[Scrape] ig @{handle} via instagram-login snapshot")
+                return profile
+            print(f"[Scrape] ig @{handle} login snapshot thin, fetching live")
+
+        token = access_token
+        if token:
+            try:
+                profile = fetch_raw_scrape(token, handle_hint=handle)
+                if diy_scrape_is_acceptable(profile, 'instagram'):
+                    print(f"[Scrape] ig @{handle} via instagram-login")
+                    return profile
+                raise InstagramLoginKitError(f"Instagram Login profile thin for @{handle}")
+            except InstagramLoginKitError as exc:
+                print(f"[Scrape] ig @{handle} login failed ({exc}); not using HTML for connected users")
+                raise ValueError(
+                    f"Could not refresh Instagram via Login for @{handle}. Reconnect Instagram and try again."
+                ) from exc
+
+        if not allow_html_fallback:
+            raise ValueError(f"Connect Instagram with Login to load @{handle}")
+
         profile = diy_scrape_instagram(handle, results_limit=12)
-        # Reject any leftover partial flags — DIY must be full TikTok-parity data
         if profile.get('_partial_scrape'):
             raise ValueError(f"In-house Instagram scrape incomplete for @{handle}")
         if diy_scrape_is_acceptable(profile, 'instagram'):
@@ -1110,15 +1151,21 @@ def scrape_and_enrich_creator(user_id, handle: str, platform: str,
         db_conn: Database connection
         skip_minimums: Skip the legacy 5-post check (onboarding uses the 12-post quality bar)
         skip_follower_floor: Skip the full quality bar (kit refresh only)
-        oauth_profile: TikTok Login Kit snapshot (skips HTML scrape)
-        access_token: Live TikTok Login Kit token
+        oauth_profile: Login Kit snapshot (skips HTML scrape)
+        access_token: Live Login Kit token
     """
     scraper = CreatorProfileScraper(db_conn)
     platform = (platform or '').lower()
 
     # Step 1: Scrape profile
     if platform == 'instagram':
-        raw_scrape = scraper.scrape_instagram_profile(handle)
+        raw_scrape = scraper.scrape_instagram_profile(
+            handle,
+            user_id=user_id,
+            access_token=access_token,
+            oauth_profile=oauth_profile,
+            allow_html_fallback=not bool(access_token or oauth_profile),
+        )
     elif platform == 'tiktok':
         raw_scrape = scraper.scrape_tiktok_profile(
             handle,

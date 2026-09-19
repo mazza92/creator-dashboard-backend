@@ -1034,13 +1034,13 @@ def get_kit_settings():
                 'post_count': scrape_row.get('post_count') if scrape_row else None,
                 'recent_posts': recent_posts,
             },
-            oauth_videos=creator.get('social_oauth_videos') if platform == 'tiktok' else None,
+            oauth_videos=creator.get('social_oauth_videos') if platform in ('tiktok', 'instagram') else None,
             handle=handle,
         )
         likes_count = stats['likes_count']
         video_count = stats['video_count']
         avg_views = stats['avg_views']
-        tiktok_videos = stats['tiktok_videos'] if platform == 'tiktok' else []
+        tiktok_videos = stats['tiktok_videos'] if platform in ('tiktok', 'instagram') else []
         theme = _sanitize_kit_theme(creator.get('kit_theme'))
         display_name = typed_portfolio_name(
             theme,

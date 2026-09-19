@@ -89,7 +89,11 @@ MIN_POSTS = 5
 # Instagram OAuth (via Facebook Login for Business)
 INSTAGRAM_APP_ID = os.getenv('INSTAGRAM_APP_ID')
 INSTAGRAM_APP_SECRET = os.getenv('INSTAGRAM_APP_SECRET')
-INSTAGRAM_REDIRECT_URI = os.getenv('INSTAGRAM_REDIRECT_URI', 'https://api.newcollab.co/api/social/callback/instagram')
+INSTAGRAM_WEB_REDIRECT_URI = 'https://api.newcollab.co/api/social/callback/instagram'
+INSTAGRAM_LOCAL_CALLBACK = 'http://localhost:5000/api/social/callback/instagram'
+INSTAGRAM_REDIRECT_URI = os.getenv('INSTAGRAM_REDIRECT_URI', INSTAGRAM_WEB_REDIRECT_URI)
+INSTAGRAM_SCOPES_FULL = 'instagram_business_basic,instagram_business_manage_insights'
+INSTAGRAM_SCOPES_BASE = 'instagram_business_basic'
 
 # TikTok OAuth (Login Kit). On whenever client key+secret exist unless
 # TIKTOK_OAUTH_ENABLED is explicitly 0/false.
@@ -122,6 +126,42 @@ def _decode_tiktok_oauth_state(state):
         return json.loads(base64.urlsafe_b64decode(state.encode()).decode()) or {}
     except Exception:
         return {}
+
+
+def _decode_oauth_state(state):
+    return _decode_tiktok_oauth_state(state)
+
+
+def _instagram_oauth_config(return_url=None):
+    """Read Instagram creds from this repo's .env first so OS/prod keys cannot leak into Sandbox."""
+    file_vals = {}
+    try:
+        from dotenv import dotenv_values
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+        file_vals = dotenv_values(env_path) or {}
+    except Exception:
+        file_vals = {}
+    app_id = (file_vals.get('INSTAGRAM_APP_ID') or os.getenv('INSTAGRAM_APP_ID') or INSTAGRAM_APP_ID or '').strip()
+    secret = (file_vals.get('INSTAGRAM_APP_SECRET') or os.getenv('INSTAGRAM_APP_SECRET') or INSTAGRAM_APP_SECRET or '').strip()
+    redirect_uri = (
+        file_vals.get('INSTAGRAM_REDIRECT_URI')
+        or os.getenv('INSTAGRAM_REDIRECT_URI')
+        or INSTAGRAM_REDIRECT_URI
+        or INSTAGRAM_WEB_REDIRECT_URI
+    ).strip()
+    if _is_local_dev_url(return_url):
+        redirect_uri = INSTAGRAM_WEB_REDIRECT_URI
+    return app_id, secret, redirect_uri
+
+
+def _instagram_oauth_enabled():
+    flag = (os.getenv('INSTAGRAM_OAUTH_ENABLED') or '').strip().lower()
+    if flag in ('0', 'false', 'no', 'off'):
+        return False
+    if flag in ('1', 'true', 'yes', 'on'):
+        return True
+    app_id, secret, _redirect = _instagram_oauth_config()
+    return bool(app_id and secret)
 
 
 def _tiktok_handle_from_user_info(user_info):
@@ -240,6 +280,18 @@ def _bounce_tiktok_callback_to_local_if_needed():
     return redirect(target)
 
 
+def _bounce_instagram_callback_to_local_if_needed():
+    if _is_local_dev_url(request.host_url):
+        return None
+    state_data = _decode_oauth_state(request.args.get('state'))
+    if not _is_local_dev_url(state_data.get('return_url')):
+        return None
+    qs = request.query_string.decode('utf-8', errors='replace')
+    target = f'{INSTAGRAM_LOCAL_CALLBACK}?{qs}' if qs else INSTAGRAM_LOCAL_CALLBACK
+    _log('[ig-login] Bouncing callback to local Flask')
+    return redirect(target)
+
+
 def _tiktok_oauth_config(return_url=None):
     """Read TikTok creds from this repo's .env first so OS/prod keys cannot leak into Sandbox."""
     file_vals = {}
@@ -292,6 +344,9 @@ def _ensure_tiktok_oauth_columns(cursor):
     )
     cursor.execute(
         'ALTER TABLE creators ADD COLUMN IF NOT EXISTS tiktok_handle VARCHAR(100)'
+    )
+    cursor.execute(
+        'ALTER TABLE creators ADD COLUMN IF NOT EXISTS instagram_handle VARCHAR(100)'
     )
 
 
@@ -646,7 +701,8 @@ def update_creator_verification(creator_id: int, platform: str, data: dict,
                 social_oauth_videos = COALESCE(%s::jsonb, social_oauth_videos),
                 followers_count = CASE WHEN %s > 0 THEN %s ELSE followers_count END,
                 creator_followers = CASE WHEN %s > 0 THEN %s ELSE creator_followers END,
-                tiktok_handle = COALESCE(NULLIF(%s, ''), tiktok_handle),
+                tiktok_handle = CASE WHEN %s = 'tiktok' THEN COALESCE(NULLIF(%s, ''), tiktok_handle) ELSE tiktok_handle END,
+                instagram_handle = CASE WHEN %s = 'instagram' THEN COALESCE(NULLIF(%s, ''), instagram_handle) ELSE instagram_handle END,
                 total_likes = CASE WHEN %s > 0 THEN %s ELSE total_likes END,
                 total_posts = CASE WHEN %s > 0 THEN %s ELSE total_posts END,
                 image_profile = COALESCE(NULLIF(%s, ''), image_profile),
@@ -668,7 +724,8 @@ def update_creator_verification(creator_id: int, platform: str, data: dict,
             videos_json,
             followers, followers,
             followers, followers,
-            handle,
+            platform, handle,
+            platform, handle,
             likes_count, likes_count,
             media_count, media_count,
             avatar_url,
@@ -881,225 +938,277 @@ def verify_handle():
 
 
 # ============================================================================
-# INSTAGRAM OAUTH ENDPOINTS (DEPRECATED - requires app review)
+# INSTAGRAM OAUTH ENDPOINTS (Instagram Login — TikTok Login Kit analog)
 # ============================================================================
 
 @social_verification_bp.route('/connect/instagram', methods=['GET'])
 def connect_instagram():
-    """Initiate Instagram OAuth flow via Instagram Business Login"""
-    # For onboarding, we may not have creator_id yet - just need user_id
-    user_id = session.get('user_id')
-    creator_id = get_creator_id_from_session()
-
-    # Get return_url from query params (allows flexible redirect back to any frontend)
+    """Initiate Instagram Login (professional Creator/Business accounts)."""
     return_url = request.args.get('return_url', f"{FRONTEND_URL}/onboarding")
+    if not _instagram_oauth_enabled():
+        _log("[ig-login] Connect blocked: Instagram credentials missing")
+        return redirect(f"{return_url}?social=failed&reason=oauth_error&platform=instagram")
+    try:
+        user_id = _session_get('user_id')
+        creator_id = get_creator_id_from_session()
+        if not user_id:
+            return redirect(f"{FRONTEND_URL}/login?redirect=/onboarding")
 
-    if not user_id:
-        return redirect(f"{FRONTEND_URL}/login?redirect=/onboarding")
+        user_country = get_user_country_from_session()
+        if user_country and not region_code_is_allowed(user_country):
+            return redirect(f"{return_url}?social=failed&reason=restricted_region&platform=instagram")
 
-    # Check region first
-    user_country = get_user_country_from_session()
-    if user_country and not region_code_is_allowed(user_country):
-        return redirect(f"{return_url}?social=failed&reason=restricted_region")
+        app_id, _secret, redirect_uri = _instagram_oauth_config(return_url)
+        if not app_id:
+            _log("[ig-login] INSTAGRAM_APP_ID not configured")
+            return redirect(f"{return_url}?social=failed&reason=oauth_error&platform=instagram")
 
-    if not INSTAGRAM_APP_ID:
-        _log("❌ INSTAGRAM_APP_ID not configured")
-        return redirect(f"{return_url}?social=failed&reason=oauth_error")
+        use_base = request.args.get('scopes') == 'base'
+        scopes = INSTAGRAM_SCOPES_BASE if use_base else INSTAGRAM_SCOPES_FULL
+        csrf_token = secrets.token_urlsafe(16)
+        state_data = {
+            'csrf': csrf_token,
+            'user_id': user_id,
+            'creator_id': creator_id,
+            'return_url': return_url,
+            'scopes': 'base' if use_base else 'full',
+            'redirect_uri': redirect_uri,
+            'source': (request.args.get('source') or '').strip().lower(),
+        }
+        state = base64.urlsafe_b64encode(json.dumps(state_data, default=str).encode()).decode()
+        try:
+            session['instagram_oauth_state'] = csrf_token
+        except Exception:
+            pass
 
-    # Encode user info in state to survive cross-subdomain redirect
-    # State format: base64(json({csrf: token, user_id: id, creator_id: id, return_url: url}))
-    csrf_token = secrets.token_urlsafe(16)
-    state_data = {
-        'csrf': csrf_token,
-        'user_id': user_id,
-        'creator_id': creator_id,
-        'return_url': return_url
-    }
-    state = base64.urlsafe_b64encode(json.dumps(state_data).encode()).decode()
-
-    # Also store in session as backup (works for same-domain)
-    session['instagram_oauth_state'] = csrf_token
-
-    _log(f"📤 Instagram Connect: user_id={user_id}, creator_id={creator_id}, state={state[:20]}...")
-
-    # Instagram Business Login OAuth URL (new API)
-    scopes = 'instagram_business_basic,instagram_business_manage_insights'
-
-    auth_url = (
-        f"https://www.instagram.com/oauth/authorize?"
-        f"client_id={INSTAGRAM_APP_ID}"
-        f"&redirect_uri={quote(INSTAGRAM_REDIRECT_URI)}"
-        f"&scope={scopes}"
-        f"&response_type=code"
-        f"&state={state}"
-    )
-
-    return redirect(auth_url)
+        _log(f"[ig-login] Connect user_id={user_id} creator_id={creator_id} scopes={scopes}")
+        # Instagram Login needs the Instagram App ID + secret from
+        # API setup with Instagram login — not Settings → Basic (Meta App ID).
+        # enable_fb_login=0 stops Instagram from treating this as Facebook Login.
+        auth_url = (
+            f"https://www.instagram.com/oauth/authorize?"
+            f"client_id={app_id}"
+            f"&redirect_uri={quote(redirect_uri)}"
+            f"&scope={scopes}"
+            f"&response_type=code"
+            f"&enable_fb_login=0"
+            f"&state={state}"
+        )
+        return redirect(auth_url)
+    except Exception as e:
+        _log(f"[ig-login] Connect exception: {e}")
+        import traceback
+        traceback.print_exc()
+        return redirect(f"{return_url}?social=failed&reason=oauth_error&platform=instagram")
 
 
 @social_verification_bp.route('/callback/instagram', methods=['GET'])
 def callback_instagram():
-    """Handle Instagram OAuth callback via Instagram Business Login API"""
-    state = request.args.get('state')
+    """Handle Instagram Login callback — persist profile + posts like TikTok Login Kit."""
+    bounced = _bounce_instagram_callback_to_local_if_needed()
+    if bounced:
+        return bounced
 
-    # Decode state to get user info (survives cross-subdomain redirect)
+    from services.instagram_login_kit import (
+        InstagramLoginKitError,
+        exchange_code_for_token,
+        exchange_long_lived_token,
+        expires_at_from_payload,
+        fetch_media,
+        fetch_user_info,
+        is_professional_account_error,
+        media_to_oauth_snapshot,
+    )
+    from services.profile_quality import ProfileQualityError
+
+    state = request.args.get('state')
     user_id = None
     creator_id = None
-    csrf_token = None
-    return_url = f"{FRONTEND_URL}/onboarding"  # Default fallback
+    return_url = f"{FRONTEND_URL}/onboarding"
+    scopes_mode = 'full'
+    oauth_source = ''
+    redirect_uri = INSTAGRAM_WEB_REDIRECT_URI
 
     if state:
-        try:
-            state_data = json.loads(base64.urlsafe_b64decode(state.encode()).decode())
-            csrf_token = state_data.get('csrf')
-            user_id = state_data.get('user_id')
-            creator_id = state_data.get('creator_id')
-            return_url = state_data.get('return_url', return_url)
-        except Exception as e:
-            _log(f"⚠️ Failed to decode state: {e}")
+        state_data = _decode_oauth_state(state)
+        user_id = state_data.get('user_id')
+        creator_id = state_data.get('creator_id')
+        return_url = state_data.get('return_url', return_url)
+        scopes_mode = state_data.get('scopes') or 'full'
+        oauth_source = state_data.get('source') or ''
+        redirect_uri = state_data.get('redirect_uri') or redirect_uri
 
-    # Fallback to session (works for same-domain)
-    stored_csrf = session.pop('instagram_oauth_state', None)
+    try:
+        session.pop('instagram_oauth_state', None)
+    except Exception:
+        pass
 
-    _log(f"📥 Instagram Callback: user_id={user_id}, creator_id={creator_id}, csrf_valid={csrf_token == stored_csrf if stored_csrf else 'no_session'}")
-
-    # Validate we have user_id (required for the flow to work)
+    _log(f"[ig-login] Callback user_id={user_id} creator_id={creator_id}")
+    fail = lambda reason: redirect(
+        f"{return_url}?social=failed&reason={reason}&platform=instagram"
+    )
     if not user_id:
-        _log("❌ Instagram OAuth: No user_id in state - session may have expired")
-        return redirect(f"{return_url}?social=failed&reason=oauth_error")
+        _log("[ig-login] Missing user_id in state")
+        return fail('oauth_error')
 
-    # Check for errors
     error = request.args.get('error')
-    error_reason = request.args.get('error_reason')
-    error_description = request.args.get('error_description')
+    error_desc = (request.args.get('error_description') or request.args.get('error_reason') or '').lower()
     if error:
-        _log(f"❌ Instagram OAuth error: {error} - {error_reason} - {error_description}")
-        return redirect(f"{return_url}?social=failed&reason=oauth_error")
+        _log(f"[ig-login] OAuth error: {error} {error_desc}")
+        if scopes_mode != 'base' and ('scope' in error_desc or 'permission' in error_desc):
+            return redirect(
+                f"/api/social/connect/instagram?scopes=base&return_url={quote(return_url)}"
+                f"&source={quote(oauth_source)}"
+            )
+        if is_professional_account_error(error_desc):
+            return fail('need_professional')
+        return fail('oauth_error')
 
     code = request.args.get('code')
     if not code:
-        return redirect(f"{return_url}?social=failed&reason=oauth_error")
+        return fail('oauth_error')
 
     try:
-        # Exchange code for short-lived access token (Instagram Business Login API)
-        _log(f"📤 Exchanging code for token...")
-        token_response = requests.post(
-            'https://api.instagram.com/oauth/access_token',
-            data={
-                'client_id': INSTAGRAM_APP_ID,
-                'client_secret': INSTAGRAM_APP_SECRET,
-                'grant_type': 'authorization_code',
-                'redirect_uri': INSTAGRAM_REDIRECT_URI,
-                'code': code
-            },
-            timeout=15
-        )
-        token_data = token_response.json()
-        _log(f"📥 Token response: {token_data}")
+        _, _, configured_redirect = _instagram_oauth_config(return_url)
+        redirect_uri = redirect_uri or configured_redirect
+        token_data = exchange_code_for_token(code, redirect_uri)
+        short_token = token_data.get('access_token')
+        if not short_token:
+            return fail('oauth_error')
 
-        if 'error_type' in token_data or 'error' in token_data:
-            _log(f"❌ Instagram token error: {token_data}")
-            return redirect(f"{return_url}?social=failed&reason=oauth_error")
+        long_lived = exchange_long_lived_token(short_token)
+        access_token = long_lived.get('access_token') or short_token
+        expires_at = expires_at_from_payload(long_lived)
 
-        access_token = token_data.get('access_token')
-        user_id = token_data.get('user_id')
+        user_info = fetch_user_info(access_token)
+        handle = (user_info.get('username') or '').strip().lstrip('@')
+        if not handle:
+            return fail('no_username')
 
-        if not access_token:
-            _log("❌ No access token in response")
-            return redirect(f"{return_url}?social=failed&reason=oauth_error")
-
-        # Get user profile using Instagram Graph API
-        _log(f"📤 Fetching user profile for user_id: {user_id}")
-        profile_response = requests.get(
-            f'https://graph.instagram.com/v22.0/me',
-            params={
-                'fields': 'user_id,username,account_type,followers_count,media_count,profile_picture_url',
-                'access_token': access_token
-            },
-            timeout=10
-        )
-        profile_data_raw = profile_response.json()
-        _log(f"📥 Profile response: {profile_data_raw}")
-
-        if 'error' in profile_data_raw:
-            _log(f"❌ Instagram profile error: {profile_data_raw}")
-            return redirect(f"{return_url}?social=failed&reason=oauth_error")
-
-        # Note: Instagram Business/Creator accounts connected via OAuth are inherently public
-        # The API only works for business accounts which must be public to function
-        # No need to scrape public profile - account_type tells us everything we need
-
-        # Build profile data
-        # Business/Creator accounts via Instagram Business Login are always public
-        account_type = profile_data_raw.get('account_type', 'BUSINESS').upper()
-        is_public_account = account_type in ['BUSINESS', 'CREATOR', 'MEDIA_CREATOR']
-
+        oauth_videos = media_to_oauth_snapshot(fetch_media(access_token, max_items=40))
+        account_type = str(user_info.get('account_type') or 'BUSINESS').upper()
         profile_data = {
             'access_token': access_token,
-            'username': profile_data_raw.get('username'),
-            'follower_count': profile_data_raw.get('followers_count', 0),
-            'media_count': profile_data_raw.get('media_count', 0),
+            'username': handle,
+            'open_id': str(user_info.get('user_id') or user_info.get('id') or ''),
+            'follower_count': int(user_info.get('followers_count') or 0),
+            'media_count': int(user_info.get('media_count') or 0) or len(oauth_videos),
+            'likes_count': 0,
+            'avatar_url': user_info.get('profile_picture_url') or '',
             'account_type': account_type,
-            'is_private': not is_public_account,  # Business/Creator accounts are always public
+            'is_private': False,
+            'bio_description': user_info.get('biography') or '',
+            'display_name': user_info.get('name') or '',
+            'following_count': int(user_info.get('follows_count') or 0),
+            'oauth_videos': oauth_videos,
         }
-        api_response = profile_data_raw
-        _log(f"✅ Instagram account found: @{profile_data['username']} - {profile_data['follower_count']} followers, {profile_data['media_count']} posts")
+        _log(
+            f"[ig-login] @{handle} followers={profile_data['follower_count']} "
+            f"posts={profile_data['media_count']} media={len(oauth_videos)}"
+        )
 
-        # Get user country - try fresh IP detection in callback
         user_country = get_user_country_from_session()
-
-        # If no country detected, try fresh IP geolocation (callback is from user's browser)
         if not user_country:
             user_country = detect_country_from_ip()
             if user_country:
-                _log(f"🌍 Fresh IP detection in callback: {user_country}")
-                # Store in database for future reference
-                if user_id:
-                    try:
-                        conn = get_db_connection()
-                        cursor = conn.cursor()
-                        cursor.execute('UPDATE users SET country = %s WHERE id = %s AND country IS NULL',
-                                      (user_country, user_id))
-                        conn.commit()
-                        cursor.close()
-                        conn.close()
-                    except Exception as e:
-                        _log(f"⚠️ Failed to store country in DB: {e}")
-
+                try:
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        'UPDATE users SET country = %s WHERE id = %s AND country IS NULL',
+                        (user_country, user_id),
+                    )
+                    conn.commit()
+                    cursor.close()
+                    conn.close()
+                except Exception as e:
+                    _log(f"[ig-login] Failed to store country: {e}")
         user_country = user_country or ''
-        _log(f"🌍 Final country for verification: '{user_country}' (restricted: {not region_code_is_allowed(user_country)})")
 
-        # Run 5-gate verification
         result = validate_social_gates(profile_data, 'instagram', user_country)
-        _store_onboarding_oauth_proof('instagram', profile_data, result)
+        _store_onboarding_oauth_proof(
+            'instagram',
+            profile_data,
+            result,
+            tokens={'access_token': access_token, 'refresh_token': None, 'expires_at': expires_at},
+        )
 
-        # Log and update DB only if creator_id exists (skip for direct URL testing)
+        from_settings = _is_settings_return(return_url, oauth_source)
+        try:
+            from services.creator_profile_scraper import scrape_and_enrich_creator
+            conn = get_db_connection()
+            scrape_and_enrich_creator(
+                user_id,
+                handle,
+                'instagram',
+                db_conn=conn,
+                skip_minimums=True,
+                skip_follower_floor=from_settings,
+                oauth_profile=profile_data,
+                access_token=access_token,
+            )
+            try:
+                conn.close()
+            except Exception:
+                pass
+        except ProfileQualityError as qe:
+            _log(f"[ig-login] quality bar failed: {qe.code}")
+            if not from_settings:
+                try:
+                    session.pop('pending_oauth', None)
+                    session.modified = True
+                except Exception:
+                    pass
+                reason = {
+                    'below_follower_min': 'below_follower_min',
+                    'below_post_min': 'below_post_min',
+                    'inactive': 'inactive',
+                }.get(qe.code, 'below_post_min')
+                return fail(reason)
+        except Exception as scrape_err:
+            _log(f"[ig-login] profile persist failed: {scrape_err}")
+            if not from_settings:
+                try:
+                    session.pop('pending_oauth', None)
+                    session.modified = True
+                except Exception:
+                    pass
+                return fail('oauth_error')
+
         if creator_id:
-            log_verification_check(creator_id, 'initial', 'instagram', result, user_country, api_response)
+            log_verification_check(creator_id, 'initial', 'instagram', result, user_country, user_info)
             update_creator_verification(
                 creator_id=creator_id,
                 platform='instagram',
                 data=profile_data,
                 result=result,
-                access_token=access_token
+                access_token=access_token,
+                expires_at=expires_at,
             )
 
-        if result['passed']:
-            # Include follower/post counts in URL for frontend (since creator_id may not exist yet)
+        if result['passed'] or from_settings:
+            handle_q = quote(str(handle))
             return redirect(
                 f"{return_url}?social=success&platform=instagram"
-                f"&handle={profile_data['username']}"
+                f"&handle={handle_q}"
                 f"&followers={profile_data['follower_count']}"
                 f"&posts={profile_data['media_count']}"
             )
-        else:
-            return redirect(f"{return_url}?social=failed&reason={result['failure_reason']}&platform=instagram")
-
+        return fail(result.get('failure_reason') or 'oauth_error')
+    except InstagramLoginKitError as e:
+        _log(f"[ig-login] kit error: {e}")
+        if is_professional_account_error(str(e)):
+            return fail('need_professional')
+        if scopes_mode != 'base' and 'scope' in str(e).lower():
+            return redirect(
+                f"/api/social/connect/instagram?scopes=base&return_url={quote(return_url)}"
+            )
+        return fail('oauth_error')
     except Exception as e:
-        _log(f"❌ Instagram OAuth exception: {e}")
+        _log(f"[ig-login] exception: {e}")
         import traceback
         traceback.print_exc()
-        return redirect(f"{return_url}?social=failed&reason=oauth_error")
+        return fail('oauth_error')
 
 
 # ============================================================================
@@ -1571,8 +1680,50 @@ def recheck_verification():
 
         # Re-fetch profile data based on platform
         if platform == 'instagram':
-            # TODO: Re-fetch Instagram data
-            return jsonify({'error': 'Instagram recheck not implemented yet'}), 501
+            from services.instagram_login_kit import (
+                InstagramLoginKitError,
+                fetch_raw_scrape,
+                refresh_long_lived_token,
+            )
+            from services.creator_profile_scraper import scrape_and_enrich_creator
+
+            token = access_token
+            try:
+                fetch_raw_scrape(token)
+            except InstagramLoginKitError:
+                try:
+                    refreshed = refresh_long_lived_token(token)
+                    token = refreshed.get('access_token') or token
+                    if token:
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            '''
+                            UPDATE creators
+                            SET social_oauth_token = %s,
+                                social_token_expires_at = NOW() + INTERVAL '50 days'
+                            WHERE id = %s
+                            ''',
+                            (encrypt_token(token), creator_id),
+                        )
+                        conn.commit()
+                        cursor.close()
+                        conn.close()
+                except Exception:
+                    return jsonify({'error': 'OAuth token expired, please reconnect'}), 400
+
+            conn = get_db_connection()
+            scrape_and_enrich_creator(
+                creator.get('user_id'),
+                creator.get('social_handle') or '',
+                'instagram',
+                db_conn=conn,
+                skip_minimums=True,
+                skip_follower_floor=True,
+                access_token=token,
+            )
+            conn.close()
+            return jsonify({'success': True, 'platform': 'instagram'})
         elif platform == 'tiktok':
             from services.tiktok_login_kit import (
                 TikTokLoginKitError,
