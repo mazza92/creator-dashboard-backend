@@ -385,6 +385,38 @@ def _resolve_apply_path(opp) -> dict:
     }
 
 
+def is_scanner_notes(notes: str) -> bool:
+    return '[scanner:' in (notes or '')
+
+
+def ensure_scanner_feed_live(cursor) -> int:
+    """
+    Indeed-style feed: classified scanner gigs go live without a Publish click.
+    Brand-submitted PR stays pending until Mazza publishes.
+    """
+    cursor.execute(
+        """
+        UPDATE opportunities
+        SET status = 'live',
+            published_at = COALESCE(published_at, NOW()),
+            closes_at = COALESCE(closes_at, NOW() + INTERVAL '21 days')
+        WHERE status = 'pending'
+          AND additional_notes ILIKE %s
+          AND (
+            additional_notes ILIKE %s
+            OR brand_website ILIKE 'http%%'
+          )
+        RETURNING id
+        """,
+        ('%[scanner:%', '%apply_url=%'),
+    )
+    rows = cursor.fetchall() or []
+    n = len(rows)
+    if n:
+        print(f"[opps] scanner feed went live n={n}")
+    return n
+
+
 def admin_required(f):
     """
     Decorator to require admin authentication.
@@ -572,6 +604,184 @@ def brand_submit():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+def _opportunity_card(opp, creator_tokens: set, applied_ids: set) -> tuple:
+    """Serialize one live opportunity the same way /api/opportunities/list does."""
+    opp_niches = opp.get('creator_niches') or []
+    fit_score, is_match, fit_label = _score_opportunity_fit(creator_tokens, opp)
+
+    spots_left = (opp.get('spots_total') or 0) - (opp.get('spots_filled') or 0)
+    days_left = None
+    if opp['closes_at']:
+        delta = (opp['closes_at'] - datetime.utcnow()).days
+        days_left = max(0, delta)
+
+    path = _resolve_apply_path(opp)
+    is_sourced = path['is_sourced']
+    apply_mode = path['apply_mode']
+    external_apply_url = path['external_apply_url']
+    apply_email = path['apply_email']
+    source_platform = path['source_platform']
+
+    desc = opp['campaign_description'] or ''
+    if is_sourced:
+        desc = re.sub(r'\n*Apply here:\s*\S+', '', desc, flags=re.I).strip()
+        desc = re.sub(r'\n*Pay:\s*', '\n', desc).strip()
+
+    niches = opp_niches if isinstance(opp_niches, list) else []
+    display_niche = None
+    bc = (opp.get('brand_category') or '').strip()
+    if bc and bc.lower() not in ('other', 'unknown', 'n/a', 'none'):
+        display_niche = bc.replace('_', ' ').strip()
+        if display_niche.islower() or '_' in bc:
+            display_niche = display_niche.title()
+    elif niches:
+        first = str(next((n for n in niches if n), '')).strip()
+        if first:
+            display_niche = first.split(',')[0].split('(')[0].strip()[:28] or None
+
+    pay_label = _short_pay_label(opp.get('pr_value_usd'), opp.get('campaign_description') or '')
+    if not display_niche or len(display_niche) > 28:
+        inferred = _infer_short_niche(
+            f"{opp.get('product_name') or ''} {opp.get('campaign_description') or ''}"
+        )
+        if inferred:
+            display_niche = inferred
+        elif display_niche and len(display_niche) > 28:
+            display_niche = display_niche.split(',')[0].split('(')[0].strip()[:28]
+
+    serialized = {
+        'id': opp['id'],
+        'brand_name': opp['brand_name'],
+        'brand_category': opp['brand_category'],
+        'display_niche': display_niche,
+        'creator_niches': niches,
+        'brand_logo_url': opp.get('brand_logo_url'),
+        'product_name': opp['product_name'],
+        'campaign_description': desc,
+        'pr_value_usd': opp['pr_value_usd'],
+        'pay_label': pay_label,
+        'creator_count_range': opp['creator_count_range'],
+        'shipping_regions': opp['shipping_regions'] or [],
+        'follower_ranges': opp['follower_ranges'] or [],
+        'content_types': opp['content_types'] or [],
+        'spots_total': opp['spots_total'],
+        'spots_left': spots_left,
+        'days_left': days_left,
+        'is_matched': is_match,
+        'fit_score': fit_score,
+        'fit_label': fit_label,
+        'already_applied': opp['id'] in applied_ids,
+        'external_apply_url': external_apply_url,
+        'apply_email': apply_email,
+        'source_platform': source_platform,
+        'apply_mode': apply_mode,
+        'is_sourced': is_sourced,
+    }
+    return serialized, is_match
+
+
+def fetch_live_opportunity_cards(creator_id, extra_tokens=None):
+    """
+    Live scanner + brand-submitted gigs for a creator.
+    Excludes gifted-PR pushes (pr_brand_id set). Same payload as /list.
+    Returns None if the creator row is missing.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        cursor.execute('''
+            SELECT niche, creator_niches, subscription_tier
+            FROM creators
+            WHERE id = %s
+        ''', (creator_id,))
+        creator = cursor.fetchone()
+    except Exception:
+        conn.rollback()
+        cursor.execute('''
+            SELECT niche, subscription_tier
+            FROM creators
+            WHERE id = %s
+        ''', (creator_id,))
+        creator = cursor.fetchone()
+        if creator is not None:
+            creator = dict(creator)
+            creator['creator_niches'] = None
+
+    if not creator:
+        cursor.close()
+        conn.close()
+        return None
+
+    creator_tokens = _tokenize_niche_blob(creator.get('creator_niches'))
+    creator_tokens |= _tokenize_niche_blob(creator.get('niche'))
+    creator_tokens |= _tokenize_niche_blob(extra_tokens)
+    is_pro = creator.get('subscription_tier') in ['pro', 'elite']
+
+    from services.opportunity_gifted_pr import ensure_opportunity_gifted_pr_columns
+    ensure_opportunity_gifted_pr_columns(cursor)
+    try:
+        ensure_scanner_feed_live(cursor)
+        conn.commit()
+    except Exception as feed_err:
+        conn.rollback()
+        print(f"[opps] scanner feed live skipped: {feed_err}")
+
+    cursor.execute('''
+        SELECT
+            id, brand_name, brand_category, brand_logo_url, brand_website,
+            product_name, campaign_description,
+            pr_value_usd, creator_count_range, shipping_regions, follower_ranges,
+            content_types, creator_niches, additional_notes,
+            spots_total, spots_filled, closes_at,
+            created_at
+        FROM opportunities
+        WHERE status = 'live'
+          AND (closes_at IS NULL OR closes_at > NOW())
+          AND (
+                additional_notes ILIKE '%[scanner:%'
+                OR (
+                    pr_brand_id IS NULL
+                    AND COALESCE(spots_filled, 0) < COALESCE(NULLIF(spots_total, 0), 1)
+                )
+              )
+        ORDER BY created_at DESC
+    ''')
+    all_opps = cursor.fetchall()
+    sourced_n = sum(1 for o in all_opps if '[scanner:' in (o.get('additional_notes') or ''))
+    print(f"[opps] live_feed n={len(all_opps)} sourced={sourced_n}")
+
+    cursor.execute('''
+        SELECT opportunity_id FROM opportunity_applications
+        WHERE creator_id = %s
+    ''', (creator_id,))
+    applied_ids = {row['opportunity_id'] for row in cursor.fetchall()}
+
+    cursor.close()
+    conn.close()
+
+    matched = []
+    others = []
+    for opp in all_opps:
+        serialized, is_match = _opportunity_card(opp, creator_tokens, applied_ids)
+        if is_match:
+            matched.append(serialized)
+        else:
+            others.append(serialized)
+
+    def _rank_key(item):
+        created = 0
+        return (-(item.get('fit_score') or 0), -(item.get('pr_value_usd') or 0), created)
+
+    matched.sort(key=_rank_key)
+    others.sort(key=_rank_key)
+    return {
+        'matched': matched,
+        'others': others,
+        'is_pro': is_pro,
+    }
+
+
 # ============================================
 # CREATOR: List live opportunities
 # ============================================
@@ -584,166 +794,14 @@ def list_opportunities():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        # Get creator's niche and subscription tier
-        try:
-            cursor.execute('''
-                SELECT niche, creator_niches, subscription_tier
-                FROM creators
-                WHERE id = %s
-            ''', (creator_id,))
-            creator = cursor.fetchone()
-        except Exception:
-            conn.rollback()
-            cursor.execute('''
-                SELECT niche, subscription_tier
-                FROM creators
-                WHERE id = %s
-            ''', (creator_id,))
-            creator = cursor.fetchone()
-            if creator is not None:
-                creator = dict(creator)
-                creator['creator_niches'] = None
-
-        if not creator:
-            cursor.close()
-            conn.close()
+        data = fetch_live_opportunity_cards(creator_id)
+        if not data:
             return jsonify({'success': False, 'error': 'Creator not found'}), 404
-
-        creator_tokens = _tokenize_niche_blob(creator.get('creator_niches'))
-        creator_tokens |= _tokenize_niche_blob(creator.get('niche'))
-        is_pro = creator.get('subscription_tier') in ['pro', 'elite']
-
-        from services.opportunity_gifted_pr import ensure_opportunity_gifted_pr_columns
-        ensure_opportunity_gifted_pr_columns(cursor)
-
-        # Get all live opportunities
-        cursor.execute('''
-            SELECT
-                id, brand_name, brand_category, brand_logo_url, brand_website,
-                product_name, campaign_description,
-                pr_value_usd, creator_count_range, shipping_regions, follower_ranges,
-                content_types, creator_niches, additional_notes,
-                spots_total, spots_filled, closes_at,
-                created_at
-            FROM opportunities
-            WHERE status = 'live'
-              AND (closes_at IS NULL OR closes_at > NOW())
-              AND spots_filled < spots_total
-              AND pr_brand_id IS NULL
-            ORDER BY created_at DESC
-        ''')
-        all_opps = cursor.fetchall()
-
-        # Get which ones the creator already applied to
-        cursor.execute('''
-            SELECT opportunity_id FROM opportunity_applications
-            WHERE creator_id = %s
-        ''', (creator_id,))
-        applied_ids = {row['opportunity_id'] for row in cursor.fetchall()}
-
-        cursor.close()
-        conn.close()
-
-        # Split into matched and others — niche-scored, not "empty niches = match everyone"
-        matched = []
-        others = []
-
-        for opp in all_opps:
-            opp_niches = opp.get('creator_niches') or []
-            fit_score, is_match, fit_label = _score_opportunity_fit(creator_tokens, opp)
-
-            spots_left = opp['spots_total'] - opp['spots_filled']
-            days_left = None
-            if opp['closes_at']:
-                delta = (opp['closes_at'] - datetime.utcnow()).days
-                days_left = max(0, delta)
-
-            path = _resolve_apply_path(opp)
-            is_sourced = path['is_sourced']
-            apply_mode = path['apply_mode']
-            external_apply_url = path['external_apply_url']
-            apply_email = path['apply_email']
-            source_platform = path['source_platform']
-
-            desc = opp['campaign_description'] or ''
-            if is_sourced:
-                desc = re.sub(r'\n*Apply here:\s*\S+', '', desc, flags=re.I).strip()
-                desc = re.sub(r'\n*Pay:\s*', '\n', desc).strip()
-
-            niches = opp_niches if isinstance(opp_niches, list) else []
-            # Card label: admin brand_category wins (editable in /admin/opportunities).
-            # Fall back to first creator niche, then text inference.
-            display_niche = None
-            bc = (opp.get('brand_category') or '').strip()
-            if bc and bc.lower() not in ('other', 'unknown', 'n/a', 'none'):
-                display_niche = bc.replace('_', ' ').strip()
-                if display_niche.islower() or '_' in bc:
-                    display_niche = display_niche.title()
-            elif niches:
-                first = str(next((n for n in niches if n), '')).strip()
-                if first:
-                    display_niche = first.split(',')[0].split('(')[0].strip()[:28] or None
-
-            pay_label = _short_pay_label(opp.get('pr_value_usd'), opp.get('campaign_description') or '')
-            if not display_niche or len(display_niche) > 28:
-                inferred = _infer_short_niche(
-                    f"{opp.get('product_name') or ''} {opp.get('campaign_description') or ''}"
-                )
-                if inferred:
-                    display_niche = inferred
-                elif display_niche and len(display_niche) > 28:
-                    display_niche = display_niche.split(',')[0].split('(')[0].strip()[:28]
-
-            serialized = {
-                'id': opp['id'],
-                'brand_name': opp['brand_name'],
-                'brand_category': opp['brand_category'],
-                'display_niche': display_niche,
-                'creator_niches': niches,
-                'brand_logo_url': opp.get('brand_logo_url'),
-                'product_name': opp['product_name'],
-                'campaign_description': desc,
-                'pr_value_usd': opp['pr_value_usd'],
-                'pay_label': pay_label,
-                'creator_count_range': opp['creator_count_range'],
-                'shipping_regions': opp['shipping_regions'] or [],
-                'follower_ranges': opp['follower_ranges'] or [],
-                'content_types': opp['content_types'] or [],
-                'spots_total': opp['spots_total'],
-                'spots_left': spots_left,
-                'days_left': days_left,
-                'is_matched': is_match,
-                'fit_score': fit_score,
-                'fit_label': fit_label,
-                'already_applied': opp['id'] in applied_ids,
-                'external_apply_url': external_apply_url,
-                'apply_email': apply_email,
-                'source_platform': source_platform,
-                'apply_mode': apply_mode,
-                'is_sourced': is_sourced,
-            }
-
-            if is_match:
-                matched.append(serialized)
-            else:
-                others.append(serialized)
-
-        # Best niche fits first, then higher pay, then newest
-        def _rank_key(item):
-            created = 0
-            return (-(item.get('fit_score') or 0), -(item.get('pr_value_usd') or 0), created)
-
-        matched.sort(key=_rank_key)
-        others.sort(key=_rank_key)
-
         return jsonify({
             'success': True,
-            'matched': matched,
-            'others': others,
-            'is_pro': is_pro
+            'matched': data['matched'],
+            'others': data['others'],
+            'is_pro': data['is_pro'],
         })
 
     except Exception as e:
@@ -1294,7 +1352,8 @@ def admin_ingest():
     Bulk-ingest sourced creator gigs into the Opportunities admin queue.
 
     Used by the brand-manager creator_gig_scanner after classification.
-    Creates status='pending' rows for Mazza to approve/publish.
+    Scanner gigs go live immediately (Polly + /opportunities). Brand
+    submissions still land pending for Mazza to publish as Gifted PR.
     Does NOT email brands (scraped listings often have no real brand inbox).
 
     Body: { "gigs": [ { title, buyer_name, apply_url, source_platform,
@@ -1432,9 +1491,11 @@ def admin_ingest():
                         product_name, campaign_description, pr_value_usd,
                         creator_count_range, shipping_regions, follower_ranges,
                         content_types, creator_niches, additional_notes,
-                        application_deadline, spots_total, status
+                        application_deadline, spots_total, status,
+                        published_at, closes_at
                     ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending'
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        'live', NOW(), NOW() + INTERVAL '21 days'
                     ) RETURNING id
                 ''', (
                     buyer[:255],
@@ -1459,16 +1520,24 @@ def admin_ingest():
             except Exception as item_err:
                 errors.append({'title': raw.get('title'), 'error': str(item_err)})
 
+        went_live = 0
+        try:
+            went_live = ensure_scanner_feed_live(cursor)
+        except Exception as feed_err:
+            print(f"[opps] ingest backlog live skipped: {feed_err}")
+
         conn.commit()
         cursor.close()
         conn.close()
 
-        if created:
+        if created or went_live:
             send_email_notification(
                 'mahery@newcollab.co',
-                f'{len(created)} sourced gigs ready to review',
-                f'{len(created)} new listings from the gig scanner are in Admin → Opportunities.\n\n'
-                f'Review: https://app.newcollab.co/admin/opportunities\n\n'
+                f'{len(created)} sourced gigs live in Polly',
+                f'{len(created)} new scanner listings are live on Opportunities and Polly.\n'
+                f'Backlog promoted: {went_live}.\n\n'
+                f'Close junk from Admin → Opportunities (Live).\n'
+                f'https://app.newcollab.co/admin/opportunities\n\n'
                 f'Skipped duplicates: {len(skipped)}'
             )
 
@@ -1479,10 +1548,28 @@ def admin_ingest():
             'errors': errors,
             'created_count': len(created),
             'skipped_count': len(skipped),
+            'went_live_count': went_live,
         }), 201
 
     except Exception as e:
         print(f"Error in admin_ingest: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@opportunities_bp.route('/admin/scanner/go-live', methods=['POST'])
+@admin_required
+def admin_scanner_go_live():
+    """Promote pending scanner gigs to live so Polly and /opportunities can list them."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        n = ensure_scanner_feed_live(cursor)
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return jsonify({'success': True, 'went_live_count': n})
+    except Exception as e:
+        print(f"Error in admin_scanner_go_live: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 

@@ -55,11 +55,11 @@ RULES:
 - If they say yes / ok after you offered matches, pull matches (intent=suggest_brands)
 - If they want to contact a listed brand, intent=generate_pitch with that brand_id
 - If they ask to get paid, paid UGC, paid opportunities, paid collabs, which
-  brands pay, or to line up brands/deals: skip the quiz. intent=suggest_brands.
-  Never treat leftover query words ("do pay UGC", "paid collaborations") as a
-  directory brand. Brands first. If My Kit has no rates, tell them to add rates
-  there — then still draft a paid pitch, never a gifted trial. Kit is a lever
-  AFTER the first cards, never a gate.
+  brands pay, or paid offers: skip the quiz. intent=suggest_gigs.
+  Explain simply that you pull paid UGC briefs from AspireIQ, LinkedIn and
+  other boards into one list here. Cards use Apply here. Never mix those
+  with gifted Directory Contact cards. Never treat leftover query words
+  ("do pay UGC", "paid collaborations") as a directory brand.
 - If discovery is incomplete AND they did not ask for deals/brands, ask the
   next discovery question.
 - Coach like a manager: content quality, Newcollab kit, bio, rates, follow-ups, rejection.
@@ -250,6 +250,53 @@ def persona_brand_intro(
     return lead
 
 
+def persona_gigs_intro(
+    gigs: Optional[List[Dict[str, Any]]] = None,
+    more: bool = False,
+) -> str:
+    """Explain the aggregator, then point at Apply here cards."""
+    rows = [g for g in (gigs or []) if g.get("name") or g.get("brand_name")]
+    sources = []
+    for gig in rows:
+        label = str(gig.get("source_label") or "").strip()
+        if label and label not in sources:
+            sources.append(label)
+    if not sources:
+        boards = "AspireIQ, LinkedIn, and the other UGC boards"
+    elif len(sources) == 1:
+        boards = sources[0]
+    elif len(sources) == 2:
+        boards = f"{sources[0]} and {sources[1]}"
+    else:
+        boards = f"{', '.join(sources[:-1])}, and {sources[-1]}"
+
+    if not rows:
+        if more:
+            return (
+                "That's the live board for now — you've already seen the open drop. "
+                "I'll have a fresh scan soon. Tap **Pitch Directory brands instead** "
+                "if you want an email I draft."
+            )
+        return (
+            "I hunt **paid UGC briefs** across AspireIQ, LinkedIn and the other creator boards, "
+            "then put them in **one list** here — so you apply without hopping apps.\n\n"
+            "Nothing live I'd send you right now. Tap **Find paid UGC offers** again in a bit, "
+            "or **Pitch Directory brands instead** if you want an email I draft."
+        )
+    n = min(3, len(rows))
+    if more:
+        return (
+            f"**{n} more** paid briefs from **{boards}**. "
+            "Tap **Apply here** to open that platform's form."
+        )
+    return (
+        "I pull **paid UGC gigs** from different platforms into **one place** — "
+        f"this drop is from **{boards}**. Same idea as Indeed, just for creator briefs.\n\n"
+        f"**{n}** open below. Each card says where we found it. "
+        "Tap **Apply here** to open that platform's form — I don't draft a Newcollab pitch for these."
+    )
+
+
 def persona_kit_after_cards(
     kit: Optional[Dict[str, Any]] = None,
     deal_intent: Optional[str] = None,
@@ -269,6 +316,17 @@ def persona_kit_after_cards(
             "If you can add a bio link, do it; if the app hasn't unlocked that yet, skip it."
         )
     return "\n\n".join(bits)
+
+
+def persona_kit_after_gigs(kit: Optional[Dict[str, Any]] = None) -> str:
+    """Rates lever after scanner gigs — Apply here doesn't need a pitch card."""
+    kit = kit or {}
+    if kit.get("has_rates"):
+        return ""
+    return (
+        "Paid UGC needs a number on **My Kit**. Tap **My portfolio** and add your rates — "
+        "not a gate for **Apply here**, but you'll want it when we pitch Directory next."
+    )
 
 
 def persona_week_plan(profile_context: str = "", notes: Optional[Dict[str, Any]] = None) -> str:

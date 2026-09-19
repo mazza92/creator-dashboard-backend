@@ -66,13 +66,31 @@ _BRAND_ASK_PREFIX_RE = re.compile(
     r"find(?:ing)?|fin|search(?:ing)?(?:\s+for)?|look(?:ing)?(?:\s+for)?)\s+"
 )
 _FOLLOWUP_LABEL_RE = re.compile(
-    r"(?i)^(?:please\s+)?(?:draft|write|send)\s+(?:a\s+|the\s+)?(.+?)\s+follow-?up\s*$"
+    r"(?i)^(?:please\s+)?(?:draft|write|send|share)\s+(?:a\s+|the\s+)?(.+?)\s+follow-?up\s*$"
+)
+_ALSO_FOR_RE = re.compile(
+    r"(?i)^(?:also|too|and)(?:\s+(?:one|another))?(?:\s+for)?\s+(.+)$"
+)
+_FOLLOWUP_ASK_RE = re.compile(
+    r"(?i)\b(follow[\s-]*up|followup|follow\s*wup|f/?u|bump(?:\s+them)?|nudge)\b"
+)
+_BRAND_REJECT_RE = re.compile(
+    r"(?i)^(not|no,?\s+not|don't|dont|do not)\b"
+)
+_FAKE_PITCH_UI_RE = re.compile(
+    r"(?i)[^.!?\n]*\b("
+    r"pitches (tab|section|page|screen)|next screen|send pitch button|"
+    r"check (your )?pitches|"
+    r"already drafted|already presented|already (?:sent|wrote) those follow-?ups?|"
+    r"here'?s the follow-up|follow-up is already"
+    r")\b[^.!?\n]*[.!?]?"
 )
 _ASK_FILLER = frozenset({
     "fin", "find", "finding", "search", "searching", "look", "looking",
     "want", "wanna", "need", "get", "show", "give", "me", "us", "a", "an",
     "the", "for", "up", "to", "please", "can", "i", "we", "try", "pitch",
     "contact", "about", "maybe", "how", "what", "brand", "brands", "help",
+    "also", "too", "same", "one",
 })
 _CHIP_SKIP_LABELS = frozenset({
     "continue setup", "skip", "skip for now", "not now", "later",
@@ -101,7 +119,7 @@ _DEAL_SEARCH_RE = re.compile(
     r"(?:to\s+(?:get|land|find)\s+)?"
     r"(?:some\s+|a\s+|3\s+)?"
     r"(?:paid\s+|gifted\s+|pr\s+|ugc\s+|brand\s+)?"
-    r"(?:collab(?:oration)?s?|deals?|packages?|brands?|ugc|opportunit(?:y|ies)|gigs?|work)|"
+    r"(?:collab(?:oration)?s?|deals?|packages?|brands?|ugc|opportunit(?:y|ies)|gigs?|offers?|work)|"
     r"\b(?:what|which)\s+brands?\b.{0,48}\b(?:pay|paid|ugc|collab)|"
     r"\bwho\s+pays?\b|"
     r"\bbrands?\s+(?:that|who|do(?:es)?)\s+pay|"
@@ -111,7 +129,7 @@ _DEAL_SEARCH_RE = re.compile(
     r"\bget\s+paid\b|"
     r"\bwant\s+paid\b|"
     r"\bneed\s+paid\b|"
-    r"\bpaid\s+(?:collab(?:oration)?s?|ugc|deals?|work|partnerships?|gigs?|opportunit(?:y|ies))\b|"
+    r"\bpaid\s+(?:collab(?:oration)?s?|ugc|deals?|work|partnerships?|gigs?|offers?|opportunit(?:y|ies))\b|"
     r"\bpaid\s+from\s+the\s+start\b|"
     r"\bnot\s+just\s+(?:receive\s+)?products\b|"
     r"\bugc.{0,48}\bpagos?\b|"
@@ -125,7 +143,7 @@ _GENERIC_BRAND_ASK = frozenset({
     "paid", "collaboration", "collaborations", "collab", "collabs",
     "deal", "deals", "ugc", "gifted", "brand", "brands", "package", "packages",
     "pr", "work", "partnership", "partnerships", "gig", "gigs",
-    "opportunity", "opportunities",
+    "opportunity", "opportunities", "offer", "offers",
     "paid collaborations", "paid collaboration", "paid collabs", "paid collab",
     "paid ugc", "paid deals", "paid deal", "paid opportunities", "paid opportunity",
     "get paid", "pay ugc", "pay for ugc", "do pay ugc", "does pay ugc",
@@ -161,12 +179,6 @@ _CATEGORY_ASK = frozenset({
 _STATUS_ASK_RE = re.compile(
     r"(?i)^(not sent|never sent|didn'?t send|did not send|haven'?t sent|"
     r"have not sent|won'?t send|will not send|not actually sent)\b"
-)
-_FAKE_PITCH_UI_RE = re.compile(
-    r"(?i)[^.!?\n]*\b("
-    r"pitches (tab|section|page|screen)|next screen|send pitch button|"
-    r"check (your )?pitches"
-    r")\b[^.!?\n]*[.!?]?"
 )
 _EXPLAIN_RE = re.compile(r"\bwhat('?s| is) newcollab\b", re.I)
 _COACH_WEEK_RE = re.compile(r"\b(this week|what should i do|action plan)\b", re.I)
@@ -638,20 +650,84 @@ def is_deal_search(text: str) -> bool:
     return deal_search_kind(text) is not None
 
 
+def deal_pool_intent(text: str) -> Optional[str]:
+    """Paid UGC hunts the scanner. Gifted / generic deals stay on Directory cards."""
+    kind = deal_search_kind(text)
+    if kind == "paid":
+        return "suggest_gigs"
+    if kind:
+        return "suggest_brands"
+    return None
+
+
+def is_brand_reject(text: str) -> bool:
+    raw = (text or "").strip()
+    if not raw or is_status_ask(raw):
+        return False
+    return bool(_BRAND_REJECT_RE.match(raw))
+
+
+def last_followup_brand(history: Optional[List[Dict]] = None) -> Optional[str]:
+    for msg in reversed(history or []):
+        if (msg.get("role") or "").lower() != "assistant":
+            continue
+        pitch = msg.get("pitch")
+        if isinstance(pitch, dict) and pitch.get("is_followup"):
+            name = str(pitch.get("brand_name") or pitch.get("name") or "").strip()
+            if name:
+                return name
+        return None
+    return None
+
+
+def last_assistant_was_followup(history: Optional[List[Dict]] = None) -> bool:
+    return bool(last_followup_brand(history))
+
+
 def followup_brand_query(text: str) -> str:
-    """'Draft Tarte Cosmetics follow-up' → 'Tarte Cosmetics'."""
-    match = _FOLLOWUP_LABEL_RE.match((text or "").strip())
-    if not match:
+    """'Draft Tarte Cosmetics follow-up' / 'also for Future Society' → brand name."""
+    raw = (text or "").strip()
+    if is_brand_reject(raw):
         return ""
-    name = match.group(1).strip(" .!,")
+    match = _FOLLOWUP_LABEL_RE.match(raw)
+    name = ""
+    if match:
+        name = match.group(1).strip(" .!,")
+    else:
+        also = _ALSO_FOR_RE.match(raw)
+        if also:
+            name = also.group(1).strip(" .!,")
+            name = re.sub(r"(?i)^(the\s+)?(one\s+)?(for\s+)?", "", name).strip()
+    if not name:
+        return ""
     name = re.sub(r"(?i)^(the|a|an)\s+", "", name).strip()
+    name = re.sub(r"(?i)\s+follow-?up$", "", name).strip()
     if leftover_looks_like_query(name) or leftover_is_category(name) or is_casual_ack(name):
         return ""
     return name if candidate_looks_like_brand_name(name) else ""
 
 
+def match_named_brand(text: str, pools: Optional[List] = None) -> str:
+    blob = (text or "").lower()
+    if not blob:
+        return ""
+    best = ""
+    for row in pools or []:
+        if isinstance(row, str):
+            name = row.strip()
+        elif isinstance(row, dict):
+            name = str(row.get("name") or row.get("brand_name") or "").strip()
+        else:
+            continue
+        if len(name) >= 2 and name.lower() in blob and len(name) >= len(best):
+            best = name
+    return best
+
+
 def asked_brand_query(text: str) -> str:
     """Drop find/fin/want filler so 'fin Dell' looks up Dell."""
+    if is_brand_reject(text):
+        return ""
     follow = followup_brand_query(text)
     if follow:
         return follow
@@ -962,15 +1038,29 @@ def pitch_from_followup_response(
     }
 
 
-def wants_followup_pitch(data: Optional[Dict] = None, user_text: str = "") -> bool:
+def wants_followup_pitch(
+    data: Optional[Dict] = None,
+    user_text: str = "",
+    history: Optional[List[Dict]] = None,
+    pitched_names: Optional[List] = None,
+) -> bool:
     data = data or {}
+    if is_brand_reject(user_text):
+        return False
     chip = str(data.get("starter") or data.get("chip_id") or "").strip().lower()
     if data.get("is_followup") or chip in ("draft_followup", "draft_it", "draft_final"):
         return True
-    low = (user_text or "").lower()
-    if "follow-up" in low:
+    if _FOLLOWUP_ASK_RE.search(user_text or ""):
         return True
-    return "follow up" in low and any(w in low for w in ("draft", "bump", "nudge"))
+    name = followup_brand_query(user_text)
+    if name and last_assistant_was_followup(history):
+        return True
+    pitched = {str(n).strip().lower() for n in (pitched_names or []) if n}
+    if name and name.lower() in pitched:
+        return True
+    if _ALSO_FOR_RE.match((user_text or "").strip()) and last_assistant_was_followup(history):
+        return True
+    return False
 
 
 def _load_env() -> None:
@@ -1415,6 +1505,12 @@ def empty_unlock_starters(
         })
     chips.extend(paywall_unlock_chips(follow))
     chips.append({
+        "id": "paid_ugc",
+        "label": "Find paid UGC offers",
+        "action": "suggest_gigs",
+        "skip_discovery": True,
+    })
+    chips.append({
         "id": "week_plan",
         "label": "What should I do this week?",
         "action": "coach_week",
@@ -1558,6 +1654,9 @@ def classify_intent_heuristic(
     raw = (text or "").strip()
     if is_done_turn(raw) or is_casual_ack(raw):
         return {"intent": "chat", "say": "", "brand_id": None, "brand_name": None}
+    from services.polly_gigs import wants_more_gigs
+    if wants_more_gigs(raw, history):
+        return {"intent": "suggest_gigs", "say": "", "brand_id": None, "brand_name": None}
     if is_more_brands_turn(raw):
         return {"intent": "suggest_brands", "say": "", "brand_id": None, "brand_name": None}
     if _AFFIRM_RE.match(raw):
@@ -1581,7 +1680,12 @@ def classify_intent_heuristic(
     if raw.lower() in ("write a pitch for a brand i name",):
         return {"intent": "ask_brand", "say": "", "brand_id": None, "brand_name": None}
     if is_deal_search(raw):
-        return {"intent": "suggest_brands", "say": "", "brand_id": None, "brand_name": None}
+        return {
+            "intent": deal_pool_intent(raw) or "suggest_brands",
+            "say": "",
+            "brand_id": None,
+            "brand_name": None,
+        }
     generic_pool = bool(_SUGGEST_RE.search(raw)) and not looks_like_brand_request(raw, history)
     if generic_pool and not _CONTACT_RE.search(raw):
         return {"intent": "suggest_brands", "say": "", "brand_id": None, "brand_name": None}
@@ -1762,7 +1866,7 @@ def _brain_extra(discovery_hint: str = "", force_intent: Optional[str] = None) -
     return (
         "You are the brain of this conversation. Write the reply in `say` using Markdown.\n"
         "Return JSON only:\n"
-        '{"intent":"suggest_brands|generate_pitch|discovery|explain_newcollab|'
+        '{"intent":"suggest_gigs|suggest_brands|generate_pitch|discovery|explain_newcollab|'
         'coach_week|coach_portfolio|coach_rates|coach_profile|ask_brand|chat",'
         '"say":"user-facing reply in Polly\'s voice",'
         '"brand_id":null,"brand_name":null,'
@@ -1791,9 +1895,9 @@ def _brain_extra(discovery_hint: str = "", force_intent: Optional[str] = None) -
         "Say if it's a weak fit, then still give the pitch. Never invent a Pitches tab, "
         "next screen, Send Pitch button, or Directory contact button. The card appears "
         "in this chat or it does not exist.\n"
-        "- If they name a company/product we do not have: say it is not in the directory and "
-        "offer similar in-niche alternatives. Never do that for a question, ack, or leftover "
-        "prompt words. Never pretend a draft is ready.\n"
+        "- also for <brand> / share follow-up after a follow-up card: intent=generate_pitch "
+        "for that brand. Never say a follow-up is already in chat unless this turn returns "
+        "a pitch card. Do not invent that they already sent it.\n"
         "- More brands is NOT confirmation. Never write that the pitch is out, sent, logged, "
         "or on Timeline unless they tapped I sent it or said they sent it.\n"
         "- 'done' / 'sent' / 'I sent it' means that brand is finished. Then you may line up "
@@ -1826,15 +1930,14 @@ def _brain_extra(discovery_hint: str = "", force_intent: Optional[str] = None) -
         "Do not invent follower counts.\n"
         "- If they tap Write a pitch for a brand I name: intent=ask_brand. "
         "Ask for the brand name only. Do not draft until they name one.\n"
-        "- If they ask for paid collabs, paid UGC, paid opportunities, to get paid, "
-        "which brands pay / who pays for UGC, or brand deals: intent=suggest_brands. "
-        "Skip the discovery / kit quiz. Brands first. Kit only after they have cards, "
-        "and never as a gate. Never treat leftover query words as a brand name "
-        "(not 'do pay UGC', 'paid collaborations', or gifted/PR packages). "
-        "Never say a query 'isn't in our directory'. Line up directory brands, "
-        "then draft a paid ask that quotes kit rates — not a gifted 'no fee' trial. "
-        "If My Kit has no rates, tell them to add rates there (lever, not a gate) "
-        "and still draft the paid pitch.\n"
+        "- If they ask for paid collabs, paid UGC, paid opportunities, paid offers, "
+        "gigs, to get paid, which brands pay / who pays for UGC: intent=suggest_gigs. "
+        "Skip the discovery / kit quiz. In `say`, explain simply: you pull paid UGC "
+        "briefs from AspireIQ, LinkedIn and other platforms into one list so they "
+        "don't hunt board-by-board. The UI shows Apply here cards labelled by source. "
+        "Do not mix those with gifted Directory Contact cards. Never treat leftover "
+        "query words as a brand name. Never say a query 'isn't in our directory'. "
+        "If My Kit has no rates, tell them to add rates there (lever, not a gate).\n"
         "- After they confirm a pitch went out: log it. Do not write remaining unlock "
         "counts, 'this month', or Unlock Pro — the server appends one credit line. "
         "Do not ask them to draft the next brand if they are out of unlocks.\n"
@@ -1903,7 +2006,7 @@ def classify_intent(
 
     intent = str(parsed.get("intent") or heuristic["intent"]).strip().lower()
     allowed = {
-        "suggest_brands", "generate_pitch", "chat", "discovery",
+        "suggest_gigs", "suggest_brands", "generate_pitch", "chat", "discovery",
         "explain_newcollab", "coach_week", "coach_portfolio", "coach_rates",
         "coach_profile", "ask_brand",
     }
@@ -1937,14 +2040,20 @@ def classify_intent(
             intent = "generate_pitch"
             if asked and not parsed.get("brand_name"):
                 parsed["brand_name"] = asked
-    elif heuristic["intent"] == "suggest_brands" and intent == "chat" and is_deal_search(text):
-        intent = "suggest_brands"
-    if is_done_turn(text) and intent == "suggest_brands" and not force_intent:
+    elif heuristic["intent"] in ("suggest_gigs", "suggest_brands") and intent == "chat" and is_deal_search(text):
+        intent = deal_pool_intent(text) or heuristic["intent"]
+    if is_done_turn(text) and intent in ("suggest_brands", "suggest_gigs") and not force_intent:
         intent = "chat"
-    if is_more_brands_turn(text) and not force_intent:
+    from services.polly_gigs import wants_more_gigs
+    more_gigs_turn = wants_more_gigs(text, history)
+    if more_gigs_turn and not force_intent:
+        intent = "suggest_gigs"
+        parsed["brand_id"] = None
+        parsed["brand_name"] = None
+    elif is_more_brands_turn(text) and not force_intent:
         intent = "suggest_brands"
-    if is_deal_search(text) and not force_intent:
-        intent = "suggest_brands"
+    if is_deal_search(text) and not force_intent and not more_gigs_turn:
+        intent = deal_pool_intent(text) or "suggest_brands"
         parsed["brand_id"] = None
         parsed["brand_name"] = None
     parsed_id = parsed.get("brand_id")

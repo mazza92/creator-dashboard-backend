@@ -195,10 +195,24 @@ class MailtoTests(unittest.TestCase):
         self.assertTrue(wants_followup_pitch({"chip_id": "draft_followup"}, "Draft Rhode follow-up"))
         self.assertTrue(wants_followup_pitch({"is_followup": True}, "yes"))
         self.assertFalse(wants_followup_pitch({}, "Suggest brands I should reach out to"))
-        from services.polly import asked_brand_query, followup_brand_query
+        from services.polly import asked_brand_query, followup_brand_query, last_followup_brand
         self.assertEqual(followup_brand_query("Draft Tarte Cosmetics follow-up"), "Tarte Cosmetics")
         self.assertEqual(asked_brand_query("Draft Tarte Cosmetics follow-up"), "Tarte Cosmetics")
         self.assertNotEqual(asked_brand_query("Draft Tarte Cosmetics follow-up"), "Draft Tarte Cosmetics follow-up")
+        history = [{
+            "role": "assistant",
+            "content": "This is the follow-up for Tarte Cosmetics.",
+            "pitch": {"brand_name": "Tarte Cosmetics", "is_followup": True},
+        }]
+        self.assertEqual(followup_brand_query("also for Future society"), "Future society")
+        self.assertTrue(wants_followup_pitch({}, "also for Future society", history))
+        self.assertTrue(wants_followup_pitch(
+            {}, "also for Future society", [], pitched_names=["Future Society"],
+        ))
+        self.assertTrue(wants_followup_pitch({}, "share follow wup", history))
+        self.assertFalse(wants_followup_pitch({}, "not the one for Future society", history))
+        self.assertEqual(asked_brand_query("not the one for Future society"), "")
+        self.assertEqual(last_followup_brand(history), "Tarte Cosmetics")
 
 
 class HeuristicIntentTests(unittest.TestCase):
@@ -487,7 +501,7 @@ class HeuristicIntentTests(unittest.TestCase):
         self.assertFalse(looks_like_brand_request(text))
         self.assertEqual(asked_brand_query(text), "")
         d = classify_intent_heuristic(text)
-        self.assertEqual(d["intent"], "suggest_brands")
+        self.assertEqual(d["intent"], "suggest_gigs")
         self.assertFalse(d.get("brand_name"))
         for paid in (
             "get paid",
@@ -498,11 +512,12 @@ class HeuristicIntentTests(unittest.TestCase):
             "which brands pay for UGC",
             "who pays for UGC",
             "do pay UGC",
+            "Find paid UGC offers",
         ):
             self.assertEqual(deal_search_kind(paid), "paid", paid)
             self.assertFalse(looks_like_brand_request(paid), paid)
             self.assertEqual(asked_brand_query(paid), "", paid)
-            self.assertEqual(classify_intent_heuristic(paid)["intent"], "suggest_brands", paid)
+            self.assertEqual(classify_intent_heuristic(paid)["intent"], "suggest_gigs", paid)
             self.assertFalse(classify_intent_heuristic(paid).get("brand_name"), paid)
         self.assertEqual(deal_search_kind("Hey I want to get brand deals"), "brands")
         self.assertTrue(looks_like_brand_request("Let's hit up Joya Mia (US)"))
@@ -761,11 +776,20 @@ class PersonaTests(unittest.TestCase):
     def test_sanitize_thread_drops_junk(self):
         from services.polly_memory import sanitize_thread
         out = sanitize_thread(
-            [{"role": "system", "content": "x"}, {"role": "user", "content": "hi"}],
+            [
+                {"role": "system", "content": "x"},
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": "3 open",
+                    "gigs": [{"id": 4, "name": "GLO"}],
+                },
+            ],
             [{"id": 1, "name": "Rhode"}],
         )
-        self.assertEqual(len(out["messages"]), 1)
+        self.assertEqual(len(out["messages"]), 2)
         self.assertEqual(out["suggested_brands"][0]["name"], "Rhode")
+        self.assertEqual(out["messages"][1]["gigs"][0]["name"], "GLO")
 
 
 class KitReviewTests(unittest.TestCase):

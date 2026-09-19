@@ -25,30 +25,37 @@ class DiscoveryTests(unittest.TestCase):
         from services.polly_discovery import opener
         chips = starters_for({})
         ids = [c["id"] for c in chips]
-        self.assertEqual(ids, ["line_up", "name_a_brand", "more_replies"])
-        self.assertEqual(chips[0]["action"], "suggest_brands")
+        self.assertEqual(ids[0], "paid_ugc")
+        self.assertEqual(chips[0]["action"], "suggest_gigs")
         self.assertTrue(chips[0].get("skip_discovery"))
-        self.assertEqual(chips[1]["action"], "ask_brand")
-        self.assertEqual(chips[2]["action"], "coach_profile")
-        self.assertEqual(chips[2]["label"], "Help me get more replies from brands")
+        self.assertEqual(chips[0]["label"], "Find paid UGC offers")
+        self.assertIn("line_up", ids)
+        self.assertEqual(chips[1]["action"], "suggest_brands")
+        self.assertIn("name_a_brand", ids)
+        self.assertEqual(chips[2]["action"], "ask_brand")
+        self.assertEqual(chips[3]["action"], "coach_profile")
+        self.assertEqual(chips[3]["label"], "Help me get more replies from brands")
         say = opener("Jined")
         self.assertIn("Creator Assistant", say)
         self.assertIn("What do you want to land first?", say)
+        self.assertIn("paid UGC offers", say)
+        self.assertIn("one list", say)
         self.assertNotIn("Ready?", say)
         self.assertNotIn("2 minutes", say)
 
     def test_starters_adapt_after_setup_tap(self):
         chips = starters_for({"discovery_step": 1, "setup_continues": 1})
         ids = [c["id"] for c in chips]
-        self.assertEqual(ids[0], "skip_setup")
+        self.assertEqual(ids[0], "paid_ugc")
+        self.assertEqual(ids[1], "skip_setup")
         self.assertIn("kit_done", ids)
-        self.assertEqual(chips[0]["label"], "Skip, show me brands")
-        self.assertTrue(chips[0].get("skip_discovery"))
+        self.assertEqual(chips[1]["label"], "Skip, show me brands")
+        self.assertTrue(chips[1].get("skip_discovery"))
 
     def test_starters_drop_continue_after_two_taps(self):
         chips = starters_for({"discovery_step": 1, "setup_continues": 2})
         ids = [c["id"] for c in chips]
-        self.assertEqual(ids, ["skip_setup", "kit_done"])
+        self.assertEqual(ids, ["paid_ugc", "skip_setup", "kit_done"])
         self.assertNotIn("continue_setup", ids)
 
     def test_pending_draft_starters_lead_with_sent(self):

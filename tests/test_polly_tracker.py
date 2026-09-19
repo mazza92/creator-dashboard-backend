@@ -81,6 +81,17 @@ class LifecycleIntentTests(unittest.TestCase):
         hit = classify_lifecycle_heuristic("hey")
         self.assertEqual(hit["intent"], "casual_chat")
 
+    def test_paid_ugc_offers_is_not_a_pending_paid_pitch(self):
+        hit = classify_lifecycle_heuristic(
+            "i want paid ugc offers",
+            last_pitch={"id": 9, "name": "Tarte Cosmetics"},
+        )
+        self.assertNotEqual(hit["intent"], "offer_paid_deal")
+        self.assertNotEqual(
+            classify_lifecycle_heuristic("Find paid UGC offers")["intent"],
+            "offer_paid_deal",
+        )
+
     def test_brand_from_notes_uses_last_pitched(self):
         from services.polly_tracker import brand_from_notes
         brand = brand_from_notes({

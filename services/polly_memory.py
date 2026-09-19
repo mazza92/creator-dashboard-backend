@@ -42,6 +42,9 @@ def _clean_message(msg: Any) -> Optional[Dict[str, Any]]:
     brands = msg.get("brands")
     if isinstance(brands, list) and brands:
         out["brands"] = brands[:8]
+    gigs = msg.get("gigs")
+    if isinstance(gigs, list) and gigs:
+        out["gigs"] = gigs[:8]
     pitch = msg.get("pitch")
     if isinstance(pitch, dict) and pitch:
         out["pitch"] = pitch

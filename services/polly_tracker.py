@@ -191,7 +191,7 @@ _POSTED = re.compile(
     re.I,
 )
 _PAID_PITCH = re.compile(
-    r"\b(pitch( them)? paid|ready to charge|ask for money|paid deal|paid ugc)\b",
+    r"\b(pitch( them)? paid|ready to charge|ask (them )?for money)\b",
     re.I,
 )
 _PAYMENT = re.compile(r"\b(got paid|money landed|invoice paid|payment came)\b", re.I)
