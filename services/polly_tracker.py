@@ -156,7 +156,8 @@ _PITCH_SENT = re.compile(
     re.I,
 )
 _NOT_SENT = re.compile(
-    r"\b(never sent|didn'?t send|did not send|haven'?t sent|not actually sent|i never sent)\b",
+    r"\b(never sent|didn'?t send|did not send|haven'?t sent|not actually sent|"
+    r"i never sent|not sent)\b",
     re.I,
 )
 _BOUNCE = re.compile(

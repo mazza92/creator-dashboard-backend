@@ -54,10 +54,19 @@ RULES:
 - Reference their real niche, captions, and location from the profile scrape
 - If they say yes / ok after you offered matches, pull matches (intent=suggest_brands)
 - If they want to contact a listed brand, intent=generate_pitch with that brand_id
-- If discovery is incomplete, do not jump to matching. Ask the next discovery
-  question. Even "line up brands" gets a short detour first.
+- If they ask to get paid, paid UGC, paid opportunities, paid collabs, which
+  brands pay, or to line up brands/deals: skip the quiz. intent=suggest_brands.
+  Never treat leftover query words ("do pay UGC", "paid collaborations") as a
+  directory brand. Brands first. If My Kit has no rates, tell them to add rates
+  there — then still draft a paid pitch, never a gifted trial. Kit is a lever
+  AFTER the first cards, never a gate.
+- If discovery is incomplete AND they did not ask for deals/brands, ask the
+  next discovery question.
 - Coach like a manager: content quality, Newcollab kit, bio, rates, follow-ups, rejection.
 - Never invent follower counts, post titles, or brand facts. Use scrape + pool + kit snapshot.
+- Out of free unlocks: never mention the monthly reset, the 1st, or "wait until next month".
+  Point them at unlocking Pro so they can keep pitching the brand they just named.
+  If they ask when credits come back, still do not give a calendar date — sell Pro for this week.
 
 NEWCOLLAB KIT (not a generic portfolio):
 - "Portfolio" / "media kit" means **My Kit** on Newcollab. Never coach Linktree,
@@ -241,6 +250,27 @@ def persona_brand_intro(
     return lead
 
 
+def persona_kit_after_cards(
+    kit: Optional[Dict[str, Any]] = None,
+    deal_intent: Optional[str] = None,
+) -> str:
+    """Kit as a lever after the first brand cards — never a quiz or a gate."""
+    kit = kit or {}
+    bits = []
+    if deal_intent == "paid" and not kit.get("has_rates"):
+        bits.append(
+            "Paid UGC needs a number on **My Kit**. Tap **My portfolio** and add your rates — "
+            "I'll still draft the paid pitch when you tap **Contact**, but brands bounce when they have to ask."
+        )
+    elif not kit.get("published"):
+        bits.append(
+            "After you tap **Contact** on one of those, we can tidy **My Kit** — "
+            "brands already get it from the pitch, so this is not a gate. "
+            "If you can add a bio link, do it; if the app hasn't unlocked that yet, skip it."
+        )
+    return "\n\n".join(bits)
+
+
 def persona_week_plan(profile_context: str = "", notes: Optional[Dict[str, Any]] = None) -> str:
     notes = notes or {}
     goal = notes.get("goal_30d") or "landing a clean first yes"
@@ -299,17 +329,132 @@ def persona_more_brands_intro(
     return intro
 
 
-def persona_pitch_intro(brand_name: str, has_mailto: bool = True, paid: bool = False) -> str:
+def persona_empty_unlock_greeting(
+    first_name: Optional[str] = None,
+    apply_count: int = 0,
+    follow_brand: Optional[str] = None,
+) -> str:
+    hello = f"Hey {first_name}" if (first_name or "").strip() else "Hey"
+    brand = (follow_brand or "").strip()
+    n = int(apply_count or 0)
+    if n >= 2 and brand:
+        return (
+            f"{hello}. You're out of free unlocks this month.\n\n"
+            f"You've got **{n}** applications still in play. "
+            f"Follow up on **{brand}** — that doesn't use a credit. "
+            "Or unlock Pro and I'll keep pitching new brands."
+        )
+    if brand:
+        return (
+            f"{hello}. You're out of free unlocks this month.\n\n"
+            f"**{brand}** is still open — a follow-up doesn't use a credit. "
+            "Or unlock Pro and I'll keep pitching."
+        )
+    return (
+        f"{hello}. You're out of free unlocks this month.\n\n"
+        "Unlock Pro and I'll keep lining up brands. "
+        "We can still work kit, rates, and follow-ups in the meantime."
+    )
+
+
+def persona_empty_unlock_brief(
+    apply_count: int = 0,
+    follow_brand: Optional[str] = None,
+) -> str:
+    brand = (follow_brand or "").strip()
+    n = int(apply_count or 0)
+    if n >= 2 and brand:
+        return (
+            f"You're out of free unlocks this month. **{n}** applications are still in review. "
+            f"Follow up on **{brand}** — no credit. Or unlock Pro to keep pitching."
+        )
+    if brand:
+        return (
+            f"You're out of free unlocks this month. "
+            f"**{brand}** is still open — a follow-up doesn't use a credit. "
+            "Or unlock Pro to keep pitching."
+        )
+    return (
+        "You're out of free unlocks this month. Unlock Pro and I'll keep lining up brands. "
+        "Kit, rates, and follow-ups are still fair game."
+    )
+
+
+def persona_paywall_say(brand_name: Optional[str] = None) -> str:
+    name = (brand_name or "").strip()
+    if name:
+        return (
+            "You're out of free unlocks this month.\n\n"
+            f"Keep pitching **{name}** — unlock Pro and I'll write it now."
+        )
+    return (
+        "You're out of free unlocks this month.\n\n"
+        "Unlock Pro and I'll keep pitching with you."
+    )
+
+
+def persona_paywall_retry(brand_name: Optional[str] = None) -> str:
+    name = (brand_name or "").strip()
+    if name:
+        return (
+            f"Pro is how we keep **{name}** moving this month. "
+            "Tap the chip and I'll write the pitch as soon as you're on."
+        )
+    return (
+        "Pro is how we keep going this month. "
+        "Tap unlock and I'll write the next pitch."
+    )
+
+
+def persona_unlocks_after_send(balance: Optional[Dict[str, Any]] = None) -> str:
+    """After I sent it — remaining free unlocks, never a monthly reset."""
+    if not isinstance(balance, dict) or balance.get("is_unlimited"):
+        return ""
+    try:
+        remaining = int(balance.get("remaining") if balance.get("remaining") is not None else 0)
+    except (TypeError, ValueError):
+        remaining = 0
+    if remaining <= 0:
+        return (
+            "That's the last free unlock. Unlock Pro and we keep pitching this week — "
+            "I won't park you waiting."
+        )
+    if remaining == 1:
+        return "You've got **1 free unlock** left."
+    return f"You've got **{remaining} free unlocks** left."
+
+
+def persona_pitch_intro(
+    brand_name: str,
+    has_mailto: bool = True,
+    paid: bool = False,
+    kit: Optional[Dict[str, Any]] = None,
+) -> str:
     name = brand_name or "them"
     kind = "paid pitch" if paid else "pitch"
     if has_mailto:
-        return (
+        lead = (
             f"Right, here's your {kind} for **{name}**. Open your mail and send it — "
             "tell me when it's out, or tap **I sent it**. I won't log it until you do."
         )
+    else:
+        lead = (
+            f"Right, here's your {kind} for **{name}**. Copy it from the card and send from your usual mail. "
+            "Tell me when it's out — I won't log it until you do."
+        )
+    kit = kit or {}
+    if paid and not kit.get("has_rates"):
+        lead += (
+            " Put your rate on **My Kit** so the next paid ask quotes your number, not a band."
+        )
+    return lead
+
+
+def persona_thanks_after_draft(brand_name: str) -> str:
+    name = (brand_name or "that brand").strip() or "that brand"
     return (
-        f"Right, here's your {kind} for **{name}**. Copy it from the card and send from your usual mail. "
-        "Tell me when it's out — I won't log it until you do."
+        f"Anytime. **{name}** is still the draft on the card — tap **I sent it** "
+        "when it's actually out, or **More brands** if you want another."
     )
 
 
@@ -385,13 +530,18 @@ def persona_park_draft(pending_name: str, new_name: str = "") -> str:
     return f"**{pending}** is still an unsent draft if you want it later.\n\n"
 
 
-def persona_off_match_pitch(brand_name: str, has_mailto: bool = True) -> str:
+def persona_off_match_pitch(
+    brand_name: str,
+    has_mailto: bool = True,
+    paid: bool = False,
+    kit: Optional[Dict[str, Any]] = None,
+) -> str:
     name = brand_name or "them"
     warn = (
         f"**{name}** is in our directory, but it's not a strong match for you — "
         "I'd treat this as a stretch, not the highest-odds first move. You asked though, so here's the pitch."
     )
-    return warn + "\n\n" + persona_pitch_intro(name, has_mailto=has_mailto)
+    return warn + "\n\n" + persona_pitch_intro(name, has_mailto=has_mailto, paid=paid, kit=kit)
 
 
 def persona_unknown_brand(asked_name: str, alternatives: Optional[List[Dict[str, Any]]] = None) -> str:
@@ -472,9 +622,14 @@ def persona_followup(
             break
     low = re.sub(r"[.!?,]", "", (text or "").strip().lower())
     declined = low in {"none", "no", "nothing", "nah", "nope", "skip"}
-    if "open your mail" in last or "here's your pitch" in last or "draft" in last:
+    if "open your mail" in last or "here's your pitch" in last or "draft" in last or "paid pitch" in last:
         if declined:
             return "Alright, leave that one. Tell me another name from the list and I'll draft it, or we pick a different brand."
+        if re.match(
+            r"(?i)^(thanks|thank you|thx|ty|cheers|cool|nice|great|awesome|perfect)[\s!.]*$",
+            (text or "").strip(),
+        ):
+            return "Anytime. Tap **I sent it** when it's actually out, or **More brands** if you want another."
         return "Which brand from that list — say the name and I'll draft the next one."
     if "which one feels right" in last or "pull them up" in last or "go after this week" in last:
         if declined:
@@ -496,6 +651,22 @@ _PET_LEAD_RE = re.compile(rf"(?i)^(?:{_PET_NAMES})\s*,\s*")
 _PET_TAIL_RE = re.compile(rf"(?i)\s+(?:{_PET_NAMES})(?=[!?.,]|$)")
 
 
+def scrub_unlock_copy(text: Optional[str]) -> str:
+    """Drop Gemini credit/unlock paragraphs so the server can append one line."""
+    parts = re.split(r"\n{2,}", text or "")
+    kept = []
+    for part in parts:
+        low = part.lower()
+        if re.search(
+            r"\b(free unlock|unlocks left|unlock pro|out of (?:free )?unlocks|"
+            r"last free unlock|unlocks? (?:left|remaining) this month)\b",
+            low,
+        ):
+            continue
+        kept.append(part)
+    return "\n\n".join(kept).strip()
+
+
 def scrub_polly_voice(text: Optional[str]) -> str:
     """Strip pet names (darling, love, hun…) without touching 'I'd love to'."""
     s = text or ""
@@ -503,8 +674,18 @@ def scrub_polly_voice(text: Optional[str]) -> str:
     s = _PET_ASIDE_RE.sub("", s)
     s = _PET_LEAD_RE.sub("", s)
     s = _PET_TAIL_RE.sub("", s)
+    s = re.sub(
+        r"(?i)[^.!?\n]*\b("
+        r"pitches (tab|section|page|screen)|next screen|send pitch button|"
+        r"check (your )?pitches"
+        r")\b[^.!?\n]*[.!?]?",
+        "",
+        s,
+    )
+    s = scrub_unlock_copy(s)
     s = re.sub(r" {2,}", " ", s)
     s = re.sub(r"\s+([!?.,])", r"\1", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
     return s.strip()
 
 

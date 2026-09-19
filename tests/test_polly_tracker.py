@@ -35,6 +35,13 @@ class LifecycleIntentTests(unittest.TestCase):
             last_pitch={"id": 9, "name": "Nuria Beauty"},
         )
         self.assertEqual(hit["intent"], "pitch_not_sent")
+        self.assertEqual(
+            classify_lifecycle_heuristic(
+                "Not sent",
+                last_pitch={"id": 9, "name": "Nuria Beauty"},
+            )["intent"],
+            "pitch_not_sent",
+        )
 
     def test_bounced_email(self):
         hit = classify_lifecycle_heuristic(

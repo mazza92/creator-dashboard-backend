@@ -12,6 +12,8 @@ from services.polly import (
     classify_intent,
     drop_pending_draft,
     drop_pitched,
+    empty_unlock_open,
+    follow_brand_from_tracker,
     flatten_for_you,
     gemini_available,
     is_done_turn,
@@ -22,8 +24,16 @@ from services.polly import (
     looks_like_brand_request,
     brand_lookup_names,
     asked_brand_query,
+    leftover_looks_like_query,
+    leftover_is_category,
+    leftover_is_prompt,
+    followup_brand_query,
+    candidate_looks_like_brand_name,
+    claims_pitch_elsewhere,
+    allow_fuzzy_brand_lookup,
     strip_brand_ask,
     is_deal_search,
+    is_casual_ack,
     deal_search_kind,
     apply_paid_ask_to_pitch,
     mark_draft_pending,
@@ -31,11 +41,16 @@ from services.polly import (
     unmark_pitched,
     narrate_kit_review,
     narrate_tool_result,
+    out_of_free_unlocks,
+    is_unlock_reset_ask,
+    next_unlock_brand,
+    paywall_unlock_chips,
     pitch_confirm_chips,
     pitch_from_followup_response,
     pitch_from_package_response,
     public_profile_summary,
     requested_brand_name,
+    names_mentioned_by_assistant,
     resolve_brand,
     sanitize_brand_card,
     say_claims_unconfirmed_send,
@@ -72,16 +87,21 @@ from services.polly_persona import (
     is_robotic,
     persona_ask_brand,
     persona_brand_intro,
+    persona_kit_after_cards,
     persona_followup_intro,
     persona_more_brands_intro,
     persona_off_match_pitch,
     persona_low_effort_skip,
     persona_park_draft,
+    persona_paywall_retry,
+    persona_paywall_say,
     persona_pitch_intro,
     persona_portfolio_review,
     persona_profile_audit,
     persona_rate_card,
+    persona_thanks_after_draft,
     persona_unknown_brand,
+    persona_unlocks_after_send,
     persona_week_plan,
     say_already_logged,
     scrub_polly_voice,
@@ -148,6 +168,30 @@ def _unlock_balance(creator_id):
         return get_creator_unlock_balance(creator_id) or {}
     except Exception:
         return {}
+
+
+def _after_send_empty_starters(notes, tracker, task_chips):
+    """Follow-up + week only — Pro chip already sits on the send confirmation."""
+    chips = []
+    follow = follow_brand_from_tracker(tracker, notes)
+    if follow and follow.get("name"):
+        chips.append({
+            "id": "draft_followup",
+            "label": f"Draft {follow['name']} follow-up",
+            "action": "generate_pitch",
+            "brand_id": follow.get("id"),
+            "brand_name": follow["name"],
+            "is_followup": True,
+        })
+    has_pro = any((c or {}).get("action") == "unlock_pro" for c in (task_chips or []))
+    if not has_pro:
+        chips.extend(paywall_unlock_chips(follow))
+    chips.append({
+        "id": "week_plan",
+        "label": "What should I do this week?",
+        "action": "coach_week",
+    })
+    return chips[:3]
 
 
 def _copy_session():
@@ -455,9 +499,11 @@ def _lookup_published_brand(conn, brand_id=None, brand_name=None):
     for candidate in names:
         if len(candidate) < 2:
             continue
+        if is_casual_ack(candidate) or not candidate_looks_like_brand_name(candidate):
+            continue
         slug = _re.sub(r"[^a-z0-9]+", "-", candidate.lower()).strip("-")
         compact = _re.sub(r"[^a-z0-9]+", "", candidate.lower())
-        like = candidate if len(candidate) >= 5 else None
+        like = candidate if allow_fuzzy_brand_lookup(candidate) else None
         cursor.execute(
             """
             SELECT id, slug, brand_name AS name, logo_url AS logo, description, category, website,
@@ -515,10 +561,21 @@ _COMPUTERISH = re.compile(
 
 
 def _product_tokens(query_name: str) -> list:
+    if (
+        leftover_is_prompt(query_name)
+        or is_casual_ack(query_name)
+        or not candidate_looks_like_brand_name(query_name or "")
+    ):
+        return []
     asked = asked_brand_query(query_name)
     toks = []
     for t in re.split(r"[^a-z0-9]+", (asked or "").lower()):
-        if not t or t in {"fin", "find", "the", "and", "for"}:
+        if not t or t in {
+            "fin", "find", "the", "and", "for", "thanks", "thank", "you",
+            "more", "how", "get", "got", "can", "our", "your", "this", "that",
+            "with", "from", "replies", "reply", "help", "please", "just",
+            "not", "brand", "brands", "draft", "follow", "followup",
+        }:
             continue
         if len(t) < 3:
             continue
@@ -583,9 +640,17 @@ def _fetch_brands_by_tokens(tokens, limit=24, exclude_ids=None):
 
 def _lookup_similar_brands(query_name, scrape=None, notes=None, creator=None, creator_id=None, exclude_ids=None, limit=3):
     """Same-product directory brands for an asked name that is not in the DB."""
+    if (
+        leftover_is_prompt(query_name)
+        or is_casual_ack(query_name)
+        or not candidate_looks_like_brand_name(query_name or "")
+    ):
+        return []
     notes = notes or {}
     skip = list(exclude_ids or []) + list((notes or {}).get("pitched_brand_ids") or [])
     tokens = _product_tokens(query_name)
+    if not tokens:
+        return []
     pooled = _fetch_brands_by_tokens(tokens, limit=max(24, limit * 8), exclude_ids=skip)
     cats = required_categories_for_match(notes, scrape) or stated_niches(notes)
     if not cats:
@@ -662,6 +727,32 @@ def bootstrap():
                 top_name = row.get("name")
                 break
         brief = morning_brief(tracker, first)
+        credit_open = None
+        if out_of_free_unlocks(balance):
+            credit_open = empty_unlock_open(first, tracker, notes)
+            greeting = credit_open["greeting"]
+            brief = credit_open["brief"]
+            follow = credit_open.get("follow") or {}
+            if follow.get("name") and not (isinstance(notes.get("paywall_brand"), dict) and notes["paywall_brand"].get("name")):
+                notes["paywall_brand"] = {
+                    "id": follow.get("id"),
+                    "name": follow.get("name"),
+                }
+                try:
+                    save_thread(
+                        conn,
+                        creator_id,
+                        messages=thread.get("messages") or [],
+                        suggested=thread.get("suggested_brands") or [],
+                        notes=notes,
+                    )
+                except Exception as err:
+                    print(f"[Polly] paywall_brand stamp skipped: {err}")
+        starters = (
+            credit_open["starters"]
+            if credit_open
+            else starters_for(notes, top_brand=top_name)
+        )
         try:
             if maybe_deliver_login_checkin(conn, creator_id, tracker):
                 thread = load_thread(conn, creator_id)
@@ -688,7 +779,7 @@ def bootstrap():
             },
             "greeting": greeting,
             "opener": greeting,
-            "starters": starters_for(notes, top_brand=top_name),
+            "starters": starters,
             "discovery": {
                 "complete": discovery_complete(notes),
                 "started": discovery_started(notes),
@@ -742,6 +833,8 @@ def chat():
         notes = bump_setup_continues(notes, user_text, chip_id, explicit_action)
         named_ask = (
             looks_like_brand_request(user_text, messages)
+            and not leftover_is_prompt(user_text)
+            and not is_casual_ack(user_text)
             and not is_more_brands_turn(user_text)
             and not is_setup_chip_tap(user_text, chip_id, explicit_action)
             and not is_deal_search(user_text)
@@ -751,6 +844,10 @@ def chat():
             notes["deal_intent"] = deal_kind
             if deal_kind == "paid" and not notes.get("goal_30d"):
                 notes["goal_30d"] = "paid UGC"
+        if deal_kind and not explicit_brand_id and explicit_action not in ("generate_pitch",):
+            skip_flag = True
+            notes["wants_matches"] = True
+            data["_deal_first_cards"] = True
         if should_auto_skip_setup(notes) and not named_ask:
             skip_flag = True
             data["_repeat_skip"] = True
@@ -819,18 +916,30 @@ def chat():
             if explicit_action in allowed_actions and explicit_action != "task_act"
             else None
         )
-        if named_ask:
-            force_for_brain = "generate_pitch"
-        decision = classify_intent(
-            user_text,
-            profile_context + "\n\n" + notes_context(notes) + "\n\n" + tracker_hint,
-            history=messages,
-            suggested_brands=suggested,
-            brand_id=explicit_brand_id,
-            discovery_hint=discovery_plus,
-            force_intent=force_for_brain,
-            pitched_names=notes.get("pitched_brand_names") or [],
+        pending_early = notes.get("pending_pitch") if isinstance(notes.get("pending_pitch"), dict) else None
+        pending_for_brain = str(
+            (pending_early or {}).get("name") or (pending_early or {}).get("brand_name") or ""
+        ).strip()
+        paywall_followup = (
+            is_unlock_reset_ask(user_text)
+            and isinstance(notes.get("paywall_brand"), dict)
+            and not named_ask
+            and explicit_action not in ("generate_pitch", "suggest_brands")
         )
+        if paywall_followup:
+            decision = {"intent": "chat", "say": "", "brain": False}
+        else:
+            decision = classify_intent(
+                user_text,
+                profile_context + "\n\n" + notes_context(notes) + "\n\n" + tracker_hint,
+                history=messages,
+                suggested_brands=suggested,
+                brand_id=explicit_brand_id,
+                discovery_hint=discovery_plus,
+                force_intent=force_for_brain,
+                pitched_names=notes.get("pitched_brand_names") or [],
+                pending_draft=pending_for_brain,
+            )
         notes = merge_notes_patch(notes, decision.get("notes_patch"))
 
         intent = decision.get("intent") or "chat"
@@ -848,24 +957,68 @@ def chat():
         typed_ask = asked_brand_query(user_text) if named_ask else ""
         if typed_ask:
             asked_brand = typed_ask
-        if (
-            asked_brand
-            and named_ask
-            and asked_brand.strip().lower() != pending_label.lower()
-        ):
+        if wants_followup_pitch(data, user_text) and not leftover_is_prompt(user_text):
             intent = "generate_pitch"
-            decision["brand_name"] = asked_brand
+            chip_name = str(data.get("brand_name") or followup_brand_query(user_text) or "").strip()
+            if chip_name:
+                asked_brand = chip_name
+                named_ask = False
             data["_repeat_skip"] = False
+        if (is_casual_ack(user_text) or leftover_is_prompt(user_text)) and not explicit_brand_id:
+            asked_brand = None
+            decision["brand_name"] = None
+            decision["brand_id"] = None
+            if is_casual_ack(user_text):
+                intent = "chat"
+                data["_ack_draft"] = pending_label
+            elif intent == "generate_pitch":
+                intent = "chat"
         print(
             f"[Polly] brand-ask typed={typed_ask!r} asked={asked_brand!r} "
             f"intent={intent} pending={pending_label!r} action={explicit_action!r}"
         )
-        if is_deal_search(user_text) and not explicit_brand_id:
+        if (
+            not explicit_brand_id
+            and not is_casual_ack(user_text)
+            and (
+                is_deal_search(user_text)
+                or (
+                    not leftover_is_prompt(user_text)
+                    and (
+                        leftover_looks_like_query(user_text)
+                        or leftover_is_category(user_text)
+                        or leftover_looks_like_query(asked_brand or "")
+                        or leftover_is_category(asked_brand or "")
+                    )
+                )
+            )
+        ):
             intent = "suggest_brands"
             asked_brand = None
             decision["brand_name"] = None
             decision["brand_id"] = None
-        if skip_flag and not named_ask:
+        if (
+            intent != "generate_pitch"
+            and not explicit_brand_id
+            and not leftover_is_prompt(user_text)
+            and not is_casual_ack(user_text)
+            and claims_pitch_elsewhere(decision.get("say") or "")
+        ):
+            named = asked_brand or requested_brand_name(
+                user_text,
+                suggested,
+                messages,
+                brand_name=decision.get("brand_name"),
+            )
+            if not named:
+                mentioned = names_mentioned_by_assistant(messages)
+                if mentioned:
+                    named = mentioned[0].get("name")
+            if named and candidate_looks_like_brand_name(str(named)):
+                intent = "generate_pitch"
+                asked_brand = named
+                decision["brand_name"] = named
+        if skip_flag and not named_ask and not paywall_followup:
             notes = skip_discovery(notes)
             if intent in ("discovery", "chat") or data.get("_repeat_skip"):
                 intent = "suggest_brands"
@@ -881,6 +1034,18 @@ def chat():
         say = ""
         wrap_say = persona_low_effort_skip() if data.get("_repeat_skip") else ""
         live_brain = bool(decision.get("brain")) and not is_robotic(decision.get("say"))
+        paywall_brand = notes.get("paywall_brand") if isinstance(notes.get("paywall_brand"), dict) else None
+        if (
+            is_unlock_reset_ask(user_text)
+            and paywall_brand
+            and explicit_action not in ("generate_pitch", "suggest_brands")
+            and not named_ask
+        ):
+            intent = "chat"
+            live_brain = False
+            say = persona_paywall_retry(paywall_brand.get("name") or paywall_brand.get("brand_name"))
+            data["_task_chips"] = paywall_unlock_chips(paywall_brand)
+            data["_keep_pitch_say"] = True
         if data.get("_repeat_skip") or (
             is_setup_chip_tap(user_text, chip_id, explicit_action) and not skip_flag
         ) or explicit_action in ("ask_brand", "coach_profile"):
@@ -925,7 +1090,9 @@ def chat():
             more_brands_turn = True
         checkin_handled = str(data.get("chip_id") or data.get("starter") or "").startswith("checkin_")
         if (
-            not more_brands_turn
+            not paywall_followup
+            and not paywall
+            and not more_brands_turn
             and not checkin_handled
             and life.get("confidence", 0) >= 0.7
             and life.get("intent") not in skip_life
@@ -965,12 +1132,24 @@ def chat():
                     print(f"[Polly] pitch tracker skipped: {err}")
             if intent == "suggest_brands" and not explicit_action:
                 intent = "chat"
+            balance = _unlock_balance(creator_id)
+            unlock_line = persona_unlocks_after_send(balance)
+            if unlock_line:
+                data["_unlock_after_send"] = unlock_line
+            leftover_cards = drop_pitched(suggested, notes)
+            next_pro = next_unlock_brand(last_pitch, leftover_cards, pending_now)
+            if out_of_free_unlocks(balance) and not data.get("_task_chips"):
+                data["_task_chips"] = paywall_unlock_chips(next_pro)
+                data["_after_send_empty"] = True
 
         remaining = drop_pitched(suggested, notes)
         progress_remaining = False
         if is_done_turn(user_text) and intent == "chat" and remaining:
-            brands = _hydrate_brand_cards(remaining[:3])
-            progress_remaining = True
+            if out_of_free_unlocks(balance):
+                progress_remaining = False
+            else:
+                brands = _hydrate_brand_cards(remaining[:3])
+                progress_remaining = True
 
         if (life_result or {}).get("unmark_pitched"):
             notes = unmark_pitched(notes, last_pitch or {
@@ -999,7 +1178,13 @@ def chat():
             say = decision.get("say") or ""
             if wants_matches:
                 notes["wants_matches"] = True
-            if open_discovery and not discovery_started(notes):
+            if (
+                open_discovery
+                and not discovery_started(notes)
+                and not skip_flag
+                and not deal_kind
+                and not is_casual_ack(user_text)
+            ):
                 notes["discovery_step"] = 1
         elif intent == "explain_newcollab":
             say = explain_newcollab(first)
@@ -1009,7 +1194,7 @@ def chat():
             say = _coach_say(intent, profile_context, notes, scrape, kit=kit)
         elif intent in ("coach_week", "coach_rates") and not open_discovery:
             say = _coach_say(intent, profile_context, notes, scrape, kit=kit)
-        elif open_discovery and intent not in (
+        elif open_discovery and not is_casual_ack(user_text) and intent not in (
             "explain_newcollab", "generate_pitch", "ask_brand", "coach_profile", "suggest_brands",
         ):
             if wants_matches:
@@ -1055,17 +1240,28 @@ def chat():
                     fallback_say = persona_brand_intro(
                         brands, profile_context, deal_intent=notes.get("deal_intent"),
                     )
-                    llm_say = decision.get("say") if not is_robotic(decision.get("say")) else ""
-                    say = narrate_tool_result(
-                        profile_context,
-                        user_text,
-                        history=messages,
-                        brands=brands,
-                        fallback=llm_say or fallback_say,
-                        discovery_hint=discovery_brief(notes),
-                    )
-                    if is_robotic(say) or say_claims_unconfirmed_send(say) or "isn't in our directory" in (say or "").lower():
+                    if data.get("_deal_first_cards") or notes.get("deal_intent") == "paid":
                         say = fallback_say
+                    else:
+                        llm_say = decision.get("say") if not is_robotic(decision.get("say")) else ""
+                        say = narrate_tool_result(
+                            profile_context,
+                            user_text,
+                            history=messages,
+                            brands=brands,
+                            fallback=llm_say or fallback_say,
+                            discovery_hint=discovery_brief(notes),
+                        )
+                        if is_robotic(say) or say_claims_unconfirmed_send(say) or "isn't in our directory" in (say or "").lower():
+                            say = fallback_say
+                    if brands and (
+                        data.get("_deal_first_cards") or notes.get("deal_intent") == "paid"
+                    ) and not more_brands_turn:
+                        kit_line = persona_kit_after_cards(
+                            kit, deal_intent=notes.get("deal_intent"),
+                        )
+                        if kit_line and kit_line.lower() not in (say or "").lower():
+                            say = f"{say}\n\n{kit_line}"
             except Exception as err:
                 print(f"[Polly] suggest narrate skipped: {err}")
                 say = persona_more_brands_intro(brands, pending_name, profile_context) if pending_name else persona_brand_intro(brands, profile_context, deal_intent=notes.get("deal_intent"))
@@ -1084,7 +1280,9 @@ def chat():
                 or user_text
             )
             prior_draft = pending_label
-            lookup_id = None if named_ask else (decision.get("brand_id") or explicit_brand_id)
+            lookup_id = explicit_brand_id or (
+                None if named_ask else (decision.get("brand_id") or explicit_brand_id)
+            )
             resolved = resolve_brand(
                 suggested,
                 brand_id=lookup_id,
@@ -1102,20 +1300,48 @@ def chat():
                 conn.close()
                 conn = None
             if not resolved:
-                try:
-                    alts = _lookup_similar_brands(
-                        asked_name,
-                        scrape=scrape,
-                        notes=notes,
-                        creator=creator,
-                        creator_id=creator_id,
-                        exclude_ids=notes.get("pitched_brand_ids") or [],
-                    )
-                except Exception as err:
-                    print(f"[Polly] similar brands skipped: {err}")
-                    alts = []
-                brands = _hydrate_brand_cards(alts)
-                say = persona_park_draft(prior_draft, asked_name) + persona_unknown_brand(asked_name, brands)
+                if (
+                    leftover_is_prompt(user_text)
+                    or is_casual_ack(user_text)
+                    or not candidate_looks_like_brand_name(asked_name or user_text or "")
+                ):
+                    if leftover_is_prompt(user_text) or is_casual_ack(user_text):
+                        if is_casual_ack(user_text) or intent == "generate_pitch":
+                            intent = "chat"
+                        brands = []
+                        if (
+                            "isn't in our directory" in (say or "").lower()
+                            or "closest we do have" in (say or "").lower()
+                        ):
+                            say = ""
+                    else:
+                        try:
+                            status, brands, err = _suggest_payload(
+                                scrape, creator, notes=notes, creator_id=creator_id,
+                            )
+                        except Exception as err:
+                            print(f"[Polly] query-as-brand suggest skipped: {err}")
+                            status, brands, err = 200, [], str(err)[:180]
+                        brands = drop_pending_draft(_hydrate_brand_cards(brands), notes)
+                        say = persona_brand_intro(
+                            brands, profile_context, deal_intent=notes.get("deal_intent"),
+                        )
+                        intent = "suggest_brands"
+                else:
+                    try:
+                        alts = _lookup_similar_brands(
+                            asked_name,
+                            scrape=scrape,
+                            notes=notes,
+                            creator=creator,
+                            creator_id=creator_id,
+                            exclude_ids=notes.get("pitched_brand_ids") or [],
+                        )
+                    except Exception as err:
+                        print(f"[Polly] similar brands skipped: {err}")
+                        alts = []
+                    brands = _hydrate_brand_cards(alts)
+                    say = persona_park_draft(prior_draft, asked_name) + persona_unknown_brand(asked_name, brands)
             else:
                 wants_followup = wants_followup_pitch(data, user_text)
                 if wants_followup:
@@ -1124,12 +1350,24 @@ def chat():
                     status, pkg = _invoke_generate_pr_package(resolved.get("id"), resolved.get("slug"))
                 if status == 402 or pkg.get("paywall"):
                     paywall = True
+                    brand_name = (resolved.get("name") or asked_name or "them").strip()
+                    notes["paywall_brand"] = {
+                        "id": resolved.get("id"),
+                        "name": brand_name,
+                    }
                     paywall_payload = {
                         "remaining": pkg.get("remaining", 0),
                         "reset_at": pkg.get("reset_at"),
                         "message": pkg.get("message") or "You've used all 3 unlocks this month.",
+                        "brand_name": brand_name,
+                        "brand_id": resolved.get("id"),
                     }
-                    say = "Right — you're out of free unlocks this month. Upgrade if you want to keep going, or wait for the reset."
+                    say = persona_paywall_say(brand_name)
+                    data["_task_chips"] = paywall_unlock_chips({
+                        "id": resolved.get("id"),
+                        "name": brand_name,
+                    })
+                    data["_keep_pitch_say"] = True
                     balance = _unlock_balance(creator_id)
                 elif status == 401:
                     return jsonify({"success": False, "error": "Not authenticated"}), 401
@@ -1148,37 +1386,48 @@ def chat():
                         pitch = pitch_from_package_response(pkg)
                     if pitch and notes.get("deal_intent") == "paid" and not wants_followup:
                         pitch = apply_paid_ask_to_pitch(pitch, kit=kit, scrape=scrape)
-                    if pitch:
+                    if not pitch:
+                        say = (
+                            "I couldn't draft that follow-up. Try again in a moment."
+                            if wants_followup
+                            else "I couldn't generate that pitch. Try another brand from the list."
+                        )
+                        data["_keep_pitch_say"] = True
+                    else:
                         pitch["brand_id"] = pitch.get("brand_id") or resolved.get("id")
                         pitch["brand_name"] = pitch.get("brand_name") or resolved.get("name")
                         if wants_followup:
                             pitch["is_followup"] = True
-                    brand_name = (pitch or {}).get("brand_name") or resolved.get("name") or "them"
-                    notes = mark_draft_pending(notes, {
-                        "id": resolved.get("id") or (pitch or {}).get("brand_id"),
-                        "name": brand_name,
-                    })
-                    off_match = not in_pool and not brand_in_suggested(suggested, resolved)
-                    if wants_followup:
-                        fallback_say = persona_followup_intro(
-                            brand_name, has_mailto=bool(pitch and pitch.get("mailto"))
-                        )
-                    elif off_match:
-                        fallback_say = persona_off_match_pitch(
-                            brand_name, has_mailto=bool(pitch and pitch.get("mailto"))
-                        )
-                    else:
-                        fallback_say = persona_pitch_intro(
-                            brand_name,
-                            has_mailto=bool(pitch and pitch.get("mailto")),
-                            paid=notes.get("deal_intent") == "paid",
-                        )
-                    say = persona_park_draft(prior_draft, brand_name) + fallback_say
-                    data["_keep_pitch_say"] = True
-                    data["_task_chips"] = pitch_confirm_chips({
-                        "id": resolved.get("id"),
-                        "name": brand_name,
-                    })
+                        brand_name = pitch.get("brand_name") or resolved.get("name") or "them"
+                        notes = mark_draft_pending(notes, {
+                            "id": resolved.get("id") or pitch.get("brand_id"),
+                            "name": brand_name,
+                        })
+                        off_match = not in_pool and not brand_in_suggested(suggested, resolved)
+                        if wants_followup:
+                            fallback_say = persona_followup_intro(
+                                brand_name, has_mailto=bool(pitch.get("mailto"))
+                            )
+                        elif off_match:
+                            fallback_say = persona_off_match_pitch(
+                                brand_name,
+                                has_mailto=bool(pitch.get("mailto")),
+                                paid=notes.get("deal_intent") == "paid",
+                                kit=kit,
+                            )
+                        else:
+                            fallback_say = persona_pitch_intro(
+                                brand_name,
+                                has_mailto=bool(pitch.get("mailto")),
+                                paid=notes.get("deal_intent") == "paid",
+                                kit=kit,
+                            )
+                        say = persona_park_draft(prior_draft, brand_name) + fallback_say
+                        data["_keep_pitch_say"] = True
+                        data["_task_chips"] = pitch_confirm_chips({
+                            "id": resolved.get("id"),
+                            "name": brand_name,
+                        })
                     balance = _unlock_balance(creator_id)
         elif not say:
             if conn:
@@ -1197,10 +1446,59 @@ def chat():
                         discovery_hint=discovery_brief(notes),
                     )
 
+        if "_ack_draft" in data:
+            label = str(data.get("_ack_draft") or "").strip()
+            fallback = (
+                persona_thanks_after_draft(label)
+                if label
+                else "Anytime. What do you want to do next?"
+            )
+            gem = (say or decision.get("say") or "").strip()
+            if (
+                not gem
+                or is_robotic(gem)
+                or "isn't in our directory" in gem.lower()
+                or "closest we do have" in gem.lower()
+                or claims_pitch_elsewhere(gem)
+            ):
+                say = fallback
+            brands = []
+            pitch = None
+
+        if leftover_is_prompt(user_text) and not explicit_brand_id:
+            brands = []
+            pitch = None
+            gem = (say or decision.get("say") or "").strip()
+            if (
+                not gem
+                or is_robotic(gem)
+                or "isn't in our directory" in gem.lower()
+                or "closest we do have" in gem.lower()
+                or claims_pitch_elsewhere(gem)
+            ):
+                if intent in ("coach_profile", "coach_week", "coach_rates", "coach_portfolio", "ask_brand"):
+                    say = _coach_say(intent, profile_context, notes, scrape, kit=kit)
+                else:
+                    say = chat_reply(
+                        profile_context,
+                        user_text,
+                        history=messages,
+                        first_name=first,
+                        discovery_hint=discovery_brief(notes),
+                    )
+            else:
+                say = gem
+
         kit_cta = []
         if intent in ("coach_portfolio", "coach_profile"):
+            keep_gemini = (
+                leftover_is_prompt(user_text)
+                and say
+                and not is_robotic(say)
+                and "isn't in our directory" not in (say or "").lower()
+            )
             fallback_say = persona_portfolio_review(profile_context, kit)
-            if not kit_reply_grounded(say, kit):
+            if not keep_gemini and not kit_reply_grounded(say, kit):
                 say = narrate_kit_review(
                     profile_context,
                     user_text,
@@ -1209,7 +1507,7 @@ def chat():
                     fallback=fallback_say,
                     discovery_hint=discovery_brief(notes),
                 )
-            if not kit_reply_grounded(say, kit):
+            if not keep_gemini and not kit_reply_grounded(say, kit):
                 say = fallback_say
             kit_cta = kit_actions(kit)
 
@@ -1245,7 +1543,9 @@ def chat():
         elif pitch:
             say = strip_embedded_pitch(say) or say
         task_chips = list(data.get("_task_chips") or [])
-        if life_result.get("say_hint") and not more_brands_turn:
+        if paywall or paywall_followup:
+            wrap_say = ""
+        if life_result.get("say_hint") and not more_brands_turn and not paywall and not paywall_followup:
             hint = scrub_polly_voice(life_result["say_hint"])
             if (
                 hint
@@ -1258,6 +1558,9 @@ def chat():
             say = scrub_polly_voice(data["_task_say"])
         if wrap_say and wrap_say not in (say or ""):
             say = (wrap_say + "\n\n" + (say or "")).strip()
+        unlock_line = data.get("_unlock_after_send") or ""
+        if unlock_line and unlock_line.lower() not in (say or "").lower():
+            say = ((say or "") + "\n\n" + unlock_line).strip()
 
         if conn:
             conn.close()
@@ -1275,9 +1578,17 @@ def chat():
             "kit_actions": json_safe(kit_cta),
             "task_chips": json_safe(task_chips),
             "paywall": paywall,
-            "starters": starters_for(
-                notes,
-                top_brand=(queue[0]["name"] if queue else None),
+            "starters": (
+                _after_send_empty_starters(notes, tracker_ctx, data.get("_task_chips") or [])
+                if data.get("_after_send_empty")
+                else (
+                    empty_unlock_open(first, tracker_ctx, notes)["starters"]
+                    if out_of_free_unlocks(balance)
+                    else starters_for(
+                        notes,
+                        top_brand=(queue[0]["name"] if queue else None),
+                    )
+                )
             ),
             "discovery": {
                 "complete": discovery_complete(notes),

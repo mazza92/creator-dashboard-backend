@@ -11,7 +11,11 @@ from services.polly import (
     build_mailto,
     build_profile_context,
     classify_intent_heuristic,
+    empty_unlock_open,
     flatten_for_you,
+    is_unlock_reset_ask,
+    out_of_free_unlocks,
+    paywall_unlock_chips,
     pitch_from_package_response,
     profile_aware_chat,
     public_profile_summary,
@@ -191,6 +195,10 @@ class MailtoTests(unittest.TestCase):
         self.assertTrue(wants_followup_pitch({"chip_id": "draft_followup"}, "Draft Rhode follow-up"))
         self.assertTrue(wants_followup_pitch({"is_followup": True}, "yes"))
         self.assertFalse(wants_followup_pitch({}, "Suggest brands I should reach out to"))
+        from services.polly import asked_brand_query, followup_brand_query
+        self.assertEqual(followup_brand_query("Draft Tarte Cosmetics follow-up"), "Tarte Cosmetics")
+        self.assertEqual(asked_brand_query("Draft Tarte Cosmetics follow-up"), "Tarte Cosmetics")
+        self.assertNotEqual(asked_brand_query("Draft Tarte Cosmetics follow-up"), "Draft Tarte Cosmetics follow-up")
 
 
 class HeuristicIntentTests(unittest.TestCase):
@@ -292,6 +300,8 @@ class HeuristicIntentTests(unittest.TestCase):
         self.assertTrue(is_more_brands_turn("More brands"))
         self.assertFalse(is_more_brands_turn("Contact Sourced"))
         self.assertTrue(is_done_turn("I sent it"))
+        self.assertFalse(is_done_turn("thanks"))
+        self.assertFalse(is_done_turn("thank you"))
         d = classify_intent_heuristic("more")
         self.assertEqual(d["intent"], "suggest_brands")
 
@@ -333,6 +343,12 @@ class HeuristicIntentTests(unittest.TestCase):
         self.assertEqual([b["name"] for b in left], ["Grace & Stella", "Sourced"])
         sent = mark_pitched(notes, {"id": 1, "name": "Grace & Stella"})
         self.assertNotIn("pending_pitch", sent)
+        parked = mark_pitched(
+            mark_draft_pending({}, {"id": 9, "name": "GLO"}),
+            {"id": 1, "name": "Future Society"},
+        )
+        self.assertEqual(parked["pending_pitch"]["name"], "GLO")
+        self.assertIn("Future Society", parked["pitched_brand_names"])
         left2 = drop_pitched(
             [{"id": 1, "name": "Grace & Stella"}, {"id": 2, "name": "Sourced"}],
             sent,
@@ -460,8 +476,10 @@ class HeuristicIntentTests(unittest.TestCase):
         from services.polly import (
             apply_paid_ask_to_pitch,
             asked_brand_query,
+            candidate_looks_like_brand_name,
             classify_intent_heuristic,
             deal_search_kind,
+            is_casual_ack,
             looks_like_brand_request,
         )
         text = "find me paid collaborations"
@@ -471,7 +489,52 @@ class HeuristicIntentTests(unittest.TestCase):
         d = classify_intent_heuristic(text)
         self.assertEqual(d["intent"], "suggest_brands")
         self.assertFalse(d.get("brand_name"))
+        for paid in (
+            "get paid",
+            "I want paid opportunities now",
+            "I want to get paid from the start, not just receive products",
+            "contratos de conteúdo gerado pelo usuário (UGC) pagos desde o início",
+            "what brands do pay UGC",
+            "which brands pay for UGC",
+            "who pays for UGC",
+            "do pay UGC",
+        ):
+            self.assertEqual(deal_search_kind(paid), "paid", paid)
+            self.assertFalse(looks_like_brand_request(paid), paid)
+            self.assertEqual(asked_brand_query(paid), "", paid)
+            self.assertEqual(classify_intent_heuristic(paid)["intent"], "suggest_brands", paid)
+            self.assertFalse(classify_intent_heuristic(paid).get("brand_name"), paid)
+        self.assertEqual(deal_search_kind("Hey I want to get brand deals"), "brands")
         self.assertTrue(looks_like_brand_request("Let's hit up Joya Mia (US)"))
+        self.assertEqual(asked_brand_query("Help me pitch Twisted Lily"), "Twisted Lily")
+        self.assertTrue(looks_like_brand_request("Help me pitch Twisted Lily"))
+        self.assertFalse(looks_like_brand_request("Not sent"))
+        self.assertEqual(asked_brand_query("Not sent"), "")
+        self.assertFalse(looks_like_brand_request("thanks"))
+        self.assertFalse(looks_like_brand_request("thank you"))
+        self.assertEqual(asked_brand_query("thanks"), "")
+        self.assertEqual(classify_intent_heuristic("thanks")["intent"], "chat")
+        self.assertFalse(classify_intent_heuristic("thanks").get("brand_name"))
+        self.assertEqual(classify_intent_heuristic("Let's hit up GLO")["intent"], "generate_pitch")
+        self.assertTrue(is_casual_ack("thanks"))
+        self.assertTrue(is_casual_ack("thanks so much"))
+        self.assertTrue(is_casual_ack("thank you"))
+        self.assertFalse(is_casual_ack("Let's hit up GLO"))
+        self.assertFalse(candidate_looks_like_brand_name("thanks"))
+        self.assertFalse(candidate_looks_like_brand_name("thank you"))
+        self.assertTrue(candidate_looks_like_brand_name("GLO"))
+        from services.polly import leftover_is_prompt
+        self.assertTrue(leftover_is_prompt("how to get more replies"))
+        self.assertTrue(leftover_is_prompt("how to get more replies from brands"))
+        self.assertFalse(looks_like_brand_request("how to get more replies"))
+        self.assertEqual(asked_brand_query("how to get more replies"), "")
+        self.assertEqual(classify_intent_heuristic("how to get more replies")["intent"], "coach_profile")
+        self.assertFalse(leftover_is_prompt("how about Rhode"))
+        self.assertTrue(looks_like_brand_request("how about Rhode"))
+        self.assertFalse(leftover_is_prompt("Help me pitch Twisted Lily"))
+        self.assertFalse(looks_like_brand_request("BEAUTY"))
+        self.assertEqual(asked_brand_query("BEAUTY"), "")
+        self.assertEqual(classify_intent_heuristic("BEAUTY")["intent"], "suggest_brands")
         gifted = {
             "subject": "1 post + 2 UGC files for a PR/gifting sample · gifted trial",
             "body": (
@@ -488,6 +551,17 @@ class HeuristicIntentTests(unittest.TestCase):
         self.assertIn("Rate:", paid["body"])
         self.assertIn("Paid UGC", paid["subject"])
         self.assertEqual(paid["deal_type"], "paid")
+        kit_paid = apply_paid_ask_to_pitch(
+            {
+                "subject": "Collab with GLO",
+                "body": "Hi GLO,\n\nI create UGC on TikTok.\n\nWorth a look?",
+                "email": "info@joyamia.com",
+            },
+            kit={"has_rates": True, "rates": {"ugc": "$200"}},
+        )
+        self.assertIn("$200", kit_paid["body"])
+        self.assertIn("Paid UGC", kit_paid["subject"])
+        self.assertNotIn("No fee", kit_paid["body"])
 
 
 class PersonaTests(unittest.TestCase):
@@ -611,6 +685,79 @@ class PersonaTests(unittest.TestCase):
         self.assertIn("top pick", text.lower())
         self.assertFalse(text.startswith("Here are"))
 
+    def test_paid_intro_then_kit_after_cards(self):
+        from services.polly_persona import persona_brand_intro, persona_kit_after_cards
+        brands = [
+            {"name": "Grace & Stella", "category": "skincare"},
+            {"name": "Pixi Beauty", "category": "beauty"},
+        ]
+        text = persona_brand_intro(brands, "Primary niche: beauty", deal_intent="paid")
+        self.assertIn("paid", text.lower())
+        self.assertIn("Grace & Stella", text)
+        self.assertNotIn("30-60 days", text.lower())
+        self.assertNotIn("unpublished", text.lower())
+        lever = persona_kit_after_cards({"found": True, "published": False})
+        self.assertIn("My Kit", lever)
+        self.assertIn("not a gate", lever.lower())
+        self.assertNotIn("unpublished", lever.lower())
+        self.assertEqual(persona_kit_after_cards({"published": True}), "")
+        rates = persona_kit_after_cards(
+            {"published": True, "has_rates": False},
+            deal_intent="paid",
+        )
+        self.assertIn("rates", rates.lower())
+        self.assertIn("My Kit", rates)
+        self.assertIn("Contact", rates)
+        self.assertEqual(
+            persona_kit_after_cards({"published": True, "has_rates": True}, deal_intent="paid"),
+            "",
+        )
+
+    def test_unlocks_after_send_and_scrubs_fake_pitches_ui(self):
+        from services.polly_persona import persona_unlocks_after_send, scrub_polly_voice
+        two = persona_unlocks_after_send({"remaining": 2, "is_unlimited": False})
+        self.assertIn("2 free unlocks", two)
+        self.assertNotIn("this month", two.lower())
+        self.assertNotRegex(two.lower(), r"reset|1st|first of")
+        one = persona_unlocks_after_send({"remaining": 1, "is_unlimited": False})
+        self.assertIn("1 free unlock", one)
+        self.assertNotIn("this month", one.lower())
+        self.assertNotIn("last free", one.lower())
+        last = persona_unlocks_after_send({"remaining": 0, "is_unlimited": False})
+        self.assertIn("unlock pro", last.lower())
+        self.assertNotIn("this month", last.lower())
+        self.assertNotRegex(last.lower(), r"reset|1st|wait until")
+        stacked = scrub_polly_voice(
+            "You've got **1 free unlock** left this month. Want the next brand?\n\n"
+            "That's the last free unlock. Unlock Pro and we keep pitching this week."
+        )
+        self.assertNotIn("free unlock", stacked.lower())
+        self.assertNotIn("Unlock Pro", stacked)
+        self.assertEqual(persona_unlocks_after_send({"is_unlimited": True}), "")
+        scrubbed = scrub_polly_voice(
+            "I've saved it in the Pitches section. Open the next screen and hit Send Pitch."
+        )
+        self.assertNotIn("Pitches", scrubbed)
+        self.assertNotIn("next screen", scrubbed.lower())
+
+    def test_thanks_after_draft_is_not_a_directory_miss(self):
+        from services.polly_persona import persona_thanks_after_draft
+        say = persona_thanks_after_draft("GLO")
+        self.assertIn("GLO", say)
+        self.assertIn("I sent it", say)
+        self.assertNotIn("isn't in our directory", say.lower())
+        self.assertNotIn("Abracadabra", say)
+
+    def test_paid_pitch_intro_nudges_missing_rates(self):
+        from services.polly_persona import persona_pitch_intro
+        missing = persona_pitch_intro("GLO", paid=True, kit={"has_rates": False})
+        self.assertIn("paid pitch", missing.lower())
+        self.assertIn("My Kit", missing)
+        self.assertIn("rate", missing.lower())
+        ready = persona_pitch_intro("GLO", paid=True, kit={"has_rates": True})
+        self.assertIn("paid pitch", ready.lower())
+        self.assertNotIn("band", ready.lower())
+
     def test_sanitize_thread_drops_junk(self):
         from services.polly_memory import sanitize_thread
         out = sanitize_thread(
@@ -699,6 +846,71 @@ class UnpackViewTests(unittest.TestCase):
         status, data = unpack_view_result({"success": True, "package": {}})
         self.assertEqual(status, 200)
         self.assertTrue(data["success"])
+
+
+class PaywallCopyTests(unittest.TestCase):
+    def test_say_names_brand_and_skips_reset(self):
+        from services.polly_persona import persona_paywall_retry, persona_paywall_say
+        text = persona_paywall_say("Grace & Stella")
+        self.assertIn("Grace & Stella", text)
+        self.assertIn("unlock Pro", text)
+        self.assertNotRegex(text.lower(), r"reset|1st|first of")
+        retry = persona_paywall_retry("Grace & Stella")
+        self.assertIn("Grace & Stella", retry)
+        self.assertNotRegex(retry.lower(), r"reset|1st|wait until")
+
+    def test_chip_label(self):
+        chips = paywall_unlock_chips({"id": 12, "name": "Grace & Stella"})
+        self.assertEqual(chips[0]["action"], "unlock_pro")
+        self.assertEqual(chips[0]["label"], "Keep pitching Grace & Stella — unlock Pro")
+        self.assertEqual(chips[0]["brand_id"], 12)
+
+    def test_after_send_pro_chip_skips_logged_and_pending(self):
+        from services.polly import next_unlock_brand
+        nxt = next_unlock_brand(
+            {"id": 1, "name": "Future Society"},
+            [
+                {"id": 2, "name": "GLO"},
+                {"id": 3, "name": "Kismet Olfactive"},
+            ],
+            {"id": 2, "name": "GLO"},
+        )
+        self.assertEqual(nxt["name"], "Kismet Olfactive")
+        self.assertIsNone(next_unlock_brand(
+            {"id": 1, "name": "Future Society"},
+            [{"id": 2, "name": "GLO"}],
+            {"id": 2, "name": "GLO"},
+        ))
+
+    def test_reset_ask_detects_iamkatmac_line(self):
+        self.assertTrue(is_unlock_reset_ask("wait for the reset- when will that be?"))
+        self.assertTrue(is_unlock_reset_ask("when do unlocks reset"))
+        self.assertFalse(is_unlock_reset_ask("Find me 3 brands to pitch today"))
+
+    def test_out_of_free_unlocks(self):
+        self.assertTrue(out_of_free_unlocks({"remaining": 0, "is_unlimited": False}))
+        self.assertFalse(out_of_free_unlocks({"remaining": None, "is_unlimited": True}))
+        self.assertFalse(out_of_free_unlocks({"remaining": 2, "is_unlimited": False}))
+
+    def test_empty_unlock_open_leads_with_followup_and_pro(self):
+        from services.polly_persona import persona_empty_unlock_greeting
+        tracker = {
+            "active_tasks": [
+                {"type": "campaign_applied", "brand_id": 9, "brand_name": "GLO"},
+                {"type": "campaign_applied", "brand_id": 8, "brand_name": "BYBI Beauty"},
+                {"type": "follow_up_due", "brand_id": 9, "brand_name": "GLO"},
+            ]
+        }
+        payload = empty_unlock_open("Katrina", tracker, {})
+        ids = [c["id"] for c in payload["starters"]]
+        self.assertIn("unlock_pro", ids)
+        self.assertIn("draft_followup", ids)
+        self.assertNotIn("line_up", ids)
+        self.assertIn("GLO", payload["greeting"])
+        self.assertIn("2", payload["greeting"])
+        self.assertNotRegex(payload["greeting"].lower(), r"reset|1st")
+        text = persona_empty_unlock_greeting("Katrina", 2, "GLO")
+        self.assertIn("doesn't use a credit", text.lower().replace("’", "'"))
 
 
 if __name__ == "__main__":
