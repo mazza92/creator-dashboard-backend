@@ -39,7 +39,9 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIn("Creator Assistant", say)
         self.assertIn("What do you want to land first?", say)
         self.assertIn("paid UGC offers", say)
-        self.assertIn("one list", say)
+        self.assertIn("one place", say)
+        self.assertNotIn("**", say)
+        self.assertNotIn("one list", say)
         self.assertNotIn("Ready?", say)
         self.assertNotIn("2 minutes", say)
 

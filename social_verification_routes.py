@@ -119,6 +119,11 @@ def _is_local_dev_url(url):
     return 'localhost' in host or '127.0.0.1' in host
 
 
+def _skip_onboarding_quality_locally(return_url=None):
+    """Skip 500/12 quality bar for localhost OAuth only. Production is unchanged."""
+    return _is_local_dev_url(return_url)
+
+
 def _decode_tiktok_oauth_state(state):
     if not state:
         return {}
@@ -185,6 +190,9 @@ def _store_onboarding_oauth_proof(platform, profile_data, result, tokens=None):
             return
         handle = (profile_data.get('username') or '').strip().lstrip('@')
         followers = int(profile_data.get('follower_count', 0) or 0)
+        avatar = (profile_data.get('avatar_url') or '').strip()
+        if avatar:
+            session['scraped_avatar_url'] = avatar
         session['social_verification_result'] = {
             'verified': bool(result.get('passed')),
             'platform': platform,
@@ -239,6 +247,10 @@ def apply_pending_oauth_to_creator(creator_id):
             expires_at = datetime.fromisoformat(expires_at)
         except Exception:
             expires_at = None
+    likes_count = int(pending.get('likes_count') or 0)
+    videos = pending.get('oauth_videos') or []
+    if likes_count <= 0:
+        likes_count = sum(int(v.get('likes') or 0) for v in videos if isinstance(v, dict))
     update_creator_verification(
         creator_id=int(creator_id),
         platform=pending.get('platform') or 'tiktok',
@@ -247,7 +259,7 @@ def apply_pending_oauth_to_creator(creator_id):
             'open_id': pending.get('open_id'),
             'follower_count': pending.get('follower_count') or 0,
             'media_count': pending.get('media_count') or 0,
-            'likes_count': pending.get('likes_count') or 0,
+            'likes_count': likes_count,
             'avatar_url': pending.get('avatar_url') or '',
             'display_name': pending.get('display_name') or '',
             'bio_description': pending.get('bio_description') or '',
@@ -1017,6 +1029,7 @@ def callback_instagram():
         fetch_media,
         fetch_user_info,
         is_professional_account_error,
+        is_unsupported_graph_method_error,
         media_to_oauth_snapshot,
     )
     from services.profile_quality import ProfileQualityError
@@ -1080,20 +1093,24 @@ def callback_instagram():
         access_token = long_lived.get('access_token') or short_token
         expires_at = expires_at_from_payload(long_lived)
 
-        user_info = fetch_user_info(access_token)
+        ig_user_id = str(token_data.get('user_id') or '').strip()
+        user_info = fetch_user_info(access_token, user_id=ig_user_id)
         handle = (user_info.get('username') or '').strip().lstrip('@')
         if not handle:
             return fail('no_username')
 
-        oauth_videos = media_to_oauth_snapshot(fetch_media(access_token, max_items=40))
+        oauth_videos = media_to_oauth_snapshot(
+            fetch_media(access_token, max_items=40, user_id=ig_user_id or user_info.get('user_id') or user_info.get('id'))
+        )
         account_type = str(user_info.get('account_type') or 'BUSINESS').upper()
+        likes_count = sum(int(item.get('likes') or 0) for item in oauth_videos)
         profile_data = {
             'access_token': access_token,
             'username': handle,
             'open_id': str(user_info.get('user_id') or user_info.get('id') or ''),
             'follower_count': int(user_info.get('followers_count') or 0),
             'media_count': int(user_info.get('media_count') or 0) or len(oauth_videos),
-            'likes_count': 0,
+            'likes_count': likes_count,
             'avatar_url': user_info.get('profile_picture_url') or '',
             'account_type': account_type,
             'is_private': False,
@@ -1126,6 +1143,18 @@ def callback_instagram():
         user_country = user_country or ''
 
         result = validate_social_gates(profile_data, 'instagram', user_country)
+        from_settings = _is_settings_return(return_url, oauth_source)
+        local_quality_skip = _skip_onboarding_quality_locally(return_url)
+        if local_quality_skip:
+            _log(f"[ig-login] local quality skip for @{handle} (testing only)")
+            result = dict(result)
+            result['passed'] = True
+            result['failure_reason'] = None
+            try:
+                session['oauth_local_quality_skip'] = True
+                session.modified = True
+            except Exception:
+                pass
         _store_onboarding_oauth_proof(
             'instagram',
             profile_data,
@@ -1133,7 +1162,6 @@ def callback_instagram():
             tokens={'access_token': access_token, 'refresh_token': None, 'expires_at': expires_at},
         )
 
-        from_settings = _is_settings_return(return_url, oauth_source)
         try:
             from services.creator_profile_scraper import scrape_and_enrich_creator
             conn = get_db_connection()
@@ -1143,7 +1171,7 @@ def callback_instagram():
                 'instagram',
                 db_conn=conn,
                 skip_minimums=True,
-                skip_follower_floor=from_settings,
+                skip_follower_floor=from_settings or local_quality_skip,
                 oauth_profile=profile_data,
                 access_token=access_token,
             )
@@ -1153,7 +1181,7 @@ def callback_instagram():
                 pass
         except ProfileQualityError as qe:
             _log(f"[ig-login] quality bar failed: {qe.code}")
-            if not from_settings:
+            if not from_settings and not local_quality_skip:
                 try:
                     session.pop('pending_oauth', None)
                     session.modified = True
@@ -1167,7 +1195,7 @@ def callback_instagram():
                 return fail(reason)
         except Exception as scrape_err:
             _log(f"[ig-login] profile persist failed: {scrape_err}")
-            if not from_settings:
+            if not from_settings and not local_quality_skip:
                 try:
                     session.pop('pending_oauth', None)
                     session.modified = True
@@ -1186,7 +1214,7 @@ def callback_instagram():
                 expires_at=expires_at,
             )
 
-        if result['passed'] or from_settings:
+        if result['passed'] or from_settings or local_quality_skip:
             handle_q = quote(str(handle))
             return redirect(
                 f"{return_url}?social=success&platform=instagram"
@@ -1197,6 +1225,8 @@ def callback_instagram():
         return fail(result.get('failure_reason') or 'oauth_error')
     except InstagramLoginKitError as e:
         _log(f"[ig-login] kit error: {e}")
+        if is_unsupported_graph_method_error(str(e)):
+            return fail('need_instagram_tester')
         if is_professional_account_error(str(e)):
             return fail('need_professional')
         if scopes_mode != 'base' and 'scope' in str(e).lower():

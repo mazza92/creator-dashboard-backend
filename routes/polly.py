@@ -40,6 +40,12 @@ from services.polly import (
     deal_search_kind,
     deal_pool_intent,
     apply_paid_ask_to_pitch,
+    apply_location_to_pitch,
+    last_thread_pitch,
+    parse_location_reply,
+    patch_last_pitch_in_history,
+    pitch_has_placeholder,
+    resolve_pitch_location,
     mark_draft_pending,
     mark_pitched,
     unmark_pitched,
@@ -101,6 +107,8 @@ from services.polly_persona import (
     persona_park_draft,
     persona_paywall_retry,
     persona_paywall_say,
+    persona_hold_pitch_send,
+    persona_location_filled,
     persona_pitch_intro,
     persona_portfolio_review,
     persona_profile_audit,
@@ -396,7 +404,7 @@ def _invoke_for_you():
     return unpack_view_result(get_for_you())
 
 
-def _invoke_generate_pr_package(brand_id, slug=None):
+def _invoke_generate_pr_package(brand_id, slug=None, city="", country=""):
     from flask import session as flask_session
     from pr_crm_routes import generate_pr_package
 
@@ -418,6 +426,10 @@ def _invoke_generate_pr_package(brand_id, slug=None):
         payload["brand_id"] = brand_id
     if slug:
         payload["slug"] = slug
+    if city:
+        payload["city"] = city
+    if country:
+        payload["country"] = country
     with current_app.test_request_context(
         "/api/pr-crm/generate-pr-package",
         method="POST",
@@ -1088,6 +1100,39 @@ def chat():
                 intent = explicit_action
 
         last_pitch = last_pitch_brand(messages, notes) or brand_from_notes(notes)
+        draft_pitch = last_thread_pitch(messages)
+        draft_needs_location = pitch_has_placeholder((draft_pitch or {}).get("body") or "")
+        loc_reply = parse_location_reply(user_text) if draft_needs_location else None
+        if (
+            loc_reply
+            and draft_pitch
+            and explicit_action not in ("generate_pitch", "suggest_brands", "suggest_gigs")
+            and not is_done_turn(user_text)
+        ):
+            updated = apply_location_to_pitch(
+                draft_pitch,
+                loc_reply.get("city") or "",
+                loc_reply.get("country") or "",
+            )
+            loc_display = str((updated or {}).get("location_display") or "")
+            notes["location"] = loc_display or f"{loc_reply.get('city')}, {loc_reply.get('country')}"
+            messages = patch_last_pitch_in_history(messages, updated)
+            data["_filled_location"] = True
+            data["_pitch_update"] = updated
+            data["_keep_pitch_say"] = True
+            data["_task_chips"] = pitch_confirm_chips({
+                "id": (updated or {}).get("brand_id") or (last_pitch or {}).get("id"),
+                "name": (updated or {}).get("brand_name") or (last_pitch or {}).get("name"),
+            })
+            intent = "chat"
+            asked_brand = None
+            named_ask = False
+            decision["brand_name"] = None
+            decision["brand_id"] = None
+            say = persona_location_filled(
+                (updated or {}).get("brand_name") or (last_pitch or {}).get("name"),
+                loc_display,
+            )
         if last_pitch and conn:
             found = lookup_brand(
                 conn,
@@ -1131,6 +1176,8 @@ def chat():
             and life.get("confidence", 0) >= 0.7
             and life.get("intent") not in skip_life
             and not (life.get("intent") == "pitch_sent" and not last_pitch)
+            and not data.get("_filled_location")
+            and not (life.get("intent") == "pitch_sent" and draft_needs_location)
         ):
             try:
                 life_brand = last_pitch or resolve_brand(
@@ -1149,36 +1196,50 @@ def chat():
                 pass
 
         if is_done_turn(user_text) and last_pitch:
-            notes = mark_pitched(notes, last_pitch)
-            if (life_result or {}).get("action") not in ("pitch_sent+followups",):
-                try:
-                    record_pitch_sent(conn, creator_id, last_pitch, drafted=False)
-                    if not life_result:
-                        life_result = {
-                            "action": "pitch_sent+followups",
-                            "say_hint": (
-                                f"Logged. **{last_pitch.get('name') or last_pitch.get('brand_name')}** "
-                                "is on your Timeline — I'll nudge you day 4 if they're quiet."
-                            ),
-                            "chips": [],
-                        }
-                except Exception as err:
-                    print(f"[Polly] pitch tracker skipped: {err}")
-            if intent == "suggest_brands" and not explicit_action:
+            if draft_needs_location:
+                data["_hold_placeholder"] = True
+                data["_keep_pitch_say"] = True
+                data["_task_chips"] = pitch_confirm_chips(last_pitch)
                 intent = "chat"
-            balance = _unlock_balance(creator_id)
-            unlock_line = persona_unlocks_after_send(balance)
-            if unlock_line:
-                data["_unlock_after_send"] = unlock_line
-            leftover_cards = drop_pitched(suggested, notes)
-            next_pro = next_unlock_brand(last_pitch, leftover_cards, pending_now)
-            if out_of_free_unlocks(balance) and not data.get("_task_chips"):
-                data["_task_chips"] = paywall_unlock_chips(next_pro)
-                data["_after_send_empty"] = True
+                say = persona_hold_pitch_send(
+                    last_pitch.get("name") or last_pitch.get("brand_name")
+                )
+            else:
+                notes = mark_pitched(notes, last_pitch)
+                if (life_result or {}).get("action") not in ("pitch_sent+followups",):
+                    try:
+                        record_pitch_sent(conn, creator_id, last_pitch, drafted=False)
+                        if not life_result:
+                            life_result = {
+                                "action": "pitch_sent+followups",
+                                "say_hint": (
+                                    f"Logged. **{last_pitch.get('name') or last_pitch.get('brand_name')}** "
+                                    "is on your Timeline — I'll nudge you day 4 if they're quiet."
+                                ),
+                                "chips": [],
+                            }
+                    except Exception as err:
+                        print(f"[Polly] pitch tracker skipped: {err}")
+                if intent == "suggest_brands" and not explicit_action:
+                    intent = "chat"
+                balance = _unlock_balance(creator_id)
+                unlock_line = persona_unlocks_after_send(balance)
+                if unlock_line:
+                    data["_unlock_after_send"] = unlock_line
+                leftover_cards = drop_pitched(suggested, notes)
+                next_pro = next_unlock_brand(last_pitch, leftover_cards, pending_now)
+                if out_of_free_unlocks(balance) and not data.get("_task_chips"):
+                    data["_task_chips"] = paywall_unlock_chips(next_pro)
+                    data["_after_send_empty"] = True
 
         remaining = drop_pitched(suggested, notes)
         progress_remaining = False
-        if is_done_turn(user_text) and intent == "chat" and remaining:
+        if (
+            is_done_turn(user_text)
+            and intent == "chat"
+            and remaining
+            and not data.get("_hold_placeholder")
+        ):
             if out_of_free_unlocks(balance):
                 progress_remaining = False
             else:
@@ -1208,7 +1269,7 @@ def chat():
             or bool((scrape or {}).get("primary_niche"))
         )
 
-        if live_brain:
+        if live_brain and not data.get("_filled_location") and not data.get("_hold_placeholder"):
             say = decision.get("say") or ""
             if wants_matches:
                 notes["wants_matches"] = True
@@ -1228,9 +1289,15 @@ def chat():
             say = _coach_say(intent, profile_context, notes, scrape, kit=kit)
         elif intent in ("coach_week", "coach_rates") and not open_discovery:
             say = _coach_say(intent, profile_context, notes, scrape, kit=kit)
-        elif open_discovery and not is_casual_ack(user_text) and intent not in (
+        elif (
+            open_discovery
+            and not is_casual_ack(user_text)
+            and not data.get("_filled_location")
+            and not data.get("_hold_placeholder")
+            and intent not in (
             "explain_newcollab", "generate_pitch", "ask_brand", "coach_profile",
             "suggest_brands", "suggest_gigs",
+        )
         ):
             if wants_matches:
                 notes["wants_matches"] = True
@@ -1415,10 +1482,21 @@ def chat():
                 wants_followup = wants_followup_pitch(
                     data, user_text, messages, notes.get("pitched_brand_names")
                 )
+                shipping = resolve_pitch_location(creator, scrape, notes)
+                loc_display = ""
+                if not shipping.get("needs_location"):
+                    loc_display = str(shipping.get("display") or "").strip()
+                    if pitch_has_placeholder(loc_display):
+                        loc_display = ""
                 if wants_followup:
                     status, pkg = _invoke_generate_followup(resolved.get("id"), resolved.get("slug"))
                 else:
-                    status, pkg = _invoke_generate_pr_package(resolved.get("id"), resolved.get("slug"))
+                    status, pkg = _invoke_generate_pr_package(
+                        resolved.get("id"),
+                        resolved.get("slug"),
+                        city=shipping.get("city") or "",
+                        country=shipping.get("country") or "",
+                    )
                 if status == 402 or pkg.get("paywall"):
                     paywall = True
                     brand_name = (resolved.get("name") or asked_name or "them").strip()
@@ -1456,7 +1534,23 @@ def chat():
                     else:
                         pitch = pitch_from_package_response(pkg)
                     if pitch and notes.get("deal_intent") == "paid" and not wants_followup:
-                        pitch = apply_paid_ask_to_pitch(pitch, kit=kit, scrape=scrape)
+                        pitch = apply_paid_ask_to_pitch(
+                            pitch,
+                            kit=kit,
+                            scrape=scrape,
+                            location_display=loc_display or None,
+                        )
+                    if pitch and not wants_followup:
+                        if loc_display:
+                            pitch = apply_location_to_pitch(
+                                pitch,
+                                shipping.get("city") or "",
+                                shipping.get("country") or "",
+                                loc_display,
+                            )
+                        pitch["needs_location"] = pitch_has_placeholder(pitch.get("body") or "")
+                        if loc_display and not pitch["needs_location"]:
+                            pitch["location_display"] = loc_display
                     if not pitch:
                         say = (
                             "I couldn't draft that follow-up. Try again in a moment."
@@ -1475,6 +1569,13 @@ def chat():
                             "name": brand_name,
                         })
                         off_match = not in_pool and not brand_in_suggested(suggested, resolved)
+                        needs_loc = bool(
+                            pitch.get("needs_location")
+                            or pitch_has_placeholder(pitch.get("body") or "")
+                        )
+                        shown_loc = "" if needs_loc else (
+                            pitch.get("location_display") or loc_display or ""
+                        )
                         if wants_followup:
                             fallback_say = persona_followup_intro(
                                 brand_name, has_mailto=bool(pitch.get("mailto"))
@@ -1485,6 +1586,8 @@ def chat():
                                 has_mailto=bool(pitch.get("mailto")),
                                 paid=notes.get("deal_intent") == "paid",
                                 kit=kit,
+                                needs_location=needs_loc,
+                                location_display=shown_loc,
                             )
                         else:
                             fallback_say = persona_pitch_intro(
@@ -1492,6 +1595,8 @@ def chat():
                                 has_mailto=bool(pitch.get("mailto")),
                                 paid=notes.get("deal_intent") == "paid",
                                 kit=kit,
+                                needs_location=needs_loc,
+                                location_display=shown_loc,
                             )
                         say = persona_park_draft(prior_draft, brand_name) + fallback_say
                         data["_keep_pitch_say"] = True
@@ -1621,6 +1726,8 @@ def chat():
             and not more_brands_turn
             and not paywall
             and not paywall_followup
+            and not data.get("_hold_placeholder")
+            and not data.get("_filled_location")
             and intent not in ("suggest_gigs",)
             and not is_deal_search(user_text)
         ):
@@ -1640,6 +1747,19 @@ def chat():
         if unlock_line and unlock_line.lower() not in (say or "").lower():
             say = ((say or "") + "\n\n" + unlock_line).strip()
 
+        if data.get("_hold_placeholder"):
+            say = persona_hold_pitch_send(
+                (last_pitch or {}).get("name") or (last_pitch or {}).get("brand_name")
+            )
+            pitch = None
+        elif data.get("_filled_location"):
+            update = data.get("_pitch_update") or {}
+            say = persona_location_filled(
+                update.get("brand_name") or (last_pitch or {}).get("name"),
+                update.get("location_display"),
+            )
+            pitch = None
+
         if conn:
             conn.close()
             conn = None
@@ -1654,6 +1774,7 @@ def chat():
             "gigs": json_safe(gigs),
             "suggested_brands": json_safe(queue),
             "pitch": json_safe(pitch),
+            "pitch_update": json_safe(data.get("_pitch_update")),
             "kit_actions": json_safe(kit_cta),
             "task_chips": json_safe(task_chips),
             "paywall": paywall,

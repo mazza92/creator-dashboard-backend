@@ -439,6 +439,21 @@ class HeuristicIntentTests(unittest.TestCase):
         d = classify_intent_heuristic("Let's hit up Grace & Stella")
         self.assertEqual(d["intent"], "generate_pitch")
         self.assertIn("Grace", d.get("brand_name") or "")
+        for line in (
+            "Pitch DOTSHOP for me",
+            "Write a pitch for DOTSHOP",
+            "Draft an email to DOTSHOP",
+            "Let's pitch DOTSHOP",
+            "Reach out to DOTSHOP",
+            "Let's try DOTSHOP",
+            "Send a note to DOTSHOP",
+            "Start with DOTSHOP",
+            "Get me in with DOTSHOP",
+            "Contact DOTSHOP",
+        ):
+            parsed = classify_intent_heuristic(line)
+            self.assertEqual(parsed["intent"], "generate_pitch", line)
+            self.assertIn("DOTSHOP", parsed.get("brand_name") or "", line)
 
     def test_i_want_dell_is_a_brand_ask(self):
         from services.polly import requested_brand_name, strip_brand_ask
@@ -566,6 +581,7 @@ class HeuristicIntentTests(unittest.TestCase):
         self.assertIn("Rate:", paid["body"])
         self.assertIn("Paid UGC", paid["subject"])
         self.assertEqual(paid["deal_type"], "paid")
+        self.assertFalse(paid.get("needs_location"))
         kit_paid = apply_paid_ask_to_pitch(
             {
                 "subject": "Collab with GLO",
@@ -577,6 +593,35 @@ class HeuristicIntentTests(unittest.TestCase):
         self.assertIn("$200", kit_paid["body"])
         self.assertIn("Paid UGC", kit_paid["subject"])
         self.assertNotIn("No fee", kit_paid["body"])
+        placeholder = apply_paid_ask_to_pitch({
+            "subject": "1 post + 2 UGC files for a PR/gifting sample · gifted trial",
+            "body": "Hi DOTSHOP,\n\nNo fee. Just product + shipping to [CITY, COUNTRY].\n\nWorth a look?",
+            "email": "pr@dotshop.com",
+        })
+        self.assertIn("[CITY, COUNTRY]", placeholder["body"])
+        self.assertTrue(placeholder["needs_location"])
+        filled = apply_paid_ask_to_pitch(
+            {
+                "subject": "1 post + 2 UGC files for a PR/gifting sample · gifted trial",
+                "body": "Hi DOTSHOP,\n\nNo fee. Just product + shipping to [CITY, COUNTRY].\n\nWorth a look?",
+            },
+            location_display="Lyon, France",
+        )
+        self.assertIn("Lyon, France", filled["body"])
+        self.assertNotIn("[CITY, COUNTRY]", filled["body"])
+        self.assertFalse(filled["needs_location"])
+        from services.polly import parse_location_reply, patch_last_pitch_in_history, pitch_has_placeholder
+        self.assertEqual(parse_location_reply("Lyon, France")["city"], "Lyon")
+        self.assertEqual(parse_location_reply("I'm in Austin, United States")["country"], "United States")
+        self.assertIsNone(parse_location_reply("Pitch DOTSHOP for me"))
+        self.assertIsNone(parse_location_reply("I sent it"))
+        history = [{
+            "role": "assistant",
+            "pitch": {"body": "shipping to [CITY, COUNTRY].", "brand_name": "DOTSHOP"},
+        }]
+        patched = patch_last_pitch_in_history(history, {"body": "shipping to Lyon, France.", "needs_location": False})
+        self.assertIn("Lyon, France", patched[0]["pitch"]["body"])
+        self.assertTrue(pitch_has_placeholder("plus product shipping to [CITY, COUNTRY] if you want it in-shot."))
 
 
 class PersonaTests(unittest.TestCase):
@@ -764,7 +809,7 @@ class PersonaTests(unittest.TestCase):
         self.assertNotIn("Abracadabra", say)
 
     def test_paid_pitch_intro_nudges_missing_rates(self):
-        from services.polly_persona import persona_pitch_intro
+        from services.polly_persona import persona_hold_pitch_send, persona_location_filled, persona_pitch_intro
         missing = persona_pitch_intro("GLO", paid=True, kit={"has_rates": False})
         self.assertIn("paid pitch", missing.lower())
         self.assertIn("My Kit", missing)
@@ -772,6 +817,14 @@ class PersonaTests(unittest.TestCase):
         ready = persona_pitch_intro("GLO", paid=True, kit={"has_rates": True})
         self.assertIn("paid pitch", ready.lower())
         self.assertNotIn("band", ready.lower())
+        hold = persona_pitch_intro("DOTSHOP", paid=True, kit={"has_rates": True}, needs_location=True)
+        self.assertIn("Don't send", hold)
+        self.assertIn("[CITY, COUNTRY]", hold)
+        self.assertNotIn("Open your mail", hold)
+        self.assertIn("[CITY, COUNTRY]", persona_hold_pitch_send("DOTSHOP"))
+        filled = persona_location_filled("DOTSHOP", "Lyon, France")
+        self.assertIn("Lyon, France", filled)
+        self.assertIn("DOTSHOP", filled)
 
     def test_sanitize_thread_drops_junk(self):
         from services.polly_memory import sanitize_thread

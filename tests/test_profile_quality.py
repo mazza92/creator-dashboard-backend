@@ -287,6 +287,22 @@ class TestOnboardingPlatformGate(unittest.TestCase):
             )
         self.assertIn("500", str(ctx.exception))
 
+    def test_local_skip_allows_below_floor(self):
+        from services.profile_quality import resolve_verified_onboarding_followers
+
+        count = resolve_verified_onboarding_followers(
+            username="mlz1192",
+            platform="instagram",
+            quality_session={"handle": "mlz1192", "platform": "instagram", "followers": 215},
+            verification_result={
+                "verified": True,
+                "platform": "instagram",
+                "profile": {"username": "mlz1192", "follower_count": 215},
+            },
+            skip_follower_floor=True,
+        )
+        self.assertEqual(count, 215)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,8 @@ if str(ROOT) not in sys.path:
 
 from services.polly_gigs import (
     gig_card_from_opp,
+    gig_dedupe_key,
+    gig_fingerprints_from_history,
     is_paid_listing,
     last_assistant_had_gigs,
     source_platform_label,
@@ -50,6 +52,79 @@ class PollyGigsTests(unittest.TestCase):
         self.assertNotIn("@", card["blurb"])
         self.assertEqual(card["external_apply_url"], "https://app.aspireiq.com/jobs/glo")
         self.assertIsNone(card["apply_email"])
+        self.assertIsNone(card.get("website"))
+
+    def test_gig_card_keeps_readable_blurb_and_brand_site(self):
+        from services.polly_gigs import public_brand_site
+        self.assertEqual(public_brand_site("https://www.bigo.tv"), "https://www.bigo.tv")
+        self.assertIsNone(public_brand_site("https://newyork.craigslist.org/foo"))
+        card = gig_card_from_opp({
+            "id": 11,
+            "brand_name": "BIGO Live",
+            "product_name": "Live-stream hosts",
+            "campaign_description": (
+                "Live-stream content on BIGO Live.\n"
+                "Monthly paid role for lifestyle creators.\n"
+                "Apply here: https://newyork.craigslist.org/foo"
+            ),
+            "brand_website": "https://www.bigo.tv",
+            "pay_label": "$510-32K",
+            "is_sourced": True,
+            "source_platform": "craigslist",
+            "apply_mode": "url",
+            "external_apply_url": "https://newyork.craigslist.org/foo",
+            "display_niche": "Lifestyle",
+        })
+        self.assertIn("Monthly paid role", card["blurb"])
+        self.assertNotIn("Apply here", card["blurb"])
+        self.assertEqual(card["website"], "https://www.bigo.tv")
+        self.assertEqual(card["product_name"], "Live-stream hosts")
+        self.assertEqual(card["location"], "New York")
+        craig = gig_card_from_opp({
+            "id": 12,
+            "brand_name": "BIGO Live",
+            "campaign_description": "Live-stream content on BIGO Live.",
+            "brand_website": "https://www.craigslist.org/view/d/los-angeles-earn-monthly-to-live-stream/abc",
+            "is_sourced": True,
+            "source_platform": "craigslist",
+            "external_apply_url": "https://www.craigslist.org/view/d/los-angeles-earn-monthly-to-live-stream/abc",
+        })
+        self.assertIsNone(craig["website"])
+        self.assertEqual(craig["location"], "Los Angeles")
+
+    def test_city_reposts_share_a_dedupe_key(self):
+        a = gig_card_from_opp({
+            "id": 1,
+            "brand_name": "BIGO Live",
+            "product_name": "Earn $510-32K Monthly to Live-stream on BIGO Live",
+            "campaign_description": "Live-stream content on BIGO Live. Monthly · paid",
+            "is_sourced": True,
+            "source_platform": "craigslist",
+            "external_apply_url": "https://www.craigslist.org/view/d/los-angeles-earn-monthly/a",
+        })
+        b = gig_card_from_opp({
+            "id": 2,
+            "brand_name": "BIGO Live",
+            "product_name": "Earn $510-32K Monthly to Live-stream on BIGO Live",
+            "campaign_description": "Live-streaming content on BIGO Live $510-32K Monthly · paid",
+            "is_sourced": True,
+            "source_platform": "craigslist",
+            "external_apply_url": "https://www.craigslist.org/view/d/brooklyn-earn-monthly/b",
+        })
+        other = gig_card_from_opp({
+            "id": 3,
+            "brand_name": "GLO",
+            "product_name": "Paid UGC for skincare",
+            "campaign_description": "Beauty UGC",
+            "is_sourced": True,
+            "source_platform": "aspireiq",
+            "external_apply_url": "https://app.aspireiq.com/jobs/glo",
+        })
+        self.assertEqual(gig_dedupe_key(a), gig_dedupe_key(b))
+        self.assertNotEqual(gig_dedupe_key(a), gig_dedupe_key(other))
+        seen = gig_fingerprints_from_history([{"role": "assistant", "gigs": [a]}])
+        self.assertIn(gig_dedupe_key(b), seen)
+        self.assertNotIn(gig_dedupe_key(other), seen)
 
     def test_persona_does_not_mix_directory_contact(self):
         text = persona_gigs_intro([

@@ -7,22 +7,27 @@ Requires a Professional Instagram account (Creator or Business).
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-GRAPH_VERSION = "v22.0"
+GRAPH_VERSION = "v23.0"
 TOKEN_URL = "https://api.instagram.com/oauth/access_token"
 LONG_LIVED_URL = "https://graph.instagram.com/access_token"
 REFRESH_URL = "https://graph.instagram.com/refresh_access_token"
-ME_URL = f"https://graph.instagram.com/{GRAPH_VERSION}/me"
-MEDIA_URL = f"https://graph.instagram.com/{GRAPH_VERSION}/me/media"
-
-ME_FIELDS = (
-    "user_id,username,name,account_type,profile_picture_url,"
-    "followers_count,follows_count,media_count,biography"
+ME_URLS = (
+    f"https://graph.instagram.com/{GRAPH_VERSION}/me",
+    "https://graph.instagram.com/me",
 )
+MEDIA_URLS = (
+    f"https://graph.instagram.com/{GRAPH_VERSION}/me/media",
+    "https://graph.instagram.com/me/media",
+)
+ME_FIELDS_BASE = "user_id,username,name,account_type,profile_picture_url,media_count,biography"
+ME_FIELDS_INSIGHTS = "followers_count,follows_count"
+
 MEDIA_FIELDS = (
     "id,caption,media_type,media_url,permalink,thumbnail_url,"
     "timestamp,like_count,comments_count"
@@ -62,25 +67,53 @@ def _graph_error(payload: dict) -> Optional[str]:
     return None
 
 
-def is_professional_account_error(message: str) -> bool:
+def is_unsupported_graph_method_error(message: str) -> bool:
     low = (message or "").lower()
+    return "method type" in low or "unsupported get request" in low
+
+
+def is_professional_account_error(message: str) -> bool:
+    """True only for Instagram account-type failures — not Graph method errors."""
+    low = (message or "").lower()
+    if is_unsupported_graph_method_error(low):
+        return False
     return any(
         needle in low
         for needle in (
-            "professional",
+            "professional account",
             "business account",
             "creator account",
-            "not a valid instagram user",
-            "unsupported request",
-            "instagram user",
+            "not a professional",
+            "switch to professional",
         )
     )
+
+
+def _unwrap_token_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if payload.get("access_token"):
+        return payload
+    data = payload.get("data")
+    if isinstance(data, list) and data and isinstance(data[0], dict) and data[0].get("access_token"):
+        return data[0]
+    if isinstance(data, dict) and data.get("access_token"):
+        return data
+    return payload
+
+
+def _graph_get(url: str, access_token: str, extra_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Query-param token only — Bearer + query together makes Instagram reject GET."""
+    params = {"access_token": access_token}
+    if extra_params:
+        params.update(extra_params)
+    resp = requests.get(url, params=params, timeout=15)
+    return resp.json() if resp.content else {}
 
 
 def exchange_code_for_token(code: str, redirect_uri: str) -> Dict[str, Any]:
     app_id, secret = load_instagram_credentials()
     if not app_id or not secret:
         raise InstagramLoginKitError("INSTAGRAM_APP_ID / INSTAGRAM_APP_SECRET missing")
+    clean_code = (code or "").strip().rstrip("#_")
     resp = requests.post(
         TOKEN_URL,
         data={
@@ -88,106 +121,173 @@ def exchange_code_for_token(code: str, redirect_uri: str) -> Dict[str, Any]:
             "client_secret": secret,
             "grant_type": "authorization_code",
             "redirect_uri": redirect_uri,
-            "code": code,
+            "code": clean_code,
         },
         timeout=15,
     )
-    payload = resp.json() if resp.content else {}
-    err = _graph_error(payload)
+    raw = resp.json() if resp.content else {}
+    payload = _unwrap_token_payload(raw if isinstance(raw, dict) else {})
+    err = _graph_error(payload) or _graph_error(raw if isinstance(raw, dict) else {})
+    token = str(payload.get("access_token") or "").strip()
+    user_id = payload.get("user_id") or payload.get("user") or ""
+    _log(
+        f"[ig-login] token http={resp.status_code} keys={sorted((raw or {}).keys()) if isinstance(raw, dict) else []} "
+        f"prefix={token[:4] or 'none'} user_id={user_id or 'none'}"
+    )
     if err:
         raise InstagramLoginKitError(err)
-    if not payload.get("access_token"):
+    if not token:
         raise InstagramLoginKitError("token exchange returned no access_token")
+    payload["access_token"] = token
+    if user_id:
+        payload["user_id"] = str(user_id)
     return payload
 
 
 def exchange_long_lived_token(short_token: str) -> Dict[str, Any]:
     """60-day token. Falls back to the short-lived token if exchange fails."""
     _app_id, secret = load_instagram_credentials()
-    try:
-        resp = requests.get(
-            LONG_LIVED_URL,
-            params={
-                "grant_type": "ig_exchange_token",
-                "client_secret": secret,
-                "access_token": short_token,
-            },
-            timeout=15,
-        )
-        payload = resp.json() if resp.content else {}
-    except Exception as exc:
-        _log(f"[ig-login] long-lived exchange failed: {exc}")
-        return {"access_token": short_token, "expires_in": 3600}
-    err = _graph_error(payload)
-    if err or not payload.get("access_token"):
-        _log(f"[ig-login] long-lived exchange skipped: {err or 'no token'}")
-        return {"access_token": short_token, "expires_in": 3600}
-    return payload
+    body = {
+        "grant_type": "ig_exchange_token",
+        "client_secret": secret,
+        "access_token": short_token,
+    }
+    last_err = None
+    for method in ("get", "post"):
+        try:
+            req = requests.get if method == "get" else requests.post
+            kwargs = {"timeout": 15}
+            if method == "get":
+                kwargs["params"] = body
+            else:
+                kwargs["data"] = body
+            resp = req(LONG_LIVED_URL, **kwargs)
+            payload = _unwrap_token_payload(resp.json() if resp.content else {})
+        except Exception as exc:
+            last_err = str(exc)
+            _log(f"[ig-login] long-lived {method} failed: {exc}")
+            continue
+        err = _graph_error(payload)
+        if err or not payload.get("access_token"):
+            last_err = err or "no token"
+            _log(f"[ig-login] long-lived {method} skipped: {last_err}")
+            continue
+        return payload
+    _log(f"[ig-login] long-lived exchange using short-lived token: {last_err}")
+    return {"access_token": short_token, "expires_in": 3600}
 
 
 def refresh_long_lived_token(access_token: str) -> Dict[str, Any]:
-    resp = requests.get(
-        REFRESH_URL,
-        params={
-            "grant_type": "ig_refresh_token",
-            "access_token": access_token,
-        },
-        timeout=15,
-    )
-    payload = resp.json() if resp.content else {}
-    err = _graph_error(payload)
-    if err:
-        raise InstagramLoginKitError(err)
-    if not payload.get("access_token"):
-        raise InstagramLoginKitError("refresh returned no access_token")
-    return payload
-
-
-def fetch_user_info(access_token: str) -> Dict[str, Any]:
-    resp = requests.get(
-        ME_URL,
-        params={"fields": ME_FIELDS, "access_token": access_token},
-        timeout=15,
-    )
-    payload = resp.json() if resp.content else {}
-    err = _graph_error(payload)
-    if err:
-        raise InstagramLoginKitError(err)
-    if not payload.get("username"):
-        raise InstagramLoginKitError("me returned no username")
-    return payload
-
-
-def fetch_media(access_token: str, max_items: int = 40) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    url = MEDIA_URL
-    params = {
-        "fields": MEDIA_FIELDS,
-        "access_token": access_token,
-        "limit": min(25, max(1, int(max_items or 40))),
-    }
-    pages = 0
-    target = max(1, min(int(max_items or 40), 60))
-    while url and len(out) < target and pages < 4:
-        pages += 1
+    last_err = None
+    for method in ("get", "post"):
         try:
-            resp = requests.get(url, params=params, timeout=15)
-            payload = resp.json() if resp.content else {}
+            req = requests.get if method == "get" else requests.post
+            kwargs = {"timeout": 15}
+            body = {
+                "grant_type": "ig_refresh_token",
+                "access_token": access_token,
+            }
+            if method == "get":
+                kwargs["params"] = body
+            else:
+                kwargs["data"] = body
+            resp = req(REFRESH_URL, **kwargs)
+            payload = _unwrap_token_payload(resp.json() if resp.content else {})
         except Exception as exc:
-            _log(f"[ig-login] media exception: {exc}")
-            break
+            last_err = str(exc)
+            continue
         err = _graph_error(payload)
         if err:
-            _log(f"[ig-login] media error: {err}")
-            break
-        for item in payload.get("data") or []:
-            mapped = _media_to_scrape_item(item)
-            if mapped:
-                out.append(mapped)
-            if len(out) >= target:
+            last_err = err
+            continue
+        if payload.get("access_token"):
+            return payload
+        last_err = "no token"
+    raise InstagramLoginKitError(last_err or "refresh returned no access_token")
+
+
+def _profile_urls(user_id: str = "") -> List[str]:
+    uid = str(user_id or "").strip()
+    urls: List[str] = []
+    if uid:
+        urls.append(f"https://graph.instagram.com/{GRAPH_VERSION}/{uid}")
+        urls.append(f"https://graph.instagram.com/{uid}")
+    urls.extend(ME_URLS)
+    return urls
+
+
+def _media_urls(user_id: str = "") -> List[str]:
+    uid = str(user_id or "").strip()
+    urls: List[str] = []
+    if uid:
+        urls.append(f"https://graph.instagram.com/{GRAPH_VERSION}/{uid}/media")
+        urls.append(f"https://graph.instagram.com/{uid}/media")
+    urls.extend(MEDIA_URLS)
+    return urls
+
+
+def fetch_user_info(access_token: str, user_id: str = "") -> Dict[str, Any]:
+    last_err = None
+    field_sets = (
+        f"{ME_FIELDS_BASE},{ME_FIELDS_INSIGHTS}",
+        ME_FIELDS_BASE,
+        "user_id,username",
+    )
+    for url in _profile_urls(user_id):
+        for fields in field_sets:
+            try:
+                payload = _graph_get(url, access_token, {"fields": fields})
+            except Exception as exc:
+                last_err = str(exc)
+                continue
+            err = _graph_error(payload)
+            if err:
+                last_err = err
+                _log(f"[ig-login] me {url} fields={fields}: {err}")
+                continue
+            if payload.get("username"):
+                if user_id and not payload.get("user_id"):
+                    payload["user_id"] = str(user_id)
+                return payload
+            last_err = "me returned no username"
+    raise InstagramLoginKitError(last_err or "me returned no username")
+
+
+def fetch_media(access_token: str, max_items: int = 40, user_id: str = "") -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    extra = {
+        "fields": MEDIA_FIELDS,
+        "limit": min(25, max(1, int(max_items or 40))),
+    }
+    target = max(1, min(int(max_items or 40), 60))
+    for start_url in _media_urls(user_id):
+        url = start_url
+        page_params: Optional[Dict[str, Any]] = extra
+        pages = 0
+        while url and len(out) < target and pages < 4:
+            pages += 1
+            try:
+                if page_params is None:
+                    payload = requests.get(url, timeout=15).json()
+                else:
+                    payload = _graph_get(url, access_token, page_params)
+            except Exception as exc:
+                _log(f"[ig-login] media exception: {exc}")
                 break
-        url = ((payload.get("paging") or {}).get("next") or "").strip()
-        params = None
+            err = _graph_error(payload)
+            if err:
+                _log(f"[ig-login] media error: {err}")
+                break
+            for item in payload.get("data") or []:
+                mapped = _media_to_scrape_item(item)
+                if mapped:
+                    out.append(mapped)
+                if len(out) >= target:
+                    break
+            url = ((payload.get("paging") or {}).get("next") or "").strip()
+            page_params = None
+        if out:
+            break
     _log(f"[ig-login] media returned {len(out)} posts")
     return out[:target]
 
@@ -196,9 +296,12 @@ def _iso_to_unix(value: Any) -> Optional[int]:
     if value in (None, ""):
         return None
     try:
-        if isinstance(value, (int, float)):
+        if isinstance(value, (int, float)) or str(value).isdigit():
             return int(value)
-        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        text = str(value).strip().replace("Z", "+00:00")
+        if len(text) >= 5 and text[-5] in "+-" and text[-3] != ":":
+            text = text[:-2] + ":" + text[-2:]
+        dt = datetime.fromisoformat(text)
         return int(dt.timestamp())
     except Exception:
         return None
@@ -207,13 +310,18 @@ def _iso_to_unix(value: Any) -> Optional[int]:
 def _media_to_scrape_item(item: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(item, dict) or not item.get("id"):
         return None
-    permalink = str(item.get("permalink") or "").strip()
+    permalink = str(item.get("permalink") or item.get("url") or item.get("share_url") or "").strip()
     cover = str(item.get("thumbnail_url") or item.get("media_url") or "").strip()
     caption = str(item.get("caption") or "")
-    create_time = _iso_to_unix(item.get("timestamp"))
+    create_time = _iso_to_unix(item.get("timestamp") if item.get("timestamp") not in (None, "") else item.get("create_time"))
+    shortcode = ""
+    if permalink:
+        match = re.search(r"instagram\.com/(?:p|reel|tv)/([^/?#]+)", permalink, re.I)
+        if match:
+            shortcode = match.group(1)
     return {
         "id": str(item.get("id")),
-        "shortCode": str(item.get("id")),
+        "shortCode": shortcode or str(item.get("id")),
         "caption": caption,
         "url": permalink,
         "displayUrl": cover,
@@ -264,6 +372,8 @@ def user_and_media_to_raw_scrape(
         "profilePicUrl": user_info.get("profile_picture_url") or user_info.get("avatar_url") or "",
         "latestPosts": media,
         "open_id": str(user_info.get("user_id") or user_info.get("id") or ""),
+        "account_type": str(user_info.get("account_type") or "BUSINESS").upper(),
+        "isBusinessAccount": True,
         "_source": "instagram_login",
     }
 
@@ -281,7 +391,8 @@ def oauth_profile_to_raw_scrape(profile_data: Dict[str, Any]) -> Dict[str, Any]:
                 "thumbnail_url": item.get("cover_image_url"),
                 "like_count": item.get("likes"),
                 "comments_count": item.get("comments"),
-                "timestamp": item.get("timestamp"),
+                "timestamp": item.get("timestamp") or item.get("create_time"),
+                "create_time": item.get("create_time"),
             })
             if mapped:
                 if item.get("create_time") and not mapped.get("createTime"):
@@ -298,6 +409,7 @@ def oauth_profile_to_raw_scrape(profile_data: Dict[str, Any]) -> Dict[str, Any]:
             "media_count": profile_data.get("media_count") or profile_data.get("postsCount") or len(media),
             "profile_picture_url": profile_data.get("avatar_url") or profile_data.get("profilePicUrl") or "",
             "user_id": profile_data.get("open_id") or "",
+            "account_type": profile_data.get("account_type") or "BUSINESS",
         },
         media,
         handle_hint=handle,

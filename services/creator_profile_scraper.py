@@ -63,6 +63,29 @@ class CreatorProfileScraper:
             print(f"[Scrape] ig @{handle} login snapshot thin, fetching live")
 
         token = access_token
+        if not token and self.db_conn and user_id:
+            try:
+                from social_verification_routes import decrypt_token
+                cur = self.db_conn.cursor()
+                cur.execute(
+                    """
+                    SELECT social_oauth_token
+                    FROM creators
+                    WHERE user_id = %s AND social_platform = 'instagram'
+                      AND social_oauth_token IS NOT NULL
+                    ORDER BY social_connected_at DESC NULLS LAST
+                    LIMIT 1
+                    """,
+                    (user_id,),
+                )
+                row = cur.fetchone()
+                cur.close()
+                stored = None
+                if row:
+                    stored = row['social_oauth_token'] if isinstance(row, dict) else row[0]
+                token = decrypt_token(stored) if stored else None
+            except Exception as exc:
+                print(f"[Scrape] ig @{handle} stored token lookup failed: {exc}")
         if token:
             try:
                 profile = fetch_raw_scrape(token, handle_hint=handle)
@@ -236,7 +259,7 @@ class CreatorProfileScraper:
         cadence = len(recent_posts) / 4.3  # per week
 
         # Recency - scan all non-pinned posts (feeds often put pinned/older first)
-        latest_post_days_ago = 999
+        latest_post_days_ago = None
         if non_pinned_posts:
             for post in non_pinned_posts:
                 post_date = self._parse_post_date(post, platform)
@@ -244,9 +267,11 @@ class CreatorProfileScraper:
                     # Make timezone-naive dates UTC-aware for comparison
                     if post_date.tzinfo is None:
                         post_date = post_date.replace(tzinfo=timezone.utc)
-                    days_ago = (now - post_date).days
-                    if days_ago < latest_post_days_ago:
+                    days_ago = max(0, (now - post_date).days)
+                    if latest_post_days_ago is None or days_ago < latest_post_days_ago:
                         latest_post_days_ago = days_ago
+        if latest_post_days_ago is None:
+            latest_post_days_ago = 999
 
         # Bio signal extraction
         has_collab_email = bool(re.search(r'[\w.-]+@[\w.-]+\.\w+', bio))
@@ -286,13 +311,23 @@ class CreatorProfileScraper:
             if not isinstance(p, dict):
                 continue
             if platform == 'instagram':
-                thumb = p.get('displayUrl') or ''
+                permalink = str(p.get('url') or p.get('share_url') or p.get('permalink') or '').strip()
+                thumb = p.get('displayUrl') or p.get('thumbnail_url') or ''
                 code = (p.get('shortCode') or p.get('shortcode') or '').strip()
-                post_url = f"https://www.instagram.com/p/{code}/" if code else None
-                likes = int(p.get('likesCount') or 0)
-                comments = int(p.get('commentsCount') or 0)
+                if permalink:
+                    match = re.search(r'instagram\.com/(?:p|reel|tv)/([^/?#]+)', permalink, re.I)
+                    if match:
+                        code = match.group(1)
+                    post_url = permalink
+                elif code and not str(code).isdigit():
+                    post_url = f"https://www.instagram.com/p/{code}/"
+                else:
+                    post_url = None
+                    code = code if code and not str(code).isdigit() else ''
+                likes = int(p.get('likesCount') or p.get('likes') or 0)
+                comments = int(p.get('commentsCount') or p.get('comments') or 0)
                 views = int(p.get('videoViewCount') or p.get('viewsCount') or p.get('views') or 0)
-                caption = (p.get('caption') or '')[:500]
+                caption = (p.get('caption') or p.get('title') or '')[:500]
             elif platform == 'youtube':
                 thumb = self._post_thumbnail_url(p, platform)
                 vid = str(p.get('videoId') or p.get('id') or '').strip()
@@ -352,7 +387,10 @@ class CreatorProfileScraper:
                 or raw_scrape.get('videoCount')
                 or 0
             ),
-            'like_count': int(raw_scrape.get('heartCount') or raw_scrape.get('likesCount') or 0),
+            'like_count': int(raw_scrape.get('heartCount') or raw_scrape.get('likesCount') or 0) or sum(
+                int((p or {}).get('likesCount') or (p or {}).get('likes') or 0)
+                for p in posts if isinstance(p, dict)
+            ),
             'is_verified': raw_scrape.get('isVerified') or raw_scrape.get('verified', False),
             'is_public': not (raw_scrape.get('isPrivate') or raw_scrape.get('privateAccount', False)),
             'is_business_account': raw_scrape.get('isBusinessAccount', False),
@@ -423,18 +461,27 @@ class CreatorProfileScraper:
         """Parse post date from raw data."""
         try:
             from datetime import timezone as _tz
+
+            def coerce(raw):
+                if raw in (None, '', 0, '0'):
+                    return None
+                if isinstance(raw, (int, float)) or str(raw).isdigit():
+                    return datetime.fromtimestamp(int(raw), tz=_tz.utc)
+                text = str(raw).strip().replace('Z', '+00:00')
+                if len(text) >= 5 and text[-5] in '+-' and text[-3] != ':':
+                    text = text[:-2] + ':' + text[-2:]
+                parsed = datetime.fromisoformat(text)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=_tz.utc)
+                return parsed
+
             if platform == 'instagram':
-                timestamp_str = post.get('timestamp')
-                if timestamp_str:
-                    return datetime.fromisoformat(str(timestamp_str).replace('Z', '+00:00'))
+                return coerce(post.get('timestamp')) or coerce(post.get('createTime'))
             create_time = post.get('createTime')
             if create_time not in (None, '', 0, '0'):
                 return datetime.fromtimestamp(int(create_time), tz=_tz.utc)
             timestamp_str = post.get('publishedAt') or post.get('timestamp')
-            if timestamp_str and not str(timestamp_str).isdigit():
-                return datetime.fromisoformat(str(timestamp_str).replace('Z', '+00:00'))
-            if timestamp_str and str(timestamp_str).isdigit():
-                return datetime.fromtimestamp(int(timestamp_str), tz=_tz.utc)
+            return coerce(timestamp_str)
         except Exception:
             pass
         return None

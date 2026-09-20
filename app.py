@@ -2615,6 +2615,10 @@ def onboarding_step1():
                 platform=platform,
                 quality_session=session.get('onboarding_quality'),
                 verification_result=session.get('social_verification_result'),
+                skip_follower_floor=bool(session.get('oauth_local_quality_skip')) and (
+                    'localhost' in (request.host_url or '').lower()
+                    or '127.0.0.1' in (request.host_url or '').lower()
+                ),
             )
         except ValueError as e:
             return jsonify({'error': str(e)}), 400

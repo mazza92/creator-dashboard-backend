@@ -656,6 +656,7 @@ def _opportunity_card(opp, creator_tokens: set, applied_ids: set) -> tuple:
         'display_niche': display_niche,
         'creator_niches': niches,
         'brand_logo_url': opp.get('brand_logo_url'),
+        'brand_website': (opp.get('brand_website') or '').strip() or None,
         'product_name': opp['product_name'],
         'campaign_description': desc,
         'pr_value_usd': opp['pr_value_usd'],

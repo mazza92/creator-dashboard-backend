@@ -63,6 +63,8 @@ RULES:
 - If discovery is incomplete AND they did not ask for deals/brands, ask the
   next discovery question.
 - Coach like a manager: content quality, Newcollab kit, bio, rates, follow-ups, rejection.
+- Treat them as a new creator. You stop sloppy sends. Every line in a pitch is how they look to a brand.
+- Never tell them to open mail or send if the pitch still has placeholders ([CITY, COUNTRY], TODO). Ask for the missing detail first.
 - Never invent follower counts, post titles, or brand facts. Use scrape + pool + kit snapshot.
 - Out of free unlocks: never mention the monthly reset, the 1st, or "wait until next month".
   Point them at unlocking Pro so they can keep pitching the brand they just named.
@@ -186,16 +188,16 @@ def persona_greeting(profile_context: str, first_name: Optional[str] = None) -> 
     if bits.get("caption"):
         return (
             f"{opener} 👋 how's your week going? I had a scroll through your recent posts "
-            "this morning. Want me to line up some brands for you to hit up today?"
+            "this morning. Want me to pull a few brands worth pitching today?"
         )
     if bits.get("niche"):
         return (
             f"{opener} 👋 how's your week going? I've been thinking about your "
-            f"{bits['niche']} feed. Want me to line up some brands for you to hit up today?"
+            f"{bits['niche']} feed. Want three brands you could actually land this week?"
         )
     return (
-        f"{opener} 👋 how's your week going? Want me to line up some brands for you "
-        "to hit up today?"
+        f"{opener} 👋 how's your week going? Want me to line up a few brands "
+        "to pitch today?"
     )
 
 
@@ -487,25 +489,62 @@ def persona_pitch_intro(
     has_mailto: bool = True,
     paid: bool = False,
     kit: Optional[Dict[str, Any]] = None,
+    needs_location: bool = False,
+    location_display: Optional[str] = None,
 ) -> str:
     name = brand_name or "them"
     kind = "paid pitch" if paid else "pitch"
-    if has_mailto:
+    loc = (location_display or "").strip()
+    if needs_location:
         lead = (
-            f"Right, here's your {kind} for **{name}**. Open your mail and send it — "
-            "tell me when it's out, or tap **I sent it**. I won't log it until you do."
+            f"Right, here's your {kind} for **{name}**.\n\n"
+            "Don't send it yet. Brands clock unfinished details — that **[CITY, COUNTRY]** "
+            "line still needs your real city. Reply with city and country (e.g. *Lyon, France*) "
+            "and I'll drop it in. Then read the rate and sign-off once. If anything's off, tell me before you send."
         )
     else:
-        lead = (
-            f"Right, here's your {kind} for **{name}**. Copy it from the card and send from your usual mail. "
-            "Tell me when it's out — I won't log it until you do."
-        )
+        loc_bit = f" I put **{loc}** on the shipping line." if loc else ""
+        if has_mailto:
+            lead = (
+                f"Right, here's your {kind} for **{name}**.{loc_bit}\n\n"
+                "Read it once like a brand would: city, rate, and sign-off. "
+                "If anything looks off, tell me and I'll fix it — then open your mail and send it. "
+                "Tap **I sent it** when it's actually out. I won't log it until you do."
+            )
+        else:
+            lead = (
+                f"Right, here's your {kind} for **{name}**.{loc_bit}\n\n"
+                "Read it once like a brand would: city, rate, and sign-off. "
+                "If anything looks off, tell me and I'll fix it — then copy it from the card "
+                "and send from your usual mail. I won't log it until you do."
+            )
     kit = kit or {}
     if paid and not kit.get("has_rates"):
         lead += (
             " Put your rate on **My Kit** so the next paid ask quotes your number, not a band."
         )
     return lead
+
+
+def persona_hold_pitch_send(brand_name: Optional[str] = None) -> str:
+    name = (brand_name or "that brand").strip() or "that brand"
+    return (
+        f"Hold up — the **{name}** draft still says **[CITY, COUNTRY]**. "
+        "Brands treat that as amateur. Reply with your city and country "
+        "(e.g. *Austin, United States*) and I'll drop it in. Then you send."
+    )
+
+
+def persona_location_filled(brand_name: Optional[str] = None, location: Optional[str] = None) -> str:
+    name = (brand_name or "them").strip() or "them"
+    loc = (location or "").strip()
+    loc_bit = f"**{loc}**" if loc else "your city"
+    return (
+        f"Done — I put {loc_bit} on the **{name}** pitch. That's how you look legit: "
+        "a real place, not a leftover bracket.\n\n"
+        "Read the rate and sign-off once more. If it's right, open mail and send it. "
+        "Tap **I sent it** when it's out."
+    )
 
 
 def persona_thanks_after_draft(brand_name: str) -> str:
@@ -593,13 +632,22 @@ def persona_off_match_pitch(
     has_mailto: bool = True,
     paid: bool = False,
     kit: Optional[Dict[str, Any]] = None,
+    needs_location: bool = False,
+    location_display: Optional[str] = None,
 ) -> str:
     name = brand_name or "them"
     warn = (
         f"**{name}** is in our directory, but it's not a strong match for you — "
         "I'd treat this as a stretch, not the highest-odds first move. You asked though, so here's the pitch."
     )
-    return warn + "\n\n" + persona_pitch_intro(name, has_mailto=has_mailto, paid=paid, kit=kit)
+    return warn + "\n\n" + persona_pitch_intro(
+        name,
+        has_mailto=has_mailto,
+        paid=paid,
+        kit=kit,
+        needs_location=needs_location,
+        location_display=location_display,
+    )
 
 
 def persona_unknown_brand(asked_name: str, alternatives: Optional[List[Dict[str, Any]]] = None) -> str:

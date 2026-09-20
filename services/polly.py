@@ -17,6 +17,11 @@ from urllib.parse import quote
 
 import requests
 
+from services.irresistible_pitch import (
+    LOCATION_PLACEHOLDER,
+    apply_location_to_body,
+    resolve_shipping,
+)
 from services.polly_persona import (
     persona_brand_intro,
     persona_followup,
@@ -62,7 +67,13 @@ _BRAND_ASK_PREFIX_RE = re.compile(
     r"(?i)^(i\s+(?:want|wanna|need)|can\s+(?:i|we)\s+(?:get|do|pitch|try)|"
     r"please\s+(?:pitch|draft|do)|how\s+about|what\s+about|maybe|"
     r"help\s+me\s+(?:pitch|contact|hit\s+up)|"
-    r"let'?s\s+(?:hit up|pitch|try|do)|hit up|pitch|contact|reach out to|"
+    r"let'?s\s+(?:hit up|pitch|try|do|reach out(?:\s+to)?|email)|"
+    r"hit up|pitch|contact|reach out to|"
+    r"write\s+(?:a\s+|me\s+a\s+)?pitch\s+for|"
+    r"draft\s+(?:an?\s+)?(?:email|pitch|note)\s+(?:to|for)|"
+    r"send\s+(?:a\s+)?(?:note|pitch|email)\s+to|"
+    r"get\s+me\s+in(?:\s+front)?\s+(?:with|of)|"
+    r"start\s+with|"
     r"find(?:ing)?|fin|search(?:ing)?(?:\s+for)?|look(?:ing)?(?:\s+for)?)\s+"
 )
 _FOLLOWUP_LABEL_RE = re.compile(
@@ -104,6 +115,19 @@ _CHIP_SKIP_LABELS = frozenset({
 _CONTACT_RE = re.compile(
     r"\b(contact|pitch|email|reach out|write to|mailto|message|send (it|this|the pitch)|open (the )?mail)\b",
     re.I,
+)
+_CONTACT_ASK_RE = re.compile(
+    r"(?i)\b("
+    r"hit up|reach out|contact|"
+    r"let'?s\s+(?:hit up|pitch|try|do|reach out)|"
+    r"pitch .{1,40} for me|"
+    r"write (?:a |me a )?pitch|"
+    r"draft (?:an? )?(?:email|pitch|note)|"
+    r"send (?:a )?(?:note|pitch|email) to|"
+    r"get me in(?: front)? (?:with|of)|"
+    r"start with|"
+    r"i want"
+    r")\b"
 )
 _SUGGEST_RE = re.compile(
     r"\b(suggest|recommend|match|for you|who should|find brand|show me brand|"
@@ -852,7 +876,7 @@ def looks_like_brand_request(text: str, history: Optional[List[Dict]] = None) ->
         name = str(row.get("name") or "").strip().lower()
         if name and (needle == name or name in needle or needle in name):
             return True
-    if _CONTACT_RE.search(raw) or re.search(r"\b(hit up|let'?s (try|do|pitch)|pitch|i want)\b", raw, re.I):
+    if _CONTACT_RE.search(raw) or _CONTACT_ASK_RE.search(raw):
         return True
     leftover = asked_brand_query(raw)
     if leftover and candidate_looks_like_brand_name(leftover):
@@ -959,10 +983,135 @@ def paid_rate_phrase(kit: Optional[Dict] = None, scrape: Optional[Dict] = None) 
     return "a paid fee"
 
 
+def is_location_placeholder(text: str) -> bool:
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if LOCATION_PLACEHOLDER.lower() in raw.lower():
+        return True
+    return bool(re.search(r"\[\s*city\s*,\s*country\s*\]", raw, re.I))
+
+
+def pitch_has_placeholder(text: str) -> bool:
+    return is_location_placeholder(text or "")
+
+
+def parse_location_reply(text: str) -> Optional[Dict[str, str]]:
+    """City + country from a short creator reply. None if it looks like a brand ask."""
+    raw = (text or "").strip().strip(" .!")
+    if not raw or len(raw) > 80:
+        return None
+    if is_done_turn(raw) or is_more_brands_turn(raw) or is_casual_ack(raw):
+        return None
+    if _CONTACT_ASK_RE.search(raw) or _CONTACT_RE.search(raw) or is_deal_search(raw):
+        return None
+    if leftover_is_prompt(raw):
+        return None
+    cleaned = re.sub(
+        r"(?i)^(i(?:'m| am)\s+(?:in|based in|from)|based in|i live in|from)\s+",
+        "",
+        raw,
+    ).strip()
+    if not cleaned or cleaned.lower() in _CHIP_SKIP_LABELS:
+        return None
+    parts = [p.strip() for p in re.split(r"\s*[,/|]\s*", cleaned) if p.strip()]
+    city = ""
+    country = ""
+    if len(parts) >= 2:
+        city = parts[0]
+        country = ", ".join(parts[1:])
+    else:
+        words = cleaned.replace(",", " ").split()
+        if not (2 <= len(words) <= 6):
+            return None
+        city = " ".join(words[:-1])
+        country = words[-1]
+    city = re.sub(r"\s+", " ", city).strip(" ,")
+    country = re.sub(r"\s+", " ", country).strip(" ,")
+    if not city or not country:
+        return None
+    if city.lower() in _CHIP_SKIP_LABELS or country.lower() in {"me", "it", "this"}:
+        return None
+    return {"city": city[:80], "country": country[:80]}
+
+
+def resolve_pitch_location(
+    creator: Optional[Dict] = None,
+    scrape: Optional[Dict] = None,
+    notes: Optional[Dict] = None,
+) -> Dict[str, str]:
+    creator = dict(creator or {})
+    scrape = scrape or {}
+    notes = notes or {}
+    city = str(creator.get("city") or scrape.get("city") or "").strip()
+    country = str(creator.get("country") or scrape.get("country") or "").strip()
+    parsed = parse_location_reply(str(notes.get("location") or ""))
+    if parsed:
+        city = city or parsed.get("city") or ""
+        country = country or parsed.get("country") or ""
+    shipping = resolve_shipping(creator, city, country)
+    if is_location_placeholder(shipping.get("display") or "") and parsed:
+        shipping = resolve_shipping(creator, parsed.get("city") or "", parsed.get("country") or "")
+    return shipping
+
+
+def apply_location_to_pitch(
+    pitch: Optional[Dict[str, Any]],
+    city: str = "",
+    country: str = "",
+    display: str = "",
+) -> Optional[Dict[str, Any]]:
+    if not pitch:
+        return pitch
+    out = dict(pitch)
+    loc = (display or "").strip() or ", ".join(p for p in (city.strip(), country.strip()) if p)
+    if not loc or is_location_placeholder(loc):
+        out["needs_location"] = True
+        return out
+    prev = ""
+    match = re.search(r"shipping to ([^\n.]+)", str(out.get("body") or ""), re.I)
+    if match:
+        prev = match.group(1).strip()
+    body = apply_location_to_body(str(out.get("body") or ""), loc, prev)
+    out["body"] = body
+    out["location_display"] = loc
+    out["needs_location"] = pitch_has_placeholder(body)
+    if out.get("email"):
+        out["mailto"] = build_mailto(out.get("email"), out.get("subject") or "", body)
+    return out
+
+
+def last_thread_pitch(history: Optional[List[Dict]] = None) -> Optional[Dict[str, Any]]:
+    for msg in reversed(history or []):
+        pitch = msg.get("pitch") if isinstance(msg, dict) else None
+        if isinstance(pitch, dict) and (pitch.get("body") or pitch.get("subject")):
+            return dict(pitch)
+    return None
+
+
+def patch_last_pitch_in_history(
+    history: Optional[List[Dict]],
+    update: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    rows = [dict(m) if isinstance(m, dict) else m for m in (history or [])]
+    if not update:
+        return rows
+    for idx in range(len(rows) - 1, -1, -1):
+        msg = rows[idx]
+        if not isinstance(msg, dict):
+            continue
+        pitch = msg.get("pitch")
+        if isinstance(pitch, dict) and (pitch.get("body") or pitch.get("subject")):
+            rows[idx] = {**msg, "pitch": {**pitch, **update}}
+            break
+    return rows
+
+
 def apply_paid_ask_to_pitch(
     pitch: Optional[Dict[str, Any]],
     kit: Optional[Dict] = None,
     scrape: Optional[Dict] = None,
+    location_display: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Paid UGC ask: quote kit rates, never a gifted 'no fee' trial."""
     if not pitch:
@@ -975,9 +1124,20 @@ def apply_paid_ask_to_pitch(
     loc_m = re.search(r"shipping to ([^\n.]+)", body, re.I)
     if loc_m:
         loc = loc_m.group(1).strip()
+    filled = (location_display or "").strip()
+    if filled and not is_location_placeholder(filled):
+        loc = filled
+    placeholder = is_location_placeholder(loc)
+    if placeholder:
+        loc = LOCATION_PLACEHOLDER
+        ship = f", plus product shipping to {loc} if you want it in-shot."
+    elif loc:
+        ship = f", plus product shipping to {loc} if you want it in-shot."
+    else:
+        ship = "."
     paid_line = (
         f"Rate: {rate} for 1 organic post + 2 UGC files (6-month paid usage)"
-        + (f", plus product shipping to {loc} if you want it in-shot." if loc else ".")
+        + ship
     )
     if re.search(r"no fee|gifted trial|pr/gifting|gifting sample", f"{subject}\n{body}", re.I):
         body = re.sub(r"No fee\. Just product \+ shipping to [^\n.]+.?", paid_line, body, flags=re.I)
@@ -987,12 +1147,17 @@ def apply_paid_ask_to_pitch(
         body = re.sub(r"(?im)^rate:[^\n]+", paid_line, body)
     elif "Rate:" not in body:
         body = (body.rstrip() + "\n\n" + paid_line).strip()
+    if filled and not is_location_placeholder(filled):
+        body = apply_location_to_body(body, filled, LOCATION_PLACEHOLDER)
     out["subject"] = "Paid UGC — 1 post + 2 raw files"
     out["body"] = body
     if out.get("email"):
         out["mailto"] = build_mailto(out.get("email"), out["subject"], body)
     out["deal_type"] = "paid"
     out["quoted_rate"] = rate
+    out["needs_location"] = pitch_has_placeholder(body)
+    if filled and not is_location_placeholder(filled):
+        out["location_display"] = filled
     return out
 
 
@@ -1908,6 +2073,8 @@ def _brain_extra(discovery_hint: str = "", force_intent: Optional[str] = None) -
         "If they cannot add a bio link yet (low followers), say that's fine.\n"
         "- If intent=generate_pitch: `say` is 1-2 short sentences. Never write Subject, "
         "the email body, or 'Hey team'. The UI already shows the pitch card.\n"
+        "- If the pitch still has [CITY, COUNTRY] or other placeholders: do not tell them to "
+        "open mail or send. Ask for city + country first. You are mentoring a new creator.\n"
         "- Never recommend a brand in already_pitched.\n"
         "- If TASK TRACKER mentions a kit view, that brand opened the pitch link. "
         "Treat it as a hot lead and offer a follow-up. Do not ignore it.\n"
@@ -2035,7 +2202,7 @@ def classify_intent(
             brand_name=asked,
         )
         if matched or (asked and candidate_looks_like_brand_name(asked) and (
-            _CONTACT_RE.search(text or "") or re.search(r"\b(hit up|let'?s (try|do|pitch))\b", text or "", re.I)
+            _CONTACT_RE.search(text or "") or _CONTACT_ASK_RE.search(text or "")
         )):
             intent = "generate_pitch"
             if asked and not parsed.get("brand_name"):

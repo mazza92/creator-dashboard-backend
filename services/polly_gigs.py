@@ -16,6 +16,7 @@ SOURCE_LABELS = {
     "facebook": "Facebook",
     "twitter": "X",
     "x": "X",
+    "craigslist": "Craigslist",
 }
 
 
@@ -43,15 +44,107 @@ def is_paid_listing(card: Optional[Dict[str, Any]] = None) -> bool:
     return False
 
 
+_BOARD_HOSTS = (
+    "craigslist.org",
+    "craigslist.com",
+    "aspireiq.com",
+    "linkedin.com",
+    "facebook.com",
+    "instagram.com",
+    "tiktok.com",
+    "twitter.com",
+    "x.com",
+)
+
+
+def _url_host(url: Optional[str]) -> str:
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    if not re.match(r"^https?://", raw, re.I):
+        raw = "https://" + raw
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(raw).hostname or "").lower().removeprefix("www.")
+        return host
+    except Exception:
+        return ""
+
+
+def public_brand_site(url: Optional[str]) -> Optional[str]:
+    raw = str(url or "").strip() or None
+    if not raw:
+        return None
+    host = _url_host(raw)
+    if not host:
+        return None
+    if any(host == board or host.endswith("." + board) for board in _BOARD_HOSTS):
+        return None
+    if not re.match(r"^https?://", raw, re.I):
+        return "https://" + raw
+    return raw
+
+
+def _clean_gig_blurb(text: Optional[str]) -> str:
+    desc = _EMAIL_RE.sub("", str(text or ""))
+    desc = re.sub(r"(?i)\n*Apply here:\s*\S+", "", desc)
+    desc = re.sub(r"(?i)\n*Pay:\s*", "\n", desc)
+    desc = re.sub(r"[ \t]+\n", "\n", desc)
+    desc = re.sub(r"\n{3,}", "\n\n", desc).strip()
+    if len(desc) > 900:
+        desc = desc[:900].rsplit(" ", 1)[0].rstrip() + "…"
+    return desc
+
+
+_CL_AREAS = {
+    "newyork": "New York",
+    "sfbay": "SF Bay Area",
+    "washingtondc": "Washington DC",
+    "lasvegas": "Las Vegas",
+    "orangecounty": "Orange County",
+    "losangeles": "Los Angeles",
+}
+
+
+def listing_place(*urls: Optional[str]) -> Optional[str]:
+    for url in urls:
+        match = re.search(r"/view/d/([a-z0-9-]+)", str(url or ""), re.I)
+        if match:
+            slug = re.split(
+                r"-(?:earn|paid|live|ugc|content|monthly)\b",
+                match.group(1),
+                maxsplit=1,
+                flags=re.I,
+            )[0]
+            place = slug.replace("-", " ").strip()
+            if 2 < len(place) < 40:
+                return _CL_AREAS.get(place.lower().replace(" ", ""), place.title())
+    for url in urls:
+        host = _url_host(url)
+        if host.endswith(".craigslist.org"):
+            city = host.split(".")[0]
+            if city and city not in {"www", "craigslist"}:
+                return _CL_AREAS.get(city, city.replace("-", " ").title())
+    return None
+
+
 def gig_card_from_opp(opp: Dict[str, Any]) -> Dict[str, Any]:
     """Compact Polly card. Never put emails in the blurb."""
-    desc = _EMAIL_RE.sub("", str(opp.get("campaign_description") or ""))
-    desc = re.sub(r"\s+", " ", desc).strip()[:180]
+    desc = _clean_gig_blurb(opp.get("campaign_description") or opp.get("blurb"))
     source = opp.get("source_platform")
     apply_mode = opp.get("apply_mode") or ("url" if opp.get("external_apply_url") else "kit")
     apply_email = None
     if apply_mode == "email":
         apply_email = (opp.get("apply_email") or "").strip() or None
+    website = public_brand_site(opp.get("brand_website") or opp.get("website"))
+    regions = opp.get("shipping_regions") or []
+    location = None
+    if isinstance(regions, list) and regions:
+        location = " / ".join(str(part).strip() for part in regions[:2] if part)
+    location = location or listing_place(
+        opp.get("external_apply_url"),
+        opp.get("brand_website"),
+    )
     return {
         "id": opp.get("id"),
         "name": opp.get("brand_name") or opp.get("name"),
@@ -61,6 +154,8 @@ def gig_card_from_opp(opp: Dict[str, Any]) -> Dict[str, Any]:
         "pay_label": opp.get("pay_label"),
         "blurb": desc,
         "product_name": opp.get("product_name"),
+        "website": website,
+        "location": location,
         "fit_score": opp.get("fit_score"),
         "source_platform": source,
         "source_label": source_platform_label(source),
@@ -113,6 +208,51 @@ def mark_shown_gigs(notes: Optional[Dict], gigs: Optional[List[Dict]] = None) ->
             seen.append(gid)
     out["shown_gig_ids"] = seen[-80:]
     return out
+
+
+def _norm_gig_text(value: Optional[str]) -> str:
+    text = str(value or "").lower()
+    text = re.sub(r"[\U00010000-\U0010ffff]|[\u2600-\u27bf]", " ", text)
+    text = re.sub(r"\$[\d,]+(?:\s*[-–]\s*\$?[\d,]+)?", " ", text)
+    text = re.sub(r"\b\d+\s*k\b", " ", text)
+    text = re.sub(r"\bstreaming\b", "stream", text)
+    text = re.sub(r"\blive[\s-]*stream\b", "live stream", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _strip_words(text: str, other: str) -> str:
+    keep = text
+    for word in (other or "").split():
+        if len(word) < 3:
+            continue
+        keep = re.sub(rf"\b{re.escape(word)}\b", " ", keep)
+    return re.sub(r"\s+", " ", keep).strip()
+
+
+def gig_dedupe_key(card: Optional[Dict[str, Any]] = None) -> tuple:
+    """Same brand + same brief, even if Craigslist posted it in 3 cities."""
+    card = card or {}
+    brand = _norm_gig_text(card.get("brand_name") or card.get("name"))
+    source = str(card.get("source_platform") or card.get("source_label") or "").strip().lower()
+    title = _strip_words(_norm_gig_text(card.get("product_name")), brand)
+    if len(title) < 10:
+        blurb = _strip_words(
+            _norm_gig_text(card.get("blurb") or card.get("campaign_description")),
+            brand,
+        )
+        title = " ".join(blurb.split()[:8])
+    return (brand, source, title)
+
+
+def gig_fingerprints_from_history(history: Optional[List[Dict]] = None) -> set:
+    keys = set()
+    for msg in history or []:
+        for gig in msg.get("gigs") or []:
+            key = gig_dedupe_key(gig)
+            if key and key[0]:
+                keys.add(key)
+    return keys
 
 
 def extra_tokens_from_profile(scrape: Optional[Dict] = None, notes: Optional[Dict] = None) -> List[str]:
@@ -226,6 +366,7 @@ def list_polly_gigs(
     skip = set(exclude_ids or [])
     skip |= set(shown_gig_ids(notes))
     skip |= set(gig_ids_from_history(history))
+    seen_fp = gig_fingerprints_from_history(history)
     print(
         f"[Polly] gigs pool={len(ranked)} paid={len(paid)} "
         f"sourced={len(sourced)} open={len(open_first)} skip={len(skip)}"
@@ -242,7 +383,12 @@ def list_polly_gigs(
             continue
         seen.add(key)
         card = gig_card_from_opp(opp)
+        fp = gig_dedupe_key(card)
+        if fp in seen_fp:
+            continue
         if card.get("id") and card.get("name"):
+            if fp[0]:
+                seen_fp.add(fp)
             cards.append(card)
         if len(cards) >= limit:
             break

@@ -61,6 +61,18 @@ class InstagramLoginKitTests(unittest.TestCase):
         from services.instagram_login_kit import is_professional_account_error
         self.assertTrue(is_professional_account_error("Switch to a professional account"))
         self.assertFalse(is_professional_account_error("user cancelled"))
+        self.assertFalse(
+            is_professional_account_error("Unsupported request - method type: get")
+        )
+        from services.instagram_login_kit import is_unsupported_graph_method_error
+        self.assertTrue(
+            is_unsupported_graph_method_error("Unsupported request - method type: get")
+        )
+
+    def test_unwraps_nested_token_payload(self):
+        from services.instagram_login_kit import _unwrap_token_payload
+        nested = {"data": [{"access_token": "IGQ", "user_id": "9"}]}
+        self.assertEqual(_unwrap_token_payload(nested)["access_token"], "IGQ")
 
     def test_token_exchange_does_not_overwrite_newcollab_user_concept(self):
         from services.instagram_login_kit import _media_to_scrape_item
@@ -74,7 +86,69 @@ class InstagramLoginKitTests(unittest.TestCase):
             "caption": "x",
         })
         self.assertEqual(item["url"], "https://www.instagram.com/p/Zz/")
+        self.assertEqual(item["shortCode"], "Zz")
         self.assertTrue(item["createTime"])
+
+    def test_oauth_snapshot_keeps_permalink_shortcode_and_unix_dates(self):
+        from datetime import datetime, timezone
+        from services.creator_profile_scraper import CreatorProfileScraper
+        from services.instagram_login_kit import oauth_profile_to_raw_scrape
+
+        five_days_ago = int(datetime.now(timezone.utc).timestamp()) - (5 * 86400)
+        raw = oauth_profile_to_raw_scrape({
+            "username": "mlz1192",
+            "display_name": "m01",
+            "follower_count": 215,
+            "following_count": 554,
+            "media_count": 5,
+            "likes_count": 0,
+            "account_type": "BUSINESS",
+            "oauth_videos": [{
+                "id": "17864011972910241",
+                "title": "Bali 2020",
+                "url": "https://www.instagram.com/p/CClrwNTo8-x/",
+                "cover_image_url": "https://cdn.example/cover.jpg",
+                "create_time": five_days_ago,
+                "likes": 33,
+                "comments": 7,
+            }],
+        })
+        self.assertTrue(raw["isBusinessAccount"])
+        self.assertEqual(raw["latestPosts"][0]["shortCode"], "CClrwNTo8-x")
+        processed = CreatorProfileScraper().process_scrape(raw, "instagram")
+        post = processed["recent_posts"][0]
+        self.assertEqual(post["post_url"], "https://www.instagram.com/p/CClrwNTo8-x/")
+        self.assertEqual(post["shortCode"], "CClrwNTo8-x")
+        self.assertEqual(post["likes"], 33)
+        self.assertEqual(processed["like_count"], 33)
+        self.assertLessEqual(processed["latest_post_days_ago"], 6)
+        self.assertNotEqual(processed["latest_post_days_ago"], 999)
+
+    def test_instagram_graph_offset_without_colon_parses(self):
+        from services.creator_profile_scraper import CreatorProfileScraper
+        from services.instagram_login_kit import _iso_to_unix
+
+        self.assertEqual(_iso_to_unix("2020-07-13T16:22:29+0000"), 1594657349)
+        scraper = CreatorProfileScraper()
+        parsed = scraper._parse_post_date({"timestamp": "2020-07-13T16:22:29+0000"}, "instagram")
+        self.assertIsNotNone(parsed)
+        self.assertEqual(int(parsed.timestamp()), 1594657349)
+        old = CreatorProfileScraper().process_scrape(
+            {
+                "username": "mlz1192",
+                "followersCount": 215,
+                "postsCount": 1,
+                "latestPosts": [{
+                    "shortCode": "CClrwNTo8-x",
+                    "url": "https://www.instagram.com/p/CClrwNTo8-x/",
+                    "displayUrl": "https://cdn.example/cover.jpg",
+                    "likesCount": 33,
+                    "timestamp": "2020-07-13T16:22:29+0000",
+                }],
+            },
+            "instagram",
+        )
+        self.assertGreater(old["latest_post_days_ago"], 999)
 
 
 class InstagramConnectConfigTests(unittest.TestCase):
@@ -83,6 +157,11 @@ class InstagramConnectConfigTests(unittest.TestCase):
         self.assertTrue(_is_settings_return(
             "http://localhost:3000/creator/dashboard/settings", "settings"
         ))
+
+    def test_local_quality_skip_stays_off_in_production(self):
+        from social_verification_routes import _skip_onboarding_quality_locally
+        self.assertTrue(_skip_onboarding_quality_locally("http://localhost:3000/onboarding"))
+        self.assertFalse(_skip_onboarding_quality_locally("https://app.newcollab.co/onboarding"))
 
     def test_instagram_oauth_enabled_with_creds(self):
         from social_verification_routes import _instagram_oauth_enabled

@@ -369,6 +369,7 @@ def resolve_verified_onboarding_followers(
     platform: str,
     quality_session=None,
     verification_result=None,
+    skip_follower_floor: bool = False,
 ) -> int:
     """Return scraped or OAuth follower count.
 
@@ -401,7 +402,7 @@ def resolve_verified_onboarding_followers(
     for count in candidates:
         if count <= 0:
             continue
-        if fails_follower_floor(count):
+        if fails_follower_floor(count) and not skip_follower_floor:
             raise ValueError(
                 f"You need at least {MIN_FOLLOWERS} followers on Instagram, TikTok, or YouTube to join."
             )

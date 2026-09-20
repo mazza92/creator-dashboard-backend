@@ -393,7 +393,7 @@ def opener(first_name: Optional[str] = None) -> str:
     hello = f"Hey {name}," if name else "Hey,"
     return (
         f"{hello} I'm Polly. I'm your Creator Assistant — I line up brand PR to pitch, "
-        "and I pull **paid UGC offers** from other platforms into one list.\n\n"
+        "and I find all paid UGC offers across all the platforms out there so you have them here in one place.\n\n"
         "What do you want to land first?"
     )
 
@@ -461,8 +461,8 @@ def wrap_up(notes: Optional[Dict] = None, first_name: Optional[str] = None) -> s
     return (
         f"Amazing. Ok {name}, I've got everything I need. Here's what I'm going to do with all this:\n\n"
         f"Based on you being {stage.replace('_', ' ')} in {niche_txt}, aiming at "
-        f"{dream_txt}, and struggling most with {challenge} — I'm going to line up 3 brands you "
-        "should hit up this week. All ones where I think you actually have a shot, not just a spray-and-pray.\n\n"
+        f"{dream_txt}, and struggling most with {challenge} — I'm going to line up 3 brands worth "
+        "pitching this week. All ones where I think you actually have a shot, not just a spray-and-pray.\n\n"
         "Want me to pull them up now, or do you want to explore the app first and come back?"
     )
 
