@@ -243,29 +243,16 @@ def _maybe_send_limit_hit_email(creator_id: int, used: int, limit: int = 3):
 
 
 def _short_pay_label(pr_value_usd, campaign_description: str) -> str | None:
-    """Compact pay signal for cards — avoid dumping long compensation blurbs."""
-    if pr_value_usd:
-        return f"${pr_value_usd}"
-
-    m_pay = re.search(r'Pay:\s*(.+)', campaign_description or '', re.I)
-    raw = m_pay.group(1).strip().split('\n')[0] if m_pay else ''
-    if not raw:
-        return None
-
-    m_dollar = re.search(r'\$[\d,]+(?:\s*[-–]\s*\$?[\d,]+)?(?:\s*/\s*\w+)?', raw)
-    if m_dollar:
-        return m_dollar.group(0)
-    if re.search(r'\bgift(ed)?\b|\bfree\s*product\b|\bproduct\s*only\b|\bpr\s*package\b', raw, re.I):
+    """Compact pay signal for cards — prefer a range from the brief over max-only."""
+    from services.gig_listing import format_pay_label
+    label = format_pay_label(pr_value_usd, campaign_description)
+    if label:
+        return label
+    if re.search(r'\bgift(ed)?\b|\bfree\s*product\b|\bproduct\s*only\b|\bpr\s*package\b', campaign_description or '', re.I):
         return 'Gifted product'
-    if re.search(r'\bunpaid\b|\bno\s*pay\b', raw, re.I):
+    if re.search(r'\bunpaid\b|\bno\s*pay\b', campaign_description or '', re.I):
         return 'Unpaid'
-    if re.search(r'\bperformance\b|\bbonus|\bvolume\b|\bper\s*video\b|\bvideos?\s*per\b', raw, re.I):
-        return 'Paid · volume + bonuses'
-    if re.search(r'\bpaid\b|\bugc\b|\brate\b|\bcompensation\b', raw, re.I):
-        return 'Paid'
-    if len(raw) <= 32:
-        return raw
-    return 'Paid opportunity'
+    return None
 
 
 _PLACEHOLDER_EMAILS = frozenset({
@@ -627,6 +614,25 @@ def _opportunity_card(opp, creator_tokens: set, applied_ids: set) -> tuple:
         desc = re.sub(r'\n*Apply here:\s*\S+', '', desc, flags=re.I).strip()
         desc = re.sub(r'\n*Pay:\s*', '\n', desc).strip()
 
+    brief = opp.get('listing_brief')
+    if isinstance(brief, str):
+        try:
+            brief = json.loads(brief)
+        except Exception:
+            brief = None
+    if not isinstance(brief, dict):
+        brief = {}
+    if brief.get('summary'):
+        desc = brief['summary']
+    product_name = brief.get('headline') or opp['product_name']
+    brand_name = brief.get('brand') or opp['brand_name']
+    website = (opp.get('brand_website') or '').strip() or None
+    try:
+        from services.polly_gigs import public_brand_site
+        website = public_brand_site(website)
+    except Exception:
+        pass
+
     niches = opp_niches if isinstance(opp_niches, list) else []
     display_niche = None
     bc = (opp.get('brand_category') or '').strip()
@@ -639,7 +645,12 @@ def _opportunity_card(opp, creator_tokens: set, applied_ids: set) -> tuple:
         if first:
             display_niche = first.split(',')[0].split('(')[0].strip()[:28] or None
 
-    pay_label = _short_pay_label(opp.get('pr_value_usd'), opp.get('campaign_description') or '')
+    from services.gig_listing import format_pay_label, prefer_amount_pay
+    pay_label = prefer_amount_pay(
+        brief.get('pay'),
+        _short_pay_label(opp.get('pr_value_usd'), opp.get('campaign_description') or ''),
+        format_pay_label(opp.get('pr_value_usd'), brief.get('raw'), desc),
+    )
     if not display_niche or len(display_niche) > 28:
         inferred = _infer_short_niche(
             f"{opp.get('product_name') or ''} {opp.get('campaign_description') or ''}"
@@ -651,16 +662,17 @@ def _opportunity_card(opp, creator_tokens: set, applied_ids: set) -> tuple:
 
     serialized = {
         'id': opp['id'],
-        'brand_name': opp['brand_name'],
+        'brand_name': brand_name,
         'brand_category': opp['brand_category'],
         'display_niche': display_niche,
         'creator_niches': niches,
         'brand_logo_url': opp.get('brand_logo_url'),
-        'brand_website': (opp.get('brand_website') or '').strip() or None,
-        'product_name': opp['product_name'],
+        'brand_website': website,
+        'product_name': product_name,
         'campaign_description': desc,
         'pr_value_usd': opp['pr_value_usd'],
         'pay_label': pay_label,
+        'listing_brief': brief or None,
         'creator_count_range': opp['creator_count_range'],
         'shipping_regions': opp['shipping_regions'] or [],
         'follower_ranges': opp['follower_ranges'] or [],
@@ -720,7 +732,9 @@ def fetch_live_opportunity_cards(creator_id, extra_tokens=None):
     is_pro = creator.get('subscription_tier') in ['pro', 'elite']
 
     from services.opportunity_gifted_pr import ensure_opportunity_gifted_pr_columns
+    from services.gig_listing import ensure_listing_brief_column
     ensure_opportunity_gifted_pr_columns(cursor)
+    ensure_listing_brief_column(conn, cursor)
     try:
         ensure_scanner_feed_live(cursor)
         conn.commit()
@@ -735,7 +749,7 @@ def fetch_live_opportunity_cards(creator_id, extra_tokens=None):
             pr_value_usd, creator_count_range, shipping_regions, follower_ranges,
             content_types, creator_niches, additional_notes,
             spots_total, spots_filled, closes_at,
-            created_at
+            created_at, listing_brief
         FROM opportunities
         WHERE status = 'live'
           AND (closes_at IS NULL OR closes_at > NOW())
@@ -1022,7 +1036,9 @@ def admin_list():
         status = request.args.get('status', 'pending')
 
         from services.opportunity_gifted_pr import ensure_opportunity_gifted_pr_columns
+        from services.gig_listing import ensure_listing_brief_column
         ensure_opportunity_gifted_pr_columns(cursor)
+        ensure_listing_brief_column(conn, cursor)
         cursor.execute('''
             SELECT
                 id, brand_name, brand_email, brand_website, brand_category,
@@ -1030,7 +1046,7 @@ def admin_list():
                 creator_count_range, shipping_regions, follower_ranges,
                 content_types, creator_niches, additional_notes, application_deadline,
                 spots_total, spots_filled, status, created_at, published_at, closes_at,
-                pr_brand_id
+                pr_brand_id, listing_brief
             FROM opportunities
             WHERE status = %s
             ORDER BY created_at DESC
@@ -1041,16 +1057,38 @@ def admin_list():
         opportunities = []
         for opp in opps:
             path = _resolve_apply_path(opp)
+            brief = opp.get('listing_brief')
+            if isinstance(brief, str):
+                try:
+                    brief = json.loads(brief)
+                except Exception:
+                    brief = None
+            if not isinstance(brief, dict):
+                brief = {}
+            from services.gig_listing import format_pay_label, prefer_amount_pay
+            pay_label = prefer_amount_pay(
+                brief.get('pay'),
+                _short_pay_label(opp.get('pr_value_usd'), opp.get('campaign_description') or ''),
+                format_pay_label(opp.get('pr_value_usd'), brief.get('raw'), opp.get('campaign_description')),
+            )
+            website = opp.get('brand_website')
+            try:
+                from services.polly_gigs import public_brand_site
+                website = public_brand_site(website)
+            except Exception:
+                website = (website or '').strip() or None
             opportunities.append({
                 'id': opp['id'],
-                'brand_name': opp['brand_name'],
+                'brand_name': brief.get('brand') or opp['brand_name'],
                 'brand_email': opp['brand_email'],
-                'brand_website': opp['brand_website'],
+                'brand_website': website,
                 'brand_category': opp['brand_category'],
                 'brand_logo_url': opp['brand_logo_url'],
-                'product_name': opp['product_name'],
-                'campaign_description': opp['campaign_description'],
+                'product_name': brief.get('headline') or opp['product_name'],
+                'campaign_description': brief.get('summary') or opp['campaign_description'],
                 'pr_value_usd': opp['pr_value_usd'],
+                'pay_label': pay_label,
+                'listing_brief': brief or None,
                 'creator_count_range': opp['creator_count_range'],
                 'shipping_regions': opp['shipping_regions'] or [],
                 'follower_ranges': opp['follower_ranges'] or [],
@@ -1398,29 +1436,16 @@ def admin_ingest():
                     skipped.append({'id': existing['id'], 'fingerprint': fingerprint})
                     continue
 
-                # Build creator-facing description with external apply link
-                comp_bits = []
-                if raw.get('compensation_display'):
-                    comp_bits.append(str(raw['compensation_display']))
-                elif raw.get('compensation_min_usd') or raw.get('compensation_max_usd'):
-                    lo = raw.get('compensation_min_usd')
-                    hi = raw.get('compensation_max_usd')
-                    if lo and hi:
-                        comp_bits.append(f"${lo}–${hi}")
-                    elif lo:
-                        comp_bits.append(f"from ${lo}")
-                    elif hi:
-                        comp_bits.append(f"up to ${hi}")
-                if raw.get('compensation_type'):
-                    comp_bits.append(str(raw['compensation_type']))
+                from services.opportunity_enricher import clean_scanner_gig
+                from services.gig_listing import ensure_listing_brief_column
 
-                desc_parts = [deliverable] if deliverable else [title]
-                if comp_bits:
-                    desc_parts.append("Pay: " + " · ".join(comp_bits))
-                desc_parts.append(f"Apply here: {apply_url}")
-                if raw.get('other_requirements'):
-                    desc_parts.append(f"Requirements: {raw['other_requirements']}")
-                campaign_description = "\n\n".join(p for p in desc_parts if p)
+                cleaned = clean_scanner_gig(raw)
+                campaign_description = cleaned["campaign_description"]
+                buyer = cleaned["brand_name"] or buyer
+                original_title = title
+                title = cleaned["product_name"] or title
+                pr_value = cleaned.get("pr_value_usd")
+                brand_website = cleaned.get("brand_website")
 
                 notes_bits = [
                     fingerprint,
@@ -1440,7 +1465,7 @@ def admin_ingest():
                     niches = list(raw['creator_niches'])
                 # Infer niche from title when classifier left it empty
                 if not niches:
-                    title_l = title.lower()
+                    title_l = original_title.lower()
                     if any(w in title_l for w in ('parent', 'mom', 'dad', 'kids', 'family')):
                         niches = ['Parenting']
                     elif any(w in title_l for w in ('beauty', 'skincare', 'makeup')):
@@ -1474,17 +1499,11 @@ def admin_ingest():
                 if not shipping:
                     shipping = ['US']
 
-                pr_value = raw.get('pr_value_usd') or raw.get('compensation_max_usd') or raw.get('compensation_min_usd')
-                try:
-                    pr_value = int(pr_value) if pr_value is not None else None
-                except (TypeError, ValueError):
-                    pr_value = None
-
                 deadline = raw.get('deadline') or raw.get('application_deadline') or None
 
                 # Placeholder email — scanner listings are not brand-submitted
                 brand_email = (raw.get('brand_email') or raw.get('apply_email') or 'sourced@newcollab.co').strip()
-                brand_website = apply_url[:500]
+                ensure_listing_brief_column(conn, cursor)
 
                 cursor.execute('''
                     INSERT INTO opportunities (
@@ -1493,16 +1512,15 @@ def admin_ingest():
                         creator_count_range, shipping_regions, follower_ranges,
                         content_types, creator_niches, additional_notes,
                         application_deadline, spots_total, status,
-                        published_at, closes_at
+                        published_at, closes_at, listing_brief
                     ) VALUES (
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        'live', NOW(), NOW() + INTERVAL '21 days'
+                        'live', NOW(), NOW() + INTERVAL '21 days', %s
                     ) RETURNING id
                 ''', (
                     buyer[:255],
                     brand_email[:255],
                     brand_website,
-                    # Prefer niche label over coarse category when we have one
                     (niches[0] if niches else (raw.get('category') or raw.get('brand_category') or None)),
                     title[:255],
                     campaign_description,
@@ -1515,6 +1533,7 @@ def admin_ingest():
                     additional_notes,
                     deadline,
                     int(raw.get('spots_total') or 10),
+                    json.dumps(cleaned.get('listing_brief') or {}),
                 ))
                 row = cursor.fetchone()
                 created.append({'id': row['id'], 'title': title, 'fingerprint': fingerprint})
@@ -1530,6 +1549,19 @@ def admin_ingest():
         conn.commit()
         cursor.close()
         conn.close()
+
+        created_ids = [row['id'] for row in created if row.get('id')]
+        if created_ids:
+            import threading
+
+            def _llm_enrich_ingest():
+                try:
+                    from services.opportunity_enricher import enrich_opportunity_ids
+                    enrich_opportunity_ids(created_ids, use_llm=True)
+                except Exception as enrich_err:
+                    print(f"[opps] ingest llm enrich skipped: {enrich_err}")
+
+            threading.Thread(target=_llm_enrich_ingest, daemon=True).start()
 
         if created or went_live:
             send_email_notification(
@@ -1554,6 +1586,103 @@ def admin_ingest():
 
     except Exception as e:
         print(f"Error in admin_ingest: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@opportunities_bp.route('/admin/enrich', methods=['POST'])
+@admin_required
+def admin_enrich():
+    """Heuristic + optional Gemini clean of scanner listings already in the DB."""
+    try:
+        data = request.get_json() or {}
+        ids = data.get('ids') or []
+        use_llm = bool(data.get('use_llm', True))
+        try:
+            limit = min(max(int(data.get('limit') or 25), 1), 200)
+        except (TypeError, ValueError):
+            limit = 25
+        status = (data.get('status') or 'live').strip().lower()
+        if status not in ('pending', 'live', 'closed', 'paused', 'rejected'):
+            status = 'live'
+
+        if not ids:
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            try:
+                from services.gig_listing import ensure_listing_brief_column
+                ensure_listing_brief_column(conn, cursor)
+                cursor.execute(
+                    """
+                    SELECT id FROM opportunities
+                    WHERE status = %s
+                      AND additional_notes ILIKE %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (status, '%[scanner:%', limit),
+                )
+                ids = [row['id'] for row in (cursor.fetchall() or [])]
+            finally:
+                cursor.close()
+                conn.close()
+
+        if len(ids) > 40:
+            ids = ids[:40]
+        status = (data.get('status') or 'live').strip().lower()
+        if status not in ('pending', 'live', 'closed', 'paused', 'rejected'):
+            status = 'live'
+
+        if not ids:
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            try:
+                from services.gig_listing import ensure_listing_brief_column
+                ensure_listing_brief_column(conn, cursor)
+                cursor.execute(
+                    """
+                    SELECT id FROM opportunities
+                    WHERE status = %s
+                      AND additional_notes ILIKE %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (status, '%[scanner:%', limit),
+                )
+                ids = [row['id'] for row in (cursor.fetchall() or [])]
+            finally:
+                cursor.close()
+                conn.close()
+
+        from services.opportunity_enricher import enrich_opportunity_ids
+        result = enrich_opportunity_ids(ids, use_llm=use_llm)
+        return jsonify({
+            'success': not result.get('error'),
+            'ids': ids,
+            **result,
+        }), (200 if not result.get('error') else 500)
+    except Exception as e:
+        print(f"Error in admin_enrich: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@opportunities_bp.route('/admin/restore', methods=['POST'])
+@admin_required
+def admin_restore():
+    """Restore pay/pricing stripped by a previous Clean listings pass."""
+    try:
+        data = request.get_json() or {}
+        ids = data.get('ids') or []
+        status = (data.get('status') or 'live').strip().lower()
+        if status not in ('pending', 'live', 'closed', 'paused', 'rejected'):
+            status = 'live'
+        from services.opportunity_enricher import restore_opportunity_ids
+        result = restore_opportunity_ids(ids or None, status=status)
+        return jsonify({
+            'success': not result.get('error'),
+            **result,
+        }), (200 if not result.get('error') else 500)
+    except Exception as e:
+        print(f"Error in admin_restore: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -1716,9 +1845,6 @@ def admin_edit(opp_id):
             url = (data.get('apply_url') or '').strip()
             notes = _notes_set(notes, 'apply_url', url or None)
             notes_dirty = True
-            if url and 'brand_website' not in data:
-                updates.append('brand_website = %s')
-                values.append(url[:500])
 
         if 'apply_via' in data or 'apply_mode' in data:
             via = (data.get('apply_via') or data.get('apply_mode') or 'auto').strip().lower()

@@ -33,6 +33,209 @@ class PollyGigsTests(unittest.TestCase):
         self.assertFalse(is_paid_listing({"is_sourced": False, "pay_label": "Unpaid"}))
         self.assertTrue(is_paid_listing({"is_sourced": False, "pr_value_usd": 200}))
 
+    def test_pay_amount_beats_generic_paid(self):
+        from services.gig_listing import format_pay_label, prefer_amount_pay
+        self.assertEqual(prefer_amount_pay("Paid", "$250"), "$250")
+        self.assertEqual(format_pay_label(250, "Paid"), "$250")
+        self.assertEqual(format_pay_label(None, "Hourly: $20.00-$45.00"), "$20–$45/hr")
+        card = gig_card_from_opp({
+            "id": 77,
+            "brand_name": "ēma",
+            "product_name": "Creators Wanted: Ēma Solid Perfume",
+            "campaign_description": "Short UGC videos (approx. 30-60 seconds each) with voiceover.",
+            "pr_value_usd": 400,
+            "pay_label": "Paid",
+            "is_sourced": True,
+            "source_platform": "upwork",
+            "listing_brief": {
+                "brand": "ēma",
+                "headline": "Solid Perfume UGC",
+                "summary": "Short UGC videos with voiceover.",
+                "pay": "Paid",
+            },
+        })
+        self.assertEqual(card["pay_label"], "$400")
+
+    def test_placeholder_listing_gets_a_readable_structure(self):
+        from services.gig_listing import apply_llm_rewrite, rewrite_is_grounded
+        perfume = gig_card_from_opp({
+            "id": 21,
+            "brand_name": "Unknown brand",
+            "product_name": "UGC TikTok Perfume Ad",
+            "campaign_description": (
+                "12-20 second, 9:16 TikTok video, 'get-ready-with-me' style, shot on phone\n"
+                "$1500-$3000 · paid"
+            ),
+            "pr_value_usd": 3000,
+            "pay_label": "$3000",
+            "is_sourced": True,
+            "source_platform": "freelancer",
+            "display_niche": "Beauty",
+            "shipping_regions": ["US"],
+        })
+        self.assertTrue(perfume["brand_unknown"])
+        self.assertIn("perfume", perfume["headline"].lower())
+        self.assertNotEqual(perfume["name"].lower(), "unknown brand")
+        self.assertEqual(perfume["pay_label"], "$1,500–$3,000")
+        self.assertIn("GRWM", perfume["deliverable"])
+        self.assertIn("TikTok", perfume["deliverable"])
+        self.assertNotIn("$1500", perfume["summary"])
+        self.assertNotIn("Unknown brand", perfume["summary"])
+
+        health = gig_card_from_opp({
+            "id": 22,
+            "brand_name": "Unknown brand",
+            "product_name": "Healthy Lifestyle UGC Content Creation",
+            "campaign_description": (
+                "Fresh, authentic product reviews for a health-focused blog\n"
+                "$750-$1500 · paid"
+            ),
+            "pr_value_usd": 1500,
+            "is_sourced": True,
+            "source_platform": "freelancer",
+            "display_niche": "Healthy Lifestyle",
+        })
+        self.assertEqual(health["pay_label"], "$750–$1,500")
+        self.assertIn("product reviews", health["summary"].lower())
+
+        redbarn = gig_card_from_opp({
+            "id": 23,
+            "brand_name": "Welcome UGC Creators",
+            "product_name": "Welcome UGC Creators - Welcome!",
+            "campaign_description": (
+                "featuring Redbarn products across Instagram, TikTok, and/or YouTube. "
+                "We're looking for passionate dog owners to create authentic content."
+            ),
+            "pr_value_usd": 1000,
+            "is_sourced": True,
+            "source_platform": "aspireiq",
+            "display_niche": "Lifestyle",
+        })
+        self.assertEqual(redbarn["brand_name"], "Redbarn")
+        self.assertFalse(redbarn["brand_unknown"])
+        self.assertEqual(redbarn["name"], "Redbarn")
+        self.assertNotIn("Welcome", redbarn["headline"])
+        self.assertIn("dog owners", redbarn["summary"].lower())
+
+        grounded = apply_llm_rewrite(dict(perfume), {
+            "brand": "",
+            "headline": "Perfume GRWM TikTok",
+            "summary": "Film a 12–20s get-ready-with-me TikTok on your phone.",
+            "deliverable": "12–20s, 9:16, GRWM, TikTok",
+            "pay": "$1,500–$3,000",
+        })
+        self.assertEqual(grounded["headline"], "Perfume GRWM TikTok")
+        self.assertEqual(grounded["pay_label"], "$1,500–$3,000")
+        self.assertTrue(rewrite_is_grounded(
+            {"brand": "MadeUp Co", "pay": "$9,999"},
+            perfume["raw_listing"],
+        ) is False)
+
+    def test_aspire_program_pages_do_not_dump_chrome(self):
+        ryl = gig_card_from_opp({
+            "id": 31,
+            "brand_name": "The Ryl Collective",
+            "product_name": "The Ryl Collective - Affiliate Program Overview",
+            "campaign_description": (
+                "and daily life. $250 · paid+gift The Ryl Collective The Ryl Co."
+            ),
+            "pr_value_usd": 250,
+            "is_sourced": True,
+            "source_platform": "aspireiq",
+            "display_niche": "Lifestyle",
+            "shipping_regions": ["US"],
+        })
+        self.assertEqual(ryl["name"], "The Ryl Collective")
+        self.assertEqual(ryl["headline"], "The Ryl Collective")
+        self.assertNotIn("Affiliate", ryl["headline"])
+        self.assertNotIn("$250", ryl["summary"])
+        self.assertNotIn("paid+gift", ryl["summary"].lower())
+        self.assertFalse(ryl["summary"][:1].islower())
+
+        love = gig_card_from_opp({
+            "id": 32,
+            "brand_name": "Be LOVE™ Clear Protein UGC Community",
+            "product_name": "Be LOVE™ Clear Protein UGC Community - What We're Looking For",
+            "campaign_description": (
+                "for Be LOVE's organic and paid media efforts. Share it in your own style - "
+                "through lifestyle moments, storytelling, or whatever feels authentic."
+            ),
+            "pr_value_usd": 250,
+            "is_sourced": True,
+            "source_platform": "aspireiq",
+        })
+        self.assertNotIn("What We're Looking For", love["headline"])
+        self.assertTrue(love["summary"].startswith("Share it"))
+        self.assertFalse(love["summary"].startswith("for "))
+
+        joy = gig_card_from_opp({
+            "id": 33,
+            "brand_name": "The Joy Edit",
+            "product_name": "The Joy Edit - Why Partner With Shop LC",
+            "campaign_description": (
+                "for a purpose-driven jewelry brand where every purchase helps feed a child "
+                "$250 - paid The Joy Edit Join the Shop LC Creator Community Join The Joy Edit"
+            ),
+            "pr_value_usd": 250,
+            "is_sourced": True,
+            "source_platform": "aspireiq",
+        })
+        self.assertEqual(joy["headline"], "The Joy Edit")
+        self.assertNotIn("Why Partner", joy["headline"])
+        self.assertNotIn("$250", joy["summary"])
+        self.assertFalse(joy["summary"][:1].islower())
+
+    def test_slogans_and_long_job_titles_become_short_cards(self):
+        unruly = gig_card_from_opp({
+            "id": 41,
+            "brand_name": "UNRULY wants to become a daily habit that builds on activities you already love.",
+            "product_name": "What To Expect",
+            "campaign_description": (
+                "UNRULY wants to become a daily habit that builds on activities you already love. "
+                "Film everyday workouts and lifestyle moments with the product."
+            ),
+            "pr_value_usd": 200,
+            "is_sourced": True,
+            "source_platform": "aspireiq",
+            "display_niche": "Lifestyle",
+        })
+        self.assertEqual(unruly["name"], "UNRULY")
+        self.assertNotIn("wants to", unruly["name"].lower())
+        self.assertNotEqual(unruly["headline"].lower(), "what to expect")
+        self.assertNotIn("wants to", unruly["summary"].lower())
+        self.assertIn("workouts", unruly["summary"].lower())
+
+        travel = gig_card_from_opp({
+            "id": 42,
+            "brand_name": "On-Camera Video Presenter / Spokesperson For Senior Travel & Leisure",
+            "product_name": "On-Camera Video Presenter / Spokesperson For Senior Travel & Leisure",
+            "campaign_description": (
+                "20 short-form videos (30-60 seconds each) covering travel tips, lifestyle advice, "
+                "leisure guides for seniors."
+            ),
+            "pr_value_usd": 10,
+            "is_sourced": True,
+            "source_platform": "upwork",
+        })
+        self.assertLessEqual(len(travel["name"].split()), 6)
+        self.assertNotIn("/", travel["name"])
+        self.assertIn("travel tips", travel["summary"].lower())
+        self.assertIn("30–60s", travel["deliverable"])
+
+        cat = gig_card_from_opp({
+            "id": 43,
+            "brand_name": "Cat Butler",
+            "product_name": "Cat Litter UGC Ad",
+            "campaign_description": (
+                "30-60 second vertical UGC video featuring creator and cat, demonstrating product use."
+            ),
+            "pr_value_usd": 200,
+            "is_sourced": True,
+            "source_platform": "upwork",
+        })
+        self.assertEqual(cat["name"], "Cat Butler")
+        self.assertIn("litter", cat["headline"].lower())
+
     def test_gig_card_strips_email_and_keeps_apply_path(self):
         card = gig_card_from_opp({
             "id": 9,

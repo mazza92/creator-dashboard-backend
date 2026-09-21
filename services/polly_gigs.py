@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Dict, List, Optional
+
+from services.gig_listing import polish_gig_cards, prefer_amount_pay, structure_gig_card, format_pay_label
 
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+")
 _GIFTED_PAY = re.compile(r"(?i)\bgifted|\bunpaid|\bfree\s+product|\bpr\s+package\b")
@@ -17,6 +20,8 @@ SOURCE_LABELS = {
     "twitter": "X",
     "x": "X",
     "craigslist": "Craigslist",
+    "freelancer": "Freelancer",
+    "upwork": "Upwork",
 }
 
 
@@ -54,6 +59,10 @@ _BOARD_HOSTS = (
     "tiktok.com",
     "twitter.com",
     "x.com",
+    "upwork.com",
+    "freelancer.com",
+    "indeed.com",
+    "fiverr.com",
 )
 
 
@@ -128,9 +137,63 @@ def listing_place(*urls: Optional[str]) -> Optional[str]:
     return None
 
 
+def parse_listing_brief(raw) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def apply_stored_brief(card: Dict[str, Any], brief) -> Dict[str, Any]:
+    stored = parse_listing_brief(brief)
+    if not stored:
+        return card
+    brand = (stored.get("brand") or "").strip()
+    headline = (stored.get("headline") or "").strip()
+    summary = (stored.get("summary") or "").strip()
+    if brand:
+        card["brand_name"] = brand
+        card["name"] = brand
+        card["brand_unknown"] = False
+    if headline:
+        card["headline"] = headline
+        card["product_name"] = headline
+    if summary:
+        card["summary"] = summary
+        card["blurb"] = summary
+    if stored.get("deliverable"):
+        card["deliverable"] = stored["deliverable"]
+    recovered = format_pay_label(
+        card.get("pr_value_usd"),
+        stored.get("pay"),
+        stored.get("raw"),
+        card.get("pay_label"),
+        card.get("raw_listing"),
+    )
+    card["pay_label"] = prefer_amount_pay(stored.get("pay"), recovered, card.get("pay_label"))
+    if stored.get("src"):
+        card["listing_src"] = stored["src"]
+    if stored.get("raw"):
+        card["raw_listing"] = stored["raw"]
+    if summary or headline:
+        card["listing_ready"] = True
+    return card
+
+
 def gig_card_from_opp(opp: Dict[str, Any]) -> Dict[str, Any]:
-    """Compact Polly card. Never put emails in the blurb."""
-    desc = _clean_gig_blurb(opp.get("campaign_description") or opp.get("blurb"))
+    """Compact Polly card with a consistent listing layout. Never put emails in the blurb."""
+    brief = parse_listing_brief(opp.get("listing_brief"))
+    desc = (
+        brief.get("raw")
+        or opp.get("campaign_description")
+        or opp.get("blurb")
+        or opp.get("raw_listing")
+    )
     source = opp.get("source_platform")
     apply_mode = opp.get("apply_mode") or ("url" if opp.get("external_apply_url") else "kit")
     apply_email = None
@@ -145,15 +208,28 @@ def gig_card_from_opp(opp: Dict[str, Any]) -> Dict[str, Any]:
         opp.get("external_apply_url"),
         opp.get("brand_website"),
     )
-    return {
+    card = structure_gig_card({
         "id": opp.get("id"),
         "name": opp.get("brand_name") or opp.get("name"),
         "brand_name": opp.get("brand_name") or opp.get("name"),
         "logo": opp.get("brand_logo_url") or opp.get("logo"),
         "category": opp.get("display_niche") or opp.get("brand_category") or opp.get("category"),
-        "pay_label": opp.get("pay_label"),
+        "pay_label": prefer_amount_pay(
+            opp.get("pay_label"),
+            brief.get("pay"),
+            format_pay_label(
+                opp.get("pr_value_usd"),
+                brief.get("pay"),
+                brief.get("raw"),
+                opp.get("campaign_description"),
+                opp.get("pay_label"),
+            ),
+        ),
+        "pr_value_usd": opp.get("pr_value_usd"),
         "blurb": desc,
-        "product_name": opp.get("product_name"),
+        "campaign_description": desc,
+        "raw_listing": desc,
+        "product_name": opp.get("product_name") or brief.get("headline"),
         "website": website,
         "location": location,
         "fit_score": opp.get("fit_score"),
@@ -164,7 +240,18 @@ def gig_card_from_opp(opp: Dict[str, Any]) -> Dict[str, Any]:
         "external_apply_url": opp.get("external_apply_url"),
         "apply_email": apply_email,
         "already_applied": bool(opp.get("already_applied")),
-    }
+    })
+    card = apply_stored_brief(card, brief)
+    card["pay_label"] = prefer_amount_pay(
+        card.get("pay_label"),
+        format_pay_label(
+            card.get("pr_value_usd"),
+            brief.get("raw"),
+            opp.get("campaign_description"),
+            opp.get("pay_label"),
+        ),
+    )
+    return card
 
 
 def _as_gig_id(raw) -> Optional[int]:
@@ -300,7 +387,7 @@ def _scanner_fallback_cards(creator_id) -> List[Dict[str, Any]]:
                 pr_value_usd, creator_count_range, shipping_regions, follower_ranges,
                 content_types, creator_niches, additional_notes,
                 spots_total, spots_filled, closes_at,
-                created_at
+                created_at, listing_brief
             FROM opportunities
             WHERE status = 'live'
               AND additional_notes ILIKE %s
@@ -386,13 +473,18 @@ def list_polly_gigs(
         fp = gig_dedupe_key(card)
         if fp in seen_fp:
             continue
-        if card.get("id") and card.get("name"):
+        if card.get("id") and (card.get("name") or card.get("headline")):
             if fp[0]:
                 seen_fp.add(fp)
             cards.append(card)
         if len(cards) >= limit:
             break
-    return cards
+    polished = polish_gig_cards(cards)
+    for card in polished:
+        card.pop("raw_listing", None)
+        card.pop("campaign_description", None)
+        card.pop("listing_src", None)
+    return polished
 
 
 _MORE_GIGS_RE = re.compile(
