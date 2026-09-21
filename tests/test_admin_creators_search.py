@@ -82,6 +82,17 @@ class TestCreatorDirectoryFilters(unittest.TestCase):
         self.assertTrue(order_sql.startswith('CASE'))
         self.assertIn('saraskye', rank_params)
 
+    def test_bio_keyword_search_hits_profile_and_kit_text(self):
+        sql, params, token = _build_where_clause({'q': 'low tox'})
+        self.assertEqual(token, 'low tox')
+        self.assertIn('c.bio', sql)
+        self.assertIn('c.kit_tagline', sql)
+        self.assertIn("c.kit_theme->>'about'", sql)
+        self.assertIn('raw_bio', sql)
+        self.assertIn('content_themes', sql)
+        self.assertTrue(any(p == '%low tox%' for p in params))
+        self.assertTrue(any(p == '%low-tox%' for p in params))
+
 
 if __name__ == '__main__':
     unittest.main()

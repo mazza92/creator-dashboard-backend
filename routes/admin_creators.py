@@ -489,8 +489,26 @@ def _region_needles(raw):
     return needles
 
 
+def _keyword_like_values(token):
+    """ILIKE patterns for phrase search, including hyphen/space variants."""
+    safe = _safe_like_fragment(token)
+    if not safe:
+        return []
+    collapsed_space = re.sub(r'[-_\s]+', ' ', safe).strip()
+    collapsed_hyphen = re.sub(r'[-_\s]+', '-', safe).strip()
+    variants = []
+    seen = set()
+    for variant in (safe, collapsed_space, collapsed_hyphen):
+        key = (variant or '').strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        variants.append(f'%{variant.strip()}%')
+    return variants
+
+
 def _search_match_sql(token):
-    """Match email, name, username, social handle, kit slug, and social_links JSON."""
+    """Match identity fields plus bio / kit / scraped-profile keywords."""
     safe = _safe_like_fragment(token)
     if not safe:
         return None, []
@@ -498,6 +516,25 @@ def _search_match_sql(token):
     contains = f'%{safe}%'
     username_sql = _HANDLE_SQL.format(col='c.username')
     social_sql = _HANDLE_SQL.format(col='c.social_handle')
+    likes = _keyword_like_values(token) or [contains]
+    text_parts = []
+    text_params = []
+    for like in likes:
+        text_parts.extend([
+            "COALESCE(c.bio, '') ILIKE %s",
+            "COALESCE(c.kit_tagline, '') ILIKE %s",
+            "COALESCE(c.kit_theme->>'about', '') ILIKE %s",
+            "COALESCE(c.kit_theme->>'headline', '') ILIKE %s",
+            """EXISTS (
+                SELECT 1 FROM creator_profile_data cpd
+                WHERE cpd.user_id = c.user_id
+                  AND (
+                    COALESCE(cpd.raw_bio, '') ILIKE %s
+                    OR COALESCE(cpd.content_themes::text, '') ILIKE %s
+                  )
+            )""",
+        ])
+        text_params.extend([like, like, like, like, like, like])
     sql = f"""(
         LOWER(u.email) = %s
         OR {username_sql} = %s
@@ -509,10 +546,12 @@ def _search_match_sql(token):
         OR {social_sql} ILIKE %s
         OR COALESCE(c.kit_slug, '') ILIKE %s
         OR COALESCE(c.social_links::text, '') ILIKE %s
+        OR {' OR '.join(text_parts)}
     )"""
     params = [
         exact, exact, exact, exact,
         contains, contains, contains, contains, contains, contains,
+        *text_params,
     ]
     return sql, params
 
