@@ -22,6 +22,7 @@ SOURCE_LABELS = {
     "craigslist": "Craigslist",
     "freelancer": "Freelancer",
     "upwork": "Upwork",
+    "sideshift": "SideShift",
 }
 
 
@@ -63,6 +64,8 @@ _BOARD_HOSTS = (
     "freelancer.com",
     "indeed.com",
     "fiverr.com",
+    "sideshift.app",
+    "sideshift.com",
 )
 
 
@@ -92,6 +95,14 @@ def public_brand_site(url: Optional[str]) -> Optional[str]:
     if not re.match(r"^https?://", raw, re.I):
         return "https://" + raw
     return raw
+
+
+def brand_logo_src(explicit: Optional[str] = None, website: Optional[str] = None) -> Optional[str]:
+    """Only a real company mark. Empty tiles are drawn as emoji in the client."""
+    logo = str(explicit or "").strip() or None
+    if logo:
+        return logo[:800]
+    return None
 
 
 def _clean_gig_blurb(text: Optional[str]) -> str:
@@ -212,7 +223,7 @@ def gig_card_from_opp(opp: Dict[str, Any]) -> Dict[str, Any]:
         "id": opp.get("id"),
         "name": opp.get("brand_name") or opp.get("name"),
         "brand_name": opp.get("brand_name") or opp.get("name"),
-        "logo": opp.get("brand_logo_url") or opp.get("logo"),
+        "logo": brand_logo_src(opp.get("brand_logo_url") or opp.get("logo"), website),
         "category": opp.get("display_niche") or opp.get("brand_category") or opp.get("category"),
         "pay_label": prefer_amount_pay(
             opp.get("pay_label"),
@@ -416,11 +427,14 @@ def _scanner_fallback_cards(creator_id) -> List[Dict[str, Any]]:
     return cards
 
 
+GIG_PAGE_SIZE = 6
+
+
 def list_polly_gigs(
     creator_id,
     scrape: Optional[Dict] = None,
     notes: Optional[Dict] = None,
-    limit: int = 3,
+    limit: int = GIG_PAGE_SIZE,
     exclude_ids: Optional[List[int]] = None,
     history: Optional[List[Dict]] = None,
 ) -> List[Dict[str, Any]]:
@@ -487,11 +501,32 @@ def list_polly_gigs(
     return polished
 
 
+def page_polly_gigs(
+    creator_id,
+    scrape: Optional[Dict] = None,
+    notes: Optional[Dict] = None,
+    exclude_ids: Optional[List[int]] = None,
+    history: Optional[List[Dict]] = None,
+    page_size: int = GIG_PAGE_SIZE,
+) -> tuple:
+    """One board page plus whether another drop is waiting."""
+    batch = list_polly_gigs(
+        creator_id,
+        scrape=scrape,
+        notes=notes,
+        limit=max(1, int(page_size or GIG_PAGE_SIZE)) + 1,
+        exclude_ids=exclude_ids,
+        history=history,
+    )
+    size = max(1, int(page_size or GIG_PAGE_SIZE))
+    return batch[:size], len(batch) > size
+
+
 _MORE_GIGS_RE = re.compile(
-    r"(?i)^(find more|more|another|next|show more|next one|another one|"
+    r"(?i)^(find more|more|another|next|show more|show more offers|next one|another one|"
     r"more (gigs?|offers?|paid|ugc)|find more (gigs?|offers?)|"
     r"find more offers)[\s!.]*$"
-    r"|\b(find more|more offers|more gigs|next drop)\b"
+    r"|\b(find more|more offers|more gigs|show more offers|next drop)\b"
 )
 
 

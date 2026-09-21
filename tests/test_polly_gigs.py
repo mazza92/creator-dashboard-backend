@@ -257,6 +257,23 @@ class PollyGigsTests(unittest.TestCase):
         self.assertIsNone(card["apply_email"])
         self.assertIsNone(card.get("website"))
 
+    def test_gig_card_uses_site_favicon_when_logo_missing(self):
+        from services.polly_gigs import brand_logo_src
+        self.assertIsNone(brand_logo_src(None, "https://www.virealapps.com"))
+        self.assertIsNone(brand_logo_src(None, "https://app.sideshift.app/jobs/x"))
+        self.assertEqual(
+            brand_logo_src("https://cdn.example.com/logo.png", "https://smoothspeak.ai"),
+            "https://cdn.example.com/logo.png",
+        )
+        card = gig_card_from_opp({
+            "id": 13,
+            "brand_name": "Vireal Apps",
+            "brand_website": "https://www.virealapps.com",
+            "is_sourced": True,
+            "source_platform": "sideshift",
+        })
+        self.assertIsNone(card.get("logo"))
+
     def test_gig_card_keeps_readable_blurb_and_brand_site(self):
         from services.polly_gigs import public_brand_site
         self.assertEqual(public_brand_site("https://www.bigo.tv"), "https://www.bigo.tv")
@@ -363,6 +380,7 @@ class PollyGigsTests(unittest.TestCase):
         self.assertTrue(last_assistant_had_gigs(history))
         self.assertTrue(wants_more_gigs("more", history))
         self.assertTrue(wants_more_gigs("find more", history))
+        self.assertTrue(wants_more_gigs("Show more offers", history))
         self.assertTrue(wants_more_gigs("Find more offers", history))
         self.assertTrue(wants_more_gigs("more offers", history))
         self.assertFalse(wants_more_gigs("more brands", history))
@@ -381,7 +399,8 @@ class PollyGigsTests(unittest.TestCase):
         self.assertTrue(wants_more_gigs("find more", drop))
 
     def test_shown_gigs_paginate(self):
-        from services.polly_gigs import gig_ids_from_history, mark_shown_gigs, shown_gig_ids
+        from services.polly_gigs import GIG_PAGE_SIZE, gig_ids_from_history, mark_shown_gigs, shown_gig_ids
+        self.assertEqual(GIG_PAGE_SIZE, 6)
         notes = mark_shown_gigs({}, [{"id": 1}, {"id": 2}, {"id": 3}])
         self.assertEqual(shown_gig_ids(notes), [1, 2, 3])
         notes = mark_shown_gigs(notes, [{"id": 2}, {"id": 4}])
@@ -409,19 +428,19 @@ class PollyGigsTests(unittest.TestCase):
         chips = starters_for({"saw_gigs": True})
         ids = [c["id"] for c in chips]
         self.assertEqual(ids[0], "paid_ugc")
-        self.assertIn("more_gigs", ids)
+        self.assertNotIn("more_gigs", ids)
         self.assertIn("directory_pitch", ids)
         directory = next(c for c in chips if c["id"] == "directory_pitch")
         self.assertEqual(directory["action"], "suggest_brands")
         wanted = [c["id"] for c in starters_for({"wanted_gigs": True})]
         self.assertIn("directory_pitch", wanted)
-        self.assertIn("more_gigs", wanted)
+        self.assertNotIn("more_gigs", wanted)
         pending = starters_for({
             "saw_gigs": True,
             "pending_pitch": {"id": 9, "name": "Tarte Cosmetics"},
         })
+        self.assertNotIn("more_gigs", [c["id"] for c in pending])
         self.assertEqual(pending[0]["id"], "i_sent_it")
-        self.assertIn("more_gigs", [c["id"] for c in pending])
 
 
 if __name__ == "__main__":

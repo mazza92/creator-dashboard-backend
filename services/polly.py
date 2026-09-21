@@ -1671,7 +1671,8 @@ def empty_unlock_starters(
     chips.extend(paywall_unlock_chips(follow))
     chips.append({
         "id": "paid_ugc",
-        "label": "Find paid UGC offers",
+        "label": "Show paid UGC I can apply to now",
+        "hint": "Live briefs — tap Apply",
         "action": "suggest_gigs",
         "skip_discovery": True,
     })

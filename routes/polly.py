@@ -816,6 +816,51 @@ def bootstrap():
             conn.close()
 
 
+@polly_bp.route("/gigs/more", methods=["POST"])
+def more_gigs():
+    """Append the next paid-UGC page without a new Polly turn."""
+    creator_id, conn, creator = _creator_auth()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    data = request.get_json(silent=True) or {}
+    exclude = data.get("exclude_ids") or []
+    try:
+        scrape = _load_scrape(conn, (creator or {}).get("user_id") or session.get("user_id"))
+        stored = load_thread(conn, creator_id)
+        notes = dict(stored.get("notes") or {})
+        history = data.get("messages") if isinstance(data.get("messages"), list) else (stored.get("messages") or [])
+        from services.polly_gigs import page_polly_gigs, mark_shown_gigs
+        gigs, has_more = page_polly_gigs(
+            creator_id,
+            scrape=scrape,
+            notes=notes,
+            exclude_ids=exclude,
+            history=history,
+        )
+        notes["wanted_gigs"] = True
+        if gigs:
+            notes["saw_gigs"] = True
+            notes = mark_shown_gigs(notes, gigs)
+        save_thread(
+            conn,
+            creator_id,
+            history,
+            stored.get("suggested_brands") or [],
+            notes=notes,
+        )
+        return jsonify({
+            "success": True,
+            "gigs": json_safe(gigs),
+            "gigs_has_more": bool(has_more),
+        })
+    except Exception as err:
+        print(f"[Polly] gigs/more failed: {err}")
+        return jsonify({"success": False, "error": "Could not load more offers"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
 @polly_bp.route("/chat", methods=["POST"])
 def chat():
     creator_id, conn, creator = _creator_auth()
@@ -1071,6 +1116,7 @@ def chat():
 
         brands = []
         gigs = []
+        gigs_has_more = False
         pitch = None
         paywall = False
         paywall_payload = None
@@ -1315,24 +1361,24 @@ def chat():
 
         if intent == "suggest_gigs":
             try:
-                from services.polly_gigs import list_polly_gigs, mark_shown_gigs, wants_more_gigs
+                from services.polly_gigs import page_polly_gigs, mark_shown_gigs, wants_more_gigs
                 more_gigs = wants_more_gigs(user_text, messages, notes) or str(
                     data.get("starter") or data.get("chip_id") or ""
                 ) == "more_gigs"
                 fresh = str(data.get("starter") or data.get("chip_id") or "") == "paid_ugc" and not more_gigs
                 if fresh:
                     notes["shown_gig_ids"] = []
-                gigs = list_polly_gigs(
+                gigs, gigs_has_more = page_polly_gigs(
                     creator_id,
                     scrape=scrape,
                     notes=notes,
-                    limit=3,
                     history=messages,
                 )
             except Exception as err:
                 print(f"[Polly] gigs failed: {err}")
                 gigs = []
                 more_gigs = False
+                gigs_has_more = False
             print(f"[Polly] gigs n={len(gigs)} more={more_gigs}")
             brands = []
             notes["wanted_gigs"] = True
@@ -1772,6 +1818,7 @@ def chat():
             "intent": intent,
             "brands": json_safe(brands),
             "gigs": json_safe(gigs),
+            "gigs_has_more": bool(gigs_has_more),
             "suggested_brands": json_safe(queue),
             "pitch": json_safe(pitch),
             "pitch_update": json_safe(data.get("_pitch_update")),
@@ -1808,6 +1855,7 @@ def chat():
             "content": say,
             "brands": json_safe(brands) or [],
             "gigs": json_safe(gigs) or [],
+            "gigs_has_more": bool(gigs_has_more),
             "pitch": json_safe(pitch),
             "kit_actions": json_safe(kit_cta) or [],
             "task_chips": json_safe(task_chips) or [],

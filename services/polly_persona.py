@@ -282,10 +282,10 @@ def persona_gigs_intro(
         return (
             "I hunt **paid UGC briefs** across AspireIQ, LinkedIn and the other creator boards, "
             "then put them in **one list** here — so you apply without hopping apps.\n\n"
-            "Nothing live I'd send you right now. Tap **Find paid UGC offers** again in a bit, "
+            "Nothing live I'd send you right now. Tap **Show paid UGC I can apply to now** again in a bit, "
             "or **Pitch Directory brands instead** if you want an email I draft."
         )
-    n = min(3, len(rows))
+    n = len(rows)
     if more:
         return (
             f"**{n} more** paid briefs from **{boards}**. "
@@ -294,8 +294,8 @@ def persona_gigs_intro(
     return (
         "I pull **paid UGC gigs** from different platforms into **one place** — "
         f"this drop is from **{boards}**. Same idea as Indeed, just for creator briefs.\n\n"
-        f"**{n}** open below. Each card says where we found it. "
-        "Tap **Apply here** to open that platform's form — I don't draft a Newcollab pitch for these."
+        f"**{n}** open below. Tap **Apply here** to open that platform's form — "
+        "I don't draft a Newcollab pitch for these."
     )
 
 

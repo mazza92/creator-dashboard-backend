@@ -538,7 +538,8 @@ def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) 
     notes = notes or {}
     paid_chip = {
         "id": "paid_ugc",
-        "label": "Find paid UGC offers",
+        "label": "Show paid UGC I can apply to now",
+        "hint": "Live briefs — tap Apply",
         "action": "suggest_gigs",
         "skip_discovery": True,
     }
@@ -547,11 +548,6 @@ def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) 
         "label": "Pitch Directory brands instead",
         "action": "suggest_brands",
         "skip_discovery": True,
-    }
-    more_gigs_chip = {
-        "id": "more_gigs",
-        "label": "Find more offers",
-        "action": "suggest_gigs",
     }
     pending = notes.get("pending_pitch") if isinstance(notes.get("pending_pitch"), dict) else None
     pending_name = str((pending or {}).get("name") or (pending or {}).get("brand_name") or "").strip()
@@ -568,8 +564,6 @@ def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) 
             paid_chip,
             {"id": "portfolio", "label": "Review my kit", "action": "coach_portfolio"},
         ]
-        if notes.get("saw_gigs") or notes.get("wanted_gigs"):
-            chips.insert(1, more_gigs_chip)
         return chips
     continues = 0
     try:
@@ -597,20 +591,26 @@ def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) 
             paid_chip,
             {
                 "id": "line_up",
-                "label": "Find me 3 brands to pitch today",
+                "label": "Pitch 3 brands for me today",
+                "hint": "I'll draft the emails",
                 "action": "suggest_brands",
                 "skip_discovery": True,
             },
-            {"id": "name_a_brand", "label": "Write a pitch for a brand I name", "action": "ask_brand"},
+            {
+                "id": "name_a_brand",
+                "label": "Write a pitch for a brand I name",
+                "hint": "You pick, I write it",
+                "action": "ask_brand",
+            },
             {
                 "id": "more_replies",
-                "label": "Help me get more replies from brands",
+                "label": "Make my kit get more replies",
+                "hint": "Rates, bio, and proof brands open",
                 "action": "coach_profile",
             },
         ]
         if notes.get("saw_gigs") or notes.get("wanted_gigs"):
-            chips.insert(1, more_gigs_chip)
-            chips.insert(2, directory_chip)
+            chips.insert(1, directory_chip)
         return chips[:4]
     chips = [
         paid_chip,
@@ -630,8 +630,7 @@ def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) 
     if notes.get("pitched_brand_names"):
         chips[1] = {"id": "line_up", "label": "Next brand to pitch", "action": "suggest_brands"}
     if notes.get("saw_gigs") or notes.get("wanted_gigs"):
-        chips.insert(1, more_gigs_chip)
-        chips.insert(2, directory_chip)
+        chips.insert(1, directory_chip)
     if top_brand:
         pitched = {str(n).strip().lower() for n in (notes.get("pitched_brand_names") or []) if n}
         if top_brand.strip().lower() in pitched:

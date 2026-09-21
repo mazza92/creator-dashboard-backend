@@ -628,10 +628,10 @@ def _opportunity_card(opp, creator_tokens: set, applied_ids: set) -> tuple:
     brand_name = brief.get('brand') or opp['brand_name']
     website = (opp.get('brand_website') or '').strip() or None
     try:
-        from services.polly_gigs import public_brand_site
+        from services.polly_gigs import public_brand_site, brand_logo_src
         website = public_brand_site(website)
     except Exception:
-        pass
+        brand_logo_src = lambda explicit, _site=None: (str(explicit or '').strip() or None)
 
     niches = opp_niches if isinstance(opp_niches, list) else []
     display_niche = None
@@ -666,7 +666,7 @@ def _opportunity_card(opp, creator_tokens: set, applied_ids: set) -> tuple:
         'brand_category': opp['brand_category'],
         'display_niche': display_niche,
         'creator_niches': niches,
-        'brand_logo_url': opp.get('brand_logo_url'),
+        'brand_logo_url': brand_logo_src(opp.get('brand_logo_url'), website),
         'brand_website': website,
         'product_name': product_name,
         'campaign_description': desc,
@@ -1073,17 +1073,18 @@ def admin_list():
             )
             website = opp.get('brand_website')
             try:
-                from services.polly_gigs import public_brand_site
+                from services.polly_gigs import public_brand_site, brand_logo_src
                 website = public_brand_site(website)
             except Exception:
                 website = (website or '').strip() or None
+                brand_logo_src = lambda explicit, _site=None: (str(explicit or '').strip() or None)
             opportunities.append({
                 'id': opp['id'],
                 'brand_name': brief.get('brand') or opp['brand_name'],
                 'brand_email': opp['brand_email'],
                 'brand_website': website,
                 'brand_category': opp['brand_category'],
-                'brand_logo_url': opp['brand_logo_url'],
+                'brand_logo_url': brand_logo_src(opp.get('brand_logo_url'), website),
                 'product_name': brief.get('headline') or opp['product_name'],
                 'campaign_description': brief.get('summary') or opp['campaign_description'],
                 'pr_value_usd': opp['pr_value_usd'],
@@ -1438,6 +1439,7 @@ def admin_ingest():
 
                 from services.opportunity_enricher import clean_scanner_gig
                 from services.gig_listing import ensure_listing_brief_column
+                from services.polly_gigs import brand_logo_src
 
                 cleaned = clean_scanner_gig(raw)
                 campaign_description = cleaned["campaign_description"]
@@ -1446,6 +1448,13 @@ def admin_ingest():
                 title = cleaned["product_name"] or title
                 pr_value = cleaned.get("pr_value_usd")
                 brand_website = cleaned.get("brand_website")
+                brand_logo_url = brand_logo_src(
+                    raw.get("brand_logo_url")
+                    or raw.get("company_logo")
+                    or raw.get("logo_url")
+                    or raw.get("logo"),
+                    brand_website,
+                )
 
                 notes_bits = [
                     fingerprint,
@@ -1507,20 +1516,21 @@ def admin_ingest():
 
                 cursor.execute('''
                     INSERT INTO opportunities (
-                        brand_name, brand_email, brand_website, brand_category,
+                        brand_name, brand_email, brand_website, brand_logo_url, brand_category,
                         product_name, campaign_description, pr_value_usd,
                         creator_count_range, shipping_regions, follower_ranges,
                         content_types, creator_niches, additional_notes,
                         application_deadline, spots_total, status,
                         published_at, closes_at, listing_brief
                     ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         'live', NOW(), NOW() + INTERVAL '21 days', %s
                     ) RETURNING id
                 ''', (
                     buyer[:255],
                     brand_email[:255],
                     brand_website,
+                    brand_logo_url,
                     (niches[0] if niches else (raw.get('category') or raw.get('brand_category') or None)),
                     title[:255],
                     campaign_description,

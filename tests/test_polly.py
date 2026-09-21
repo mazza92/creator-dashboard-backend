@@ -528,6 +528,7 @@ class HeuristicIntentTests(unittest.TestCase):
             "who pays for UGC",
             "do pay UGC",
             "Find paid UGC offers",
+            "Show paid UGC I can apply to now",
         ):
             self.assertEqual(deal_search_kind(paid), "paid", paid)
             self.assertFalse(looks_like_brand_request(paid), paid)
