@@ -19,6 +19,7 @@ ROSTER_FILL_PAD = 8
 ROSTER_FOCUS_MIN = 3
 ROSTER_FOCUS_CAP = 8
 ROSTER_MINT_MIN = 8
+ROSTER_PICK_LIMIT = 5
 
 _SPOTLIGHT_COL_READY = False
 _SPOTLIGHT_COL_LOCK = threading.Lock()
@@ -56,11 +57,8 @@ LEFT JOIN (
         SELECT
             k.brand_id,
             COALESCE(co.fill_count, 0) AS fill_count,
-            COALESCE(c.slot_limit, 5) AS slot_limit,
-            GREATEST(
-                COALESCE(c.slot_limit, 5) * 3,
-                COALESCE(c.slot_limit, 5) + 8
-            ) AS target,
+            LEAST(COALESCE(c.slot_limit, 5), 5) AS slot_limit,
+            GREATEST(5 * 3, 5 + 8) AS target,
             CASE WHEN i.brand_id IS NOT NULL THEN 1 ELSE 0 END AS inbound,
             CASE WHEN s.brand_id IS NOT NULL THEN 1 ELSE 0 END AS spotlighted
         FROM keys k
@@ -146,10 +144,29 @@ def ensure_campaign_spotlight_column(cursor, conn=None):
             print(f"[roster_demand] spotlight column ensure skipped: {exc}")
 
 
-def fill_target(slot_limit):
-    n = int(slot_limit or 5)
-    n = max(1, min(n, 50))
+def pick_limit(slot_limit=None):
+    """Brands always pick 5 creators. Fill is uncapped."""
+    return ROSTER_PICK_LIMIT
+
+
+def fill_target(slot_limit=None):
+    """Ready-to-pick floor for For You. Applications themselves are uncapped."""
+    n = pick_limit(slot_limit)
     return max(n * ROSTER_FILL_MULT, n + ROSTER_FILL_PAD)
+
+
+def clamp_active_pick_limits(cursor):
+    """Force live rosters onto 5 picks. Does not touch locked/shipped history."""
+    cursor.execute(
+        """
+        UPDATE brand_pr_campaigns
+        SET slot_limit = %s, updated_at = NOW()
+        WHERE status = 'active'
+          AND COALESCE(slot_limit, 0) IS DISTINCT FROM %s
+        """,
+        (ROSTER_PICK_LIMIT, ROSTER_PICK_LIMIT),
+    )
+    return cursor.rowcount or 0
 
 
 def mark_focus(campaigns):

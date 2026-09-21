@@ -23,7 +23,13 @@ from psycopg2.extras import RealDictCursor, Json
 
 from pr_crm_routes import get_db_connection, convert_decimals
 from social_verification_routes import normalize_country_code
-from services.roster_demand import fill_target, mark_focus, ensure_campaign_spotlight_column
+from services.roster_demand import (
+    clamp_active_pick_limits,
+    fill_target,
+    mark_focus,
+    pick_limit,
+    ensure_campaign_spotlight_column,
+)
 from services.kit_view_tracking import public_kit_url, record_brand_profile_view
 from services.brand_billing import (
     billing_public_summary,
@@ -300,7 +306,7 @@ DEFAULT_SLOT_LIMIT = 5
 
 
 def _insert_campaign(cursor, brand, slot_limit=DEFAULT_SLOT_LIMIT, title=None, headline=None, lede=None, sku_note=None, chips=None):
-    slot_limit = max(1, min(int(slot_limit or DEFAULT_SLOT_LIMIT), 50))
+    slot_limit = pick_limit(slot_limit)
     name = brand.get("brand_name") or "Brand"
     token = secrets.token_urlsafe(24)
     cursor.execute(
@@ -356,6 +362,7 @@ def maybe_mint_roster_for_brand(cursor, brand_id, slot_limit=DEFAULT_SLOT_LIMIT)
     """Attach to a live roster, or mint once the list is worth sending."""
     from services.roster_demand import ROSTER_MINT_MIN
     _ensure_schema(cursor)
+    clamp_active_pick_limits(cursor)
     cursor.execute(
         """
         SELECT c.*
@@ -383,6 +390,7 @@ def ensure_active_roster_for_brand(cursor, brand_id, slot_limit=DEFAULT_SLOT_LIM
     (unless admin force path bypasses via can_mint check skipped upstream).
     """
     _ensure_schema(cursor)
+    clamp_active_pick_limits(cursor)
     cursor.execute(
         """
         SELECT c.*
@@ -1216,7 +1224,7 @@ def _campaign_public(campaign, cards):
             for c in cards
             if c["status"] in ("ships", "posted")
         ]
-    slot_limit = int(campaign.get("slot_limit") or 5)
+    slot_limit = pick_limit(campaign.get("slot_limit"))
     return convert_decimals(
         {
             "success": True,
@@ -1443,7 +1451,7 @@ def select_creator(token):
             return jsonify({"success": False, "error": "Creator is not available to pick"}), 400
 
         selected = _selected_ids(campaign)
-        slot_limit = int(campaign.get("slot_limit") or 5)
+        slot_limit = pick_limit(campaign.get("slot_limit"))
         if app_id in selected:
             payload = _build_roster_response(cursor, campaign)
             conn.close()
@@ -1634,7 +1642,7 @@ def lock_roster(token):
             return jsonify(payload), 200
 
         selected = _selected_ids(campaign)
-        slot_limit = int(campaign.get("slot_limit") or 5)
+        slot_limit = pick_limit(campaign.get("slot_limit"))
         if len(selected) != slot_limit:
             conn.close()
             return jsonify({
@@ -1860,8 +1868,7 @@ def admin_create_campaign():
             return jsonify({"success": False, "error": "brand_id required"}), 400
 
         force = bool(data.get("force"))
-        slot_limit = int(data.get("slot_limit") or 5)
-        slot_limit = max(1, min(slot_limit, 50))
+        slot_limit = pick_limit(data.get("slot_limit") or 5)
         title = (data.get("title") or "").strip()
         headline = (data.get("headline") or "").strip() or DEFAULT_HEADLINE
         lede = (data.get("lede") or "").strip() or DEFAULT_LEDE
@@ -2012,6 +2019,8 @@ def admin_list_campaigns():
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         _ensure_schema(cursor, conn)
         ensure_campaign_spotlight_column(cursor, conn)
+        clamp_active_pick_limits(cursor)
+        conn.commit()
         clauses = []
         params = []
         if brand_id:
@@ -2060,7 +2069,7 @@ def admin_list_campaigns():
                 if r.get("status") in ("locked", "shipped")
                 else len([x for x in selected_ids if str(x).isdigit() or isinstance(x, int)])
             )
-            target = fill_target(r.get("slot_limit"))
+            target = fill_target()
             fill_count = int(r["review_count"] or 0) + int(r.get("shipped_picks") or 0)
             hunger = max(0, target - fill_count) if r.get("status") == "active" else 0
             spotlighted_at = r.get("creator_spotlighted_at")
@@ -2074,7 +2083,7 @@ def admin_list_campaigns():
                 "hero_product": r.get("hero_product") or "",
                 "token": r["token"],
                 "title": r["title"],
-                "slot_limit": r["slot_limit"],
+                "slot_limit": pick_limit(r.get("slot_limit")),
                 "sku_note": r.get("sku_note") or "",
                 "status": r["status"],
                 "applicant_count": int(r["applicant_count"] or 0),

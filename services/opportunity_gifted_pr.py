@@ -385,7 +385,8 @@ def push_opportunity_to_gifted_pr(cursor, opp) -> dict | None:
         ensure_active_roster_for_brand,
     )
 
-    slot_limit = max(1, min(int(opp.get("spots_total") or 5), 50))
+    from services.roster_demand import pick_limit
+    slot_limit = pick_limit(opp.get("spots_total") or 5)
     campaign, created = ensure_active_roster_for_brand(
         cursor, brand["id"], slot_limit=slot_limit
     )
@@ -399,10 +400,7 @@ def push_opportunity_to_gifted_pr(cursor, opp) -> dict | None:
                 headline = COALESCE(NULLIF(headline, ''), %s),
                 lede = COALESCE(NULLIF(lede, ''), %s),
                 sku_note = COALESCE(NULLIF(sku_note, ''), %s),
-                slot_limit = CASE
-                    WHEN slot_limit IS NULL OR slot_limit < 1 THEN %s
-                    ELSE slot_limit
-                END,
+                slot_limit = %s,
                 deal_chips = COALESCE(deal_chips, %s),
                 updated_at = NOW()
             WHERE id = %s

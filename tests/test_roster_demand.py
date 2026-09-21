@@ -23,8 +23,14 @@ class TestFillTarget(unittest.TestCase):
     def test_five_slots_needs_fifteen(self):
         self.assertEqual(fill_target(5), 15)
 
-    def test_uses_pad_when_larger(self):
-        self.assertEqual(fill_target(2), 10)
+    def test_inflated_slots_still_use_five_pick_fill_floor(self):
+        self.assertEqual(fill_target(50), 15)
+        self.assertEqual(fill_target(2), 15)
+
+    def test_pick_limit_is_always_five(self):
+        from services.roster_demand import pick_limit
+        self.assertEqual(pick_limit(50), 5)
+        self.assertEqual(pick_limit(None), 5)
 
 
 class TestPreferHungryRosters(unittest.TestCase):
