@@ -18,6 +18,7 @@ from urllib.parse import quote
 import requests
 
 from services.irresistible_pitch import (
+    IRRESISTIBLE_SUBJECT,
     LOCATION_PLACEHOLDER,
     apply_location_to_body,
     resolve_shipping,
@@ -32,7 +33,10 @@ from services.polly_persona import (
 POLLY_BCC = "creators@newcollab.co"
 MAX_SUGGESTED_BRANDS = 3
 MAX_HISTORY_TURNS = 24
+MAX_LLM_TURNS = 8
 DEFAULT_POLLY_MODEL = "gemini-2.5-flash"
+_FAST_CHIP_INTENTS = frozenset({"suggest_gigs", "suggest_brands"})
+_LLM_TIMEOUT_SEC = 18
 _MODEL_FALLBACKS = (
     "gemini-2.5-flash",
     "gemini-3.5-flash",
@@ -129,6 +133,51 @@ _CONTACT_ASK_RE = re.compile(
     r"i want"
     r")\b"
 )
+_EMAIL_ASK_RE = re.compile(
+    r"(?i)^(?:please\s+)?(?:"
+    r"(?:i\s+)?(?:need|want|wanna)\s+(?:an?\s+|the\s+|their\s+|the\s+brand'?s\s+)?"
+    r"email(?:\s+address)?"
+    r"|(?:give|send|tell)\s+me\s+(?:an?\s+|the\s+|their\s+)?email(?:\s+address)?"
+    r"|(?:what(?:'s| is|s)?|where(?:'s| is))\s+(?:the\s+|their\s+|the\s+brand'?s\s+)?"
+    r"email(?:\s+address)?"
+    r"|(?:can i (?:have|get)|got)\s+(?:the\s+|an?\s+)?email(?:\s+address)?"
+    r"|(?:the\s+|their\s+|the\s+brand'?s\s+)?email(?:\s+address)?"
+    r")[\s?.!]*$"
+)
+_HANDLE_REVISION_RE = re.compile(
+    r"(?i)\b(?:my\s+)?(?:tiktok|instagram|ig|tt)\s+"
+    r"(?:id|handle|username|account|user(?:name)?)\s+"
+    r"is\s+@?(?P<keep>[\w.]+)\s+not\s+@?(?P<drop>[\w.]+)"
+)
+_HANDLE_REVISION_ALT_RE = re.compile(
+    r"(?i)\b(?:not|was)\s+@?(?P<drop>[\w.]+).{0,20}"
+    r"(?:it'?s|is|should be)\s+@?(?P<keep>[\w.]+)"
+)
+_PITCH_REVISION_RE = re.compile(
+    r"(?i)\b("
+    r"(?:tiktok|instagram|ig)\s+(?:id|handle|username|account)"
+    r"|wrong\s+(?:tiktok|handle|id|email)"
+    r"|incorrect\s+(?:tiktok|handle|id|email)"
+    r"|handle\s+is\s+wrong"
+    r")\b"
+)
+_APPROVAL_TIMING_RE = re.compile(
+    r"(?i)("
+    r"after mailing"
+    r"|after\s+(?:i\s+)?(?:mail|email|send)"
+    r"|they approve"
+    r"|do they approve"
+    r"|will they (?:approve|reply|accept)"
+    r")"
+)
+_SENT_WRONG_DETAIL_RE = re.compile(
+    r"(?i)("
+    r"(?:already (?:been )?sent|has already been sent|i (?:already )?sent).{0,100}"
+    r"(?:incorrect|wrong|mistake|typo|not \d+)"
+    r"|(?:incorrect|wrong).{0,40}(?:tiktok|handle|id|email).{0,40}"
+    r"(?:what should|what do i|now)"
+    r")"
+)
 _SUGGEST_RE = re.compile(
     r"\b(suggest|recommend|match|for you|who should|find brand|show me brand|"
     r"line up|hit up|brands? to (reach|pitch|contact)|which brand|what brand|"
@@ -180,6 +229,7 @@ _QUERY_VOCAB = _GENERIC_BRAND_ASK | _ASK_FILLER | frozenset({
     "pay", "pays", "paying", "now", "today", "first", "real", "really",
     "actual", "actually", "just", "from", "start", "receive", "products",
     "line", "up", "with", "and", "or", "of", "in", "on", "at",
+    "email", "emails", "inbox", "mailto",
 })
 _PROMPT_VOCAB = frozenset({
     "replies", "reply", "response", "responses", "more", "better", "improve",
@@ -187,6 +237,7 @@ _PROMPT_VOCAB = frozenset({
     "could", "would", "after", "follow", "following", "next", "this",
     "that", "my", "your", "open", "rate", "rates", "kit", "portfolio",
     "week", "today", "now", "how", "why", "when", "where", "who",
+    "email", "emails", "inbox", "mailto", "address",
 })
 _QUESTION_LEAD_RE = re.compile(
     r"(?i)^(how\s+(?:to|do|does|can|could|should|would|i\b)|"
@@ -578,6 +629,8 @@ def leftover_is_prompt(text: str) -> bool:
         return False
     if followup_brand_query(raw):
         return False
+    if _EMAIL_ASK_RE.match(raw):
+        return True
     if "?" in raw:
         return True
     if re.match(r"(?i)^(how|what)\s+about\b", raw):
@@ -593,6 +646,57 @@ def leftover_is_prompt(text: str) -> bool:
     ):
         return True
     return False
+
+
+def is_pitch_email_ask(text: str) -> bool:
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    return bool(_EMAIL_ASK_RE.match(raw))
+
+
+def parse_handle_revision(text: str) -> Optional[Dict[str, str]]:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    match = _HANDLE_REVISION_RE.search(raw) or _HANDLE_REVISION_ALT_RE.search(raw)
+    if not match:
+        return None
+    keep = (match.group("keep") or "").strip().lstrip("@")
+    drop = (match.group("drop") or "").strip().lstrip("@")
+    if not keep or keep.lower() == drop.lower():
+        return None
+    return {"keep": keep, "drop": drop}
+
+
+def is_pitch_revision(text: str) -> bool:
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if parse_handle_revision(raw):
+        return True
+    return bool(_PITCH_REVISION_RE.search(raw))
+
+
+def is_approval_timing_ask(text: str) -> bool:
+    return bool(_APPROVAL_TIMING_RE.search((text or "").strip()))
+
+
+def is_sent_wrong_detail(text: str) -> bool:
+    return bool(_SENT_WRONG_DETAIL_RE.search((text or "").strip()))
+
+
+def is_out_of_script_chat(text: str) -> bool:
+    """Questions/corrections that must not run the brand/gigs script."""
+    return bool(
+        leftover_is_prompt(text)
+        or is_pitch_email_ask(text)
+        or is_pitch_revision(text)
+        or is_approval_timing_ask(text)
+        or is_sent_wrong_detail(text)
+        or is_casual_ack(text)
+        or is_status_ask(text)
+    )
 
 
 def leftover_looks_like_query(text: str) -> bool:
@@ -619,6 +723,10 @@ def candidate_looks_like_brand_name(text: str) -> bool:
         or is_status_ask(leftover)
         or leftover_looks_like_query(leftover)
         or is_casual_ack(leftover)
+        or is_pitch_email_ask(leftover)
+        or is_pitch_revision(leftover)
+        or is_approval_timing_ask(leftover)
+        or is_sent_wrong_detail(leftover)
     ):
         return False
     low = leftover.lower()
@@ -634,6 +742,26 @@ def candidate_looks_like_brand_name(text: str) -> bool:
     if all(part in _QUERY_VOCAB or part in _CATEGORY_ASK or part in _PROMPT_VOCAB for part in parts):
         return False
     return True
+
+
+def brain_brand_name(name: Optional[str]) -> Optional[str]:
+    """Company/product only — never a sentence, never 'email', never the whole user prompt."""
+    raw = (name or "").strip(" .!,")
+    if not raw:
+        return None
+    if leftover_is_prompt(raw) or is_pitch_email_ask(raw) or is_casual_ack(raw) or is_status_ask(raw):
+        return None
+    words = raw.split()
+    if len(words) > 4 or len(raw) > 48:
+        return None
+    low = raw.lower()
+    if low in _CATEGORY_ASK or low in _GENERIC_BRAND_ASK or low in _CASUAL_WORDS:
+        return None
+    if low in {"email", "emails", "inbox", "mailto", "handle", "tiktok", "instagram"}:
+        return None
+    if not candidate_looks_like_brand_name(raw):
+        return None
+    return raw
 
 
 def allow_fuzzy_brand_lookup(candidate: str) -> bool:
@@ -660,12 +788,23 @@ def deal_search_kind(text: str) -> Optional[str]:
     if not (_DEAL_SEARCH_RE.search(raw) or leftover_outcome):
         return None
     low = raw.lower()
-    if re.search(
+    gifted_hit = bool(re.search(r"\b(gifted|pr package|pr box|gifting)\b", low))
+    paid_negated = bool(re.search(
+        r"\b(?:not|no)\s+(?:a\s+|looking\s+for\s+(?:a\s+)?)?(?:paid|paying)\b"
+        r"|\binstead of (?:a\s+)?paid\b"
+        r"|\brather than (?:a\s+)?paid\b"
+        r"|\bnot a paid\b",
+        low,
+    ))
+    paid_hit = bool(re.search(
         r"\bpaid\b|\bpay(?:s|ing)?\b|\bpagos?\b|\bugc\b|\bnot\s+just\s+(?:receive\s+)?products\b",
         low,
-    ):
+    ))
+    if gifted_hit and (paid_negated or not paid_hit):
+        return "gifted"
+    if paid_hit and not paid_negated:
         return "paid"
-    if re.search(r"\b(gifted|pr package)\b", low):
+    if gifted_hit:
         return "gifted"
     return "brands"
 
@@ -748,6 +887,19 @@ def match_named_brand(text: str, pools: Optional[List] = None) -> str:
     return best
 
 
+def named_brand_in_message(
+    text: str,
+    suggested: Optional[List[Dict]] = None,
+    history: Optional[List[Dict]] = None,
+) -> str:
+    """Directory name mentioned in a long prompt (gifted SKIN1004, etc.)."""
+    raw = (text or "").strip()
+    if not raw or is_pitch_email_ask(raw) or is_pitch_revision(raw) or is_sent_wrong_detail(raw):
+        return ""
+    pools = list(suggested or []) + names_mentioned_by_assistant(history)
+    return match_named_brand(raw, pools)
+
+
 def asked_brand_query(text: str) -> str:
     """Drop find/fin/want filler so 'fin Dell' looks up Dell."""
     if is_brand_reject(text):
@@ -762,6 +914,7 @@ def asked_brand_query(text: str) -> str:
         or leftover_is_category(text)
         or is_status_ask(text)
         or is_casual_ack(text)
+        or is_pitch_email_ask(text)
     ):
         return ""
     stripped = strip_brand_ask(text)
@@ -847,6 +1000,10 @@ def looks_like_brand_request(text: str, history: Optional[List[Dict]] = None) ->
         or leftover_is_category(raw)
         or is_status_ask(raw)
         or is_casual_ack(raw)
+        or is_pitch_email_ask(raw)
+        or is_pitch_revision(raw)
+        or is_approval_timing_ask(raw)
+        or is_sent_wrong_detail(raw)
     ):
         return False
     if _AFFIRM_RE.match(raw):
@@ -893,6 +1050,8 @@ def requested_brand_name(
 ) -> Optional[str]:
     raw = (text or "").strip()
     if leftover_is_prompt(raw) or is_casual_ack(raw) or leftover_looks_like_query(raw) or is_deal_search(raw):
+        return None
+    if is_pitch_email_ask(raw) or is_pitch_revision(raw) or is_sent_wrong_detail(raw):
         return None
     typed = asked_brand_query(raw) if looks_like_brand_request(raw, history) else ""
     typed = (typed or "").strip()
@@ -1161,6 +1320,82 @@ def apply_paid_ask_to_pitch(
     return out
 
 
+def apply_gifted_ask_to_pitch(
+    pitch: Optional[Dict[str, Any]],
+    location_display: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Rewrite a paid draft into a gifted PR ask."""
+    if not pitch:
+        return pitch
+    out = dict(pitch)
+    body = str(out.get("body") or "")
+    loc = (location_display or "").strip()
+    if not loc:
+        loc_m = re.search(r"shipping to ([^\n.]+)", body, re.I)
+        if loc_m:
+            loc = loc_m.group(1).strip()
+    if not loc or is_location_placeholder(loc):
+        loc = LOCATION_PLACEHOLDER
+    gifted_line = f"No fee. Just product + shipping to {loc}."
+    if re.search(r"(?im)^rate:", body):
+        body = re.sub(r"(?im)^rate:[^\n]+", gifted_line, body)
+    elif re.search(r"Rate:", body):
+        body = re.sub(r"Rate: [^\n]+", gifted_line, body)
+    elif re.search(r"(?i)no fee", body):
+        body = re.sub(r"(?i)No fee[^\n]*", gifted_line, body)
+    else:
+        body = (body.rstrip() + "\n\n" + gifted_line).strip()
+    out["subject"] = IRRESISTIBLE_SUBJECT
+    out["body"] = body
+    out["deal_type"] = "gifted"
+    out["quoted_rate"] = None
+    out["needs_location"] = pitch_has_placeholder(body)
+    if loc and not is_location_placeholder(loc):
+        out["location_display"] = loc
+    if out.get("email"):
+        out["mailto"] = build_mailto(out.get("email"), out["subject"], body)
+    return out
+
+
+def apply_handle_revision_to_pitch(
+    pitch: Optional[Dict[str, Any]],
+    keep: str,
+    drop: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Swap a wrong TikTok/IG handle in the live draft."""
+    if not pitch:
+        return pitch
+    out = dict(pitch)
+    body = str(out.get("body") or "")
+    keep = (keep or "").strip().lstrip("@")
+    drop = (drop or "").strip().lstrip("@")
+    if not keep:
+        return out
+    if drop and drop in body:
+        body = body.replace(drop, keep)
+    elif keep.isdigit():
+        def _swap_digits(match: re.Match) -> str:
+            prefix, digits = match.group(1), match.group(2)
+            if drop and digits != drop:
+                return match.group(0)
+            return prefix + keep
+        body = re.sub(r"(@[\w.]*?)(\d+)(?=\b)", _swap_digits, body)
+        body = re.sub(r"(?m)^([\w.]*?)(\d+)$", _swap_digits, body)
+    else:
+        body = re.sub(r"@[\w.]+", "@" + keep, body, count=1)
+        body = re.sub(
+            r"tiktok\.com/@[\w.]+",
+            "tiktok.com/@" + keep,
+            body,
+            count=1,
+            flags=re.I,
+        )
+    out["body"] = body
+    if out.get("email"):
+        out["mailto"] = build_mailto(out.get("email"), out.get("subject") or "", body)
+    return out
+
+
 def pitch_from_followup_response(
     data: Optional[Dict],
     brand: Optional[Dict] = None,
@@ -1274,9 +1509,8 @@ def gemini_available() -> bool:
 
 
 def llm_available() -> bool:
-    if llm_disabled():
-        return False
-    return bool(get_gemini_key() or get_anthropic_key())
+    """Polly's brain is Gemini-only — never fall through to Anthropic."""
+    return gemini_available() and not _GEMINI_DEPLETED
 
 
 def begin_polly_turn() -> None:
@@ -1317,15 +1551,15 @@ def _history_lines(history: Optional[List[Dict]]) -> List[str]:
 
 def _turn_messages(history: Optional[List[Dict]], latest_user: str = "") -> List[Dict[str, str]]:
     msgs: List[Dict[str, str]] = []
-    for msg in (history or [])[-MAX_HISTORY_TURNS:]:
+    for msg in (history or [])[-MAX_LLM_TURNS:]:
         role = "assistant" if (msg.get("role") or "").lower() == "assistant" else "user"
         content = (msg.get("content") or "").strip()
         if not content:
             continue
         if msgs and msgs[-1]["role"] == role:
-            msgs[-1]["content"] = (msgs[-1]["content"] + "\n" + content)[:4000]
+            msgs[-1]["content"] = (msgs[-1]["content"] + "\n" + content)[:1600]
         else:
-            msgs.append({"role": role, "content": content[:2000]})
+            msgs.append({"role": role, "content": content[:1200]})
     latest = (latest_user or "").strip()
     if latest:
         if msgs and msgs[-1]["role"] == "user":
@@ -1340,10 +1574,34 @@ def _turn_messages(history: Optional[List[Dict]], latest_user: str = "") -> List
 
 def _parse_json_text(text: str) -> Dict[str, Any]:
     text = (text or "").strip()
+    if not text:
+        raise ValueError("empty model text")
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
-    return json.loads(text)
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        parsed = json.loads(text[start:end + 1])
+    if not isinstance(parsed, dict):
+        raise ValueError("model JSON was not an object")
+    return parsed
+
+
+def _gemini_output_text(data: Optional[Dict[str, Any]]) -> str:
+    cand = ((data or {}).get("candidates") or [{}])[0]
+    if not isinstance(cand, dict):
+        return ""
+    parts = ((cand.get("content") or {}).get("parts") or [])
+    chunks = []
+    for part in parts:
+        if isinstance(part, dict) and part.get("text"):
+            chunks.append(str(part.get("text") or ""))
+    return "\n".join(chunks).strip()
 
 
 def profile_aware_chat(profile_context: str, text: str = "", first_name: Optional[str] = None) -> str:
@@ -1820,6 +2078,13 @@ def classify_intent_heuristic(
     raw = (text or "").strip()
     if is_done_turn(raw) or is_casual_ack(raw):
         return {"intent": "chat", "say": "", "brand_id": None, "brand_name": None}
+    if (
+        is_pitch_email_ask(raw)
+        or is_pitch_revision(raw)
+        or is_approval_timing_ask(raw)
+        or is_sent_wrong_detail(raw)
+    ):
+        return {"intent": "chat", "say": "", "brand_id": None, "brand_name": None}
     from services.polly_gigs import wants_more_gigs
     if wants_more_gigs(raw, history):
         return {"intent": "suggest_gigs", "say": "", "brand_id": None, "brand_name": None}
@@ -1846,6 +2111,18 @@ def classify_intent_heuristic(
     if raw.lower() in ("write a pitch for a brand i name",):
         return {"intent": "ask_brand", "say": "", "brand_id": None, "brand_name": None}
     if is_deal_search(raw):
+        named = named_brand_in_message(raw, suggested_brands, history)
+        if named:
+            resolved = resolve_brand(suggested_brands, brand_name=named) or resolve_brand(
+                names_mentioned_by_assistant(history),
+                brand_name=named,
+            )
+            return {
+                "intent": "generate_pitch",
+                "say": "",
+                "brand_id": resolved.get("id") if resolved else None,
+                "brand_name": (resolved.get("name") if resolved else None) or named,
+            }
         return {
             "intent": deal_pool_intent(raw) or "suggest_brands",
             "say": "",
@@ -1924,15 +2201,17 @@ def _gemini_generate_json(system_prompt: str, user_prompt: str, history: Optiona
         "systemInstruction": {"parts": [{"text": system_prompt}]},
         "contents": contents,
         "generationConfig": {
-            "temperature": 0.7,
+            "temperature": 0.4,
+            "maxOutputTokens": 512,
             "responseMimeType": "application/json",
+            "thinkingConfig": {"thinkingBudget": 0},
         },
     }
     last_err = "Gemini failed"
     for model in _model_candidates():
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
-        resp = requests.post(url, json=payload, headers=headers, timeout=45)
+        resp = requests.post(url, json=payload, headers=headers, timeout=_LLM_TIMEOUT_SEC)
         if resp.status_code == 429:
             body = (resp.text or "")[:400]
             if "depleted" in body.lower() or "prepayment" in body.lower():
@@ -1943,15 +2222,26 @@ def _gemini_generate_json(system_prompt: str, user_prompt: str, history: Optiona
             continue
         if resp.status_code >= 400:
             last_err = f"{model} HTTP {resp.status_code}"
+            if resp.status_code == 400 and payload["generationConfig"].pop("thinkingConfig", None):
+                resp = requests.post(url, json=payload, headers=headers, timeout=_LLM_TIMEOUT_SEC)
+                if resp.status_code >= 400:
+                    continue
+            else:
+                continue
+        try:
+            data = resp.json()
+        except ValueError:
+            last_err = f"{model} empty HTTP body"
             continue
-        data = resp.json()
-        text = (
-            data.get("candidates", [{}])[0]
-            .get("content", {})
-            .get("parts", [{}])[0]
-            .get("text", "")
-        )
-        parsed = _parse_json_text(text)
+        text = _gemini_output_text(data)
+        try:
+            parsed = _parse_json_text(text)
+        except (ValueError, json.JSONDecodeError) as err:
+            reason = ((data.get("candidates") or [{}])[0] or {}).get("finishReason")
+            last_err = f"{model} json:{err} finish={reason!r}"
+            print(f"[Polly] Gemini JSON miss model={model} finish={reason!r} chars={len(text)}")
+            # Don't cascade extra Gemini models, and never fall through to Anthropic.
+            break
         from services.polly_llm_cost import usage_from_gemini
         usage = usage_from_gemini(data, model)
         print(
@@ -1965,6 +2255,7 @@ def _gemini_generate_json(system_prompt: str, user_prompt: str, history: Optiona
 
 
 def _anthropic_generate_json(system_prompt: str, user_prompt: str, history: Optional[List[Dict]] = None) -> Dict[str, Any]:
+    """Unused by Polly's chat brain — kept for cost helpers / optional ops tools."""
     api_key = get_anthropic_key()
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY not configured")
@@ -1990,7 +2281,7 @@ def _anthropic_generate_json(system_prompt: str, user_prompt: str, history: Opti
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         },
-        timeout=45,
+        timeout=_LLM_TIMEOUT_SEC,
     )
     if resp.status_code >= 400:
         raise ValueError(f"Anthropic HTTP {resp.status_code}")
@@ -2012,25 +2303,22 @@ def _anthropic_generate_json(system_prompt: str, user_prompt: str, history: Opti
 def _llm_generate_json(system_prompt: str, user_prompt: str, history: Optional[List[Dict]] = None) -> Dict[str, Any]:
     if llm_disabled():
         raise ValueError("Polly LLM disabled")
-    errors = []
-    if get_gemini_key() and not _GEMINI_DEPLETED:
-        try:
-            return _gemini_generate_json(system_prompt, user_prompt, history=history)
-        except Exception as err:
-            errors.append(f"gemini:{err}")
-            print(f"[Polly] Gemini failed, trying Anthropic: {_redact_secrets(err)}")
-    if get_anthropic_key():
-        try:
-            return _anthropic_generate_json(system_prompt, user_prompt, history=history)
-        except Exception as err:
-            errors.append(f"anthropic:{err}")
-    raise ValueError(_redact_secrets("; ".join(errors) or "No LLM available"))
+    if not get_gemini_key() or _GEMINI_DEPLETED:
+        raise ValueError("Gemini not available")
+    try:
+        return _gemini_generate_json(system_prompt, user_prompt, history=history)
+    except Exception as err:
+        print(f"[Polly] Gemini failed (no Anthropic fallback): {_redact_secrets(err)}")
+        raise
 
 
 def _brain_extra(discovery_hint: str = "", force_intent: Optional[str] = None) -> str:
     force = f" Forced intent for this turn: {force_intent}." if force_intent else ""
     return (
-        "You are the brain of this conversation. Write the reply in `say` using Markdown.\n"
+        "You are layer 1 — the brain. Every free-text message lands here first. "
+        "You understand the request, write `say`, and allocate a backend tool via `intent`.\n"
+        "Layer 2 will run that tool (pitch card, paid gigs, brand cards). "
+        "Do not wait for a keyword. A question is still a real request.\n"
         "Return JSON only:\n"
         '{"intent":"suggest_gigs|suggest_brands|generate_pitch|discovery|explain_newcollab|'
         'coach_week|coach_portfolio|coach_rates|coach_profile|ask_brand|chat",'
@@ -2039,6 +2327,12 @@ def _brain_extra(discovery_hint: str = "", force_intent: Optional[str] = None) -
         '"notes_patch":{"goal_30d":null,"stage":null,"niche":null,"location":null,'
         '"biggest_challenge":null,"dream_brands":null}}\n'
         "Rules:\n"
+        "- `brand_name` is a company/product only (SKIN1004, Ayla, NatPat AU). "
+        "Never put a sentence there. Never 'email', 'do you have Ayla email', or 'i need an email'.\n"
+        "- Asking for an email, inbox, handle, or 'do you have X email' is intent=chat. "
+        "Quote the address from open_pitch if it is that brand. If they named a different brand, "
+        "set brand_name to that company and say whether you have an inbox on a card. "
+        "Do not invent emails. Do not generate_pitch unless they asked you to draft/contact/pitch.\n"
         "- Have an opinion. Do not write a canned menu or restart with a greeting if history exists.\n"
         "- Format `say` for reading: short paragraphs, **bold** the must-do, *italics* for asides, "
         "__underline__ the exact kit URL, numbered steps when coaching. 1-3 emojis max.\n"
@@ -2057,10 +2351,18 @@ def _brain_extra(discovery_hint: str = "", force_intent: Optional[str] = None) -
         "- After a pitch card, wait. If they say more / another / next, intent=suggest_brands "
         "(show cards). Do not auto-generate the next pitch. Only generate_pitch when they "
         "name a brand or tap Contact — even if that brand is not in suggested_brands.\n"
-        "- If they name a brand not on their match cards: still intent=generate_pitch. "
-        "Say if it's a weak fit, then still give the pitch. Never invent a Pitches tab, "
-        "next screen, Send Pitch button, or Directory contact button. The card appears "
-        "in this chat or it does not exist.\n"
+        "- If they name a brand (even inside a gifted/paid ask) AND they want a pitch/contact: "
+        "intent=generate_pitch for that brand. Do not dump paid UGC gigs. "
+        "If they only asked for the email/inbox/handle, intent=chat.\n"
+        "- Gifted / PR / not paid + a brand name = generate_pitch (gifted), never suggest_gigs.\n"
+        "- 'what is the email' after a pitch card: quote the email from the card. "
+        "Do not ask for city/country if the pitch already has a real shipping line.\n"
+        "- TikTok/IG handle corrections ('id is 499 not 497') are chat, not a brand name. "
+        "Never write 'isn't in our directory' for those.\n"
+        "- After they say they already sent with a wrong handle: tell them to send a 2-line "
+        "correction to the same inbox. Do not dump more brand cards. Do not insist it's still a draft.\n"
+        "- 'do they approve after mailing' = chat. Typical reply is days, not minutes. "
+        "Ask them to tap I sent it if they actually sent. No new pitch.\n"
         "- also for <brand> / share follow-up after a follow-up card: intent=generate_pitch "
         "for that brand. Never say a follow-up is already in chat unless this turn returns "
         "a pitch card. Do not invent that they already sent it.\n"
@@ -2076,6 +2378,8 @@ def _brain_extra(discovery_hint: str = "", force_intent: Optional[str] = None) -
         "the email body, or 'Hey team'. The UI already shows the pitch card.\n"
         "- If the pitch still has [CITY, COUNTRY] or other placeholders: do not tell them to "
         "open mail or send. Ask for city + country first. You are mentoring a new creator.\n"
+        "- If the pitch card already has a real shipping line, never ask for city/country again "
+        "and never pretend [CITY, COUNTRY] is still there.\n"
         "- Never recommend a brand in already_pitched.\n"
         "- If TASK TRACKER mentions a kit view, that brand opened the pitch link. "
         "Treat it as a hot lead and offer a follow-up. Do not ignore it.\n"
@@ -2131,13 +2435,21 @@ def classify_intent(
     force_intent: Optional[str] = None,
     pitched_names: Optional[List[str]] = None,
     pending_draft: Optional[str] = None,
+    open_pitch: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Live LLM is the brain. Heuristic only routes tools if the model is down."""
+    """Layer 1: Gemini always sees free text. Heuristic only if the model is down or a chip allocated the tool."""
     heuristic = classify_intent_heuristic(
         text, suggested_brands, brand_id=brand_id, history=history
     )
     if force_intent:
         heuristic["intent"] = force_intent
+    chip_allocated = force_intent in _FAST_CHIP_INTENTS or (
+        force_intent == "generate_pitch" and brand_id not in (None, "", 0, "0")
+    )
+    if chip_allocated:
+        heuristic["intent"] = force_intent
+        heuristic["brain"] = "chip"
+        return heuristic
     if not llm_available():
         print("[Polly] LLM unavailable — using heuristic")
         return heuristic
@@ -2157,6 +2469,17 @@ def classify_intent(
             f"\nUnsent draft still on the card: {pending_label}. "
             "Acks (thanks, cool, nice) keep that draft. Never treat the ack as a brand."
         )
+    pitch_bits = None
+    if isinstance(open_pitch, dict) and (open_pitch.get("brand_name") or open_pitch.get("email")):
+        pitch_bits = {
+            "brand_name": open_pitch.get("brand_name"),
+            "email": open_pitch.get("email") or None,
+            "needs_location": bool(open_pitch.get("needs_location")),
+        }
+        extra += (
+            "\nopen_pitch is the live draft card. If they ask for the email/inbox, quote open_pitch.email. "
+            "If they name a different brand, brand_name=that company, intent=chat unless they asked to pitch."
+        )
     system = polly_system_prompt(profile_context, extra=extra)
     user_prompt = json.dumps({
         "latest_user_message": text,
@@ -2165,6 +2488,7 @@ def classify_intent(
         "forced_intent": force_intent,
         "already_pitched": pitched_names,
         "pending_unsent_draft": pending_label or None,
+        "open_pitch": pitch_bits,
     })
     try:
         parsed = _llm_generate_json(system, user_prompt, history=history)
@@ -2172,72 +2496,30 @@ def classify_intent(
         print(f"[Polly] LLM classify failed, using heuristic: {_redact_secrets(err)}")
         return heuristic
 
-    intent = str(parsed.get("intent") or heuristic["intent"]).strip().lower()
     allowed = {
         "suggest_gigs", "suggest_brands", "generate_pitch", "chat", "discovery",
         "explain_newcollab", "coach_week", "coach_portfolio", "coach_rates",
         "coach_profile", "ask_brand",
     }
+    intent = str(parsed.get("intent") or heuristic["intent"]).strip().lower()
     if intent not in allowed:
         intent = heuristic["intent"]
     if force_intent in allowed:
         intent = force_intent
-    elif leftover_is_prompt(text) or is_casual_ack(text):
-        if intent == "generate_pitch":
-            coach = heuristic.get("intent") or "chat"
-            intent = coach if coach != "generate_pitch" else "chat"
-        parsed["brand_id"] = None
-        parsed["brand_name"] = None
-        gem_say = str(parsed.get("say") or "")
-        if "isn't in our directory" in gem_say.lower() or "closest we do have" in gem_say.lower():
-            parsed["say"] = ""
-    elif heuristic["intent"] == "generate_pitch" and looks_like_brand_request(text, history):
-        asked = requested_brand_name(
-            text,
-            suggested_brands,
-            history,
-            brand_name=heuristic.get("brand_name") or parsed.get("brand_name"),
-        )
-        matched = resolve_brand(suggested_brands, brand_name=asked) or resolve_brand(
-            names_mentioned_by_assistant(history),
-            brand_name=asked,
-        )
-        if matched or (asked and candidate_looks_like_brand_name(asked) and (
-            _CONTACT_RE.search(text or "") or _CONTACT_ASK_RE.search(text or "")
-        )):
-            intent = "generate_pitch"
-            if asked and not parsed.get("brand_name"):
-                parsed["brand_name"] = asked
-    elif heuristic["intent"] in ("suggest_gigs", "suggest_brands") and intent == "chat" and is_deal_search(text):
-        intent = deal_pool_intent(text) or heuristic["intent"]
-    if is_done_turn(text) and intent in ("suggest_brands", "suggest_gigs") and not force_intent:
-        intent = "chat"
-    from services.polly_gigs import wants_more_gigs
-    more_gigs_turn = wants_more_gigs(text, history)
-    if more_gigs_turn and not force_intent:
-        intent = "suggest_gigs"
-        parsed["brand_id"] = None
-        parsed["brand_name"] = None
-    elif is_more_brands_turn(text) and not force_intent:
-        intent = "suggest_brands"
-    if is_deal_search(text) and not force_intent and not more_gigs_turn:
-        intent = deal_pool_intent(text) or "suggest_brands"
-        parsed["brand_id"] = None
-        parsed["brand_name"] = None
+    parsed_name = brain_brand_name(parsed.get("brand_name")) or brain_brand_name(heuristic.get("brand_name"))
     parsed_id = parsed.get("brand_id")
-    parsed_name = parsed.get("brand_name")
-    if intent == "generate_pitch" and looks_like_brand_request(text, history):
-        asked = requested_brand_name(
-            text,
-            suggested_brands,
-            history,
-            brand_name=heuristic.get("brand_name") or parsed_name,
-        )
-        if asked:
-            parsed_name = asked
-            parsed_id = None
+    if intent != "generate_pitch":
+        # Chat/coach/gigs: keep a clean brand pointer for lookup, never a leftover sentence.
+        parsed_id = parsed_id if parsed_name else None
     resolved = resolve_brand(suggested_brands, brand_id=parsed_id or brand_id, brand_name=parsed_name)
     say = (parsed.get("say") or "").strip()
+    if "isn't in our directory" in say.lower() or "closest we do have" in say.lower():
+        if intent != "generate_pitch":
+            say = ""
+    print(
+        f"[Polly] brain-alloc intent={intent} brand={parsed_name!r} "
+        f"chip={bool(chip_allocated)} force={force_intent!r}"
+    )
     return {
         "intent": intent,
         "say": say,

@@ -27,6 +27,7 @@ from services.polly import (
     leftover_looks_like_query,
     leftover_is_category,
     leftover_is_prompt,
+    brain_brand_name,
     followup_brand_query,
     last_followup_brand,
     match_named_brand,
@@ -37,9 +38,17 @@ from services.polly import (
     strip_brand_ask,
     is_deal_search,
     is_casual_ack,
+    is_pitch_email_ask,
+    is_approval_timing_ask,
+    is_sent_wrong_detail,
+    is_out_of_script_chat,
+    named_brand_in_message,
+    parse_handle_revision,
     deal_search_kind,
     deal_pool_intent,
     apply_paid_ask_to_pitch,
+    apply_gifted_ask_to_pitch,
+    apply_handle_revision_to_pitch,
     apply_location_to_pitch,
     last_thread_pitch,
     parse_location_reply,
@@ -50,7 +59,6 @@ from services.polly import (
     mark_pitched,
     unmark_pitched,
     narrate_kit_review,
-    narrate_tool_result,
     out_of_free_unlocks,
     is_unlock_reset_ask,
     next_unlock_brand,
@@ -114,6 +122,10 @@ from services.polly_persona import (
     persona_profile_audit,
     persona_rate_card,
     persona_thanks_after_draft,
+    persona_pitch_email,
+    persona_handle_fixed,
+    persona_sent_wrong_detail,
+    persona_approval_timing,
     persona_unknown_brand,
     persona_unlocks_after_send,
     persona_week_plan,
@@ -901,21 +913,26 @@ def chat():
             and not is_more_brands_turn(user_text)
             and not is_setup_chip_tap(user_text, chip_id, explicit_action)
             and not is_deal_search(user_text)
+            and not is_out_of_script_chat(user_text)
         )
         deal_kind = deal_search_kind(user_text)
+        named_in_text = named_brand_in_message(user_text, suggested, messages)
+        if named_in_text and deal_kind:
+            named_ask = True
         if deal_kind in ("paid", "gifted"):
             notes["deal_intent"] = deal_kind
             if deal_kind == "paid" and not notes.get("goal_30d"):
                 notes["goal_30d"] = "paid UGC"
-        if deal_kind and not explicit_brand_id and explicit_action not in ("generate_pitch",):
+        if deal_kind and not explicit_brand_id and explicit_action not in ("generate_pitch",) and not named_in_text:
             skip_flag = True
             notes["wants_matches"] = True
             data["_deal_first_cards"] = True
-        if should_auto_skip_setup(notes) and not named_ask:
+        if should_auto_skip_setup(notes) and not named_ask and not is_out_of_script_chat(user_text):
             skip_flag = True
-            data["_repeat_skip"] = True
-            if explicit_action in (None, "", "discovery"):
-                explicit_action = "suggest_brands"
+            if is_setup_chip_tap(user_text, chip_id, explicit_action):
+                data["_repeat_skip"] = True
+                if explicit_action in (None, "", "discovery"):
+                    explicit_action = "suggest_brands"
         asked = field_from_history(messages)
         if (
             asked
@@ -989,6 +1006,17 @@ def chat():
             and not named_ask
             and explicit_action not in ("generate_pitch", "suggest_brands")
         )
+        draft_for_brain = last_thread_pitch(messages)
+        open_pitch = None
+        if draft_for_brain:
+            open_pitch = {
+                "brand_name": draft_for_brain.get("brand_name") or draft_for_brain.get("name"),
+                "email": draft_for_brain.get("email"),
+                "needs_location": bool(
+                    draft_for_brain.get("needs_location")
+                    or pitch_has_placeholder(draft_for_brain.get("body") or "")
+                ),
+            }
         if paywall_followup:
             decision = {"intent": "chat", "say": "", "brain": False}
         else:
@@ -1002,116 +1030,56 @@ def chat():
                 force_intent=force_for_brain,
                 pitched_names=notes.get("pitched_brand_names") or [],
                 pending_draft=pending_for_brain,
+                open_pitch=open_pitch,
             )
         notes = merge_notes_patch(notes, decision.get("notes_patch"))
 
         intent = decision.get("intent") or "chat"
         from services.polly_gigs import wants_more_gigs
-        more_gigs = wants_more_gigs(user_text, messages, notes) or str(
-            data.get("starter") or data.get("chip_id") or ""
-        ) == "more_gigs"
-        if more_gigs and explicit_action not in ("generate_pitch", "suggest_brands"):
+        chip_more_gigs = str(data.get("starter") or data.get("chip_id") or "") == "more_gigs"
+        more_gigs = chip_more_gigs or (
+            intent == "suggest_gigs" and wants_more_gigs(user_text, messages, notes)
+        )
+        if chip_more_gigs:
             intent = "suggest_gigs"
-        elif is_more_brands_turn(user_text) and explicit_action not in ("generate_pitch", "suggest_gigs"):
-            intent = "suggest_brands"
-        asked_brand = requested_brand_name(
-            user_text,
-            suggested,
-            messages,
-            brand_id=decision.get("brand_id") or explicit_brand_id,
-            brand_name=decision.get("brand_name") or data.get("brand_name"),
+        asked_brand = brain_brand_name(
+            decision.get("brand_name") or data.get("brand_name")
         )
         pending_now = notes.get("pending_pitch") if isinstance(notes.get("pending_pitch"), dict) else None
         pending_label = str((pending_now or {}).get("name") or (pending_now or {}).get("brand_name") or "").strip()
-        typed_ask = asked_brand_query(user_text) if named_ask else ""
-        if typed_ask:
-            asked_brand = typed_ask
-        if (
-            wants_followup_pitch(data, user_text, messages, notes.get("pitched_brand_names"))
-            and not leftover_is_prompt(user_text)
-            and not is_brand_reject(user_text)
+        typed_ask = asked_brand or ""
+        if data.get("is_followup") or (
+            explicit_action == "generate_pitch"
+            and wants_followup_pitch(data, user_text, messages, notes.get("pitched_brand_names"))
         ):
             intent = "generate_pitch"
             data["is_followup"] = True
             pools = list(suggested or []) + names_mentioned_by_assistant(messages)
             for name in notes.get("pitched_brand_names") or []:
                 pools.append({"name": name})
-            chip_name = str(
+            chip_name = brain_brand_name(
                 data.get("brand_name")
                 or followup_brand_query(user_text)
                 or match_named_brand(user_text, pools)
                 or last_followup_brand(messages)
-                or ""
-            ).strip()
+            ) or ""
             if chip_name:
                 asked_brand = chip_name
-                named_ask = False
             data["_repeat_skip"] = False
-        if (is_casual_ack(user_text) or leftover_is_prompt(user_text)) and not explicit_brand_id:
-            asked_brand = None
-            decision["brand_name"] = None
-            decision["brand_id"] = None
-            if is_casual_ack(user_text):
-                intent = "chat"
-                data["_ack_draft"] = pending_label
-            elif intent == "generate_pitch":
-                intent = "chat"
+        if is_casual_ack(user_text) and not explicit_brand_id and (
+            decision.get("brain") != "llm" or is_robotic(decision.get("say"))
+        ):
+            intent = "chat"
+            data["_ack_draft"] = pending_label
         print(
             f"[Polly] brand-ask typed={typed_ask!r} asked={asked_brand!r} "
-            f"intent={intent} pending={pending_label!r} action={explicit_action!r}"
+            f"intent={intent} pending={pending_label!r} action={explicit_action!r} "
+            f"brain={decision.get('brain')!r}"
         )
-        if (
-            not more_gigs
-            and not explicit_brand_id
-            and not is_casual_ack(user_text)
-            and (
-                is_deal_search(user_text)
-                or (
-                    not leftover_is_prompt(user_text)
-                    and (
-                        leftover_looks_like_query(user_text)
-                        or leftover_is_category(user_text)
-                        or leftover_looks_like_query(asked_brand or "")
-                        or leftover_is_category(asked_brand or "")
-                    )
-                )
-            )
-        ):
-            intent = deal_pool_intent(user_text) or "suggest_brands"
-            asked_brand = None
-            decision["brand_name"] = None
-            decision["brand_id"] = None
-        if (
-            intent != "generate_pitch"
-            and not explicit_brand_id
-            and not leftover_is_prompt(user_text)
-            and not is_casual_ack(user_text)
-            and not is_brand_reject(user_text)
-            and claims_pitch_elsewhere(decision.get("say") or "")
-        ):
-            named = asked_brand or requested_brand_name(
-                user_text,
-                suggested,
-                messages,
-                brand_name=decision.get("brand_name"),
-            )
-            if not named:
-                mentioned = names_mentioned_by_assistant(messages)
-                if mentioned:
-                    named = mentioned[0].get("name")
-            if named and candidate_looks_like_brand_name(str(named)):
-                intent = "generate_pitch"
-                asked_brand = named
-                decision["brand_name"] = named
-        if skip_flag and not named_ask and not paywall_followup:
+        if skip_flag:
             notes = skip_discovery(notes)
-            if intent in ("discovery", "chat") or data.get("_repeat_skip"):
-                if deal_kind == "paid" or explicit_action == "suggest_gigs":
-                    intent = "suggest_gigs"
-                else:
-                    intent = "suggest_brands"
-        elif skip_flag and named_ask:
-            notes = skip_discovery(notes)
+            if data.get("_repeat_skip") and explicit_action in ("suggest_brands", "suggest_gigs"):
+                intent = explicit_action
         notes = assign_track(notes, scrape)
 
         brands = []
@@ -1179,6 +1147,80 @@ def chat():
                 (updated or {}).get("brand_name") or (last_pitch or {}).get("name"),
                 loc_display,
             )
+        draft_name = (
+            (draft_pitch or {}).get("brand_name")
+            or (last_pitch or {}).get("name")
+            or (last_pitch or {}).get("brand_name")
+            or pending_label
+        )
+        gem_ok = (
+            bool((decision.get("say") or "").strip())
+            and not is_robotic(decision.get("say"))
+            and "isn't in our directory" not in (decision.get("say") or "").lower()
+            and "closest we do have" not in (decision.get("say") or "").lower()
+        )
+        if (
+            not data.get("_filled_location")
+            and explicit_action not in ("generate_pitch", "suggest_brands", "suggest_gigs")
+            and is_pitch_email_ask(user_text)
+        ):
+            intent = "chat"
+            data["_keep_pitch_say"] = True
+            data["_keep_draft"] = True
+            data["_task_chips"] = pitch_confirm_chips({
+                "id": (draft_pitch or {}).get("brand_id") or (last_pitch or {}).get("id"),
+                "name": draft_name,
+            })
+            if not gem_ok:
+                say = persona_pitch_email(draft_name, (draft_pitch or {}).get("email"))
+                live_brain = False
+                data["_local_say"] = True
+            else:
+                data["_keep_draft"] = True
+        elif (
+            not data.get("_filled_location")
+            and draft_pitch
+            and explicit_action not in ("generate_pitch", "suggest_brands", "suggest_gigs")
+        ):
+            handle_fix = parse_handle_revision(user_text)
+            if handle_fix:
+                updated = apply_handle_revision_to_pitch(
+                    draft_pitch, handle_fix.get("keep") or "", handle_fix.get("drop") or "",
+                )
+                messages = patch_last_pitch_in_history(messages, updated)
+                data["_pitch_update"] = updated
+                data["_keep_pitch_say"] = True
+                data["_keep_draft"] = True
+                data["_task_chips"] = pitch_confirm_chips({
+                    "id": (updated or {}).get("brand_id") or (last_pitch or {}).get("id"),
+                    "name": (updated or {}).get("brand_name") or draft_name,
+                })
+                intent = "chat"
+                if not gem_ok:
+                    live_brain = False
+                    data["_local_say"] = True
+                    say = persona_handle_fixed(
+                        (updated or {}).get("brand_name") or draft_name,
+                        handle_fix.get("keep") or "",
+                        handle_fix.get("drop") or "",
+                    )
+            elif is_sent_wrong_detail(user_text):
+                intent = "chat"
+                data["_keep_draft"] = True
+                if not gem_ok:
+                    handle_fix = parse_handle_revision(user_text)
+                    keep = (handle_fix or {}).get("keep") or ""
+                    drop = (handle_fix or {}).get("drop") or ""
+                    live_brain = False
+                    data["_local_say"] = True
+                    say = persona_sent_wrong_detail(draft_name, keep, drop)
+            elif is_approval_timing_ask(user_text):
+                intent = "chat"
+                data["_keep_draft"] = True
+                if not gem_ok:
+                    live_brain = False
+                    data["_local_say"] = True
+                    say = persona_approval_timing(draft_name)
         if last_pitch and conn:
             found = lookup_brand(
                 conn,
@@ -1223,6 +1265,8 @@ def chat():
             and life.get("intent") not in skip_life
             and not (life.get("intent") == "pitch_sent" and not last_pitch)
             and not data.get("_filled_location")
+            and not data.get("_local_say")
+            and intent not in ("chat", "coach_profile", "ask_brand")
             and not (life.get("intent") == "pitch_sent" and draft_needs_location)
         ):
             try:
@@ -1315,7 +1359,7 @@ def chat():
             or bool((scrape or {}).get("primary_niche"))
         )
 
-        if live_brain and not data.get("_filled_location") and not data.get("_hold_placeholder"):
+        if live_brain and not data.get("_filled_location") and not data.get("_hold_placeholder") and not data.get("_local_say"):
             say = decision.get("say") or ""
             if wants_matches:
                 notes["wants_matches"] = True
@@ -1340,6 +1384,7 @@ def chat():
             and not is_casual_ack(user_text)
             and not data.get("_filled_location")
             and not data.get("_hold_placeholder")
+            and not data.get("_local_say")
             and intent not in (
             "explain_newcollab", "generate_pitch", "ask_brand", "coach_profile",
             "suggest_brands", "suggest_gigs",
@@ -1386,7 +1431,11 @@ def chat():
                 notes["saw_gigs"] = True
                 notes = mark_shown_gigs(notes, gigs)
             fallback_say = persona_gigs_intro(gigs, more=more_gigs)
-            say = fallback_say
+            gem_say = (decision.get("say") or "").strip()
+            if live_brain and gem_say and not is_robotic(gem_say):
+                say = gem_say
+            else:
+                say = fallback_say
             kit_line = persona_kit_after_gigs(kit) if gigs else ""
             if kit_line and kit_line.lower() not in (say or "").lower():
                 say = f"{say}\n\n{kit_line}"
@@ -1422,20 +1471,10 @@ def chat():
                     fallback_say = persona_brand_intro(
                         brands, profile_context, deal_intent=notes.get("deal_intent"),
                     )
-                    if data.get("_deal_first_cards") or notes.get("deal_intent") == "paid":
+                    llm_say = decision.get("say") if not is_robotic(decision.get("say")) else ""
+                    say = llm_say or fallback_say
+                    if is_robotic(say) or say_claims_unconfirmed_send(say) or "isn't in our directory" in (say or "").lower():
                         say = fallback_say
-                    else:
-                        llm_say = decision.get("say") if not is_robotic(decision.get("say")) else ""
-                        say = narrate_tool_result(
-                            profile_context,
-                            user_text,
-                            history=messages,
-                            brands=brands,
-                            fallback=llm_say or fallback_say,
-                            discovery_hint=discovery_brief(notes),
-                        )
-                        if is_robotic(say) or say_claims_unconfirmed_send(say) or "isn't in our directory" in (say or "").lower():
-                            say = fallback_say
                     if brands and (
                         data.get("_deal_first_cards") or notes.get("deal_intent") == "paid"
                     ) and not more_brands_turn:
@@ -1455,16 +1494,11 @@ def chat():
             if wrap_say:
                 say = wrap_say + "\n\n" + say
         elif intent == "generate_pitch":
-            asked_name = asked_brand_query(
-                asked_brand
-                or decision.get("brand_name")
-                or data.get("brand_name")
-                or user_text
+            asked_name = brain_brand_name(
+                asked_brand or decision.get("brand_name") or data.get("brand_name")
             )
             prior_draft = pending_label
-            lookup_id = explicit_brand_id or (
-                None if named_ask else (decision.get("brand_id") or explicit_brand_id)
-            )
+            lookup_id = explicit_brand_id or decision.get("brand_id")
             resolved = resolve_brand(
                 suggested,
                 brand_id=lookup_id,
@@ -1482,34 +1516,13 @@ def chat():
                 conn.close()
                 conn = None
             if not resolved:
-                if (
-                    leftover_is_prompt(user_text)
-                    or is_casual_ack(user_text)
-                    or not candidate_looks_like_brand_name(asked_name or user_text or "")
-                ):
-                    if leftover_is_prompt(user_text) or is_casual_ack(user_text):
-                        if is_casual_ack(user_text) or intent == "generate_pitch":
-                            intent = "chat"
-                        brands = []
-                        if (
-                            "isn't in our directory" in (say or "").lower()
-                            or "closest we do have" in (say or "").lower()
-                        ):
-                            say = ""
-                    else:
-                        try:
-                            status, brands, err = _suggest_payload(
-                                scrape, creator, notes=notes, creator_id=creator_id,
-                            )
-                        except Exception as err:
-                            print(f"[Polly] query-as-brand suggest skipped: {err}")
-                            status, brands, err = 200, [], str(err)[:180]
-                        brands = drop_pending_draft(_hydrate_brand_cards(brands), notes)
-                        say = persona_brand_intro(
-                            brands, profile_context, deal_intent=notes.get("deal_intent"),
-                        )
-                        intent = "suggest_brands"
-                else:
+                gem = (decision.get("say") or say or "").strip()
+                if gem and not is_robotic(gem) and "isn't in our directory" not in gem.lower():
+                    intent = "chat"
+                    brands = []
+                    say = gem
+                    data["_keep_draft"] = True
+                elif asked_name and candidate_looks_like_brand_name(asked_name):
                     try:
                         alts = _lookup_similar_brands(
                             asked_name,
@@ -1524,6 +1537,14 @@ def chat():
                         alts = []
                     brands = _hydrate_brand_cards(alts)
                     say = persona_park_draft(prior_draft, asked_name) + persona_unknown_brand(asked_name, brands)
+                else:
+                    intent = "chat"
+                    brands = []
+                    say = gem or (
+                        "I didn't catch a brand name there. Tell me the company and I'll pull "
+                        "the inbox or draft the pitch."
+                    )
+                    data["_keep_draft"] = True
             else:
                 wants_followup = wants_followup_pitch(
                     data, user_text, messages, notes.get("pitched_brand_names")
@@ -1586,6 +1607,11 @@ def chat():
                             scrape=scrape,
                             location_display=loc_display or None,
                         )
+                    elif pitch and notes.get("deal_intent") == "gifted" and not wants_followup:
+                        pitch = apply_gifted_ask_to_pitch(
+                            pitch,
+                            location_display=loc_display or None,
+                        )
                     if pitch and not wants_followup:
                         if loc_display:
                             pitch = apply_location_to_pitch(
@@ -1614,15 +1640,27 @@ def chat():
                             "id": resolved.get("id") or pitch.get("brand_id"),
                             "name": brand_name,
                         })
-                        off_match = not in_pool and not brand_in_suggested(suggested, resolved)
-                        needs_loc = bool(
-                            pitch.get("needs_location")
-                            or pitch_has_placeholder(pitch.get("body") or "")
+                        off_match = (
+                            not named_ask
+                            and not named_in_text
+                            and not in_pool
+                            and not brand_in_suggested(suggested, resolved)
                         )
+                        needs_loc = pitch_has_placeholder(pitch.get("body") or "")
+                        pitch["needs_location"] = needs_loc
                         shown_loc = "" if needs_loc else (
                             pitch.get("location_display") or loc_display or ""
                         )
-                        if wants_followup:
+                        gem_say = (decision.get("say") or "").strip()
+                        if (
+                            live_brain
+                            and gem_say
+                            and not is_robotic(gem_say)
+                            and "isn't in our directory" not in gem_say.lower()
+                            and "[city, country]" not in gem_say.lower()
+                        ):
+                            fallback_say = gem_say
+                        elif wants_followup:
                             fallback_say = persona_followup_intro(
                                 brand_name, has_mailto=bool(pitch.get("mailto"))
                             )
@@ -1687,28 +1725,17 @@ def chat():
             brands = []
             pitch = None
 
-        if leftover_is_prompt(user_text) and not explicit_brand_id:
+        if leftover_is_prompt(user_text) and intent not in (
+            "generate_pitch", "suggest_gigs", "suggest_brands",
+        ) and not explicit_brand_id and not data.get("_keep_draft"):
             brands = []
             pitch = None
             gem = (say or decision.get("say") or "").strip()
-            if (
-                not gem
-                or is_robotic(gem)
-                or "isn't in our directory" in gem.lower()
-                or "closest we do have" in gem.lower()
-                or claims_pitch_elsewhere(gem)
-            ):
-                if intent in ("coach_profile", "coach_week", "coach_rates", "coach_portfolio", "ask_brand"):
-                    say = _coach_say(intent, profile_context, notes, scrape, kit=kit)
-                else:
-                    say = chat_reply(
-                        profile_context,
-                        user_text,
-                        history=messages,
-                        first_name=first,
-                        discovery_hint=discovery_brief(notes),
-                    )
-            else:
+            if gem and not is_robotic(gem) and "isn't in our directory" not in gem.lower():
+                say = gem
+            elif intent in ("coach_profile", "coach_week", "coach_rates", "coach_portfolio", "ask_brand"):
+                say = _coach_say(intent, profile_context, notes, scrape, kit=kit)
+            elif gem:
                 say = gem
 
         kit_cta = []

@@ -624,6 +624,130 @@ class HeuristicIntentTests(unittest.TestCase):
         self.assertIn("Lyon, France", patched[0]["pitch"]["body"])
         self.assertTrue(pitch_has_placeholder("plus product shipping to [CITY, COUNTRY] if you want it in-shot."))
 
+    def test_brain_brand_name_rejects_sentences(self):
+        from services.polly import brain_brand_name
+        self.assertIsNone(brain_brand_name("do you have Ayla email"))
+        self.assertIsNone(brain_brand_name("i need an email"))
+        self.assertIsNone(brain_brand_name("email"))
+        self.assertEqual(brain_brand_name("Ayla"), "Ayla")
+        self.assertEqual(brain_brand_name("SKIN1004"), "SKIN1004")
+        self.assertEqual(brain_brand_name("NatPat AU"), "NatPat AU")
+
+    def test_gemini_json_extracts_object_from_preamble(self):
+        from services.polly import _gemini_output_text, _parse_json_text
+        parsed = _parse_json_text('Sure.\n{"intent":"coach_rates","say":"Charge $150.","brand_name":null}')
+        self.assertEqual(parsed["intent"], "coach_rates")
+        with self.assertRaises(ValueError):
+            _parse_json_text("")
+        text = _gemini_output_text({
+            "candidates": [{"content": {"parts": [{"text": '{"intent":'}, {"text": '"chat"}'}]}}],
+        })
+        self.assertIn("intent", text)
+
+    def test_polly_brain_does_not_call_anthropic(self):
+        from unittest.mock import patch
+        from services import polly
+        with patch.object(polly, "llm_disabled", return_value=False), \
+             patch.object(polly, "get_gemini_key", return_value="test-key"), \
+             patch.object(polly, "_gemini_generate_json", side_effect=ValueError("empty model text")) as gem, \
+             patch.object(polly, "_anthropic_generate_json") as anth:
+            polly._GEMINI_DEPLETED = False
+            with self.assertRaises(ValueError):
+                polly._llm_generate_json("sys", "user")
+            gem.assert_called_once()
+            anth.assert_not_called()
+
+    def test_gifted_named_brand_is_pitch_not_paid_gigs(self):
+        from services.polly import (
+            apply_gifted_ask_to_pitch,
+            apply_handle_revision_to_pitch,
+            asked_brand_query,
+            candidate_looks_like_brand_name,
+            classify_intent_heuristic,
+            deal_search_kind,
+            is_pitch_email_ask,
+            is_pitch_revision,
+            is_approval_timing_ask,
+            is_sent_wrong_detail,
+            looks_like_brand_request,
+            named_brand_in_message,
+            parse_handle_revision,
+        )
+        gifted_ask = (
+            "I'm looking for a gifted collaboration, not a paid collaboration. "
+            "I'd love to receive SKIN1004 products and create content for TikTok and Instagram. "
+            "Could you please help me with a gifted PR opportunity?"
+        )
+        self.assertEqual(deal_search_kind(gifted_ask), "gifted")
+        self.assertNotEqual(deal_search_kind(gifted_ask), "paid")
+        suggested = [{"id": 355, "name": "SKIN1004"}]
+        self.assertEqual(named_brand_in_message(gifted_ask, suggested), "SKIN1004")
+        d = classify_intent_heuristic(gifted_ask, suggested)
+        self.assertEqual(d["intent"], "generate_pitch")
+        self.assertEqual((d.get("brand_name") or "").lower(), "skin1004")
+        self.assertEqual(deal_search_kind("find me paid collaborations"), "paid")
+        self.assertEqual(
+            classify_intent_heuristic("find me paid collaborations")["intent"],
+            "suggest_gigs",
+        )
+
+        handle = "My tiktok id is 499 not 497"
+        self.assertFalse(looks_like_brand_request(handle))
+        self.assertTrue(is_pitch_revision(handle))
+        self.assertEqual(classify_intent_heuristic(handle)["intent"], "chat")
+        self.assertFalse(classify_intent_heuristic(handle).get("brand_name"))
+        rev = parse_handle_revision(handle)
+        self.assertEqual(rev["keep"], "499")
+        self.assertEqual(rev["drop"], "497")
+        patched = apply_handle_revision_to_pitch(
+            {
+                "body": "I create beauty content on TikTok (https://www.tiktok.com/@sabu.497).\n\nsabu.497",
+                "email": "skin1004@skin1004korea.com",
+                "subject": "Paid UGC",
+            },
+            "499",
+            "497",
+        )
+        self.assertIn("@sabu.499", patched["body"])
+        self.assertNotIn("497", patched["body"])
+        self.assertIn("sabu.499", patched["mailto"])
+
+        self.assertTrue(is_pitch_email_ask("What is the email"))
+        self.assertTrue(is_pitch_email_ask("i need an email"))
+        self.assertTrue(is_pitch_email_ask("I need the email"))
+        self.assertTrue(is_pitch_email_ask("give me the email"))
+        self.assertFalse(is_pitch_email_ask("send an email to Dell"))
+        self.assertFalse(looks_like_brand_request("i need an email"))
+        self.assertEqual(asked_brand_query("i need an email"), "")
+        self.assertFalse(candidate_looks_like_brand_name("email"))
+        self.assertEqual(classify_intent_heuristic("i need an email")["intent"], "chat")
+        self.assertFalse(classify_intent_heuristic("i need an email").get("brand_name"))
+        self.assertFalse(looks_like_brand_request("What is the email"))
+        self.assertEqual(classify_intent_heuristic("What is the email")["intent"], "chat")
+        self.assertTrue(is_approval_timing_ask("They approve my request..? After mailing..?"))
+        self.assertEqual(
+            classify_intent_heuristic("They approve my request..? After mailing..?")["intent"],
+            "chat",
+        )
+        self.assertTrue(is_sent_wrong_detail(
+            "The email has already been sent, but the TikTok ID I provided was incorrect. What should I do now?"
+        ))
+        self.assertEqual(
+            classify_intent_heuristic(
+                "The email has already been sent, but the TikTok ID I provided was incorrect. What should I do now?"
+            )["intent"],
+            "chat",
+        )
+        gifted = apply_gifted_ask_to_pitch({
+            "subject": "Paid UGC — 1 post + 2 raw files",
+            "body": "Rate: $150–$250 for 1 organic post + 2 UGC files (6-month paid usage), plus product shipping to Kansas City, United States.",
+            "email": "skin1004@skin1004korea.com",
+        })
+        self.assertIn("No fee", gifted["body"])
+        self.assertNotRegex(gifted["body"], r"(?i)^rate:", )
+        self.assertEqual(gifted["deal_type"], "gifted")
+        self.assertIn("gifted", gifted["subject"].lower())
+
 
 class PersonaTests(unittest.TestCase):
     def test_greeting_does_not_use_handle_as_name(self):

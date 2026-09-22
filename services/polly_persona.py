@@ -555,6 +555,53 @@ def persona_thanks_after_draft(brand_name: str) -> str:
     )
 
 
+def persona_pitch_email(brand_name: Optional[str], email: Optional[str]) -> str:
+    name = (brand_name or "them").strip() or "them"
+    addr = (email or "").strip()
+    if addr:
+        return (
+            f"The **{name}** inbox is **{addr}**. It's already on the pitch card — "
+            "tap the mail button and send from there."
+        )
+    return (
+        f"I don't have a public inbox for **{name}** on the card. Copy the pitch "
+        "and send from your usual mail if you already have a contact."
+    )
+
+
+def persona_handle_fixed(brand_name: Optional[str], keep: str, drop: str = "") -> str:
+    name = (brand_name or "the brand").strip() or "the brand"
+    new = (keep or "").strip().lstrip("@")
+    old = (drop or "").strip().lstrip("@")
+    swap = f"I swapped **{old}** for **{new}**" if old else f"I put **{new}** on the draft"
+    return (
+        f"{swap} in the **{name}** pitch. Read the TikTok line once, then send. "
+        "If this already went out with the old handle, send a 2-line correction to the same inbox."
+    )
+
+
+def persona_sent_wrong_detail(brand_name: Optional[str], keep: str = "", drop: str = "") -> str:
+    name = (brand_name or "them").strip() or "them"
+    if keep:
+        extra = f" Tell them the TikTok is **{keep}**" + (f", not **{drop}**." if drop else ".")
+    else:
+        extra = " Tell them the correct TikTok handle in one line."
+    return (
+        f"Send a short correction to **{name}** — same inbox, same thread.{extra} "
+        "Don't wait for a yes/no on the first email; brands rarely confirm receipt. "
+        "Tap **I sent it** if you haven't logged the original yet."
+    )
+
+
+def persona_approval_timing(brand_name: Optional[str] = None) -> str:
+    name = (brand_name or "a brand").strip() or "a brand"
+    return (
+        f"Not instantly. **{name}** usually takes a few days, sometimes a week. "
+        "If you already mailed it, tap **I sent it** so I can log it. "
+        "If they say yes, reply the same day with your kit — don't wait."
+    )
+
+
 def persona_low_effort_skip() -> str:
     return (
         "You're tapping through — that's fine. I'll line up brands now "
