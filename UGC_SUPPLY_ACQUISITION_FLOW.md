@@ -24,7 +24,7 @@ mkdir -p logs
 #   TIKTOK_SHOP_PROXY=http://USER:PASS@host:port
 #   IG_PROXY=http://USER:PASS@host:port
 python -u scripts/crawl_tiktok_ugc.py --daily --save-to-db \
-  --quota 20 --max-handles 500 --serp-pages 5 --workers 2 \
+  --quota 20 --max-handles 500 --no-serp --workers 2 \
   -o logs/tiktok_ugc_$(date -u +%Y%m%d_%H%M).json
 ```
 
@@ -44,7 +44,7 @@ If logs show `[InHouse/TT] embed status=400` / `profile html empty` / `No TikTok
 2. Confirm crawl logs print `[InHouse/TT] proxy enabled host=...` or `playwright proxy http://...`
 3. If you also see `SSL: CERTIFICATE_VERIFY_FAILED` / `self-signed certificate` through the proxy, the HTTP scraper must disable TLS verify on that session (shipped). Confirm logs print `TLS verify disabled (proxy MITM / self-signed)`.
 4. Rerun the crawl command above (prefer `--workers 2` with a working proxy)
-5. Until proxy works: set `UGC_SKIP_CRAWL=1` for cron, or pause the cron — SerpAPI + empty enrich wastes money and worsens the ban
+5. Until proxy works: set `UGC_SKIP_CRAWL=1` for cron, or pause the crawl — empty enrich still hammers TikTok
 
 `example@example.com` = you did not run this script. Stop and rerun the command above.
 
@@ -100,10 +100,10 @@ No Hunter step. These creators already have a public email in bio.
 | File | Role |
 |------|------|
 | `scripts/crawl_tiktok_ugc.py` | CLI: discover + enrich + optional DB insert |
-| `services/tiktok_ugc_profile_scraper.py` | SerpAPI + TikTok enrich + qualify |
+| `services/tiktok_ugc_profile_scraper.py` | In-house TikTok hashtag/search + enrich + qualify |
 | `services/tiktok_ugc_lead_writer.py` | Inserts drafts with `[UGC_SUPPLY_OUTREACH]` |
 | `routes/ugc_supply.py` | Admin list / send / stats |
-| `.env` | `DATABASE_URL`, `SERPAPI_API_KEY` |
+| `.env` | `DATABASE_URL`, `TIKTOK_SHOP_PROXY` (optional `UGC_USE_SERPAPI=1`) |
 
 Send requires `RESEND_API_KEY` on the API host (Vercel `appbackend`).
 
@@ -165,12 +165,12 @@ Do not add 6-month reuse, Pro pricing, brand-count claims, or a rate/deliverable
 cd /home/hermes/apps/creator_dashboard
 source venv/bin/activate
 python scripts/crawl_tiktok_ugc.py --daily --save-to-db --quota 50 --max-handles 400 \
-  -o /home/hermes/apps/creator_dashboard/logs/tiktok_ugc_$(date -u +%Y%m%d_%H%M).json
+  --no-serp -o /home/hermes/apps/creator_dashboard/logs/tiktok_ugc_$(date -u +%Y%m%d_%H%M).json
 ```
 
 What this does:
 
-1. SerpAPI Google + Bing for UGC + niche + gmail / beacons / collab queries
+1. In-house TikTok hashtag + user-search pages (same proxy session as profile scrape)
 2. Enriches TikTok profiles (display name, bio, email, followers)
 3. Qualifies: **UGC + niche + public email + ≥1,000 followers**
 4. Inserts into `ugc_supply` as **`draft`** with notes `[UGC_SUPPLY_OUTREACH] … Batch YYYY-MM-DD`
@@ -178,11 +178,14 @@ What this does:
 
 Do **not** pass `--ignore-seen` on the daily cron (that re-scrapes old handles). Use it only for a one-off recovery.
 
+SerpAPI is **off** unless you pass `--serp` or set `UGC_USE_SERPAPI=1`. Free SerpAPI 429s were burning the crawl before any TikTok enrich.
+
 Env:
 
 ```bash
 DATABASE_URL=postgresql://...
-SERPAPI_API_KEY=...
+TIKTOK_SHOP_PROXY=http://USER:PASS@host:port   # recommended on VPS
+# UGC_USE_SERPAPI=1   # only if you have paid SerpAPI credits
 ```
 
 Expected runtime: ~8–15 minutes for quota 50. Cron wraps the crawl in `timeout --kill-after=60 2400` (40 minutes). Do not treat `crawl_exit=124` as “zero creators” — check `RESULT_CRAWL inserted=` and whether `Database insert:` printed before the timeout.
@@ -211,7 +214,7 @@ conn.close()
 PY
 ```
 
-If count is 0 → crawl failed (SerpAPI / TikTok scrape / DB). Fix before sending.
+If count is 0 → crawl failed (TikTok scrape / proxy / DB). Fix before sending.
 
 Admin spot-check: `https://app.newcollab.co/admin/ugc-supply` → Ready to email.
 
@@ -307,7 +310,7 @@ echo "===== START $STAMP ====="
 
 echo "[1/2] crawl + draft insert"
 python scripts/crawl_tiktok_ugc.py --daily --save-to-db --quota 50 --max-handles 400 \
-  -o "$LOG_DIR/tiktok_ugc_$STAMP.json"
+  --no-serp -o "$LOG_DIR/tiktok_ugc_$STAMP.json"
 
 echo "[2/2] outreach send via Hermes / API"
 # Prefer a creator-onboarding Hermes turn, or:
@@ -343,7 +346,7 @@ Crontab (as user `hermes`):
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| 0 seeds | SerpAPI key / credits / timeout | Check `SERPAPI_API_KEY`; retry |
+| 0 seeds | TikTok blocking VPS / empty hashtag HTML | Set residential `TIKTOK_SHOP_PROXY`; confirm `[InHouse/TT] proxy enabled`; do not turn SerpAPI back on for free-tier 429s |
 | 0 profiles / embed `400` / empty HTML | TikTok blocking VPS IP | Set `TIKTOK_SHOP_PROXY` or `IG_PROXY` (residential); confirm proxy log line; `--workers 1`; pause crawl until fixed |
 | 0 qualified | Email-in-bio is scarce | Normal; raise `--max-handles`, do not loosen email or 1k floor |
 | Inserts all skipped | Handle already in `ugc_supply` | Normal; do not `--ignore-seen` on cron |
@@ -378,4 +381,4 @@ Crontab (as user `hermes`):
 
 ## One-liner for Hermes memory
 
-> Twice daily: `crawl_tiktok_ugc.py --daily --save-to-db --quota 50` → `GET /api/admin/ugc-supply/for-outreach` → `POST /outreach/bulk` max 25 (no custom email; locked match-invite template). Never touch `pr_brands`.
+> 5× daily: `crawl_tiktok_ugc.py --daily --save-to-db --quota 20 --no-serp` → `GET /api/admin/ugc-supply/for-outreach` → `POST /outreach/bulk` max 20 (locked match-invite template). Never touch `pr_brands`. Never SerpAPI on the free plan.

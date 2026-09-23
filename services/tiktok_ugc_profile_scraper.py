@@ -3,10 +3,10 @@
 TikTok UGC creator crawler (same pipeline shape as Meta Ads → Shopify).
 
 DISCOVERY (volume):
-  1) SerpAPI Google + Bing, up to 10 pages per query (cached)
-  2) TikTok hashtag pages
-  3) @mention graph from bios/captions (BFS until 1k–2k profiles)
-  4) HTML search only if seeds are still thin
+  1) In-house TikTok hashtag + user-search pages (same proxy as profile scrape)
+  2) @mention graph from bios/captions (BFS until 1k–2k profiles)
+  3) Optional SerpAPI Google/Bing only if UGC_USE_SERPAPI=1
+  4) HTML search (DDG/Brave) only if seeds are still thin
 
 ENRICHMENT: existing in-house scrape_tiktok (SSR / embed) plus optional
 link-in-bio page fetch for emails that only live on Beacons / Linktree.
@@ -33,6 +33,8 @@ try:
     from services.inhouse_social_scraper import (
         InHouseScrapeError,
         fetch_tiktok_html_playwright,
+        fetch_tiktok_public_html,
+        fetch_tiktok_url_html_playwright,
         open_tiktok_playwright_page,
         scrape_tiktok,
         scrape_tiktok_from_html,
@@ -47,6 +49,8 @@ except ImportError:
     from inhouse_social_scraper import (
         InHouseScrapeError,
         fetch_tiktok_html_playwright,
+        fetch_tiktok_public_html,
+        fetch_tiktok_url_html_playwright,
         open_tiktok_playwright_page,
         scrape_tiktok,
         scrape_tiktok_from_html,
@@ -72,6 +76,20 @@ DEFAULT_QUOTA = 1000
 DEFAULT_MAX_HANDLES = 2000
 DEFAULT_WORKERS = 4
 DEFAULT_SERP_PAGES = 10
+DEFAULT_TT_SEARCHES = [
+    "ugc creator",
+    "ugc creator beauty",
+    "ugc creator skincare",
+    "ugc creator makeup",
+    "ugc creator fashion",
+    "ugc creator fitness",
+    "ugc creator wellness",
+    "ugc creator lifestyle",
+    "ugc hairstylist",
+    "paid ugc",
+    "ugc portfolio",
+    "brand deals ugc",
+]
 
 _JUNK_EMAIL_MARKERS = (
     "example.com",
@@ -471,10 +489,15 @@ def _serpapi_search(
         params=params,
         timeout=timeout,
     )
+    if resp.status_code == 429:
+        raise requests.HTTPError("Too Many Requests", response=resp)
     resp.raise_for_status()
     data = resp.json() if resp.content else {}
     if isinstance(data, dict) and data.get("error"):
-        print(f"[TikTokUGC] serpapi error: {data.get('error')}")
+        err = str(data.get("error"))
+        print(f"[TikTokUGC] serpapi error: {err}")
+        if "429" in err or "Too Many Requests" in err or "limit" in err.lower():
+            raise requests.HTTPError(err or "Too Many Requests", response=resp)
         return {}
     cache[ck] = {"ts": time.time(), "data": data}
     if len(cache) > 600:
@@ -554,32 +577,101 @@ def _add_handles(found: List[str], seen: Set[str], handles: Iterable[str], cap: 
     return False
 
 
+def extract_handles_from_tiktok_html(html: str) -> List[str]:
+    """Handles from hashtag/search SSR JSON and /@handle URLs."""
+    return extract_tiktok_handles(html or "")
+
+
+def _use_serpapi() -> bool:
+    flag = (os.getenv("UGC_USE_SERPAPI") or "").strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return False
+    if flag in ("1", "true", "yes", "on"):
+        return bool((os.getenv("SERPAPI_API_KEY") or "").strip())
+    return False
+
+
+def _tiktok_discovery_urls(
+    tags: Optional[Iterable[str]] = None,
+    searches: Optional[Iterable[str]] = None,
+) -> List[str]:
+    urls: List[str] = []
+    for tag in tags or DEFAULT_HASHTAGS:
+        slug = re.sub(r"[^A-Za-z0-9._]", "", (tag or "").lstrip("#"))
+        if slug:
+            urls.append(f"https://www.tiktok.com/tag/{slug}")
+    for q in searches or DEFAULT_TT_SEARCHES:
+        q = (q or "").strip()
+        if not q:
+            continue
+        encoded = quote_plus(q)
+        urls.append(f"https://www.tiktok.com/search/user?q={encoded}")
+        urls.append(f"https://www.tiktok.com/search?q={encoded}")
+    return urls
+
+
+def discover_handles_from_tiktok(
+    tags: Optional[Iterable[str]] = None,
+    *,
+    searches: Optional[Iterable[str]] = None,
+    max_handles: int = 80,
+    use_playwright: bool = True,
+) -> List[str]:
+    """Discover @handles from TikTok hashtag + user-search pages (no SerpAPI)."""
+    found: List[str] = []
+    seen: Set[str] = set()
+    urls = _tiktok_discovery_urls(tags, searches)
+    pw = browser = page = None
+    pw_used = 0
+    pw_budget = int(os.environ.get("UGC_PLAYWRIGHT_DISCOVER_MAX", "8"))
+
+    def _close_pw() -> None:
+        nonlocal pw, browser, page
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+        if pw is not None:
+            try:
+                pw.stop()
+            except Exception:
+                pass
+        pw = browser = page = None
+
+    try:
+        for url in urls:
+            if len(found) >= max_handles:
+                break
+            print(f"[TikTokUGC] in-house page: {url}")
+            html = fetch_tiktok_public_html(url)
+            page_handles = extract_handles_from_tiktok_html(html)
+            if not page_handles and use_playwright and pw_used < pw_budget:
+                if page is None:
+                    try:
+                        pw, browser, page = open_tiktok_playwright_page()
+                    except Exception as exc:
+                        print(f"[TikTokUGC] playwright discover start failed: {exc}")
+                        use_playwright = False
+                if page is not None:
+                    pw_used += 1
+                    html = fetch_tiktok_url_html_playwright(url, page=page) or ""
+                    page_handles = extract_handles_from_tiktok_html(html)
+            print(f"[TikTokUGC] in-house {url}: {len(page_handles)} handles")
+            if _add_handles(found, seen, page_handles, max_handles):
+                return found
+            time.sleep(0.6 + random.random())
+    finally:
+        _close_pw()
+    return found
+
+
 def discover_handles_from_hashtags(
     tags: Optional[Iterable[str]] = None,
     *,
     max_handles: int = 80,
 ) -> List[str]:
-    found: List[str] = []
-    seen: Set[str] = set()
-    for tag in tags or DEFAULT_HASHTAGS:
-        slug = re.sub(r"[^A-Za-z0-9._]", "", (tag or "").lstrip("#"))
-        if not slug:
-            continue
-        url = f"https://www.tiktok.com/tag/{slug}"
-        print(f"[TikTokUGC] hashtag: #{slug}")
-        try:
-            resp = requests.get(url, headers=_search_headers(), timeout=20)
-            if resp.status_code != 200 or not resp.text:
-                print(f"[TikTokUGC] hashtag #{slug} status={resp.status_code}")
-                continue
-            page_handles = extract_tiktok_handles(resp.text)
-            print(f"[TikTokUGC] hashtag #{slug}: {len(page_handles)} handles")
-            if _add_handles(found, seen, page_handles, max_handles):
-                return found
-        except Exception as exc:
-            print(f"[TikTokUGC] hashtag #{slug} failed: {exc}")
-        time.sleep(0.8 + random.random())
-    return found
+    return discover_handles_from_tiktok(tags, max_handles=max_handles, use_playwright=True)
 
 
 def discover_handles_html(
@@ -626,19 +718,33 @@ def discover_handles(
     hashtags: Optional[Iterable[str]] = None,
     serp_pages: int = DEFAULT_SERP_PAGES,
     engines: Optional[Iterable[str]] = None,
+    use_serpapi: Optional[bool] = None,
 ) -> List[str]:
     found: List[str] = []
     seen: Set[str] = set()
-    has_serpapi = bool((os.getenv("SERPAPI_API_KEY") or "").strip())
+    if use_serpapi is None:
+        use_serpapi = _use_serpapi()
     engine_list = [e for e in (engines or ("google", "bing")) if e]
-    page_starts = list(range(0, max(1, int(serp_pages)) * 10, 10))
+    page_starts = list(range(0, max(1, int(serp_pages or 0)) * 10, 10))
 
-    if has_serpapi:
+    extra = discover_handles_from_tiktok(
+        hashtags,
+        max_handles=max_handles,
+    )
+    if _add_handles(found, seen, extra, max_handles):
+        return found
+    print(f"[TikTokUGC] in-house discovery: {len(found)} handles")
+
+    if use_serpapi and int(serp_pages or 0) > 0:
+        print("[TikTokUGC] SerpAPI enabled (UGC_USE_SERPAPI=1)")
+        rate_limited = False
         for engine in engine_list:
+            if rate_limited:
+                break
             empty_rounds = 0
             for start in page_starts:
-                if len(found) >= max_handles:
-                    return found
+                if len(found) >= max_handles or rate_limited:
+                    break
                 added_this_round = 0
                 for query in queries:
                     if len(found) >= max_handles:
@@ -647,7 +753,12 @@ def discover_handles(
                     try:
                         data = _serpapi_search(query, start=start, engine=engine)
                     except Exception as exc:
+                        msg = str(exc)
                         print(f"[TikTokUGC] serpapi failed: {exc}")
+                        if "429" in msg or "Too Many Requests" in msg:
+                            print("[TikTokUGC] SerpAPI rate limit — staying on in-house TikTok discovery")
+                            rate_limited = True
+                            break
                         continue
                     page_handles = extract_handles_from_serpapi(data)
                     before = len(found)
@@ -656,6 +767,8 @@ def discover_handles(
                         return found
                     added_this_round += len(found) - before
                     time.sleep(pause)
+                if rate_limited:
+                    break
                 print(
                     f"[TikTokUGC] {engine} start={start}: "
                     f"+{added_this_round} new / {len(found)} total"
@@ -666,13 +779,10 @@ def discover_handles(
                         break
                 else:
                     empty_rounds = 0
+    elif (os.getenv("SERPAPI_API_KEY") or "").strip():
+        print("[TikTokUGC] SERPAPI_API_KEY present but skipped (set UGC_USE_SERPAPI=1 to enable)")
     else:
-        print("[TikTokUGC] SERPAPI_API_KEY missing — skipping Google/Bing API")
-
-    if len(found) < max_handles:
-        extra = discover_handles_from_hashtags(hashtags, max_handles=max_handles - len(found))
-        if _add_handles(found, seen, extra, max_handles):
-            return found
+        print("[TikTokUGC] SerpAPI off — in-house TikTok discovery only")
 
     if len(found) < max(80, max_handles // 10) and queries:
         extra = discover_handles_html(
@@ -839,6 +949,7 @@ def discover_and_enrich(
     expand_graph: bool = True,
     on_batch: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
+    use_serpapi: Optional[bool] = None,
 ) -> List[Dict[str, Any]]:
     niches = list(niches or DEFAULT_NICHES)
     queries = list(queries or default_search_queries(niches))
@@ -851,6 +962,7 @@ def discover_and_enrich(
         queries,
         max_handles=max_handles,
         serp_pages=serp_pages,
+        use_serpapi=use_serpapi,
     )
     print(f"[TikTokUGC] {len(seeds)} seed handles")
 

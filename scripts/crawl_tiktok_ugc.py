@@ -86,7 +86,17 @@ def main():
         "--serp-pages",
         type=int,
         default=DEFAULT_SERP_PAGES,
-        help=f"Google/Bing result pages per engine (default {DEFAULT_SERP_PAGES})",
+        help=f"SerpAPI pages per engine when --serp is on (default {DEFAULT_SERP_PAGES})",
+    )
+    parser.add_argument(
+        "--serp",
+        action="store_true",
+        help="Enable SerpAPI Google/Bing discovery (off by default; burns free quota)",
+    )
+    parser.add_argument(
+        "--no-serp",
+        action="store_true",
+        help="Force skip SerpAPI even if UGC_USE_SERPAPI=1",
     )
     parser.add_argument(
         "--ignore-seen",
@@ -127,6 +137,11 @@ def main():
         except Exception:
             pass
 
+    if args.no_serp:
+        os.environ["UGC_USE_SERPAPI"] = "0"
+    elif args.serp:
+        os.environ["UGC_USE_SERPAPI"] = "1"
+
     records = []
     if args.handles:
         for handle in args.handles:
@@ -158,6 +173,7 @@ def main():
             expand_graph=not args.no_graph,
             on_batch=inserter.add if inserter else None,
             should_stop=stop.is_set,
+            use_serpapi=True if args.serp else (False if args.no_serp else None),
         )
 
     if args.output:

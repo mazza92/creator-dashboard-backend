@@ -2740,6 +2740,31 @@ def _tt_from_profile_html(
         return None, []
 
 
+def fetch_tiktok_public_html(url: str, timeout: int = 20) -> str:
+    """Hashtag / search / explore pages with the same proxy session as profile scrape."""
+    url = (url or "").strip()
+    if not url.startswith("http"):
+        return ""
+    session = _session(for_tiktok=True)
+    headers = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://www.tiktok.com/",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    try:
+        resp = session.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+        print(f"[InHouse/TT] page status={resp.status_code} bytes={len(resp.text or '')} {url}")
+        if resp.status_code != 200:
+            return ""
+        return resp.text or ""
+    except Exception as e:
+        print(f"[InHouse/TT] page error {url}: {e}")
+        return ""
+
+
 def fetch_tiktok_html_playwright(
     handle: str,
     timeout_ms: int = 25000,
@@ -2798,6 +2823,51 @@ def fetch_tiktok_html_playwright(
         return None
     except Exception as e:
         print(f"[InHouse/TT] playwright error @{handle}: {e}")
+        return None
+
+
+def fetch_tiktok_url_html_playwright(
+    url: str,
+    timeout_ms: int = 25000,
+    page=None,
+) -> Optional[str]:
+    """Load a TikTok hashtag/search URL in Chromium (same proxy as profiles)."""
+    url = (url or "").strip()
+    if not url.startswith("http"):
+        return None
+    try:
+        if page is not None:
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            page.wait_for_timeout(3500)
+            html = page.content()
+            print(f"[InHouse/TT] playwright page bytes={len(html or '')} {url}")
+            return html
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            launch_kwargs: Dict[str, Any] = {
+                "headless": True,
+                "args": ["--disable-blink-features=AutomationControlled"],
+            }
+            pw_proxy = _tt_playwright_proxy()
+            if pw_proxy:
+                launch_kwargs["proxy"] = pw_proxy
+                print(f"[InHouse/TT] playwright proxy {pw_proxy['server']}")
+            browser = p.chromium.launch(**launch_kwargs)
+            context = browser.new_context(**_tiktok_playwright_context_kwargs())
+            inner = context.new_page()
+            try:
+                inner.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                inner.wait_for_timeout(3500)
+                html = inner.content()
+            finally:
+                browser.close()
+        print(f"[InHouse/TT] playwright page bytes={len(html or '')} {url}")
+        return html
+    except ImportError:
+        print("[InHouse/TT] playwright not installed")
+        return None
+    except Exception as e:
+        print(f"[InHouse/TT] playwright page error {url}: {e}")
         return None
 
 

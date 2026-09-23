@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
+import os
 import unittest
+from unittest import mock
+
+import requests
 
 from services.tiktok_ugc_profile_scraper import (
     default_search_queries,
@@ -128,7 +132,45 @@ class TestTikTokUgcQualifier(unittest.TestCase):
         html = '<a class="result__a" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.tiktok.com%2F%40hannahs.ugccorner">x</a>'
         self.assertEqual(extract_handles_from_ddg_html(html), ["hannahs.ugccorner"])
 
-    def test_serpapi_organic_handles(self):
+    def test_inhouse_tiktok_html_handles(self):
+        html = (
+            '<script id="SIGI_STATE">{"UserModule":{"users":{'
+            '"hannahs.ugccorner":{"uniqueId":"hannahs.ugccorner"}'
+            '}}}</script>'
+            '<a href="https://www.tiktok.com/@createwithvic">x</a>'
+        )
+        from services.tiktok_ugc_profile_scraper import extract_handles_from_tiktok_html
+        self.assertEqual(
+            set(extract_handles_from_tiktok_html(html)),
+            {"hannahs.ugccorner", "createwithvic"},
+        )
+
+    def test_serpapi_off_by_default(self):
+        from services.tiktok_ugc_profile_scraper import _use_serpapi
+        env = {k: v for k, v in os.environ.items() if k != "UGC_USE_SERPAPI"}
+        env["SERPAPI_API_KEY"] = "x"
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertFalse(_use_serpapi())
+        env["UGC_USE_SERPAPI"] = "1"
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertTrue(_use_serpapi())
+
+    def test_serpapi_429_stops_and_keeps_inhouse_seeds(self):
+        from services import tiktok_ugc_profile_scraper as mod
+
+        def boom(*_a, **_k):
+            raise requests.HTTPError("Too Many Requests")
+
+        with mock.patch.object(mod, "discover_handles_from_tiktok", return_value=["seed.one"]):
+            with mock.patch.object(mod, "_serpapi_search", side_effect=boom):
+                with mock.patch.object(mod, "discover_handles_html", return_value=[]):
+                    handles = mod.discover_handles(
+                        ['site:tiktok.com "UGC"'],
+                        max_handles=80,
+                        serp_pages=1,
+                        use_serpapi=True,
+                    )
+        self.assertIn("seed.one", handles)
         data = {
             "organic_results": [
                 {
