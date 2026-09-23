@@ -32,8 +32,8 @@ BLOCKED_OUTREACH_STATUSES = {
     "reply",
 }
 
-SIGNUP_URL = "https://app.newcollab.co/register/creator"
-DEFAULT_SUBJECT = "PR / gifting campaigns — @{{handle}}"
+SIGNUP_URL = "https://newcollab.co/land-your-first-pr-package"
+DEFAULT_SUBJECT = "PR / gifting campaigns for @{{handle}}"
 DEFAULT_FOLLOWUP_HOURS = 96
 
 
@@ -108,8 +108,8 @@ def default_onboarding_html(lead=None):
     return """
 <p>Hey,</p>
 <p>Saw your TikTok (@{{handle}}).</p>
-<p>We have brands running PR / gifting campaigns, and your profile could be a good match.</p>
-<p>If you're interested, you can sign up and apply here:<br><a href="{{signup_url}}">{{signup_url}}</a></p>
+<p>Brands on Newcollab are looking for UGC in exchange for gifted product. It's a straightforward way to build your portfolio, and the collabs that land often move into paid and retainers. Your profile could be a good match.</p>
+<p>If you're interested, you can see how it works and apply here:<br><a href="{{signup_url}}">{{signup_url}}</a></p>
 <p>Worth a look?</p>
 <p>Mazza<br>Founder, Newcollab</p>
 """

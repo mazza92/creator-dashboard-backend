@@ -82,7 +82,7 @@ No Hunter step. These creators already have a public email in bio.
 - Backend API: `https://api.newcollab.co`
 - Admin UI: `https://app.newcollab.co/admin/ugc-supply`
 - Admin token env: `NEWCOLLAB_ADMIN_TOKEN` (fallback `pr-hunter-admin-2026`)
-- Signup link in every email: `https://app.newcollab.co/register/creator`
+- Signup link in every email: `https://newcollab.co/land-your-first-pr-package`
 - **Never** use `/home/mazza/` paths
 - **Never** send mail via SMTP / smtplib / Gmail from Hermes
 - **Never** write these rows into `pr_brands`
@@ -132,19 +132,19 @@ Location is extracted when present but **not required**.
 ## Locked email (do not rewrite)
 
 Invite / match — not an unpaid-work brief. Do **not** list deliverables (1 organic + 1 UGC) or “just product”; that triggers “I only do fixed rate.”
-Objective: **sign up + apply if interested.**
+Objective: **read the landing page + apply if interested.** Gifted UGC is the first collab; paid/retainer is the path, not the ask.
 
-**Subject:** `PR / gifting campaigns — @{{handle}}`
+**Subject:** `PR / gifting campaigns for @{{handle}}`
 
 ```
 Hey,
 
 Saw your TikTok (@{{handle}}).
 
-We have brands running PR / gifting campaigns, and your profile could be a good match.
+Brands on Newcollab are looking for UGC in exchange for gifted product. It's a straightforward way to build your portfolio, and the collabs that land often move into paid and retainers. Your profile could be a good match.
 
-If you're interested, you can sign up and apply here:
-https://app.newcollab.co/register/creator
+If you're interested, you can see how it works and apply here:
+https://newcollab.co/land-your-first-pr-package
 
 Worth a look?
 
@@ -377,7 +377,7 @@ Crontab (as user `hermes`):
 ## Out of scope
 
 - Writing to `pr_brands`
-- Paid UGC / Creator Pro pitch on first email
+- Asking for a paid rate or pitching Creator Pro on first email
 - Listing deliverables (1 organic + 1 UGC) or “just product” on first email
 - Promising perpetual copyright or 6-month reuse in the cold email
 - Inventing emails, follower counts, or brand counts
