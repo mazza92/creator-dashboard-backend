@@ -145,6 +145,30 @@ class TestTikTokUgcQualifier(unittest.TestCase):
             {"hannahs.ugccorner", "createwithvic"},
         )
 
+    def test_nested_unique_id_from_search_json(self):
+        html = (
+            '<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__">'
+            '{"__DEFAULT_SCOPE__":{"webapp.search-user":{"user_list":['
+            '{"user_info":{"unique_id":"hannahs.ugccorner"}},'
+            '{"user_info":{"uniqueId":"createdby_charli"}}'
+            ']}}}</script>'
+        )
+        from services.tiktok_ugc_profile_scraper import extract_handles_from_tiktok_html
+        self.assertEqual(
+            set(extract_handles_from_tiktok_html(html)),
+            {"hannahs.ugccorner", "createdby_charli"},
+        )
+
+    def test_escaped_slash_profile_url(self):
+        from services.tiktok_ugc_profile_scraper import extract_handles_from_tiktok_html
+        html = r'{"share_url":"https:\/\/www.tiktok.com\/@ugcbyallana"}'
+        self.assertIn("ugcbyallana", extract_handles_from_tiktok_html(html))
+
+    def test_chrome_handles_skipped(self):
+        from services.tiktok_ugc_profile_scraper import extract_handles_from_tiktok_html
+        html = '<a href="https://www.tiktok.com/@tiktok">x</a><a href="https://www.tiktok.com/@discover">y</a>'
+        self.assertEqual(extract_handles_from_tiktok_html(html), [])
+
     def test_serpapi_off_by_default(self):
         from services.tiktok_ugc_profile_scraper import _use_serpapi
         env = {k: v for k, v in os.environ.items() if k != "UGC_USE_SERPAPI"}

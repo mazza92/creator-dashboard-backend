@@ -323,6 +323,8 @@ Crontab (as user `hermes`):
 
 ```cron
 # UGC creator acquisition — 5x daily UTC (offset from Meta Ads 09:00 / 17:00)
+# Invoke this script directly. Do not wrap it in a Hermes chat/terminal with a 300s timeout.
+# If a Hermes cron job must own it: HERMES_CRON_SCRIPT_TIMEOUT=2400
 30 7 * * * /home/hermes/apps/creator_dashboard/scripts/run_ugc_supply_acquisition.sh
 30 10 * * * /home/hermes/apps/creator_dashboard/scripts/run_ugc_supply_acquisition.sh
 30 13 * * * /home/hermes/apps/creator_dashboard/scripts/run_ugc_supply_acquisition.sh
@@ -346,6 +348,10 @@ Crontab (as user `hermes`):
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
+| 0 seeds / 2 chrome handles from 350k tag HTML | Tag/search SSR is an empty app shell | In-house search + challenge APIs, then Playwright XHR; do not turn SerpAPI back on |
+| Hermes / terminal kill at 300s | Wrapper timeout, not TikTok | Call `scripts/run_ugc_supply_acquisition.sh` from crontab; set `HERMES_CRON_SCRIPT_TIMEOUT=2400` |
+| `emails_sent: 254` vs `sent=0` | Lifetime `/outreach/stats`, not this run | Trust `RESULT inserted=` and `sent=` |
+| 0 profiles after 2 seeds | Those handles already in `_tiktok_ugc_state.json` | Expected; need more unique discovery seeds |
 | 0 seeds | TikTok blocking VPS / empty hashtag HTML | Set residential `TIKTOK_SHOP_PROXY`; confirm `[InHouse/TT] proxy enabled`; do not turn SerpAPI back on for free-tier 429s |
 | 0 profiles / embed `400` / empty HTML | TikTok blocking VPS IP | Set `TIKTOK_SHOP_PROXY` or `IG_PROXY` (residential); confirm proxy log line; `--workers 1`; pause crawl until fixed |
 | 0 qualified | Email-in-bio is scarce | Normal; raise `--max-handles`, do not loosen email or 1k floor |

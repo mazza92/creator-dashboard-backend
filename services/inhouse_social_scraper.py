@@ -26,7 +26,7 @@ import uuid
 import codecs
 from datetime import datetime, timedelta, timezone
 from html import unescape
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote, quote_plus, urlparse
 
 import requests
@@ -240,6 +240,51 @@ def _jitter(lo: float = 0.3, hi: float = 1.0) -> None:
 
 def _clean_handle(handle: str) -> str:
     return (handle or "").lstrip("@").strip()
+
+
+_TT_HANDLE_RE = re.compile(r"^[A-Za-z0-9._]{2,24}$")
+_TT_DISCOVER_SKIP = frozenset(
+    {
+        "www", "vm", "t", "foryou", "discover", "live", "api", "login", "signup",
+        "embed", "music", "tag", "search", "about", "legal", "privacy", "explore",
+        "following", "friends", "inbox", "messages", "upload", "creator", "shop",
+        "place", "hashtag", "trending", "fyp", "video", "photo", "effect",
+        "us", "uk", "en", "topic", "share", "item", "tiktok", "tiktokcreators",
+        "creativecenter", "effecthouse", "ads", "business", "developers",
+    }
+)
+
+
+def collect_tiktok_unique_ids(obj: Any, limit: int = 400) -> List[str]:
+    """Walk search/challenge/SSR JSON for uniqueId / unique_id."""
+    found: List[str] = []
+    seen: Set[str] = set()
+
+    def walk(node: Any, depth: int) -> None:
+        if node is None or depth > 14 or len(found) >= limit:
+            return
+        if isinstance(node, dict):
+            for key in ("uniqueId", "unique_id", "uniqueid"):
+                val = node.get(key)
+                if not isinstance(val, str):
+                    continue
+                handle = val.strip().lstrip("@").rstrip(".").lower()
+                if (
+                    handle
+                    and handle not in _TT_DISCOVER_SKIP
+                    and handle not in seen
+                    and _TT_HANDLE_RE.match(handle)
+                ):
+                    seen.add(handle)
+                    found.append(handle)
+            for val in node.values():
+                walk(val, depth + 1)
+        elif isinstance(node, list):
+            for val in node:
+                walk(val, depth + 1)
+
+    walk(obj, 0)
+    return found
 
 
 def _diy_bio_ok(bio: str) -> bool:
@@ -2765,6 +2810,89 @@ def fetch_tiktok_public_html(url: str, timeout: int = 20) -> str:
         return ""
 
 
+def _tt_api_json(url: str, referer: str, timeout: int = 20) -> Optional[Dict[str, Any]]:
+    session = _session(for_tiktok=True)
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Referer": referer,
+    }
+    try:
+        resp = session.get(url, headers=headers, timeout=timeout)
+        path = url.split("?", 1)[0]
+        print(f"[InHouse/TT] api status={resp.status_code} bytes={len(resp.content or b'')} {path}")
+        if resp.status_code != 200 or not (resp.text or "").strip():
+            return None
+        data = resp.json()
+        return data if isinstance(data, dict) else None
+    except Exception as exc:
+        print(f"[InHouse/TT] api error {url.split('?', 1)[0]}: {exc}")
+        return None
+
+
+def fetch_tiktok_search_user_handles(keyword: str, count: int = 30) -> List[str]:
+    """Unsigned web search/user/full — returns [] when TikTok wants X-Bogus."""
+    keyword = (keyword or "").strip()
+    if not keyword:
+        return []
+    n = max(10, min(int(count or 30), 50))
+    encoded = quote_plus(keyword)
+    url = (
+        "https://www.tiktok.com/api/search/user/full/"
+        f"?aid=1988&app_name=tiktok_web&device_platform=web_pc"
+        f"&keyword={encoded}&count={n}&cursor=0&offset=0&search_source=normal_search"
+    )
+    data = _tt_api_json(url, referer=f"https://www.tiktok.com/search/user?q={encoded}")
+    if not data:
+        return []
+    handles = collect_tiktok_unique_ids(data)
+    print(f"[InHouse/TT] search api {keyword!r}: {len(handles)} handles")
+    return handles
+
+
+def fetch_tiktok_challenge_handles(tag: str, count: int = 30) -> List[str]:
+    """Hashtag challenge detail + item_list (unsigned; may be empty)."""
+    slug = re.sub(r"[^A-Za-z0-9._]", "", (tag or "").lstrip("#"))
+    if not slug:
+        return []
+    n = max(10, min(int(count or 30), 50))
+    detail = _tt_api_json(
+        f"https://www.tiktok.com/api/challenge/detail/?aid=1988&challengeName={quote(slug)}",
+        referer=f"https://www.tiktok.com/tag/{slug}",
+    )
+    handles: List[str] = collect_tiktok_unique_ids(detail) if isinstance(detail, dict) else []
+    challenge_id = ""
+    if isinstance(detail, dict):
+        ch = detail.get("challengeInfo") or detail.get("challenge") or {}
+        if isinstance(ch, dict):
+            raw = ch.get("id") or ch.get("challengeId") or ""
+            if isinstance(raw, dict):
+                raw = raw.get("id") or ""
+            challenge_id = str(raw or "")
+        if not challenge_id:
+            blob = json.dumps(detail)
+            m = re.search(r'"challengeId"\s*:\s*"?(\d{5,})"?', blob)
+            if not m:
+                m = re.search(r'"id"\s*:\s*"?(\d{8,})"?', blob)
+            if m:
+                challenge_id = m.group(1)
+    if challenge_id:
+        items = _tt_api_json(
+            (
+                "https://www.tiktok.com/api/challenge/item_list/"
+                f"?aid=1988&challengeID={quote(challenge_id)}&count={n}&cursor=0"
+            ),
+            referer=f"https://www.tiktok.com/tag/{slug}",
+        )
+        if items:
+            seen = set(handles)
+            for h in collect_tiktok_unique_ids(items):
+                if h not in seen:
+                    seen.add(h)
+                    handles.append(h)
+    print(f"[InHouse/TT] challenge api #{slug}: {len(handles)} handles")
+    return handles
+
+
 def fetch_tiktok_html_playwright(
     handle: str,
     timeout_ms: int = 25000,
@@ -2826,6 +2954,59 @@ def fetch_tiktok_html_playwright(
         return None
 
 
+def _playwright_xhr_is_discover(url: str) -> bool:
+    u = (url or "").lower()
+    return any(
+        tok in u
+        for tok in (
+            "/api/search/",
+            "/api/challenge/",
+            "item_list",
+            "search/user",
+            "search/general",
+        )
+    )
+
+
+def _playwright_load_discover_page(page, url: str, timeout_ms: int) -> str:
+    captured: List[str] = []
+
+    def _on_response(resp) -> None:
+        try:
+            if int(getattr(resp, "status", 0) or 0) != 200:
+                return
+            if not _playwright_xhr_is_discover(getattr(resp, "url", "") or ""):
+                return
+            body = resp.text()
+            if body and ("uniqueId" in body or "unique_id" in body):
+                captured.append(body)
+        except Exception:
+            return
+
+    page.on("response", _on_response)
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        page.wait_for_timeout(2200)
+        try:
+            page.mouse.wheel(0, 4200)
+        except Exception:
+            pass
+        page.wait_for_timeout(2200)
+        html = page.content() or ""
+    finally:
+        try:
+            page.remove_listener("response", _on_response)
+        except Exception:
+            try:
+                page.off("response", _on_response)
+            except Exception:
+                pass
+    if captured:
+        html = html + "\n" + "\n".join(captured)
+        print(f"[InHouse/TT] playwright xhr blobs={len(captured)} {url}")
+    return html
+
+
 def fetch_tiktok_url_html_playwright(
     url: str,
     timeout_ms: int = 25000,
@@ -2837,9 +3018,7 @@ def fetch_tiktok_url_html_playwright(
         return None
     try:
         if page is not None:
-            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-            page.wait_for_timeout(3500)
-            html = page.content()
+            html = _playwright_load_discover_page(page, url, timeout_ms)
             print(f"[InHouse/TT] playwright page bytes={len(html or '')} {url}")
             return html
         from playwright.sync_api import sync_playwright
@@ -2856,9 +3035,7 @@ def fetch_tiktok_url_html_playwright(
             context = browser.new_context(**_tiktok_playwright_context_kwargs())
             inner = context.new_page()
             try:
-                inner.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-                inner.wait_for_timeout(3500)
-                html = inner.content()
+                html = _playwright_load_discover_page(inner, url, timeout_ms)
             finally:
                 browser.close()
         print(f"[InHouse/TT] playwright page bytes={len(html or '')} {url}")

@@ -589,5 +589,22 @@ class TestInhouseScraperWithApifyFallback(unittest.TestCase):
         mock_diy.assert_called_once()
 
 
+class TestTikTokDiscoverIds(unittest.TestCase):
+    def test_collects_unique_id_and_skips_chrome(self):
+        from services.inhouse_social_scraper import collect_tiktok_unique_ids
+
+        data = {
+            "user_list": [
+                {"user_info": {"unique_id": "hannahs.ugccorner"}},
+                {"author": {"uniqueId": "tiktok"}},
+                {"user": {"uniqueId": "createdby_charli"}},
+            ]
+        }
+        self.assertEqual(
+            collect_tiktok_unique_ids(data),
+            ["hannahs.ugccorner", "createdby_charli"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

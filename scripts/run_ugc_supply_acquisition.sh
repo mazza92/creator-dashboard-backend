@@ -31,6 +31,7 @@ exec > >(tee -a "$LOG") 2>&1
 
 echo "===== START $STAMP ====="
 echo "cwd=$ROOT skip_crawl=${UGC_SKIP_CRAWL:-0} dry_run=${UGC_DRY_RUN:-0}"
+echo "note: crawl takes 15-40 min through the TikTok proxy; crontab must call this script directly (Hermes terminal timeout 300s will kill it)"
 if [[ -n "${TIKTOK_SHOP_PROXY:-}" || -n "${IG_PROXY:-}" ]]; then
   echo "tiktok_proxy=set"
 else
@@ -80,9 +81,12 @@ else:
         inserted = int(m[-1])
     else:
         m3 = re.findall(r"done: \d+ profiles, (\d+) qualified", text)
-        if m3:
-            inserted = 0  # qualified but maybe not flushed; keep insert 0
+        if m3 and int(m3[-1]) > 0:
+            inserted = 0
             print(f"NOTE: crawl reported qualified={m3[-1]} but no Database insert line")
+    seeds = re.findall(r"(\d+) seed handles", text)
+    if seeds and int(seeds[-1]) <= 2:
+        print(f"NOTE: only {seeds[-1]} seed handles — discovery parser/API likely empty")
 # Prefer the send script's integer line. Do not match sent=[{...}] list dumps.
 ms = re.findall(r"(?m)^sent=(\d+)(?:\s+failed=(\d+))?", text)
 if ms:

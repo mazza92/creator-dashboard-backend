@@ -24,6 +24,7 @@ import re
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from html import unescape
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
@@ -32,8 +33,11 @@ import requests
 try:
     from services.inhouse_social_scraper import (
         InHouseScrapeError,
+        collect_tiktok_unique_ids,
+        fetch_tiktok_challenge_handles,
         fetch_tiktok_html_playwright,
         fetch_tiktok_public_html,
+        fetch_tiktok_search_user_handles,
         fetch_tiktok_url_html_playwright,
         open_tiktok_playwright_page,
         scrape_tiktok,
@@ -48,8 +52,11 @@ try:
 except ImportError:
     from inhouse_social_scraper import (
         InHouseScrapeError,
+        collect_tiktok_unique_ids,
+        fetch_tiktok_challenge_handles,
         fetch_tiktok_html_playwright,
         fetch_tiktok_public_html,
+        fetch_tiktok_search_user_handles,
         fetch_tiktok_url_html_playwright,
         open_tiktok_playwright_page,
         scrape_tiktok,
@@ -158,7 +165,8 @@ _SKIP_HANDLES = {
     "embed", "music", "tag", "search", "about", "legal", "privacy", "explore",
     "following", "friends", "inbox", "messages", "upload", "creator", "shop",
     "place", "hashtag", "trending", "fyp", "video", "photo", "effect",
-    "us", "uk", "en", "topic", "share", "item",
+    "us", "uk", "en", "topic", "share", "item", "tiktok", "tiktokcreators",
+    "creativecenter", "effecthouse", "ads", "business",
 }
 
 _US_STATES = {
@@ -255,7 +263,8 @@ def tiktok_profile_url(handle: str) -> str:
 def extract_tiktok_handles(text: str) -> List[str]:
     seen: Set[str] = set()
     out: List[str] = []
-    for raw in _HANDLE_RE.findall(text or ""):
+    blob = (text or "").replace("\\/", "/").replace("\\u0022", '"')
+    for raw in _HANDLE_RE.findall(blob):
         handle = raw.strip().lstrip("@").rstrip(".").lower()
         if not handle or handle in _SKIP_HANDLES:
             continue
@@ -263,7 +272,7 @@ def extract_tiktok_handles(text: str) -> List[str]:
             continue
         seen.add(handle)
         out.append(handle)
-    for raw in _UNIQUE_ID_RE.findall(text or ""):
+    for raw in _UNIQUE_ID_RE.findall(blob):
         handle = raw.strip().lstrip("@").rstrip(".").lower()
         if not handle or handle in _SKIP_HANDLES or handle in seen:
             continue
@@ -577,9 +586,68 @@ def _add_handles(found: List[str], seen: Set[str], handles: Iterable[str], cap: 
     return False
 
 
+def _json_from_script_blob(blob: str) -> Optional[Any]:
+    raw = unescape((blob or "").strip())
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    alt = raw.replace("\\u0022", '"').replace("\\/", "/")
+    try:
+        return json.loads(alt)
+    except json.JSONDecodeError:
+        return None
+
+
 def extract_handles_from_tiktok_html(html: str) -> List[str]:
-    """Handles from hashtag/search SSR JSON and /@handle URLs."""
-    return extract_tiktok_handles(html or "")
+    """Handles from hashtag/search SSR JSON, XHR payloads, and /@handle URLs."""
+    text = unescape(html or "")
+    found: List[str] = []
+    seen: Set[str] = set()
+
+    def _take(handles: Iterable[str]) -> None:
+        for handle in handles:
+            h = (handle or "").strip().lstrip("@").rstrip(".").lower()
+            if not h or h in _SKIP_HANDLES or h in seen:
+                continue
+            seen.add(h)
+            found.append(h)
+
+    script_re = re.compile(
+        r'<script[^>]*id="(?:__UNIVERSAL_DATA_FOR_REHYDRATION__|SIGI_STATE|'
+        r'__NEXT_DATA__|__FRONTITY_CONNECT_STATE__)"[^>]*>([^<]+)</script>',
+        re.I,
+    )
+    for match in script_re.finditer(text):
+        data = _json_from_script_blob(match.group(1))
+        if data is not None:
+            _take(collect_tiktok_unique_ids(data))
+
+    if len(found) < 8:
+        for match in re.finditer(r"<script[^>]*>(\{.+?\})</script>", text, re.I | re.DOTALL):
+            blob = match.group(1)
+            if "uniqueId" not in blob and "unique_id" not in blob:
+                continue
+            data = _json_from_script_blob(blob)
+            if data is not None:
+                _take(collect_tiktok_unique_ids(data))
+
+    tail = text
+    close = text.lower().rfind("</html>")
+    if close >= 0:
+        tail = text[close + 7 :]
+    for blob in re.split(r"\n(?=\{)", tail):
+        blob = blob.strip()
+        if not blob.startswith("{") or ("uniqueId" not in blob and "unique_id" not in blob):
+            continue
+        data = _json_from_script_blob(blob)
+        if data is not None:
+            _take(collect_tiktok_unique_ids(data))
+
+    _take(extract_tiktok_handles(text.replace("\\/", "/").replace("\\u0022", '"')))
+    return found
 
 
 def _use_serpapi() -> bool:
@@ -617,13 +685,14 @@ def discover_handles_from_tiktok(
     max_handles: int = 80,
     use_playwright: bool = True,
 ) -> List[str]:
-    """Discover @handles from TikTok hashtag + user-search pages (no SerpAPI)."""
+    """Discover @handles from TikTok search/challenge APIs, then HTML/Playwright."""
     found: List[str] = []
     seen: Set[str] = set()
-    urls = _tiktok_discovery_urls(tags, searches)
+    tag_list = list(tags or DEFAULT_HASHTAGS)
+    search_list = [q.strip() for q in (searches or DEFAULT_TT_SEARCHES) if (q or "").strip()]
     pw = browser = page = None
     pw_used = 0
-    pw_budget = int(os.environ.get("UGC_PLAYWRIGHT_DISCOVER_MAX", "8"))
+    pw_budget = int(os.environ.get("UGC_PLAYWRIGHT_DISCOVER_MAX", "6"))
 
     def _close_pw() -> None:
         nonlocal pw, browser, page
@@ -639,6 +708,70 @@ def discover_handles_from_tiktok(
                 pass
         pw = browser = page = None
 
+    def _ensure_pw() -> bool:
+        nonlocal pw, browser, page, use_playwright
+        if not use_playwright or pw_used >= pw_budget:
+            return False
+        if page is not None:
+            return True
+        try:
+            pw, browser, page = open_tiktok_playwright_page()
+            return page is not None
+        except Exception as exc:
+            print(f"[TikTokUGC] playwright discover start failed: {exc}")
+            use_playwright = False
+            return False
+
+    api_hits = 0
+    empty_streak = 0
+    for query in search_list:
+        if len(found) >= max_handles:
+            return found
+        handles = fetch_tiktok_search_user_handles(query, count=30)
+        if handles:
+            api_hits += 1
+            empty_streak = 0
+        else:
+            empty_streak += 1
+        if _add_handles(found, seen, handles, max_handles):
+            return found
+        time.sleep(0.35 + random.random() * 0.4)
+        if empty_streak >= 3:
+            print("[TikTokUGC] search API empty — skipping remaining unsigned search calls")
+            break
+
+    empty_streak = 0
+    for tag in tag_list:
+        if len(found) >= max_handles:
+            return found
+        handles = fetch_tiktok_challenge_handles(tag, count=30)
+        if handles:
+            api_hits += 1
+            empty_streak = 0
+        else:
+            empty_streak += 1
+        if _add_handles(found, seen, handles, max_handles):
+            return found
+        time.sleep(0.35 + random.random() * 0.4)
+        if empty_streak >= 3:
+            print("[TikTokUGC] challenge API empty — skipping remaining unsigned challenge calls")
+            break
+            return found
+        time.sleep(0.35 + random.random() * 0.4)
+
+    print(f"[TikTokUGC] after APIs: {len(found)} handles (api_pages_with_users={api_hits})")
+
+    # Unsigned APIs often 403. Browser XHR is signed — only then hit a few pages.
+    need_browser = len(found) < min(40, max_handles)
+    urls: List[str] = []
+    if need_browser:
+        for query in search_list[:4]:
+            urls.append(f"https://www.tiktok.com/search/user?q={quote_plus(query)}")
+        for tag in tag_list[:3]:
+            slug = re.sub(r"[^A-Za-z0-9._]", "", (tag or "").lstrip("#"))
+            if slug:
+                urls.append(f"https://www.tiktok.com/tag/{slug}")
+
     try:
         for url in urls:
             if len(found) >= max_handles:
@@ -646,21 +779,15 @@ def discover_handles_from_tiktok(
             print(f"[TikTokUGC] in-house page: {url}")
             html = fetch_tiktok_public_html(url)
             page_handles = extract_handles_from_tiktok_html(html)
-            if not page_handles and use_playwright and pw_used < pw_budget:
-                if page is None:
-                    try:
-                        pw, browser, page = open_tiktok_playwright_page()
-                    except Exception as exc:
-                        print(f"[TikTokUGC] playwright discover start failed: {exc}")
-                        use_playwright = False
-                if page is not None:
-                    pw_used += 1
-                    html = fetch_tiktok_url_html_playwright(url, page=page) or ""
-                    page_handles = extract_handles_from_tiktok_html(html)
+            thin_shell = len(page_handles) < 8
+            if thin_shell and _ensure_pw():
+                pw_used += 1
+                html = fetch_tiktok_url_html_playwright(url, page=page) or html
+                page_handles = extract_handles_from_tiktok_html(html)
             print(f"[TikTokUGC] in-house {url}: {len(page_handles)} handles")
             if _add_handles(found, seen, page_handles, max_handles):
                 return found
-            time.sleep(0.6 + random.random())
+            time.sleep(0.5 + random.random() * 0.5)
     finally:
         _close_pw()
     return found
@@ -784,11 +911,11 @@ def discover_handles(
     else:
         print("[TikTokUGC] SerpAPI off — in-house TikTok discovery only")
 
-    if len(found) < max(80, max_handles // 10) and queries:
+    if len(found) < 12 and queries:
         extra = discover_handles_html(
-            queries[:8],
+            queries[:3],
             max_handles=max_handles - len(found),
-            pause=3.5,
+            pause=2.5,
         )
         _add_handles(found, seen, extra, max_handles)
     return found
@@ -967,9 +1094,13 @@ def discover_and_enrich(
     print(f"[TikTokUGC] {len(seeds)} seed handles")
 
     seen_state = set() if ignore_seen else _load_seen()
+    leftover = [h for h in seeds if h not in seen_state]
+    print(f"[TikTokUGC] {len(leftover)}/{len(seeds)} seeds not yet seen")
+    if seeds and not leftover:
+        print("[TikTokUGC] all seed handles already seen — discovery found no new profiles")
     queue: deque = deque()
     queued: Set[str] = set()
-    for handle in seeds:
+    for handle in leftover if not ignore_seen else seeds:
         if handle in queued:
             continue
         queued.add(handle)
