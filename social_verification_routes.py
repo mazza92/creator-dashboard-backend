@@ -169,6 +169,70 @@ def _instagram_oauth_enabled():
     return bool(app_id and secret)
 
 
+def _lookup_creator_instagram_handle(creator_id=None, user_id=None):
+    """Existing @handle so Graph-denied OAuth can finish via public scrape."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        row = None
+        if creator_id:
+            cursor.execute(
+                'SELECT social_handle, username FROM creators WHERE id = %s',
+                (creator_id,),
+            )
+            row = cursor.fetchone()
+        elif user_id:
+            cursor.execute(
+                '''
+                SELECT social_handle, username FROM creators
+                WHERE user_id = %s
+                ORDER BY id DESC LIMIT 1
+                ''',
+                (user_id,),
+            )
+            row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        if not row:
+            return ''
+        data = row if isinstance(row, dict) else {'social_handle': row[0], 'username': row[1]}
+        handle = str(data.get('social_handle') or data.get('username') or '').strip().lstrip('@')
+        return handle
+    except Exception as exc:
+        _log(f"[ig-login] handle lookup failed: {exc}")
+        return ''
+
+
+def _finish_instagram_html_fallback(user_id, handle, return_url, from_settings):
+    """Complete Instagram connect from public profile when Graph rejects the token."""
+    from services.creator_profile_scraper import scrape_and_enrich_creator
+
+    conn = get_db_connection()
+    try:
+        profile_data, _vision = scrape_and_enrich_creator(
+            user_id,
+            handle,
+            'instagram',
+            db_conn=conn,
+            skip_minimums=True,
+            skip_follower_floor=from_settings,
+        )
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    profile_data = profile_data or {}
+    followers = int(profile_data.get('follower_count') or 0)
+    posts = int(profile_data.get('post_count') or 0)
+    handle_q = quote(str(profile_data.get('handle') or handle).lstrip('@'))
+    _log(f"[ig-login] HTML fallback @{handle} followers={followers} posts={posts}")
+    return redirect(
+        f"{return_url}?social=success&platform=instagram"
+        f"&handle={handle_q}&followers={followers}&posts={posts}"
+    )
+
+
 def _tiktok_handle_from_user_info(user_info):
     """Real @username only. display_name is not a handle."""
     user_info = user_info or {}
@@ -1094,6 +1158,8 @@ def callback_instagram():
         expires_at = expires_at_from_payload(long_lived)
 
         ig_user_id = str(token_data.get('user_id') or '').strip()
+        perms = token_data.get('permissions')
+        _log(f"[ig-login] graph start user_id={ig_user_id or 'none'} permissions={perms}")
         user_info = fetch_user_info(access_token, user_id=ig_user_id)
         handle = (user_info.get('username') or '').strip().lstrip('@')
         if not handle:
@@ -1225,8 +1291,27 @@ def callback_instagram():
         return fail(result.get('failure_reason') or 'oauth_error')
     except InstagramLoginKitError as e:
         _log(f"[ig-login] kit error: {e}")
+        from_settings = _is_settings_return(return_url, oauth_source)
         if is_unsupported_graph_method_error(str(e)):
-            return fail('need_instagram_tester')
+            existing = _lookup_creator_instagram_handle(creator_id, user_id)
+            if existing:
+                try:
+                    _log(f"[ig-login] Graph denied; HTML fallback @{existing}")
+                    return _finish_instagram_html_fallback(
+                        user_id, existing, return_url, from_settings
+                    )
+                except ProfileQualityError as qe:
+                    _log(f"[ig-login] HTML fallback quality failed: {qe.code}")
+                    if not from_settings:
+                        reason = {
+                            'below_follower_min': 'below_follower_min',
+                            'below_post_min': 'below_post_min',
+                            'inactive': 'inactive',
+                        }.get(qe.code, 'below_post_min')
+                        return fail(reason)
+                except Exception as scrape_err:
+                    _log(f"[ig-login] HTML fallback failed: {scrape_err}")
+            return fail('instagram_graph_denied')
         if is_professional_account_error(str(e)):
             return fail('need_professional')
         if scopes_mode != 'base' and 'scope' in str(e).lower():

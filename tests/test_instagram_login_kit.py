@@ -68,6 +68,11 @@ class InstagramLoginKitTests(unittest.TestCase):
         self.assertTrue(
             is_unsupported_graph_method_error("Unsupported request - method type: get")
         )
+        self.assertTrue(
+            is_unsupported_graph_method_error(
+                "Unsupported request - method type: get (code=100 type=IGApiException)"
+            )
+        )
 
     def test_unwraps_nested_token_payload(self):
         from services.instagram_login_kit import _unwrap_token_payload
@@ -168,6 +173,19 @@ class InstagramConnectConfigTests(unittest.TestCase):
         with patch("social_verification_routes._instagram_oauth_config", return_value=("id", "secret", "https://x")):
             with patch.dict("os.environ", {"INSTAGRAM_OAUTH_ENABLED": ""}, clear=False):
                 self.assertTrue(_instagram_oauth_enabled())
+
+    def test_graph_error_includes_meta_code(self):
+        from services.instagram_login_kit import _graph_error
+        self.assertIn(
+            "code=100",
+            _graph_error({
+                "error": {
+                    "message": "Unsupported request - method type: get",
+                    "type": "IGApiException",
+                    "code": 100,
+                }
+            }),
+        )
 
 
 if __name__ == "__main__":

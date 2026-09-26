@@ -86,6 +86,7 @@ class CreatorProfileScraper:
                 token = decrypt_token(stored) if stored else None
             except Exception as exc:
                 print(f"[Scrape] ig @{handle} stored token lookup failed: {exc}")
+        graph_denied = False
         if token:
             try:
                 profile = fetch_raw_scrape(token, handle_hint=handle)
@@ -94,12 +95,17 @@ class CreatorProfileScraper:
                     return profile
                 raise InstagramLoginKitError(f"Instagram Login profile thin for @{handle}")
             except InstagramLoginKitError as exc:
-                print(f"[Scrape] ig @{handle} login failed ({exc}); not using HTML for connected users")
-                raise ValueError(
-                    f"Could not refresh Instagram via Login for @{handle}. Reconnect Instagram and try again."
-                ) from exc
+                from services.instagram_login_kit import is_unsupported_graph_method_error
+                if is_unsupported_graph_method_error(str(exc)):
+                    graph_denied = True
+                    print(f"[Scrape] ig @{handle} Graph denied ({exc}); HTML fallback")
+                else:
+                    print(f"[Scrape] ig @{handle} login failed ({exc}); not using HTML for connected users")
+                    raise ValueError(
+                        f"Could not refresh Instagram via Login for @{handle}. Reconnect Instagram and try again."
+                    ) from exc
 
-        if not allow_html_fallback:
+        if not allow_html_fallback and not graph_denied:
             raise ValueError(f"Connect Instagram with Login to load @{handle}")
 
         profile = diy_scrape_instagram(handle, results_limit=12)

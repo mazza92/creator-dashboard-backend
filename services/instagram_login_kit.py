@@ -61,7 +61,12 @@ def load_instagram_credentials() -> Tuple[str, str]:
 def _graph_error(payload: dict) -> Optional[str]:
     err = payload.get("error")
     if isinstance(err, dict):
-        return str(err.get("message") or err.get("type") or "graph_error")
+        msg = str(err.get("message") or err.get("type") or "graph_error")
+        code = err.get("code")
+        err_type = err.get("type")
+        if code is not None:
+            return f"{msg} (code={code} type={err_type})"
+        return msg
     if payload.get("error_type") or payload.get("error_message"):
         return str(payload.get("error_message") or payload.get("error_type"))
     return None
@@ -130,9 +135,12 @@ def exchange_code_for_token(code: str, redirect_uri: str) -> Dict[str, Any]:
     err = _graph_error(payload) or _graph_error(raw if isinstance(raw, dict) else {})
     token = str(payload.get("access_token") or "").strip()
     user_id = payload.get("user_id") or payload.get("user") or ""
+    perms = payload.get("permissions") if isinstance(payload, dict) else None
+    if perms is None and isinstance(raw, dict):
+        perms = raw.get("permissions")
     _log(
         f"[ig-login] token http={resp.status_code} keys={sorted((raw or {}).keys()) if isinstance(raw, dict) else []} "
-        f"prefix={token[:4] or 'none'} user_id={user_id or 'none'}"
+        f"prefix={token[:4] or 'none'} user_id={user_id or 'none'} permissions={perms}"
     )
     if err:
         raise InstagramLoginKitError(err)
@@ -231,7 +239,9 @@ def fetch_user_info(access_token: str, user_id: str = "") -> Dict[str, Any]:
     field_sets = (
         f"{ME_FIELDS_BASE},{ME_FIELDS_INSIGHTS}",
         ME_FIELDS_BASE,
+        "id,user_id,username",
         "user_id,username",
+        "id,username",
     )
     for url in _profile_urls(user_id):
         for fields in field_sets:
