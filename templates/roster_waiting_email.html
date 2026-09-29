@@ -1,0 +1,71 @@
+{# Inner HTML only. Rendered into welcome_email.html via message | safe. #}
+<p style="margin: 0 0 16px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
+  Hi {{ greeting }},
+</p>
+
+{% if trigger_number == 4 %}
+<p style="margin: 0 0 16px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
+  we're going to archive your Newcollab roster on Friday if there's no activity.
+  You have <strong>{{ applicant_count }}</strong> creators waiting.
+  If you're still interested, just click the link and pick your 5, otherwise we'll re-open it next quarter.
+  No hard feelings either way.
+</p>
+<p style="margin: 0 0 8px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
+  <a href="{{ roster_link }}" style="color: #1d1d1f; font-weight: 600;">{{ roster_link }}</a>
+</p>
+{% else %}
+{% if trigger_number == 3 %}
+<p style="margin: 0 0 16px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
+  Just checking back: your {{ brand_name }} roster now has
+  <strong>{{ applicant_count }} creators waiting</strong> and hasn't been reviewed yet.
+  Spots are still yours to fill, but the sooner the better before creators lose interest.
+</p>
+{% else %}
+<p style="margin: 0 0 16px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
+  Quick heads up: <strong>{{ applicant_count }} creators</strong> on Newcollab have applied to work with {{ brand_name }} and are waiting for you to review them.
+</p>
+{% endif %}
+
+<p style="margin: 0 0 16px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
+  They're all small creators (500-10K followers), keen to create UGC in exchange for your PR product. No cash fee, no commitment beyond product + shipping.
+</p>
+
+<p style="margin: 0 0 8px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
+  Browse and select them directly here, no signup needed:
+</p>
+<p style="margin: 0 0 20px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
+  &#128073; <a href="{{ roster_link }}" style="color: #1d1d1f; font-weight: 600; word-break: break-all;">{{ roster_link }}</a>
+</p>
+
+<p style="margin: 0 0 8px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
+  From your dedicated interface you can:
+</p>
+<ul style="margin: 0 0 20px; padding-left: 20px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
+  <li style="margin-bottom: 6px;">See applicant profiles (followers, engagement, geo, recent content)</li>
+  <li style="margin-bottom: 6px;">Pick the ones you'd like to send PR to</li>
+  <li style="margin-bottom: 6px;">Export shipping details in one click (CSV ready for your fulfillment team)</li>
+</ul>
+
+<p style="margin: 0 0 16px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
+  Just product + shipping cost. No platform fee for this first campaign.
+</p>
+
+<p style="margin: 0 0 16px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
+  If anything's unclear or you want a quick 15-min walkthrough, just reply here.
+</p>
+{% endif %}
+
+<p style="margin: 0 0 4px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
+  Best,
+</p>
+<p style="margin: 0 0 16px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
+  Mahery<br>
+  Founder, Newcollab<br>
+  <a href="mailto:team@newcollab.co" style="color: #1d1d1f; text-decoration: underline;">team@newcollab.co</a>
+</p>
+
+{% if trigger_number != 4 %}
+<p style="margin: 0; font-size: 14px; line-height: 1.6; color: #86868b;">
+  P.S. Applicants typically lose interest after 2 weeks of waiting. Quick reviews keep quality high.
+</p>
+{% endif %}

@@ -17,6 +17,10 @@
     {
       "path": "/api/admin/email/cron/process",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/brand-pr/cron/waiting-emails",
+      "schedule": "0 * * * *"
     }
   ]
 }

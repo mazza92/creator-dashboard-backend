@@ -2404,6 +2404,68 @@ def admin_revoke_campaign(campaign_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+def _waiting_email_cron_authorized() -> bool:
+    allowed = {
+        os.getenv("CRON_SECRET"),
+        os.getenv("EMAIL_CRON_SECRET"),
+        "newcollab-cron-2026",
+        "pr-hunter-admin-2026",
+        os.getenv("ADMIN_TOKEN"),
+    }
+    allowed.discard(None)
+    secret = (
+        request.headers.get("X-Cron-Secret")
+        or request.headers.get("X-Cron-Token")
+        or request.headers.get("X-Admin-Token")
+        or request.args.get("secret")
+        or request.args.get("cron_token")
+    )
+    auth = request.headers.get("Authorization") or ""
+    bearer = auth.split(" ", 1)[1].strip() if auth.lower().startswith("bearer ") else ""
+    return secret in allowed or bearer in allowed
+
+
+@brand_pr_roster_bp.route("/cron/waiting-emails", methods=["GET", "POST"])
+def cron_roster_waiting_emails():
+    """Hourly: send roster-waiting emails at 10am brand-local time.
+
+    Query: dry_run, limit, test_email, brand_id, skip_hour_check
+    """
+    if not _waiting_email_cron_authorized():
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    dry_run = request.args.get("dry_run", str(data.get("dry_run", "false"))).lower() == "true"
+    skip_hour = request.args.get(
+        "skip_hour_check", str(data.get("skip_hour_check", "false"))
+    ).lower() == "true"
+    if not dry_run:
+        from services.resend_mail import resend_configured
+
+        if not resend_configured():
+            return jsonify({
+                "success": False,
+                "error": "RESEND_API_KEY not set. Roster waiting emails send through Resend, not SMTP.",
+            }), 503
+    limit = int(request.args.get("limit", data.get("limit", 8)))
+    test_email = request.args.get("test_email", data.get("test_email")) or None
+    brand_id = request.args.get("brand_id", data.get("brand_id"))
+    brand_id = int(brand_id) if brand_id else None
+    try:
+        from services.roster_waiting_email import process_roster_waiting_emails
+
+        stats = process_roster_waiting_emails(
+            dry_run=dry_run,
+            limit=max(1, min(limit, 50)),
+            test_email=test_email,
+            brand_id=brand_id,
+            skip_time_checks=skip_hour,
+        )
+        return jsonify({"success": True, "dry_run": dry_run, "stats": stats}), 200
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 # Alias blueprint matching plan paths: /api/admin/brand-pr/campaigns
 admin_brand_pr_bp = Blueprint("admin_brand_pr", __name__, url_prefix="/api/admin/brand-pr")
 
