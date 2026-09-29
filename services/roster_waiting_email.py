@@ -580,15 +580,15 @@ def _candidate_sql(has_first_name: bool, has_outreach: bool, has_emails: bool) -
             c.locked_at,
             (
                 SELECT COUNT(*)::int FROM brand_pr_applications a
-                WHERE a.campaign_id = c.id AND a.status = 'review'
+                WHERE a.brand_id = b.id AND a.status = 'review'
             ) AS applicant_count,
             (
                 SELECT COUNT(*)::int FROM brand_pr_applications a
-                WHERE a.campaign_id = c.id AND a.status IN ('ships', 'posted')
+                WHERE a.brand_id = b.id AND a.status IN ('ships', 'posted')
             ) AS picked_count,
             (
                 SELECT MIN(a.applied_at) FROM brand_pr_applications a
-                WHERE a.campaign_id = c.id AND a.status = 'review'
+                WHERE a.brand_id = b.id AND a.status = 'review'
             ) AS oldest_waiting_at,
             (
                 SELECT MAX(e.created_at) FROM brand_pr_events e
@@ -608,7 +608,7 @@ def _candidate_sql(has_first_name: bool, has_outreach: bool, has_emails: bool) -
           AND TRIM(b.contact_email) <> ''
           AND EXISTS (
               SELECT 1 FROM brand_pr_applications a
-              WHERE a.campaign_id = c.id AND a.status = 'review'
+              WHERE a.brand_id = b.id AND a.status = 'review'
           )
         ORDER BY b.id, c.created_at DESC
     """
@@ -634,6 +634,23 @@ def load_candidates(cursor, test_email: str = None, brand_id: int = None) -> lis
         )
     cursor.execute(sql, params)
     return list(cursor.fetchall() or [])
+
+
+def _attach_waiting_apps_to_active_rosters(cursor) -> None:
+    """Applicants often land with campaign_id NULL until a roster is opened."""
+    if not public_table_exists(cursor, "brand_pr_applications"):
+        return
+    cursor.execute(
+        """
+        UPDATE brand_pr_applications a
+        SET campaign_id = c.id
+        FROM brand_pr_campaigns c
+        WHERE c.brand_id = a.brand_id
+          AND c.status = 'active'
+          AND a.campaign_id IS NULL
+          AND a.status IN ('review', 'ships', 'posted')
+        """
+    )
 
 
 def _sync_opens_and_engagement(cursor, now: datetime) -> None:
@@ -755,9 +772,10 @@ def process_roster_waiting_emails(
     }
     try:
         ensure_brand_emails_table(cursor, conn)
+        _attach_waiting_apps_to_active_rosters(cursor)
         if not dry_run:
             _sync_opens_and_engagement(cursor, now)
-            conn.commit()
+        conn.commit()
         rows = load_candidates(cursor, test_email=test_email, brand_id=brand_id)
         stats["scanned"] = len(rows)
         mailer = send_fn or _default_send_fn

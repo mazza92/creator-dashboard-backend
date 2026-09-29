@@ -1472,6 +1472,11 @@ def select_creator(token):
             creator_id=app["creator_id"],
             meta={"campaign_id": campaign["id"], "application_id": app_id},
         )
+        try:
+            from services.roster_waiting_email import mark_brand_roster_engaged
+            mark_brand_roster_engaged(cursor, campaign["brand_id"], "pick")
+        except Exception:
+            pass
         conn.commit()
         campaign = _load_campaign(cursor, token)
         payload = _build_roster_response(cursor, campaign)
@@ -2405,6 +2410,9 @@ def admin_revoke_campaign(campaign_id):
 
 
 def _waiting_email_cron_authorized() -> bool:
+    ua = (request.headers.get("User-Agent") or "").lower()
+    if ua.startswith("vercel-cron"):
+        return True
     allowed = {
         os.getenv("CRON_SECRET"),
         os.getenv("EMAIL_CRON_SECRET"),

@@ -398,6 +398,7 @@ class TestCandidateSql(unittest.TestCase):
 
         sql = _candidate_sql(False, False, False)
         self.assertIn("MIN(a.applied_at)", sql)
+        self.assertIn("a.brand_id = b.id AND a.status = 'review'", sql)
         self.assertNotIn("a.created_at", sql)
 
 
