@@ -392,5 +392,14 @@ class TestResendSendPath(unittest.TestCase):
         self.assertNotIn("smtp", source.lower())
 
 
+class TestCandidateSql(unittest.TestCase):
+    def test_waiting_age_uses_applied_at(self):
+        from services.roster_waiting_email import _candidate_sql
+
+        sql = _candidate_sql(False, False, False)
+        self.assertIn("MIN(a.applied_at)", sql)
+        self.assertNotIn("a.created_at", sql)
+
+
 if __name__ == "__main__":
     unittest.main()

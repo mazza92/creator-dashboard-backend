@@ -587,7 +587,7 @@ def _candidate_sql(has_first_name: bool, has_outreach: bool, has_emails: bool) -
                 WHERE a.campaign_id = c.id AND a.status IN ('ships', 'posted')
             ) AS picked_count,
             (
-                SELECT MIN(a.created_at) FROM brand_pr_applications a
+                SELECT MIN(a.applied_at) FROM brand_pr_applications a
                 WHERE a.campaign_id = c.id AND a.status = 'review'
             ) AS oldest_waiting_at,
             (
