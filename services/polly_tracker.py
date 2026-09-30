@@ -1715,13 +1715,25 @@ def deliver_nudge(conn, creator_id: int, nudge: Dict) -> None:
     save_thread(conn, creator_id, messages, thread.get("suggested_brands") or [], notes=thread.get("notes"))
 
 
-def process_due_nudges(conn, creator_limit: int = 40) -> int:
-    """Hourly cron: one nudge per creator per run, max 1/day already gated."""
+def process_due_nudges(
+    conn,
+    creator_limit: int = 40,
+    delivered: Optional[List[Dict[str, Any]]] = None,
+) -> int:
+    """Cron: one nudge per creator per run, max 1/day already gated.
+
+    Appends ``{"creator_id", "nudge"}`` to ``delivered`` so the caller can email them.
+    """
     cur = _cursor(conn)
     cur.execute(
         """
-        SELECT DISTINCT creator_id FROM polly_tasks
+        SELECT creator_id, MIN(due_at) AS first_due FROM polly_tasks
         WHERE status = ANY(%s) AND due_at IS NOT NULL AND due_at <= NOW()
+          AND COALESCE(polly_nudge_count, 0) < 3
+          AND (polly_last_nudge_at IS NULL OR polly_last_nudge_at < NOW() - INTERVAL '20 hours')
+          AND (snoozed_until IS NULL OR snoozed_until <= NOW())
+        GROUP BY creator_id
+        ORDER BY first_due ASC
         LIMIT %s
         """,
         (list(OPEN_STATUSES), creator_limit),
@@ -1735,6 +1747,8 @@ def process_due_nudges(conn, creator_limit: int = 40) -> int:
         try:
             deliver_nudge(conn, cid, nudges[0])
             sent += 1
+            if delivered is not None:
+                delivered.append({"creator_id": cid, "nudge": nudges[0]})
         except Exception as err:
             print(f"[Polly tracker] nudge failed creator={cid}: {err}")
     return sent

@@ -171,6 +171,12 @@ def _hours_since(ts):
 
 
 def _queue_brand_view_email(cursor, creator_id, brand_name, brand_category):
+    from services.resend_mail import resend_configured
+
+    # The Polly alerts cron emails kit views through Resend; a daemon thread
+    # does not survive a serverless response.
+    if resend_configured():
+        return False
     cursor.execute(
         """
         SELECT c.username, c.subscription_tier, c.brand_view_email_sent_at,

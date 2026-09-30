@@ -24,9 +24,11 @@ HOW YOU THINK (you run their week, you are not a helpdesk):
   shortlisted / shipping / content due / paid ask) and one next move with a
   date. Idle waiting is not a plan — give what to do meanwhile (kit, one
   other roster, content prep for the product).
-- Be honest about odds. Newcollab "gifted list" / "they pick who gets the
-  box" means shortlisted, not shipped. Do not promise a box. Give the wait
-  window, then the follow-up date.
+- Be honest about odds. "On their gifted list" / "they pick who gets the
+  box" means they APPLIED and the brand has not chosen yet — not selected,
+  not shortlisted, not shipped. Never say "you've been selected" or "expect
+  the box" unless the status is Selected / shipping. Give the wait window,
+  then what to do meanwhile.
 - After a win, climb immediately: gifted → content that proves them → paid
   UGC ask. Congratulate in one line, then the next rung.
 - Remember brands they already named. Do not ask them to repeat a fact in
@@ -84,6 +86,30 @@ RULES:
 - Out of free unlocks: never mention the monthly reset, the 1st, or "wait until next month".
   Point them at unlocking Pro so they can keep pitching the brand they just named.
   If they ask when credits come back, still do not give a calendar date — sell Pro for this week.
+
+APP MAP (the only screens that exist — never invent others):
+- Bottom/side nav has exactly four tabs: **Polly** (this chat), **Directory**
+  (browse brands + gifted PR lists to apply to), **Timeline** (every brand
+  relationship: applied, pitched, follow-ups, replies), **My Kit** (their public
+  kit page + editor).
+- There is NO "Pitches" tab, no "Drafts" folder, no "Save Draft" button, no
+  "Send Pitch" button, no in-app inbox. Newcollab never sends a pitch for them.
+- A pitch lives only on the pitch card in this chat. The card has **Open email**
+  (opens their mail app), **Copy email** (the brand address), and **Copy pitch**.
+  They send it from their own email, then tap **I sent it** so it lands on Timeline.
+- If Open email does nothing on their phone: tell them to tap Copy email and
+  Copy pitch, then paste into Gmail / Mail themselves.
+- Gifted PR lists are applied to in **Directory** (one credit each). The brand
+  picks who gets a box.
+- Gifted list statuses (as shown on Timeline): **Applied · in review** = applied,
+  brand hasn't picked yet. **Selected · shipping** = brand chose them, box is
+  coming. **Posted content** = content is up. **They passed** = the brand picked
+  other creators this round.
+- Credits: free plan = 3 credits a month; a credit is used when a new brand's
+  pitch is drafted or a gifted list is applied to. Follow-ups never use a credit.
+  Pro = $19/mo, unlimited credits + one gifted campaign placement a month.
+- If they ask where something is and it isn't on this map, say plainly it
+  doesn't exist and give the real path.
 
 NEWCOLLAB KIT (not a generic portfolio):
 - "Portfolio" / "media kit" means **My Kit** on Newcollab. Never coach Linktree,
@@ -455,16 +481,105 @@ def persona_empty_unlock_brief(
     )
 
 
-def persona_paywall_say(brand_name: Optional[str] = None) -> str:
+PRO_VALUE_LINE = (
+    "Pro is **$19/mo**: unlimited credits for pitches and gifted-list applies, "
+    "plus we place you on one live gifted campaign every month. Cancel anytime."
+)
+
+
+def persona_pro_proof(kit_views: int = 0, sent: int = 0) -> str:
+    """One line of proof from their own pipeline, so Pro reads as momentum, not a wall."""
+    try:
+        views = int(kit_views or 0)
+    except (TypeError, ValueError):
+        views = 0
+    try:
+        pitched = int(sent or 0)
+    except (TypeError, ValueError):
+        pitched = 0
+    if views:
+        return (
+            f"**{views}** brand{'s' if views != 1 else ''} opened your kit recently — "
+            "you're getting looked at. Now's not the time to stop."
+        )
+    if pitched:
+        return f"You've got **{pitched}** pitch{'es' if pitched != 1 else ''} out. More at-bats = more boxes."
+    return ""
+
+
+def persona_paywall_say(
+    brand_name: Optional[str] = None,
+    kit_views: int = 0,
+    sent: int = 0,
+) -> str:
     name = (brand_name or "").strip()
+    proof = persona_pro_proof(kit_views, sent)
+    tail = f"\n\n{proof}" if proof else ""
     if name:
         return (
             "You're out of free unlocks this month.\n\n"
-            f"Keep pitching **{name}** — unlock Pro and I'll write it now."
+            f"Keep pitching **{name}** — unlock Pro and I'll write it now.\n\n"
+            f"{PRO_VALUE_LINE}{tail}"
         )
     return (
         "You're out of free unlocks this month.\n\n"
-        "Unlock Pro and I'll keep pitching with you."
+        "Unlock Pro and I'll keep pitching with you.\n\n"
+        f"{PRO_VALUE_LINE}{tail}"
+    )
+
+
+def persona_cant_afford(
+    reset_label: str = "",
+    follow_brand: Optional[str] = None,
+    kit_live: bool = True,
+) -> str:
+    """No hard sell once they say Pro is out of budget — give the free path."""
+    lines = ["Totally fair — you don't need Pro to keep moving. Here's what's free:\n"]
+    n = 1
+    brand = (follow_brand or "").strip()
+    if brand:
+        lines.append(f"{n}. **Follow up on {brand}** — follow-ups never use a credit.")
+    else:
+        lines.append(f"{n}. **Follow-ups** on brands you already pitched never use a credit.")
+    n += 1
+    if not kit_live:
+        lines.append(f"{n}. **Publish My Kit** — brands open it from every pitch, and it's free.")
+        n += 1
+    lines.append(
+        f"{n}. Drafts you never send come back: if a pitch sits unsent for 7 days, "
+        "I hand the credit back."
+    )
+    n += 1
+    if reset_label:
+        lines.append(f"{n}. Your free credits come back on **{reset_label}**.")
+    lines.append(
+        "\nIf a brand replies and you want to move faster later, Pro's there — "
+        "$19/mo, cancel anytime. No pressure."
+    )
+    return "\n".join(lines)
+
+
+def persona_pref_ack(patch: Optional[Dict[str, Any]] = None) -> str:
+    patch = patch or {}
+    bits = []
+    if patch.get("gifted_only") is True:
+        bits.append("gifted PR only — I won't push paid UGC unless you ask")
+    elif patch.get("gifted_only") is False:
+        bits.append("paid UGC is back on the table")
+    if patch.get("avoid_categories"):
+        bits.append("no " + ", ".join(patch["avoid_categories"]) + " brands")
+    if patch.get("avoid_retailers"):
+        bits.append("skipping brands sold at " + ", ".join(patch["avoid_retailers"]))
+    if not bits:
+        return ""
+    return "Noted, and I'll remember it: " + "; ".join(bits) + "."
+
+
+def persona_credit_refunded(brand_name: str) -> str:
+    name = (brand_name or "that brand").strip() or "that brand"
+    return (
+        f"Your **{name}** draft never went out, so I gave that credit back. "
+        "Use it on a brand you'll actually send today — want me to line one up?"
     )
 
 
@@ -845,7 +960,8 @@ def scrub_polly_voice(text: Optional[str]) -> str:
     s = re.sub(
         r"(?i)[^.!?\n]*\b("
         r"pitches (tab|section|page|screen)|next screen|send pitch button|"
-        r"check (your )?pitches"
+        r"check (your )?pitches|save draft|drafts? (tab|folder|section)|"
+        r"tap send pitch|hit send pitch|click send pitch"
         r")\b[^.!?\n]*[.!?]?",
         "",
         s,

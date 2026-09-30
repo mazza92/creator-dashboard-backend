@@ -21,6 +21,10 @@
     {
       "path": "/api/brand-pr/cron/waiting-emails",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/polly/cron/alerts",
+      "schedule": "*/15 * * * *"
     }
   ]
 }

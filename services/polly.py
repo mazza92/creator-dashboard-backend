@@ -11,6 +11,7 @@ import json
 import os
 import re
 import time
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -742,6 +743,38 @@ def candidate_looks_like_brand_name(text: str) -> bool:
     if all(part in _QUERY_VOCAB or part in _CATEGORY_ASK or part in _PROMPT_VOCAB for part in parts):
         return False
     return True
+
+
+_SENTENCE_WORDS = frozenset({
+    "i", "im", "i'm", "ive", "i've", "me", "my", "we", "our", "us", "they", "their", "them",
+    "he", "she", "his", "her", "it's", "its", "is", "are", "was", "were", "am", "been",
+    "have", "has", "had", "do", "does", "did", "didnt", "didn't", "dont", "don't", "cant",
+    "can't", "cannot", "wont", "won't", "not", "no", "never", "want", "wanna", "need",
+    "said", "say", "afford", "wait", "please", "still", "yet", "already", "because",
+    "response", "reply", "replied", "sent", "send", "should", "would", "could", "why",
+    "when", "where", "which", "who", "if", "but", "so", "id", "number", "account",
+})
+
+
+def reads_like_sentence(text: str) -> bool:
+    """A sentence or correction, not a company name. Only used after the directory lookup missed."""
+    raw = (text or "").strip(" .!,?")
+    if not raw:
+        return False
+    if re.search(r"\d{3,}", raw) and len(raw.split()) >= 3:
+        return True
+    tokens = [re.sub(r"[^\w']+", "", part).lower() for part in raw.split()]
+    tokens = [t for t in tokens if t]
+    if not tokens:
+        return False
+    hits = sum(1 for t in tokens if t in _SENTENCE_WORDS)
+    if len(tokens) >= 4 and hits >= 1:
+        return True
+    if hits >= 2:
+        return True
+    if len(tokens) >= 2 and tokens[0] in _SENTENCE_WORDS and tokens[0] not in {"no", "not", "my", "it's", "its", "us"}:
+        return True
+    return False
 
 
 def brain_brand_name(name: Optional[str]) -> Optional[str]:
@@ -1765,6 +1798,35 @@ def is_unlock_reset_ask(text: str) -> bool:
     return bool(_UNLOCK_RESET_RE.search(text or ""))
 
 
+_CANT_AFFORD_RE = re.compile(
+    r"(?i)\b(?:can'?t|cannot|can not|cant|unable to|not able to|won'?t be able to)\s+"
+    r"(?:really\s+|currently\s+|rn\s+)?(?:afford|pay(?: for)?|spend)\b"
+    r"|\btoo expensive\b|\bno money\b|\bi'?m broke\b|\bout of (?:my )?budget\b"
+    r"|\bnot in (?:my|the) budget\b|\bdon'?t have (?:the )?money\b"
+)
+
+
+def is_cant_afford(text: str) -> bool:
+    return bool(_CANT_AFFORD_RE.search(text or ""))
+
+
+def reset_label(balance: Optional[Dict] = None) -> str:
+    """'Oct 1' from the balance reset_at, else the first of next month (UTC)."""
+    raw = (balance or {}).get("reset_at") if isinstance(balance, dict) else None
+    when = None
+    if isinstance(raw, datetime):
+        when = raw
+    elif isinstance(raw, str) and raw:
+        try:
+            when = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            when = None
+    if when is None:
+        now = datetime.now(timezone.utc)
+        when = datetime(now.year + (1 if now.month == 12 else 0), 1 if now.month == 12 else now.month + 1, 1)
+    return f"{when.strftime('%b')} {when.day}"
+
+
 def next_unlock_brand(
     last_pitch: Optional[Dict] = None,
     remaining_brands: Optional[List[Dict]] = None,
@@ -2397,6 +2459,16 @@ def _brain_extra(discovery_hint: str = "", force_intent: Optional[str] = None) -
         "- Only generate_pitch when they name a company/product (on suggested_brands, "
         "already in the thread, or 'hit up' / Contact / pitch <Name>). "
         "Only name directory brands. Never invent brands, emails, or UI screens.\n"
+        "- UI facts: tabs are Polly, Directory, Timeline, My Kit — nothing else. No Pitches tab, "
+        "no Save Draft, no Send Pitch. A draft lives on the pitch card here (Open email / "
+        "Copy email / Copy pitch); they send from their own inbox, then tap I sent it.\n"
+        "- Gifted list 'in review' / 'they pick who gets the box' = applied, NOT selected. "
+        "Only say selected/shipping if TASK TRACKER or Timeline shows Selected · shipping.\n"
+        "- Stated preferences in Manager notes are hard rules: gifted only means no paid gigs "
+        "or paid pitches; never suggest avoided categories or retailers. If they restate one, "
+        "acknowledge and comply — never argue or re-offer the thing they declined.\n"
+        "- If they say they can't afford Pro: no hard sell. Give the free path "
+        "(follow-ups are free, publish the kit, drafts unsent for 7 days get the credit back).\n"
         "- If they tap Help me get more replies from brands: intent=coach_profile. "
         "Audit kit + bio + rates + follow-up habits + niche clarity. Not kit-only. "
         "Do not invent follower counts.\n"

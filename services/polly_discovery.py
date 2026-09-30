@@ -392,8 +392,9 @@ def opener(first_name: Optional[str] = None) -> str:
     name = (first_name or "").strip()
     hello = f"Hey {name}," if name else "Hey,"
     return (
-        f"{hello} I'm Polly. I'm your Creator Assistant — I line up brand PR to pitch, "
-        "and I find all paid UGC offers across all the platforms out there so you have them here in one place.\n\n"
+        f"{hello} I'm Polly. I'm your Creator Assistant — I get you on brands' gifted PR lists "
+        "and write the pitches for the ones worth emailing. When you're ready for paid work, "
+        "I pull paid UGC offers from across the platforms into one place.\n\n"
         "What do you want to land first?"
     )
 
@@ -506,6 +507,10 @@ def notes_context(notes: Optional[Dict] = None) -> str:
         bits.append(f"Frustration: {notes['biggest_challenge']}")
     if notes.get("dream_brands"):
         bits.append(f"Dream brands: {notes['dream_brands']}")
+    from services.polly_prefs import prefs_context
+    prefs_line = prefs_context(notes)
+    if prefs_line:
+        bits.append(prefs_line)
     if notes.get("pitched_brand_names"):
         bits.append("Already pitched (do not re-pitch): " + ", ".join(str(n) for n in notes["pitched_brand_names"][:12]))
     pending = notes.get("pending_pitch") if isinstance(notes.get("pending_pitch"), dict) else None
@@ -534,7 +539,26 @@ def notes_context(notes: Optional[Dict] = None) -> str:
     )
 
 
+GIFTED_LISTS_CHIP = {
+    "id": "gifted_lists",
+    "label": "Apply to gifted PR lists",
+    "hint": "Brands picking creators for boxes now",
+    "action": "open_directory",
+    "href": "/creator/dashboard/pr-brands",
+}
+
+
+def paid_first(notes: Optional[Dict] = None) -> bool:
+    """Paid UGC leads only for established creators who haven't asked for gifted only."""
+    from services.polly_prefs import gifted_only
+
+    notes = notes or {}
+    return (notes.get("polly_track") or "") == "established" and not gifted_only(notes)
+
+
 def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) -> List[Dict[str, Any]]:
+    from services.polly_prefs import gifted_only
+
     notes = notes or {}
     paid_chip = {
         "id": "paid_ugc",
@@ -543,12 +567,15 @@ def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) 
         "action": "suggest_gigs",
         "skip_discovery": True,
     }
+    gifted_chip = dict(GIFTED_LISTS_CHIP)
     directory_chip = {
         "id": "directory_pitch",
         "label": "Pitch Directory brands instead",
         "action": "suggest_brands",
         "skip_discovery": True,
+        "deal": "gifted",
     }
+    lead_chip = paid_chip if paid_first(notes) else gifted_chip
     pending = notes.get("pending_pitch") if isinstance(notes.get("pending_pitch"), dict) else None
     pending_name = str((pending or {}).get("name") or (pending or {}).get("brand_name") or "").strip()
     if pending_name:
@@ -561,7 +588,7 @@ def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) 
                 "brand_name": pending_name,
             },
             {"id": "more_brands", "label": "More brands", "action": "suggest_brands"},
-            paid_chip,
+            lead_chip,
             {"id": "portfolio", "label": "Review my kit", "action": "coach_portfolio"},
         ]
         return chips
@@ -579,22 +606,22 @@ def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) 
         }
         kit_chip = {"id": "kit_done", "label": "I published my kit", "action": "coach_portfolio"}
         if continues >= 2 or notes.get("wants_matches"):
-            return [paid_chip, skip_chip, kit_chip]
+            return [lead_chip, skip_chip, kit_chip]
         if continues >= 1 or discovery_started(notes):
             return [
-                paid_chip,
+                lead_chip,
                 skip_chip,
                 kit_chip,
                 {"id": "continue_setup", "label": "Keep going on my kit", "action": "discovery"},
             ]
         chips = [
-            paid_chip,
             {
                 "id": "line_up",
-                "label": "Pitch 3 brands for me today",
+                "label": "Pitch 3 gifted brands for me today",
                 "hint": "I'll draft the emails",
                 "action": "suggest_brands",
                 "skip_discovery": True,
+                "deal": "gifted",
             },
             {
                 "id": "name_a_brand",
@@ -609,26 +636,28 @@ def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) 
                 "action": "coach_profile",
             },
         ]
-        if notes.get("saw_gigs") or notes.get("wanted_gigs"):
-            chips.insert(1, directory_chip)
-        return chips[:4]
-    chips = [
-        paid_chip,
-        {"id": "line_up", "label": "Line up brands for me today", "action": "suggest_brands"},
-        {"id": "week_plan", "label": "What should I do this week?", "action": "coach_week"},
-        {"id": "portfolio", "label": "Review my kit", "action": "coach_portfolio"},
-        {"id": "rates", "label": "Set my rates", "action": "coach_rates"},
-    ]
-    if (notes.get("polly_track") or "") == "established":
-        chips = [
-            paid_chip,
-            {"id": "line_up", "label": "Line up brands for me today", "action": "suggest_brands"},
-            {"id": "week_plan", "label": "What should I do this week?", "action": "coach_week"},
-            {"id": "rates", "label": "Set my rates", "action": "coach_rates"},
-            {"id": "portfolio", "label": "Review my kit", "action": "coach_portfolio"},
-        ]
+        if paid_first(notes):
+            chips[0] = dict(chips[0], label="Pitch 3 brands for me today", deal=None)
+            chips = [paid_chip] + chips
+        else:
+            chips = [gifted_chip] + chips
+            if notes.get("saw_gigs") or notes.get("wanted_gigs"):
+                chips.insert(1, directory_chip)
+            elif not gifted_only(notes):
+                chips.append(paid_chip)
+        return chips[:5]
+    line_up = {"id": "line_up", "label": "Line up brands for me today", "action": "suggest_brands"}
     if notes.get("pitched_brand_names"):
-        chips[1] = {"id": "line_up", "label": "Next brand to pitch", "action": "suggest_brands"}
+        line_up["label"] = "Next brand to pitch"
+    week = {"id": "week_plan", "label": "What should I do this week?", "action": "coach_week"}
+    rates = {"id": "rates", "label": "Set my rates", "action": "coach_rates"}
+    portfolio = {"id": "portfolio", "label": "Review my kit", "action": "coach_portfolio"}
+    if paid_first(notes):
+        chips = [paid_chip, line_up, week, rates, portfolio]
+    else:
+        line_up["deal"] = "gifted"
+        chips = [gifted_chip, line_up, week, portfolio]
+        chips.append(rates if gifted_only(notes) else paid_chip)
     if notes.get("saw_gigs") or notes.get("wanted_gigs"):
         chips.insert(1, directory_chip)
     if top_brand:

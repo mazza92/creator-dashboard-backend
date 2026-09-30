@@ -25,18 +25,19 @@ class DiscoveryTests(unittest.TestCase):
         from services.polly_discovery import opener
         chips = starters_for({})
         ids = [c["id"] for c in chips]
-        self.assertEqual(ids[0], "paid_ugc")
-        self.assertEqual(chips[0]["action"], "suggest_gigs")
-        self.assertTrue(chips[0].get("skip_discovery"))
-        self.assertEqual(chips[0]["label"], "Show paid UGC I can apply to now")
-        self.assertEqual(chips[0]["hint"], "Live briefs — tap Apply")
-        self.assertIn("line_up", ids)
+        self.assertEqual(ids[0], "gifted_lists")
+        self.assertEqual(chips[0]["action"], "open_directory")
+        self.assertEqual(chips[0]["href"], "/creator/dashboard/pr-brands")
+        self.assertEqual(ids[1], "line_up")
         self.assertEqual(chips[1]["action"], "suggest_brands")
-        self.assertEqual(chips[1]["label"], "Pitch 3 brands for me today")
-        self.assertIn("name_a_brand", ids)
+        self.assertEqual(chips[1]["label"], "Pitch 3 gifted brands for me today")
+        self.assertEqual(chips[1]["deal"], "gifted")
         self.assertEqual(chips[2]["action"], "ask_brand")
         self.assertEqual(chips[3]["action"], "coach_profile")
         self.assertEqual(chips[3]["label"], "Make my kit get more replies")
+        self.assertEqual(ids[-1], "paid_ugc")
+        self.assertEqual(chips[-1]["action"], "suggest_gigs")
+        self.assertEqual(chips[-1]["hint"], "Live briefs — tap Apply")
         say = opener("Jined")
         self.assertIn("Creator Assistant", say)
         self.assertIn("What do you want to land first?", say)
@@ -50,7 +51,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_starters_adapt_after_setup_tap(self):
         chips = starters_for({"discovery_step": 1, "setup_continues": 1})
         ids = [c["id"] for c in chips]
-        self.assertEqual(ids[0], "paid_ugc")
+        self.assertEqual(ids[0], "gifted_lists")
         self.assertEqual(ids[1], "skip_setup")
         self.assertIn("kit_done", ids)
         self.assertEqual(chips[1]["label"], "Skip, show me brands")
@@ -59,7 +60,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_starters_drop_continue_after_two_taps(self):
         chips = starters_for({"discovery_step": 1, "setup_continues": 2})
         ids = [c["id"] for c in chips]
-        self.assertEqual(ids, ["paid_ugc", "skip_setup", "kit_done"])
+        self.assertEqual(ids, ["gifted_lists", "skip_setup", "kit_done"])
         self.assertNotIn("continue_setup", ids)
 
     def test_pending_draft_starters_lead_with_sent(self):

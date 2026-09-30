@@ -427,7 +427,7 @@ class PollyGigsTests(unittest.TestCase):
     def test_starters_after_gigs_offer_directory_fallback(self):
         chips = starters_for({"saw_gigs": True})
         ids = [c["id"] for c in chips]
-        self.assertEqual(ids[0], "paid_ugc")
+        self.assertEqual(ids[0], "gifted_lists")
         self.assertNotIn("more_gigs", ids)
         self.assertIn("directory_pitch", ids)
         directory = next(c for c in chips if c["id"] == "directory_pitch")
