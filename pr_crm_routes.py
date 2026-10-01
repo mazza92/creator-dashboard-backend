@@ -8637,9 +8637,7 @@ def reveal_contact():
         tier = creator['subscription_tier'] or 'free'
         current_count = creator['pitches_sent_this_month'] or 0
 
-        # Check limits based on tier
         FREE_LIMIT = 10
-        PRO_LIMIT = 20
 
         if tier == 'free' and current_count >= FREE_LIMIT:
             cursor.close()
@@ -8650,18 +8648,6 @@ def reveal_contact():
                 'message': f'You\'ve used all {FREE_LIMIT} free brand contacts. Go Pro to get placed on 1 live gifted campaign every month, plus unlimited credits on top.',
                 'current_count': current_count,
                 'limit': FREE_LIMIT,
-                'tier': tier
-            }), 403
-
-        if tier == 'pro' and current_count >= PRO_LIMIT:
-            cursor.close()
-            conn.close()
-            return jsonify({
-                'success': False,
-                'error': 'Pro tier limit reached',
-                'message': f'You\'ve used all {PRO_LIMIT} brand contacts this month.',
-                'current_count': current_count,
-                'limit': PRO_LIMIT,
                 'tier': tier
             }), 403
 
