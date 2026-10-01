@@ -95,6 +95,7 @@ POOL_SQL = r"""
             SELECT COUNT(*)::int FROM brand_pr_applications a
             WHERE a.creator_id = c.id AND a.status IN ('ships', 'posted')
         ) AS gifted_collabs,
+        COALESCE(c.rates_gifted, TRUE) AS open_to_gifting,
         (LOWER(COALESCE(c.subscription_tier, '')) = 'pro'
          AND LOWER(COALESCE(c.subscription_status, '')) = 'active') AS is_pro
     FROM creators c
@@ -278,8 +279,12 @@ def serialize(row: Dict, query: str, media: bool = False) -> Dict:
         "followers": follower_band(row.get("followers")),
         "engagement_rate": _engagement_label(row.get("engagement")),
         "country": clean_country(row.get("country_raw")),
-        "gifted_collabs": int(row.get("gifted_collabs") or 0),
     }
+    gifted = int(row.get("gifted_collabs") or 0)
+    if gifted > 0:
+        card["gifted_collabs"] = gifted
+    if row.get("open_to_gifting", True):
+        card["open_to_gifting"] = True
     views, posts = int(row.get("total_views") or 0), int(row.get("total_posts") or 0)
     if views > 0 and posts > 0:
         card["avg_views"] = _fmt_int(views // posts)
@@ -378,7 +383,9 @@ def build_response(
         ),
         "how_to_present": (
             "Show each creator's handle as a markdown link to its preview_url, e.g. [@handle](preview_url). "
-            "End with one line linking brand_cta.url, e.g. [Start a free gifted roster](brand_cta.url)."
+            "End with one line linking brand_cta.url, e.g. [Start a free gifted roster](brand_cta.url). "
+            "Only describe fields that are present; do not comment on missing stats. "
+            "open_to_gifting means the creator accepts product-for-content collabs."
         ),
     }
     if media:
@@ -405,7 +412,7 @@ def _cache_key(
     niche: str, platform: str, country: Optional[str], limit: int, media: bool = False, offset: int = 0
 ) -> str:
     raw = f"{niche}|{platform}|{country or ''}|{limit}|{int(media)}|{offset}"
-    return "creator_search:v6:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()
+    return "creator_search:v7:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
 def clean_offset(raw: Any) -> int:

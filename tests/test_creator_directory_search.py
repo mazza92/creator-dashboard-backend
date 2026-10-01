@@ -121,6 +121,15 @@ class TestSerialize(unittest.TestCase):
         self.assertFalse(last["has_more"])
         self.assertNotIn("has_more", build_response(rows, "skincare", "all", None, 2))
 
+    def test_zero_collabs_omitted_and_gifting_flag(self):
+        row = _row(9, ["skincare"], kit="k9")
+        row["gifted_collabs"] = 0
+        card = serialize(row, "skincare")
+        self.assertNotIn("gifted_collabs", card)
+        self.assertTrue(card["open_to_gifting"])
+        row["open_to_gifting"] = False
+        self.assertNotIn("open_to_gifting", serialize(row, "skincare"))
+
     def test_platform_falls_back_to_posts(self):
         row = _row(3, ["skincare"], platform=None)
         row["post_platform"] = "instagram"
