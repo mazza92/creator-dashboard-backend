@@ -7,6 +7,7 @@ inspector both accept.
 from __future__ import annotations
 
 import json
+import os
 import traceback
 
 from flask import Blueprint, Response, current_app, jsonify, request
@@ -20,6 +21,16 @@ from services.creator_directory_search import (
 )
 
 integrations_bp = Blueprint("integrations", __name__, url_prefix="/api/v1/integrations")
+wellknown_bp = Blueprint("integrations_wellknown", __name__)
+
+
+@wellknown_bp.route("/.well-known/openai-apps-challenge", methods=["GET"])
+def openai_apps_challenge():
+    """Domain verification for the ChatGPT plugin directory: must return the exact token."""
+    token = (os.getenv("OPENAI_APPS_CHALLENGE") or "").strip()
+    if not token:
+        return Response("Not configured", status=404, mimetype="text/plain")
+    return Response(token, status=200, mimetype="text/plain")
 
 SERVER_INFO = {"name": "newcollab-creators", "title": "Newcollab Creator Search", "version": "1.0.0"}
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")

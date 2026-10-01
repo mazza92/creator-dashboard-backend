@@ -163,6 +163,26 @@ class TestResponse(unittest.TestCase):
             search_creators({"niche": "  "})
 
 
+class TestWellKnown(unittest.TestCase):
+    def test_challenge_token(self):
+        import os
+        from unittest import mock
+
+        from flask import Flask
+
+        from routes.integrations import wellknown_bp
+
+        app = Flask(__name__)
+        app.register_blueprint(wellknown_bp)
+        client = app.test_client()
+        with mock.patch.dict(os.environ, {"OPENAI_APPS_CHALLENGE": ""}):
+            self.assertEqual(client.get("/.well-known/openai-apps-challenge").status_code, 404)
+        with mock.patch.dict(os.environ, {"OPENAI_APPS_CHALLENGE": " tok123 "}):
+            resp = client.get("/.well-known/openai-apps-challenge")
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.get_data(as_text=True), "tok123")
+
+
 class _FakeRedis:
     def __init__(self):
         self.store = {}
