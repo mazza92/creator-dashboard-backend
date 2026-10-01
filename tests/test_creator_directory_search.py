@@ -128,7 +128,10 @@ class TestSerialize(unittest.TestCase):
         self.assertNotIn("gifted_collabs", card)
         self.assertTrue(card["open_to_gifting"])
         row["open_to_gifting"] = False
-        self.assertNotIn("open_to_gifting", serialize(row, "skincare"))
+        self.assertIs(serialize(row, "skincare")["open_to_gifting"], False)
+        open_row = _row(10, ["skincare"], kit="k10")
+        out = build_response([row, open_row], "skincare", "all", None, 5)
+        self.assertEqual(out["creators"][0]["handle"], "@k10")
 
     def test_platform_falls_back_to_posts(self):
         row = _row(3, ["skincare"], platform=None)

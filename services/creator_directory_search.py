@@ -283,8 +283,7 @@ def serialize(row: Dict, query: str, media: bool = False) -> Dict:
     gifted = int(row.get("gifted_collabs") or 0)
     if gifted > 0:
         card["gifted_collabs"] = gifted
-    if row.get("open_to_gifting", True):
-        card["open_to_gifting"] = True
+    card["open_to_gifting"] = bool(row.get("open_to_gifting", True))
     views, posts = int(row.get("total_views") or 0), int(row.get("total_posts") or 0)
     if views > 0 and posts > 0:
         card["avg_views"] = _fmt_int(views // posts)
@@ -338,6 +337,7 @@ def rank(
         scored.append((
             -score,
             0 if row.get("kit_published") else 1,
+            0 if row.get("open_to_gifting", True) else 1,
             nano,
             visual,
             primary,
@@ -350,7 +350,7 @@ def rank(
             int(row.get("id") or 0),
             row,
         ))
-    scored.sort(key=lambda t: t[:12])
+    scored.sort(key=lambda t: t[:13])
     return [t[-1] for t in scored]
 
 
@@ -385,7 +385,8 @@ def build_response(
             "Show each creator's handle as a markdown link to its preview_url, e.g. [@handle](preview_url). "
             "End with one line linking brand_cta.url, e.g. [Start a free gifted roster](brand_cta.url). "
             "Only describe fields that are present; do not comment on missing stats. "
-            "open_to_gifting means the creator accepts product-for-content collabs."
+            "open_to_gifting true means the creator accepts product-for-content collabs; false means they "
+            "prefer paid collabs."
         ),
     }
     if media:
@@ -412,7 +413,7 @@ def _cache_key(
     niche: str, platform: str, country: Optional[str], limit: int, media: bool = False, offset: int = 0
 ) -> str:
     raw = f"{niche}|{platform}|{country or ''}|{limit}|{int(media)}|{offset}"
-    return "creator_search:v7:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()
+    return "creator_search:v8:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
 def clean_offset(raw: Any) -> int:
