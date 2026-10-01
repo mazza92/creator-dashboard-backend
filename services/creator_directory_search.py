@@ -38,6 +38,11 @@ POOL_SQL = r"""
         c.niche,
         c.creator_niches,
         COALESCE(NULLIF(BTRIM(c.kit_slug), ''), c.username) AS kit_slug,
+        CASE
+            WHEN c.image_profile ~* '^https://'
+             AND c.image_profile !~* '(media-proxy|tiktokcdn|cdninstagram|fbcdn\.net|fbsbx\.com)'
+            THEN c.image_profile
+        END AS avatar_url,
         mk.niches AS kit_niches,
         (COALESCE(c.kit_published, FALSE) OR COALESCE(mk.is_published, FALSE)) AS kit_published,
         (
@@ -289,13 +294,18 @@ def serialize(row: Dict, query: str, media: bool = False) -> Dict:
         if media:
             thumbs = [u for u in _as_list(row.get("thumbnails")) if isinstance(u, str) and u.startswith("https://")]
             card["thumbnails"] = thumbs[:3]
+            avatar = str(row.get("avatar_url") or "")
+            if avatar.startswith("https://"):
+                card["avatar_url"] = avatar
     else:
         card["handle"] = None
         card["public_profile"] = False
     return {k: v for k, v in card.items() if v is not None or k == "handle"}
 
 
-def rank(rows: List[Dict], niche: str, platform: str, country: Optional[str]) -> List[Dict]:
+def rank(
+    rows: List[Dict], niche: str, platform: str, country: Optional[str], visual_first: bool = False
+) -> List[Dict]:
     scored = []
     for row in rows:
         tags = creator_niche_tags(row)
@@ -316,10 +326,15 @@ def rank(rows: List[Dict], niche: str, platform: str, country: Optional[str]) ->
             er = float(row.get("engagement") or 0)
         except (TypeError, ValueError):
             er = 0.0
+        if visual_first:
+            visual = 0 if _as_list(row.get("thumbnails")) else (1 if row.get("avatar_url") else 2)
+        else:
+            visual = 0
         scored.append((
             -score,
             0 if row.get("kit_published") else 1,
             nano,
+            visual,
             primary,
             reach,
             proven,
@@ -330,21 +345,23 @@ def rank(rows: List[Dict], niche: str, platform: str, country: Optional[str]) ->
             int(row.get("id") or 0),
             row,
         ))
-    scored.sort(key=lambda t: t[:11])
+    scored.sort(key=lambda t: t[:12])
     return [t[-1] for t in scored]
 
 
 def build_response(
-    rows: List[Dict], niche: str, platform: str, country: Optional[str], limit: int, media: bool = False
+    rows: List[Dict], niche: str, platform: str, country: Optional[str], limit: int,
+    media: bool = False, offset: int = 0,
 ) -> Dict:
-    ranked = rank(rows, niche, platform, country)
+    ranked = rank(rows, niche, platform, country, visual_first=media)
     label = niche.title() if niche else "your niche"
-    return {
+    page = ranked[offset:offset + limit]
+    payload = {
         "total_creators_found": len(ranked),
         "niche": niche,
         "platform": platform,
         "country": country,
-        "creators": [serialize(r, niche, media=media) for r in ranked[:limit]],
+        "creators": [serialize(r, niche, media=media) for r in page],
         "brand_cta": {
             "action": "Start a free gifted roster",
             "description": (
@@ -364,6 +381,10 @@ def build_response(
             "End with one line linking brand_cta.url, e.g. [Start a free gifted roster](brand_cta.url)."
         ),
     }
+    if media:
+        payload["offset"] = offset
+        payload["has_more"] = offset + len(page) < len(ranked)
+    return payload
 
 
 def _load_pool(cursor) -> List[Dict]:
@@ -380,9 +401,18 @@ def _load_pool(cursor) -> List[Dict]:
     return rows
 
 
-def _cache_key(niche: str, platform: str, country: Optional[str], limit: int, media: bool = False) -> str:
-    raw = f"{niche}|{platform}|{country or ''}|{limit}|{int(media)}"
-    return "creator_search:v5:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()
+def _cache_key(
+    niche: str, platform: str, country: Optional[str], limit: int, media: bool = False, offset: int = 0
+) -> str:
+    raw = f"{niche}|{platform}|{country or ''}|{limit}|{int(media)}|{offset}"
+    return "creator_search:v6:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def clean_offset(raw: Any) -> int:
+    try:
+        return max(0, min(2000, int(raw)))
+    except (TypeError, ValueError):
+        return 0
 
 
 def search_creators(params: Dict, redis_client=None, conn=None, landing: bool = False) -> Dict:
@@ -396,8 +426,9 @@ def search_creators(params: Dict, redis_client=None, conn=None, landing: bool = 
     platform = clean_platform(params.get("platform"))
     country = clean_country(params.get("country"))
     limit = clean_limit(params.get("limit"), LANDING_MAX_LIMIT if landing else MAX_LIMIT)
+    offset = clean_offset(params.get("offset")) if landing else 0
 
-    key = _cache_key(niche, platform, country, limit, landing)
+    key = _cache_key(niche, platform, country, limit, landing, offset)
     if redis_client is not None:
         try:
             cached = redis_client.get(key)
@@ -415,7 +446,9 @@ def search_creators(params: Dict, redis_client=None, conn=None, landing: bool = 
         from psycopg2.extras import RealDictCursor
 
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        payload = build_response(_load_pool(cursor), niche, platform, country, limit, media=landing)
+        payload = build_response(
+            _load_pool(cursor), niche, platform, country, limit, media=landing, offset=offset
+        )
     finally:
         if owns:
             conn.close()

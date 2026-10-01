@@ -108,6 +108,19 @@ class TestSerialize(unittest.TestCase):
         self.assertEqual(out["creators"][0]["handle"], "@micro")
         self.assertIn("preview_url", out["how_to_present"])
 
+    def test_landing_pages_and_prefers_visuals(self):
+        rows = [_row(i, ["skincare"], kit=f"k{i}", followers=5000) for i in range(1, 6)]
+        rows[4]["thumbnails"] = ["https://x.supabase.co/t.jpg"]
+        rows[3]["avatar_url"] = "https://x.supabase.co/a.jpg"
+        first = build_response(rows, "skincare", "all", None, 2, media=True)
+        self.assertEqual([c["handle"] for c in first["creators"]], ["@k5", "@k4"])
+        self.assertEqual(first["creators"][1]["avatar_url"], "https://x.supabase.co/a.jpg")
+        self.assertTrue(first["has_more"])
+        last = build_response(rows, "skincare", "all", None, 2, media=True, offset=4)
+        self.assertEqual(len(last["creators"]), 1)
+        self.assertFalse(last["has_more"])
+        self.assertNotIn("has_more", build_response(rows, "skincare", "all", None, 2))
+
     def test_platform_falls_back_to_posts(self):
         row = _row(3, ["skincare"], platform=None)
         row["post_platform"] = "instagram"
