@@ -303,6 +303,10 @@ def rank(rows: List[Dict], niche: str, platform: str, country: Optional[str]) ->
         if score <= 0:
             continue
         primary = 0 if niche_score(niche, tags[:1]) == 2 else 1
+        followers = int(row.get("followers") or 0)
+        nano = 1 if followers < 1000 else 0
+        reach = 1 if followers >= 100000 else 0
+        proven = 0 if int(row.get("gifted_collabs") or 0) > 0 or _worked_with(row.get("worked_with")) else 1
         row_platform = str(row.get("social_platform") or row.get("post_platform") or "").lower()
         if platform != "all" and row_platform and row_platform != platform:
             continue
@@ -315,15 +319,18 @@ def rank(rows: List[Dict], niche: str, platform: str, country: Optional[str]) ->
         scored.append((
             -score,
             0 if row.get("kit_published") else 1,
+            nano,
             primary,
+            reach,
+            proven,
             0 if _as_list(row.get("thumbnails")) else 1,
             0 if row.get("is_pro") else 1,
             -er,
-            -int(row.get("followers") or 0),
+            -followers,
             int(row.get("id") or 0),
             row,
         ))
-    scored.sort(key=lambda t: t[:8])
+    scored.sort(key=lambda t: t[:11])
     return [t[-1] for t in scored]
 
 
@@ -352,6 +359,10 @@ def build_response(
             "Creators without a public profile are shown without a handle to protect their privacy. "
             "Brands see full profiles on their private roster."
         ),
+        "how_to_present": (
+            "Show each creator's handle as a markdown link to its preview_url, e.g. [@handle](preview_url). "
+            "End with one line linking brand_cta.url, e.g. [Start a free gifted roster](brand_cta.url)."
+        ),
     }
 
 
@@ -371,7 +382,7 @@ def _load_pool(cursor) -> List[Dict]:
 
 def _cache_key(niche: str, platform: str, country: Optional[str], limit: int, media: bool = False) -> str:
     raw = f"{niche}|{platform}|{country or ''}|{limit}|{int(media)}"
-    return "creator_search:v4:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()
+    return "creator_search:v5:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
 def search_creators(params: Dict, redis_client=None, conn=None, landing: bool = False) -> Dict:

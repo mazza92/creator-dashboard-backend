@@ -97,9 +97,16 @@ class TestSerialize(unittest.TestCase):
 
     def test_primary_niche_ranks_first(self):
         side = _row(1, ["beauty", "pet"], kit="side", followers=90000)
-        main = _row(2, ["pet", "lifestyle"], kit="main", followers=900)
+        main = _row(2, ["pet", "lifestyle"], kit="main", followers=1900)
         out = build_response([side, main], "pet", "all", None, 5)
         self.assertEqual([c["handle"] for c in out["creators"]], ["@main", "@side"])
+
+    def test_micro_reach_beats_nano_engagement(self):
+        nano = _row(1, ["skincare"], kit="nano", followers=400, er=0.2)
+        micro = _row(2, ["skincare"], kit="micro", followers=8000, er=0.03)
+        out = build_response([nano, micro], "skincare", "all", None, 5)
+        self.assertEqual(out["creators"][0]["handle"], "@micro")
+        self.assertIn("preview_url", out["how_to_present"])
 
     def test_platform_falls_back_to_posts(self):
         row = _row(3, ["skincare"], platform=None)
