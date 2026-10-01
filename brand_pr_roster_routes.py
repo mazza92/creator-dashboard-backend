@@ -52,6 +52,11 @@ _SCHEMA_LOCK = threading.Lock()
 _ROSTER_APP_COLUMNS = ("campaign_id", "declined_at", "shipped_at")
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 PUBLIC_APP_STATUSES = ("review", "ships", "posted", "declined")
+# Pro includes a monthly placement, so Pro applicants lead every roster.
+PRO_FIRST_SQL = (
+    "(LOWER(COALESCE(c.subscription_tier, '')) = 'pro' "
+    "AND LOWER(COALESCE(c.subscription_status, '')) = 'active')"
+)
 ADMIN_APP_STATUSES = PUBLIC_APP_STATUSES + ("hidden",)
 
 DEFAULT_DEAL_CHIPS = [
@@ -292,7 +297,41 @@ def _save_selected(cursor, campaign_id, ids):
     )
 
 
+_BRAND_FACING_EVENTS = frozenset({
+    "roster_view", "roster_profile_view", "roster_select", "roster_deselect",
+    "roster_skip", "roster_unskip", "roster_lock", "roster_shipped",
+})
+_ROSTER_VIEW_DEDUPE_SECONDS = 120
+
+
+def _is_internal_roster_request() -> bool:
+    """Admin tooling or a logged-in non-brand session. Brands only ever use the magic link."""
+    from flask import has_request_context
+
+    if not has_request_context():
+        return False
+    if request.headers.get("X-Admin-Token"):
+        return True
+    return bool(session.get("user_id")) and session.get("user_role") != "brand"
+
+
+def _recent_roster_view(cursor, campaign_id) -> bool:
+    cursor.execute(
+        """
+        SELECT 1 FROM brand_pr_events
+        WHERE event = 'roster_view'
+          AND meta->>'campaign_id' = %s
+          AND created_at > NOW() - make_interval(secs => %s)
+        LIMIT 1
+        """,
+        (str(campaign_id), _ROSTER_VIEW_DEDUPE_SECONDS),
+    )
+    return cursor.fetchone() is not None
+
+
 def _record_roster_event(cursor, event, brand_id=None, creator_id=None, meta=None):
+    if event in _BRAND_FACING_EVENTS and _is_internal_roster_request():
+        event = f"internal_{event}"
     cursor.execute(
         """
         INSERT INTO brand_pr_events (creator_id, brand_id, event, source, meta)
@@ -444,6 +483,50 @@ def ensure_active_roster_for_brand(cursor, brand_id, slot_limit=DEFAULT_SLOT_LIM
     except Exception:
         pass
     return campaign, True
+
+
+def auto_mint_waiting_rosters(cursor, limit=25):
+    """Cron sweep: mint rosters for emailable brands that crossed ROSTER_MINT_MIN.
+
+    The apply path mints too, but only when a new application lands. This catches
+    brands that crossed the threshold before it was lowered, or whose mint failed.
+    """
+    from services.roster_demand import ROSTER_MINT_MIN
+
+    _ensure_schema(cursor)
+    cursor.execute(
+        """
+        SELECT a.brand_id
+        FROM brand_pr_applications a
+        JOIN pr_brands b ON b.id = a.brand_id
+        WHERE a.status = 'review'
+          AND b.contact_email IS NOT NULL
+          AND TRIM(b.contact_email) <> ''
+          AND NOT EXISTS (
+            SELECT 1 FROM brand_pr_campaigns c
+            WHERE c.brand_id = a.brand_id
+              AND c.status IN ('active', 'locked')
+          )
+        GROUP BY a.brand_id
+        HAVING COUNT(*) >= %s
+        ORDER BY COUNT(*) DESC, a.brand_id
+        LIMIT %s
+        """,
+        (ROSTER_MINT_MIN, max(1, int(limit or 25))),
+    )
+    minted = []
+    for row in cursor.fetchall() or []:
+        cursor.execute("SAVEPOINT auto_mint")
+        try:
+            campaign, created = ensure_active_roster_for_brand(cursor, row["brand_id"])
+            cursor.execute("RELEASE SAVEPOINT auto_mint")
+        except Exception as exc:
+            cursor.execute("ROLLBACK TO SAVEPOINT auto_mint")
+            print(f"[brand-pr-roster] auto mint failed brand={row['brand_id']}: {exc}")
+            continue
+        if created and campaign:
+            minted.append(int(row["brand_id"]))
+    return minted
 
 
 def backfill_waiting_rosters(cursor):
@@ -1146,7 +1229,7 @@ def _fetch_applications(cursor, campaign, *, include_hidden=False):
         WHERE a.brand_id = %s
           AND (a.campaign_id IS NULL OR a.campaign_id = %s)
           AND a.status IN ({status_sql})
-        ORDER BY a.applied_at DESC
+        ORDER BY {PRO_FIRST_SQL} DESC, a.applied_at DESC
         """,
         (brand_id, campaign_id),
     )
@@ -1243,7 +1326,7 @@ def _campaign_public(campaign, cards):
                 "brand": _brand_public(campaign),
                 "selected_application_ids": selected_ids,
                 "selected_count": len(selected_ids),
-                "can_lock": campaign.get("status") == "active" and len(selected_ids) == slot_limit,
+                "can_lock": campaign.get("status") == "active" and 1 <= len(selected_ids) <= slot_limit,
                 "portal_url": f"{_frontend_base()}/r/{campaign['token']}",
             },
             "creators": cards,
@@ -1337,12 +1420,17 @@ def get_roster(token):
             conn.close()
             return jsonify({"success": False, "error": "Roster link not found or expired"}), 404
         payload = _build_roster_response(cursor, campaign)
-        _record_roster_event(
-            cursor,
-            "roster_view",
-            brand_id=campaign["brand_id"],
-            meta={"campaign_id": campaign["id"]},
-        )
+        if not _recent_roster_view(cursor, campaign["id"]):
+            _record_roster_event(
+                cursor,
+                "roster_view",
+                brand_id=campaign["brand_id"],
+                meta={
+                    "campaign_id": campaign["id"],
+                    "ua": (request.headers.get("User-Agent") or "")[:200],
+                    "utm_medium": request.args.get("utm_medium") or None,
+                },
+            )
         conn.commit()
         conn.close()
         return jsonify(payload), 200
@@ -1630,6 +1718,57 @@ def unskip_creator(token):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+def _lock_picks(cursor, campaign, selected, source="roster"):
+    """Move 1..slot_limit review picks to ships and lock. Returns an error string or None."""
+    slot_limit = pick_limit(campaign.get("slot_limit"))
+    if not selected:
+        return "Pick at least 1 creator before locking"
+    if len(selected) > slot_limit:
+        return f"You can gift up to {slot_limit} creators. Remove one to lock."
+
+    cursor.execute(
+        """
+        SELECT id, status FROM brand_pr_applications
+        WHERE id = ANY(%s) AND brand_id = %s
+        """,
+        (selected, campaign["brand_id"]),
+    )
+    rows = cursor.fetchall() or []
+    if len(rows) != len(selected) or any(r["status"] != "review" for r in rows):
+        return "One or more picks are no longer available. Refresh and try again."
+
+    cursor.execute(
+        """
+        UPDATE brand_pr_applications
+        SET status = 'ships',
+            campaign_id = COALESCE(campaign_id, %s),
+            updated_at = NOW()
+        WHERE id = ANY(%s) AND brand_id = %s AND status = 'review'
+        """,
+        (campaign["id"], selected, campaign["brand_id"]),
+    )
+    cursor.execute(
+        """
+        UPDATE brand_pr_campaigns
+        SET status = 'locked', locked_at = NOW(), updated_at = NOW()
+        WHERE id = %s AND status = 'active'
+        """,
+        (campaign["id"],),
+    )
+    _record_roster_event(
+        cursor,
+        "roster_lock",
+        brand_id=campaign["brand_id"],
+        meta={"campaign_id": campaign["id"], "application_ids": selected, "source": source},
+    )
+    try:
+        from services.roster_waiting_email import mark_brand_roster_engaged
+        mark_brand_roster_engaged(cursor, campaign["brand_id"], "pick")
+    except Exception:
+        pass
+    return None
+
+
 @brand_pr_roster_bp.route("/r/<token>/lock", methods=["POST"])
 def lock_roster(token):
     try:
@@ -1646,55 +1785,75 @@ def lock_roster(token):
             conn.close()
             return jsonify(payload), 200
 
-        selected = _selected_ids(campaign)
-        slot_limit = pick_limit(campaign.get("slot_limit"))
-        if len(selected) != slot_limit:
+        error = _lock_picks(cursor, campaign, _selected_ids(campaign))
+        if error:
+            conn.rollback()
             conn.close()
-            return jsonify({
-                "success": False,
-                "error": f"Select exactly {slot_limit} creators before locking",
-            }), 400
+            return jsonify({"success": False, "error": error}), 400
+        conn.commit()
+        campaign = _load_campaign(cursor, token)
+        payload = _build_roster_response(cursor, campaign)
+        conn.close()
+        return jsonify(payload), 200
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
 
-        # Validate all still review
+
+@brand_pr_roster_bp.route("/r/<token>/quick-pick", methods=["POST"])
+def quick_pick_roster(token):
+    """One click from the waiting email: approve the shortlisted creators and lock.
+
+    POST only so link scanners that prefetch the email URL never approve anyone.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        requested = []
+        for raw in data.get("application_ids") or []:
+            try:
+                requested.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        if not requested:
+            return jsonify({"success": False, "error": "application_ids required"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        _ensure_schema(cursor, conn)
+        campaign = _load_campaign(cursor, token)
+        if not campaign:
+            conn.close()
+            return jsonify({"success": False, "error": "Roster link not found or expired"}), 404
+        if campaign.get("status") != "active":
+            payload = _build_roster_response(cursor, campaign)
+            conn.close()
+            return jsonify(payload), 200
+
         cursor.execute(
             """
-            SELECT id, status FROM brand_pr_applications
-            WHERE id = ANY(%s) AND brand_id = %s
-            """,
-            (selected, campaign["brand_id"]),
-        )
-        rows = cursor.fetchall() or []
-        if len(rows) != slot_limit or any(r["status"] != "review" for r in rows):
-            conn.close()
-            return jsonify({
-                "success": False,
-                "error": "One or more picks are no longer available. Refresh and try again.",
-            }), 400
-
-        cursor.execute(
-            """
-            UPDATE brand_pr_applications
-            SET status = 'ships',
-                campaign_id = COALESCE(campaign_id, %s),
-                updated_at = NOW()
+            SELECT id FROM brand_pr_applications
             WHERE id = ANY(%s) AND brand_id = %s AND status = 'review'
+              AND (campaign_id IS NULL OR campaign_id = %s)
             """,
-            (campaign["id"], selected, campaign["brand_id"]),
+            (requested, campaign["brand_id"], campaign["id"]),
         )
-        cursor.execute(
-            """
-            UPDATE brand_pr_campaigns
-            SET status = 'locked', locked_at = NOW(), updated_at = NOW()
-            WHERE id = %s AND status = 'active'
-            """,
-            (campaign["id"],),
-        )
-        _record_roster_event(
-            cursor,
-            "roster_lock",
-            brand_id=campaign["brand_id"],
-            meta={"campaign_id": campaign["id"], "application_ids": selected},
-        )
+        available = {int(r["id"]) for r in cursor.fetchall() or []}
+        slot_limit = pick_limit(campaign.get("slot_limit"))
+        picks = [i for i in dict.fromkeys(requested) if i in available][:slot_limit]
+        if not picks:
+            conn.close()
+            return jsonify({
+                "success": False,
+                "error": "Those creators are no longer available. Pick from the list below.",
+            }), 400
+
+        _save_selected(cursor, campaign["id"], picks)
+        campaign = dict(campaign, selected_application_ids=picks)
+        error = _lock_picks(cursor, campaign, picks, source="quick_pick")
+        if error:
+            conn.rollback()
+            conn.close()
+            return jsonify({"success": False, "error": error}), 400
         conn.commit()
         campaign = _load_campaign(cursor, token)
         payload = _build_roster_response(cursor, campaign)
@@ -2454,12 +2613,33 @@ def cron_roster_waiting_emails():
                 "success": False,
                 "error": "RESEND_API_KEY not set. Roster waiting emails send through Resend, not SMTP.",
             }), 503
-    limit = int(request.args.get("limit", data.get("limit", 8)))
+    limit = int(request.args.get("limit", data.get("limit", 25)))
     test_email = request.args.get("test_email", data.get("test_email")) or None
     brand_id = request.args.get("brand_id", data.get("brand_id"))
     brand_id = int(brand_id) if brand_id else None
     try:
         from services.roster_waiting_email import process_roster_waiting_emails
+
+        minted = []
+        pro = None
+        if not dry_run and not test_email and not brand_id:
+            conn = get_db_connection()
+            try:
+                cursor = conn.cursor(cursor_factory=RealDictCursor)
+                minted = auto_mint_waiting_rosters(cursor)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                traceback.print_exc()
+            try:
+                from services.pro_roster_placement import place_pro_creators
+
+                pro = place_pro_creators(conn)
+            except Exception:
+                conn.rollback()
+                traceback.print_exc()
+            finally:
+                conn.close()
 
         stats = process_roster_waiting_emails(
             dry_run=dry_run,
@@ -2468,7 +2648,13 @@ def cron_roster_waiting_emails():
             brand_id=brand_id,
             skip_time_checks=skip_hour,
         )
-        return jsonify({"success": True, "dry_run": dry_run, "stats": stats}), 200
+        return jsonify({
+            "success": True,
+            "dry_run": dry_run,
+            "minted_brand_ids": minted,
+            "pro_placement": pro,
+            "stats": stats,
+        }), 200
     except Exception as e:
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500

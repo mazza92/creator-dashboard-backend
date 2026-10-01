@@ -21,38 +21,26 @@ from services.unlock_quota import (
 
 class TestUsageFromDelivered(unittest.TestCase):
     def test_new_free_user_has_three(self):
-        used, remaining_free, remaining = usage_from_delivered(0, 0)
+        used, remaining_free, remaining = usage_from_delivered(0)
         self.assertEqual(used, 0)
         self.assertEqual(remaining_free, 3)
         self.assertEqual(remaining, 3)
 
     def test_one_and_two_unlocks(self):
-        self.assertEqual(usage_from_delivered(1, 0), (1, 2, 2))
-        self.assertEqual(usage_from_delivered(2, 0), (2, 1, 1))
+        self.assertEqual(usage_from_delivered(1), (1, 2, 2))
+        self.assertEqual(usage_from_delivered(2), (2, 1, 1))
 
     def test_three_unlocks_is_capped(self):
-        used, remaining_free, remaining = usage_from_delivered(3, 0)
+        used, remaining_free, remaining = usage_from_delivered(3)
         self.assertEqual(used, 3)
         self.assertEqual(remaining_free, 0)
         self.assertEqual(remaining, 0)
 
     def test_leaked_fourth_pack_does_not_show_negative(self):
-        used, remaining_free, remaining = usage_from_delivered(4, 0)
+        used, remaining_free, remaining = usage_from_delivered(4)
         self.assertEqual(used, 3)
         self.assertEqual(remaining_free, 0)
         self.assertEqual(remaining, 0)
-
-    def test_paid_pack_credits_sit_on_top(self):
-        used, remaining_free, remaining = usage_from_delivered(3, 3)
-        self.assertEqual(used, 3)
-        self.assertEqual(remaining_free, 0)
-        self.assertEqual(remaining, 3)
-
-    def test_two_free_plus_credits(self):
-        used, remaining_free, remaining = usage_from_delivered(2, 1)
-        self.assertEqual(used, 2)
-        self.assertEqual(remaining_free, 1)
-        self.assertEqual(remaining, 2)
 
     def test_limit_is_three(self):
         self.assertEqual(FREE_UNLOCK_LIMIT, 3)
@@ -85,7 +73,7 @@ class TestDeliveredCountQuery(unittest.TestCase):
     def test_free_unlock_usage_uses_delivered_not_counter(self):
         cursor = MagicMock()
         cursor.fetchone.return_value = {'n': 2}
-        used, remaining = free_unlock_usage(cursor, 1, unlocks_remaining=2, pack_credits=0)
+        used, remaining = free_unlock_usage(cursor, 1, unlocks_remaining=2)
         self.assertEqual(used, 2)
         self.assertEqual(remaining, 1)
 

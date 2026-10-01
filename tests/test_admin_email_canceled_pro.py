@@ -14,10 +14,10 @@ class CanceledProSegmentTests(unittest.TestCase):
 
 
 class ActiveProSegmentTests(unittest.TestCase):
-    def test_sql_only_matches_live_pro_or_elite(self):
+    def test_sql_only_matches_live_pro(self):
         sql = _active_pro_sql()
         self.assertIn("'pro'", sql)
-        self.assertIn("'elite'", sql)
+        self.assertNotIn("'elite'", sql)
         self.assertIn("canceled", sql)
         self.assertNotIn("stripe_subscription_id", sql)
         self.assertNotIn("= 'free'", sql)

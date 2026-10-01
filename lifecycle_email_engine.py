@@ -1161,6 +1161,11 @@ def get_for_you_brands_for_email(creator_id: int, cursor, limit: int = 3) -> Lis
     cursor.execute("SELECT brand_id FROM brand_unlocks WHERE creator_id = %s", (creator_id,))
     unlocked_ids = [r['brand_id'] for r in cursor.fetchall()]
 
+    from services.brand_reply_signal import id_sets as reply_id_sets
+    reply_ids = reply_id_sets(cursor)
+    unlocked_ids = list(unlocked_ids) + [i for i in reply_ids['cold'] if i]
+    replies_array = "ARRAY[" + ",".join(str(int(i)) for i in reply_ids['replies']) + "]::int[]"
+
     # Use creator_id + week for unique rotation per creator
     week_number = datetime.now().isocalendar()[1]
     rotation_offset = ((creator_id * 17) + (week_number * 7)) % 1000
@@ -1184,7 +1189,7 @@ def get_for_you_brands_for_email(creator_id: int, cursor, limit: int = 3) -> Lis
               AND b.status = 'published'
               AND b.accepting_pr = true
               {exclude_clause}
-            ORDER BY (b.id + %s) %% 1000, b.created_at DESC
+            ORDER BY (b.id = ANY({replies_array})) DESC, (b.id + %s) %% 1000, b.created_at DESC
             LIMIT %s
         """, tuple(query_params) + (limit,))
 
@@ -1205,7 +1210,7 @@ def get_for_you_brands_for_email(creator_id: int, cursor, limit: int = 3) -> Lis
                 WHERE b.status = 'published'
                   AND b.accepting_pr = true
                   {exclude_clause}
-                ORDER BY (b.id + %s) %% 1000, b.created_at DESC
+                ORDER BY (b.id = ANY({replies_array})) DESC, (b.id + %s) %% 1000, b.created_at DESC
                 LIMIT %s
             """, tuple(query_params) + (limit,))
             brands = cursor.fetchall()
@@ -1222,7 +1227,7 @@ def get_for_you_brands_for_email(creator_id: int, cursor, limit: int = 3) -> Lis
             WHERE b.status = 'published'
               AND b.accepting_pr = true
               {exclude_clause}
-            ORDER BY (b.id + %s) %% 1000, b.created_at DESC
+            ORDER BY (b.id = ANY({replies_array})) DESC, (b.id + %s) %% 1000, b.created_at DESC
             LIMIT %s
         """, tuple(query_params) + (limit,))
         brands = cursor.fetchall()
@@ -1309,7 +1314,7 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
             return {}
 
         subscription_tier = creator.get('subscription_tier', 'free')
-        is_pro = subscription_tier in ('pro', 'elite')
+        is_pro = subscription_tier == 'pro'
 
         from services.unlock_quota import FREE_UNLOCK_LIMIT, count_delivered_unlocks_this_month, usage_from_delivered
         if is_pro:
@@ -1318,11 +1323,8 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
             unlocks_available = '∞'
         else:
             delivered = count_delivered_unlocks_this_month(cursor, creator_id)
-            pack_credits = creator.get('pack_credits') or 0
-            unlocks_used, remaining_free, unlocks_available = usage_from_delivered(delivered, pack_credits)
+            unlocks_used, _remaining_free, unlocks_available = usage_from_delivered(delivered)
             unlocks_quota = FREE_UNLOCK_LIMIT
-            # Email copy uses free slots, not paid pack credits
-            unlocks_available = remaining_free
 
         # Calculate real progress score
         current_score = _calculate_creator_progress_score(creator)
@@ -1336,7 +1338,7 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
             'pitches_sent': creator.get('total_pitches_sent', 0) or 0,
             'replies_count': creator.get('total_replies_received', 0) or 0,
             'subscription_tier': subscription_tier,
-            'is_pro': subscription_tier in ('pro', 'elite'),
+            'is_pro': subscription_tier == 'pro',
         }
 
         # Calculate reset date
@@ -1573,14 +1575,10 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        from services.pack_credits import pack_credits_of, pack_credits_select_sql
-        pack_sql = pack_credits_select_sql(conn)
-
         # Get full creator data including user_id for scrape lookup
-        cursor.execute(f"""
+        cursor.execute("""
             SELECT c.id, c.username, c.user_id, u.email, u.first_name,
                    c.daily_unlocks_used, c.unlocks_remaining,
-                   {pack_sql},
                    c.pitches_sent_this_week, c.subscription_tier,
                    c.bio, c.image_profile, c.niche, c.creator_niches,
                    c.kit_published, c.total_pitches_sent, c.total_replies_received,
@@ -1597,18 +1595,16 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
 
         user_id = creator.get('user_id')
         subscription_tier = creator.get('subscription_tier') or 'free'
-        is_pro = subscription_tier in ('pro', 'elite')
+        is_pro = subscription_tier == 'pro'
 
         from services.unlock_quota import FREE_UNLOCK_LIMIT, count_delivered_unlocks_this_month, usage_from_delivered
-        pack_credits = int(pack_credits_of(creator) or 0)
         if is_pro:
             credits_used = 0
             credits_remaining = None
             credits_quota = 'unlimited'
-            pack_credits = 0
         else:
             delivered = count_delivered_unlocks_this_month(cursor, creator_id)
-            credits_used, _remaining_free, credits_remaining = usage_from_delivered(delivered, pack_credits)
+            credits_used, _remaining_free, credits_remaining = usage_from_delivered(delivered)
             credits_quota = FREE_UNLOCK_LIMIT
 
         applications_this_week = 0
@@ -1750,7 +1746,6 @@ def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
             'credits_used': credits_used,
             'credits_remaining': credits_remaining,
             'credits_quota': credits_quota,
-            'pack_credits': pack_credits,
             'is_pro': is_pro,
             'applications_this_week': applications_this_week,
             'replies_count': creator.get('total_replies_received') or 0,
@@ -1955,7 +1950,7 @@ def trigger_quota_hit(creator_id: int):
         if not result:
             return False, "Creator not found"
 
-        if result.get('subscription_tier') in ('pro', 'elite'):
+        if result.get('subscription_tier') == 'pro':
             return False, "Pro user - no quota"
 
         # Quota hit = 3 PR packs delivered this calendar month, not a stale remaining counter

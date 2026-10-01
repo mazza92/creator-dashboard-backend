@@ -94,7 +94,7 @@ _KIT_LAYOUTS = {'maison', 'gallery', 'ratecard', 'editorial', 'studio'}
 
 
 def _is_pro_tier(tier) -> bool:
-    return (tier or "free").lower() in ("pro", "elite")
+    return (tier or "free").lower() == "pro"
 
 
 def _normalize_kit_layout(raw) -> str:
@@ -1859,7 +1859,7 @@ def get_public_kit(slug):
 
         # Check if creator is Pro
         tier = creator.get('subscription_tier', 'free') or 'free'
-        is_pro = tier in ('pro', 'elite')
+        is_pro = tier == 'pro'
 
         socials, social_profiles = build_public_socials(
             creator.get('social_links'),
@@ -2068,15 +2068,16 @@ def send_brand_view_notification(to_email, creator_name, brand_name, brand_categ
                                 With Pro you can:
                             </p>
                             <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                                <tr><td style="padding: 0 0 10px 0; font-size: 14px; color: #374151;">&#127873; <strong>Get placed on 1 live gifted campaign</strong> every month, guaranteed</td></tr>
                                 <tr><td style="padding: 0 0 10px 0; font-size: 14px; color: #374151;">&#128065; <strong>See exactly which brand</strong> reviewed you</td></tr>
-                                <tr><td style="padding: 0 0 10px 0; font-size: 14px; color: #374151;">&#127873; <strong>Apply to more gifted PR lists</strong> on For You</td></tr>
+                                <tr><td style="padding: 0 0 10px 0; font-size: 14px; color: #374151;">&#10133; <strong>Unlimited credits on top</strong> to apply to more gifted PR lists</td></tr>
                                 <tr><td style="padding: 0 0 10px 0; font-size: 14px; color: #374151;">&#9889; <strong>Priority placement</strong> when brands are picking</td></tr>
                             </table>
                         </td>
                     </tr>
                 </table>
             """
-            cta_label = "See which brand — $19/mo"
+            cta_label = "Go Pro · get placed this month"
             cta_url = f"{frontend_url}/creator/dashboard/for-you?upgrade=kit_views&utm_source=email&utm_medium=brand_view"
             footer_note = '<p style="margin: 14px 0 0 0; font-size: 12px; color: #9ca3af;">Cancel anytime. One gifted PR collab pays for a year of Pro.</p>'
 

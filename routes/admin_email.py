@@ -84,9 +84,9 @@ def _canceled_pro_sql():
 
 
 def _active_pro_sql():
-    """Currently on Pro/Elite. Canceled accounts are moved back to free."""
+    """Currently on Pro. Canceled accounts are moved back to free."""
     return (
-        " AND LOWER(COALESCE(c.subscription_tier, 'free')) IN ('pro', 'elite')"
+        " AND LOWER(COALESCE(c.subscription_tier, 'free')) = 'pro'"
         " AND LOWER(COALESCE(c.subscription_status, 'active')) NOT IN ('canceled', 'cancelled')"
     )
 
@@ -444,7 +444,7 @@ def get_segments():
         segments.append({
             'id': 'at_quota_limit',
             'name': 'At 3/3 unlocks (free)',
-            'description': 'Used all 3 free packs, no extra credits. Founder sprint / Pro upgrade.',
+            'description': 'Used all 3 free packs. Founder sprint / Pro upgrade.',
             'count': cursor.fetchone()['count'],
             'icon': 'thunderbolt',
             'highlight': True
@@ -476,7 +476,7 @@ def get_segments():
         segments.append({
             'id': 'pro_tier',
             'name': 'Pro users (check-in)',
-            'description': 'Currently paying Pro or Elite. Founder check-in — not a sales blast.',
+            'description': 'Currently paying Pro. Founder check-in — not a sales blast.',
             'count': cursor.fetchone()['count'],
             'icon': 'star',
             'highlight': True

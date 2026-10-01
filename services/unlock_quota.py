@@ -139,12 +139,11 @@ DELIVERED_LAST_MONTH_BY_CREATOR_SQL = '''
 '''
 
 
-def usage_from_delivered(delivered, pack_credits=0):
+def usage_from_delivered(delivered):
     """used / free remaining / total remaining for the quota bar."""
     used = min(FREE_UNLOCK_LIMIT, max(0, int(delivered or 0)))
     remaining_free = max(0, FREE_UNLOCK_LIMIT - used)
-    remaining = remaining_free + max(0, int(pack_credits or 0))
-    return used, remaining_free, remaining
+    return used, remaining_free, remaining_free
 
 
 def count_delivered_unlocks_all_time(cursor, creator_id):
@@ -174,16 +173,16 @@ def brand_already_delivered(cursor, creator_id, brand_id):
     return cursor.fetchone() is not None
 
 
-def free_unlock_usage(cursor, creator_id, unlocks_remaining=None, pack_credits=0, unlocks_reset_at=None):
+def free_unlock_usage(cursor, creator_id, unlocks_remaining=None, unlocks_reset_at=None):
     """Quota bar is packs delivered this calendar month, not the remaining counter."""
     delivered = count_delivered_unlocks_this_month(cursor, creator_id)
-    used, _remaining_free, remaining = usage_from_delivered(delivered, pack_credits)
+    used, _remaining_free, remaining = usage_from_delivered(delivered)
     return used, remaining
 
 
-def sync_free_unlock_remaining(cursor, creator_id, pack_credits=0):
+def sync_free_unlock_remaining(cursor, creator_id):
     """Write unlocks_remaining to match packs delivered this month."""
-    used, remaining = free_unlock_usage(cursor, creator_id, pack_credits=pack_credits)
+    used, remaining = free_unlock_usage(cursor, creator_id)
     remaining_free = max(0, FREE_UNLOCK_LIMIT - used)
     cursor.execute(
         '''
@@ -192,7 +191,7 @@ def sync_free_unlock_remaining(cursor, creator_id, pack_credits=0):
             unlocks_reset_at = date_trunc('month', NOW()) + interval '1 month'
         WHERE id = %s
           AND COALESCE(unlocks_tier, 'free') <> 'pro'
-          AND COALESCE(subscription_tier, 'free') NOT IN ('pro', 'elite')
+          AND COALESCE(subscription_tier, 'free') <> 'pro'
           AND unlocks_remaining IS DISTINCT FROM %s
         ''',
         (remaining_free, creator_id, remaining_free),

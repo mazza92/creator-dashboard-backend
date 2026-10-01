@@ -23,152 +23,6 @@ def get_db_connection():
 admin_reports_bp = Blueprint('admin_reports', __name__, url_prefix='/api/admin/reports')
 
 
-def _empty_pack_bucket():
-    return {
-        'purchases': 0,
-        'buyers': 0,
-        'revenue_cents': 0,
-        'packs': 0,
-    }
-
-
-def _pack_purchases_table_exists(cursor) -> bool:
-    cursor.execute("""
-        SELECT 1
-        FROM information_schema.tables
-        WHERE table_schema = 'public'
-          AND table_name = 'pack_purchases'
-        LIMIT 1
-    """)
-    return cursor.fetchone() is not None
-
-
-def _pack_stats_from_row(row):
-    row = row or {}
-    return {
-        'purchases': int(row.get('purchases') or 0),
-        'buyers': int(row.get('buyers') or 0),
-        'revenue_cents': int(row.get('revenue_cents') or 0),
-        'packs': int(row.get('packs') or 0),
-    }
-
-
-def fetch_pack_report_stats(cursor, start_date, end_date, prev_start_date, prev_end_date):
-    """One-time $9 extra-pack sales. Never folded into MRR."""
-    from services.pack_credits import PACK_BUNDLE_CENTS, PACK_BUNDLE_SIZE
-
-    empty = _empty_pack_bucket()
-    stats = {
-        'price_cents': PACK_BUNDLE_CENTS,
-        'packs_per_purchase': PACK_BUNDLE_SIZE,
-        'all_time': {**empty, 'repeat_buyers': 0},
-        'period': dict(empty),
-        'prev_period': dict(empty),
-        'today': {'purchases': 0, 'revenue_cents': 0, 'packs': 0},
-        'this_month': dict(empty),
-        'daily': [],
-        'recent': [],
-        'buyers_with_credits': 0,
-    }
-
-    if not _pack_purchases_table_exists(cursor):
-        return stats
-
-    agg_sql = """
-        SELECT
-            COUNT(*)::int AS purchases,
-            COUNT(DISTINCT creator_id)::int AS buyers,
-            COALESCE(SUM(amount_cents), 0)::int AS revenue_cents,
-            COALESCE(SUM(packs), 0)::int AS packs
-        FROM pack_purchases
-    """
-
-    cursor.execute(agg_sql)
-    stats['all_time'] = _pack_stats_from_row(cursor.fetchone())
-
-    cursor.execute("""
-        SELECT COUNT(*)::int AS n
-        FROM (
-            SELECT creator_id
-            FROM pack_purchases
-            GROUP BY creator_id
-            HAVING COUNT(*) > 1
-        ) repeats
-    """)
-    stats['all_time']['repeat_buyers'] = int((cursor.fetchone() or {}).get('n') or 0)
-
-    cursor.execute(
-        agg_sql + " WHERE created_at >= %s AND created_at <= %s",
-        (start_date, end_date),
-    )
-    stats['period'] = _pack_stats_from_row(cursor.fetchone())
-
-    cursor.execute(
-        agg_sql + " WHERE created_at >= %s AND created_at < %s",
-        (prev_start_date, prev_end_date),
-    )
-    stats['prev_period'] = _pack_stats_from_row(cursor.fetchone())
-
-    cursor.execute(agg_sql + " WHERE created_at >= DATE_TRUNC('day', NOW())")
-    today = _pack_stats_from_row(cursor.fetchone())
-    stats['today'] = {
-        'purchases': today['purchases'],
-        'revenue_cents': today['revenue_cents'],
-        'packs': today['packs'],
-    }
-
-    cursor.execute(agg_sql + " WHERE created_at >= DATE_TRUNC('month', NOW())")
-    stats['this_month'] = _pack_stats_from_row(cursor.fetchone())
-
-    cursor.execute("""
-        SELECT
-            DATE(created_at) AS date,
-            COUNT(*)::int AS count,
-            COALESCE(SUM(amount_cents), 0)::int AS revenue_cents
-        FROM pack_purchases
-        WHERE created_at >= %s AND created_at <= %s
-        GROUP BY DATE(created_at)
-        ORDER BY date ASC
-    """, (start_date, end_date))
-    stats['daily'] = [
-        {
-            'date': str(row['date']),
-            'count': int(row['count'] or 0),
-            'revenue_cents': int(row['revenue_cents'] or 0),
-        }
-        for row in cursor.fetchall()
-    ]
-
-    cursor.execute("""
-        SELECT
-            pp.creator_id,
-            u.email,
-            c.username,
-            pp.packs,
-            pp.amount_cents,
-            pp.created_at
-        FROM pack_purchases pp
-        JOIN creators c ON c.id = pp.creator_id
-        JOIN users u ON u.id = c.user_id
-        ORDER BY pp.created_at DESC
-        LIMIT 20
-    """)
-    recent = []
-    for row in cursor.fetchall():
-        created = row['created_at']
-        recent.append({
-            'creator_id': row['creator_id'],
-            'email': row['email'],
-            'username': row['username'],
-            'packs': int(row['packs'] or 0),
-            'amount_cents': int(row['amount_cents'] or 0),
-            'created_at': created.strftime('%b %d, %H:%M') if created else None,
-            'created_at_iso': created.isoformat() if created else None,
-        })
-    stats['recent'] = recent
-    return stats
-
-
 # ============================================================================
 # AUTHENTICATION DECORATOR
 # ============================================================================
@@ -468,7 +322,7 @@ def get_today_stats():
         cursor.execute("""
             SELECT COUNT(*) as count
             FROM creators
-            WHERE subscription_tier IN ('pro', 'elite')
+            WHERE subscription_tier = 'pro'
             AND subscription_started_at >= NOW() - INTERVAL '24 hours'
         """)
         new_pro_subscriptions = cursor.fetchone()['count']
@@ -1773,7 +1627,7 @@ def get_engagement():
                     ELSE 'inactive'
                 END as segment,
                 COUNT(*) as count,
-                COUNT(CASE WHEN tier IN ('pro', 'elite') THEN 1 END) as paid
+                COUNT(CASE WHEN tier = 'pro' THEN 1 END) as paid
             FROM user_activity
             GROUP BY segment
         """, (start_date, start_date))
@@ -1895,7 +1749,6 @@ def get_founder_dashboard():
             "health": {...},
             "funnel": {...},
             "this_month": {...},
-            "packs": {...},  # $9 extra-pack sales; one-time, not MRR
             "period": {...}  # info about selected period
         }
     """
@@ -1985,23 +1838,6 @@ def get_founder_dashboard():
 
         # Need X more subs to hit goal
         subs_needed = max(0, int((goal_mrr - current_mrr) / pro_price))
-
-        # ================== EXTRA PACKS ($9 one-time) ==================
-        # Pack revenue is not MRR. Track purchases separately from Pro.
-        pack_stats = fetch_pack_report_stats(
-            cursor, start_date, end_date, prev_start_date, prev_end_date
-        )
-        from services.pack_credits import pack_credits_column_exists
-        has_pack_col = pack_credits_column_exists(conn)
-        pack_exhausted_sql = "AND COALESCE(c.pack_credits, 0) = 0" if has_pack_col else ""
-        if has_pack_col:
-            cursor.execute("""
-                SELECT COUNT(*) as count
-                FROM creators c
-                WHERE (c.subscription_tier = 'free' OR c.subscription_tier IS NULL)
-                AND COALESCE(c.pack_credits, 0) > 0
-            """)
-            pack_stats['buyers_with_credits'] = int(cursor.fetchone()['count'] or 0)
 
         # ================== AT-LIMIT USERS (Hot Leads) ==================
         # Free users who used all 3 free credits this calendar month vs last month.
@@ -2195,7 +2031,6 @@ def get_founder_dashboard():
         pitched_multiple = cursor.fetchone()['count']
 
         subscribed_pro = pro_count_db
-        bought_pack = pack_stats['all_time']['buyers']
 
         # Kept for older clients; not a funnel step.
         cursor.execute("""
@@ -2467,7 +2302,6 @@ def get_founder_dashboard():
                     'last_7d': portfolio_built_7d
                 }
             },
-            'packs': pack_stats,
             'funnel': {
                 'signed_up': total_signups,
                 'unlocked_brand': unlocked_brand,
@@ -2475,7 +2309,6 @@ def get_founder_dashboard():
                 'pitched_multiple': pitched_multiple,
                 'unlocked_multiple': pitched_multiple,
                 'unlocked_over_2': pitched_multiple,
-                'bought_pack': bought_pack,
                 'subscribed_pro': subscribed_pro,
                 'got_package': got_package
             },
@@ -2486,9 +2319,6 @@ def get_founder_dashboard():
                 'total_signups': total_signups,
                 'pitches': pitches_this_month,
                 'unique_pitch_users': unique_pitch_users,
-                'pack_purchases': pack_stats['this_month']['purchases'],
-                'pack_revenue_cents': pack_stats['this_month']['revenue_cents'],
-                'pack_buyers': pack_stats['this_month']['buyers']
             },
             'onboarding_survey': onboarding_survey,
         }), 200
@@ -2680,7 +2510,8 @@ def send_nudge_email():
         teaser_brands = []
         if user_niche:
             pitched_brand_ids = [row.get('id') for row in pitch_rows if row.get('id')]
-            # Get 2 high-response-rate brands in same category/niche
+            from services.brand_reply_signal import id_sets as reply_id_sets
+            reply_ids = reply_id_sets(cursor)
             cursor.execute("""
                 SELECT
                     brand_name,
@@ -2691,10 +2522,11 @@ def send_nudge_email():
                   AND id NOT IN (
                       SELECT brand_id FROM creator_pipeline WHERE creator_id = %s
                   )
+                  AND id != ALL(%s)
                   AND COALESCE(status, 'published') = 'published'
-                ORDER BY response_rate DESC NULLS LAST
+                ORDER BY (id = ANY(%s)) DESC, response_rate DESC NULLS LAST
                 LIMIT 2
-            """, (user_niche, creator_id))
+            """, (user_niche, creator_id, reply_ids['cold'], reply_ids['replies']))
             teaser_rows = cursor.fetchall()
 
             teaser_colors = ['#E85D75', '#6D28D9', '#1D4ED8', '#C8102E']
@@ -2729,7 +2561,7 @@ def send_nudge_email():
             'preheader': f"You've used your 3 free unlocks. Here's the status of each one.",
             'message': message_html,
             'action_url': f'{frontend_url}/creator/dashboard/settings?upgrade=pro&ref=quota_email&utm_source=email&utm_medium=trigger&utm_campaign=quota_hit',
-            'action_text': 'Unlock Pro — $19/month →',
+            'action_text': 'Get placed with Pro — $19/month →',
         }
 
         success, smtp_error = send_template_email(

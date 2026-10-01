@@ -599,7 +599,7 @@ def send_first_pitch_nudge():
               AND (
                 c.created_at < NOW() - INTERVAL '24 hours'
                 OR (
-                  c.subscription_tier IN ('pro', 'elite')
+                  c.subscription_tier = 'pro'
                   AND c.subscription_started_at IS NOT NULL
                   AND c.subscription_started_at < NOW() - INTERVAL '24 hours'
                   AND c.subscription_started_at > NOW() - INTERVAL '14 days'
@@ -692,11 +692,11 @@ def send_limit_warning():
                 <p style="margin: 0 0 16px;">Hey there,</p>
                 <p style="margin: 0 0 16px;">Quick heads up: you've used 2 of your 3 free applications this month. One left.</p>
                 <p style="margin: 0 0 16px;">Once it's gone, you'll need to wait until next month to apply to more brands.</p>
-                <p style="margin: 0 0 16px;">If you want to keep going without limits, Pro is $19/month — unlimited unlocks, applications, and full contact access.</p>
+                <p style="margin: 0 0 16px;">Or skip the wait: with Pro ($19/month) we place you on 1 live gifted campaign every month. The brand ships product, you post, no cold pitching. Unlimited credits come on top.</p>
                 <p style="margin: 0;">No pressure either way. Just a quick heads up before you hit the wall.</p>
             """,
             'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
-            'action_text': 'Go Pro for $19/mo',
+            'action_text': 'Get placed with Pro',
             'user_id': 0
         }
         success, error = send_template_email(
@@ -748,11 +748,11 @@ def send_limit_warning():
                     <p style="margin: 0 0 16px;">Hey {name},</p>
                     <p style="margin: 0 0 16px;">Quick heads up: you've used 2 of your 3 free applications this month. One left.</p>
                     <p style="margin: 0 0 16px;">Once it's gone, you'll need to wait until next month to apply to more brands.</p>
-                    <p style="margin: 0 0 16px;">If you want to keep going without limits, Pro is $19/month — unlimited unlocks, applications, and full contact access.</p>
+                    <p style="margin: 0 0 16px;">Or skip the wait: with Pro ($19/month) we place you on 1 live gifted campaign every month. The brand ships product, you post, no cold pitching. Unlimited credits come on top.</p>
                     <p style="margin: 0;">No pressure either way. Just a quick heads up before you hit the wall.</p>
                 """,
                 'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
-                'action_text': 'Go Pro for $19/mo',
+                'action_text': 'Get placed with Pro',
                 'user_id': creator['id']
             }
 
@@ -832,11 +832,11 @@ def send_limit_reached():
                 <p style="margin: 0 0 16px;">Hey there,</p>
                 <p style="margin: 0 0 16px;">You've used all 3 of your free unlocks this month.</p>
                 <p style="margin: 0 0 16px;">That actually says something good about you. You're out there pitching, which is exactly how creators land PR packages.</p>
-                <p style="margin: 0 0 16px;">Your unlocks reset next month. Don't want to wait? Pro removes the limit — $19/month, unlimited unlocks, cancel anytime.</p>
+                <p style="margin: 0 0 16px;">Your unlocks reset next month. Don't want to wait? With Pro ($19/month) we place you on 1 live gifted campaign every month, guaranteed. No cold pitching. Unlimited credits on top, cancel anytime.</p>
                 <p style="margin: 0;">Either way, nice work reaching out to brands. Most people never get this far.</p>
             """,
             'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
-            'action_text': 'Upgrade to Pro',
+            'action_text': 'Go Pro · get placed this month',
             'user_id': 0
         }
         success, error = send_template_email(
@@ -889,11 +889,11 @@ def send_limit_reached():
                     <p style="margin: 0 0 16px;">Hey {name},</p>
                     <p style="margin: 0 0 16px;">You've used all 3 of your free unlocks this month.</p>
                     <p style="margin: 0 0 16px;">That actually says something good about you. You're out there pitching, which is exactly how creators land PR packages.</p>
-                    <p style="margin: 0 0 16px;">Your unlocks reset next month. Don't want to wait? Pro removes the limit — $19/month, unlimited unlocks, cancel anytime.</p>
+                    <p style="margin: 0 0 16px;">Your unlocks reset next month. Don't want to wait? With Pro ($19/month) we place you on 1 live gifted campaign every month, guaranteed. No cold pitching. Unlimited credits on top, cancel anytime.</p>
                     <p style="margin: 0;">Either way, nice work reaching out to brands. Most people never get this far.</p>
                 """,
                 'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
-                'action_text': 'Upgrade to Pro',
+                'action_text': 'Go Pro · get placed this month',
                 'user_id': creator['id']
             }
 
@@ -1076,7 +1076,7 @@ def send_monthly_reset():
                 <p style="margin: 0 0 16px;">Hey there,</p>
                 <p style="margin: 0 0 16px;">Your 3 free unlocks just reset for the month.</p>
                 <p style="margin: 0 0 16px;">You used all of them last month — that's how creators land PR packages. Most people never send a single pitch.</p>
-                <p style="margin: 0 0 16px;">Want to skip the monthly limit? Pro is $19/month for unlimited unlocks. Either way, you've got 3 fresh ones ready.</p>
+                <p style="margin: 0 0 16px;">Want a guaranteed one? With Pro ($19/month) we place you on 1 live gifted campaign every month, plus unlimited credits on top. Either way, you've got 3 fresh ones ready.</p>
                 <p style="margin: 0;">Good luck this month.</p>
             """,
             'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
@@ -1132,7 +1132,7 @@ def send_monthly_reset():
                     <p style="margin: 0 0 16px;">Hey {name},</p>
                     <p style="margin: 0 0 16px;">Your 3 free unlocks just reset for the month.</p>
                     <p style="margin: 0 0 16px;">You used all of them last month — that's how creators land PR packages. Most people never send a single pitch.</p>
-                    <p style="margin: 0 0 16px;">Want to skip the monthly limit? Pro is $19/month for unlimited unlocks. Either way, you've got 3 fresh ones ready.</p>
+                    <p style="margin: 0 0 16px;">Want a guaranteed one? With Pro ($19/month) we place you on 1 live gifted campaign every month, plus unlimited credits on top. Either way, you've got 3 fresh ones ready.</p>
                     <p style="margin: 0;">Good luck this month.</p>
                 """,
                 'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
@@ -1268,7 +1268,7 @@ def pipeline_followup_nudge():
                 creators_pitches[cid] = {
                     'email': row['email'],
                     'username': row['username'],
-                    'is_pro': row['subscription_tier'] in ('pro', 'elite'),
+                    'is_pro': row['subscription_tier'] == 'pro',
                     'pitches': []
                 }
             creators_pitches[cid]['pitches'].append({
@@ -1525,7 +1525,7 @@ def pipeline_discover_nudge():
             WHERE cp.stage IN ('waiting', 'followup', 'pitched')
               AND (cp.send_confirmed = TRUE OR cp.pitched_at IS NOT NULL)
               AND cp.pitched_at::date = (NOW() - INTERVAL '21 days')::date
-              AND c.subscription_tier IN ('pro', 'elite')
+              AND c.subscription_tier = 'pro'
               AND u.is_verified = true
               AND u.unsubscribed_at IS NULL
               AND (
@@ -1540,20 +1540,23 @@ def pipeline_discover_nudge():
         errors = []
 
         for row in rows:
-            # Fetch 3 alternative brands in same category with higher response rate
-            cursor.execute("""
-                SELECT brand_name, response_rate, slug
-                FROM pr_brands
-                WHERE category = %s
-                  AND response_rate > 35
-                  AND id != (SELECT brand_id FROM creator_pipeline WHERE id = %s)
-                ORDER BY response_rate DESC LIMIT 3
-            """, (row['category'], row['pipeline_id']))
-            alternatives = cursor.fetchall()
+            from services.brand_reply_signal import responsive_alternatives
+            cursor.execute("SELECT brand_id FROM creator_pipeline WHERE id = %s", (row['pipeline_id'],))
+            seed = cursor.fetchone() or {}
+            alternatives = responsive_alternatives(
+                cursor, row['category'] or "", exclude_ids=[seed.get('brand_id')], limit=3,
+            )
 
             alt_html = ""
             for alt in alternatives:
-                alt_html += f"<li><strong>{alt['brand_name']}</strong> - {alt['response_rate']}% response rate</li>"
+                signal = alt.get('reply_signal') or {}
+                if signal.get('tier') == 'replies':
+                    why = signal.get('detail')
+                elif alt.get('response_rate'):
+                    why = f"{alt['response_rate']}% response rate"
+                else:
+                    why = "Works with micro-creators" if alt.get('micro_friendly') else ""
+                alt_html += f"<li><strong>{alt['name']}</strong>{' - ' + why if why else ''}</li>"
 
             if not alt_html:
                 alt_html = "<li>Check Discover for new options in your niche</li>"

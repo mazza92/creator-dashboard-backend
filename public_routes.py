@@ -205,6 +205,11 @@ def _format_public_brand_list_item(b):
     pitch_count, response_count = resolve_pitch_social_proof(
         b['slug'], b.get('pitch_count'), b.get('response_count'), response_rate
     )
+    reply_signal = b.get('reply_signal')
+    if reply_signal and reply_signal.get('tier') == 'cold':
+        pitch_count = reply_signal['pitched']
+        response_count = reply_signal['replied']
+        response_rate = round(100 * response_count / pitch_count) if pitch_count else 0
 
     # Calculate estimated package value (considers category + brand positioning)
     estimated_value = _estimate_package_value(b['category'], b['brand_name'])
@@ -250,6 +255,7 @@ def _format_public_brand_list_item(b):
         'roster_is_open': int(b.get('roster_is_open') or 0),
         'roster_spotlighted': int(b.get('roster_spotlighted') or 0),
         'roster_open': int(b.get('roster_is_open') or b.get('roster_fill_count') or b.get('roster_hunger') or b.get('roster_spotlighted') or 0) > 0,
+        'reply_signal': reply_signal or None,
     }
 
 
@@ -416,6 +422,9 @@ def get_public_brands():
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         from services.roster_demand import ensure_campaign_spotlight_column
         ensure_campaign_spotlight_column(cursor, conn)
+        from services.brand_reply_signal import annotate as annotate_reply, id_sets as reply_id_sets, load_stats as load_reply_stats
+        reply_ids = reply_id_sets(cursor)
+        reply_order = "(b.id = ANY(%s)) DESC, (b.id = ANY(%s)) ASC,"
 
         # Build query with filters (includes pitch stats from creator_pipeline)
         query = f"""
@@ -488,8 +497,8 @@ def get_public_brands():
             # Brands actively accepting PR
             query += " AND b.accepting_pr = TRUE"
         elif activity == 'responsive':
-            # High response rate (50% or higher)
-            query += " AND b.response_rate >= 50"
+            query += " AND (b.id = ANY(%s) OR (b.response_rate >= 50 AND b.id != ALL(%s)))"
+            params.extend([reply_ids['replies'], reply_ids['cold']])
 
         # Contact type filters
         if contact_type == 'application':
@@ -547,32 +556,34 @@ def get_public_brands():
                 params.extend([limit, offset])
         else:
             if prefer_niches:
-                query += """
+                query += f"""
                     ORDER BY
                         COALESCE(roster_demand.spotlighted, 0) DESC,
                         COALESCE(roster_demand.hunger, 0) DESC,
+                        {reply_order}
                         CASE WHEN LOWER(b.category) = ANY(%s) THEN 0 ELSE 1 END,
                         b.is_featured DESC,
                         b.created_at DESC NULLS LAST,
                         b.brand_name ASC
                     LIMIT %s OFFSET %s
                 """
-                params.extend([prefer_niches, limit, offset])
+                params.extend([reply_ids['replies'], reply_ids['cold'], prefer_niches, limit, offset])
             else:
-                # Default: underfilled rosters, then featured, then most recently added
-                query += """
+                # Default: underfilled rosters, brands that reply, featured, then most recently added
+                query += f"""
                     ORDER BY
                         COALESCE(roster_demand.spotlighted, 0) DESC,
                         COALESCE(roster_demand.hunger, 0) DESC,
+                        {reply_order}
                         b.is_featured DESC,
                         b.created_at DESC NULLS LAST,
                         b.brand_name ASC
                     LIMIT %s OFFSET %s
                 """
-                params.extend([limit, offset])
+                params.extend([reply_ids['replies'], reply_ids['cold'], limit, offset])
 
         cursor.execute(query, params)
-        brands = cursor.fetchall()
+        brands = annotate_reply([dict(b) for b in cursor.fetchall()], load_reply_stats(cursor))
 
         # Get total count for pagination
         count_query = """
@@ -600,7 +611,8 @@ def get_public_brands():
         elif activity == 'active':
             count_query += " AND accepting_pr = TRUE"
         elif activity == 'responsive':
-            count_query += " AND response_rate >= 50"
+            count_query += " AND (id = ANY(%s) OR (response_rate >= 50 AND id != ALL(%s)))"
+            count_params.extend([reply_ids['replies'], reply_ids['cold']])
 
         # Contact type filters for count
         if contact_type == 'application':
@@ -734,6 +746,10 @@ def get_public_brand(slug):
         """, (slug,))
 
         brand = cursor.fetchone()
+        reply_signal = None
+        if brand and brand.get('id'):
+            from services.brand_reply_signal import brand_signal
+            reply_signal = brand_signal(cursor, brand['id'])
         cursor.close()
         conn.close()
 
@@ -746,6 +762,10 @@ def get_public_brand(slug):
         pitch_count, response_count = resolve_pitch_social_proof(
             brand['slug'], brand['pitch_count'], brand['response_count'], response_rate
         )
+        if reply_signal and reply_signal.get('tier') == 'cold':
+            pitch_count = reply_signal['pitched']
+            response_count = reply_signal['replied']
+            response_rate = round(100 * response_count / pitch_count) if pitch_count else 0
 
         # Format public response
         response = {
@@ -774,6 +794,7 @@ def get_public_brand(slug):
             },
             'responseRate': response_rate,
             'avgResponseTime': avg_days,
+            'reply_signal': reply_signal,
             'isFeatured': brand['is_featured'],
             'applicationMethod': brand['application_method'],
             # Gated fields - tell frontend what's locked (show masked email to create desire)
@@ -845,7 +866,7 @@ def unlock_brand_access(slug):
             return jsonify({'error': 'Creator not found'}), 404
 
         tier = creator['subscription_tier'] or 'free'
-        is_pro = tier in ['pro', 'elite']
+        is_pro = tier == 'pro'
 
         app.logger.info(f"🔍 Unlock request - Creator ID: {creator_id}, Tier: {tier}, Type: {unlock_type}")
         print(f"🔍 Unlock request - Creator ID: {creator_id}, Tier: {tier}, Type: {unlock_type}")
@@ -881,7 +902,7 @@ def unlock_brand_access(slug):
                 print(f"🚫 Monthly quota limit reached for creator {creator_id}")
                 conn.close()
                 return jsonify({
-                    'error': f"You've used all {MONTHLY_LIMIT} free brand unlocks this month. Upgrade to Pro for unlimited access!",
+                    'error': f"You've used all {MONTHLY_LIMIT} free brand unlocks this month. Go Pro to get placed on 1 live gifted campaign every month, plus unlimited credits on top.",
                     'upgrade_required': True,
                     'current_count': monthly_unlocks,
                     'limit': MONTHLY_LIMIT
@@ -970,7 +991,7 @@ def unlock_brand_access(slug):
                 app.logger.info(f"✅ Re-unlocked existing brand - incremented monthly quota for creator {creator_id}")
                 print(f"✅ Re-unlocked existing brand - incremented monthly quota for creator {creator_id}")
         elif is_pro:
-            # PRO/ELITE users: only increment brands_saved_count if it's a new brand (no daily quota)
+            # PRO users: only increment brands_saved_count if it's a new brand (no daily quota)
             if not already_saved:
                 cursor.execute('''
                     UPDATE creators

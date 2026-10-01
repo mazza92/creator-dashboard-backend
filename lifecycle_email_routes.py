@@ -567,7 +567,6 @@ def test_send_email():
                 'credits_used': 2,
                 'credits_remaining': 1,
                 'credits_quota': 3,
-                'pack_credits': 0,
                 'applications_this_week': 1,
                 'pitches_sent': 4,
                 'replies_count': 1,

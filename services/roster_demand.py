@@ -18,7 +18,9 @@ ROSTER_FILL_MULT = 3
 ROSTER_FILL_PAD = 8
 ROSTER_FOCUS_MIN = 3
 ROSTER_FOCUS_CAP = 8
-ROSTER_MINT_MIN = 8
+# Matches the first waiting-email trigger. Minting does not boost a list;
+# For You still only pushes ROSTER_FOCUS_CAP lists.
+ROSTER_MINT_MIN = 3
 ROSTER_PICK_LIMIT = 5
 
 _SPOTLIGHT_COL_READY = False

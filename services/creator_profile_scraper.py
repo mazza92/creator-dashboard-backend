@@ -988,10 +988,8 @@ Analyze and return JSON only.'''
         try:
             # Kit engagement lives in recent_posts (added after initial schema)
             try:
-                cursor.execute(
-                    "ALTER TABLE creator_profile_data "
-                    "ADD COLUMN IF NOT EXISTS recent_posts JSONB DEFAULT '[]'::jsonb"
-                )
+                from services.pg_hotpath_schema import ensure_columns
+                ensure_columns(cursor, "creator_profile_data", {"recent_posts": "JSONB DEFAULT '[]'::jsonb"})
             except Exception as col_err:
                 print(f"[Scrape] recent_posts column ensure: {col_err}")
                 try:

@@ -1,4 +1,4 @@
-"""Polly outside Polly: alert emails, one-tap outcomes, and unsent-draft refunds.
+"""Polly outside Polly: alert emails and one-tap outcomes.
 
 Runs from the Polly cron. Resend only (no SMTP). Every email deep-links back
 into Polly with a chip so one tap records the outcome (e.g. "They replied").
@@ -15,7 +15,6 @@ from urllib.parse import urlencode
 from psycopg2.extras import RealDictCursor
 
 POLLY_PATH = "/creator/dashboard/for-you"
-REFUND_AFTER = timedelta(days=7)
 KIT_VIEW_EMAIL_WINDOW = timedelta(hours=48)
 KIT_VIEW_THROTTLE = timedelta(hours=6)
 NUDGE_EMAIL_THROTTLE = timedelta(hours=20)
@@ -129,114 +128,6 @@ def record_handoff(conn, creator_id: int, brand_id: Any, method: str = "") -> bo
     )
     conn.commit()
     return bool(cur.rowcount)
-
-
-STALE_DRAFTS_SQL = """
-    SELECT d.id, d.creator_id, d.brand_id, COALESCE(d.brand_name, b.brand_name) AS brand_name
-    FROM polly_drafts d
-    JOIN creators c ON c.id = d.creator_id
-    LEFT JOIN pr_brands b ON b.id = d.brand_id
-    WHERE d.credit_used
-      AND d.refunded_at IS NULL
-      AND d.handoff_at IS NULL
-      AND d.drafted_at <= NOW() - INTERVAL '7 days'
-      AND d.drafted_at >= date_trunc('month', NOW())
-      AND COALESCE(c.unlocks_tier, 'free') <> 'pro'
-      AND COALESCE(c.subscription_tier, 'free') NOT IN ('pro', 'elite')
-      AND NOT EXISTS (
-          SELECT 1 FROM polly_tasks t
-          WHERE t.creator_id = d.creator_id AND t.brand_id = d.brand_id
-            AND t.type = 'pitch_sent'
-            AND COALESCE(t.metadata->>'drafted', 'false') <> 'true'
-      )
-      AND NOT EXISTS (
-          SELECT 1 FROM creator_pipeline cp
-          WHERE cp.creator_id = d.creator_id AND cp.brand_id = d.brand_id
-            AND (cp.pitched_at IS NOT NULL OR cp.send_confirmed IS TRUE)
-      )
-      AND NOT EXISTS (
-          SELECT 1 FROM brand_pr_applications a
-          WHERE a.creator_id = d.creator_id AND a.brand_id = d.brand_id
-      )
-    ORDER BY d.drafted_at ASC
-    LIMIT %s
-"""
-
-
-def refund_stale_drafts(conn, limit: int = 50, dry_run: bool = False) -> List[Dict[str, Any]]:
-    """Give the credit back for Polly drafts never sent or handed off within 7 days.
-
-    Only drafts from the current month: last month's credits already reset.
-    The refund is a pack credit, so the brand stays unlocked for them.
-    """
-    from services.pack_credits import pack_credits_column_exists
-
-    ensure_alert_tables(conn)
-    if not pack_credits_column_exists(conn):
-        print("[Polly alerts] refunds skipped: creators.pack_credits missing")
-        return []
-    cur = _cursor(conn)
-    cur.execute(STALE_DRAFTS_SQL, (limit,))
-    rows = [dict(r) for r in cur.fetchall()]
-    if dry_run:
-        return rows
-    done = []
-    for row in rows:
-        try:
-            cur.execute(
-                "UPDATE polly_drafts SET refunded_at = NOW() WHERE id = %s AND refunded_at IS NULL",
-                (row["id"],),
-            )
-            if not cur.rowcount:
-                conn.rollback()
-                continue
-            cur.execute(
-                "UPDATE creators SET pack_credits = COALESCE(pack_credits, 0) + 1 WHERE id = %s",
-                (row["creator_id"],),
-            )
-            conn.commit()
-            _post_refund_notice(conn, row["creator_id"], row.get("brand_id"), row.get("brand_name") or "")
-            done.append(row)
-        except Exception as err:
-            print(f"[Polly alerts] refund failed draft={row.get('id')}: {err}")
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-    return done
-
-
-def _post_refund_notice(conn, creator_id: int, brand_id: Any, brand_name: str) -> None:
-    from services.polly_memory import load_thread, save_thread
-    from services.polly_persona import persona_credit_refunded
-    from services.polly_tracker import add_event
-
-    try:
-        add_event(
-            conn, creator_id, "milestone",
-            f"Credit refunded · {brand_name or 'unsent draft'}",
-            brand_id=brand_id,
-            event_data={"kind": "credit_refunded", "brand_name": brand_name},
-            polly_notes="Draft sat unsent for 7 days, so the credit came back.",
-        )
-    except Exception as err:
-        print(f"[Polly alerts] refund event skipped: {err}")
-    thread = load_thread(conn, creator_id)
-    messages = list(thread.get("messages") or [])
-    messages.append({
-        "role": "assistant",
-        "content": persona_credit_refunded(brand_name),
-        "kind": "nudge",
-        "task_chips": [
-            {
-                "id": "line_up",
-                "label": "Line up a brand I'll send today",
-                "action": "suggest_brands",
-                "deal": "gifted",
-            },
-        ],
-    })
-    save_thread(conn, creator_id, messages, thread.get("suggested_brands") or [], notes=thread.get("notes"))
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +289,7 @@ def _recipient(conn, creator_id: int) -> Optional[Dict[str, Any]]:
     row = dict(row)
     row["is_pro"] = (
         (row.get("unlocks_tier") or "") == "pro"
-        or (row.get("subscription_tier") or "").lower() in ("pro", "elite")
+        or (row.get("subscription_tier") or "").lower() == "pro"
     )
     first = (row.get("first_name") or "").strip()
     row["first"] = first.split()[0].capitalize() if first else ""
@@ -527,7 +418,7 @@ def email_nudges(conn, delivered: List[Dict[str, Any]], dry_run: bool = False, s
 
 
 def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "", send_fn: Optional[Callable] = None) -> Dict[str, Any]:
-    """Cron entry: post due nudges in-thread, email them + kit views, refund stale drafts."""
+    """Cron entry: post due nudges in-thread, email them + kit views."""
     from services.polly_tracker import process_due_nudges
     from services.resend_mail import resend_configured
 
@@ -540,13 +431,8 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
     if can_email:
         emails += email_nudges(conn, delivered, dry_run=dry_run, send_fn=send_fn, test_email=test_email)
         emails += email_kit_views(conn, limit=limit, dry_run=dry_run, send_fn=send_fn, test_email=test_email)
-    refunds = refund_stale_drafts(conn, limit=limit, dry_run=dry_run)
     return {
         "nudged": nudged,
         "emails": emails,
         "email_enabled": can_email,
-        "refunds": [
-            {"creator_id": r.get("creator_id"), "brand_id": r.get("brand_id"), "brand_name": r.get("brand_name")}
-            for r in refunds
-        ],
     }

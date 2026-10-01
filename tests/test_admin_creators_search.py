@@ -8,9 +8,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-sys.modules.setdefault("flask", MagicMock())
-sys.modules.setdefault("psycopg2", MagicMock())
-sys.modules.setdefault("psycopg2.extras", MagicMock())
+# Stubs are removed after import so later test modules get the real packages.
+_STUBBED = [
+    name for name in ("flask", "psycopg2", "psycopg2.extras")
+    if name not in sys.modules
+]
+for _name in _STUBBED:
+    sys.modules[_name] = MagicMock()
 
 from routes.admin_creators import (
     _build_where_clause,
@@ -18,6 +22,9 @@ from routes.admin_creators import (
     _resolve_sort,
     normalize_search_token,
 )
+
+for _name in _STUBBED:
+    sys.modules.pop(_name, None)
 
 
 class TestNormalizeSearchToken(unittest.TestCase):

@@ -192,7 +192,7 @@ def _review_flags(row):
 
     tier = str(row.get('tier') or row.get('subscription_tier') or 'free').lower()
     status = row.get('approval_status')
-    if tier in ('pro', 'elite') and status == 'pending':
+    if tier == 'pro' and status == 'pending':
         flags.append('pro_pending')
 
     username = (row.get('username') or '').strip()
@@ -203,7 +203,8 @@ def _review_flags(row):
 
 def _ensure_review_columns(cursor):
     """Waitlist review can show post thumbs if the column exists; never fail if it does not."""
-    cursor.execute('ALTER TABLE creators ADD COLUMN IF NOT EXISTS social_oauth_videos JSONB')
+    from services.pg_hotpath_schema import ensure_columns
+    ensure_columns(cursor, "creators", {"social_oauth_videos": "JSONB"})
 
 
 def _admin_actor_id(cursor):
@@ -1171,7 +1172,7 @@ def approve_creator(creator_id):
 
         admin_id = _admin_actor_id(cursor)
         tier = str(creator.get('tier') or 'free').lower()
-        new_status = 'pro_approved' if force_pro or tier in ('pro', 'elite') else 'approved'
+        new_status = 'pro_approved' if force_pro or tier == 'pro' else 'approved'
 
         cursor.execute("""
             UPDATE creators

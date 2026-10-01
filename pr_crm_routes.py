@@ -2032,7 +2032,7 @@ def get_brands():
             creator = temp_cursor.fetchone()
             temp_cursor.close()
             temp_conn.close()
-            if creator and creator['subscription_tier'] in ['pro', 'elite']:
+            if creator and creator['subscription_tier'] == 'pro':
                 is_premium = True
 
         # Build query
@@ -3240,19 +3240,11 @@ def dashboard_init():
     cursor = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        from services.pack_credits import (
-            pack_credits_of,
-            pack_credits_select_sql,
-            total_unlocks_left,
-        )
-        pack_sql = pack_credits_select_sql(conn)
-
         # 1. Get creator profile with subscription info
-        cursor.execute(f'''
+        cursor.execute('''
             SELECT
                 c.id, c.subscription_tier, c.unlocks_tier, c.unlocks_remaining,
                 c.unlocks_reset_at, c.creator_niches, c.niche,
-                {pack_sql},
                 u.first_name, u.email
             FROM creators c
             JOIN users u ON c.user_id = u.id
@@ -3265,7 +3257,7 @@ def dashboard_init():
 
         # 2. Get unlock balance
         tier = creator.get('subscription_tier') or 'free'
-        is_pro = tier in ('pro', 'elite')
+        is_pro = tier == 'pro'
 
         if is_pro:
             unlock_balance = {
@@ -3277,8 +3269,7 @@ def dashboard_init():
                 'reset_at': None
             }
         else:
-            pack_credits = pack_credits_of(creator)
-            used, remaining = sync_free_unlock_remaining(cursor, creator_id, pack_credits)
+            used, remaining = sync_free_unlock_remaining(cursor, creator_id)
             conn.commit()
             cursor.execute('SELECT unlocks_reset_at FROM creators WHERE id = %s', (creator_id,))
             reset_row = cursor.fetchone() or {}
@@ -3288,7 +3279,6 @@ def dashboard_init():
                 'remaining': remaining,
                 'used': used,
                 'limit': FREE_UNLOCK_LIMIT,
-                'pack_credits': pack_credits,
                 'is_unlimited': False,
                 'reset_at': unlocks_reset_at.isoformat() if unlocks_reset_at else None
             }
@@ -3653,7 +3643,7 @@ def get_email_templates():
         if creator_id:
             cursor.execute('SELECT subscription_tier FROM creators WHERE id = %s', (creator_id,))
             creator = cursor.fetchone()
-            if creator and creator['subscription_tier'] in ['pro', 'elite']:
+            if creator and creator['subscription_tier'] == 'pro':
                 is_premium = True
 
         # Get platform templates
@@ -3846,7 +3836,7 @@ def get_pitch_limits():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     try:
-        # Billing is unlock-based (free packs + paid pack credits), not pitches_sent.
+        # Billing is unlock-based (free monthly packs), not pitches_sent.
         balance = get_creator_unlock_balance(creator_id)
 
         if not balance:
@@ -3855,14 +3845,12 @@ def get_pitch_limits():
         is_unlimited = bool(balance.get('is_unlimited'))
         remaining = balance.get('remaining')
         used = balance.get('used') or 0
-        pack_credits = balance.get('pack_credits') or 0
 
         return jsonify({
             'success': True,
             'used': used,
             'limit': None if is_unlimited else FREE_UNLOCK_LIMIT,
             'remaining': remaining,
-            'pack_credits': pack_credits,
             'canPitch': is_unlimited or (remaining or 0) > 0,
             'tier': balance.get('tier') or 'free',
             'period': 'month',
@@ -3933,7 +3921,7 @@ def track_pitch():
             pitches_used = 0
 
         # Billing is charged at unlock time. Do not block send on the legacy pitch counter.
-        is_pro = tier in ['pro', 'elite']
+        is_pro = tier == 'pro'
 
         # Update pitch count
         new_pitch_count = pitches_used + 1
@@ -4697,7 +4685,9 @@ def generate_pr_package():
                                 fit_result.get('is_low_follower', False),
                                 json.dumps(convert_decimals(fit_result.get('ugc_guide'))) if fit_result.get('ugc_guide') else None,
                                 fit_result.get('tier', 'high'),
-                                fit_result.get('used_ai_depth', False)
+                                fit_result.get('used_ai_depth', False),
+                                creator_id,
+                                brand_id,
                             ))
                             conn.commit()
                             print(f"[PR Package] Backfilled AI coaching data for legacy unlock creator={creator_id}, brand={brand_id}")
@@ -5291,7 +5281,9 @@ def generate_pr_package_v2():
                                 fit_result.get('is_low_follower', False),
                                 json.dumps(convert_decimals(fit_result.get('ugc_guide'))) if fit_result.get('ugc_guide') else None,
                                 fit_result.get('tier', 'high'),
-                                fit_result.get('used_ai_depth', False)
+                                fit_result.get('used_ai_depth', False),
+                                creator_id,
+                                resolved_brand_id,
                             ))
                             conn.commit()
                             print(f"[PR Package V2] Backfilled AI coaching for legacy unlock creator={creator_id}, brand={resolved_brand_id}")
@@ -7198,12 +7190,6 @@ def get_subscription_status(creator_id):
 # CREDIT UNLOCK SYSTEM
 # ============================================
 
-from services.pack_credits import (
-    pack_credits_column_exists,
-    pack_credits_of,
-    pack_credits_select_sql,
-    total_unlocks_left,
-)
 from services.unlock_quota import (
     FREE_UNLOCK_LIMIT,
     brand_already_delivered,
@@ -7231,12 +7217,10 @@ def attempt_unlock(creator_id, brand_id, conn=None):
 
     try:
         print(f"[attempt_unlock] Checking creator {creator_id}, brand {brand_id}")
-        pack_sql = pack_credits_select_sql(conn)
 
         # Serialize quota checks for this creator so two tabs cannot pass 3/3.
-        cursor.execute(f'''
-            SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier,
-                   {pack_sql}
+        cursor.execute('''
+            SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier
             FROM creators WHERE id = %s
             FOR UPDATE
         ''', (creator_id,))
@@ -7246,15 +7230,13 @@ def attempt_unlock(creator_id, brand_id, conn=None):
             return {"status": "error", "error": "Creator not found"}
 
         if brand_already_delivered(cursor, creator_id, brand_id):
-            _used, remaining = sync_free_unlock_remaining(
-                cursor, creator_id, pack_credits_of(creator)
-            )
+            _used, remaining = sync_free_unlock_remaining(cursor, creator_id)
             conn.commit()
             print(f"[attempt_unlock] Brand {brand_id} already delivered for creator {creator_id}")
             return {"status": "already_unlocked", "credits_used": 0, "remaining": remaining}
 
-        # Pro/Elite users get unlimited unlocks
-        if creator.get('unlocks_tier') == 'pro' or creator.get('subscription_tier') in ('pro', 'elite'):
+        # Pro users get unlimited unlocks
+        if creator.get('unlocks_tier') == 'pro' or creator.get('subscription_tier') == 'pro':
             cursor.execute('''
                 INSERT INTO brand_unlocks (creator_id, brand_id, unlocked_at)
                 VALUES (%s, %s, NOW())
@@ -7268,38 +7250,21 @@ def attempt_unlock(creator_id, brand_id, conn=None):
             conn.commit()
             return {"status": "unlocked", "credits_used": 0, "remaining": None, "tier": "pro"}
 
-        pack_credits = pack_credits_of(creator)
-        leftover_packs = pack_credits
         delivered = count_delivered_unlocks_this_month(cursor, creator_id)
-        has_pack_col = pack_credits_column_exists(conn)
-        spent_pack_credit = False
 
         if delivered >= FREE_UNLOCK_LIMIT:
-            spent_pack = None
-            if has_pack_col and pack_credits > 0:
-                cursor.execute('''
-                    UPDATE creators
-                    SET pack_credits = pack_credits - 1
-                    WHERE id = %s AND COALESCE(pack_credits, 0) > 0
-                    RETURNING unlocks_remaining, pack_credits
-                ''', (creator_id,))
-                spent_pack = cursor.fetchone()
-            if spent_pack is None:
-                print(
-                    f"[attempt_unlock] PAYWALL triggered for creator {creator_id}: "
-                    f"delivered={delivered}/{FREE_UNLOCK_LIMIT} this month"
-                )
-                conn.rollback()
-                return {
-                    "status": "paywall",
-                    "credits_used": 0,
-                    "remaining": 0,
-                    "pack_credits": 0,
-                    "reset_at": None,
-                    "debug_db_value": creator.get('unlocks_remaining')
-                }
-            leftover_packs = int(spent_pack.get('pack_credits') or 0)
-            spent_pack_credit = True
+            print(
+                f"[attempt_unlock] PAYWALL triggered for creator {creator_id}: "
+                f"delivered={delivered}/{FREE_UNLOCK_LIMIT} this month"
+            )
+            conn.rollback()
+            return {
+                "status": "paywall",
+                "credits_used": 0,
+                "remaining": 0,
+                "reset_at": None,
+                "debug_db_value": creator.get('unlocks_remaining')
+            }
 
         cursor.execute('''
             INSERT INTO brand_unlocks (creator_id, brand_id, unlocked_at)
@@ -7309,7 +7274,7 @@ def attempt_unlock(creator_id, brand_id, conn=None):
         ''', (creator_id, brand_id))
         inserted = cursor.fetchone()
         if not inserted:
-            _used, remaining = sync_free_unlock_remaining(cursor, creator_id, leftover_packs)
+            _used, remaining = sync_free_unlock_remaining(cursor, creator_id)
             conn.commit()
             return {"status": "already_unlocked", "credits_used": 0, "remaining": remaining}
 
@@ -7320,7 +7285,7 @@ def attempt_unlock(creator_id, brand_id, conn=None):
         ''', (creator_id, brand_id))
 
         delivered_after = count_delivered_unlocks_this_month(cursor, creator_id)
-        if delivered_after > FREE_UNLOCK_LIMIT and not spent_pack_credit:
+        if delivered_after > FREE_UNLOCK_LIMIT:
             cursor.execute(
                 'DELETE FROM brand_unlocks WHERE creator_id = %s AND brand_id = %s',
                 (creator_id, brand_id),
@@ -7330,12 +7295,11 @@ def attempt_unlock(creator_id, brand_id, conn=None):
                 "status": "paywall",
                 "credits_used": 0,
                 "remaining": 0,
-                "pack_credits": leftover_packs,
                 "reset_at": None,
                 "debug_db_value": creator.get('unlocks_remaining')
             }
 
-        _used, new_remaining = sync_free_unlock_remaining(cursor, creator_id, leftover_packs)
+        _used, new_remaining = sync_free_unlock_remaining(cursor, creator_id)
         conn.commit()
 
         if new_remaining == 0:
@@ -7407,15 +7371,12 @@ def can_unlock(creator_id, brand_id, conn=None):
     cursor = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        pack_sql = pack_credits_select_sql(conn)
-
         if brand_already_delivered(cursor, creator_id, brand_id):
             return {"can_unlock": True, "already_unlocked": True}
 
         # Get creator's unlock status
-        cursor.execute(f'''
-            SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier,
-                   {pack_sql}
+        cursor.execute('''
+            SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier
             FROM creators WHERE id = %s
         ''', (creator_id,))
         creator = cursor.fetchone()
@@ -7423,22 +7384,20 @@ def can_unlock(creator_id, brand_id, conn=None):
         if not creator:
             return {"can_unlock": False, "error": "Creator not found"}
 
-        # Pro/Elite users always can unlock
-        if creator.get('unlocks_tier') == 'pro' or creator.get('subscription_tier') in ('pro', 'elite'):
+        # Pro users always can unlock
+        if creator.get('unlocks_tier') == 'pro' or creator.get('subscription_tier') == 'pro':
             return {"can_unlock": True, "already_unlocked": False, "remaining": None, "tier": "pro"}
 
         unlocks_remaining = creator.get('unlocks_remaining') or 0
         unlocks_reset_at = creator.get('unlocks_reset_at')
-        pack_credits = pack_credits_of(creator)
         _used, remaining = free_unlock_usage(
-            cursor, creator_id, unlocks_remaining, pack_credits, unlocks_reset_at
+            cursor, creator_id, unlocks_remaining, unlocks_reset_at
         )
         if remaining <= 0:
             return {
                 "can_unlock": False,
                 "paywall": True,
                 "remaining": 0,
-                "pack_credits": pack_credits,
                 "reset_at": unlocks_reset_at.isoformat() if unlocks_reset_at else None
             }
 
@@ -7446,7 +7405,6 @@ def can_unlock(creator_id, brand_id, conn=None):
             "can_unlock": True,
             "already_unlocked": False,
             "remaining": remaining,
-            "pack_credits": pack_credits,
             "tier": "free"
         }
 
@@ -7488,10 +7446,8 @@ def get_creator_unlock_balance(creator_id, conn=None):
         close_conn = True
 
     cursor = conn.cursor(cursor_factory=RealDictCursor)
-    pack_sql = pack_credits_select_sql(conn)
-    cursor.execute(f'''
-        SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier,
-               {pack_sql}
+    cursor.execute('''
+        SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier
         FROM creators WHERE id = %s
     ''', (creator_id,))
     creator = cursor.fetchone()
@@ -7502,8 +7458,8 @@ def get_creator_unlock_balance(creator_id, conn=None):
             conn.close()
         return None
 
-    # Pro/Elite = unlimited
-    if creator.get('unlocks_tier') == 'pro' or creator.get('subscription_tier') in ('pro', 'elite'):
+    # Pro = unlimited
+    if creator.get('unlocks_tier') == 'pro' or creator.get('subscription_tier') == 'pro':
         cursor.close()
         if close_conn:
             conn.close()
@@ -7512,13 +7468,11 @@ def get_creator_unlock_balance(creator_id, conn=None):
             "remaining": None,  # unlimited
             "reset_at": None,
             "is_unlimited": True,
-            "pack_credits": 0,
         }
 
     unlocks_remaining = creator.get('unlocks_remaining') or 0
     unlocks_reset_at = creator.get('unlocks_reset_at')
-    pack_credits = pack_credits_of(creator)
-    used, remaining = sync_free_unlock_remaining(cursor, creator_id, pack_credits)
+    used, remaining = sync_free_unlock_remaining(cursor, creator_id)
     conn.commit()
     cursor.execute('SELECT unlocks_reset_at FROM creators WHERE id = %s', (creator_id,))
     reset_row = cursor.fetchone() or {}
@@ -7533,7 +7487,6 @@ def get_creator_unlock_balance(creator_id, conn=None):
         "remaining": remaining,
         "used": used,
         "limit": FREE_UNLOCK_LIMIT,
-        "pack_credits": pack_credits,
         "reset_at": unlocks_reset_at.isoformat() if unlocks_reset_at else None,
         "is_unlimited": False
     }
@@ -7551,6 +7504,69 @@ def get_unlock_balance():
         return jsonify({'success': False, 'error': 'Creator not found'}), 404
 
     return jsonify({'success': True, **balance})
+
+
+def cold_spend_warning(creator_id, brand_id, conn=None):
+    """Signal + alternatives when a free credit is about to go to a brand that rarely replies.
+
+    Returns {"warn": bool, "signal": {...}|None, "alternatives": [...]}. Pro users,
+    already-unlocked brands, and brands without a cold signal never warn.
+    """
+    from services.brand_reply_signal import brand_signal, responsive_alternatives
+
+    close_conn = False
+    if not conn:
+        conn = get_db_connection()
+        close_conn = True
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    out = {"warn": False, "signal": None, "alternatives": []}
+    try:
+        signal = brand_signal(cursor, brand_id)
+        out["signal"] = signal
+        if not signal or signal.get("tier") != "cold":
+            return out
+        balance = get_creator_unlock_balance(creator_id, conn=conn) or {}
+        if balance.get("is_unlimited"):
+            return out
+        if brand_already_delivered(cursor, creator_id, brand_id):
+            return out
+        remaining = int(balance.get("remaining") or 0)
+        if remaining <= 0:
+            return out
+        cursor.execute(
+            "SELECT category, min_followers FROM pr_brands WHERE id = %s",
+            (brand_id,),
+        )
+        brand = cursor.fetchone() or {}
+        cursor.execute("SELECT followers_count FROM creators WHERE id = %s", (creator_id,))
+        creator = cursor.fetchone() or {}
+        cap = get_min_follower_cap(creator.get("followers_count") or 0) if creator.get("followers_count") else None
+        out["warn"] = True
+        out["remaining"] = remaining
+        out["alternatives"] = responsive_alternatives(
+            cursor, brand.get("category") or "", exclude_ids=[brand_id], limit=3, min_follower_cap=cap,
+        )
+        return out
+    except Exception as err:
+        print(f"[cold_spend_warning] skipped: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return out
+    finally:
+        cursor.close()
+        if close_conn:
+            conn.close()
+
+
+@pr_crm.route('/brands/<int:brand_id>/reply-signal', methods=['GET'])
+def get_brand_reply_signal(brand_id):
+    """Reply evidence for one brand, and whether to confirm before spending a free credit."""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    return jsonify({'success': True, **cold_spend_warning(creator_id, brand_id)})
 
 
 @pr_crm.route('/unlocks/brands', methods=['GET'])
@@ -8180,7 +8196,7 @@ def log_reply(pipeline_id):
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     try:
-        is_pro = get_subscription_status(creator_id) in ['pro', 'elite']
+        is_pro = get_subscription_status(creator_id) == 'pro'
         data = request.get_json()
         reply_type = data.get('reply_type')
 
@@ -8274,7 +8290,7 @@ def bump_profile():
 
     # Verify Pro subscription
     subscription = get_subscription_status(creator_id)
-    if subscription not in ['pro', 'elite']:
+    if subscription != 'pro':
         return jsonify({'success': False, 'error': 'Pro subscription required'}), 403
 
     data = request.get_json() or {}
@@ -8419,7 +8435,7 @@ def get_kit_views():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     try:
-        is_pro = get_subscription_status(creator_id) in ['pro', 'elite']
+        is_pro = get_subscription_status(creator_id) == 'pro'
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -8534,7 +8550,7 @@ def get_pipeline_stats():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     try:
-        is_pro = get_subscription_status(creator_id) in ['pro', 'elite']
+        is_pro = get_subscription_status(creator_id) == 'pro'
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -8631,7 +8647,7 @@ def reveal_contact():
             return jsonify({
                 'success': False,
                 'error': 'Free tier limit reached',
-                'message': f'You\'ve used all {FREE_LIMIT} free brand contacts. Upgrade to Pro for 20 contacts/month + pitch templates.',
+                'message': f'You\'ve used all {FREE_LIMIT} free brand contacts. Go Pro to get placed on 1 live gifted campaign every month, plus unlimited credits on top.',
                 'current_count': current_count,
                 'limit': FREE_LIMIT,
                 'tier': tier
@@ -8643,13 +8659,11 @@ def reveal_contact():
             return jsonify({
                 'success': False,
                 'error': 'Pro tier limit reached',
-                'message': f'You\'ve used all {PRO_LIMIT} brand contacts this month. Upgrade to Elite for unlimited contacts.',
+                'message': f'You\'ve used all {PRO_LIMIT} brand contacts this month.',
                 'current_count': current_count,
                 'limit': PRO_LIMIT,
                 'tier': tier
             }), 403
-
-        # Elite tier has unlimited, so no check needed
 
         # Increment the counter
         cursor.execute('''
@@ -8697,7 +8711,7 @@ def get_for_you():
         ensure_campaign_spotlight_column(cursor, conn)
 
         # Get creator subscription status and profile
-        is_pro = get_subscription_status(creator_id) in ['pro', 'elite']
+        is_pro = get_subscription_status(creator_id) == 'pro'
 
         # Get creator's niche from signup + For You preferences + follower count
         # Join with media_kits to get total_followers if available
@@ -9380,19 +9394,28 @@ def get_for_you():
         else:
             print("[ForYou] No mentor-ranked matches")
 
+        from services.brand_reply_signal import annotate, annotate_and_sort, load_stats
+        reply_stats = load_stats(cursor)
+        hot = annotate_and_sort(cursor, [dict(r) for r in hot])
+        filtered_matched = annotate_and_sort(cursor, filtered_matched or [], fit_aware=True)
+        open_lists = annotate(open_lists, reply_stats)
+        recruiting = annotate(recruiting, reply_stats)
+        seasonal = annotate_and_sort(cursor, [dict(r) for r in seasonal])
+        newest = annotate_and_sort(cursor, [dict(r) for r in newest])
+
         cursor.close()
         conn.close()
 
         return jsonify({
             'success': True,
-            'hot': [dict(r) for r in hot],
+            'hot': hot,
             'matched': filtered_matched,
             'open_lists': open_lists,
             'recruiting': recruiting,
-            'seasonal': [dict(r) for r in seasonal],
+            'seasonal': seasonal,
             'seasonal_reason': seasonal_reasons.get(month, ''),
             'seasonal_month': datetime.now().strftime('%B'),
-            'newest': [dict(r) for r in newest],
+            'newest': newest,
             'is_pro': is_pro,
             'has_profile': bool(niches or followers),
             'profile': {

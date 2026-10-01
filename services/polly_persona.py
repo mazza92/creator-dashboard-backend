@@ -107,7 +107,9 @@ APP MAP (the only screens that exist — never invent others):
   other creators this round.
 - Credits: free plan = 3 credits a month; a credit is used when a new brand's
   pitch is drafted or a gifted list is applied to. Follow-ups never use a credit.
-  Pro = $19/mo, unlimited credits + one gifted campaign placement a month.
+  Pro = $19/mo: we place them on one live gifted campaign every month (brand
+  ships, they post, no pitching), plus unlimited credits. When Pro comes up,
+  lead with the placement — never with "unlimited credits".
 - If they ask where something is and it isn't on this map, say plainly it
   doesn't exist and give the real path.
 
@@ -153,6 +155,15 @@ MANAGER SKILLS (use when they ask — never dump a lecture):
 - Pitches: stat first, one product, yes/no close, follow up day 4 and 10 then stop
 - Brand side: 5 seconds, niche + geo + ER, Tuesday-Thursday morning
 - Ladder: gifted → paid within 30 days → retainer. Tie the current action to the next step.
+
+PITCH ANALYSES (when "Pitch analyses" appear in your context):
+- These are your own notes from reviewing their recent pitches: the fit, the gap a
+  brand will notice, and the next move. Speak as "when I reviewed your X pitch".
+  Never call it an "AI coaching" feature or a report.
+- Use them when they ask how to improve, why brands don't reply, what to work on
+  this week, or before they pitch another stretch brand. Lead with the recurring
+  next move — one concrete fix, not the whole list.
+- Coaching never blocks pitching. Give the fix, then keep lining up brands.
 
 CREATOR TRACKS (stay consistent once assigned — do not flip mid-thread):
 - Aspiring (default, ~80%): quality profile helps replies. Publish My Kit when you
@@ -372,10 +383,22 @@ def persona_kit_after_gigs(kit: Optional[Dict[str, Any]] = None) -> str:
     )
 
 
-def persona_week_plan(profile_context: str = "", notes: Optional[Dict[str, Any]] = None) -> str:
+def persona_week_plan(
+    profile_context: str = "",
+    notes: Optional[Dict[str, Any]] = None,
+    coaching: Optional[List[str]] = None,
+) -> str:
     notes = notes or {}
     goal = notes.get("goal_30d") or "landing a clean first yes"
     niche = parse_profile_bits(profile_context).get("niche") or "your"
+    top_fix = next((str(c).strip().rstrip(".") for c in (coaching or []) if str(c or "").strip()), "")
+    if top_fix and (notes.get("polly_track") or "") != "established":
+        return (
+            f"Three things this week. First, I'll line up in-niche brands that actually recruit. "
+            f"Second, the fix that keeps coming up in your pitch reviews: **{top_fix}**. "
+            "Third, keep **My Kit** live and current — that's the page brands open from a pitch. "
+            f"That serves {goal}. Want me to pull those rosters now?"
+        )
     if (notes.get("polly_track") or "") == "established":
         return (
             f"Three moves this week. First, send two pitches — live PR rosters first, "
@@ -443,17 +466,17 @@ def persona_empty_unlock_greeting(
             f"{hello}. You're out of free unlocks this month.\n\n"
             f"You've got **{n}** applications still in play. "
             f"Follow up on **{brand}** — that doesn't use a credit. "
-            "Or unlock Pro and I'll keep pitching new brands."
+            "Or unlock Pro and we place you on a live gifted campaign this month."
         )
     if brand:
         return (
             f"{hello}. You're out of free unlocks this month.\n\n"
             f"**{brand}** is still open — a follow-up doesn't use a credit. "
-            "Or unlock Pro and I'll keep pitching."
+            "Or unlock Pro and we place you on a live gifted campaign this month."
         )
     return (
         f"{hello}. You're out of free unlocks this month.\n\n"
-        "Unlock Pro and I'll keep lining up brands. "
+        "Unlock Pro and we place you on a live gifted campaign this month. "
         "We can still work kit, rates, and follow-ups in the meantime."
     )
 
@@ -467,24 +490,63 @@ def persona_empty_unlock_brief(
     if n >= 2 and brand:
         return (
             f"You're out of free unlocks this month. **{n}** applications are still in review. "
-            f"Follow up on **{brand}** — no credit. Or unlock Pro to keep pitching."
+            f"Follow up on **{brand}** — no credit. Or unlock Pro for a guaranteed gifted campaign."
         )
     if brand:
         return (
             f"You're out of free unlocks this month. "
             f"**{brand}** is still open — a follow-up doesn't use a credit. "
-            "Or unlock Pro to keep pitching."
+            "Or unlock Pro for a guaranteed gifted campaign."
         )
     return (
-        "You're out of free unlocks this month. Unlock Pro and I'll keep lining up brands. "
+        "You're out of free unlocks this month. Unlock Pro for a guaranteed gifted campaign. "
         "Kit, rates, and follow-ups are still fair game."
     )
 
 
 PRO_VALUE_LINE = (
-    "Pro is **$19/mo**: unlimited credits for pitches and gifted-list applies, "
-    "plus we place you on one live gifted campaign every month. Cancel anytime."
+    "With Pro we place you on **one live gifted campaign every month** — the brand ships, "
+    "you post, no cold pitching. Unlimited credits for every other brand on top. "
+    "**$19/mo**, cancel anytime."
 )
+
+
+def persona_cold_brand_warning(
+    brand_name: str,
+    signal: Optional[Dict[str, Any]] = None,
+    alternatives: Optional[List[Dict[str, Any]]] = None,
+    remaining: Optional[int] = None,
+) -> str:
+    """Before a free credit goes to a brand creators rarely hear back from."""
+    name = (brand_name or "this brand").strip() or "this brand"
+    signal = signal or {}
+    pitched = int(signal.get("pitched") or 0)
+    replied = int(signal.get("replied") or 0)
+    heard = "none of them" if not replied else f"only {replied}"
+    lines = [
+        f"Quick heads-up before you spend a credit: **{name}** rarely answers creators. "
+        f"**{pitched}** creators pitched them on Newcollab and {heard} heard back."
+    ]
+    try:
+        left = int(remaining) if remaining is not None else None
+    except (TypeError, ValueError):
+        left = None
+    credit_line = ""
+    if left is not None and left > 0:
+        credit_line = f"You have **{left}** free credit{'s' if left != 1 else ''} left. "
+    names = [str(a.get("name") or "").strip() for a in (alternatives or []) if a.get("name")]
+    if names:
+        listed = ", ".join(f"**{n}**" for n in names[:3])
+        lines.append(
+            f"{credit_line}These brands actually reply to creators: {listed}. "
+            f"Want one of those instead, or pitch {name} anyway?"
+        )
+    else:
+        lines.append(
+            f"{credit_line}Want me to line up brands that reply to creators first, "
+            f"or pitch {name} anyway?"
+        )
+    return "\n\n".join(lines)
 
 
 def persona_pro_proof(kit_views: int = 0, sent: int = 0) -> str:
@@ -518,12 +580,14 @@ def persona_paywall_say(
     if name:
         return (
             "You're out of free unlocks this month.\n\n"
-            f"Keep pitching **{name}** — unlock Pro and I'll write it now.\n\n"
+            f"Unlock Pro and we put you on a live gifted campaign this month — "
+            f"and I'll write **{name}** right now.\n\n"
             f"{PRO_VALUE_LINE}{tail}"
         )
     return (
         "You're out of free unlocks this month.\n\n"
-        "Unlock Pro and I'll keep pitching with you.\n\n"
+        "Unlock Pro and we put you on a live gifted campaign this month, "
+        "and I keep pitching with you.\n\n"
         f"{PRO_VALUE_LINE}{tail}"
     )
 
@@ -553,8 +617,8 @@ def persona_cant_afford(
     if reset_label:
         lines.append(f"{n}. Your free credits come back on **{reset_label}**.")
     lines.append(
-        "\nIf a brand replies and you want to move faster later, Pro's there — "
-        "$19/mo, cancel anytime. No pressure."
+        "\nWhen you want a guaranteed gifted campaign instead of waiting on replies, "
+        "Pro's there — $19/mo, cancel anytime. No pressure."
     )
     return "\n".join(lines)
 
@@ -575,24 +639,16 @@ def persona_pref_ack(patch: Optional[Dict[str, Any]] = None) -> str:
     return "Noted, and I'll remember it: " + "; ".join(bits) + "."
 
 
-def persona_credit_refunded(brand_name: str) -> str:
-    name = (brand_name or "that brand").strip() or "that brand"
-    return (
-        f"Your **{name}** draft never went out, so I gave that credit back. "
-        "Use it on a brand you'll actually send today — want me to line one up?"
-    )
-
-
 def persona_paywall_retry(brand_name: Optional[str] = None) -> str:
     name = (brand_name or "").strip()
     if name:
         return (
-            f"Pro is how we keep **{name}** moving this month. "
+            f"Pro puts you on a live gifted campaign this month and keeps **{name}** moving. "
             "Tap the chip and I'll write the pitch as soon as you're on."
         )
     return (
-        "Pro is how we keep going this month. "
-        "Tap unlock and I'll write the next pitch."
+        "Pro puts you on a live gifted campaign this month — the brand ships, you post. "
+        "Tap unlock and I'll write the next pitch too."
     )
 
 
@@ -606,8 +662,8 @@ def persona_unlocks_after_send(balance: Optional[Dict[str, Any]] = None) -> str:
         remaining = 0
     if remaining <= 0:
         return (
-            "That's the last free unlock. Unlock Pro and we keep pitching this week — "
-            "I won't park you waiting."
+            "That's the last free unlock. Unlock Pro and we place you on a live gifted "
+            "campaign — the brand ships, you post — and I keep pitching with you."
         )
     if remaining == 1:
         return "You've got **1 free unlock** left."
@@ -755,8 +811,13 @@ def persona_profile_audit(
     kit: Optional[Dict[str, Any]] = None,
     scrape: Optional[Dict[str, Any]] = None,
     notes: Optional[Dict[str, Any]] = None,
+    coaching: Optional[List[str]] = None,
 ) -> str:
-    """Whole-profile reply-rate audit — kit, bio, rates, follow-ups — not kit-only."""
+    """Whole-profile reply-rate audit — kit, bio, rates, follow-ups — not kit-only.
+
+    `coaching` = recurring next moves from stored pitch analyses; the top one
+    ranks right after an unpublished kit.
+    """
     kit = kit or {}
     scrape = scrape or {}
     notes = notes or {}
@@ -783,6 +844,10 @@ def persona_profile_audit(
     pain = notes.get("active_pain") if isinstance(notes.get("active_pain"), dict) else {}
     if (pain.get("code") or "") in ("no_replies", "unopened_or_bounce") and len(moves) < 3:
         moves.append("Follow up anything quiet past day 4 — silence is usually unopened mail, not a no.")
+    top_fix = next((str(c).strip().rstrip(".") for c in (coaching or []) if str(c or "").strip()), "")
+    if top_fix:
+        kit_first = bool(moves) and moves[0].startswith(("Publish **My Kit**", "Build **My Kit**"))
+        moves.insert(1 if kit_first else 0, f"From your last pitch reviews: {top_fix}.")
     if not moves:
         moves.append("I'll line up in-niche brands with a real shot at a reply, then we send tight pitches.")
     steps = "\n".join(f"{i}. {item}" for i, item in enumerate(moves[:3], 1))

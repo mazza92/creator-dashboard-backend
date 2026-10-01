@@ -412,18 +412,13 @@ def _is_settings_return(return_url: str = '', source: str = '') -> bool:
 
 def _ensure_tiktok_oauth_columns(cursor):
     """Add open_id + video snapshot columns if missing (idempotent)."""
-    cursor.execute(
-        'ALTER TABLE creators ADD COLUMN IF NOT EXISTS social_open_id VARCHAR(128)'
-    )
-    cursor.execute(
-        'ALTER TABLE creators ADD COLUMN IF NOT EXISTS social_oauth_videos JSONB'
-    )
-    cursor.execute(
-        'ALTER TABLE creators ADD COLUMN IF NOT EXISTS tiktok_handle VARCHAR(100)'
-    )
-    cursor.execute(
-        'ALTER TABLE creators ADD COLUMN IF NOT EXISTS instagram_handle VARCHAR(100)'
-    )
+    from services.pg_hotpath_schema import ensure_columns
+    ensure_columns(cursor, "creators", {
+        "social_open_id": "VARCHAR(128)",
+        "social_oauth_videos": "JSONB",
+        "tiktok_handle": "VARCHAR(100)",
+        "instagram_handle": "VARCHAR(100)",
+    })
 
 
 def _fetch_tiktok_videos(access_token, max_count=20):

@@ -30,7 +30,7 @@
                 <span style="color: #15161a; font-weight: 600;">Unlimited</span>
                 {% elif credits_remaining is not none %}
                 <span style="color: #15161a; font-weight: 600;">{{ credits_remaining }} left</span>
-                <span style="color: #6b7280; font-size: 13px;">({{ credits_used }} used of {{ credits_quota }} this month{% if pack_credits and pack_credits > 0 %}, +{{ pack_credits }} pack{% endif %})</span>
+                <span style="color: #6b7280; font-size: 13px;">({{ credits_used }} used of {{ credits_quota }} this month)</span>
                 {% else %}
                 <span style="color: #15161a; font-weight: 600;">{{ unlocks_used }} used of {{ unlocks_quota }}</span>
                 {% endif %}

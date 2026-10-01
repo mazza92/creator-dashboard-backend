@@ -88,7 +88,7 @@ class TestFocusAndMint(unittest.TestCase):
     def test_thresholds(self):
         self.assertEqual(ROSTER_FOCUS_MIN, 3)
         self.assertEqual(ROSTER_FOCUS_CAP, 8)
-        self.assertEqual(ROSTER_MINT_MIN, 8)
+        self.assertEqual(ROSTER_MINT_MIN, 3)
 
     def test_demand_sql_finishes_fuller_lists(self):
         sql = ' '.join(ROSTER_DEMAND_JOIN.split())

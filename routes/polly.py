@@ -5,6 +5,9 @@ import re
 from flask import Blueprint, jsonify, request, session, current_app
 
 from services.polly import (
+    coaching_moves,
+    pitch_coach_line,
+    pitch_coaching_context,
     begin_polly_turn,
     brand_in_suggested,
     build_profile_context,
@@ -65,6 +68,7 @@ from services.polly import (
     reset_label,
     next_unlock_brand,
     paywall_unlock_chips,
+    cold_brand_chips,
     pitch_confirm_chips,
     pitch_from_followup_response,
     pitch_from_package_response,
@@ -118,6 +122,7 @@ from services.polly_persona import (
     persona_ask_brand,
     persona_brand_intro,
     persona_cant_afford,
+    persona_cold_brand_warning,
     persona_gigs_intro,
     persona_pref_ack,
     persona_kit_after_cards,
@@ -204,6 +209,40 @@ def _load_scrape(conn, user_id):
         return None
 
 
+def _load_pitch_coaching(conn, creator_id, limit=5):
+    """Stored fit coaching from recent PR packages, newest first."""
+    if not conn or not creator_id:
+        return []
+    from psycopg2.extras import RealDictCursor
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cursor.execute("SAVEPOINT polly_coaching")
+        cursor.execute(
+            """
+            SELECT b.brand_name, p.ai_status, p.ai_coaching, p.ai_quick_wins
+            FROM pr_packages p
+            JOIN pr_brands b ON b.id = p.brand_id
+            WHERE p.creator_id = %s
+              AND (p.ai_coaching IS NOT NULL OR p.ai_quick_wins IS NOT NULL)
+            ORDER BY p.id DESC
+            LIMIT %s
+            """,
+            (creator_id, limit),
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        cursor.execute("RELEASE SAVEPOINT polly_coaching")
+        return rows
+    except Exception as err:
+        print(f"[Polly] coaching load skipped: {err}")
+        try:
+            cursor.execute("ROLLBACK TO SAVEPOINT polly_coaching")
+        except Exception:
+            pass
+        return []
+    finally:
+        cursor.close()
+
+
 def _unlock_balance(creator_id):
     from pr_crm_routes import get_creator_unlock_balance
     try:
@@ -277,6 +316,21 @@ def _cron_authorized():
     auth = request.headers.get("Authorization") or ""
     bearer = auth.split(" ", 1)[1].strip() if auth.lower().startswith("bearer ") else ""
     return (provided in allowed) or (bearer in allowed)
+
+
+def _log_polly_event(creator_id, event, meta=None):
+    if not creator_id:
+        return
+    try:
+        from pr_crm_routes import get_db_connection
+        from services.polly_usage import log_usage
+        conn = get_db_connection()
+        try:
+            log_usage(conn, creator_id, event, meta=meta or {})
+        finally:
+            conn.close()
+    except Exception as err:
+        print(f"[Polly] usage log skipped: {err}")
 
 
 def _replied_chip_from_tracker(tracker):
@@ -386,7 +440,8 @@ def _fetch_brands_by_category(categories, limit=40, exclude_ids=None):
             """,
             params,
         )
-        return [dict(row) for row in cursor.fetchall()]
+        from services.brand_reply_signal import annotate_and_sort
+        return annotate_and_sort(cursor, [dict(row) for row in cursor.fetchall()])
     except Exception as err:
         print(f"[Polly] category pool skipped: {err}")
         return []
@@ -502,13 +557,15 @@ def _suggest_payload(scrape, creator, notes=None, creator_id=None):
     return 200, filter_brands_by_prefs(drop_pitched(brands, notes, extra_ids=exclude), notes), None
 
 
-def _coach_say(intent, profile_context, notes, scrape, kit=None):
+def _coach_say(intent, profile_context, notes, scrape, kit=None, coach_moves=None):
     if intent == "explain_newcollab":
         return explain_newcollab()
     if intent == "coach_portfolio":
         return persona_portfolio_review(profile_context, kit)
     if intent == "coach_profile":
-        return persona_profile_audit(profile_context, kit=kit, scrape=scrape, notes=notes)
+        return persona_profile_audit(
+            profile_context, kit=kit, scrape=scrape, notes=notes, coaching=coach_moves,
+        )
     if intent == "ask_brand":
         return persona_ask_brand()
     if intent == "coach_rates":
@@ -519,7 +576,7 @@ def _coach_say(intent, profile_context, notes, scrape, kit=None):
             followers = None
         return persona_rate_card(followers)
     if intent == "coach_week":
-        return persona_week_plan(profile_context, notes)
+        return persona_week_plan(profile_context, notes, coaching=coach_moves)
     return None
 
 
@@ -772,7 +829,8 @@ def _fetch_brands_by_tokens(tokens, limit=24, exclude_ids=None):
             """,
             params,
         )
-        return [dict(row) for row in cursor.fetchall()]
+        from services.brand_reply_signal import annotate_and_sort
+        return annotate_and_sort(cursor, [dict(row) for row in cursor.fetchall()])
     except Exception as err:
         print(f"[Polly] token pool skipped: {err}")
         return []
@@ -820,7 +878,9 @@ def _lookup_similar_brands(query_name, scrape=None, notes=None, creator=None, cr
         token_hits = sum(1 for tok in tokens if tok in blob)
         if tokens and token_hits <= 0:
             continue
-        ranked.append((-token_hits, -int(card.get("match_score") or 0), len(ranked), card))
+        tier = (card.get("reply_signal") or {}).get("tier")
+        reply_rank = 0 if tier == "replies" else 2 if tier == "cold" else 1
+        ranked.append((reply_rank, -token_hits, -int(card.get("match_score") or 0), len(ranked), card))
     ranked.sort()
     return [item[-1] for item in ranked[:limit]]
 
@@ -1046,6 +1106,11 @@ def chat():
         scrape = _load_scrape(conn, (creator or {}).get("user_id") or session.get("user_id"))
         kit = load_kit_snapshot(conn, creator_id, scrape)
         profile_context = build_profile_context(scrape, creator) + "\n\n" + kit_context(kit)
+        coaching_rows = _load_pitch_coaching(conn, creator_id)
+        coaching_block = pitch_coaching_context(coaching_rows)
+        if coaching_block:
+            profile_context += "\n\n" + coaching_block
+        coach_moves = coaching_moves(coaching_rows)
         balance = _unlock_balance(creator_id)
         first = creator_first_name(creator, scrape)
         stored = load_thread(conn, creator_id)
@@ -1610,11 +1675,11 @@ def chat():
         elif intent == "explain_newcollab":
             say = explain_newcollab(first)
         elif intent == "coach_portfolio":
-            say = _coach_say(intent, profile_context, notes, scrape, kit=kit)
+            say = _coach_say(intent, profile_context, notes, scrape, kit=kit, coach_moves=coach_moves)
         elif intent in ("coach_profile", "ask_brand"):
-            say = _coach_say(intent, profile_context, notes, scrape, kit=kit)
+            say = _coach_say(intent, profile_context, notes, scrape, kit=kit, coach_moves=coach_moves)
         elif intent in ("coach_week", "coach_rates") and not open_discovery:
-            say = _coach_say(intent, profile_context, notes, scrape, kit=kit)
+            say = _coach_say(intent, profile_context, notes, scrape, kit=kit, coach_moves=coach_moves)
         elif (
             open_discovery
             and not is_casual_ack(user_text)
@@ -1820,7 +1885,17 @@ def chat():
                     loc_display = str(shipping.get("display") or "").strip()
                     if pitch_has_placeholder(loc_display):
                         loc_display = ""
-                if wants_followup:
+                cold = {}
+                if not wants_followup and not data.get("confirm_cold") and creator_id:
+                    try:
+                        from pr_crm_routes import cold_spend_warning
+                        cold = cold_spend_warning(creator_id, resolved.get("id")) or {}
+                    except Exception as err:
+                        print(f"[Polly] cold check skipped: {err}")
+                        cold = {}
+                if cold.get("warn"):
+                    status, pkg = 200, {"_cold": cold}
+                elif wants_followup:
                     status, pkg = _invoke_generate_followup(resolved.get("id"), resolved.get("slug"))
                 else:
                     status, pkg = _invoke_generate_pr_package(
@@ -1854,6 +1929,22 @@ def chat():
                     balance = _unlock_balance(creator_id)
                 elif status == 401:
                     return jsonify({"success": False, "error": "Not authenticated"}), 401
+                elif pkg.get("_cold"):
+                    cold = pkg["_cold"]
+                    brand_name = (resolved.get("name") or asked_name or "this brand").strip()
+                    brands = _hydrate_brand_cards(cold.get("alternatives") or [])
+                    say = persona_cold_brand_warning(
+                        brand_name, cold.get("signal"), brands, cold.get("remaining"),
+                    )
+                    data["_server_say"] = say
+                    data["_keep_draft"] = True
+                    data["_task_chips"] = cold_brand_chips(
+                        {"id": resolved.get("id"), "name": brand_name}, brands,
+                    )
+                    _log_polly_event(
+                        creator_id, "cold_brand_warned",
+                        {"brand_id": resolved.get("id"), "alternatives": len(brands)},
+                    )
                 elif not pkg.get("success"):
                     error = pkg.get("error") or "Could not generate pitch"
                     print(f"[Polly] pitch failed status={status} error={error}")
@@ -1957,6 +2048,9 @@ def chat():
                                 location_display=shown_loc,
                             )
                         say = persona_park_draft(prior_draft, brand_name) + fallback_say
+                        coach_line = "" if wants_followup else pitch_coach_line(pkg, brand_name)
+                        if coach_line:
+                            say = f"{say}\n\n{coach_line}"
                         data["_keep_pitch_say"] = True
                         data["_task_chips"] = pitch_confirm_chips({
                             "id": resolved.get("id"),
@@ -1968,7 +2062,7 @@ def chat():
                 conn.close()
                 conn = None
             if intent in ("coach_week", "coach_portfolio", "coach_rates", "coach_profile", "ask_brand", "explain_newcollab"):
-                say = _coach_say(intent, profile_context, notes, scrape, kit=kit)
+                say = _coach_say(intent, profile_context, notes, scrape, kit=kit, coach_moves=coach_moves)
             else:
                 say = decision.get("say")
                 if is_robotic(say):
@@ -2008,7 +2102,7 @@ def chat():
             if gem and not is_robotic(gem) and "isn't in our directory" not in gem.lower():
                 say = gem
             elif intent in ("coach_profile", "coach_week", "coach_rates", "coach_portfolio", "ask_brand"):
-                say = _coach_say(intent, profile_context, notes, scrape, kit=kit)
+                say = _coach_say(intent, profile_context, notes, scrape, kit=kit, coach_moves=coach_moves)
             elif gem:
                 say = gem
 
@@ -2317,7 +2411,7 @@ def pitch_handoff():
 
 @polly_bp.route("/cron/alerts", methods=["GET", "POST"])
 def cron_alerts():
-    """Due nudges in-thread + by email, kit-view emails, unsent-draft credit refunds."""
+    """Due nudges in-thread + by email, kit-view emails."""
     if not _cron_authorized():
         return jsonify({"success": False, "error": "unauthorized"}), 401
     from pr_crm_routes import get_db_connection

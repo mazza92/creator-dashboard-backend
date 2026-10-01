@@ -2375,10 +2375,8 @@ VALID_SURVEY_PAINS = frozenset({
 
 def _ensure_onboarding_survey_column(cursor):
     """Idempotent for environments that have not run the migration yet."""
-    cursor.execute("""
-        ALTER TABLE creators
-        ADD COLUMN IF NOT EXISTS onboarding_survey JSONB NOT NULL DEFAULT '{}'::jsonb
-    """)
+    from services.pg_hotpath_schema import ensure_columns
+    ensure_columns(cursor, "creators", {"onboarding_survey": "JSONB NOT NULL DEFAULT '{}'::jsonb"})
 
 
 def _parse_onboarding_survey(raw):
@@ -3880,7 +3878,7 @@ def unlock_brand_access(slug):
                 app.logger.warning(f"🚫 Quota limit reached for creator {creator_id}")
                 conn.close()
                 return jsonify({
-                    'error': f"You've used all {DAILY_LIMIT} free application forms today. Come back tomorrow or upgrade to Pro for unlimited!",
+                    'error': f"You've used all {DAILY_LIMIT} free application forms today. Come back tomorrow, or go Pro to get placed on 1 live gifted campaign every month, plus unlimited credits on top.",
                     'upgrade_required': True,
                     'current_count': daily_unlocks,
                     'limit': DAILY_LIMIT

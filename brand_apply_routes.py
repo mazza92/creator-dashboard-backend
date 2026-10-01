@@ -885,6 +885,8 @@ def related_brands(brand_id):
         if not seed:
             return jsonify({"success": False, "error": "Brand not found"}), 404
 
+        from services.brand_reply_signal import annotate, id_sets, load_stats
+        reply_ids = id_sets(cursor)
         cursor.execute(
             """
             SELECT
@@ -904,13 +906,24 @@ def related_brands(brand_id):
               )
             ORDER BY
               CASE WHEN b.category IS NOT NULL AND b.category = %s THEN 0 ELSE 1 END,
+              (b.id = ANY(%s)) DESC,
+              (b.id = ANY(%s)) ASC,
               CASE WHEN b.micro_friendly = %s THEN 0 ELSE 1 END,
               b.id DESC
             LIMIT 6
             """,
-            (brand_id, creator_id, seed.get("category"), bool(seed.get("micro_friendly"))),
+            (
+                brand_id, creator_id, seed.get("category"),
+                reply_ids["replies"], reply_ids["cold"], bool(seed.get("micro_friendly")),
+            ),
         )
-        brands = [_brand_card(row) for row in (cursor.fetchall() or [])]
+        rows = annotate([dict(r) for r in (cursor.fetchall() or [])], load_stats(cursor))
+        brands = []
+        for row in rows:
+            card = _brand_card(row)
+            if row.get("reply_signal"):
+                card["reply_signal"] = row["reply_signal"]
+            brands.append(card)
         return jsonify({"success": True, "brands": brands})
     except Exception as e:
         print(f"[brand-apply] related error: {e}")

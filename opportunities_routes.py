@@ -210,13 +210,14 @@ def _maybe_send_limit_hit_email(creator_id: int, used: int, limit: int = 3):
             except Exception:
                 pass
 
-        subject = 'Open gigs are waiting — keep applying with Pro'
+        subject = 'Get placed on a gifted campaign this month'
         body = (
             f"Hey {row.get('username') or 'there'},\n\n"
             f"You've used all {limit} free application credits this month.\n\n"
-            f"Pro ($19/mo) unlocks unlimited applications + your AI talent manager "
-            f"so you can keep applying to {niche} brands that are hiring now.\n\n"
-            f"Upgrade: https://app.newcollab.co/creator/dashboard/for-you\n\n"
+            f"With Pro ($19/mo) we place you on 1 live gifted campaign every month, guaranteed. "
+            f"The brand ships product, you post. No cold pitching.\n\n"
+            f"Unlimited credits come on top, so you can keep applying to {niche} brands that are hiring now.\n\n"
+            f"Get placed with Pro: https://app.newcollab.co/creator/dashboard/for-you\n\n"
             f"— NewCollab"
         )
         sent = send_email_notification(row['email'], subject, body)
@@ -729,7 +730,7 @@ def fetch_live_opportunity_cards(creator_id, extra_tokens=None):
     creator_tokens = _tokenize_niche_blob(creator.get('creator_niches'))
     creator_tokens |= _tokenize_niche_blob(creator.get('niche'))
     creator_tokens |= _tokenize_niche_blob(extra_tokens)
-    is_pro = creator.get('subscription_tier') in ['pro', 'elite']
+    is_pro = creator.get('subscription_tier') == 'pro'
 
     from services.opportunity_gifted_pr import ensure_opportunity_gifted_pr_columns
     from services.gig_listing import ensure_listing_brief_column
@@ -927,7 +928,7 @@ def apply_opportunity(opp_id):
             ''', (month_start, creator_id))
 
         FREE_MONTHLY_LIMIT = 3
-        is_pro = tier in ['pro', 'elite']
+        is_pro = tier == 'pro'
 
         if not is_pro and pitches_used >= FREE_MONTHLY_LIMIT:
             cursor.close()

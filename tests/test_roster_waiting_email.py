@@ -392,6 +392,61 @@ class TestResendSendPath(unittest.TestCase):
         self.assertNotIn("smtp", source.lower())
 
 
+class TestQuickPick(unittest.TestCase):
+    PICKS = [
+        {"application_id": 11, "name": "Maya", "handle": "@maya", "followers_label": "4.2K", "niche": "Beauty"},
+        {"application_id": 12, "name": "Jo", "handle": "", "followers_label": "", "niche": ""},
+    ]
+
+    def test_shortlist_from_rows(self):
+        from services.roster_waiting_email import shortlist_from_rows
+
+        rows = [
+            {"application_id": 1, "username": "@maya", "first_name": "Maya", "followers": 4200, "niche": '["Beauty", "Skin"]'},
+            {"application_id": 2, "username": "jo", "first_name": None, "followers": 0, "niche": None},
+        ]
+        picks = shortlist_from_rows(rows, limit=5)
+        self.assertEqual(picks[0], {
+            "application_id": 1, "name": "Maya", "handle": "@maya",
+            "followers_label": "4.2K", "niche": "Beauty",
+        })
+        self.assertEqual(picks[1]["name"], "jo")
+        self.assertEqual(picks[1]["followers_label"], "")
+        self.assertEqual(len(shortlist_from_rows(rows, limit=1)), 1)
+
+    def test_build_email_with_picks_links_quick_pick(self):
+        payload = build_email(1, "TALGH", "team", 9, "abc123", variant="A",
+                              base_url="https://app.newcollab.co", top_picks=self.PICKS)
+        link = payload["quick_pick_link"]
+        self.assertIn("/r/abc123?", link)
+        self.assertIn("pick=11%2C12", link)
+        self.assertIn("utm_medium=trigger_1_quickpick", link)
+        html = payload["html"]
+        self.assertIn("Approve these 2 creators", html)
+        self.assertIn("@maya", html)
+        self.assertIn("4.2K followers", html)
+        self.assertIn("See all 9 applicants", html)
+        self.assertIn(payload["roster_link"].replace("&", "&amp;"), html)
+
+    def test_build_email_without_picks_keeps_review_cta(self):
+        payload = build_email(1, "TALGH", "team", 9, "abc123", variant="A", base_url="https://app.newcollab.co")
+        self.assertIsNone(payload["quick_pick_link"])
+        self.assertIn("Review your roster", payload["html"])
+        self.assertNotIn("Approve these", payload["html"])
+
+    def test_archive_email_shows_shortlist(self):
+        payload = build_email(4, "TALGH", "team", 9, "abc123", base_url="https://app.newcollab.co", top_picks=self.PICKS)
+        self.assertIn("Approve these 2 in one click", payload["html"])
+        self.assertIn("1 to 5", payload["html"])
+
+    def test_brand_views_require_user_agent(self):
+        from services.roster_waiting_email import _candidate_sql
+
+        sql = _candidate_sql(False, False, True)
+        self.assertIn("e.meta ? 'ua'", sql)
+        self.assertNotIn("e.event = 'roster_view'\n", sql)
+
+
 class TestCandidateSql(unittest.TestCase):
     def test_waiting_age_uses_applied_at(self):
         from services.roster_waiting_email import _candidate_sql

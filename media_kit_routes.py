@@ -172,7 +172,7 @@ def get_my_media_kit():
         publish_count = media_kit['publish_count'] if media_kit else 0
 
         # Free users can edit until they publish once
-        can_edit = tier in ['pro', 'elite'] or publish_count == 0
+        can_edit = tier == 'pro' or publish_count == 0
 
         return jsonify({
             'success': True,
@@ -236,7 +236,7 @@ def create_or_update_media_kit():
             conn.close()
             return jsonify({
                 'success': False,
-                'error': 'Free users can only publish once. Upgrade to Pro for unlimited updates.',
+                'error': 'Free users can only publish once. Go Pro to get placed on 1 live gifted campaign every month, with unlimited kit updates on top.',
                 'upgrade_required': True
             }), 403
 
@@ -372,7 +372,7 @@ def publish_media_kit():
             conn.close()
             return jsonify({
                 'success': False,
-                'error': 'Free users can only publish once. Upgrade to Pro for unlimited updates.',
+                'error': 'Free users can only publish once. Go Pro to get placed on 1 live gifted campaign every month, with unlimited kit updates on top.',
                 'upgrade_required': True
             }), 403
 
@@ -728,7 +728,7 @@ def get_media_kit_analytics():
 
         tier = creator['subscription_tier'] if creator else 'free'
 
-        if tier not in ['pro', 'elite']:
+        if tier != 'pro':
             cursor.close()
             conn.close()
             return jsonify({

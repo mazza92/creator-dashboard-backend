@@ -92,6 +92,10 @@ REGION_TZ = {
 }
 
 ROSTER_ACTIVITY_EVENTS = ("roster_view", "roster_select", "roster_lock")
+# Views logged before internal traffic was split out carry no user agent and are
+# mostly our own previews. Only trust views stamped with one.
+BRAND_VIEW_SQL = "(e.event = 'roster_view' AND e.meta ? 'ua')"
+TOP_PICKS_LIMIT = 5
 
 _SCHEMA_READY = False
 _SCHEMA_LOCK = threading.Lock()
@@ -347,21 +351,32 @@ def render_roster_waiting_html(
     applicant_count: int,
     roster_link: str,
     subject: str,
+    top_picks: list = None,
+    quick_pick_link: str = None,
 ) -> str:
     env = _jinja_env()
+    picks = list(top_picks or []) if quick_pick_link else []
     inner = env.get_template("roster_waiting_email.html").render(
         trigger_number=int(trigger_number),
         brand_name=safe_brand_name(brand_name),
         greeting=greeting or "team",
         applicant_count=int(applicant_count),
         roster_link=roster_link,
+        top_picks=picks,
+        quick_pick_link=quick_pick_link if picks else None,
     )
+    if picks:
+        action_url = quick_pick_link
+        action_text = f"Approve these {len(picks)} creators"
+    else:
+        action_url = roster_link
+        action_text = "Review your roster" if trigger_number != 4 else "Keep this roster open"
     outer = env.get_template("welcome_email.html").render(
         subject=subject,
         preheader=_preheader(trigger_number, applicant_count, brand_name),
         message=Markup(inner),
-        action_url=roster_link,
-        action_text="Review your roster" if trigger_number != 4 else "Keep this roster open",
+        action_url=action_url,
+        action_text=action_text,
         unsubscribe_url=None,
     )
     return outer
@@ -385,10 +400,16 @@ def build_email(
     token: str,
     variant: str = None,
     base_url: str = None,
+    top_picks: list = None,
 ) -> dict:
     variant = variant_for_trigger(trigger_number, variant)
     subject = subject_for(trigger_number, applicant_count, brand_name, variant)
     link = build_roster_link(token, applicant_count, trigger_number, base=base_url)
+    picks = list(top_picks or [])[:TOP_PICKS_LIMIT]
+    quick_link = (
+        build_quick_pick_link(token, picks, applicant_count, trigger_number, base=base_url)
+        if picks else None
+    )
     html = render_roster_waiting_html(
         trigger_number=trigger_number,
         brand_name=brand_name,
@@ -396,6 +417,8 @@ def build_email(
         applicant_count=applicant_count,
         roster_link=link,
         subject=subject,
+        top_picks=picks,
+        quick_pick_link=quick_link,
     )
     if _EM_DASH_RE.search(html) or _EM_DASH_RE.search(subject):
         html = _EM_DASH_RE.sub("-", html)
@@ -406,6 +429,8 @@ def build_email(
         "subject_variant": variant,
         "html": html,
         "roster_link": link,
+        "quick_pick_link": quick_link,
+        "top_picks": picks,
         "preheader": _preheader(trigger_number, applicant_count, brand_name),
         "greeting": greeting or "team",
         "trigger_number": int(trigger_number),
@@ -592,11 +617,12 @@ def _candidate_sql(has_first_name: bool, has_outreach: bool, has_emails: bool) -
             ) AS oldest_waiting_at,
             (
                 SELECT MAX(e.created_at) FROM brand_pr_events e
-                WHERE e.brand_id = b.id AND e.event = 'roster_view'
+                WHERE e.brand_id = b.id AND {BRAND_VIEW_SQL}
             ) AS last_roster_view_at,
             (
                 SELECT MAX(e.created_at) FROM brand_pr_events e
-                WHERE e.brand_id = b.id AND e.event IN ('roster_view', 'roster_select', 'roster_lock')
+                WHERE e.brand_id = b.id
+                  AND ({BRAND_VIEW_SQL} OR e.event IN ('roster_select', 'roster_lock'))
             ) AS last_roster_activity_at,
             {email_cols},
             {outreach_col}
@@ -636,6 +662,85 @@ def load_candidates(cursor, test_email: str = None, brand_id: int = None) -> lis
     return list(cursor.fetchall() or [])
 
 
+def _followers_label(n: Any) -> str:
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        return ""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}".rstrip("0").rstrip(".") + "M"
+    if n >= 1000:
+        return f"{n / 1000:.1f}".rstrip("0").rstrip(".") + "K"
+    return str(n) if n > 0 else ""
+
+
+def _niche_text(raw: Any) -> str:
+    items = _as_list(raw)
+    if items:
+        return str(items[0]).strip()[:40]
+    return str(raw or "").split(",")[0].strip()[:40]
+
+
+def shortlist_from_rows(rows: list, limit: int = TOP_PICKS_LIMIT) -> list:
+    picks = []
+    for row in rows or []:
+        username = str(row.get("username") or "").strip().lstrip("@")
+        name = str(row.get("first_name") or "").strip() or username or "Creator"
+        picks.append({
+            "application_id": int(row["application_id"]),
+            "name": safe_brand_name(name)[:40],
+            "handle": f"@{username}" if username else "",
+            "followers_label": _followers_label(row.get("followers")),
+            "niche": _niche_text(row.get("niche")),
+        })
+        if len(picks) >= limit:
+            break
+    return picks
+
+
+def load_top_picks(cursor, brand_id: int, campaign_id: int = None, limit: int = TOP_PICKS_LIMIT) -> list:
+    """Best waiting applicants for the one-click shortlist: Pro, then content, then reach."""
+    cursor.execute(
+        """
+        SELECT
+            a.id AS application_id,
+            c.username,
+            c.niche,
+            u.first_name,
+            GREATEST(COALESCE(c.followers_count, 0), COALESCE(c.social_follower_count, 0)) AS followers
+        FROM brand_pr_applications a
+        JOIN creators c ON c.id = a.creator_id
+        JOIN users u ON u.id = c.user_id
+        WHERE a.brand_id = %s
+          AND a.status = 'review'
+          AND (a.campaign_id IS NULL OR a.campaign_id = %s)
+        ORDER BY
+            (LOWER(COALESCE(c.subscription_tier, '')) = 'pro'
+             AND LOWER(COALESCE(c.subscription_status, '')) = 'active') DESC,
+            (COALESCE(a.selected_posts::text, '[]') NOT IN ('[]', 'null', '')) DESC,
+            GREATEST(COALESCE(c.followers_count, 0), COALESCE(c.social_follower_count, 0)) DESC,
+            a.applied_at ASC
+        LIMIT %s
+        """,
+        (int(brand_id), int(campaign_id or 0), int(limit)),
+    )
+    return shortlist_from_rows(list(cursor.fetchall() or []), limit=limit)
+
+
+def build_quick_pick_link(token: str, picks: list, applicant_count: int, trigger_number: int, base: str = None) -> str:
+    root = (base or frontend_base()).rstrip("/")
+    query = urlencode(
+        {
+            "pick": ",".join(str(p["application_id"]) for p in picks),
+            "count": int(applicant_count),
+            "utm_source": "email",
+            "utm_campaign": "roster_waiting",
+            "utm_medium": f"trigger_{int(trigger_number)}_quickpick",
+        }
+    )
+    return f"{root}/r/{token}?{query}"
+
+
 def _attach_waiting_apps_to_active_rosters(cursor) -> None:
     """Applicants often land with campaign_id NULL until a roster is opened."""
     if not public_table_exists(cursor, "brand_pr_applications"):
@@ -657,15 +762,15 @@ def _sync_opens_and_engagement(cursor, now: datetime) -> None:
     if not public_table_exists(cursor, "brand_emails"):
         return
     cursor.execute(
-        """
+        f"""
         UPDATE brand_emails be
         SET roster_opened_at = e.opened_at,
             roster_clicked_at = COALESCE(be.roster_clicked_at, e.opened_at)
         FROM (
-            SELECT brand_id, MIN(created_at) AS opened_at
-            FROM brand_pr_events
-            WHERE event = 'roster_view'
-            GROUP BY brand_id
+            SELECT e.brand_id, MIN(e.created_at) AS opened_at
+            FROM brand_pr_events e
+            WHERE {BRAND_VIEW_SQL}
+            GROUP BY e.brand_id
         ) e
         WHERE be.brand_id = e.brand_id
           AND be.status = 'sent'
@@ -744,7 +849,7 @@ def _default_send_fn(to_email: str, subject: str, html: str, trigger_number: int
 def process_roster_waiting_emails(
     *,
     dry_run: bool = False,
-    limit: int = 8,
+    limit: int = 25,
     test_email: str = None,
     brand_id: int = None,
     skip_time_checks: bool = False,
@@ -808,12 +913,21 @@ def process_roster_waiting_emails(
                 continue
             stats["eligible"] += 1
             greeting = greeting_for_brand(row)
+            try:
+                cursor.execute("SAVEPOINT top_picks")
+                top_picks = load_top_picks(cursor, row["brand_id"], row.get("campaign_id"))
+                cursor.execute("RELEASE SAVEPOINT top_picks")
+            except Exception as exc:
+                cursor.execute("ROLLBACK TO SAVEPOINT top_picks")
+                print(f"[roster-waiting] top picks failed brand={row['brand_id']}: {exc}")
+                top_picks = []
             payload = build_email(
                 trigger_number=choice.number,
                 brand_name=row.get("brand_name") or "",
                 greeting=greeting,
                 applicant_count=state.applicant_count,
                 token=row.get("token") or "",
+                top_picks=top_picks,
             )
             preview = {
                 "brand_id": row["brand_id"],
@@ -824,6 +938,8 @@ def process_roster_waiting_emails(
                 "subject": payload["subject"],
                 "applicant_count": state.applicant_count,
                 "roster_link": payload["roster_link"],
+                "quick_pick_link": payload["quick_pick_link"],
+                "top_picks": [p["handle"] or p["name"] for p in payload["top_picks"]],
             }
             if dry_run:
                 stats["would_send"].append(preview)

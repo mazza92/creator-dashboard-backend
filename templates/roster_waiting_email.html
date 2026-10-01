@@ -1,4 +1,28 @@
 {# Inner HTML only. Rendered into welcome_email.html via message | safe. #}
+{% macro shortlist() %}
+{% if top_picks and quick_pick_link %}
+<p style="margin: 0 0 8px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
+  To save you time, here are the {{ top_picks|length }} we'd send to first:
+</p>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin: 0 0 16px; border-collapse: collapse;">
+  {% for p in top_picks %}
+  <tr>
+    <td style="padding: 8px 0; border-bottom: 1px solid #ececf0; font-size: 15px; line-height: 1.4; color: #1d1d1f;">
+      <strong>{{ p.name }}</strong>{% if p.handle %} <span style="color: #6e6e73;">{{ p.handle }}</span>{% endif %}
+    </td>
+    <td align="right" style="padding: 8px 0; border-bottom: 1px solid #ececf0; font-size: 14px; line-height: 1.4; color: #6e6e73; white-space: nowrap;">
+      {% if p.followers_label %}{{ p.followers_label }} followers{% endif %}{% if p.followers_label and p.niche %} · {% endif %}{{ p.niche }}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+<p style="margin: 0 0 20px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
+  &#9989; <a href="{{ quick_pick_link }}" style="color: #1d1d1f; font-weight: 600;">Approve these {{ top_picks|length }} in one click</a>
+  and we'll show you their shipping addresses straight away.
+  Prefer to choose yourself? <a href="{{ roster_link }}" style="color: #1d1d1f;">See all {{ applicant_count }} applicants</a>.
+</p>
+{% endif %}
+{% endmacro %}
 <p style="margin: 0 0 16px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
   Hi {{ greeting }},
 </p>
@@ -7,12 +31,16 @@
 <p style="margin: 0 0 16px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
   we're going to archive your Newcollab roster on Friday if there's no activity.
   You have <strong>{{ applicant_count }}</strong> creators waiting.
-  If you're still interested, just click the link and pick your 5, otherwise we'll re-open it next quarter.
+  If you're still interested, pick anywhere from 1 to 5 creators to gift. Otherwise we'll re-open it next quarter.
   No hard feelings either way.
 </p>
+{% if top_picks and quick_pick_link %}
+{{ shortlist() }}
+{% else %}
 <p style="margin: 0 0 8px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
   <a href="{{ roster_link }}" style="color: #1d1d1f; font-weight: 600;">{{ roster_link }}</a>
 </p>
+{% endif %}
 {% else %}
 {% if trigger_number == 3 %}
 <p style="margin: 0 0 16px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
@@ -25,6 +53,8 @@
   Quick heads up: <strong>{{ applicant_count }} creators</strong> on Newcollab have applied to work with {{ brand_name }} and are waiting for you to review them.
 </p>
 {% endif %}
+
+{{ shortlist() }}
 
 <p style="margin: 0 0 16px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
   They're all small creators (500-10K followers), keen to create UGC in exchange for your PR product. No cash fee, no commitment beyond product + shipping.
@@ -42,7 +72,7 @@
 </p>
 <ul style="margin: 0 0 20px; padding-left: 20px; font-size: 16px; line-height: 1.6; color: #1d1d1f;">
   <li style="margin-bottom: 6px;">See applicant profiles (followers, engagement, geo, recent content)</li>
-  <li style="margin-bottom: 6px;">Pick the ones you'd like to send PR to</li>
+  <li style="margin-bottom: 6px;">Pick the ones you'd like to send PR to (1 to 5, your call)</li>
   <li style="margin-bottom: 6px;">Export shipping details in one click (CSV ready for your fulfillment team)</li>
 </ul>
 

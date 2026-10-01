@@ -227,7 +227,7 @@ def build_monetization_plan(
         },
         {
             "id": "unlimited_unlocks",
-            "label": "Unlimited Brand PR unlocks",
+            "label": "Unlimited Brand PR credits on top",
             "unlocked": bool(is_pro),
         },
         {
@@ -242,7 +242,7 @@ def build_monetization_plan(
     return {
         "plan": "pro" if is_pro else "free",
         "price": "$19/mo",
-        "pitch": "Free shows the score. Pro unlocks coaching, stats, and pitching power.",
+        "pitch": "Free shows the score. Pro places you on 1 live gifted campaign every month, plus coaching, stats, and unlimited credits on top.",
         "primary_meter": unlock_meter,
         "secondary_meter": pitch_meter,
         "tools": tools,
@@ -258,7 +258,7 @@ def build_monetization_plan(
             else FREE_KIT_POST_LIMIT_DISPLAY,
         },
         "score_capped": bool(score_capped and not is_pro),
-        "upgrade_headline": "Upgrade to unlock access",
+        "upgrade_headline": "Get placed on a gifted campaign this month",
         "locked_tools": [t for t in tools if not t.get("unlocked")],
     }
 
@@ -1360,10 +1360,9 @@ def ensure_recent_posts_column(conn) -> None:
     if not conn:
         return
     try:
+        from services.pg_hotpath_schema import ensure_columns
         cursor = conn.cursor()
-        cursor.execute(
-            "ALTER TABLE creator_profile_data ADD COLUMN IF NOT EXISTS recent_posts JSONB DEFAULT '[]'::jsonb"
-        )
+        ensure_columns(cursor, "creator_profile_data", {"recent_posts": "JSONB DEFAULT '[]'::jsonb"})
         conn.commit()
         cursor.close()
     except Exception as e:
@@ -2194,7 +2193,7 @@ def _story_score_climb(
             cur.close()
 
         tier = (profile.get("subscription_tier") or "free")
-        is_pro = tier in ("pro", "elite")
+        is_pro = tier == "pro"
         current_report = compute_pr_ready_score(
             scrape,
             kit_status,

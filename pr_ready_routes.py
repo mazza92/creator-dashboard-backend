@@ -297,7 +297,7 @@ def get_pr_ready():
         scrape = _maybe_recover_collab_email(conn, user_id, scrape)
         _complete, _msg, kit_status = check_media_kit_complete(creator_id)
         tier = (creator or {}).get("subscription_tier") or "free"
-        is_pro = tier in ("pro", "elite")
+        is_pro = tier == "pro"
         report = compute_pr_ready_score(
             scrape,
             kit_status,
@@ -357,12 +357,13 @@ def get_pr_ready():
                         "1 sample UGC hook",
                     ],
                     "pro_includes": [
+                        "1 live gifted campaign every month, guaranteed",
                         "full fix coaching + evidence",
                         "engagement stats on portfolio posts",
                         "uncapped Ready score",
                         "portfolio view tracking",
                         "weekly UGC hooks + pitch pack",
-                        "9-post portfolio + unlimited Brand PR unlocks",
+                        "9-post portfolio + unlimited Brand PR credits on top",
                     ],
                     "price": plan.get("price") or "$19/mo",
                     "pitch": plan.get("pitch")
@@ -489,7 +490,7 @@ def refresh_scrape():
 
         _complete, _msg, kit_status = check_media_kit_complete(creator_id)
         tier = (creator or {}).get("subscription_tier") or "free"
-        is_pro = tier in ("pro", "elite")
+        is_pro = tier == "pro"
         report = compute_pr_ready_score(
             scrape,
             kit_status,
@@ -578,7 +579,7 @@ def rewrite_bio_route():
         creator = _creator_social(conn, creator_id)
         _complete, _msg, kit_status = check_media_kit_complete(creator_id)
         tier = (creator or {}).get("subscription_tier") or "free"
-        is_pro = tier in ("pro", "elite")
+        is_pro = tier == "pro"
         prev_report = compute_pr_ready_score(
             scrape,
             kit_status,
@@ -739,7 +740,7 @@ def auto_kit_route():
         ensure_recent_posts_column(conn)
         creator = _creator_social(conn, creator_id)
         tier = (creator or {}).get("subscription_tier") or "free"
-        is_pro = tier in ("pro", "elite")
+        is_pro = tier == "pro"
 
         scrape = _load_scrape(conn, user_id)
         if not scrape:
@@ -874,7 +875,7 @@ def brand_scores_route():
         scrape = _load_scrape(conn, user_id)
         _complete, _msg, kit_status = check_media_kit_complete(creator_id)
         tier = (creator or {}).get("subscription_tier") or "free"
-        is_pro = tier in ("pro", "elite")
+        is_pro = tier == "pro"
         report = compute_pr_ready_score(
             scrape,
             kit_status,
@@ -912,7 +913,7 @@ def pitch_pack_route():
         conn = get_db_connection()
         creator = _creator_social(conn, creator_id)
         tier = (creator or {}).get("subscription_tier") or "free"
-        is_pro = tier in ("pro", "elite")
+        is_pro = tier == "pro"
 
         scrape = _load_scrape(conn, user_id)
         if not scrape:

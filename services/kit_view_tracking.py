@@ -199,7 +199,7 @@ def _queue_brand_view_email(cursor, creator_id, brand_name, brand_category):
         return False
 
     tier = (info.get("subscription_tier") or "free").lower()
-    is_pro = tier in ("pro", "elite")
+    is_pro = tier == "pro"
     first = (info.get("first_name") or "").strip()
     creator_name = first.split()[0].capitalize() if first else (info.get("username") or "there")
 

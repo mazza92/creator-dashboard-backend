@@ -283,6 +283,7 @@ _BRAND_CARD_KEYS = (
     "application_form_url",
     "source",
     "why",
+    "reply_signal",
 )
 
 
@@ -412,6 +413,142 @@ def build_profile_context(scrape: Optional[Dict], creator: Optional[Dict] = None
     return "\n".join(lines)
 
 
+_COACH_STATUS_LABEL = {
+    "ready": "top match",
+    "almost": "good match",
+    "not_yet": "worth improving first",
+    "poor_fit": "stretch match",
+    "build_first": "build audience first",
+}
+_WEAK_FIT = ("not_yet", "poor_fit", "build_first")
+
+
+def _json_field(value: Any, default: Any) -> Any:
+    if value in (None, ""):
+        return default
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return default
+    return value
+
+
+def _clean_line(text: Any, limit: int = 180) -> str:
+    out = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(out) <= limit:
+        return out
+    cut = out[:limit].rsplit(" ", 1)[0].rstrip(" ,;:-")
+    return f"{cut}…"
+
+
+def _ranked_moves(rows: Optional[List[Dict]]) -> List[tuple]:
+    """(label, count) pairs. Moves sharing their first four words count as one."""
+    counts: Dict[str, int] = {}
+    order: Dict[str, int] = {}
+    labels: Dict[str, str] = {}
+    for row in rows or []:
+        coaching = _json_field(row.get("ai_coaching"), {}) or {}
+        wins = _json_field(row.get("ai_quick_wins"), []) or []
+        candidates = []
+        if isinstance(coaching, dict):
+            candidates.append(coaching.get("action"))
+        for win in wins if isinstance(wins, list) else []:
+            if isinstance(win, dict):
+                candidates.append(win.get("action_title"))
+        seen_in_row = set()
+        for raw in candidates:
+            label = _clean_line(raw, 110).rstrip(".")
+            if not label:
+                continue
+            key = " ".join(re.findall(r"[a-z0-9']+", label.lower())[:4])
+            if not key or key in seen_in_row:
+                continue
+            seen_in_row.add(key)
+            counts[key] = counts.get(key, 0) + 1
+            order.setdefault(key, len(order))
+            if key not in labels or len(label) < len(labels[key]):
+                labels[key] = label
+    ranked = sorted(counts, key=lambda k: (-counts[k], order[k]))
+    return [(labels[k], counts[k]) for k in ranked]
+
+
+def coaching_moves(rows: Optional[List[Dict]], limit: int = 3) -> List[str]:
+    """Concrete next moves from stored pitch analyses, most repeated first."""
+    return [label for label, _ in _ranked_moves(rows)[:limit]]
+
+
+def pitch_coaching_context(rows: Optional[List[Dict]], limit: int = 4) -> str:
+    """Stored per-brand fit coaching as Polly's own notes. Empty when there is none."""
+    lines = []
+    for row in (rows or [])[:limit]:
+        brand = _clean_line(row.get("brand_name"), 60)
+        if not brand:
+            continue
+        status = str(row.get("ai_status") or "").strip()
+        coaching = _json_field(row.get("ai_coaching"), {}) or {}
+        if not isinstance(coaching, dict):
+            coaching = {}
+        parts = [f"- {brand} ({_COACH_STATUS_LABEL.get(status, 'reviewed')})"]
+        gap = _clean_line(coaching.get("observation"))
+        if gap:
+            parts.append(f"gap: {gap}")
+        action = _clean_line(coaching.get("action"), 140)
+        if not action:
+            wins = _json_field(row.get("ai_quick_wins"), []) or []
+            first = wins[0] if isinstance(wins, list) and wins and isinstance(wins[0], dict) else {}
+            action = _clean_line(first.get("action_title"), 140)
+        if action:
+            parts.append(f"next move: {action}")
+        note = _clean_line(coaching.get("coach_note"), 140)
+        if note:
+            parts.append(f"note: {note}")
+        lines.append(" | ".join(parts))
+    if not lines:
+        return ""
+    out = ["Pitch analyses (your own notes from reviewing their recent pitches, newest first):"] + lines
+    recurring = [(label, n) for label, n in _ranked_moves(rows) if n >= 2][:2]
+    if recurring:
+        out.append(
+            "Recurring next move: "
+            + "; ".join(f"{label} (in {n} reviews)" for label, n in recurring)
+        )
+    return "\n".join(out)
+
+
+def pitch_coach_line(pkg: Optional[Dict], brand_name: str = "") -> str:
+    """One honest mentor line after drafting a pitch to a weak-fit brand. Empty for good fits."""
+    pkg = pkg or {}
+    status = str(pkg.get("status") or "").strip()
+    if status not in _WEAK_FIT:
+        return ""
+    name = (brand_name or "").strip() or "this brand"
+    coaching = pkg.get("coaching") if isinstance(pkg.get("coaching"), dict) else {}
+    action = _clean_line(coaching.get("action"), 140).rstrip(".")
+    if not action:
+        wins = pkg.get("quick_wins") or ([pkg.get("quick_win")] if pkg.get("quick_win") else [])
+        first = wins[0] if wins and isinstance(wins[0], dict) else {}
+        action = _clean_line(first.get("action_title"), 140).rstrip(".")
+    if status == "not_yet":
+        lead = f"Worth sending — but one fix lifts your odds with **{name}**."
+    elif status == "build_first":
+        lead = f"Honest take: **{name}** is a long shot at your current size."
+    else:
+        lead = f"Honest take: **{name}** is a stretch match for you right now."
+    parts = [lead]
+    if action:
+        parts.append(f"Next move: {action}.")
+    alts = []
+    for alt in pkg.get("better_matches") or []:
+        if isinstance(alt, dict):
+            alt_name = _clean_line(alt.get("brand_name") or alt.get("name"), 50)
+            if alt_name and alt_name.lower() != name.lower():
+                alts.append(f"**{alt_name}**")
+    if alts and status != "not_yet":
+        parts.append(f"Better odds right now: {', '.join(alts[:2])}.")
+    return " ".join(parts)
+
+
 def public_profile_summary(scrape: Optional[Dict], creator: Optional[Dict] = None) -> Dict[str, Any]:
     """Frontend bootstrap — no emails, no invented follower counts."""
     scrape = scrape or {}
@@ -461,6 +598,11 @@ def sanitize_brand_card(row: Any, source: str = "matched") -> Optional[Dict[str,
         "source": source,
         "why": desc or None,
     }
+    signal = brand.get("reply_signal")
+    if isinstance(signal, dict) and signal.get("tier"):
+        card["reply_signal"] = {
+            k: signal.get(k) for k in ("tier", "label", "detail", "pitched", "replied", "selected")
+        }
     return {k: v for k, v in card.items() if k in _BRAND_CARD_KEYS}
 
 
@@ -552,7 +694,9 @@ def flatten_for_you(
                 reach_rank = 0
             elif min_followers and followers and min_followers > followers:
                 reach_rank = 2
-            ranked.append((campaign_rank, reach_rank, -overlap, -score, len(ranked), card))
+            tier = (card.get("reply_signal") or {}).get("tier")
+            reply_rank = 0 if tier == "replies" else 2 if tier == "cold" else 1
+            ranked.append((campaign_rank, reply_rank, reach_rank, -overlap, -score, len(ranked), card))
             if scrape is None and not required and not skip_ids and len(ranked) >= limit:
                 return [item[-1] for item in ranked]
     ranked.sort()
@@ -1881,7 +2025,10 @@ def paywall_unlock_chips(brand: Optional[Dict] = None) -> List[Dict[str, Any]]:
     label_name = name
     if label_name and len(label_name) > 28:
         label_name = label_name[:26].rstrip() + "…"
-    label = f"Keep pitching {label_name} — unlock Pro" if label_name else "Unlock Pro to keep pitching"
+    label = (
+        f"Get placed + pitch {label_name} — unlock Pro" if label_name
+        else "Unlock Pro · get placed this month"
+    )
     return [
         {
             "id": "unlock_pro",
@@ -1891,6 +2038,41 @@ def paywall_unlock_chips(brand: Optional[Dict] = None) -> List[Dict[str, Any]]:
             "brand_name": name or None,
         }
     ]
+
+
+def cold_brand_chips(brand: Optional[Dict] = None, alternatives: Optional[List[Dict]] = None) -> List[Dict[str, Any]]:
+    """After a cold-brand warning: pitch a brand that replies, or confirm the original."""
+    brand = brand or {}
+    name = str(brand.get("name") or brand.get("brand_name") or "").strip() or "them"
+    chips: List[Dict[str, Any]] = []
+    for alt in (alternatives or [])[:2]:
+        alt_name = str(alt.get("name") or "").strip()
+        if not alt_name or not alt.get("id"):
+            continue
+        chips.append({
+            "id": "pitch_responsive",
+            "label": f"Pitch {alt_name} instead",
+            "action": "generate_pitch",
+            "brand_id": alt.get("id"),
+            "brand_name": alt_name,
+        })
+    if not chips:
+        chips.append({
+            "id": "line_up",
+            "label": "Show brands that reply",
+            "action": "suggest_brands",
+            "skip_discovery": True,
+            "deal": "gifted",
+        })
+    chips.append({
+        "id": "pitch_anyway",
+        "label": f"Pitch {name} anyway",
+        "action": "generate_pitch",
+        "brand_id": brand.get("id") or brand.get("brand_id"),
+        "brand_name": name,
+        "confirm_cold": True,
+    })
+    return chips
 
 
 def out_of_free_unlocks(balance: Optional[Dict] = None) -> bool:

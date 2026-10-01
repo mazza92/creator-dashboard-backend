@@ -127,7 +127,8 @@ class ProConversionTests(unittest.TestCase):
     def test_paywall_names_brand_and_shows_proof_without_reset(self):
         say = persona_paywall_say("Glow Co", kit_views=2)
         self.assertIn("Glow Co", say)
-        self.assertIn("unlock Pro", say)
+        self.assertIn("Unlock Pro", say)
+        self.assertIn("gifted campaign", say)
         self.assertIn("**2** brands opened your kit", say)
         self.assertNotIn("reset", say.lower())
 

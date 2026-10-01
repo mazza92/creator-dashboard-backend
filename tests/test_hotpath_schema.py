@@ -9,15 +9,21 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 # Route modules import Flask; keep these tests runnable without the API venv.
-sys.modules.setdefault("flask", MagicMock())
-sys.modules.setdefault("pr_crm_routes", MagicMock())
-sys.modules.setdefault("social_verification_routes", MagicMock())
-sys.modules.setdefault("services.roster_demand", MagicMock())
+# Stubs are removed after import so later test modules get the real packages.
+_STUBBED = [
+    name for name in ("flask", "pr_crm_routes", "social_verification_routes")
+    if name not in sys.modules
+]
+for _name in _STUBBED:
+    sys.modules[_name] = MagicMock()
 
 import brand_apply_routes
 import brand_pr_roster_routes
 from services.brand_billing import ensure_brand_billing_schema
 from services.pg_hotpath_schema import columns_ready, tables_ready, _value
+
+for _name in _STUBBED:
+    sys.modules.pop(_name, None)
 
 
 def _sql_blob(cursor) -> str:
