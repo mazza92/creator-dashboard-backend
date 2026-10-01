@@ -21,7 +21,7 @@ def _row(cid, niches, kit=None, platform="tiktok", country="US", er=0.042, follo
         "social_platform": platform,
         "niche": json.dumps(niches),
         "creator_niches": [],
-        "kit_username": kit,
+        "kit_slug": kit or f"user{cid}",
         "kit_niches": None,
         "kit_published": bool(kit),
         "followers": followers,
@@ -39,6 +39,7 @@ class TestCleaning(unittest.TestCase):
         self.assertEqual(clean_limit(None), 5)
         self.assertEqual(clean_limit(99), 8)
         self.assertEqual(clean_limit(0), 1)
+        self.assertEqual(clean_limit(99, 24), 24)
         self.assertEqual(clean_platform("Instagram"), "instagram")
         self.assertEqual(clean_platform("snapchat"), "tiktok")
 
@@ -81,6 +82,29 @@ class TestSerialize(unittest.TestCase):
         blob = json.dumps(card)
         for leak in ("user2", "@", "email", "phone", "address"):
             self.assertNotIn(leak, blob)
+
+    def test_media_only_for_public_kits_on_landing(self):
+        public = _row(1, ["skincare"], kit="sarah")
+        public["thumbnails"] = ["https://x.supabase.co/a.jpg", "http://insecure.jpg"]
+        public["worked_with"] = ["Glow Co", "glow co", "Rhode"]
+        private = _row(2, ["skincare"])
+        private["thumbnails"] = ["https://x.supabase.co/b.jpg"]
+        self.assertNotIn("thumbnails", serialize(public, "skincare"))
+        card = serialize(public, "skincare", media=True)
+        self.assertEqual(card["thumbnails"], ["https://x.supabase.co/a.jpg"])
+        self.assertEqual(card["worked_with"], ["Glow Co", "Rhode"])
+        self.assertNotIn("thumbnails", serialize(private, "skincare", media=True))
+
+    def test_primary_niche_ranks_first(self):
+        side = _row(1, ["beauty", "pet"], kit="side", followers=90000)
+        main = _row(2, ["pet", "lifestyle"], kit="main", followers=900)
+        out = build_response([side, main], "pet", "all", None, 5)
+        self.assertEqual([c["handle"] for c in out["creators"]], ["@main", "@side"])
+
+    def test_platform_falls_back_to_posts(self):
+        row = _row(3, ["skincare"], platform=None)
+        row["post_platform"] = "instagram"
+        self.assertEqual(serialize(row, "skincare")["platform"], "Instagram")
 
 
 class TestResponse(unittest.TestCase):

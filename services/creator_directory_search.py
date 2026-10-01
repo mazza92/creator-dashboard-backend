@@ -14,12 +14,13 @@ import os
 import threading
 import time
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from services.audience_fit import _LANE_COMPATIBLE, _lanes_from_tokens, _split_niche_tokens
 
 DEFAULT_LIMIT = 5
 MAX_LIMIT = 8
+LANDING_MAX_LIMIT = 24
 PLATFORMS = ("tiktok", "instagram", "all")
 CACHE_TTL_SECONDS = 3600
 POOL_TTL_SECONDS = 600
@@ -29,16 +30,43 @@ UTM = {"utm_source": "chatgpt", "utm_medium": "plugin"}
 _POOL: Dict[str, Any] = {"rows": None, "at": 0.0}
 _POOL_LOCK = threading.Lock()
 
-POOL_SQL = """
+POOL_SQL = r"""
     SELECT
         c.id,
         c.username,
         c.social_platform,
         c.niche,
         c.creator_niches,
-        mk.username AS kit_username,
+        COALESCE(NULLIF(BTRIM(c.kit_slug), ''), c.username) AS kit_slug,
         mk.niches AS kit_niches,
-        COALESCE(mk.is_published, FALSE) AS kit_published,
+        (COALESCE(c.kit_published, FALSE) OR COALESCE(mk.is_published, FALSE)) AS kit_published,
+        (
+            SELECT COALESCE(json_agg(t.thumbnail_url), '[]'::json)
+            FROM (
+                SELECT p.thumbnail_url
+                FROM portfolio_posts p
+                WHERE p.creator_id = c.id
+                  AND p.thumbnail_url ~* '^https://'
+                  AND p.thumbnail_url !~* '(media-proxy|tiktokcdn|cdninstagram|fbcdn\.net|fbsbx\.com)'
+                ORDER BY p.is_featured DESC NULLS LAST, p.display_order ASC NULLS LAST, p.created_at DESC
+                LIMIT 3
+            ) t
+        ) AS thumbnails,
+        (
+            SELECT COALESCE(json_agg(b.brand_name), '[]'::json)
+            FROM (
+                SELECT DISTINCT ON (LOWER(BTRIM(p.brand_name))) BTRIM(p.brand_name) AS brand_name
+                FROM portfolio_posts p
+                WHERE p.creator_id = c.id AND NULLIF(BTRIM(p.brand_name), '') IS NOT NULL
+                ORDER BY LOWER(BTRIM(p.brand_name))
+                LIMIT 3
+            ) b
+        ) AS worked_with,
+        (
+            SELECT LOWER(p.platform) FROM portfolio_posts p
+            WHERE p.creator_id = c.id AND NULLIF(BTRIM(p.platform), '') IS NOT NULL
+            GROUP BY LOWER(p.platform) ORDER BY COUNT(*) DESC LIMIT 1
+        ) AS post_platform,
         GREATEST(
             COALESCE(c.followers_count, 0),
             COALESCE(c.social_follower_count, 0),
@@ -70,7 +98,8 @@ POOL_SQL = """
     WHERE LOWER(COALESCE(u.email, '')) NOT LIKE '%%@newcollab.co'
       AND LOWER(COALESCE(u.email, '')) <> ALL(%s)
       AND (
-        mk.is_published = TRUE
+        c.kit_published = TRUE
+        OR mk.is_published = TRUE
         OR EXISTS (SELECT 1 FROM brand_pr_applications a WHERE a.creator_id = c.id)
       )
 """
@@ -119,12 +148,12 @@ def clean_country(raw: Any) -> Optional[str]:
         return None
 
 
-def clean_limit(raw: Any) -> int:
+def clean_limit(raw: Any, cap: int = MAX_LIMIT) -> int:
     try:
         n = int(raw)
     except (TypeError, ValueError):
         n = DEFAULT_LIMIT
-    return max(1, min(MAX_LIMIT, n))
+    return max(1, min(cap, n))
 
 
 def creator_niche_tags(row: Dict) -> List[str]:
@@ -225,12 +254,21 @@ def launch_url(niche: str, platform: str = None, country: str = None, campaign: 
     return f"{frontend_base()}/brands/launch?{urlencode(query)}"
 
 
-def serialize(row: Dict, query: str) -> Dict:
-    """Public card. Handles only for creators with a published kit."""
+def _worked_with(raw: Any) -> List[str]:
+    names: List[str] = []
+    for item in _as_list(raw):
+        name = " ".join(str(item or "").split())[:40]
+        if name and len(name) > 1 and name.lower() not in {n.lower() for n in names}:
+            names.append(name)
+    return names[:3]
+
+
+def serialize(row: Dict, query: str, media: bool = False) -> Dict:
+    """Public card. Handles (and content thumbnails) only for creators with a published kit."""
     tags = creator_niche_tags(row)
     ordered = sorted(tags, key=lambda t: (0 if niche_score(query, [t]) == 2 else 1))[:3]
     card: Dict[str, Any] = {
-        "platform": _platform_label(row.get("social_platform")),
+        "platform": _platform_label(row.get("social_platform")) or _platform_label(row.get("post_platform")),
         "niches": [t.title() for t in ordered],
         "followers": follower_band(row.get("followers")),
         "engagement_rate": _engagement_label(row.get("engagement")),
@@ -240,11 +278,17 @@ def serialize(row: Dict, query: str) -> Dict:
     views, posts = int(row.get("total_views") or 0), int(row.get("total_posts") or 0)
     if views > 0 and posts > 0:
         card["avg_views"] = _fmt_int(views // posts)
-    kit = str(row.get("kit_username") or "").strip().lstrip("@")
+    worked = _worked_with(row.get("worked_with"))
+    if worked:
+        card["worked_with"] = worked
+    kit = str(row.get("kit_slug") or "").strip().lstrip("@")
     if row.get("kit_published") and kit:
         card["handle"] = f"@{kit}"
-        card["preview_url"] = f"{kit_base()}/kit/{kit}?{urlencode(UTM)}"
+        card["preview_url"] = f"{kit_base()}/kit/{quote(kit)}?{urlencode(UTM)}"
         card["public_profile"] = True
+        if media:
+            thumbs = [u for u in _as_list(row.get("thumbnails")) if isinstance(u, str) and u.startswith("https://")]
+            card["thumbnails"] = thumbs[:3]
     else:
         card["handle"] = None
         card["public_profile"] = False
@@ -254,10 +298,12 @@ def serialize(row: Dict, query: str) -> Dict:
 def rank(rows: List[Dict], niche: str, platform: str, country: Optional[str]) -> List[Dict]:
     scored = []
     for row in rows:
-        score = niche_score(niche, creator_niche_tags(row))
+        tags = creator_niche_tags(row)
+        score = niche_score(niche, tags)
         if score <= 0:
             continue
-        row_platform = str(row.get("social_platform") or "").lower()
+        primary = 0 if niche_score(niche, tags[:1]) == 2 else 1
+        row_platform = str(row.get("social_platform") or row.get("post_platform") or "").lower()
         if platform != "all" and row_platform and row_platform != platform:
             continue
         if country and clean_country(row.get("country_raw")) != country:
@@ -269,17 +315,21 @@ def rank(rows: List[Dict], niche: str, platform: str, country: Optional[str]) ->
         scored.append((
             -score,
             0 if row.get("kit_published") else 1,
+            primary,
+            0 if _as_list(row.get("thumbnails")) else 1,
             0 if row.get("is_pro") else 1,
             -er,
             -int(row.get("followers") or 0),
             int(row.get("id") or 0),
             row,
         ))
-    scored.sort(key=lambda t: t[:6])
+    scored.sort(key=lambda t: t[:8])
     return [t[-1] for t in scored]
 
 
-def build_response(rows: List[Dict], niche: str, platform: str, country: Optional[str], limit: int) -> Dict:
+def build_response(
+    rows: List[Dict], niche: str, platform: str, country: Optional[str], limit: int, media: bool = False
+) -> Dict:
     ranked = rank(rows, niche, platform, country)
     label = niche.title() if niche else "your niche"
     return {
@@ -287,7 +337,7 @@ def build_response(rows: List[Dict], niche: str, platform: str, country: Optiona
         "niche": niche,
         "platform": platform,
         "country": country,
-        "creators": [serialize(r, niche) for r in ranked[:limit]],
+        "creators": [serialize(r, niche, media=media) for r in ranked[:limit]],
         "brand_cta": {
             "action": "Start a free gifted roster",
             "description": (
@@ -319,21 +369,24 @@ def _load_pool(cursor) -> List[Dict]:
     return rows
 
 
-def _cache_key(niche: str, platform: str, country: Optional[str], limit: int) -> str:
-    raw = f"{niche}|{platform}|{country or ''}|{limit}"
-    return "creator_search:v2:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()
+def _cache_key(niche: str, platform: str, country: Optional[str], limit: int, media: bool = False) -> str:
+    raw = f"{niche}|{platform}|{country or ''}|{limit}|{int(media)}"
+    return "creator_search:v4:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
-def search_creators(params: Dict, redis_client=None, conn=None) -> Dict:
-    """Validated, cached search. Raises ValueError on a missing niche."""
+def search_creators(params: Dict, redis_client=None, conn=None, landing: bool = False) -> Dict:
+    """Validated, cached search. Raises ValueError on a missing niche.
+
+    landing=True (the /brands/launch page) allows a longer list and adds content thumbnails.
+    """
     niche = clean_niche(params.get("niche"))
     if not niche:
         raise ValueError("niche is required")
     platform = clean_platform(params.get("platform"))
     country = clean_country(params.get("country"))
-    limit = clean_limit(params.get("limit"))
+    limit = clean_limit(params.get("limit"), LANDING_MAX_LIMIT if landing else MAX_LIMIT)
 
-    key = _cache_key(niche, platform, country, limit)
+    key = _cache_key(niche, platform, country, limit, landing)
     if redis_client is not None:
         try:
             cached = redis_client.get(key)
@@ -351,7 +404,7 @@ def search_creators(params: Dict, redis_client=None, conn=None) -> Dict:
         from psycopg2.extras import RealDictCursor
 
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        payload = build_response(_load_pool(cursor), niche, platform, country, limit)
+        payload = build_response(_load_pool(cursor), niche, platform, country, limit, media=landing)
     finally:
         if owns:
             conn.close()

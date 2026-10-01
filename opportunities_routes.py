@@ -13,6 +13,7 @@ import json
 from datetime import datetime, timedelta, date
 import re
 import requests
+from html import escape as html_escape
 
 from services.opportunity_gifted_pr import (
     gifted_pr_payload_for_opportunity,
@@ -486,6 +487,25 @@ def get_creator_id_from_session():
         pass
     return None
 
+def send_brand_notice(to_email, subject, body):
+    """Plain-text notice to a brand that signed up, or to the admin, via Resend."""
+    from services.resend_mail import send_resend_email
+
+    html = (
+        '<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.55">'
+        + html_escape(body).replace('\n', '<br>')
+        + '</div>'
+    )
+    try:
+        result = send_resend_email(to_email, subject, html, tags=[{'name': 'type', 'value': 'opportunity_notice'}])
+    except Exception as e:
+        print(f"Resend error for {to_email}: {e}")
+        return False
+    if not result.get('success'):
+        print(f"Resend skipped/failed for {to_email}: {result.get('error')}")
+    return bool(result.get('success'))
+
+
 def send_email_notification(to_email, subject, body):
     """Send email via SendGrid"""
     try:
@@ -568,21 +588,26 @@ def brand_submit():
         conn.close()
 
         # Notify admin
-        send_email_notification(
+        notes = (data.get('additional_notes') or '').strip()
+        send_brand_notice(
             'mahery@newcollab.co',
             f'New opportunity to review: {data["brand_name"]}',
-            f'{data["brand_name"]} submitted an opportunity for {data["product_name"]}.\n\n'
-            f'Review at: https://app.newcollab.co/admin/opportunities/{opp_id}'
+            f'{data["brand_name"]} ({data["brand_email"]}, {data["brand_website"]}) submitted '
+            f'{data["product_name"]}.\n\n'
+            + (f'{notes}\n\n' if notes else '')
+            + f'Review at: https://app.newcollab.co/admin/opportunities/{opp_id}'
         )
 
-        # Confirm to brand
-        send_email_notification(
+        send_brand_notice(
             data['brand_email'],
-            'Your Newcollab listing is under review',
+            f'We got your gifted campaign for {data["product_name"]}',
             f'Hi {data["brand_name"]},\n\n'
-            f'We received your opportunity listing for {data["product_name"]}. '
-            f'We will review and publish it within 24 hours.\n\n'
-            f'Best,\nNewcollab Team'
+            f'Thanks for starting a gifted campaign for {data["product_name"]} on Newcollab. '
+            f'We review every brand by hand and will email your private creator roster link within 24 hours.\n\n'
+            f'Creators in your niche apply to your product, you pick up to 5, then export a shipping CSV. '
+            f'No platform fee on your first campaign.\n\n'
+            f'Reply to this email if you have questions.\n\n'
+            f'Newcollab Team'
         )
 
         return jsonify({'success': True, 'id': opp_id}), 201
@@ -1226,7 +1251,7 @@ def admin_publish(opp_id):
                 f'\nCreators apply in-app. Your roster:\n{gifted.get("roster_url")}\n'
                 if gifted.get('roster_url') else '\n'
             )
-            send_email_notification(
+            send_brand_notice(
                 opp['brand_email'],
                 f'Your Newcollab gift list is live',
                 f'Your gifted PR list for {opp["product_name"]} is live on Newcollab.\n'
@@ -1236,7 +1261,7 @@ def admin_publish(opp_id):
             )
             return jsonify({'success': True, 'gifted_pr': gifted})
 
-        send_email_notification(
+        send_brand_notice(
             opp['brand_email'],
             f'Your Newcollab listing is live',
             f'Your opportunity for {opp["product_name"]} is now live on Newcollab.\n\n'
@@ -1313,7 +1338,7 @@ def admin_reject(opp_id):
 
         # Notify brand
         reason_text = f'\n\nReason: {reason}' if reason else ''
-        send_email_notification(
+        send_brand_notice(
             opp['brand_email'],
             'Your Newcollab listing needs some changes',
             f'Thanks for submitting to Newcollab. We were not able to publish '

@@ -94,7 +94,11 @@ def search_creators_rest():
     if _too_many():
         return jsonify({"error": f"Rate limit: {RATE_LIMIT_PER_MINUTE} requests per minute"}), 429
     try:
-        payload = search_creators(request.args.to_dict(), redis_client=_redis())
+        payload = search_creators(
+            request.args.to_dict(),
+            redis_client=_redis(),
+            landing=request.args.get("view") == "landing",
+        )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception:
