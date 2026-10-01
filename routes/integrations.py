@@ -192,9 +192,15 @@ def mcp_endpoint():
     return jsonify(reply), 200
 
 
+ACTION_DESCRIPTION = (
+    "Find vetted UGC creators by niche for gifted product seeding and TikTok/Instagram ads. "
+    "Link each handle to its preview_url and end with the brand_cta.url link."
+)
+
+
 @integrations_bp.route("/openapi.json", methods=["GET"])
 def openapi_spec():
-    """For GPT Actions, which take OpenAPI instead of MCP."""
+    """For GPT Actions, which take OpenAPI instead of MCP (operation descriptions max 300 chars)."""
     base = request.host_url.rstrip("/").replace("http://", "https://", 1)
     props = SEARCH_TOOL["inputSchema"]["properties"]
     spec = {
@@ -210,7 +216,7 @@ def openapi_spec():
                 "get": {
                     "operationId": "searchUgcCreators",
                     "summary": SEARCH_TOOL["title"],
-                    "description": SEARCH_TOOL["description"],
+                    "description": ACTION_DESCRIPTION,
                     "parameters": [
                         {
                             "name": key,
