@@ -86,14 +86,16 @@ ALLOWED_COUNTRY_NAMES = {
 MIN_FOLLOWERS = 500
 MIN_POSTS = 5
 
-# Instagram OAuth (via Facebook Login for Business)
+# Instagram OAuth (Instagram API with Instagram Login)
 INSTAGRAM_APP_ID = os.getenv('INSTAGRAM_APP_ID')
 INSTAGRAM_APP_SECRET = os.getenv('INSTAGRAM_APP_SECRET')
 INSTAGRAM_WEB_REDIRECT_URI = 'https://api.newcollab.co/api/social/callback/instagram'
 INSTAGRAM_LOCAL_CALLBACK = 'http://localhost:5000/api/social/callback/instagram'
 INSTAGRAM_REDIRECT_URI = os.getenv('INSTAGRAM_REDIRECT_URI', INSTAGRAM_WEB_REDIRECT_URI)
-INSTAGRAM_SCOPES_FULL = 'instagram_business_basic,instagram_business_manage_insights'
+# Profile, followers and media all come from instagram_business_basic. Asking for
+# a scope the live Meta app isn't approved for makes Instagram reject the login.
 INSTAGRAM_SCOPES_BASE = 'instagram_business_basic'
+INSTAGRAM_SCOPES_FULL = os.getenv('INSTAGRAM_SCOPES') or INSTAGRAM_SCOPES_BASE
 
 # TikTok OAuth (Login Kit). On whenever client key+secret exist unless
 # TIKTOK_OAUTH_ENABLED is explicitly 0/false.
