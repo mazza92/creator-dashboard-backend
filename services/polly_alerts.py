@@ -18,6 +18,8 @@ POLLY_PATH = "/creator/dashboard/for-you"
 KIT_VIEW_EMAIL_WINDOW = timedelta(hours=48)
 KIT_VIEW_THROTTLE = timedelta(hours=6)
 NUDGE_EMAIL_THROTTLE = timedelta(hours=20)
+INTRO_EMAIL_AFTER = timedelta(hours=24)
+INTRO_EMAIL_WINDOW = timedelta(days=60)
 
 NUDGE_SUBJECTS = {
     "follow_up_d4": "Any reply from {brand}?",
@@ -417,6 +419,96 @@ def email_nudges(conn, delivered: List[Dict[str, Any]], dry_run: bool = False, s
     return out
 
 
+_INTRO_STAGE = {
+    "just_starting": "you're just starting",
+    "early_stage": "you've done a few collabs",
+    "growing": "you're growing",
+    "established": "you're already working with brands",
+}
+_INTRO_PAIN = {
+    "finding_brands": "the hard part is knowing who to pitch",
+    "no_replies": "brands aren't replying",
+    "writing_pitches": "writing the pitch is the hard part",
+    "no_portfolio": "you don't have a kit to send yet",
+    "pricing": "you're not sure what to charge",
+}
+
+
+def intro_email(first_name: str, survey: Optional[Dict[str, Any]] = None, unsubscribe_url: str = "") -> Dict[str, str]:
+    """One-time nudge for creators who signed up but never opened Polly."""
+    survey = survey if isinstance(survey, dict) else {}
+    told = [
+        _INTRO_STAGE.get(str(survey.get("segment") or "")),
+        next((_INTRO_PAIN[p] for p in (survey.get("pain") or []) if p in _INTRO_PAIN), None),
+    ]
+    told = [t for t in told if t]
+    subject = "I picked 3 gifted brands for you"
+    lines = []
+    if told:
+        lines.append(f"You told us {' and '.join(told)}. So I did that bit.")
+    lines.append(
+        "I've lined up 3 brands that are picking creators your size right now. "
+        "Tap <strong>Contact</strong> on one and I'll write the pitch for you. It takes two minutes."
+    )
+    params = urlencode({"utm_source": "email", "utm_medium": "polly_alert", "utm_campaign": "polly_intro"})
+    buttons = [{"label": "See my 3 brands", "href": f"{frontend_url()}{POLLY_PATH}?{params}"}]
+    return {
+        "subject": subject,
+        "html": render_email(first_name, "Your first 3 brands are ready", lines, buttons, unsubscribe_url),
+    }
+
+
+def email_never_opened(conn, limit: int = 25, dry_run: bool = False, send_fn: Optional[Callable] = None, test_email: str = "") -> List[Dict[str, Any]]:
+    ensure_alert_tables(conn)
+    from services.polly_usage import _cursor as usage_cursor
+
+    usage_cursor(conn)
+    conn.commit()
+    send = send_fn or _default_send
+    cur = _cursor(conn)
+    now = utc_now()
+    cur.execute(
+        """
+        SELECT c.id AS creator_id, c.onboarding_survey
+        FROM creators c
+        WHERE c.created_at < %s AND c.created_at > %s
+          AND COALESCE(c.onboarding_survey->>'segment', '') <> 'is_brand'
+          AND NOT EXISTS (
+              SELECT 1 FROM polly_usage_events e WHERE e.creator_id = c.id AND e.event = 'open'
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM polly_email_log l WHERE l.creator_id = c.id AND l.kind = 'polly_intro'
+          )
+        ORDER BY c.created_at DESC
+        LIMIT %s
+        """,
+        (now - INTRO_EMAIL_AFTER, now - INTRO_EMAIL_WINDOW, limit),
+    )
+    out = []
+    for row in [dict(r) for r in cur.fetchall()]:
+        who = _recipient(conn, row["creator_id"])
+        if not who:
+            continue
+        survey = row.get("onboarding_survey")
+        if isinstance(survey, str):
+            try:
+                import json
+                survey = json.loads(survey)
+            except Exception:
+                survey = {}
+        unsub = _unsubscribe_url(who["user_id"])
+        mail = intro_email(who["first"], survey, unsub)
+        item = {"creator_id": row["creator_id"], "kind": "polly_intro", "subject": mail["subject"], "to": who["email"]}
+        if dry_run:
+            out.append(item)
+            continue
+        result = send(test_email or who["email"], mail["subject"], mail["html"], unsub, "polly_intro")
+        _log_email(conn, row["creator_id"], "polly_intro", None, None, mail["subject"], result)
+        item["ok"] = bool(result.get("success"))
+        out.append(item)
+    return out
+
+
 def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "", send_fn: Optional[Callable] = None) -> Dict[str, Any]:
     """Cron entry: post due nudges in-thread, email them + kit views."""
     from services.polly_tracker import process_due_nudges
@@ -431,6 +523,14 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
     if can_email:
         emails += email_nudges(conn, delivered, dry_run=dry_run, send_fn=send_fn, test_email=test_email)
         emails += email_kit_views(conn, limit=limit, dry_run=dry_run, send_fn=send_fn, test_email=test_email)
+        try:
+            emails += email_never_opened(conn, dry_run=dry_run, send_fn=send_fn, test_email=test_email)
+        except Exception as err:
+            print(f"[Polly alerts] intro emails skipped: {err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
     return {
         "nudged": nudged,
         "emails": emails,

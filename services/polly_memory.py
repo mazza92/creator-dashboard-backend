@@ -54,6 +54,9 @@ def _clean_message(msg: Any) -> Optional[Dict[str, Any]]:
     task_chips = msg.get("task_chips")
     if isinstance(task_chips, list) and task_chips:
         out["task_chips"] = task_chips[:6]
+    locked = msg.get("locked_pitch")
+    if isinstance(locked, dict) and locked.get("lines"):
+        out["locked_pitch"] = locked
     kind = msg.get("kind")
     if kind in ("nudge", "brief", "alert"):
         out["kind"] = kind

@@ -83,7 +83,7 @@ class PreferenceTests(unittest.TestCase):
 class GiftedFirstStarterTests(unittest.TestCase):
     def test_gifted_only_hides_paid_chip(self):
         ids = [c["id"] for c in starters_for({"prefs": {"gifted_only": True}})]
-        self.assertEqual(ids[0], "gifted_lists")
+        self.assertEqual(ids[:2], ["line_up", "gifted_lists"])
         self.assertNotIn("paid_ugc", ids)
 
     def test_established_creator_keeps_paid_first(self):
@@ -127,8 +127,8 @@ class ProConversionTests(unittest.TestCase):
     def test_paywall_names_brand_and_shows_proof_without_reset(self):
         say = persona_paywall_say("Glow Co", kit_views=2)
         self.assertIn("Glow Co", say)
-        self.assertIn("Unlock Pro", say)
-        self.assertIn("gifted campaign", say)
+        self.assertIn("$19/mo", say)
+        self.assertLess(say.index("gifted campaign"), say.index("unlimited pitches"))
         self.assertIn("**2** brands opened your kit", say)
         self.assertNotIn("reset", say.lower())
 
@@ -244,6 +244,44 @@ class AlertEmailTests(unittest.TestCase):
         self.assertEqual(sent[0][2], "follow_up_d4")
         self.assertTrue(out[0]["ok"])
         log.assert_called_once()
+
+
+class SurveyFirstMessageTests(unittest.TestCase):
+    SURVEY = {"segment": "just_starting", "intent": ["gifted_pr"], "pain": ["finding_brands"]}
+
+    def test_seed_from_survey_skips_discovery(self):
+        from services.polly_discovery import discovery_complete, seed_from_survey
+        notes = seed_from_survey({}, self.SURVEY, {"primary_niche": "skincare"})
+        self.assertTrue(discovery_complete(notes))
+        self.assertTrue(notes.get("survey_seeded_at"))
+        self.assertEqual(notes["survey"]["segment"], "just_starting")
+        again = seed_from_survey(dict(notes, stage="changed"), {"segment": "growing"}, {})
+        self.assertEqual(again["stage"], "changed")
+
+    def test_first_matches_uses_survey_and_asks_nothing(self):
+        from services.polly_persona import persona_first_matches
+        brands = [{"name": "Glow Co"}, {"name": "Byoma"}, {"name": "Tower 28"}]
+        say = persona_first_matches("Ava", self.SURVEY, brands, niche="skincare", live=True)
+        self.assertTrue(say.startswith("Hey Ava"))
+        self.assertIn("You told me you're just starting", say)
+        self.assertIn("who to pitch", say)
+        self.assertIn("picking creators in skincare this week", say)
+        self.assertNotIn("?", say)
+
+    def test_paywall_preview_is_two_lines(self):
+        from services.polly_persona import paywall_preview_lines
+        lines = paywall_preview_lines("Glow Co", "Ava", "asmr")
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0], "Hi Glow Co team,")
+        self.assertIn("an asmr creator", lines[1])
+
+    def test_intro_email_links_into_polly(self):
+        from services.polly_alerts import intro_email
+        mail = intro_email("Ava", self.SURVEY)
+        self.assertIn("3 gifted brands", mail["subject"])
+        self.assertIn("just starting", mail["html"])
+        self.assertIn("/creator/dashboard/for-you?", mail["html"])
+        self.assertIn("polly_intro", mail["html"])
 
 
 if __name__ == "__main__":

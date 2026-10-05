@@ -332,10 +332,10 @@ def persona_gigs_intro(
                 "if you want an email I draft."
             )
         return (
-            "I hunt **paid UGC briefs** across AspireIQ, LinkedIn and the other creator boards, "
-            "then put them in **one list** here — so you apply without hopping apps.\n\n"
-            "Nothing live I'd send you right now. Tap **Show paid UGC I can apply to now** again in a bit, "
-            "or **Pitch Directory brands instead** if you want an email I draft."
+            "I checked the paid boards and nothing live fits your size right now. "
+            "I'd rather say that than send you briefs written for agencies.\n\n"
+            "Fastest route to paid is 2-3 gifted collabs. Tap **Pitch 3 gifted brands for me** "
+            "and I'll line them up."
         )
     n = len(rows)
     if more:
@@ -349,6 +349,92 @@ def persona_gigs_intro(
         f"**{n}** open below. Tap **Apply here** to open that platform's form — "
         "I don't draft a Newcollab pitch for these."
     )
+
+
+def persona_paid_ladder(brands: Optional[List[Dict[str, Any]]] = None) -> str:
+    """Small creator asked for paid: be honest, then point at gifted brands that convert."""
+    names = [str(b.get("name") or "").strip() for b in (brands or []) if b.get("name")][:2]
+    lead = (
+        "Real talk: paid briefs at your size are rare, and the ones out there want a portfolio "
+        "of brand work first. Fastest route to paid is 2-3 gifted collabs."
+    )
+    if len(names) == 2:
+        return (
+            f"{lead} **{names[0]}** and **{names[1]}** are picking creators right now, "
+            "and gifted creators are who brands hire for paid next. Want me to get you on both?"
+        )
+    if names:
+        return (
+            f"{lead} **{names[0]}** is picking creators right now. "
+            "Want me to write the pitch?"
+        )
+    return f"{lead} Want me to line up 3 gifted brands for you?"
+
+
+_SURVEY_STAGE = {
+    "just_starting": "you're just starting",
+    "early_stage": "you've had a few gifted boxes",
+    "growing": "you've done 5+ gifted collabs",
+    "established": "you already do paid UGC",
+}
+_SURVEY_GOAL = {
+    "gifted_pr": "after gifted PR",
+    "paid_ugc": "after paid UGC",
+    "retainer": "after monthly retainers",
+    "discovery": "want bigger brands to find you",
+    "learn": "want to learn what brands look for",
+}
+_SURVEY_PAIN = {
+    "finding_brands": "the hard part is knowing who to pitch. So I did that bit.",
+    "writing_pitches": "the hard part is knowing what to say. So I'll write the pitch.",
+    "no_replies": "brands never reply. So I picked ones that actually answer creators.",
+    "no_portfolio": "you don't have a portfolio yet. Gifted collabs fix that, and these take new creators.",
+    "pricing": "pricing is the tricky bit. We'll get there; first, brands that'll say yes.",
+}
+
+
+def persona_first_matches(
+    first_name: Optional[str] = None,
+    survey: Optional[Dict[str, Any]] = None,
+    brands: Optional[List[Dict[str, Any]]] = None,
+    niche: str = "",
+    live: bool = False,
+) -> str:
+    """Message one: use what the survey already told us, then hand over matches. No questions."""
+    survey = survey or {}
+    hello = f"Hey {first_name} 👋" if (first_name or "").strip() else "Hey 👋"
+    bits = []
+    stage = _SURVEY_STAGE.get(str(survey.get("segment") or ""))
+    if stage:
+        bits.append(stage)
+    goal = next((_SURVEY_GOAL[i] for i in (survey.get("intent") or []) if i in _SURVEY_GOAL), "")
+    if goal:
+        bits.append(goal)
+    pain = next((_SURVEY_PAIN[p] for p in (survey.get("pain") or []) if p in _SURVEY_PAIN), "")
+    if pain:
+        bits.append(f"and {pain}")
+    if bits:
+        told = ", ".join(bits)
+        if not pain:
+            told += "."
+        opening = f"{hello} You told me {told}"
+    else:
+        opening = f"{hello} I'm Polly. I pulled brands for you so you can start today."
+    rows = [b for b in (brands or []) if b.get("name")]
+    where = f" in {niche}" if niche and niche != "your" else ""
+    if not rows:
+        return (
+            f"{opening}\n\nNothing clean{where} this minute. Tell me a brand you love "
+            "and I'll write the pitch, or tap **Apply to gifted PR lists**."
+        )
+    n = min(3, len(rows))
+    these = f"These {n}" if n > 1 else "This one"
+    verb = "are" if n > 1 else "is"
+    if live:
+        line = f"{these} {verb} picking creators{where} this week."
+    else:
+        line = f"{these} {verb} a strong fit{where} and work with creators your size."
+    return f"{opening}\n\n{line} Tap **Contact** on one and I'll write the pitch."
 
 
 def persona_kit_after_cards(
@@ -458,27 +544,18 @@ def persona_empty_unlock_greeting(
     apply_count: int = 0,
     follow_brand: Optional[str] = None,
 ) -> str:
+    """Opening Polly with no unlocks left is not a high-intent moment: lead with what's moving."""
     hello = f"Hey {first_name}" if (first_name or "").strip() else "Hey"
     brand = (follow_brand or "").strip()
     n = int(apply_count or 0)
     if n >= 2 and brand:
         return (
-            f"{hello}. You're out of free unlocks this month.\n\n"
-            f"You've got **{n}** applications still in play. "
-            f"Follow up on **{brand}** — that doesn't use a credit. "
-            "Or unlock Pro and we place you on a live gifted campaign this month."
+            f"{hello}. You've got **{n}** applications in play. "
+            f"**{brand}** is the one to nudge today, and follow-ups are free."
         )
     if brand:
-        return (
-            f"{hello}. You're out of free unlocks this month.\n\n"
-            f"**{brand}** is still open — a follow-up doesn't use a credit. "
-            "Or unlock Pro and we place you on a live gifted campaign this month."
-        )
-    return (
-        f"{hello}. You're out of free unlocks this month.\n\n"
-        "Unlock Pro and we place you on a live gifted campaign this month. "
-        "We can still work kit, rates, and follow-ups in the meantime."
-    )
+        return f"{hello}. **{brand}** is still open. A short follow-up today beats a perfect one next week."
+    return f"{hello}. Let's work on what gets brands to say yes: your kit, your rates, and follow-ups."
 
 
 def persona_empty_unlock_brief(
@@ -488,27 +565,34 @@ def persona_empty_unlock_brief(
     brand = (follow_brand or "").strip()
     n = int(apply_count or 0)
     if n >= 2 and brand:
-        return (
-            f"You're out of free unlocks this month. **{n}** applications are still in review. "
-            f"Follow up on **{brand}** — no credit. Or unlock Pro for a guaranteed gifted campaign."
-        )
+        return f"**{n}** applications in review. Follow up on **{brand}**, it's free."
     if brand:
-        return (
-            f"You're out of free unlocks this month. "
-            f"**{brand}** is still open — a follow-up doesn't use a credit. "
-            "Or unlock Pro for a guaranteed gifted campaign."
-        )
-    return (
-        "You're out of free unlocks this month. Unlock Pro for a guaranteed gifted campaign. "
-        "Kit, rates, and follow-ups are still fair game."
-    )
+        return f"**{brand}** is still open. Follow-ups are free."
+    return "Kit, rates, and follow-ups are all free. Let's keep the pipeline moving."
 
 
 PRO_VALUE_LINE = (
-    "With Pro we place you on **one live gifted campaign every month** — the brand ships, "
-    "you post, no cold pitching. Unlimited credits for every other brand on top. "
-    "**$19/mo**, cancel anytime."
+    "Pro is **$19/mo**: I put you forward on **one live gifted campaign every month**, "
+    "plus unlimited pitches and applies, and follow-ups drafted for you."
 )
+
+
+def paywall_preview_lines(
+    brand_name: str,
+    first_name: Optional[str] = None,
+    niche: str = "",
+) -> List[str]:
+    """First two lines of the pitch, shown in clear above a blurred body."""
+    name = (brand_name or "your brand").strip() or "your brand"
+    who = f"I'm {first_name}" if (first_name or "").strip() else "I'm a creator"
+    if niche and niche != "your":
+        what = f"{'an' if niche[0].lower() in 'aeiou' else 'a'} {niche} creator"
+    else:
+        what = "a UGC creator"
+    return [
+        f"Hi {name} team,",
+        f"{who}, {what} who already makes the kind of content your customers stop scrolling for.",
+    ]
 
 
 def persona_cold_brand_warning(
@@ -579,15 +663,12 @@ def persona_paywall_say(
     tail = f"\n\n{proof}" if proof else ""
     if name:
         return (
-            "You're out of free unlocks this month.\n\n"
-            f"Unlock Pro and we put you on a live gifted campaign this month — "
-            f"and I'll write **{name}** right now.\n\n"
+            f"Keep pitching **{name}**: I've started it below. "
+            "You've used your free pitches this month, so this one's on Pro.\n\n"
             f"{PRO_VALUE_LINE}{tail}"
         )
     return (
-        "You're out of free unlocks this month.\n\n"
-        "Unlock Pro and we put you on a live gifted campaign this month, "
-        "and I keep pitching with you.\n\n"
+        "You've used your free pitches this month, so the next one's on Pro.\n\n"
         f"{PRO_VALUE_LINE}{tail}"
     )
 

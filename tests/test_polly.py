@@ -1055,7 +1055,7 @@ class PaywallCopyTests(unittest.TestCase):
         from services.polly_persona import persona_paywall_retry, persona_paywall_say
         text = persona_paywall_say("Grace & Stella")
         self.assertIn("Grace & Stella", text)
-        self.assertIn("Unlock Pro", text)
+        self.assertIn("$19/mo", text)
         self.assertIn("gifted campaign", text)
         self.assertNotRegex(text.lower(), r"reset|1st|first of")
         retry = persona_paywall_retry("Grace & Stella")
@@ -1106,14 +1106,15 @@ class PaywallCopyTests(unittest.TestCase):
         }
         payload = empty_unlock_open("Katrina", tracker, {})
         ids = [c["id"] for c in payload["starters"]]
-        self.assertIn("unlock_pro", ids)
+        self.assertNotIn("unlock_pro", ids)
         self.assertIn("draft_followup", ids)
         self.assertNotIn("line_up", ids)
         self.assertIn("GLO", payload["greeting"])
         self.assertIn("2", payload["greeting"])
         self.assertNotRegex(payload["greeting"].lower(), r"reset|1st")
         text = persona_empty_unlock_greeting("Katrina", 2, "GLO")
-        self.assertIn("doesn't use a credit", text.lower().replace("’", "'"))
+        self.assertIn("follow-ups are free", text.lower())
+        self.assertNotIn("out of free unlocks", text.lower())
 
 
 if __name__ == "__main__":

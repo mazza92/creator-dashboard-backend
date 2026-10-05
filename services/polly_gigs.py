@@ -367,6 +367,69 @@ def extra_tokens_from_profile(scrape: Optional[Dict] = None, notes: Optional[Dic
     return list(tokens)
 
 
+SMALL_CREATOR_FOLLOWERS = 10000
+SMALL_CREATOR_MAX_PAY_USD = 1500
+_OPEN_BOARDS = frozenset({"craigslist", "freelancer", "upwork", "fiverr", "indeed"})
+_AGENCY_BRIEF = re.compile(
+    r"(?i)\b(agency|agencies|expert|experienced|seasoned|portfolio required|"
+    r"years? of experience|full[- ]time|videographers?|video editors?|"
+    r"\d{2,}\s*\+?\s*(?:product\s+)?(?:videos|ugc videos|pieces))\b"
+)
+
+
+def creator_followers(scrape: Optional[Dict] = None) -> int:
+    try:
+        return int((scrape or {}).get("follower_count") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def is_small_creator(scrape: Optional[Dict] = None) -> bool:
+    """Unknown follower count counts as small: most signups are under 10K."""
+    return creator_followers(scrape) < SMALL_CREATOR_FOLLOWERS
+
+
+def _min_followers(opp: Dict[str, Any]) -> int:
+    try:
+        from services.opportunity_gifted_pr import min_followers_from_ranges
+        return int(min_followers_from_ranges(opp.get("follower_ranges")) or 0)
+    except Exception:
+        return 0
+
+
+def gig_fits_creator(opp: Optional[Dict[str, Any]], followers: int = 0) -> bool:
+    """Drop briefs a creator can't realistically land at their size."""
+    opp = opp or {}
+    need = _min_followers(opp)
+    if need and followers and need > followers:
+        return False
+    if followers >= SMALL_CREATOR_FOLLOWERS:
+        return True
+    if need and need >= SMALL_CREATOR_FOLLOWERS:
+        return False
+    source = str(opp.get("source_platform") or "").strip().lower()
+    if source in _OPEN_BOARDS:
+        return False
+    try:
+        pay = float(opp.get("pr_value_usd") or 0)
+    except (TypeError, ValueError):
+        pay = 0
+    if pay > SMALL_CREATOR_MAX_PAY_USD:
+        return False
+    brief = parse_listing_brief(opp.get("listing_brief"))
+    text = " ".join(
+        str(part or "")
+        for part in (
+            opp.get("product_name"),
+            opp.get("campaign_description"),
+            brief.get("headline"),
+            brief.get("summary"),
+            opp.get("pay_label"),
+        )
+    )
+    return not _AGENCY_BRIEF.search(text)
+
+
 def _scanner_fallback_cards(creator_id) -> List[Dict[str, Any]]:
     """Live piggyback gigs only — skips Directory gifted-PR rows."""
     from opportunities_routes import (
@@ -459,7 +522,8 @@ def list_polly_gigs(
             ranked = _scanner_fallback_cards(creator_id) + ranked
         except Exception as err:
             print(f"[Polly] gigs scanner fallback failed: {err}")
-    paid = [c for c in ranked if is_paid_listing(c)]
+    followers = creator_followers(scrape)
+    paid = [c for c in ranked if is_paid_listing(c) and gig_fits_creator(c, followers)]
     sourced = [c for c in paid if c.get("is_sourced")]
     native = [c for c in paid if not c.get("is_sourced")]
     open_first = [c for c in sourced + native if not c.get("already_applied")]
@@ -498,6 +562,8 @@ def list_polly_gigs(
         card.pop("raw_listing", None)
         card.pop("campaign_description", None)
         card.pop("listing_src", None)
+        if card.get("is_sourced"):
+            card.pop("fit_score", None)
     return polished
 
 

@@ -104,6 +104,80 @@ def period_start(days: int) -> datetime:
     return utc_now() - timedelta(days=max(1, int(days or 7)))
 
 
+FUNNEL_STEPS = ("opened", "matches_shown", "pitch_or_apply", "kit_viewed", "paywall_shown", "upgraded")
+
+
+def polly_funnel(cursor, start: datetime) -> Dict[str, Any]:
+    """Distinct creators who opened Polly in the window, and how far each got."""
+    empty = {"steps": [{"key": k, "creators": 0} for k in FUNNEL_STEPS]}
+    if not _table_exists(cursor, "polly_usage_events"):
+        return empty
+    has_timeline = _table_exists(cursor, "polly_timeline_events")
+    has_apps = _table_exists(cursor, "brand_pr_applications")
+    pitch_sql = "FALSE"
+    kit_sql = "FALSE"
+    if has_timeline:
+        pitch_sql = (
+            "EXISTS (SELECT 1 FROM polly_timeline_events t WHERE t.creator_id = o.creator_id "
+            "AND t.event_type IN ('pitch_drafted','pitch_sent','campaign_applied') AND t.occurred_at >= o.first_open)"
+        )
+        kit_sql = (
+            "EXISTS (SELECT 1 FROM polly_timeline_events t WHERE t.creator_id = o.creator_id "
+            "AND t.event_type = 'portfolio_viewed' AND t.occurred_at >= o.first_open)"
+        )
+    if has_apps:
+        apply_sql = (
+            "EXISTS (SELECT 1 FROM brand_pr_applications a WHERE a.creator_id = o.creator_id "
+            "AND a.applied_at >= o.first_open)"
+        )
+        pitch_sql = f"({pitch_sql} OR {apply_sql})"
+    try:
+        cursor.execute(
+            f"""
+            WITH o AS (
+                SELECT creator_id, MIN(created_at) AS first_open
+                FROM polly_usage_events
+                WHERE event = 'open' AND created_at >= %s AND creator_id IS NOT NULL
+                GROUP BY creator_id
+            ),
+            f AS (
+                SELECT
+                    o.creator_id,
+                    EXISTS (SELECT 1 FROM polly_usage_events e WHERE e.creator_id = o.creator_id
+                            AND e.event = 'matches_shown' AND e.created_at >= o.first_open) AS matches,
+                    {pitch_sql} AS pitched,
+                    {kit_sql} AS kit,
+                    EXISTS (SELECT 1 FROM polly_usage_events e WHERE e.creator_id = o.creator_id
+                            AND e.event = 'paywall_shown' AND e.created_at >= o.first_open) AS paywall,
+                    COALESCE(
+                        (SELECT c.unlocks_tier = 'pro' OR LOWER(COALESCE(c.subscription_tier, '')) = 'pro'
+                         FROM creators c WHERE c.id = o.creator_id),
+                        FALSE
+                    ) AS pro
+                FROM o
+            )
+            SELECT
+                COUNT(*)::int AS opened,
+                COUNT(*) FILTER (WHERE matches)::int AS matches_shown,
+                COUNT(*) FILTER (WHERE pitched)::int AS pitch_or_apply,
+                COUNT(*) FILTER (WHERE kit)::int AS kit_viewed,
+                COUNT(*) FILTER (WHERE paywall)::int AS paywall_shown,
+                COUNT(*) FILTER (WHERE pro)::int AS upgraded
+            FROM f
+            """,
+            (start,),
+        )
+        row = cursor.fetchone() or {}
+    except Exception as err:
+        print(f"[Polly usage] funnel skipped: {err}")
+        try:
+            cursor.connection.rollback()
+        except Exception:
+            pass
+        return empty
+    return {"steps": [{"key": k, "creators": int(row.get(k) or 0)} for k in FUNNEL_STEPS]}
+
+
 def polly_beta_snapshot(cursor, days: int = 7) -> Dict[str, Any]:
     start = period_start(days)
     usage = {
@@ -264,9 +338,12 @@ def polly_beta_snapshot(cursor, days: int = 7) -> Dict[str, Any]:
         )
         pain = _count_map(cursor.fetchall() or [], "code")
 
+    funnel = polly_funnel(cursor, start)
+
     turns = usage.get("turns") or 0
     errors = usage.get("errors") or 0
     return {
+        "funnel": funnel,
         "days": days,
         "reach": {
             "openers": usage.get("openers") or 0,

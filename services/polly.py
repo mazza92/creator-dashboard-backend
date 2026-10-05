@@ -2170,13 +2170,13 @@ def empty_unlock_starters(
             "brand_name": follow.get("name"),
             "is_followup": True,
         })
-    chips.extend(paywall_unlock_chips(follow))
+    from services.polly_discovery import GIFTED_LISTS_CHIP
+
+    chips.append(dict(GIFTED_LISTS_CHIP))
     chips.append({
-        "id": "paid_ugc",
-        "label": "Show paid UGC I can apply to now",
-        "hint": "Live briefs — tap Apply",
-        "action": "suggest_gigs",
-        "skip_discovery": True,
+        "id": "portfolio",
+        "label": "Review my kit",
+        "action": "coach_portfolio",
     })
     chips.append({
         "id": "week_plan",
@@ -2208,9 +2208,9 @@ def empty_unlock_open(
         "starters": starters,
         "brief": {
             "kind": "brief",
-            "title": "Out of free unlocks",
+            "title": "Your pipeline",
             "summary": persona_empty_unlock_brief(apply_n, brand),
-            "priority": f"{brand} · follow-up" if brand else "Unlock Pro",
+            "priority": f"{brand} · follow-up" if brand else "Polish your kit",
             "watched": watched[:4],
             "chips": starters,
         },

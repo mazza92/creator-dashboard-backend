@@ -100,10 +100,12 @@ from services.polly_discovery import (
     field_from_history,
     is_non_answer_chip,
     is_setup_chip_tap,
+    load_onboarding_survey,
     merge_notes_patch,
     notes_context,
     opener as discovery_opener,
     paid_first,
+    seed_from_survey,
     should_auto_skip_setup,
     skip_discovery,
     starters_for,
@@ -123,7 +125,10 @@ from services.polly_persona import (
     persona_brand_intro,
     persona_cant_afford,
     persona_cold_brand_warning,
+    persona_first_matches,
     persona_gigs_intro,
+    persona_paid_ladder,
+    paywall_preview_lines,
     persona_pref_ack,
     persona_kit_after_cards,
     persona_kit_after_gigs,
@@ -897,12 +902,16 @@ def bootstrap():
         profile_context = build_profile_context(scrape, creator) + "\n\n" + kit_context(kit)
         first = creator_first_name(creator, scrape)
         thread = load_thread(conn, creator_id)
-        notes = assign_track(thread.get("notes") or {}, scrape)
+        notes = thread.get("notes") or {}
+        seeded = not notes.get("survey_seeded_at")
+        if seeded:
+            notes = seed_from_survey(notes, load_onboarding_survey(conn, creator_id), scrape)
+        notes = assign_track(notes, scrape)
         try:
             backfill_from_notes(conn, creator_id, notes)
         except Exception as err:
             print(f"[Polly] tracker backfill skipped: {err}")
-        prior = thread.get("notes") or {}
+        prior = {} if seeded else (thread.get("notes") or {})
         tracker = {}
         try:
             tracker = load_creator_context(conn, creator_id)
@@ -913,7 +922,7 @@ def bootstrap():
         notes = stamp_pain(notes, pain)
         if pain:
             tracker["active_pain"] = pain
-        if notes.get("active_pain") != prior.get("active_pain") or notes.get("polly_track") != prior.get("polly_track") or notes.get("polly_track_provisional") != prior.get("polly_track_provisional"):
+        if seeded or notes.get("active_pain") != prior.get("active_pain") or notes.get("polly_track") != prior.get("polly_track") or notes.get("polly_track_provisional") != prior.get("polly_track_provisional"):
             save_thread(
                 conn,
                 creator_id,
@@ -960,6 +969,7 @@ def bootstrap():
             starters = list(starters)
             starters.insert(1 if starters else 0, replied)
         empty_thread = not (thread.get("messages") or [])
+        auto_action = None
         if empty_thread:
             applications = []
             try:
@@ -970,13 +980,35 @@ def bootstrap():
             if opened:
                 greeting = opened["greeting"]
                 starters = opened["starters"]
+                if opened.get("state") == "kit_view" and out_of_free_unlocks(balance):
+                    from services.polly_persona import PRO_VALUE_LINE
+                    greeting = (
+                        greeting
+                        + "\n\nThe follow-up's on me. If you want more brands like this one looking, "
+                        + PRO_VALUE_LINE
+                    )
+                    starters = list(starters) + [{
+                        "id": "unlock_pro",
+                        "label": "Unlock Pro · get placed this month",
+                        "action": "unlock_pro",
+                    }]
+                    _log_polly_event(creator_id, "paywall_shown", {"moment": "kit_view"})
                 try:
                     from services.polly_usage import log_usage
                     log_usage(conn, creator_id, "state_opener", meta={"state": opened.get("state")})
                 except Exception:
                     pass
+            if not opened or opened.get("state") == "kit_not_live":
+                # Message one is three matched gifted brands, written from the survey.
+                auto_action = {
+                    "action": "suggest_brands",
+                    "starter": "first_matches",
+                    "chip_id": "first_matches",
+                    "deal": "gifted",
+                    "skip_discovery": True,
+                }
             shipping = resolve_pitch_location(creator, scrape, notes)
-            if shipping.get("needs_location") and not notes.get("location_asked_at"):
+            if not auto_action and shipping.get("needs_location") and not notes.get("location_asked_at"):
                 greeting = with_location_ask(greeting)
                 notes["location_asked_at"] = utc_iso_now()
                 notes["awaiting_location"] = True
@@ -1029,6 +1061,7 @@ def bootstrap():
             },
             "brief": brief,
             "nudge": nudge,
+            "auto_action": auto_action,
         })
     finally:
         if conn:
@@ -1115,6 +1148,8 @@ def chat():
         first = creator_first_name(creator, scrape)
         stored = load_thread(conn, creator_id)
         notes = dict(stored.get("notes") or {})
+        if not notes.get("survey_seeded_at"):
+            notes = seed_from_survey(notes, load_onboarding_survey(conn, creator_id), scrape)
         skip_flag = bool(data.get("skip_discovery"))
         chip_id = str(data.get("starter") or data.get("chip_id") or "").strip()
         notes = bump_setup_continues(notes, user_text, chip_id, explicit_action)
@@ -1596,7 +1631,20 @@ def chat():
                     last_pitch.get("name") or last_pitch.get("brand_name")
                 )
             else:
+                from services.polly import pitched_id_set
+                try:
+                    already_logged = int(last_pitch.get("id") or last_pitch.get("brand_id") or 0) in pitched_id_set(notes)
+                except (TypeError, ValueError):
+                    already_logged = False
                 notes = mark_pitched(notes, last_pitch)
+                if already_logged and not life_result:
+                    life_result = {
+                        "action": "pitch_sent+followups",
+                        "say_hint": (
+                            f"Already logged. **{last_pitch.get('name') or last_pitch.get('brand_name')}** "
+                            "is on your Timeline — I'll check if they replied on day 4."
+                        ),
+                    }
                 if (life_result or {}).get("action") not in ("pitch_sent+followups",):
                     try:
                         record_pitch_sent(conn, creator_id, last_pitch, drafted=False)
@@ -1705,6 +1753,18 @@ def chat():
             elif pull:
                 intent = "discovery"
 
+        chip_key = str(data.get("starter") or data.get("chip_id") or "")
+        if intent == "suggest_gigs" and chip_key not in ("paid_anyway", "more_gigs"):
+            from services.polly_gigs import is_small_creator, wants_more_gigs as _wants_more
+            if is_small_creator(scrape) and not _wants_more(user_text, messages, notes):
+                # Paid briefs at this size are mostly agency work; redirect to the gifted ladder.
+                intent = "suggest_brands"
+                can_match = True
+                data["_paid_ladder"] = True
+                notes["wanted_gigs"] = True
+                if not gifted_only(notes):
+                    notes["deal_intent"] = "gifted"
+
         if intent == "suggest_gigs":
             try:
                 from services.polly_gigs import page_polly_gigs, mark_shown_gigs, wants_more_gigs
@@ -1787,6 +1847,48 @@ def chat():
             except Exception as err:
                 print(f"[Polly] suggest narrate skipped: {err}")
                 say = persona_more_brands_intro(brands, pending_name, profile_context) if pending_name else persona_brand_intro(brands, profile_context, deal_intent=notes.get("deal_intent"))
+            live_first = sorted(
+                brands,
+                key=lambda b: 0 if (b or {}).get("source") in ("recruiting", "open_lists") else 1,
+            )
+            if data.get("_paid_ladder"):
+                brands = live_first[:2]
+                say = persona_paid_ladder(brands)
+                ladder_chips = [
+                    {
+                        "id": "pitch_ladder",
+                        "label": f"Pitch {b['name']}",
+                        "action": "generate_pitch",
+                        "brand_id": b.get("id"),
+                        "brand_name": b["name"],
+                    }
+                    for b in brands if b.get("name")
+                ]
+                ladder_chips.append({
+                    "id": "paid_anyway",
+                    "label": "Show paid briefs anyway",
+                    "action": "suggest_gigs",
+                    "skip_discovery": True,
+                })
+                data["_task_chips"] = ladder_chips
+            elif chip_key == "first_matches":
+                brands = live_first[:3]
+                live = any((b or {}).get("source") in ("recruiting", "open_lists") for b in brands)
+                niche = (
+                    (stated_niches(notes) or [None])[0]
+                    or (scrape or {}).get("primary_niche")
+                    or ""
+                )
+                say = persona_first_matches(
+                    first, notes.get("survey"), brands, niche=str(niche).strip().lower(), live=live,
+                )
+                shipping = resolve_pitch_location(creator, scrape, notes)
+                if shipping.get("needs_location") and not notes.get("location_asked_at"):
+                    say = with_location_ask(say)
+                    notes["location_asked_at"] = utc_iso_now()
+                    notes["awaiting_location"] = True
+            if brands:
+                _log_polly_event(creator_id, "matches_shown", {"n": len(brands), "chip": chip_key or None})
             if not brands and not say:
                 say = (
                     "I couldn't pull a fresh list just now. Tap again in a second, "
@@ -1917,7 +2019,16 @@ def chat():
                         "message": pkg.get("message") or "You've used all 3 unlocks this month.",
                         "brand_name": brand_name,
                         "brand_id": resolved.get("id"),
+                        "preview": paywall_preview_lines(
+                            brand_name,
+                            first,
+                            str((stated_niches(notes) or [None])[0] or (scrape or {}).get("primary_niche") or "").strip().lower(),
+                        ),
                     }
+                    _log_polly_event(
+                        creator_id, "paywall_shown",
+                        {"brand_id": resolved.get("id"), "moment": "pitch", "followup": bool(wants_followup)},
+                    )
                     views_n, sent_n = _pipeline_proof(tracker_ctx)
                     say = persona_paywall_say(brand_name, kit_views=views_n, sent=sent_n)
                     data["_server_say"] = say
@@ -2260,6 +2371,11 @@ def chat():
             "kit_actions": json_safe(kit_cta) or [],
             "task_chips": json_safe(task_chips) or [],
         }
+        if paywall_payload and paywall_payload.get("preview"):
+            assistant["locked_pitch"] = {
+                "brand_name": paywall_payload.get("brand_name"),
+                "lines": paywall_payload["preview"],
+            }
         try:
             persist_conn = None
             from pr_crm_routes import get_db_connection
@@ -2385,6 +2501,36 @@ def timeline_brand(brand_id):
             conn.close()
 
 
+def _log_send_on_open(conn, creator_id, brand_id, brand_name=None):
+    """Open email counts as sent: log it and schedule the day-4 follow-up, so Polly asks
+    'did they reply?' later instead of 'did you send it?' now."""
+    try:
+        bid = int(brand_id or 0)
+    except (TypeError, ValueError):
+        bid = 0
+    if not bid:
+        return False
+    stored = load_thread(conn, creator_id)
+    notes = dict(stored.get("notes") or {})
+    from services.polly import pitched_id_set
+    if bid in pitched_id_set(notes):
+        return False
+    brand = {"id": bid, "name": (brand_name or "").strip() or None}
+    if not brand["name"]:
+        pending = notes.get("pending_pitch") if isinstance(notes.get("pending_pitch"), dict) else {}
+        brand["name"] = pending.get("name") or pending.get("brand_name")
+    record_pitch_sent(conn, creator_id, brand, drafted=False)
+    notes = mark_pitched(notes, brand)
+    save_thread(
+        conn,
+        creator_id,
+        messages=stored.get("messages") or [],
+        suggested=stored.get("suggested_brands") or [],
+        notes=notes,
+    )
+    return True
+
+
 @polly_bp.route("/pitch/handoff", methods=["POST"])
 def pitch_handoff():
     """Open email / Copy email / Copy pitch tapped — the draft left Polly."""
@@ -2400,7 +2546,10 @@ def pitch_handoff():
         from services.polly_usage import log_usage
         updated = record_handoff(conn, creator_id, body.get("brand_id"), method)
         log_usage(conn, creator_id, "pitch_handoff", intent=method, meta={"brand_id": body.get("brand_id")})
-        return jsonify({"success": True, "recorded": updated})
+        logged = False
+        if method == "open_email" and not body.get("is_followup"):
+            logged = _log_send_on_open(conn, creator_id, body.get("brand_id"), body.get("brand_name"))
+        return jsonify({"success": True, "recorded": updated, "logged_sent": logged})
     except Exception as err:
         print(f"[Polly] handoff log failed: {err}")
         return jsonify({"success": False, "error": "could not log"}), 500

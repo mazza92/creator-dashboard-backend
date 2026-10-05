@@ -364,9 +364,33 @@ class PollyGigsTests(unittest.TestCase):
         self.assertNotIn("Contact", text)
         self.assertNotIn("gifted Directory pitch", text)
         empty = persona_gigs_intro([])
-        self.assertIn("one list", empty.lower())
-        self.assertIn("Pitch Directory brands instead", empty)
+        self.assertIn("nothing live fits your size", empty.lower())
+        self.assertIn("Pitch 3 gifted brands for me", empty)
         self.assertNotIn("Contact", empty)
+
+    def test_small_creator_gig_filter(self):
+        from services.polly_gigs import gig_fits_creator, is_small_creator
+        self.assertTrue(is_small_creator({"follower_count": 2400}))
+        self.assertTrue(is_small_creator({}))
+        self.assertFalse(is_small_creator({"follower_count": 25000}))
+        agency = {"campaign_description": "Seeking experienced UGC agency for 20+ videos", "source_platform": "aspireiq"}
+        board = {"campaign_description": "UGC creator wanted", "source_platform": "craigslist"}
+        fine = {"campaign_description": "Film one TikTok for our serum", "source_platform": "aspireiq", "pr_value_usd": 150}
+        pricey = dict(fine, pr_value_usd=4000)
+        self.assertFalse(gig_fits_creator(pricey, 2400))
+        self.assertFalse(gig_fits_creator(agency, 2400))
+        self.assertFalse(gig_fits_creator(board, 2400))
+        self.assertTrue(gig_fits_creator(fine, 2400))
+        self.assertTrue(gig_fits_creator(board, 40000))
+
+    def test_paid_ladder_names_two_brands(self):
+        from services.polly_persona import persona_paid_ladder
+        say = persona_paid_ladder([{"name": "Glow Co"}, {"name": "Byoma"}, {"name": "Extra"}])
+        self.assertIn("Real talk", say)
+        self.assertIn("Glow Co", say)
+        self.assertIn("Byoma", say)
+        self.assertNotIn("Extra", say)
+        self.assertIn("Want me to get you on both?", say)
 
     def test_kit_after_gigs_is_lever_not_gate(self):
         nudge = persona_kit_after_gigs({"has_rates": False})
@@ -427,14 +451,17 @@ class PollyGigsTests(unittest.TestCase):
     def test_starters_after_gigs_offer_directory_fallback(self):
         chips = starters_for({"saw_gigs": True})
         ids = [c["id"] for c in chips]
-        self.assertEqual(ids[0], "gifted_lists")
+        self.assertEqual(ids[0], "line_up")
+        self.assertEqual(chips[0]["action"], "suggest_brands")
+        self.assertEqual(chips[0]["deal"], "gifted")
+        self.assertIn("gifted_lists", ids)
         self.assertNotIn("more_gigs", ids)
-        self.assertIn("directory_pitch", ids)
-        directory = next(c for c in chips if c["id"] == "directory_pitch")
-        self.assertEqual(directory["action"], "suggest_brands")
+        self.assertNotIn("paid_ugc", ids)
         wanted = [c["id"] for c in starters_for({"wanted_gigs": True})]
-        self.assertIn("directory_pitch", wanted)
+        self.assertEqual(wanted[0], "line_up")
         self.assertNotIn("more_gigs", wanted)
+        returning = [c["id"] for c in starters_for({"saw_gigs": True, "discovery_completed_at": "2026-01-01"})]
+        self.assertIn("directory_pitch", returning)
         pending = starters_for({
             "saw_gigs": True,
             "pending_pitch": {"id": 9, "name": "Tarte Cosmetics"},

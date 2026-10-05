@@ -68,6 +68,87 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+_SURVEY_STAGES = frozenset({"just_starting", "early_stage", "growing", "established"})
+_SURVEY_GOALS = {
+    "gifted_pr": "gifted PR",
+    "paid_ugc": "paid UGC",
+    "retainer": "a monthly retainer",
+    "discovery": "getting found by bigger brands",
+    "simple_portfolio": "a clean portfolio",
+    "sell_organic": "selling organic posts as ads",
+    "learn": "learning what brands want",
+}
+_SURVEY_PAINS = {
+    "no_replies": "brands never reply to pitches",
+    "writing_pitches": "doesn't know what to say in a pitch",
+    "finding_brands": "doesn't know which brands to pitch",
+    "no_portfolio": "no portfolio yet",
+    "pricing": "doesn't know how to price work",
+    "content_ideas": "no content ideas",
+    "low_views": "videos don't get many views",
+}
+
+
+def load_onboarding_survey(conn, creator_id) -> Dict[str, Any]:
+    if not conn or not creator_id:
+        return {}
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT onboarding_survey FROM creators WHERE id = %s", (creator_id,))
+        row = cur.fetchone()
+    except Exception as err:
+        print(f"[Polly] survey load skipped: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {}
+    finally:
+        cur.close()
+    raw = (row.get("onboarding_survey") if isinstance(row, dict) else (row[0] if row else None)) or {}
+    if isinstance(raw, str):
+        import json
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def seed_from_survey(
+    notes: Optional[Dict] = None,
+    survey: Optional[Dict] = None,
+    scrape: Optional[Dict] = None,
+) -> Dict[str, Any]:
+    """Fill discovery from the onboarding survey and close it. Polly never re-asks."""
+    out = dict(notes or {})
+    if out.get("survey_seeded_at"):
+        return out
+    survey = survey if isinstance(survey, dict) else {}
+    segment = str(survey.get("segment") or "")
+    intents = [i for i in (survey.get("intent") or []) if isinstance(i, str)]
+    pains = [p for p in (survey.get("pain") or []) if isinstance(p, str)]
+    if segment in _SURVEY_STAGES and not _filled(out, "stage"):
+        out["stage"] = segment
+    goal = next((_SURVEY_GOALS[i] for i in intents if i in _SURVEY_GOALS), "")
+    if goal and not _filled(out, "goal_30d"):
+        out["goal_30d"] = goal
+    challenge = next((_SURVEY_PAINS[p] for p in pains if p in _SURVEY_PAINS), "")
+    challenge = challenge or str(survey.get("pain_other") or "").strip()[:200]
+    if challenge and not _filled(out, "biggest_challenge"):
+        out["biggest_challenge"] = challenge
+    niche = str((scrape or {}).get("primary_niche") or "").strip()
+    if niche and not _filled(out, "niche"):
+        out["niche"] = niche
+    if segment or intents or pains:
+        out["survey"] = {"segment": segment, "intent": intents[:3], "pain": pains[:3]}
+    if not discovery_complete(out):
+        out["discovery_completed_at"] = utc_now()
+        out["discovery_source"] = "survey" if out.get("survey") else "skipped"
+    out["survey_seeded_at"] = utc_now()
+    return out
+
+
 def discovery_complete(notes: Optional[Dict] = None) -> bool:
     notes = notes or {}
     return bool(notes.get("discovery_completed_at") or notes.get("discovery_skipped_at"))
@@ -640,13 +721,18 @@ def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) 
             chips[0] = dict(chips[0], label="Pitch 3 brands for me today", deal=None)
             chips = [paid_chip] + chips
         else:
-            chips = [gifted_chip] + chips
-            if notes.get("saw_gigs") or notes.get("wanted_gigs"):
-                chips.insert(1, directory_chip)
-            elif not gifted_only(notes):
+            chips.insert(1, gifted_chip)
+            saw_paid = notes.get("saw_gigs") or notes.get("wanted_gigs")
+            if not saw_paid and not gifted_only(notes):
                 chips.append(paid_chip)
         return chips[:5]
-    line_up = {"id": "line_up", "label": "Line up brands for me today", "action": "suggest_brands"}
+    line_up = {
+        "id": "line_up",
+        "label": "Pitch 3 gifted brands for me today",
+        "hint": "I'll draft the emails",
+        "action": "suggest_brands",
+        "skip_discovery": True,
+    }
     if notes.get("pitched_brand_names"):
         line_up["label"] = "Next brand to pitch"
     week = {"id": "week_plan", "label": "What should I do this week?", "action": "coach_week"}
@@ -656,7 +742,7 @@ def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) 
         chips = [paid_chip, line_up, week, rates, portfolio]
     else:
         line_up["deal"] = "gifted"
-        chips = [gifted_chip, line_up, week, portfolio]
+        chips = [line_up, gifted_chip, week, portfolio]
         chips.append(rates if gifted_only(notes) else paid_chip)
     if notes.get("saw_gigs") or notes.get("wanted_gigs"):
         chips.insert(1, directory_chip)
