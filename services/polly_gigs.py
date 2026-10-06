@@ -196,6 +196,15 @@ def apply_stored_brief(card: Dict[str, Any], brief) -> Dict[str, Any]:
     return card
 
 
+def _posted_iso(value) -> Optional[str]:
+    if not value:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    text = str(value).strip()
+    return text or None
+
+
 def gig_card_from_opp(opp: Dict[str, Any]) -> Dict[str, Any]:
     """Compact Polly card with a consistent listing layout. Never put emails in the blurb."""
     brief = parse_listing_brief(opp.get("listing_brief"))
@@ -251,6 +260,7 @@ def gig_card_from_opp(opp: Dict[str, Any]) -> Dict[str, Any]:
         "external_apply_url": opp.get("external_apply_url"),
         "apply_email": apply_email,
         "already_applied": bool(opp.get("already_applied")),
+        "posted_at": _posted_iso(opp.get("posted_at") or opp.get("created_at")),
     })
     card = apply_stored_brief(card, brief)
     card["pay_label"] = prefer_amount_pay(

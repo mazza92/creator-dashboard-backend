@@ -55,6 +55,15 @@ class PollyGigsTests(unittest.TestCase):
             },
         })
         self.assertEqual(card["pay_label"], "$400")
+        dated = gig_card_from_opp({
+            "id": 78,
+            "brand_name": "ēma",
+            "product_name": "Solid Perfume UGC",
+            "campaign_description": "Short UGC videos with voiceover.",
+            "is_sourced": True,
+            "posted_at": "2026-10-02T12:00:00+00:00",
+        })
+        self.assertEqual(dated["posted_at"], "2026-10-02T12:00:00+00:00")
 
     def test_placeholder_listing_gets_a_readable_structure(self):
         from services.gig_listing import apply_llm_rewrite, rewrite_is_grounded

@@ -715,6 +715,7 @@ def _opportunity_card(opp, creator_tokens: set, applied_ids: set) -> tuple:
         'source_platform': source_platform,
         'apply_mode': apply_mode,
         'is_sourced': is_sourced,
+        'posted_at': opp['created_at'].isoformat() if opp.get('created_at') else None,
     }
     return serialized, is_match
 
