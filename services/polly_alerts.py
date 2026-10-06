@@ -44,7 +44,13 @@ def _cursor(conn):
     return conn.cursor(cursor_factory=RealDictCursor)
 
 
+_ALERT_TABLES_READY = False
+
+
 def ensure_alert_tables(conn) -> None:
+    global _ALERT_TABLES_READY
+    if _ALERT_TABLES_READY:
+        return
     cur = _cursor(conn)
     cur.execute(
         """
@@ -82,6 +88,7 @@ def ensure_alert_tables(conn) -> None:
         "CREATE INDEX IF NOT EXISTS idx_polly_email_log_creator ON polly_email_log (creator_id, kind, sent_at DESC)"
     )
     conn.commit()
+    _ALERT_TABLES_READY = True
 
 
 # ---------------------------------------------------------------------------

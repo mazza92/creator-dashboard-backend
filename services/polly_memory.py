@@ -10,7 +10,13 @@ from psycopg2.extras import Json, RealDictCursor
 _MAX_MESSAGES = 80
 
 
+_THREAD_TABLE_READY = False
+
+
 def ensure_polly_thread_table(cursor, conn) -> None:
+    global _THREAD_TABLE_READY
+    if _THREAD_TABLE_READY:
+        return
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS polly_threads (
@@ -23,6 +29,7 @@ def ensure_polly_thread_table(cursor, conn) -> None:
         """
     )
     conn.commit()
+    _THREAD_TABLE_READY = True
 
 
 def _clean_message(msg: Any) -> Optional[Dict[str, Any]]:

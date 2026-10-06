@@ -209,7 +209,14 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(microsecond=0)
 
 
+_TRACKER_TABLES_READY = False
+
+
 def ensure_tracker_tables(cursor, conn) -> None:
+    """DDL once per process; every tracker call goes through _cursor()."""
+    global _TRACKER_TABLES_READY
+    if _TRACKER_TABLES_READY:
+        return
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS polly_tasks (
@@ -269,6 +276,7 @@ def ensure_tracker_tables(cursor, conn) -> None:
         "CREATE INDEX IF NOT EXISTS idx_polly_timeline_creator ON polly_timeline_events (creator_id, occurred_at DESC)"
     )
     conn.commit()
+    _TRACKER_TABLES_READY = True
 
 
 def _int(val) -> Optional[int]:

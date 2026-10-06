@@ -15,8 +15,14 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+_USAGE_TABLE_READY = False
+
+
 def _cursor(conn):
+    global _USAGE_TABLE_READY
     cur = conn.cursor(cursor_factory=RealDictCursor)
+    if _USAGE_TABLE_READY:
+        return cur
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS polly_usage_events (
@@ -38,6 +44,8 @@ def _cursor(conn):
         ON polly_usage_events (created_at DESC)
         """
     )
+    conn.commit()
+    _USAGE_TABLE_READY = True
     return cur
 
 

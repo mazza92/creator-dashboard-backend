@@ -1,6 +1,8 @@
 """Polly chat API — Gemini brain over For You matching + PR package pitch."""
 
 import re
+import threading
+import time
 
 from flask import Blueprint, jsonify, request, session, current_app
 
@@ -180,6 +182,31 @@ from services.polly_tracker import (
 polly_bp = Blueprint("polly", __name__, url_prefix="/api/polly")
 
 
+class _StepTimer:
+    """Per-request step timings, logged and sent as Server-Timing."""
+
+    def __init__(self, name):
+        self.name = name
+        self.start = self.last = time.perf_counter()
+        self.steps = []
+
+    def mark(self, label):
+        now = time.perf_counter()
+        self.steps.append((label, (now - self.last) * 1000))
+        self.last = now
+
+    def finish(self, resp, extra=""):
+        total = (time.perf_counter() - self.start) * 1000
+        parts = " ".join(f"{label}={ms:.0f}" for label, ms in self.steps)
+        print(f"[Polly timing] {self.name} total={total:.0f}ms {parts} {extra}".rstrip())
+        try:
+            header = ", ".join(f"{label};dur={ms:.0f}" for label, ms in self.steps)
+            resp.headers["Server-Timing"] = (header + ", " if header else "") + f"total;dur={total:.0f}"
+        except Exception:
+            pass
+        return resp
+
+
 def _creator_auth():
     from pr_crm_routes import get_creator_id_from_session, get_db_connection
     creator_id = get_creator_id_from_session()
@@ -248,11 +275,16 @@ def _load_pitch_coaching(conn, creator_id, limit=5):
         cursor.close()
 
 
-def _unlock_balance(creator_id):
+def _unlock_balance(creator_id, conn=None):
     from pr_crm_routes import get_creator_unlock_balance
     try:
-        return get_creator_unlock_balance(creator_id) or {}
+        return get_creator_unlock_balance(creator_id, conn=conn) or {}
     except Exception:
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         return {}
 
 
@@ -324,18 +356,23 @@ def _cron_authorized():
 
 
 def _log_polly_event(creator_id, event, meta=None):
+    """Analytics only — never on the reply's critical path."""
     if not creator_id:
         return
-    try:
-        from pr_crm_routes import get_db_connection
-        from services.polly_usage import log_usage
-        conn = get_db_connection()
+
+    def _write():
         try:
-            log_usage(conn, creator_id, event, meta=meta or {})
-        finally:
-            conn.close()
-    except Exception as err:
-        print(f"[Polly] usage log skipped: {err}")
+            from pr_crm_routes import get_db_connection
+            from services.polly_usage import log_usage
+            conn = get_db_connection()
+            try:
+                log_usage(conn, creator_id, event, meta=meta or {})
+            finally:
+                conn.close()
+        except Exception as err:
+            print(f"[Polly] usage log skipped: {err}")
+
+    threading.Thread(target=_write, daemon=True).start()
 
 
 def _replied_chip_from_tracker(tracker):
@@ -537,13 +574,28 @@ def _suggest_payload(scrape, creator, notes=None, creator_id=None):
     match_scrape = _match_scrape(scrape, notes)
     cats = required_categories_for_match(notes, match_scrape)
     niches = cats or stated or (creator or {}).get("creator_niches") or (creator or {}).get("niche")
-    exclude = list(notes.get("pitched_brand_ids") or []) + _pipeline_pitched_ids(creator_id or (creator or {}).get("id"))
-    pooled = _fetch_brands_by_category(cats, exclude_ids=exclude) if cats else []
-    try:
-        status, for_you = _invoke_for_you()
-    except Exception as err:
-        print(f"[Polly] for_you skipped: {err}")
-        status, for_you = 200, {}
+    cid = creator_id or (creator or {}).get("id")
+    noted = list(notes.get("pitched_brand_ids") or [])
+    from concurrent.futures import ThreadPoolExecutor
+    from flask import copy_current_request_context
+
+    @copy_current_request_context
+    def _for_you():
+        try:
+            return _cached_for_you(cid)
+        except Exception as err:
+            print(f"[Polly] for_you skipped: {err}")
+            return 200, {}
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        f_pitched = pool.submit(_pipeline_pitched_ids, cid)
+        f_pooled = pool.submit(_fetch_brands_by_category, cats, exclude_ids=noted) if cats else None
+        f_for_you = pool.submit(_for_you)
+        exclude = noted + f_pitched.result()
+        pooled = f_pooled.result() if f_pooled else []
+        status, for_you = f_for_you.result()
+    skip = {str(x) for x in exclude}
+    pooled = [b for b in pooled if str(b.get("id")) not in skip]
     if status == 401:
         return status, [], "Not authenticated"
     payload = dict(for_you or {}) if (for_you or {}).get("success") else {}
@@ -588,6 +640,52 @@ def _coach_say(intent, profile_context, notes, scrape, kit=None, coach_moves=Non
 def _invoke_for_you():
     from pr_crm_routes import get_for_you
     return unpack_view_result(get_for_you())
+
+
+_FOR_YOU_TTL_SEC = 180
+_FOR_YOU_CACHE = {}
+_FOR_YOU_LOCK = threading.Lock()
+_FOR_YOU_KEY_LOCKS = {}
+
+
+def _cached_for_you(creator_id):
+    """The For You feed is ~20 queries; reuse it for a few minutes per creator.
+    Pitched/excluded brands are filtered after, so a warm copy stays correct."""
+    import copy
+
+    key = int(creator_id or 0)
+    if not key:
+        return _invoke_for_you()
+    with _FOR_YOU_LOCK:
+        key_lock = _FOR_YOU_KEY_LOCKS.setdefault(key, threading.Lock())
+    # A bootstrap prefetch may already be running: wait for it instead of doubling the work.
+    with key_lock:
+        with _FOR_YOU_LOCK:
+            hit = _FOR_YOU_CACHE.get(key)
+        if hit and time.time() - hit[0] < _FOR_YOU_TTL_SEC:
+            return hit[1], copy.deepcopy(hit[2])
+        status, data = _invoke_for_you()
+        if status == 200 and (data or {}).get("success"):
+            with _FOR_YOU_LOCK:
+                if len(_FOR_YOU_CACHE) > 500:
+                    _FOR_YOU_CACHE.clear()
+                    _FOR_YOU_KEY_LOCKS.clear()
+                _FOR_YOU_CACHE[key] = (time.time(), status, copy.deepcopy(data))
+        return status, data
+
+
+def _prefetch_for_you(creator_id):
+    """Warm the feed while the client renders bootstrap and fires first matches."""
+    from flask import copy_current_request_context
+
+    @copy_current_request_context
+    def _run():
+        try:
+            _cached_for_you(creator_id)
+        except Exception as err:
+            print(f"[Polly] for_you prefetch skipped: {err}")
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def _invoke_generate_pr_package(brand_id, slug=None, city="", country=""):
@@ -892,16 +990,20 @@ def _lookup_similar_brands(query_name, scrape=None, notes=None, creator=None, cr
 
 @polly_bp.route("/bootstrap", methods=["GET"])
 def bootstrap():
+    timer = _StepTimer("bootstrap")
     creator_id, conn, creator = _creator_auth()
     if not creator_id:
         return jsonify({"success": False, "error": "Not authenticated"}), 401
     try:
+        timer.mark("auth")
         scrape = _load_scrape(conn, (creator or {}).get("user_id") or session.get("user_id"))
-        balance = _unlock_balance(creator_id)
+        balance = _unlock_balance(creator_id, conn=conn)
+        timer.mark("profile")
         kit = load_kit_snapshot(conn, creator_id, scrape)
         profile_context = build_profile_context(scrape, creator) + "\n\n" + kit_context(kit)
         first = creator_first_name(creator, scrape)
         thread = load_thread(conn, creator_id)
+        timer.mark("kit_thread")
         notes = thread.get("notes") or {}
         seeded = not notes.get("survey_seeded_at")
         if seeded:
@@ -918,6 +1020,7 @@ def bootstrap():
         except Exception as err:
             print(f"[Polly] tracker context skipped: {err}")
             tracker = {}
+        timer.mark("tracker")
         pain = diagnose_pain(notes, tracker, kit, scrape)
         notes = stamp_pain(notes, pain)
         if pain:
@@ -993,13 +1096,10 @@ def bootstrap():
                         "action": "unlock_pro",
                     }]
                     _log_polly_event(creator_id, "paywall_shown", {"moment": "kit_view"})
-                try:
-                    from services.polly_usage import log_usage
-                    log_usage(conn, creator_id, "state_opener", meta={"state": opened.get("state")})
-                except Exception:
-                    pass
+                _log_polly_event(creator_id, "state_opener", {"state": opened.get("state")})
             if not opened or opened.get("state") == "kit_not_live":
                 # Message one is three matched gifted brands, written from the survey.
+                _prefetch_for_you(creator_id)
                 auto_action = {
                     "action": "suggest_brands",
                     "starter": "first_matches",
@@ -1022,6 +1122,7 @@ def bootstrap():
                     )
                 except Exception as err:
                     print(f"[Polly] location ask stamp skipped: {err}")
+        timer.mark("state")
         try:
             if maybe_deliver_login_checkin(conn, creator_id, tracker):
                 thread = load_thread(conn, creator_id)
@@ -1032,12 +1133,9 @@ def bootstrap():
             nudge = maybe_bootstrap_nudge(conn, creator_id)
         except Exception as err:
             print(f"[Polly] nudge peek skipped: {err}")
-        try:
-            from services.polly_usage import log_usage
-            log_usage(conn, creator_id, "open")
-        except Exception:
-            pass
-        return jsonify({
+        timer.mark("opener")
+        _log_polly_event(creator_id, "open")
+        return timer.finish(jsonify({
             "success": True,
             "profile": public_profile_summary(scrape, creator),
             "credits": {
@@ -1062,7 +1160,7 @@ def bootstrap():
             "brief": brief,
             "nudge": nudge,
             "auto_action": auto_action,
-        })
+        }), extra=f"empty={int(empty_thread)} auto={int(bool(auto_action))}")
     finally:
         if conn:
             conn.close()
@@ -1115,6 +1213,7 @@ def more_gigs():
 
 @polly_bp.route("/chat", methods=["POST"])
 def chat():
+    timer = _StepTimer("chat")
     creator_id, conn, creator = _creator_auth()
     if not creator_id:
         return jsonify({"success": False, "error": "Not authenticated"}), 401
@@ -1144,7 +1243,8 @@ def chat():
         if coaching_block:
             profile_context += "\n\n" + coaching_block
         coach_moves = coaching_moves(coaching_rows)
-        balance = _unlock_balance(creator_id)
+        balance = _unlock_balance(creator_id, conn=conn)
+        timer.mark("load")
         first = creator_first_name(creator, scrape)
         stored = load_thread(conn, creator_id)
         notes = dict(stored.get("notes") or {})
@@ -1295,6 +1395,7 @@ def chat():
                 open_pitch=open_pitch,
             )
         notes = merge_notes_patch(notes, decision.get("notes_patch"))
+        timer.mark("classify")
 
         intent = decision.get("intent") or "chat"
         from services.polly_gigs import wants_more_gigs
@@ -1807,11 +1908,13 @@ def chat():
             if conn:
                 conn.close()
                 conn = None
+            timer.mark("route")
             try:
                 status, brands, err = _suggest_payload(scrape, creator, notes=notes, creator_id=creator_id)
             except Exception as err:
                 print(f"[Polly] suggest failed: {err}")
                 status, brands, err = 200, [], str(err)[:180]
+            timer.mark("match")
             if status == 401:
                 return jsonify({"success": False, "error": "Not authenticated"}), 401
             if err and not brands:
@@ -2317,10 +2420,6 @@ def chat():
             )
             pitch = None
 
-        if conn:
-            conn.close()
-            conn = None
-
         brands = filter_brands_by_prefs(_hydrate_brand_cards(brands), notes)
         queue = filter_brands_by_prefs(_hydrate_brand_cards(drop_pitched(brands or suggested, notes)), notes)
         payload = {
@@ -2376,10 +2475,14 @@ def chat():
                 "brand_name": paywall_payload.get("brand_name"),
                 "lines": paywall_payload["preview"],
             }
+        timer.mark("reply")
         try:
             persist_conn = None
-            from pr_crm_routes import get_db_connection
-            persist_conn = get_db_connection()
+            if conn and not getattr(conn, "closed", 1):
+                persist_conn, conn = conn, None
+            else:
+                from pr_crm_routes import get_db_connection
+                persist_conn = get_db_connection()
             save_thread(
                 persist_conn,
                 creator_id,
@@ -2416,11 +2519,13 @@ def chat():
         finally:
             if persist_conn:
                 persist_conn.close()
+        timer.mark("persist")
         if error:
             payload["error"] = error
+        tag = f"intent={intent} chip={chip_id or '-'} brain={decision.get('brain')}"
         if paywall:
-            return jsonify(payload), 402
-        return jsonify(payload)
+            return timer.finish(jsonify(payload), extra=tag), 402
+        return timer.finish(jsonify(payload), extra=tag)
     except Exception as err:
         print(f"[Polly] chat error: {err}")
         import traceback
