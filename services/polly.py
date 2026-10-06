@@ -1769,6 +1769,129 @@ def _parse_json_text(text: str) -> Dict[str, Any]:
     return parsed
 
 
+import threading as _threading
+
+_STREAM = _threading.local()
+# Only plain chat turns speak the brain's `say` verbatim; tool turns get cards/templates.
+STREAM_SAY_INTENTS = frozenset({"chat"})
+
+
+def set_stream_sink(sink) -> None:
+    """Route this thread's LLM output to `sink(event_dict)` as it is generated."""
+    _STREAM.sink = sink
+
+
+def clear_stream_sink() -> None:
+    _STREAM.sink = None
+
+
+def stream_sink():
+    return getattr(_STREAM, "sink", None)
+
+
+_JSON_ESCAPES = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+_SAY_KEY_RE = re.compile(r'"say"\s*:\s*"')
+_INTENT_RE = re.compile(r'"intent"\s*:\s*"([^"\\]*)"')
+
+
+def _partial_json_string(text: str, start: int):
+    """Decode a JSON string body from `start` as far as it is complete. Returns (value, closed)."""
+    out = []
+    i = start
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            return "".join(out), True
+        if ch != "\\":
+            out.append(ch)
+            i += 1
+            continue
+        if i + 1 >= n:
+            break
+        esc = text[i + 1]
+        if esc == "u":
+            if i + 6 > n:
+                break
+            try:
+                code = int(text[i + 2:i + 6], 16)
+            except ValueError:
+                break
+            if 0xD800 <= code <= 0xDBFF:
+                if i + 12 > n:
+                    break
+                try:
+                    low = int(text[i + 8:i + 12], 16)
+                except ValueError:
+                    break
+                out.append(chr(0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)))
+                i += 12
+                continue
+            out.append(chr(code))
+            i += 6
+            continue
+        out.append(_JSON_ESCAPES.get(esc, esc))
+        i += 2
+    return "".join(out), False
+
+
+class SayStreamer:
+    """Feeds cumulative model JSON; emits intent once and `say` text deltas."""
+
+    def __init__(self, sink):
+        self.sink = sink
+        self.intent = None
+        self.sent = ""
+
+    def feed(self, text: str) -> None:
+        if self.intent is None:
+            m = _INTENT_RE.search(text)
+            if m:
+                self.intent = m.group(1).strip().lower()
+                self.sink({"type": "intent", "intent": self.intent})
+        if self.intent not in STREAM_SAY_INTENTS:
+            return
+        m = _SAY_KEY_RE.search(text)
+        if not m:
+            return
+        value, _closed = _partial_json_string(text, m.end())
+        if len(value) > len(self.sent) and value.startswith(self.sent):
+            self.sink({"type": "delta", "text": value[len(self.sent):]})
+            self.sent = value
+
+
+def _gemini_stream_call(model: str, payload: Dict[str, Any], headers: Dict[str, str], sink) -> Dict[str, Any]:
+    """streamGenerateContent over SSE; returns a generateContent-shaped dict."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse"
+    streamer = SayStreamer(sink)
+    sink({"type": "reset"})
+    text = ""
+    finish = None
+    usage = {}
+    with requests.post(url, json=payload, headers=headers, timeout=_LLM_TIMEOUT_SEC, stream=True) as resp:
+        if resp.status_code >= 400:
+            raise ValueError(f"{model} stream HTTP {resp.status_code}")
+        for raw in resp.iter_lines(decode_unicode=True):
+            if not raw or not raw.startswith("data:"):
+                continue
+            try:
+                chunk = json.loads(raw[5:].strip())
+            except ValueError:
+                continue
+            cand = ((chunk.get("candidates") or [{}])[0]) or {}
+            for part in ((cand.get("content") or {}).get("parts") or []):
+                if isinstance(part, dict) and part.get("text"):
+                    text += str(part["text"])
+            finish = cand.get("finishReason") or finish
+            if chunk.get("usageMetadata"):
+                usage = chunk["usageMetadata"]
+            streamer.feed(text)
+    return {
+        "candidates": [{"content": {"parts": [{"text": text}]}, "finishReason": finish}],
+        "usageMetadata": usage,
+    }
+
+
 def _gemini_output_text(data: Optional[Dict[str, Any]]) -> str:
     cand = ((data or {}).get("candidates") or [{}])[0]
     if not isinstance(cand, dict):
@@ -2452,9 +2575,27 @@ def _gemini_generate_json(system_prompt: str, user_prompt: str, history: Optiona
         },
     }
     last_err = "Gemini failed"
+    sink = stream_sink()
     for model in _model_candidates():
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+        if sink:
+            try:
+                data = _gemini_stream_call(model, payload, headers, sink)
+                text = _gemini_output_text(data)
+                parsed = _parse_json_text(text)
+                from services.polly_llm_cost import usage_from_gemini as _usage
+                usage = _usage(data, model)
+                print(
+                    f"[Polly] brain=gemini model={model} stream=1 "
+                    f"in={usage.get('input_tokens')} out={usage.get('output_tokens')} "
+                    f"usd={usage.get('usd')}"
+                )
+                remember_polly_brain("gemini", model, usage)
+                return parsed
+            except Exception as err:
+                print(f"[Polly] Gemini stream fell back: {_redact_secrets(err)}")
+                sink({"type": "reset"})
         resp = requests.post(url, json=payload, headers=headers, timeout=_LLM_TIMEOUT_SEC)
         if resp.status_code == 429:
             body = (resp.text or "")[:400]

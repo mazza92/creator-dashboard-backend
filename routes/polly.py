@@ -2541,6 +2541,51 @@ def chat():
             conn.close()
 
 
+@polly_bp.route("/chat/stream", methods=["POST"])
+def chat_stream():
+    """Same turn as /chat, as server-sent events: intent, say deltas, then the full payload."""
+    import json
+    import queue
+
+    from flask import Response, copy_current_request_context
+    from services.polly import clear_stream_sink, set_stream_sink, unpack_view_result
+
+    events = queue.Queue()
+
+    @copy_current_request_context
+    def _run():
+        set_stream_sink(events.put)
+        try:
+            status, body = unpack_view_result(chat())
+        except Exception as err:
+            print(f"[Polly] stream turn failed: {err}")
+            status, body = 500, {"success": False, "error": "Polly hit a snag. Try again."}
+        finally:
+            clear_stream_sink()
+        events.put({"type": "done", "status": status, "data": json_safe(body or {})})
+
+    threading.Thread(target=_run, daemon=True).start()
+
+    def _generate():
+        # Padding nudges proxies to flush the first bytes immediately.
+        yield ":" + " " * 2048 + "\n\n"
+        while True:
+            try:
+                event = events.get(timeout=10)
+            except queue.Empty:
+                yield ": ping\n\n"
+                continue
+            yield f"data: {json.dumps(event, default=str)}\n\n"
+            if event.get("type") == "done":
+                return
+
+    return Response(
+        _generate(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+    )
+
+
 @polly_bp.route("/thread", methods=["GET", "PUT"])
 def thread():
     creator_id, conn, _creator = _creator_auth()
