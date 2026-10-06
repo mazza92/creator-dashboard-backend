@@ -112,12 +112,41 @@ def period_start(days: int) -> datetime:
     return utc_now() - timedelta(days=max(1, int(days or 7)))
 
 
-FUNNEL_STEPS = ("opened", "matches_shown", "pitch_or_apply", "kit_viewed", "paywall_shown", "upgraded")
+FUNNEL_STEPS = ("opened", "matches_shown", "pitch_or_apply", "paywall_shown", "upgraded")
+
+
+def funnel_paywall_moment(
+    moment: Optional[Dict[str, Any]],
+    paywall: bool,
+    task_chips: Optional[List[Dict]] = None,
+    starters: Optional[List[Dict]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Which upgrade prompt a chat reply showed, or None when it showed none."""
+    if isinstance(moment, dict) and moment.get("moment"):
+        return dict(moment)
+    if paywall:
+        return {"moment": "pitch"}
+    if any((c or {}).get("action") == "unlock_pro" for c in (task_chips or [])):
+        return {"moment": "chip"}
+    if any((c or {}).get("action") == "unlock_pro" for c in (starters or [])):
+        return {"moment": "starter"}
+    return None
 
 
 def polly_funnel(cursor, start: datetime) -> Dict[str, Any]:
-    """Distinct creators who opened Polly in the window, and how far each got."""
-    empty = {"steps": [{"key": k, "creators": 0} for k in FUNNEL_STEPS]}
+    """Free creators who first opened Polly in the window, each step requiring the one before.
+
+    Creators already on Pro at first open are counted separately, since they can't upgrade.
+    Kit views sit beside the funnel: they depend on brands, not on the creator's next step.
+    """
+    empty = {
+        "steps": [{"key": k, "creators": 0} for k in FUNNEL_STEPS],
+        "already_pro": 0,
+        "kit_viewed": 0,
+        "paywall_moments": {},
+        "upgrade_moments": {},
+        "checkout_sources": {},
+    }
     if not _table_exists(cursor, "polly_usage_events"):
         return empty
     has_timeline = _table_exists(cursor, "polly_timeline_events")
@@ -157,25 +186,91 @@ def polly_funnel(cursor, start: datetime) -> Dict[str, Any]:
                     {kit_sql} AS kit,
                     EXISTS (SELECT 1 FROM polly_usage_events e WHERE e.creator_id = o.creator_id
                             AND e.event = 'paywall_shown' AND e.created_at >= o.first_open) AS paywall,
-                    COALESCE(
-                        (SELECT c.unlocks_tier = 'pro' OR LOWER(COALESCE(c.subscription_tier, '')) = 'pro'
-                         FROM creators c WHERE c.id = o.creator_id),
-                        FALSE
-                    ) AS pro
+                    COALESCE(c.unlocks_tier = 'pro' OR LOWER(COALESCE(c.subscription_tier, '')) = 'pro', FALSE) AS pro_now,
+                    c.subscription_started_at AS pro_since,
+                    o.first_open
                 FROM o
+                LEFT JOIN creators c ON c.id = o.creator_id
+            ),
+            g AS (
+                SELECT f.*,
+                    (pro_now AND (pro_since IS NULL OR pro_since < first_open)) AS already_pro,
+                    (pro_now AND pro_since IS NOT NULL AND pro_since >= first_open) AS upgraded_after
+                FROM f
             )
             SELECT
-                COUNT(*)::int AS opened,
-                COUNT(*) FILTER (WHERE matches)::int AS matches_shown,
-                COUNT(*) FILTER (WHERE pitched)::int AS pitch_or_apply,
-                COUNT(*) FILTER (WHERE kit)::int AS kit_viewed,
-                COUNT(*) FILTER (WHERE paywall)::int AS paywall_shown,
-                COUNT(*) FILTER (WHERE pro)::int AS upgraded
-            FROM f
+                COUNT(*) FILTER (WHERE already_pro)::int AS already_pro,
+                COUNT(*) FILTER (WHERE NOT already_pro)::int AS opened,
+                COUNT(*) FILTER (WHERE NOT already_pro AND matches)::int AS matches_shown,
+                COUNT(*) FILTER (WHERE NOT already_pro AND matches AND pitched)::int AS pitch_or_apply,
+                COUNT(*) FILTER (WHERE NOT already_pro AND matches AND pitched AND paywall)::int AS paywall_shown,
+                COUNT(*) FILTER (WHERE NOT already_pro AND matches AND pitched AND paywall AND upgraded_after)::int AS upgraded,
+                COUNT(*) FILTER (WHERE upgraded_after)::int AS upgraded_any,
+                COUNT(*) FILTER (WHERE NOT already_pro AND paywall)::int AS paywall_any,
+                COUNT(*) FILTER (WHERE NOT already_pro AND kit)::int AS kit_viewed
+            FROM g
             """,
             (start,),
         )
         row = cursor.fetchone() or {}
+        cursor.execute(
+            """
+            WITH o AS (
+                SELECT creator_id, MIN(created_at) AS first_open
+                FROM polly_usage_events
+                WHERE event = 'open' AND created_at >= %s AND creator_id IS NOT NULL
+                GROUP BY creator_id
+            )
+            SELECT COALESCE(e.meta->>'moment', 'unknown') AS moment,
+                   COUNT(DISTINCT e.creator_id)::int AS n
+            FROM polly_usage_events e
+            JOIN o ON o.creator_id = e.creator_id AND e.created_at >= o.first_open
+            WHERE e.event = 'paywall_shown'
+            GROUP BY 1
+            """,
+            (start,),
+        )
+        paywall_moments = _count_map(cursor.fetchall() or [], "moment")
+        cursor.execute(
+            """
+            WITH o AS (
+                SELECT creator_id, MIN(created_at) AS first_open
+                FROM polly_usage_events
+                WHERE event = 'open' AND created_at >= %s AND creator_id IS NOT NULL
+                GROUP BY creator_id
+            ),
+            u AS (
+                SELECT o.creator_id, c.subscription_started_at AS pro_since, o.first_open
+                FROM o JOIN creators c ON c.id = o.creator_id
+                WHERE (c.unlocks_tier = 'pro' OR LOWER(COALESCE(c.subscription_tier, '')) = 'pro')
+                  AND c.subscription_started_at IS NOT NULL
+                  AND c.subscription_started_at >= o.first_open
+            ),
+            m AS (
+                SELECT COALESCE((
+                    SELECT e.meta->>'moment' FROM polly_usage_events e
+                    WHERE e.creator_id = u.creator_id AND e.event = 'paywall_shown'
+                      AND e.created_at >= u.first_open AND e.created_at <= u.pro_since
+                    ORDER BY e.created_at DESC LIMIT 1
+                ), 'no_polly_paywall') AS moment
+                FROM u
+            )
+            SELECT moment, COUNT(*)::int AS n FROM m GROUP BY moment
+            """,
+            (start,),
+        )
+        upgrade_moments = _count_map(cursor.fetchall() or [], "moment")
+        cursor.execute(
+            """
+            SELECT COALESCE(NULLIF(intent, ''), 'unknown') AS source,
+                   COUNT(DISTINCT creator_id)::int AS n
+            FROM polly_usage_events
+            WHERE event = 'checkout_completed' AND created_at >= %s
+            GROUP BY 1
+            """,
+            (start,),
+        )
+        checkout_sources = _count_map(cursor.fetchall() or [], "source")
     except Exception as err:
         print(f"[Polly usage] funnel skipped: {err}")
         try:
@@ -183,7 +278,16 @@ def polly_funnel(cursor, start: datetime) -> Dict[str, Any]:
         except Exception:
             pass
         return empty
-    return {"steps": [{"key": k, "creators": int(row.get(k) or 0)} for k in FUNNEL_STEPS]}
+    return {
+        "steps": [{"key": k, "creators": int(row.get(k) or 0)} for k in FUNNEL_STEPS],
+        "already_pro": int(row.get("already_pro") or 0),
+        "upgraded_any": int(row.get("upgraded_any") or 0),
+        "paywall_any": int(row.get("paywall_any") or 0),
+        "kit_viewed": int(row.get("kit_viewed") or 0),
+        "paywall_moments": paywall_moments,
+        "upgrade_moments": upgrade_moments,
+        "checkout_sources": checkout_sources,
+    }
 
 
 def polly_beta_snapshot(cursor, days: int = 7) -> Dict[str, Any]:

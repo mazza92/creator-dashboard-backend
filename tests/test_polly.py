@@ -1056,7 +1056,8 @@ class PaywallCopyTests(unittest.TestCase):
         text = persona_paywall_say("Grace & Stella")
         self.assertIn("Grace & Stella", text)
         self.assertIn("$19/mo", text)
-        self.assertIn("gifted campaign", text)
+        self.assertIn("autopilot", text)
+        self.assertNotIn("gifted campaign", text)
         self.assertNotRegex(text.lower(), r"reset|1st|first of")
         retry = persona_paywall_retry("Grace & Stella")
         self.assertIn("Grace & Stella", retry)
@@ -1065,7 +1066,7 @@ class PaywallCopyTests(unittest.TestCase):
     def test_chip_label(self):
         chips = paywall_unlock_chips({"id": 12, "name": "Grace & Stella"})
         self.assertEqual(chips[0]["action"], "unlock_pro")
-        self.assertEqual(chips[0]["label"], "Get placed + pitch Grace & Stella — unlock Pro")
+        self.assertEqual(chips[0]["label"], "Pitch Grace & Stella + put Polly on autopilot")
         self.assertEqual(chips[0]["brand_id"], 12)
 
     def test_after_send_pro_chip_skips_logged_and_pending(self):

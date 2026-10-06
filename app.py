@@ -55,6 +55,7 @@ from flask import Flask, request, jsonify, session
 from subscription_routes import subscription_bp
 from pr_crm_routes import pr_crm
 from routes.polly import polly_bp
+from routes.polly_autopilot import autopilot_bp
 from routes.integrations import integrations_bp, wellknown_bp
 from brand_apply_routes import brand_apply_bp
 from brand_pr_roster_routes import brand_pr_roster_bp, admin_brand_pr_bp
@@ -350,6 +351,7 @@ app.register_blueprint(account_bp)
 app.register_blueprint(subscription_bp)
 app.register_blueprint(pr_crm)
 app.register_blueprint(polly_bp)
+app.register_blueprint(autopilot_bp)
 app.register_blueprint(integrations_bp)
 app.register_blueprint(wellknown_bp)
 app.register_blueprint(brand_apply_bp)

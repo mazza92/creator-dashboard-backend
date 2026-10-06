@@ -3,9 +3,24 @@
 import re
 import threading
 import time
+from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request, session, current_app
 
+from services.polly_usage import funnel_paywall_moment
+from services.polly_manager import (
+    away_brief_message,
+    away_items,
+    career_context,
+    career_from_counts,
+    career_snapshot,
+    load_last_month,
+    month_key,
+    month_plan_message,
+    pitch_cap_for,
+    plan_open_note,
+    unsent_drafts,
+)
 from services.polly import (
     coaching_moves,
     pitch_coach_line,
@@ -135,6 +150,7 @@ from services.polly_persona import (
     persona_kit_after_cards,
     persona_kit_after_gigs,
     persona_followup_intro,
+    persona_followup_too_early,
     persona_more_brands_intro,
     persona_off_match_pitch,
     persona_low_effort_skip,
@@ -160,6 +176,10 @@ from services.polly_persona import (
     strip_embedded_pitch,
 )
 from services.polly_tracker import (
+    FOLLOWUP_GAP,
+    drop_early_followups,
+    early_followup_brands,
+    followup_unlocks_at,
     apply_lifecycle_intent,
     apply_task_chip,
     backfill_from_notes,
@@ -988,6 +1008,46 @@ def _lookup_similar_brands(query_name, scrape=None, notes=None, creator=None, cr
     return [item[-1] for item in ranked[:limit]]
 
 
+def _deliver_manager_note(conn, creator_id, first, career, tracker, balance, queue):
+    """Post the month plan (first open of the month) or a while-you-were-away brief into the thread."""
+    try:
+        thread = load_thread(conn, creator_id)
+        notes = dict(thread.get("notes") or {})
+        which = plan_open_note(notes, bool(thread.get("messages")))
+        if not which:
+            return None
+        is_pro = bool((balance or {}).get("is_unlimited"))
+        now_iso = utc_iso_now()
+        if which == "month":
+            message = month_plan_message(
+                first, career, load_last_month(conn, creator_id), is_pro,
+                brands=[b for b in (queue or []) if isinstance(b, dict) and b.get("name")],
+            )
+            notes["month_plan_month"] = month_key()
+        else:
+            message = away_brief_message(
+                away_items(tracker, unsent_drafts(conn, creator_id), since=notes.get("away_brief_at")),
+                career,
+                early=early_followup_brands(conn, creator_id),
+            )
+        notes["away_brief_at"] = now_iso
+        messages = list(thread.get("messages") or [])
+        if message:
+            messages.append(message)
+        save_thread(conn, creator_id, messages, thread.get("suggested_brands") or [], notes=notes)
+        if not message:
+            return None
+        _log_polly_event(creator_id, "manager_note", {"kind": which, "stage": career.get("stage")})
+        return which
+    except Exception as err:
+        print(f"[Polly] manager note skipped: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None
+
+
 @polly_bp.route("/bootstrap", methods=["GET"])
 def bootstrap():
     timer = _StepTimer("bootstrap")
@@ -1092,7 +1152,7 @@ def bootstrap():
                     )
                     starters = list(starters) + [{
                         "id": "unlock_pro",
-                        "label": "Unlock Pro · get placed this month",
+                        "label": "Put Polly on autopilot · Pro",
                         "action": "unlock_pro",
                     }]
                     _log_polly_event(creator_id, "paywall_shown", {"moment": "kit_view"})
@@ -1123,16 +1183,33 @@ def bootstrap():
                 except Exception as err:
                     print(f"[Polly] location ask stamp skipped: {err}")
         timer.mark("state")
+        checked_in = False
         try:
             if maybe_deliver_login_checkin(conn, creator_id, tracker):
+                checked_in = True
                 thread = load_thread(conn, creator_id)
         except Exception as err:
             print(f"[Polly] login checkin skipped: {err}")
+        career = career_snapshot(conn, creator_id, notes, balance)
+        if not checked_in and not empty_thread and career:
+            posted = _deliver_manager_note(conn, creator_id, first, career, tracker, balance, queue)
+            if posted:
+                thread = load_thread(conn, creator_id)
+                brief = None
         nudge = None
         try:
             nudge = maybe_bootstrap_nudge(conn, creator_id)
         except Exception as err:
             print(f"[Polly] nudge peek skipped: {err}")
+        try:
+            early_fu = early_followup_brands(conn, creator_id)
+        except Exception as err:
+            print(f"[Polly] early follow-up lookup skipped: {err}")
+            conn.rollback()
+            early_fu = {}
+        starters = drop_early_followups(starters, early_fu)
+        if brief and brief.get("chips"):
+            brief = dict(brief, chips=drop_early_followups(brief["chips"], early_fu))
         timer.mark("opener")
         _log_polly_event(creator_id, "open")
         return timer.finish(jsonify({
@@ -1158,6 +1235,7 @@ def bootstrap():
                 "active_count": len(tracker.get("active_tasks") or []),
             },
             "brief": brief,
+            "career": career,
             "nudge": nudge,
             "auto_action": auto_action,
         }), extra=f"empty={int(empty_thread)} auto={int(bool(auto_action))}")
@@ -1248,6 +1326,16 @@ def chat():
         first = creator_first_name(creator, scrape)
         stored = load_thread(conn, creator_id)
         notes = dict(stored.get("notes") or {})
+        career = career_snapshot(conn, creator_id, notes, balance)
+        career_block = career_context(career)
+        if career_block:
+            profile_context += "\n\n" + career_block
+        try:
+            early_fu = early_followup_brands(conn, creator_id)
+        except Exception as err:
+            print(f"[Polly] early follow-up lookup skipped: {err}")
+            conn.rollback()
+            early_fu = {}
         if not notes.get("survey_seeded_at"):
             notes = seed_from_survey(notes, load_onboarding_survey(conn, creator_id), scrape)
         skip_flag = bool(data.get("skip_discovery"))
@@ -1438,6 +1526,34 @@ def chat():
             if chip_name:
                 asked_brand = chip_name
             data["_repeat_skip"] = False
+            early_name = chip_name or data.get("brand_name") or ""
+            try:
+                unlocks_at = followup_unlocks_at(conn, creator_id, explicit_brand_id, early_name)
+            except Exception as err:
+                print(f"[Polly] follow-up gate skipped: {err}")
+                conn.rollback()
+                unlocks_at = None
+            if unlocks_at:
+                held_id = explicit_brand_id
+                intent = "chat"
+                explicit_action = None
+                explicit_brand_id = None
+                named_ask = False
+                asked_brand = None
+                data["is_followup"] = False
+                decision["brand_name"] = None
+                decision["brand_id"] = None
+                say = persona_followup_too_early(early_name, unlocks_at)
+                data["_server_say"] = say
+                data["_keep_pitch_say"] = True
+                data["_keep_draft"] = True
+                data["_local_say"] = True
+                data["_task_chips"] = [
+                    {"id": "checkin_replied", "label": f"{early_name or 'They'} replied", "action": "task_act",
+                     "brand_id": held_id, "brand_name": early_name or None},
+                    {"id": "line_up", "label": "Pitch another brand", "action": "suggest_brands",
+                     "skip_discovery": True, "deal": "gifted"},
+                ]
         if is_casual_ack(user_text) and not explicit_brand_id and (
             decision.get("brain") != "llm" or is_robotic(decision.get("say"))
         ):
@@ -1476,6 +1592,7 @@ def chat():
             say = persona_paywall_retry(paywall_brand.get("name") or paywall_brand.get("brand_name"))
             data["_task_chips"] = paywall_unlock_chips(paywall_brand)
             data["_keep_pitch_say"] = True
+            data["_paywall_moment"] = {"moment": "retry", "brand_id": paywall_brand.get("id")}
         if (
             is_cant_afford(user_text)
             and not balance.get("is_unlimited")
@@ -1760,6 +1877,13 @@ def chat():
                             }
                     except Exception as err:
                         print(f"[Polly] pitch tracker skipped: {err}")
+                if not already_logged:
+                    data["_sent_now"] = True
+                ready_at = datetime.now(timezone.utc) + FOLLOWUP_GAP
+                for key in (last_pitch.get("id") or last_pitch.get("brand_id"),
+                            last_pitch.get("name") or last_pitch.get("brand_name")):
+                    if key:
+                        early_fu.setdefault(str(key).strip().lower(), ready_at)
                 if intent == "suggest_brands" and not explicit_action:
                     intent = "chat"
                 balance = _unlock_balance(creator_id)
@@ -1771,6 +1895,7 @@ def chat():
                 if out_of_free_unlocks(balance) and not data.get("_task_chips"):
                     data["_task_chips"] = paywall_unlock_chips(next_pro)
                     data["_after_send_empty"] = True
+                    data["_paywall_moment"] = {"moment": "after_send", "brand_id": (next_pro or {}).get("id")}
 
         remaining = drop_pitched(suggested, notes)
         progress_remaining = False
@@ -1990,8 +2115,6 @@ def chat():
                     say = with_location_ask(say)
                     notes["location_asked_at"] = utc_iso_now()
                     notes["awaiting_location"] = True
-            if brands:
-                _log_polly_event(creator_id, "matches_shown", {"n": len(brands), "chip": chip_key or None})
             if not brands and not say:
                 say = (
                     "I couldn't pull a fresh list just now. Tap again in a second, "
@@ -2128,10 +2251,9 @@ def chat():
                             str((stated_niches(notes) or [None])[0] or (scrape or {}).get("primary_niche") or "").strip().lower(),
                         ),
                     }
-                    _log_polly_event(
-                        creator_id, "paywall_shown",
-                        {"brand_id": resolved.get("id"), "moment": "pitch", "followup": bool(wants_followup)},
-                    )
+                    data["_paywall_moment"] = {
+                        "brand_id": resolved.get("id"), "moment": "pitch", "followup": bool(wants_followup),
+                    }
                     views_n, sent_n = _pipeline_proof(tracker_ctx)
                     say = persona_paywall_say(brand_name, kit_views=views_n, sent=sent_n)
                     data["_server_say"] = say
@@ -2418,10 +2540,11 @@ def chat():
                 update.get("brand_name") or (last_pitch or {}).get("name"),
                 update.get("location_display"),
             )
-            pitch = None
+            pitch = update or None
 
         brands = filter_brands_by_prefs(_hydrate_brand_cards(brands), notes)
         queue = filter_brands_by_prefs(_hydrate_brand_cards(drop_pitched(brands or suggested, notes)), notes)
+        task_chips = drop_early_followups(task_chips, early_fu)
         payload = {
             "success": not error,
             "message": say,
@@ -2458,6 +2581,14 @@ def chat():
                 "used": balance.get("used"),
             },
         }
+        payload["starters"] = drop_early_followups(payload["starters"], early_fu)
+        if career and data.get("_sent_now"):
+            totals = dict(career.get("totals") or {})
+            totals["pitched"] = int(totals.get("pitched") or 0) + 1
+            totals["pitched_month"] = int(totals.get("pitched_month") or 0) + 1
+            career = career_from_counts(totals, notes, pitch_cap_for(balance))
+        if career:
+            payload["career"] = career
         if paywall_payload:
             payload["paywall_payload"] = paywall_payload
         assistant = {
@@ -2475,6 +2606,15 @@ def chat():
                 "brand_name": paywall_payload.get("brand_name"),
                 "lines": paywall_payload["preview"],
             }
+        if brands or gigs:
+            _log_polly_event(creator_id, "matches_shown", {
+                "brands": len(brands or []), "gigs": len(gigs or []), "intent": intent,
+            })
+        paywall_moment = funnel_paywall_moment(
+            data.get("_paywall_moment"), paywall, task_chips, payload.get("starters"),
+        )
+        if paywall_moment:
+            _log_polly_event(creator_id, "paywall_shown", paywall_moment)
         timer.mark("reply")
         try:
             persist_conn = None

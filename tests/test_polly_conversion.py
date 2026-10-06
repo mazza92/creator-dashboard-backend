@@ -128,7 +128,7 @@ class ProConversionTests(unittest.TestCase):
         say = persona_paywall_say("Glow Co", kit_views=2)
         self.assertIn("Glow Co", say)
         self.assertIn("$19/mo", say)
-        self.assertLess(say.index("gifted campaign"), say.index("unlimited pitches"))
+        self.assertLess(say.index("autopilot"), say.index("unlimited roster applications"))
         self.assertIn("**2** brands opened your kit", say)
         self.assertNotIn("reset", say.lower())
 

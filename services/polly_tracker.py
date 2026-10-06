@@ -678,6 +678,100 @@ def record_pitch_sent(
     return {"task_id": parent, "brand_id": brand_id, "created_followups": True}
 
 
+FOLLOWUP_GAP = timedelta(days=4)
+
+
+def followup_unlocks_at(
+    conn,
+    creator_id: int,
+    brand_id: Optional[int] = None,
+    brand_name: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> Optional[datetime]:
+    """When a follow-up to this brand is allowed, if that's still in the future.
+
+    Counts from the last email that went out (first pitch or previous follow-up).
+    None means go ahead: never pitched, gap passed, or the brand already replied.
+    """
+    bid = _int(brand_id)
+    name = (brand_name or "").strip()
+    if not bid and not name:
+        return None
+    cur = _cursor(conn)
+    cur.execute(
+        """
+        SELECT
+          MAX(e.occurred_at) FILTER (WHERE e.event_type = 'pitch_sent') AS last_sent,
+          BOOL_OR(e.event_type IN ('brand_replied_interested', 'brand_replied_question',
+                                   'brand_replied_rejected')) AS replied
+        FROM polly_timeline_events e
+        LEFT JOIN pr_brands b ON b.id = e.brand_id
+        WHERE e.creator_id = %s
+          AND (e.brand_id = %s OR (%s <> '' AND LOWER(b.brand_name) = LOWER(%s)))
+        """,
+        (creator_id, bid, name, name),
+    )
+    row = cur.fetchone() or {}
+    last = row.get("last_sent")
+    if not last or row.get("replied"):
+        return None
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    ready = last + FOLLOWUP_GAP
+    return ready if ready > (now or utc_now()) else None
+
+
+def early_followup_brands(conn, creator_id: int) -> Dict[str, datetime]:
+    """Brands emailed under 4 days ago with no reply, keyed by id and lowercased name."""
+    cur = _cursor(conn)
+    cur.execute(
+        """
+        SELECT e.brand_id, LOWER(COALESCE(b.brand_name, e.event_data->>'brand_name')) AS name,
+               MAX(e.occurred_at) AS last_sent
+        FROM polly_timeline_events e
+        LEFT JOIN pr_brands b ON b.id = e.brand_id
+        WHERE e.creator_id = %s AND e.event_type = 'pitch_sent' AND e.occurred_at > %s
+          AND NOT EXISTS (
+              SELECT 1 FROM polly_timeline_events r
+              WHERE r.creator_id = e.creator_id AND r.brand_id = e.brand_id
+                AND r.event_type IN ('brand_replied_interested', 'brand_replied_question',
+                                     'brand_replied_rejected')
+          )
+        GROUP BY e.brand_id, 2
+        """,
+        (creator_id, utc_now() - FOLLOWUP_GAP),
+    )
+    out: Dict[str, datetime] = {}
+    for row in cur.fetchall():
+        last = row["last_sent"]
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        ready = last + FOLLOWUP_GAP
+        if row.get("brand_id"):
+            out[str(row["brand_id"])] = ready
+        if row.get("name"):
+            out[row["name"]] = ready
+    return out
+
+
+def drop_early_followups(chips: Optional[List[Dict]], early: Optional[Dict[str, datetime]]) -> List[Dict]:
+    """Remove follow-up chips for brands still inside the 4-day window."""
+    if not early:
+        return list(chips or [])
+    out = []
+    for chip in chips or []:
+        is_followup = isinstance(chip, dict) and (chip.get("is_followup") or chip.get("id") == "draft_followup")
+        if is_followup:
+            keys = (str(chip.get("brand_id") or ""), (chip.get("brand_name") or "").strip().lower())
+            if any(k and k in early for k in keys):
+                continue
+            label = (chip.get("label") or "").lower()
+            if any(not k.isdigit() and f" {k} " in f" {label} " for k in early):
+                continue
+        out.append(chip)
+    return out
+
+
 def record_campaign_applied(
     conn,
     creator_id: int,
@@ -725,8 +819,26 @@ def record_campaign_applied(
     return {"ok": True, "brand_id": brand_id, "task_id": task_id}
 
 
-def portfolio_view_alert(brand_name: str, brand_id: Optional[int] = None) -> Dict[str, Any]:
+def portfolio_view_alert(brand_name: str, brand_id: Optional[int] = None,
+                         followup_at: Optional[datetime] = None) -> Dict[str, Any]:
     name = (brand_name or "this brand").strip() or "this brand"
+    if followup_at:
+        return {
+            "message": (
+                f"**{name}** just opened your kit from the pitch. That's a real look. "
+                f"Give them until **{followup_at.strftime('%A')}** to answer. A bump sooner reads as pushy. "
+                "I'll have the follow-up ready then."
+            ),
+            "chips": [
+                {
+                    "id": "checkin_replied",
+                    "label": f"{name} replied",
+                    "action": "task_act",
+                    "brand_id": brand_id,
+                    "brand_name": name,
+                }
+            ],
+        }
     return {
         "message": (
             f"**{name}** just opened your kit from the pitch. That's a real look — "
@@ -762,7 +874,7 @@ def _inject_portfolio_view_alert(
         and "opened your kit" in last_text
     ):
         return False
-    alert = portfolio_view_alert(name, brand_id)
+    alert = portfolio_view_alert(name, brand_id, followup_unlocks_at(conn, creator_id, brand_id, name))
     messages.append({
         "role": "assistant",
         "content": alert["message"],

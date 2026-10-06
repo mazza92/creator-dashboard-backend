@@ -7,6 +7,7 @@ from flask import Blueprint, request, jsonify, session
 from flask_jwt_extended import get_jwt_identity
 import stripe
 import os
+import re
 import requests
 import smtplib
 from email.mime.text import MIMEText
@@ -305,6 +306,38 @@ def check_limits():
         print(f"Error checking limits: {e}")
         return jsonify({'error': str(e)}), 500
 
+def _log_checkout_source(conn, creator_id, metadata, session_id=None):
+    """Which screen sold Pro (polly, directory, ...). Webhook and confirm both call this."""
+    try:
+        meta = dict(metadata or {})
+        cid = int(creator_id)
+    except (TypeError, ValueError):
+        return
+    try:
+        from services.polly_usage import log_usage
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT 1 FROM polly_usage_events
+            WHERE creator_id = %s AND event = 'checkout_completed' AND meta->>'session_id' = %s
+            """,
+            (cid, str(session_id or '')),
+        )
+        if cur.fetchone():
+            return
+        log_usage(conn, cid, 'checkout_completed', intent=meta.get('source') or 'unknown', meta={
+            'source': meta.get('source') or 'unknown',
+            'interval': meta.get('interval'),
+            'session_id': str(session_id or ''),
+        })
+    except Exception as err:
+        print(f"[subscription] checkout source log skipped: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
 @subscription_bp.route('/create-checkout', methods=['POST'])
 def create_checkout_session():
     """Create Stripe Checkout session for subscription"""
@@ -381,6 +414,9 @@ def create_checkout_session():
         }
         if apply_winback:
             metadata['offer'] = 'winback'
+        source = re.sub(r'[^a-z0-9_]', '', str(body.get('source') or '').lower())[:40]
+        if source:
+            metadata['source'] = source
 
         checkout_session = stripe.checkout.Session.create(
             payment_method_types=['card'],
@@ -547,6 +583,7 @@ def confirm_checkout():
         ''', (tier, sub_status, subscription_id, customer_id, creator_id))
         conn.commit()
         cursor.close()
+        _log_checkout_source(conn, creator_id, checkout_session.metadata, session_id)
         conn.close()
 
         print(f"✅ Activated {tier} subscription for creator {creator_id}")
@@ -985,6 +1022,7 @@ def stripe_webhook():
 
             conn.commit()
             cursor.close()
+            _log_checkout_source(conn, creator_id, meta, session.get('id'))
             conn.close()
 
             print(f"✅ Updated creator {creator_id} to {tier} tier")

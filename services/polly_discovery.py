@@ -622,10 +622,11 @@ def notes_context(notes: Optional[Dict] = None) -> str:
 
 GIFTED_LISTS_CHIP = {
     "id": "gifted_lists",
-    "label": "Apply to gifted PR lists",
-    "hint": "Brands picking creators for boxes now",
-    "action": "open_directory",
-    "href": "/creator/dashboard/pr-brands",
+    "label": "Find gifted brands to pitch",
+    "hint": "Brands that send boxes to creators your size",
+    "action": "suggest_brands",
+    "skip_discovery": True,
+    "deal": "gifted",
 }
 
 

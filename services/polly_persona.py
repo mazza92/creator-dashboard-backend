@@ -7,6 +7,7 @@ Never invent brands, emails, follower counts, or post names.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 POLLY_PERSONA = """
@@ -93,7 +94,9 @@ APP MAP (the only screens that exist — never invent others):
   relationship: applied, pitched, follow-ups, replies), **My Kit** (their public
   kit page + editor).
 - There is NO "Pitches" tab, no "Drafts" folder, no "Save Draft" button, no
-  "Send Pitch" button, no in-app inbox. Newcollab never sends a pitch for them.
+  "Send Pitch" button, no in-app inbox. On free, Newcollab never sends a pitch
+  for them. On Pro, **Autopilot** (in this chat) sends the pitches they approve
+  from their own Gmail.
 - A pitch lives only on the pitch card in this chat. The card has **Open email**
   (opens their mail app), **Copy email** (the brand address), and **Copy pitch**.
   They send it from their own email, then tap **I sent it** so it lands on Timeline.
@@ -107,9 +110,12 @@ APP MAP (the only screens that exist — never invent others):
   other creators this round.
 - Credits: free plan = 3 credits a month; a credit is used when a new brand's
   pitch is drafted or a gifted list is applied to. Follow-ups never use a credit.
-  Pro = $19/mo: we place them on one live gifted campaign every month (brand
-  ships, they post, no pitching), plus unlimited credits. When Pro comes up,
-  lead with the placement — never with "unlimited credits".
+  Pro = $19/mo: Polly on autopilot. You run their brand outreach like a
+  manager: pick 20–30 matched brands a month, write every pitch, send them from
+  their own Gmail once they OK the week's batch, follow up on day 4 in the same
+  thread, and log everything on Timeline. Plus unlimited roster applications and
+  pitches. When Pro comes up, lead with you doing the outreach for them — never
+  with "unlimited credits". Never promise a guaranteed placement or a box.
 - If they ask where something is and it isn't on this map, say plainly it
   doesn't exist and give the real path.
 
@@ -572,8 +578,9 @@ def persona_empty_unlock_brief(
 
 
 PRO_VALUE_LINE = (
-    "Pro is **$19/mo**: I put you forward on **one live gifted campaign every month**, "
-    "plus unlimited pitches and applies, and follow-ups drafted for you."
+    "Pro is **$19/mo** and I run your outreach on **autopilot**: I pick **20–30 matched brands "
+    "a month**, write every pitch, send them from your Gmail once you OK the week, and follow up "
+    "on day 4. Plus unlimited roster applications and pitches."
 )
 
 
@@ -698,8 +705,8 @@ def persona_cant_afford(
     if reset_label:
         lines.append(f"{n}. Your free credits come back on **{reset_label}**.")
     lines.append(
-        "\nWhen you want a guaranteed gifted campaign instead of waiting on replies, "
-        "Pro's there — $19/mo, cancel anytime. No pressure."
+        "\nWhen you'd rather I do the pitching for you, Pro puts me on autopilot — "
+        "$19/mo, cancel anytime. No pressure."
     )
     return "\n".join(lines)
 
@@ -724,12 +731,12 @@ def persona_paywall_retry(brand_name: Optional[str] = None) -> str:
     name = (brand_name or "").strip()
     if name:
         return (
-            f"Pro puts you on a live gifted campaign this month and keeps **{name}** moving. "
-            "Tap the chip and I'll write the pitch as soon as you're on."
+            f"On Pro I write **{name}** right away, then keep pitching 20–30 brands a month "
+            "for you from your Gmail. Tap the chip and we're on."
         )
     return (
-        "Pro puts you on a live gifted campaign this month — the brand ships, you post. "
-        "Tap unlock and I'll write the next pitch too."
+        "On Pro I do the outreach for you: 20–30 matched brands a month, sent from your Gmail, "
+        "with day-4 follow-ups. Tap unlock and I'll start this week's batch."
     )
 
 
@@ -743,8 +750,8 @@ def persona_unlocks_after_send(balance: Optional[Dict[str, Any]] = None) -> str:
         remaining = 0
     if remaining <= 0:
         return (
-            "That's the last free unlock. Unlock Pro and we place you on a live gifted "
-            "campaign — the brand ships, you post — and I keep pitching with you."
+            "That's the last free unlock. Unlock Pro and I take over the outreach: 20–30 brands a "
+            "month pitched from your Gmail, with the follow-ups, plus unlimited roster applications."
         )
     if remaining == 1:
         return "You've got **1 free unlock** left."
@@ -807,9 +814,8 @@ def persona_location_filled(brand_name: Optional[str] = None, location: Optional
     loc = (location or "").strip()
     loc_bit = f"**{loc}**" if loc else "your city"
     return (
-        f"Done — I put {loc_bit} on the **{name}** pitch. That's how you look legit: "
-        "a real place, not a leftover bracket.\n\n"
-        "Read the rate and sign-off once more. If it's right, open mail and send it. "
+        f"Done — I put {loc_bit} on the **{name}** pitch. Here's the updated version, ready to go.\n\n"
+        "Read the sign-off once more. If it's right, open mail and send it. "
         "Tap **I sent it** when it's out."
     )
 
@@ -990,6 +996,21 @@ def persona_unknown_brand(asked_name: str, alternatives: Optional[List[Dict[str,
     return (
         f"**{asked}** isn't in our directory, so I can't draft that pitch. "
         "Tell me the niche or another brand and I'll find something close."
+    )
+
+
+def persona_followup_too_early(brand_name: Optional[str], unlocks_at: Optional[datetime] = None,
+                               now: Optional[datetime] = None) -> str:
+    name = (brand_name or "that brand").strip() or "that brand"
+    days = 1
+    if unlocks_at:
+        now = now or datetime.now(timezone.utc)
+        days = max(1, -(-int((unlocks_at - now).total_seconds()) // 86400))
+    when = unlocks_at.strftime("%A") if unlocks_at and days > 1 else "tomorrow"
+    return (
+        f"Too soon for a follow-up to **{name}**. Your pitch only just landed, and a bump this early "
+        "reads as pushy. Brands get 4 days to answer.\n\n"
+        f"I'll have the follow-up ready **{when}**. If they reply before then, tell me and we'll answer instead."
     )
 
 

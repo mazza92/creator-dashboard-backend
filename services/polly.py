@@ -2149,8 +2149,8 @@ def paywall_unlock_chips(brand: Optional[Dict] = None) -> List[Dict[str, Any]]:
     if label_name and len(label_name) > 28:
         label_name = label_name[:26].rstrip() + "…"
     label = (
-        f"Get placed + pitch {label_name} — unlock Pro" if label_name
-        else "Unlock Pro · get placed this month"
+        f"Pitch {label_name} + put Polly on autopilot" if label_name
+        else "Put Polly on autopilot · Pro"
     )
     return [
         {

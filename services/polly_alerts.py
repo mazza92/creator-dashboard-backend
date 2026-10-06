@@ -30,9 +30,16 @@ NUDGE_SUBJECTS = {
     "content_due": "Time to film your {brand} content",
 }
 
+BRIEF_EMAIL_EVERY = timedelta(hours=44)
+BRIEF_AFTER_DRAFT = timedelta(hours=20)
+BRIEF_QUIET_OPEN = timedelta(hours=24)
+OTHER_ALERT_GAP = timedelta(hours=12)
+MONTH_REPORT_DAYS = (1, 2, 3)
+
 EMAIL_CHIP_IDS = (
     "checkin_replied", "checkin_quiet", "draft_followup", "checkin_not_sent",
     "pr_arrived", "pr_not_yet", "help_reply", "line_up", "move_on", "need_idea",
+    "send_draft",
 )
 
 
@@ -217,8 +224,29 @@ def kit_view_email(
     is_pro: bool,
     category: str = "",
     unsubscribe_url: str = "",
+    followup_at: Optional[datetime] = None,
 ) -> Dict[str, str]:
-    """Pro sees the brand name. Free sees the category and opens Polly to find out who."""
+    """Pro sees the brand name. Free sees the category and opens Polly to find out who.
+
+    ``followup_at`` set means the pitch went out under 4 days ago: no follow-up button yet.
+    """
+    if followup_at:
+        who = brand_name if is_pro else "A brand you pitched"
+        subject = f"{who} just opened your kit"
+        lines = [
+            f"{escape(who)} opened your Newcollab kit. That's a real look.",
+            f"Give them until <strong>{followup_at.strftime('%A')}</strong> to answer. "
+            "A bump sooner reads as pushy. I'll have the follow-up ready then.",
+        ]
+        buttons = [{
+            "label": "They already replied",
+            "href": chip_link("checkin_replied", brand_id=brand_id, brand_name=brand_name if is_pro else "",
+                              kind="kit_view"),
+        }]
+        return {
+            "subject": subject,
+            "html": render_email(first_name, subject, lines, buttons, unsubscribe_url),
+        }
     if is_pro:
         subject = f"{brand_name} just opened your kit"
         headline = f"{brand_name} opened your kit"
@@ -383,9 +411,12 @@ def email_kit_views(conn, limit: int = 40, dry_run: bool = False, send_fn: Optio
         if not who:
             continue
         unsub = _unsubscribe_url(who["user_id"])
+        from services.polly_tracker import followup_unlocks_at
+
         mail = kit_view_email(
             who["first"], row.get("brand_name") or "A brand", row.get("brand_id"),
             who["is_pro"], row.get("category") or "", unsub,
+            followup_at=followup_unlocks_at(conn, row["creator_id"], row.get("brand_id"), row.get("brand_name")),
         )
         item = {"creator_id": row["creator_id"], "kind": "kit_view", "subject": mail["subject"], "to": who["email"]}
         if dry_run:
@@ -516,6 +547,173 @@ def email_never_opened(conn, limit: int = 25, dry_run: bool = False, send_fn: Op
     return out
 
 
+def unsent_brief_email(first_name: str, drafts: List[Dict[str, Any]], career: Optional[Dict[str, Any]] = None,
+                       unsubscribe_url: str = "") -> Dict[str, str]:
+    """Pitches Polly wrote that never left the chat. The leak between drafted and sent."""
+    top = drafts[0]
+    name = top.get("brand_name") or "that brand"
+    if len(drafts) == 1:
+        subject = f"Your {name} pitch is still waiting"
+        lines = [f"I wrote your <strong>{escape(name)}</strong> pitch, but it hasn't gone out yet."]
+    else:
+        names = ", ".join(escape(d.get("brand_name") or "a brand") for d in drafts[:3])
+        subject = f"{len(drafts)} pitches are written and waiting"
+        lines = [f"Your pitches to <strong>{names}</strong> are written but not sent."]
+    lines.append("A written pitch gets zero replies. One tap opens it in your email, ready to send.")
+    month = (career or {}).get("month") or {}
+    if month.get("pitches_goal"):
+        lines.append(f"This month: {month.get('pitches', 0)} of {month['pitches_goal']} pitches sent.")
+    buttons = [{
+        "label": f"Send my {name} pitch",
+        "href": chip_link("send_draft", brand_id=top.get("brand_id"), brand_name=name, kind="polly_brief"),
+    }]
+    return {
+        "subject": subject,
+        "html": render_email(first_name, subject, lines, buttons, unsubscribe_url),
+    }
+
+
+def email_unsent_briefs(conn, limit: int = 25, dry_run: bool = False, send_fn: Optional[Callable] = None,
+                        test_email: str = "") -> List[Dict[str, Any]]:
+    """Every other day at most: creators sitting on unsent drafts who haven't opened Polly in a day."""
+    from services.polly_manager import career_snapshot, unsent_drafts
+
+    ensure_alert_tables(conn)
+    send = send_fn or _default_send
+    cur = _cursor(conn)
+    now = utc_now()
+    cur.execute(
+        """
+        SELECT DISTINCT d.creator_id
+        FROM polly_drafts d
+        WHERE d.handoff_at IS NULL AND d.refunded_at IS NULL
+          AND d.drafted_at <= %s AND d.drafted_at >= %s
+          AND NOT EXISTS (
+              SELECT 1 FROM polly_usage_events u
+              WHERE u.creator_id = d.creator_id AND u.event = 'open' AND u.created_at > %s
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM polly_email_log l
+              WHERE l.creator_id = d.creator_id AND l.kind = 'polly_brief' AND l.sent_at > %s
+          )
+        LIMIT %s
+        """,
+        (now - BRIEF_AFTER_DRAFT, now - timedelta(days=7), now - BRIEF_QUIET_OPEN,
+         now - BRIEF_EMAIL_EVERY, limit * 2),
+    )
+    out = []
+    for row in [dict(r) for r in cur.fetchall()]:
+        if len(out) >= limit:
+            break
+        cid = row["creator_id"]
+        if _recently_emailed(conn, cid, ["kit_view", "nudge", "month_report"], OTHER_ALERT_GAP):
+            continue
+        drafts = unsent_drafts(conn, cid)
+        if not drafts:
+            continue
+        who = _recipient(conn, cid)
+        if not who:
+            continue
+        unsub = _unsubscribe_url(who["user_id"])
+        balance = {"is_unlimited": True} if who["is_pro"] else {"limit": 3}
+        mail = unsent_brief_email(who["first"], drafts, career_snapshot(conn, cid, None, balance), unsub)
+        item = {"creator_id": cid, "kind": "polly_brief", "subject": mail["subject"], "to": who["email"]}
+        if dry_run:
+            out.append(item)
+            continue
+        result = send(test_email or who["email"], mail["subject"], mail["html"], unsub, "polly_brief")
+        _log_email(conn, cid, "polly_brief", drafts[0].get("brand_id"), drafts[0].get("draft_id"), mail["subject"], result)
+        item["ok"] = bool(result.get("success"))
+        out.append(item)
+    return out
+
+
+def month_report_email(first_name: str, last: Dict[str, int], career: Dict[str, Any], is_pro: bool,
+                       matched_left: int = 0, month_label: str = "", unsubscribe_url: str = "") -> Dict[str, str]:
+    import re
+    from services.polly_manager import month_report_lines
+
+    m = career.get("month") or {}
+    cap = None if is_pro else (m.get("pitches_goal") or 3)
+    report = month_report_lines(last, is_pro, cap=cap, matched_left=matched_left)
+    subject = f"Your {month_label or 'monthly'} report card from Polly"
+    lines = [re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escape(line)) for line in report]
+    lines.append(
+        f"You're at <strong>{escape(career.get('stage_label') or '')}</strong>. "
+        f"This month's goal: {int(m.get('pitches_goal') or 0)} pitches sent."
+    )
+    nxt = career.get("next") or {}
+    if nxt.get("label"):
+        lines.append(f"Next step: {escape(nxt['label'])}. {escape(nxt.get('why') or '')}")
+    params = urlencode({"utm_source": "email", "utm_medium": "polly_alert", "utm_campaign": "month_report"})
+    buttons = [{"label": "See this month's plan", "href": f"{frontend_url()}{POLLY_PATH}?{params}"}]
+    return {
+        "subject": subject,
+        "html": render_email(first_name, subject, lines, buttons, unsubscribe_url),
+    }
+
+
+def email_month_reports(conn, limit: int = 40, dry_run: bool = False, send_fn: Optional[Callable] = None,
+                        test_email: str = "", now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    """Days 1-3 of the month: one report card per creator who did anything last month."""
+    from services.polly_manager import career_snapshot, load_last_month
+    from services.polly_memory import load_thread
+
+    now = now or utc_now()
+    if now.day not in MONTH_REPORT_DAYS:
+        return []
+    ensure_alert_tables(conn)
+    send = send_fn or _default_send
+    month_ref = int(now.strftime("%Y%m"))
+    last_month_label = (now.replace(day=1) - timedelta(days=1)).strftime("%B")
+    cur = _cursor(conn)
+    cur.execute(
+        """
+        SELECT DISTINCT e.creator_id
+        FROM polly_timeline_events e
+        WHERE e.event_type IN ('pitch_sent', 'portfolio_viewed', 'brand_replied_interested',
+                               'brand_replied_question', 'content_posted', 'milestone')
+          AND e.occurred_at >= date_trunc('month', NOW()) - INTERVAL '1 month'
+          AND e.occurred_at < date_trunc('month', NOW())
+          AND NOT EXISTS (
+              SELECT 1 FROM polly_email_log l
+              WHERE l.creator_id = e.creator_id AND l.kind = 'month_report' AND l.ref_id = %s
+          )
+        LIMIT %s
+        """,
+        (month_ref, limit),
+    )
+    out = []
+    for row in [dict(r) for r in cur.fetchall()]:
+        cid = row["creator_id"]
+        who = _recipient(conn, cid)
+        if not who:
+            continue
+        last = load_last_month(conn, cid)
+        if not any(last.values()):
+            continue
+        thread = load_thread(conn, cid)
+        balance = {"is_unlimited": True} if who["is_pro"] else {"limit": 3}
+        career = career_snapshot(conn, cid, thread.get("notes") or {}, balance)
+        if not career:
+            continue
+        unsub = _unsubscribe_url(who["user_id"])
+        mail = month_report_email(
+            who["first"], last, career, who["is_pro"],
+            matched_left=len(thread.get("suggested_brands") or []),
+            month_label=last_month_label, unsubscribe_url=unsub,
+        )
+        item = {"creator_id": cid, "kind": "month_report", "subject": mail["subject"], "to": who["email"]}
+        if dry_run:
+            out.append(item)
+            continue
+        result = send(test_email or who["email"], mail["subject"], mail["html"], unsub, "month_report")
+        _log_email(conn, cid, "month_report", None, month_ref, mail["subject"], result)
+        item["ok"] = bool(result.get("success"))
+        out.append(item)
+    return out
+
+
 def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "", send_fn: Optional[Callable] = None) -> Dict[str, Any]:
     """Cron entry: post due nudges in-thread, email them + kit views."""
     from services.polly_tracker import process_due_nudges
@@ -524,7 +722,20 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
     can_email = dry_run or bool(send_fn) or resend_configured()
     delivered: List[Dict[str, Any]] = []
     nudged = 0
+    autopilot: Dict[str, Any] = {}
     if not dry_run:
+        try:
+            from services.polly_autopilot import run_autopilot
+            from services.polly_gmail import gmail_configured
+
+            if gmail_configured():
+                autopilot = run_autopilot(conn, limit=limit)
+        except Exception as err:
+            print(f"[Polly alerts] autopilot skipped: {err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         nudged = process_due_nudges(conn, creator_limit=limit, delivered=delivered)
     emails = []
     if can_email:
@@ -538,8 +749,18 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
                 conn.rollback()
             except Exception:
                 pass
+        for job in (email_month_reports, email_unsent_briefs):
+            try:
+                emails += job(conn, dry_run=dry_run, send_fn=send_fn, test_email=test_email)
+            except Exception as err:
+                print(f"[Polly alerts] {job.__name__} skipped: {err}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
     return {
         "nudged": nudged,
+        "autopilot": autopilot,
         "emails": emails,
         "email_enabled": can_email,
     }
