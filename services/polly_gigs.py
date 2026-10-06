@@ -398,36 +398,16 @@ def _min_followers(opp: Dict[str, Any]) -> int:
 
 
 def gig_fits_creator(opp: Optional[Dict[str, Any]], followers: int = 0) -> bool:
-    """Drop briefs a creator can't realistically land at their size."""
+    """Drop briefs a creator is under-qualified for, nothing else.
+
+    Pay level, board, and agency wording stay visible: creators asked to see paid
+    work, so the board is the board.
+    """
     opp = opp or {}
     need = _min_followers(opp)
-    if need and followers and need > followers:
-        return False
-    if followers >= SMALL_CREATOR_FOLLOWERS:
+    if not need or not followers:
         return True
-    if need and need >= SMALL_CREATOR_FOLLOWERS:
-        return False
-    source = str(opp.get("source_platform") or "").strip().lower()
-    if source in _OPEN_BOARDS:
-        return False
-    try:
-        pay = float(opp.get("pr_value_usd") or 0)
-    except (TypeError, ValueError):
-        pay = 0
-    if pay > SMALL_CREATOR_MAX_PAY_USD:
-        return False
-    brief = parse_listing_brief(opp.get("listing_brief"))
-    text = " ".join(
-        str(part or "")
-        for part in (
-            opp.get("product_name"),
-            opp.get("campaign_description"),
-            brief.get("headline"),
-            brief.get("summary"),
-            opp.get("pay_label"),
-        )
-    )
-    return not _AGENCY_BRIEF.search(text)
+    return need <= followers
 
 
 def _scanner_fallback_cards(creator_id) -> List[Dict[str, Any]]:

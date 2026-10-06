@@ -379,6 +379,22 @@ class HeuristicIntentTests(unittest.TestCase):
         self.assertNotIn(1, back.get("pitched_brand_ids") or [])
         self.assertEqual(back["pending_pitch"]["name"], "Nuria Beauty")
 
+    def test_shown_brands_are_skipped_next_time(self):
+        from services.polly import drop_shown, mark_shown_brands
+        pool = [
+            {"id": 1, "name": "Taima Titanium"},
+            {"id": 2, "name": "Medjet"},
+            {"id": 3, "name": "GlobalTravel"},
+            {"id": 4, "name": "Away"},
+        ]
+        notes = mark_shown_brands({}, pool[:3])
+        self.assertEqual(notes["shown_brand_ids"], [1, 2, 3])
+        notes = mark_shown_brands(notes, pool[:3])
+        self.assertEqual(notes["shown_brand_ids"], [1, 2, 3])
+        left = drop_shown(pool, notes)
+        self.assertEqual([b["name"] for b in left], ["Away"])
+        self.assertEqual(drop_shown(pool, {}), pool)
+
     def test_drop_pitched_moves_queue(self):
         from services.polly import drop_pitched, mark_pitched
         notes = mark_pitched({}, {"id": 1, "name": "Acure"})

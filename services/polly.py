@@ -1968,6 +1968,33 @@ def last_pitch_brand(
     return None
 
 
+def shown_brand_ids(notes: Optional[Dict] = None) -> List[int]:
+    """Brands already shown as cards, so the next ask can bring a fresh batch."""
+    ids: List[int] = []
+    for raw in (notes or {}).get("shown_brand_ids") or []:
+        try:
+            bid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if bid and bid not in ids:
+            ids.append(bid)
+    return ids
+
+
+def mark_shown_brands(notes: Optional[Dict], brands: Optional[List[Dict]] = None) -> Dict[str, Any]:
+    out = dict(notes or {})
+    seen = shown_brand_ids(out)
+    for brand in brands or []:
+        try:
+            bid = int((brand or {}).get("id") or (brand or {}).get("brand_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if bid and bid not in seen:
+            seen.append(bid)
+    out["shown_brand_ids"] = seen[-120:]
+    return out
+
+
 def pitched_id_set(notes: Optional[Dict] = None) -> set:
     out = set()
     for item in (notes or {}).get("pitched_brand_ids") or []:
@@ -2423,6 +2450,26 @@ def drop_pitched(
         if bid and bid in skip:
             continue
         if name and name in skip_names:
+            continue
+        kept.append(brand)
+    return kept
+
+
+def drop_shown(
+    brands: Optional[List[Dict]],
+    notes: Optional[Dict] = None,
+) -> List[Dict[str, Any]]:
+    """Brands not already shown as cards, so a repeat ask brings a fresh batch."""
+    skip = set(shown_brand_ids(notes))
+    if not skip:
+        return list(brands or [])
+    kept = []
+    for brand in brands or []:
+        try:
+            bid = int((brand or {}).get("id") or (brand or {}).get("brand_id") or 0)
+        except (TypeError, ValueError):
+            bid = 0
+        if bid and bid in skip:
             continue
         kept.append(brand)
     return kept

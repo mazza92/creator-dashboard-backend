@@ -377,11 +377,13 @@ class PollyGigsTests(unittest.TestCase):
         board = {"campaign_description": "UGC creator wanted", "source_platform": "craigslist"}
         fine = {"campaign_description": "Film one TikTok for our serum", "source_platform": "aspireiq", "pr_value_usd": 150}
         pricey = dict(fine, pr_value_usd=4000)
-        self.assertFalse(gig_fits_creator(pricey, 2400))
-        self.assertFalse(gig_fits_creator(agency, 2400))
-        self.assertFalse(gig_fits_creator(board, 2400))
+        too_big = dict(fine, follower_ranges=["25k-100k"])
+        self.assertTrue(gig_fits_creator(pricey, 2400))
+        self.assertTrue(gig_fits_creator(agency, 2400))
+        self.assertTrue(gig_fits_creator(board, 2400))
         self.assertTrue(gig_fits_creator(fine, 2400))
-        self.assertTrue(gig_fits_creator(board, 40000))
+        self.assertFalse(gig_fits_creator(too_big, 2400))
+        self.assertTrue(gig_fits_creator(too_big, 40000))
 
     def test_paid_ladder_names_two_brands(self):
         from services.polly_persona import persona_paid_ladder

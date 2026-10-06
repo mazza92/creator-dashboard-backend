@@ -144,7 +144,6 @@ from services.polly_persona import (
     persona_cold_brand_warning,
     persona_first_matches,
     persona_gigs_intro,
-    persona_paid_ladder,
     paywall_preview_lines,
     persona_pref_ack,
     persona_kit_after_cards,
@@ -631,7 +630,11 @@ def _suggest_payload(scrape, creator, notes=None, creator_id=None):
         required_categories=cats,
         exclude_ids=exclude,
     )
-    return 200, filter_brands_by_prefs(drop_pitched(brands, notes, extra_ids=exclude), notes), None
+    from services.polly import drop_shown
+    fresh = drop_shown(brands, notes)
+    if not fresh and brands:
+        fresh = brands
+    return 200, filter_brands_by_prefs(drop_pitched(fresh, notes, extra_ids=exclude), notes), None
 
 
 def _coach_say(intent, profile_context, notes, scrape, kit=None, coach_moves=None):
@@ -1980,17 +1983,6 @@ def chat():
                 intent = "discovery"
 
         chip_key = str(data.get("starter") or data.get("chip_id") or "")
-        if intent == "suggest_gigs" and chip_key not in ("paid_anyway", "more_gigs"):
-            from services.polly_gigs import is_small_creator, wants_more_gigs as _wants_more
-            if is_small_creator(scrape) and not _wants_more(user_text, messages, notes):
-                # Paid briefs at this size are mostly agency work; redirect to the gifted ladder.
-                intent = "suggest_brands"
-                can_match = True
-                data["_paid_ladder"] = True
-                notes["wanted_gigs"] = True
-                if not gifted_only(notes):
-                    notes["deal_intent"] = "gifted"
-
         if intent == "suggest_gigs":
             try:
                 from services.polly_gigs import page_polly_gigs, mark_shown_gigs, wants_more_gigs
@@ -2044,9 +2036,10 @@ def chat():
                 return jsonify({"success": False, "error": "Not authenticated"}), 401
             if err and not brands:
                 error = err
-            brands = drop_pending_draft(brands, notes)
+            from services.polly import drop_shown
+            brands = drop_shown(drop_pending_draft(brands, notes), notes)
             if not brands:
-                brands = drop_pending_draft(drop_pitched(suggested, notes), notes)
+                brands = drop_shown(drop_pending_draft(drop_pitched(suggested, notes), notes), notes)
             brands = filter_brands_by_prefs(_hydrate_brand_cards(brands), notes)
             pending_name = ""
             pending = notes.get("pending_pitch") if isinstance(notes.get("pending_pitch"), dict) else None
@@ -2079,27 +2072,7 @@ def chat():
                 brands,
                 key=lambda b: 0 if (b or {}).get("source") in ("recruiting", "open_lists") else 1,
             )
-            if data.get("_paid_ladder"):
-                brands = live_first[:2]
-                say = persona_paid_ladder(brands)
-                ladder_chips = [
-                    {
-                        "id": "pitch_ladder",
-                        "label": f"Pitch {b['name']}",
-                        "action": "generate_pitch",
-                        "brand_id": b.get("id"),
-                        "brand_name": b["name"],
-                    }
-                    for b in brands if b.get("name")
-                ]
-                ladder_chips.append({
-                    "id": "paid_anyway",
-                    "label": "Show paid briefs anyway",
-                    "action": "suggest_gigs",
-                    "skip_discovery": True,
-                })
-                data["_task_chips"] = ladder_chips
-            elif chip_key == "first_matches":
+            if chip_key == "first_matches":
                 brands = live_first[:3]
                 live = any((b or {}).get("source") in ("recruiting", "open_lists") for b in brands)
                 niche = (
@@ -2115,6 +2088,14 @@ def chat():
                     say = with_location_ask(say)
                     notes["location_asked_at"] = utc_iso_now()
                     notes["awaiting_location"] = True
+            if brands:
+                from services.polly import mark_shown_brands
+                notes = mark_shown_brands(notes, brands)
+            elif notes.get("shown_brand_ids"):
+                say = (
+                    "That's every match I have for you right now. Pitch one of the brands above, "
+                    "or check back tomorrow and I'll have new ones."
+                )
             if not brands and not say:
                 say = (
                     "I couldn't pull a fresh list just now. Tap again in a second, "
