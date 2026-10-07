@@ -15,6 +15,7 @@ import requests
 from brand_stats_synthesis import resolve_brand_stats, resolve_pitch_social_proof
 from brand_categories import normalize_category, aggregate_category_counts, category_label
 from services.public_brand_guard import scraper_rate_limit
+from services.brand_seo import is_indexable, public_seo_fields
 from services.roster_demand import ROSTER_DEMAND_JOIN, ROSTER_DEMAND_SELECT
 
 public_bp = Blueprint('public', __name__, url_prefix='/api/public')
@@ -679,6 +680,40 @@ def get_public_brands():
         return jsonify({'error': 'Failed to fetch brands'}), 500
 
 
+@public_bp.route('/brand-index', methods=['GET'])
+@scraper_rate_limit
+def get_public_brand_index():
+    """Every indexable published brand (slug, name, category, lastmod) for the
+    sitemap and the A-Z directory. Uses the same rule as the brand page."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("""
+            SELECT slug, brand_name, category, logo_url, description, hero_product,
+                   target_audience, price_point, avg_product_value, collaboration_type,
+                   regions, instagram_handle, tiktok_handle, application_method,
+                   product_types, niches, min_followers, updated_at
+            FROM pr_brands
+            WHERE COALESCE(status, 'published') = 'published' AND slug IS NOT NULL
+            ORDER BY LOWER(brand_name)
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        brands = [{
+            'slug': r['slug'],
+            'name': r['brand_name'],
+            'category': r['category'],
+            'updatedAt': r['updated_at'].isoformat() if r.get('updated_at') else None,
+        } for r in rows if is_indexable(r)]
+        response = jsonify({'brands': brands, 'total': len(brands)})
+        response.headers['Cache-Control'] = 'public, max-age=600, s-maxage=3600'
+        return response, 200
+    except Exception as e:
+        print(f"Error fetching brand index: {str(e)}")
+        return jsonify({'error': 'Failed to fetch brand index'}), 500
+
+
 @public_bp.route('/brands/<slug>', methods=['GET'])
 @scraper_rate_limit
 def get_public_brand(slug):
@@ -723,6 +758,19 @@ def get_public_brand(slug):
                 b.seo_title,
                 b.seo_description,
                 b.contact_email,
+                b.hero_product,
+                b.target_audience,
+                b.tone,
+                b.price_point,
+                b.avg_product_value,
+                b.collaboration_type,
+                b.micro_friendly,
+                b.accepting_pr,
+                b.youtube_handle,
+                b.pr_social_profile,
+                b.pr_example_posts,
+                b.updated_at,
+                b.last_verified_at,
                 CASE
                     WHEN b.application_form_url IS NOT NULL THEN TRUE
                     ELSE FALSE
@@ -811,6 +859,9 @@ def get_public_brand(slug):
                 'description': brand['seo_description']
             }
         }
+        response.update(public_seo_fields(
+            brand, estimated_value=_estimate_package_value(brand['category'], brand['brand_name'])
+        ))
 
         return jsonify(response), 200
 
