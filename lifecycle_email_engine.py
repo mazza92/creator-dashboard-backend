@@ -18,6 +18,7 @@ from jinja2 import Environment, FileSystemLoader
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from public_routes import make_unsubscribe_token
+from services.waitlist_gate import WAITLISTED_STATUSES, WAITLIST_EXCLUDE_SQL
 
 # ============================================
 # CONFIGURATION
@@ -347,9 +348,10 @@ def send_lifecycle_email(
         if not template.get('exempt_from_daily_cap') and is_quiet_hours():
             return False, "Quiet hours - email queued"
 
-        # Get user_id for unsubscribe token
-        cursor.execute("SELECT user_id FROM creators WHERE id = %s", (creator_id,))
+        cursor.execute("SELECT user_id, approval_status FROM creators WHERE id = %s", (creator_id,))
         creator_row = cursor.fetchone()
+        if creator_row and creator_row.get('approval_status') in WAITLISTED_STATUSES:
+            return False, f"Waitlisted ({creator_row['approval_status']}) - no lifecycle emails"
         user_id = creator_row['user_id'] if creator_row else creator_id
 
         # Generate signed unsubscribe URL
@@ -484,7 +486,7 @@ def get_eligible_emails(creator_id: int) -> List[Dict[str, Any]]:
         if not creator:
             return []
 
-        if creator.get('approval_status') in ('pending', 'rejected'):
+        if creator.get('approval_status') in WAITLISTED_STATUSES:
             logging.info(
                 f"[ELIGIBLE] Creator {creator_id}: skipped waitlist gate "
                 f"({creator.get('approval_status')})"
@@ -776,13 +778,14 @@ def process_daily_lifecycle_emails(
             # Exclude those who already hit daily limit or unsubscribed
             # Include creators whose counter is from a previous day (needs reset)
             effective_limit = limit if limit else batch_size
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT c.id, c.user_id, u.email, c.lifecycle_state
                 FROM creators c
                 JOIN users u ON c.user_id = u.id
                 LEFT JOIN email_preferences ep ON ep.creator_id = c.id
                 WHERE u.is_verified = true
                 AND ep.unsubscribed_at IS NULL
+                AND {WAITLIST_EXCLUDE_SQL}
                 AND (
                     c.lifecycle_emails_sent_today IS NULL
                     OR c.lifecycle_emails_sent_today < %s
@@ -926,13 +929,14 @@ def process_weekly_digest(
         else:
             # Get verified creators - exclude unsubscribed
             effective_limit = limit if limit else batch_size
-            cursor.execute("""
+            cursor.execute(f"""
                 SELECT c.id, c.user_id, u.email
                 FROM creators c
                 JOIN users u ON c.user_id = u.id
                 LEFT JOIN email_preferences ep ON ep.creator_id = c.id
                 WHERE u.is_verified = true
                 AND ep.unsubscribed_at IS NULL
+                AND {WAITLIST_EXCLUDE_SQL}
                 ORDER BY c.id
                 LIMIT %s
             """, (effective_limit,))
@@ -1828,7 +1832,7 @@ def trigger_welcome_email(creator_id: int, email: str, first_name: str = None):
         conn.close()
 
     status = row.get('approval_status')
-    if status in ('pending', 'rejected'):
+    if status in WAITLISTED_STATUSES:
         return False, "Waitlisted — welcome sends after approval"
 
     context = {

@@ -12,6 +12,8 @@ import os
 import threading
 from datetime import datetime
 
+from services.waitlist_gate import is_waitlisted_status
+
 
 def generate_kit_token(creator_id, brand_id):
     """Deterministic 12-char token for a creator/brand pair."""
@@ -180,7 +182,7 @@ def _queue_brand_view_email(cursor, creator_id, brand_name, brand_category):
     cursor.execute(
         """
         SELECT c.username, c.subscription_tier, c.brand_view_email_sent_at,
-               u.email, u.first_name
+               c.approval_status, u.email, u.first_name
         FROM creators c
         JOIN users u ON c.user_id = u.id
         WHERE c.id = %s
@@ -189,6 +191,8 @@ def _queue_brand_view_email(cursor, creator_id, brand_name, brand_category):
     )
     info = _as_dict(cursor.fetchone())
     if not info or not info.get("email"):
+        return False
+    if is_waitlisted_status(info.get("approval_status")):
         return False
 
     if _hours_since(info.get("brand_view_email_sent_at")) < 1:

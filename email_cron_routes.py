@@ -71,6 +71,16 @@ def get_db_connection():
         password=os.getenv('DB_PASSWORD')
     )
 
+def _recipient_waitlisted(to_email):
+    from services.waitlist_gate import is_waitlisted_email
+
+    conn = get_db_connection()
+    try:
+        return is_waitlisted_email(conn.cursor(), to_email)
+    finally:
+        conn.close()
+
+
 def send_template_email(to_email, template_name, subject, context):
     """
     Send an email using a Jinja2 template.
@@ -86,6 +96,9 @@ def send_template_email(to_email, template_name, subject, context):
         Tuple of (success: bool, error_message: str or None)
     """
     try:
+        if _recipient_waitlisted(to_email):
+            return False, "Waitlisted creator - skipped"
+
         # Auto-inject unsubscribe_url for every outgoing email.
         # Resolves user_id from context if present, otherwise looks it up by email.
         if 'unsubscribe_url' not in context:

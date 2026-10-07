@@ -2279,6 +2279,7 @@ def maybe_send_kit_view_notification(creator_id, conn=None):
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.id = %s AND c.kit_published = true
+              AND COALESCE(c.approval_status, '') NOT IN ('pending', 'rejected')
         ''', (creator_id,))
         creator = cursor.fetchone()
 

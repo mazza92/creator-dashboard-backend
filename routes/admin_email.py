@@ -351,7 +351,7 @@ def get_segments():
             SELECT COUNT(DISTINCT c.id) as count
             FROM creators c
             JOIN users u ON c.user_id = u.id
-            WHERE u.unsubscribed_at IS NULL
+            WHERE u.unsubscribed_at IS NULL AND COALESCE(c.approval_status, '') NOT IN ('pending', 'rejected')
         """)
         segments.append({
             'id': 'all_active',
@@ -367,7 +367,7 @@ def get_segments():
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE u.created_at >= NOW() - INTERVAL '7 days'
-            AND u.unsubscribed_at IS NULL
+            AND u.unsubscribed_at IS NULL AND COALESCE(c.approval_status, '') NOT IN ('pending', 'rejected')
         """)
         segments.append({
             'id': 'new_users_7d',
@@ -388,7 +388,7 @@ def get_segments():
             AND c.id NOT IN (
                 SELECT DISTINCT creator_id FROM creator_pipeline WHERE pitched_at IS NOT NULL
             )
-            AND u.unsubscribed_at IS NULL
+            AND u.unsubscribed_at IS NULL AND COALESCE(c.approval_status, '') NOT IN ('pending', 'rejected')
         """)
         segments.append({
             'id': 'exploring',
@@ -407,7 +407,7 @@ def get_segments():
             WHERE c.id IN (
                 SELECT DISTINCT creator_id FROM creator_pipeline WHERE pitched_at IS NOT NULL
             )
-            AND u.unsubscribed_at IS NULL
+            AND u.unsubscribed_at IS NULL AND COALESCE(c.approval_status, '') NOT IN ('pending', 'rejected')
         """)
         segments.append({
             'id': 'engaged',
@@ -423,7 +423,7 @@ def get_segments():
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE COALESCE(c.pitches_sent_total, 0) >= 5
-            AND u.unsubscribed_at IS NULL
+            AND u.unsubscribed_at IS NULL AND COALESCE(c.approval_status, '') NOT IN ('pending', 'rejected')
         """)
         segments.append({
             'id': 'power_users',
@@ -438,7 +438,7 @@ def get_segments():
             SELECT COUNT(DISTINCT c.id) as count
             FROM creators c
             JOIN users u ON c.user_id = u.id
-            WHERE u.unsubscribed_at IS NULL
+            WHERE u.unsubscribed_at IS NULL AND COALESCE(c.approval_status, '') NOT IN ('pending', 'rejected')
             {_free_at_unlock_limit_sql(conn)}
         """)
         segments.append({
@@ -454,7 +454,7 @@ def get_segments():
             SELECT COUNT(DISTINCT c.id) as count
             FROM creators c
             JOIN users u ON c.user_id = u.id
-            WHERE u.unsubscribed_at IS NULL
+            WHERE u.unsubscribed_at IS NULL AND COALESCE(c.approval_status, '') NOT IN ('pending', 'rejected')
             {_canceled_pro_sql()}
         """)
         segments.append({
@@ -470,7 +470,7 @@ def get_segments():
             SELECT COUNT(DISTINCT c.id) as count
             FROM creators c
             JOIN users u ON c.user_id = u.id
-            WHERE u.unsubscribed_at IS NULL
+            WHERE u.unsubscribed_at IS NULL AND COALESCE(c.approval_status, '') NOT IN ('pending', 'rejected')
             {_active_pro_sql()}
         """)
         segments.append({
@@ -494,7 +494,7 @@ def get_segments():
                    OR pitched_at >= NOW() - INTERVAL '14 days'
             )
             AND u.created_at < NOW() - INTERVAL '14 days'
-            AND u.unsubscribed_at IS NULL
+            AND u.unsubscribed_at IS NULL AND COALESCE(c.approval_status, '') NOT IN ('pending', 'rejected')
         """)
         segments.append({
             'id': 'dormant',
@@ -510,7 +510,7 @@ def get_segments():
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE COALESCE(c.subscription_tier, 'free') = 'free'
-            AND u.unsubscribed_at IS NULL
+            AND u.unsubscribed_at IS NULL AND COALESCE(c.approval_status, '') NOT IN ('pending', 'rejected')
         """)
         segments.append({
             'id': 'free_tier',
@@ -526,7 +526,7 @@ def get_segments():
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE COALESCE(c.kit_published, false) = false
-            AND u.unsubscribed_at IS NULL
+            AND u.unsubscribed_at IS NULL AND COALESCE(c.approval_status, '') NOT IN ('pending', 'rejected')
         """)
         segments.append({
             'id': 'kit_unpublished',
@@ -556,7 +556,7 @@ def _creator_search_select_sql():
                 COALESCE(c.followers_count, 0) as followers_count
             FROM creators c
             JOIN users u ON c.user_id = u.id
-            WHERE u.unsubscribed_at IS NULL
+            WHERE u.unsubscribed_at IS NULL AND COALESCE(c.approval_status, '') NOT IN ('pending', 'rejected')
     """
 
 
@@ -637,7 +637,7 @@ def preview_segment():
                 u.created_at as signup_date
             FROM creators c
             JOIN users u ON c.user_id = u.id
-            WHERE u.unsubscribed_at IS NULL
+            WHERE u.unsubscribed_at IS NULL AND COALESCE(c.approval_status, '') NOT IN ('pending', 'rejected')
         """
 
         # Add segment conditions
@@ -972,6 +972,17 @@ def _pick_recipients_for_send(cursor, campaign_id):
     """
     Atomically claim sendable recipients so parallel send requests don't double-send.
     """
+    cursor.execute(
+        """
+        DELETE FROM email_campaign_recipients e
+        USING creators c
+        WHERE e.campaign_id = %s
+          AND e.status IN ('pending', 'failed_temp')
+          AND c.id = e.creator_id
+          AND c.approval_status IN ('pending', 'rejected')
+        """,
+        (campaign_id,)
+    )
     cursor.execute(
         """
         WITH picked AS (
@@ -1775,7 +1786,7 @@ def send_campaign(campaign_id):
                 COALESCE(c.brands_saved_count, 0) as brands_saved
             FROM creators c
             JOIN users u ON c.user_id = u.id
-            WHERE u.unsubscribed_at IS NULL
+            WHERE u.unsubscribed_at IS NULL AND COALESCE(c.approval_status, '') NOT IN ('pending', 'rejected')
         """
 
         user_ids = []  # Initialize before segment checks to avoid NameError

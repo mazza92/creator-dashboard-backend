@@ -14,6 +14,8 @@ from urllib.parse import urlencode
 
 from psycopg2.extras import RealDictCursor
 
+from services.waitlist_gate import WAITLISTED_STATUSES, WAITLIST_EXCLUDE_SQL
+
 POLLY_PATH = "/creator/dashboard/for-you"
 KIT_VIEW_EMAIL_WINDOW = timedelta(hours=48)
 KIT_VIEW_THROTTLE = timedelta(hours=6)
@@ -314,7 +316,8 @@ def _recipient(conn, creator_id: int) -> Optional[Dict[str, Any]]:
     cur.execute(
         """
         SELECT c.id AS creator_id, u.id AS user_id, u.email, u.first_name,
-               c.subscription_tier, c.unlocks_tier, u.unsubscribed_at
+               c.subscription_tier, c.unlocks_tier, u.unsubscribed_at,
+               c.approval_status
         FROM creators c JOIN users u ON u.id = c.user_id
         WHERE c.id = %s
         """,
@@ -322,6 +325,8 @@ def _recipient(conn, creator_id: int) -> Optional[Dict[str, Any]]:
     )
     row = cur.fetchone()
     if not row or not row.get("email") or row.get("unsubscribed_at"):
+        return None
+    if row.get("approval_status") in WAITLISTED_STATUSES:
         return None
     row = dict(row)
     row["is_pro"] = (
@@ -506,11 +511,12 @@ def email_never_opened(conn, limit: int = 25, dry_run: bool = False, send_fn: Op
     cur = _cursor(conn)
     now = utc_now()
     cur.execute(
-        """
+        f"""
         SELECT c.id AS creator_id, c.onboarding_survey
         FROM creators c
         WHERE c.created_at < %s AND c.created_at > %s
           AND COALESCE(c.onboarding_survey->>'segment', '') <> 'is_brand'
+          AND {WAITLIST_EXCLUDE_SQL}
           AND NOT EXISTS (
               SELECT 1 FROM polly_usage_events e WHERE e.creator_id = c.id AND e.event = 'open'
           )

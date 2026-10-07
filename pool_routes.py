@@ -13,6 +13,8 @@ from datetime import datetime, timedelta
 from psycopg2.extras import RealDictCursor
 from jinja2 import Environment, FileSystemLoader
 
+from services.waitlist_gate import WAITLISTED_STATUSES
+
 pool_bp = Blueprint('pool', __name__, url_prefix='/api/pool')
 
 # Import Pusher for real-time notifications
@@ -579,7 +581,7 @@ def confirm_support():
 
         # Get target's info for notification (including email)
         cursor.execute("""
-            SELECT c.username, u.id as user_id, u.email, u.first_name
+            SELECT c.username, u.id as user_id, u.email, u.first_name, c.approval_status
             FROM creators c
             JOIN users u ON c.user_id = u.id
             WHERE c.id = %s
@@ -606,7 +608,7 @@ def confirm_support():
             )
 
             # Send email notification to target (async - don't block response)
-            if target_info.get('email'):
+            if target_info.get('email') and target_info.get('approval_status') not in WAITLISTED_STATUSES:
                 # Get supporter's social URL from their social_links
                 supporter_social_url = None
                 social_handles = parse_social_links(supporter_info.get('social_links'))
