@@ -1965,26 +1965,31 @@ def test_supabase():
 @app.route('/profile/update', methods=['PUT'])
 def update_profile():
     try:
-        user_id = session.get("user_id", 1)  # Assuming default user for dev
-        user_role = session.get("user_role", "creator")
+        user_id = session.get("user_id")
+        user_role = session.get("user_role")
+        if not user_id or not user_role:
+            return jsonify({"error": "Unauthorized access"}), 403
 
         conn = get_db_connection()
         cursor = conn.cursor()
 
+        file_url = None
         if 'image' in request.files:
             image = request.files['image']
-            if image and allowed_file(image.filename):
-                # Upload to S3 instead of saving locally
-                file_url = upload_file_to_s3(image, S3_BUCKET)
-                if file_url:
-                    if user_role == 'creator':
-                        cursor.execute("UPDATE creators SET image_profile = %s WHERE user_id = %s", (file_url, user_id))
-                    elif user_role == 'brand':
-                        cursor.execute("UPDATE brands SET logo = %s WHERE user_id = %s", (file_url, user_id))
-                    else:
-                        return jsonify({"error": "Invalid user role"}), 400
-                else:
-                    return jsonify({'error': 'Failed to upload to S3'}), 500
+            if not image or not allowed_file(image.filename):
+                conn.close()
+                return jsonify({'error': 'Use a JPG, PNG or WEBP image'}), 400
+            file_url = upload_file_to_supabase(image, SUPABASE_BUCKET)
+            if not file_url:
+                conn.close()
+                return jsonify({'error': 'Failed to upload image'}), 500
+            if user_role == 'creator':
+                cursor.execute("UPDATE creators SET image_profile = %s WHERE user_id = %s", (file_url, user_id))
+            elif user_role == 'brand':
+                cursor.execute("UPDATE brands SET logo = %s WHERE user_id = %s", (file_url, user_id))
+            else:
+                conn.close()
+                return jsonify({"error": "Invalid user role"}), 400
 
         if 'bio' in request.form:
             bio = request.form.get('bio')
@@ -1997,10 +2002,11 @@ def update_profile():
         cursor.close()
         conn.close()
 
-        return jsonify({"message": "Profile updated successfully"}), 200
+        return jsonify({"message": "Profile updated successfully", "file_url": file_url, "file_path": file_url}), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error(f"Error updating profile: {e}")
+        return jsonify({"error": "Failed to update profile"}), 500
 
     
 @app.route('/creators', methods=['GET'])

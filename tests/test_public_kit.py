@@ -9,6 +9,7 @@ if str(ROOT) not in sys.path:
 
 from services.public_kit import (
     build_public_socials,
+    display_name_typed_flag,
     parse_kit_niches,
     public_portfolio_name,
     serialize_public_recent_posts,
@@ -180,6 +181,33 @@ class TestPublicPortfolioName(unittest.TestCase):
             ),
             'Studio Maya',
         )
+
+    def test_shows_account_name_once_creator_typed_it(self):
+        self.assertEqual(
+            public_portfolio_name(
+                {'display_name': 'Laura Finoia', 'display_name_typed': True},
+                username='laurafinoia',
+                first_name='Laura',
+                last_name='Finoia',
+            ),
+            'Laura Finoia',
+        )
+
+    def test_typed_flag_set_when_name_differs_from_what_editor_showed(self):
+        copied = {'display_name': 'Laura Finoia'}
+        self.assertTrue(display_name_typed_flag('Laura Finoia', copied, shown_name=''))
+        self.assertTrue(display_name_typed_flag('Laura F.', copied, shown_name=''))
+
+    def test_typed_flag_kept_on_autosave(self):
+        self.assertFalse(display_name_typed_flag('Studio Maya', {'display_name': 'Studio Maya'}, 'Studio Maya'))
+        self.assertTrue(display_name_typed_flag(
+            'Laura Finoia',
+            {'display_name': 'Laura Finoia', 'display_name_typed': True},
+            'Laura Finoia',
+        ))
+
+    def test_typed_flag_cleared_when_name_removed(self):
+        self.assertFalse(display_name_typed_flag('', {'display_name': 'Laura', 'display_name_typed': True}, 'Laura'))
 
     def test_typed_name_empty_when_public_name_is_username(self):
         self.assertEqual(

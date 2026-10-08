@@ -160,8 +160,27 @@ def get_public_api_base() -> str:
     return env or "https://api.newcollab.co"
 
 
-def to_proxied_media_url(url: Optional[str], api_base: Optional[str] = None) -> str:
-    """Rewrite a social CDN URL to absolute /api/media-proxy?url=..."""
+def is_public_post_url(url: Optional[str]) -> bool:
+    """Public TikTok / Instagram post pages the proxy may read to mint a fresh still."""
+    try:
+        parsed = urlparse(str(url or "").strip())
+    except Exception:
+        return False
+    host = (parsed.netloc or "").lower().split(":")[0]
+    if parsed.scheme != "https":
+        return False
+    return host in ("tiktok.com", "www.tiktok.com", "instagram.com", "www.instagram.com")
+
+
+def to_proxied_media_url(
+    url: Optional[str],
+    api_base: Optional[str] = None,
+    post_url: Optional[str] = None,
+) -> str:
+    """Rewrite a social CDN URL to absolute /api/media-proxy?url=...
+
+    With post_url, the proxy can recover a fresh still once the signed link expires.
+    """
     if not url or not isinstance(url, str):
         return url or ""
     raw = url.strip()
@@ -182,6 +201,8 @@ def to_proxied_media_url(url: Optional[str], api_base: Optional[str] = None) -> 
     if not is_social_cdn_url(raw):
         return raw
     path = f"/api/media-proxy?url={quote(raw, safe='')}"
+    if is_public_post_url(post_url):
+        path += f"&post={quote(str(post_url).strip(), safe='')}"
     return f"{base}{path}" if base else path
 
 
@@ -255,7 +276,7 @@ def format_snapshot_posts(profile: Optional[dict], limit: int = 9) -> List[dict]
         seen.add(key)
         posts.append(
             {
-                "thumbnail_url": to_proxied_media_url(thumb),
+                "thumbnail_url": to_proxied_media_url(thumb, post_url=post_url),
                 "post_url": post_url,
                 "shortCode": short_code or None,
                 "likes": likes,
@@ -524,7 +545,9 @@ def proxy_profile_snapshot_thumbnails(snapshot: Optional[dict]) -> Optional[dict
     if isinstance(posts, list):
         for post in posts:
             if isinstance(post, dict) and post.get("thumbnail_url"):
-                post["thumbnail_url"] = to_proxied_media_url(post["thumbnail_url"])
+                post["thumbnail_url"] = to_proxied_media_url(
+                    post["thumbnail_url"], post_url=coerce_post_url(post)
+                )
     return snapshot
 
 
@@ -545,6 +568,9 @@ def proxy_media():
 
     try:
         fetched = _fetch_cdn_bytes(url, timeout=12)
+        post_url = (request.args.get("post") or "").strip()
+        if not fetched and is_public_post_url(post_url):
+            fetched = fetch_post_preview_bytes(post_url)
         if not fetched:
             # Expired/signed CDN URLs cannot be recovered here — show a tile, not a broken <img>
             img_io = BytesIO(_PLACEHOLDER_SVG)

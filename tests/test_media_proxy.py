@@ -23,6 +23,56 @@ class TestToProxiedMediaUrl(unittest.TestCase):
         proxied = to_proxied_media_url(url, api_base="https://api.newcollab.co")
         self.assertIn("/api/media-proxy?url=", proxied)
         self.assertIn("tiktokcdn-eu.com", proxied)
+        self.assertNotIn("&post=", proxied)
+
+    def test_adds_public_post_url_for_recovery(self):
+        url = "https://p16-common-sign.tiktokcdn-eu.com/cover.image?x-expires=1"
+        proxied = to_proxied_media_url(
+            url,
+            api_base="https://api.newcollab.co",
+            post_url="https://www.tiktok.com/@laura/video/7688348412441267489",
+        )
+        self.assertIn("&post=https%3A%2F%2Fwww.tiktok.com%2F%40laura%2Fvideo%2F7688348412441267489", proxied)
+
+    def test_ignores_non_social_post_url(self):
+        url = "https://p16-common-sign.tiktokcdn-eu.com/cover.image?x-expires=1"
+        proxied = to_proxied_media_url(url, api_base="https://api.newcollab.co", post_url="http://169.254.169.254/")
+        self.assertNotIn("&post=", proxied)
+
+
+class TestProxyRecoversExpiredStill(unittest.TestCase):
+    def setUp(self):
+        from flask import Flask
+        from media_proxy_routes import media_proxy
+
+        app = Flask(__name__)
+        app.register_blueprint(media_proxy)
+        self.client = app.test_client()
+        self.cdn = "https://p16-common-sign.tiktokcdn-eu.com/cover.image?x-expires=1"
+
+    def test_uses_post_page_when_signed_link_expired(self):
+        from urllib.parse import quote
+
+        post = "https://www.tiktok.com/@laura/video/1"
+        jpeg = b"\xff\xd8" + b"x" * 900
+        with patch("media_proxy_routes._fetch_cdn_bytes", return_value=None), patch(
+            "media_proxy_routes.fetch_post_preview_bytes", return_value=(jpeg, "image/jpeg")
+        ) as recover:
+            res = self.client.get(f"/api/media-proxy?url={quote(self.cdn, safe='')}&post={quote(post, safe='')}")
+        recover.assert_called_once_with(post)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.mimetype, "image/jpeg")
+        self.assertEqual(res.data, jpeg)
+
+    def test_placeholder_without_post_url(self):
+        from urllib.parse import quote
+
+        with patch("media_proxy_routes._fetch_cdn_bytes", return_value=None), patch(
+            "media_proxy_routes.fetch_post_preview_bytes"
+        ) as recover:
+            res = self.client.get(f"/api/media-proxy?url={quote(self.cdn, safe='')}&post=https%3A%2F%2Fevil.example%2F")
+        recover.assert_not_called()
+        self.assertEqual(res.mimetype, "image/svg+xml")
 
 
 class TestUnwrapAndRecoverThumbs(unittest.TestCase):

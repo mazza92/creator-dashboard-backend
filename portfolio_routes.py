@@ -79,6 +79,7 @@ def get_creator_id_from_session():
 from media_proxy_routes import fetch_post_preview_bytes, to_proxied_media_url
 from services.public_kit import (
     build_public_socials,
+    display_name_typed_flag,
     parse_kit_niches,
     public_portfolio_name,
     typed_portfolio_name,
@@ -236,6 +237,7 @@ def _sanitize_kit_theme(raw) -> dict:
         'accent': accent,
         'cover_url': str(src.get('cover_url') or '')[:500],
         'display_name': str(src.get('display_name') or '')[:80],
+        'display_name_typed': bool(src.get('display_name_typed')),
         'headline': str(src.get('headline') or '')[:140],
         'about': str(src.get('about') or '')[:600],
         'location': str(src.get('location') or '')[:80],
@@ -601,7 +603,7 @@ def serialize_post(post):
         'comments': post['comments'],
         'shares': post['shares'],
         'saves': post.get('saves', 0),
-        'thumbnail_url': to_proxied_media_url(thumb) if thumb else None,
+        'thumbnail_url': to_proxied_media_url(thumb, post_url=post['post_url']) if thumb else None,
         'display_order': post['display_order'],
         'is_featured': post['is_featured'],
         'created_at': post['created_at'].isoformat() if post['created_at'] else None,
@@ -875,13 +877,33 @@ def update_kit_settings():
             _ensure_kit_theme_column(cursor, conn)
             incoming = data.get('kit_theme') if isinstance(data.get('kit_theme'), dict) else {}
             theme = _sanitize_kit_theme(incoming)
+            cursor.execute(
+                '''
+                SELECT c.kit_theme, c.username, c.social_handle, u.first_name, u.last_name,
+                       (SELECT full_name FROM creator_profile_data p WHERE p.user_id = c.user_id LIMIT 1) AS scrape_name
+                FROM creators c
+                LEFT JOIN users u ON u.id = c.user_id
+                WHERE c.id = %s
+                ''',
+                (creator_id,),
+            )
+            prev_row = cursor.fetchone() or {}
+            previous = _as_theme_dict(prev_row.get('kit_theme'))
+            shown_name = typed_portfolio_name(
+                previous,
+                username=prev_row.get('username') or prev_row.get('social_handle') or '',
+                first_name=prev_row.get('first_name') or '',
+                last_name=prev_row.get('last_name') or '',
+                scrape_name=prev_row.get('scrape_name') or '',
+            )
+            theme['display_name_typed'] = display_name_typed_flag(
+                theme.get('display_name'), previous, shown_name
+            )
             quotes = _sanitize_testimonials(incoming.get('testimonials'))
             if quotes:
                 theme['testimonials'] = quotes
             else:
-                cursor.execute('SELECT kit_theme FROM creators WHERE id = %s', (creator_id,))
-                existing = cursor.fetchone() or {}
-                kept = _sanitize_testimonials(_as_theme_dict(existing.get('kit_theme')).get('testimonials'))
+                kept = _sanitize_testimonials(previous.get('testimonials'))
                 if kept:
                     theme['testimonials'] = kept
                 else:
@@ -1894,7 +1916,9 @@ def get_public_kit(slug):
             )
             for post in serialized_posts:
                 if post.get('thumbnail_url'):
-                    post['thumbnail_url'] = to_proxied_media_url(post['thumbnail_url'])
+                    post['thumbnail_url'] = to_proxied_media_url(
+                        post['thumbnail_url'], post_url=post.get('post_url')
+                    )
             if serialized_posts:
                 posts_source = 'scrape'
 

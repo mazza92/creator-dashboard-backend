@@ -312,9 +312,25 @@ def public_portfolio_name(theme=None, username='', first_name='', last_name='', 
         _norm_person_name(scrape_name),
     }
     aliases.discard('')
-    if typed and _norm_person_name(typed) not in aliases:
+    if typed and (theme.get('display_name_typed') or _norm_person_name(typed) not in aliases):
         return typed
     return username
+
+
+def display_name_typed_flag(new_name, previous_theme=None, shown_name=''):
+    """True once the creator edits the portfolio Name, so it shows even if it matches the account name.
+
+    shown_name is what the editor displayed (typed_portfolio_name of the stored theme). Autosaves
+    resend it unchanged and keep the previous flag, so an account name copied into the theme
+    never becomes public on its own.
+    """
+    new_name = str(new_name or '').strip()
+    if not new_name:
+        return False
+    previous_theme = previous_theme if isinstance(previous_theme, dict) else {}
+    if new_name != str(shown_name or '').strip():
+        return True
+    return bool(previous_theme.get('display_name_typed'))
 
 
 def typed_portfolio_name(theme=None, username='', first_name='', last_name='', scrape_name=''):

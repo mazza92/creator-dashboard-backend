@@ -704,7 +704,7 @@ def submit_apply(brand_id):
     try:
         from media_proxy_routes import to_proxied_media_url
     except Exception:
-        to_proxied_media_url = lambda url: url or ""
+        to_proxied_media_url = lambda url, **_: url or ""
     for p in posts[:3]:
         if isinstance(p, str):
             item = {"post_url": p, "thumbnail_url": ""}
@@ -715,7 +715,9 @@ def submit_apply(brand_id):
             }
         else:
             continue
-        item["thumbnail_url"] = to_proxied_media_url(item.get("thumbnail_url") or "")
+        item["thumbnail_url"] = to_proxied_media_url(
+            item.get("thumbnail_url") or "", post_url=item.get("post_url")
+        )
         selected.append(item)
     if len(selected) != 3:
         return jsonify({"success": False, "error": "Select 3 posts to continue."}), 400

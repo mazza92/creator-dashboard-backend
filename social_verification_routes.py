@@ -778,7 +778,12 @@ def update_creator_verification(creator_id: int, platform: str, data: dict,
                 instagram_handle = CASE WHEN %s = 'instagram' THEN COALESCE(NULLIF(%s, ''), instagram_handle) ELSE instagram_handle END,
                 total_likes = CASE WHEN %s > 0 THEN %s ELSE total_likes END,
                 total_posts = CASE WHEN %s > 0 THEN %s ELSE total_posts END,
-                image_profile = COALESCE(NULLIF(%s, ''), image_profile),
+                image_profile = CASE
+                    WHEN COALESCE(image_profile, '') = ''
+                      OR image_profile ~* '(tiktokcdn|cdninstagram|fbcdn\\.net|media-proxy)'
+                    THEN COALESCE(NULLIF(%s, ''), image_profile)
+                    ELSE image_profile
+                END,
                 bio = COALESCE(NULLIF(BTRIM(COALESCE(bio, '')), ''), NULLIF(%s, ''))
             WHERE id = %s
         ''', (
@@ -819,6 +824,9 @@ def update_creator_verification(creator_id: int, platform: str, data: dict,
         conn.commit()
         cursor.close()
         conn.close()
+        if platform == 'tiktok':
+            from services.tiktok_media_persist import persist_creator_tiktok_avatar_async
+            persist_creator_tiktok_avatar_async(creator_id)
         return True
     except Exception as e:
         _log(f"Error updating creator verification: {e}")

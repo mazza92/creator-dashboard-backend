@@ -885,7 +885,7 @@ def _is_storage_thumb(url):
     return "supabase.co" in low or "/storage/v1/object/public/" in low
 
 
-def _public_thumb(url):
+def _public_thumb(url, post_url=""):
     """Browser-safe <img src>. Proxies social CDNs. Never uploads a file."""
     raw = str(url or "").strip()
     if not raw:
@@ -896,8 +896,10 @@ def _public_thumb(url):
         inner = unwrap_proxied_media_url(raw) or raw
         if _is_storage_thumb(inner):
             return inner
-        if is_social_cdn_url(inner) or "/api/media-proxy" in raw.lower():
-            return to_proxied_media_url(inner if is_social_cdn_url(inner) else raw)
+        if is_social_cdn_url(inner):
+            return to_proxied_media_url(inner, post_url=post_url)
+        if "/api/media-proxy" in raw.lower():
+            return to_proxied_media_url(raw)
     except Exception:
         return raw
     return raw if raw.startswith("http") else ""
@@ -913,16 +915,17 @@ def _posts_public(*sources):
     seen = set()
     for raw in sources:
         for post in _parse_json_list(raw):
-            thumb = _public_thumb(_thumb_from_post(post))
+            post_url = ""
+            if isinstance(post, dict):
+                post_url = post.get("post_url") or post.get("url") or post.get("share_url") or ""
+            source_thumb = _thumb_from_post(post)
+            thumb = _public_thumb(source_thumb, post_url)
             if not thumb:
                 continue
-            key = thumb.split("?", 1)[0]
+            key = _post_key(post) or source_thumb.split("?", 1)[0]
             if key in seen:
                 continue
             seen.add(key)
-            post_url = ""
-            if isinstance(post, dict):
-                post_url = post.get("post_url") or post.get("url") or ""
             out.append({"post_url": post_url, "thumbnail_url": thumb})
             if len(out) >= 3:
                 return out

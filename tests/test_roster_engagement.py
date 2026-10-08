@@ -165,6 +165,20 @@ class TestRosterEngagement(unittest.TestCase):
         self.assertIn("supabase.co", out[1]["thumbnail_url"])
         self.assertNotIn("media-proxy", out[1]["thumbnail_url"])
 
+    def test_posts_public_keeps_all_three_proxied_picks(self):
+        from brand_pr_roster_routes import _posts_public
+
+        selected = [
+            {
+                "post_url": f"https://www.tiktok.com/@laura/video/{i}",
+                "thumbnail_url": f"https://p16-common-sign.tiktokcdn-eu.com/x{i}.jpg",
+            }
+            for i in range(3)
+        ]
+        out = _posts_public(selected)
+        self.assertEqual(len(out), 3)
+        self.assertIn("&post=https%3A%2F%2Fwww.tiktok.com%2F%40laura%2Fvideo%2F2", out[2]["thumbnail_url"])
+
     def test_posts_public_unwraps_hosted_proxy(self):
         from urllib.parse import quote
         from brand_pr_roster_routes import _posts_public
