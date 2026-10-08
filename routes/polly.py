@@ -102,6 +102,7 @@ from services.polly import (
     confirmed_brand_name,
     brand_named_in_yes,
     pitch_brand_id,
+    locked_pitch_name,
     sanitize_brand_card,
     say_claims_unconfirmed_send,
     unpack_view_result,
@@ -1682,6 +1683,41 @@ def chat():
                 intent = explicit_action
 
         last_pitch = last_pitch_brand(messages, notes) or brand_from_notes(notes)
+        if chip_id == "i_sent_it" and explicit_brand_id and data.get("brand_name"):
+            last_pitch = {
+                "id": explicit_brand_id,
+                "brand_id": explicit_brand_id,
+                "name": data.get("brand_name"),
+                "brand_name": data.get("brand_name"),
+            }
+        locked_name = locked_pitch_name(stored.get("messages"))
+        if (
+            is_done_turn(user_text)
+            and locked_name
+            and not explicit_brand_id
+            and not brand_names_agree(locked_name, (last_pitch or {}).get("name"))
+        ):
+            draft_name = str((last_pitch or {}).get("name") or "").strip()
+            say = f"The **{locked_name}** pitch is still locked, so it hasn't gone out yet."
+            chips = []
+            if draft_name:
+                say += f" Did you send the **{draft_name}** draft instead?"
+                chips.append({
+                    "id": "i_sent_it",
+                    "label": "I sent it",
+                    "action": "chat",
+                    "brand_id": (last_pitch or {}).get("id"),
+                    "brand_name": draft_name,
+                })
+            chips.extend(paywall_unlock_chips(notes.get("paywall_brand") or {"name": locked_name}))
+            data["_server_say"] = say
+            data["_task_chips"] = chips
+            data["_keep_pitch_say"] = True
+            data["_keep_draft"] = True
+            data["_local_say"] = True
+            intent = "chat"
+            live_brain = False
+            last_pitch = None
         draft_pitch = last_thread_pitch(messages)
         draft_needs_location = pitch_has_placeholder((draft_pitch or {}).get("body") or "")
         loc_reply = parse_location_reply(user_text) if draft_needs_location else None
@@ -1936,6 +1972,11 @@ def chat():
                     data["_unlock_after_send"] = unlock_line
                 leftover_cards = drop_pitched(suggested, notes)
                 next_pro = next_unlock_brand(last_pitch, leftover_cards, pending_now)
+                wall = notes.get("paywall_brand") if isinstance(notes.get("paywall_brand"), dict) else None
+                if wall and wall.get("name") and not brand_names_agree(
+                    wall.get("name"), last_pitch.get("name") or last_pitch.get("brand_name")
+                ):
+                    next_pro = {"id": wall.get("id"), "name": wall.get("name")}
                 if out_of_free_unlocks(balance) and not data.get("_task_chips"):
                     data["_task_chips"] = paywall_unlock_chips(next_pro)
                     data["_after_send_empty"] = True

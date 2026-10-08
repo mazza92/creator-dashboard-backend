@@ -169,6 +169,14 @@ class BrandPoolTests(unittest.TestCase):
         self.assertEqual(confirmed_brand_name("yes", history), "Secretlab")
         self.assertEqual(confirmed_brand_name("yes NordVPN", history), "")
 
+    def test_locked_pitch_is_only_the_latest_turn(self):
+        from services.polly import locked_pitch_name
+
+        locked = {"role": "assistant", "content": "On Pro", "locked_pitch": {"brand_name": "Secretlab", "lines": ["Hi"]}}
+        self.assertEqual(locked_pitch_name([{"role": "user", "content": "x"}, locked]), "Secretlab")
+        later = {"role": "assistant", "content": "Logged", "pitch": None}
+        self.assertEqual(locked_pitch_name([locked, {"role": "user", "content": "ok"}, later]), "")
+
     def test_typed_name_drops_a_different_brand_id(self):
         from services.polly import brand_named_in_yes, pitch_brand_id
 

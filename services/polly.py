@@ -2058,6 +2058,18 @@ def say_claims_unconfirmed_send(text: str) -> bool:
     return bool(_UNCONFIRMED_SENT_RE.search(text or ""))
 
 
+def locked_pitch_name(history: Optional[List[Dict]] = None) -> str:
+    """Brand on a paywalled pitch preview, when that is Polly's latest turn."""
+    for msg in reversed(history or []):
+        if (msg.get("role") or "").lower() != "assistant":
+            continue
+        locked = msg.get("locked_pitch")
+        if isinstance(locked, dict) and not msg.get("pitch"):
+            return str(locked.get("brand_name") or "").strip()
+        return ""
+    return ""
+
+
 def last_pitch_brand(
     history: Optional[List[Dict]] = None,
     notes: Optional[Dict] = None,
