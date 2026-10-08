@@ -1871,6 +1871,9 @@ def _gemini_stream_call(model: str, payload: Dict[str, Any], headers: Dict[str, 
     with requests.post(url, json=payload, headers=headers, timeout=_LLM_TIMEOUT_SEC, stream=True) as resp:
         if resp.status_code >= 400:
             raise ValueError(f"{model} stream HTTP {resp.status_code}")
+        # Gemini's SSE has no charset. requests would read it as Latin-1 and
+        # turn an em dash into "â" plus two boxes.
+        resp.encoding = "utf-8"
         for raw in resp.iter_lines(decode_unicode=True):
             if not raw or not raw.startswith("data:"):
                 continue

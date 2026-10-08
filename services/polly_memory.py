@@ -3,11 +3,37 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict, List, Optional
 
 from psycopg2.extras import Json, RealDictCursor
 
 _MAX_MESSAGES = 80
+
+# UTF-8 read as Latin-1: an em dash arrives as "â" plus two control boxes.
+_MOJIBAKE_RUN = re.compile(
+    r"(?:"
+    r"[\u00c2-\u00df][\u0080-\u00bf]"
+    r"|[\u00e0-\u00ef][\u0080-\u00bf]{2}"
+    r"|[\u00f0-\u00f4][\u0080-\u00bf]{3}"
+    r")"
+)
+
+
+def repair_mojibake(text: Optional[str]) -> str:
+    """Turn Latin-1-misread UTF-8 punctuation back into the real character."""
+    raw = text or ""
+    if not raw or not _MOJIBAKE_RUN.search(raw):
+        return raw
+
+    def _fix(match: re.Match) -> str:
+        chunk = match.group(0)
+        try:
+            return chunk.encode("latin-1").decode("utf-8")
+        except UnicodeError:
+            return chunk
+
+    return _MOJIBAKE_RUN.sub(_fix, raw)
 
 
 _THREAD_TABLE_READY = False
@@ -44,7 +70,7 @@ def _clean_message(msg: Any) -> Optional[Dict[str, Any]]:
     out = {
         "id": msg.get("id"),
         "role": role,
-        "content": str(content)[:8000],
+        "content": repair_mojibake(str(content))[:8000],
     }
     brands = msg.get("brands")
     if isinstance(brands, list) and brands:

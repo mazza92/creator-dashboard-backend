@@ -5,6 +5,17 @@ from unittest.mock import patch
 from flask import Flask, jsonify
 
 from services.polly import SayStreamer, _partial_json_string
+from services.polly_memory import repair_mojibake
+
+
+class MojibakeRepairTests(unittest.TestCase):
+    def test_em_dash_read_as_latin1_becomes_a_dash(self):
+        broken = "Secretlab \u00e2\u0080\u0094 they're a fit."
+        self.assertEqual(repair_mojibake(broken), "Secretlab \u2014 they're a fit.")
+
+    def test_real_punctuation_is_left_alone(self):
+        clean = "Secretlab \u2014 they're a fit. caf\u00e9"
+        self.assertEqual(repair_mojibake(clean), clean)
 
 
 class PartialJsonStringTests(unittest.TestCase):
@@ -57,6 +68,8 @@ class GeminiStreamTests(unittest.TestCase):
                 return False
 
             def iter_lines(self, decode_unicode=True):
+                if getattr(self, "encoding", None) != "utf-8":
+                    raise AssertionError("Gemini stream must be decoded as utf-8")
                 return iter(lines)
 
         events = []
