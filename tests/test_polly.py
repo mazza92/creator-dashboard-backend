@@ -169,6 +169,17 @@ class BrandPoolTests(unittest.TestCase):
         self.assertEqual(confirmed_brand_name("yes", history), "Secretlab")
         self.assertEqual(confirmed_brand_name("yes NordVPN", history), "")
 
+    def test_directory_question_names_the_brand(self):
+        from services.polly import directory_brand_ask, leftover_is_prompt
+
+        self.assertEqual(directory_brand_ask("do you have Gucci?"), "Gucci")
+        self.assertEqual(directory_brand_ask("is Gucci in the directory?"), "Gucci")
+        self.assertEqual(directory_brand_ask("do you have Charlotte Tilbury?"), "Charlotte Tilbury")
+        self.assertFalse(leftover_is_prompt("do you have Gucci?"))
+        for text in ("do you have tech brands?", "do you have time?", "is there anything else?",
+                     "any tips?", "do you have paid gigs?", "can you help me?", "any skincare?"):
+            self.assertEqual(directory_brand_ask(text), "", text)
+
     def test_locked_pitch_is_only_the_latest_turn(self):
         from services.polly import locked_pitch_name
 

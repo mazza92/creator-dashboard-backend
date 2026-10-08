@@ -103,6 +103,7 @@ from services.polly import (
     brand_named_in_yes,
     pitch_brand_id,
     locked_pitch_name,
+    directory_brand_ask,
     sanitize_brand_card,
     say_claims_unconfirmed_send,
     unpack_view_result,
@@ -1718,6 +1719,54 @@ def chat():
             intent = "chat"
             live_brain = False
             last_pitch = None
+        dir_ask = "" if (explicit_brand_id or chip_id or data.get("_local_say")) else directory_brand_ask(user_text)
+        if dir_ask:
+            try:
+                dir_row = _lookup_published_brand(conn, brand_name=dir_ask)
+            except Exception as err:
+                print(f"[Polly] directory ask lookup skipped: {err}")
+                if conn:
+                    conn.rollback()
+                dir_row = None
+            if dir_row or dir_ask[:1].isupper():
+                intent = "chat"
+                live_brain = False
+                asked_brand = None
+                named_ask = False
+                decision["brand_name"] = None
+                decision["brand_id"] = None
+                data["_local_say"] = True
+                data["_keep_draft"] = True
+            if dir_row:
+                found_name = dir_row.get("name") or dir_ask
+                category = str(dir_row.get("category") or "").strip()
+                pitched = any(
+                    brand_names_agree(found_name, n) for n in (notes.get("pitched_brand_names") or [])
+                )
+                say = f"Yes, **{found_name}** is in the directory" + (f" ({category})." if category else ".")
+                if pitched:
+                    say += " You've already pitched them, so I'd give it a few days before a follow-up."
+                else:
+                    say += " Want me to draft your pitch?"
+                data["_server_say"] = say
+                data["_dir_cards"] = [dir_row]
+                data["_task_chips"] = [] if pitched else [{
+                    "id": "pitch_brand",
+                    "label": f"Pitch {found_name}"[:40],
+                    "action": "generate_pitch",
+                    "brand_id": dir_row.get("id"),
+                    "brand_name": found_name,
+                }]
+                data["_task_chips"].append({"id": "more_brands", "label": "More brands", "action": "suggest_brands"})
+            elif dir_ask[:1].isupper():
+                say = (
+                    f"I searched the directory and **{dir_ask}** isn't in it yet. "
+                    "Want me to find brands like them that are?"
+                )
+                data["_server_say"] = say
+                data["_task_chips"] = [
+                    {"id": "more_brands", "label": "Show similar brands", "action": "suggest_brands"},
+                ]
         draft_pitch = last_thread_pitch(messages)
         draft_needs_location = pitch_has_placeholder((draft_pitch or {}).get("body") or "")
         loc_reply = parse_location_reply(user_text) if draft_needs_location else None
@@ -2646,6 +2695,8 @@ def chat():
             pitch = update or None
 
         brands = filter_brands_by_prefs(_hydrate_brand_cards(brands), notes)
+        if data.get("_dir_cards"):
+            brands = _hydrate_brand_cards(data["_dir_cards"])
         queue = filter_brands_by_prefs(_hydrate_brand_cards(drop_pitched(brands or suggested, notes)), notes)
         task_chips = drop_early_followups(task_chips, early_fu)
         payload = {

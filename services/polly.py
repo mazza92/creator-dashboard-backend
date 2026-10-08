@@ -731,9 +731,52 @@ def resolve_brand(
     return None
 
 
+_DIRECTORY_ASK_RE = re.compile(
+    r"(?i)^(?:hey|hi|so|and|ok|okay)?[,\s]*(?:polly[,\s]+)?"
+    r"(?:do\s+(?:you|we|u)\s+(?:have|got|know|list|carry)|have\s+(?:you|we)\s+got|"
+    r"is\s+there|are\s+there|any|got|can\s+(?:i|we|you)\s+(?:pitch|get|find|contact|reach)|"
+    r"(?:is|are)(?=\s+.+?\s+(?:in|on)\s+(?:the\s+|your\s+|our\s+)?(?:directory|database|list|here|polly)))"
+    r"\s+(?:a\s+|an\s+|the\s+)?(?P<name>.+?)"
+    r"(?:\s+(?:in|on)\s+(?:the\s+|your\s+|our\s+)?(?:directory|database|list|here|polly)|"
+    r"\s+(?:available|listed|there|too|as\s+well))?"
+    r"\s*[?.!]*\s*$"
+)
+
+
+_DIRECTORY_ASK_NOT_NAMES = frozenset({
+    "time", "anything", "something", "everything", "nothing", "more", "other", "others",
+    "else", "idea", "ideas", "tip", "tips", "advice", "question", "questions", "feedback",
+    "news", "update", "updates", "access", "room", "space", "way", "chance", "luck",
+    "it", "this", "that", "them", "those", "these", "me", "my", "mine", "your", "one", "ones",
+    "new", "free", "good", "best", "better", "cheap", "local", "small", "big",
+})
+
+
+def directory_brand_ask(text: str) -> str:
+    """'do you have Gucci?' / 'is Gucci in the directory?' → Gucci."""
+    raw = (text or "").strip()
+    if not raw or len(raw) > 80:
+        return ""
+    match = _DIRECTORY_ASK_RE.match(raw)
+    if not match:
+        return ""
+    name = match.group("name").strip(" .!,?\"'")
+    low = name.lower()
+    if any(tok in _DIRECTORY_ASK_NOT_NAMES for tok in re.findall(r"[a-z']+", low)):
+        return ""
+    if low in _CATEGORY_ASK or low in _GENERIC_BRAND_ASK or leftover_looks_like_query(name):
+        return ""
+    if len(name.split()) > 4 or not candidate_looks_like_brand_name(name):
+        return ""
+    return name
+
+
 def strip_brand_ask(text: str) -> str:
     """Turn 'I want DELL' / 'Let's hit up Grace & Stella' into the brand name."""
     raw = (text or "").strip()
+    asked = directory_brand_ask(raw)
+    if asked:
+        return asked
     cleaned = _BRAND_ASK_PREFIX_RE.sub("", raw).strip(" .!,")
     return cleaned or raw
 
@@ -773,6 +816,8 @@ def leftover_is_prompt(text: str) -> bool:
     if not raw:
         return False
     if followup_brand_query(raw):
+        return False
+    if directory_brand_ask(raw):
         return False
     if _EMAIL_ASK_RE.match(raw):
         return True
