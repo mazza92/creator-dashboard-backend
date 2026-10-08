@@ -8,8 +8,6 @@ from urllib.parse import parse_qs, urlparse
 from services.polly import (
     credits_out_offer_due,
     credits_out_offer_message,
-    is_cant_afford,
-    reads_like_sentence,
     reset_label,
 )
 from services.polly_alerts import chip_link, email_nudges, kit_view_email, nudge_email
@@ -97,28 +95,7 @@ class GiftedFirstStarterTests(unittest.TestCase):
         self.assertEqual(chips[0]["id"], "paid_ugc")
 
 
-class BrandLookupGateTests(unittest.TestCase):
-    def test_sentences_are_not_brands(self):
-        for text in (
-            "find me paid collaborations",
-            "I want paid opportunities now",
-            "no I meant the one I pitched yesterday",
-            "can you change my city to Lyon",
-            "my number is 514 555 0199",
-        ):
-            self.assertTrue(reads_like_sentence(text), text)
-
-    def test_brand_names_pass(self):
-        for text in ("Rare Beauty", "Not Your Mother's", "Kiss My Face", "Glossier", "The Ordinary"):
-            self.assertFalse(reads_like_sentence(text), text)
-
-
 class ProConversionTests(unittest.TestCase):
-    def test_cant_afford_detection(self):
-        for text in ("I can't afford Pro", "pro is too expensive for me", "I don't have money for that"):
-            self.assertTrue(is_cant_afford(text), text)
-        self.assertFalse(is_cant_afford("how much is Pro?"))
-
     def test_reset_label(self):
         self.assertEqual(reset_label({"reset_at": "2026-10-01T00:00:00+00:00"}), "Oct 1")
         self.assertRegex(reset_label({}), r"^[A-Z][a-z]{2} 1$")

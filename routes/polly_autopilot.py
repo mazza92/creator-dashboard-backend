@@ -221,9 +221,8 @@ def plan():
 @autopilot_bp.route("/draft", methods=["POST"])
 def draft():
     """Write one pitch for the batch. The frontend calls this per brand so progress shows."""
-    from routes.polly import (
-        _invoke_generate_pr_package,
-        _load_scrape,
+    from routes.polly import _invoke_generate_pr_package, _load_scrape
+    from services.polly import (
         apply_gifted_ask_to_pitch,
         apply_location_to_pitch,
         pitch_from_package_response,

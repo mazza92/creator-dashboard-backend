@@ -13,11 +13,9 @@ from services.polly import (
     classify_intent_heuristic,
     empty_unlock_open,
     flatten_for_you,
-    is_unlock_reset_ask,
     out_of_free_unlocks,
     paywall_unlock_chips,
     pitch_from_package_response,
-    profile_aware_chat,
     public_profile_summary,
     resolve_brand,
     sanitize_brand_card,
@@ -154,21 +152,6 @@ class BrandPoolTests(unittest.TestCase):
         self.assertEqual(resolve_brand(suggested, brand_name="rhode")["id"], 9)
         self.assertIsNone(resolve_brand(suggested, brand_name="Invented Brand"))
 
-    def test_yes_to_named_brand_beats_the_card_on_screen(self):
-        from services.polly import confirmed_brand_name
-
-        history = [{
-            "role": "assistant",
-            "content": "I'd start with **Secretlab**. Want me to draft a pitch for them?",
-            "brands": [{"id": 4, "name": "NordVPN"}],
-        }]
-        self.assertEqual(
-            confirmed_brand_name("yes Secretlab", history, history[0]["brands"]),
-            "Secretlab",
-        )
-        self.assertEqual(confirmed_brand_name("yes", history), "Secretlab")
-        self.assertEqual(confirmed_brand_name("yes NordVPN", history), "")
-
     def test_directory_question_names_the_brand(self):
         from services.polly import directory_brand_ask, leftover_is_prompt
 
@@ -187,16 +170,6 @@ class BrandPoolTests(unittest.TestCase):
         self.assertEqual(locked_pitch_name([{"role": "user", "content": "x"}, locked]), "Secretlab")
         later = {"role": "assistant", "content": "Logged", "pitch": None}
         self.assertEqual(locked_pitch_name([locked, {"role": "user", "content": "ok"}, later]), "")
-
-    def test_typed_name_drops_a_different_brand_id(self):
-        from services.polly import brand_named_in_yes, pitch_brand_id
-
-        self.assertEqual(brand_named_in_yes("yes Secretlab"), "Secretlab")
-        self.assertEqual(brand_named_in_yes("yes"), "")
-        suggested = [{"id": 4, "name": "NordVPN"}, {"id": 9, "name": "BALLBOYZ"}]
-        self.assertIsNone(pitch_brand_id(9, "Secretlab", suggested))
-        self.assertEqual(pitch_brand_id(4, "NordVPN", suggested), 4)
-        self.assertIsNone(pitch_brand_id(88, "Secretlab", suggested))
 
 
 class MailtoTests(unittest.TestCase):
@@ -224,7 +197,7 @@ class MailtoTests(unittest.TestCase):
         self.assertIn("mailto:pr@brand.example", pitch["mailto"])
 
     def test_followup_from_generate_pitch(self):
-        from services.polly import pitch_from_followup_response, wants_followup_pitch
+        from services.polly import pitch_from_followup_response
         pitch = pitch_from_followup_response({
             "subject": "Quick follow-up - Rhode collab",
             "body": "Just bumping this in case it got buried.",
@@ -236,40 +209,15 @@ class MailtoTests(unittest.TestCase):
         self.assertEqual(pitch["subject"], "Quick follow-up - Rhode collab")
         self.assertIn("buried", pitch["body"])
         self.assertNotIn("3 posts", pitch["body"])
-        self.assertTrue(wants_followup_pitch({"chip_id": "draft_followup"}, "Draft Rhode follow-up"))
-        self.assertTrue(wants_followup_pitch({"is_followup": True}, "yes"))
-        self.assertFalse(wants_followup_pitch({}, "Suggest brands I should reach out to"))
-        from services.polly import asked_brand_query, followup_brand_query, last_followup_brand
+        from services.polly import asked_brand_query, followup_brand_query
         self.assertEqual(followup_brand_query("Draft Tarte Cosmetics follow-up"), "Tarte Cosmetics")
         self.assertEqual(asked_brand_query("Draft Tarte Cosmetics follow-up"), "Tarte Cosmetics")
         self.assertNotEqual(asked_brand_query("Draft Tarte Cosmetics follow-up"), "Draft Tarte Cosmetics follow-up")
-        history = [{
-            "role": "assistant",
-            "content": "This is the follow-up for Tarte Cosmetics.",
-            "pitch": {"brand_name": "Tarte Cosmetics", "is_followup": True},
-        }]
         self.assertEqual(followup_brand_query("also for Future society"), "Future society")
-        self.assertTrue(wants_followup_pitch({}, "also for Future society", history))
-        self.assertTrue(wants_followup_pitch(
-            {}, "also for Future society", [], pitched_names=["Future Society"],
-        ))
-        self.assertTrue(wants_followup_pitch({}, "share follow wup", history))
-        self.assertFalse(wants_followup_pitch({}, "not the one for Future society", history))
         self.assertEqual(asked_brand_query("not the one for Future society"), "")
-        self.assertEqual(last_followup_brand(history), "Tarte Cosmetics")
 
 
 class HeuristicIntentTests(unittest.TestCase):
-    def test_profile_aware_chat_uses_name_and_niche(self):
-        text = profile_aware_chat(
-            "Display name: Maya Lopez\nPrimary niche: skincare",
-            first_name="Maya",
-        )
-        self.assertIn("Maya", text)
-        self.assertIn("skincare", text)
-        self.assertNotIn("Here are", text)
-        self.assertNotIn("fit your profile", text.lower())
-
     def test_suggest(self):
         d = classify_intent_heuristic("Suggest brands I should reach out to")
         self.assertEqual(d["intent"], "suggest_brands")
@@ -364,14 +312,8 @@ class HeuristicIntentTests(unittest.TestCase):
         self.assertEqual(d["intent"], "suggest_brands")
 
     def test_more_does_not_claim_draft_was_sent(self):
-        from services.polly import drop_pending_draft, mark_draft_pending, say_claims_unconfirmed_send
+        from services.polly import drop_pending_draft, mark_draft_pending
         from services.polly_persona import persona_more_brands_intro
-        self.assertTrue(say_claims_unconfirmed_send(
-            "Now that Nuria Beauty pitch is out, I've got another strong one for you."
-        ))
-        self.assertFalse(say_claims_unconfirmed_send(
-            "Nuria Beauty is still a draft — tap I sent it when it's actually out."
-        ))
         notes = mark_draft_pending({}, {"id": 1, "name": "Nuria Beauty"})
         left = drop_pending_draft(
             [{"id": 1, "name": "Nuria Beauty"}, {"id": 2, "name": "Sentix Cosmetics (US)"}],
@@ -671,51 +613,12 @@ class HeuristicIntentTests(unittest.TestCase):
         self.assertIn("Lyon, France", filled["body"])
         self.assertNotIn("[CITY, COUNTRY]", filled["body"])
         self.assertFalse(filled["needs_location"])
-        from services.polly import parse_location_reply, patch_last_pitch_in_history, pitch_has_placeholder
+        from services.polly import parse_location_reply, pitch_has_placeholder
         self.assertEqual(parse_location_reply("Lyon, France")["city"], "Lyon")
         self.assertEqual(parse_location_reply("I'm in Austin, United States")["country"], "United States")
         self.assertIsNone(parse_location_reply("Pitch DOTSHOP for me"))
         self.assertIsNone(parse_location_reply("I sent it"))
-        history = [{
-            "role": "assistant",
-            "pitch": {"body": "shipping to [CITY, COUNTRY].", "brand_name": "DOTSHOP"},
-        }]
-        patched = patch_last_pitch_in_history(history, {"body": "shipping to Lyon, France.", "needs_location": False})
-        self.assertIn("Lyon, France", patched[0]["pitch"]["body"])
         self.assertTrue(pitch_has_placeholder("plus product shipping to [CITY, COUNTRY] if you want it in-shot."))
-
-    def test_brain_brand_name_rejects_sentences(self):
-        from services.polly import brain_brand_name
-        self.assertIsNone(brain_brand_name("do you have Ayla email"))
-        self.assertIsNone(brain_brand_name("i need an email"))
-        self.assertIsNone(brain_brand_name("email"))
-        self.assertEqual(brain_brand_name("Ayla"), "Ayla")
-        self.assertEqual(brain_brand_name("SKIN1004"), "SKIN1004")
-        self.assertEqual(brain_brand_name("NatPat AU"), "NatPat AU")
-
-    def test_gemini_json_extracts_object_from_preamble(self):
-        from services.polly import _gemini_output_text, _parse_json_text
-        parsed = _parse_json_text('Sure.\n{"intent":"coach_rates","say":"Charge $150.","brand_name":null}')
-        self.assertEqual(parsed["intent"], "coach_rates")
-        with self.assertRaises(ValueError):
-            _parse_json_text("")
-        text = _gemini_output_text({
-            "candidates": [{"content": {"parts": [{"text": '{"intent":'}, {"text": '"chat"}'}]}}],
-        })
-        self.assertIn("intent", text)
-
-    def test_polly_brain_does_not_call_anthropic(self):
-        from unittest.mock import patch
-        from services import polly
-        with patch.object(polly, "llm_disabled", return_value=False), \
-             patch.object(polly, "get_gemini_key", return_value="test-key"), \
-             patch.object(polly, "_gemini_generate_json", side_effect=ValueError("empty model text")) as gem, \
-             patch.object(polly, "_anthropic_generate_json") as anth:
-            polly._GEMINI_DEPLETED = False
-            with self.assertRaises(ValueError):
-                polly._llm_generate_json("sys", "user")
-            gem.assert_called_once()
-            anth.assert_not_called()
 
     def test_gifted_named_brand_is_pitch_not_paid_gigs(self):
         from services.polly import (
@@ -898,23 +801,6 @@ class PersonaTests(unittest.TestCase):
         self.assertIn("Treat yourself better", text)
         self.assertNotIn("already sit", text)
         self.assertNotIn("Benji", text)
-
-    def test_done_after_pitch_does_not_greet(self):
-        import os
-        from unittest.mock import patch
-        from services.polly import chat_reply
-        with patch.dict(os.environ, {"POLLY_DISABLE_LLM": "1"}):
-            text = chat_reply(
-                "Display name: Mahery\nPrimary niche: skincare",
-                "done",
-                history=[{
-                    "role": "assistant",
-                    "content": "Right, here's your pitch for Clementine Sleepwear. Open your mail.",
-                }],
-                first_name="Mahery",
-            )
-        self.assertNotIn("how's your week going", text.lower())
-        self.assertNotIn("Want me to line up some brands", text)
 
     def test_brand_intro_picks_a_favourite(self):
         from services.polly_persona import persona_brand_intro
@@ -1145,11 +1031,6 @@ class PaywallCopyTests(unittest.TestCase):
             [{"id": 2, "name": "GLO"}],
             {"id": 2, "name": "GLO"},
         ))
-
-    def test_reset_ask_detects_iamkatmac_line(self):
-        self.assertTrue(is_unlock_reset_ask("wait for the reset- when will that be?"))
-        self.assertTrue(is_unlock_reset_ask("when do unlocks reset"))
-        self.assertFalse(is_unlock_reset_ask("Find me 3 brands to pitch today"))
 
     def test_out_of_free_unlocks(self):
         self.assertTrue(out_of_free_unlocks({"remaining": 0, "is_unlimited": False}))
