@@ -100,6 +100,8 @@ from services.polly import (
     brand_names_agree,
     brand_in_text,
     confirmed_brand_name,
+    brand_named_in_yes,
+    pitch_brand_id,
     sanitize_brand_card,
     say_claims_unconfirmed_send,
     unpack_view_result,
@@ -2171,14 +2173,14 @@ def chat():
             )
             prior_draft = pending_label
             lookup_id = explicit_brand_id or decision.get("brand_id")
-            confirmed = "" if explicit_brand_id else confirmed_brand_name(
-                user_text, messages, suggested,
+            typed = "" if explicit_brand_id else (
+                brand_named_in_yes(user_text)
+                or confirmed_brand_name(user_text, messages, suggested)
             )
-            if confirmed and not brand_names_agree(confirmed, asked_name):
-                id_row = resolve_brand(suggested, brand_id=lookup_id) if lookup_id else None
-                if not brand_names_agree(confirmed, (id_row or {}).get("name")):
-                    lookup_id = None
-                    asked_name = confirmed
+            if typed:
+                asked_name = typed
+            if not explicit_brand_id:
+                lookup_id = pitch_brand_id(lookup_id, asked_name, suggested)
             resolved = resolve_brand(
                 suggested,
                 brand_id=lookup_id,
@@ -2197,6 +2199,12 @@ def chat():
                     brand_name=asked_name,
                 )
                 resolved = pooled
+            if (
+                asked_name
+                and resolved
+                and not brand_names_agree(asked_name, resolved.get("name"))
+            ):
+                resolved = None
             if conn:
                 conn.close()
                 conn = None

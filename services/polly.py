@@ -1169,6 +1169,37 @@ _SHORT_YES_RE = re.compile(
 )
 
 
+_YES_NAME_RE = re.compile(
+    r"(?i)^(?:yes|yeah|yep|yup|sure|ok|okay)[,!]?\s+(.+?)\s*$"
+)
+
+
+def brand_named_in_yes(text: Optional[str]) -> str:
+    """'yes Secretlab' → Secretlab. A bare 'yes' stays empty."""
+    match = _YES_NAME_RE.match((text or "").strip())
+    if not match:
+        return ""
+    name = match.group(1).strip(" .!,")
+    name = re.sub(r"(?i)^(please\s+)?(pitch|draft|do)\s+", "", name).strip()
+    if not name or not candidate_looks_like_brand_name(name):
+        return ""
+    return name
+
+
+def pitch_brand_id(lookup_id: Any, asked_name: Optional[str], suggested: Optional[List[Dict]] = None) -> Any:
+    """Drop a brand id that isn't the company they named.
+
+    The model often sets brand_name correctly and brand_id to some other card.
+    resolve_brand trusts the id, so the pitch comes out for the wrong company.
+    """
+    if lookup_id in (None, "", 0, "0") or not (asked_name or "").strip():
+        return lookup_id
+    row = resolve_brand(suggested, brand_id=lookup_id)
+    if row and brand_names_agree(asked_name, row.get("name")):
+        return lookup_id
+    return None
+
+
 def confirmed_brand_name(
     text: str,
     history: Optional[List[Dict]] = None,

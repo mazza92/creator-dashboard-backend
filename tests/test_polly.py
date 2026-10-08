@@ -169,6 +169,16 @@ class BrandPoolTests(unittest.TestCase):
         self.assertEqual(confirmed_brand_name("yes", history), "Secretlab")
         self.assertEqual(confirmed_brand_name("yes NordVPN", history), "")
 
+    def test_typed_name_drops_a_different_brand_id(self):
+        from services.polly import brand_named_in_yes, pitch_brand_id
+
+        self.assertEqual(brand_named_in_yes("yes Secretlab"), "Secretlab")
+        self.assertEqual(brand_named_in_yes("yes"), "")
+        suggested = [{"id": 4, "name": "NordVPN"}, {"id": 9, "name": "BALLBOYZ"}]
+        self.assertIsNone(pitch_brand_id(9, "Secretlab", suggested))
+        self.assertEqual(pitch_brand_id(4, "NordVPN", suggested), 4)
+        self.assertIsNone(pitch_brand_id(88, "Secretlab", suggested))
+
 
 class MailtoTests(unittest.TestCase):
     def test_includes_bcc_subject_body(self):
