@@ -154,6 +154,21 @@ class BrandPoolTests(unittest.TestCase):
         self.assertEqual(resolve_brand(suggested, brand_name="rhode")["id"], 9)
         self.assertIsNone(resolve_brand(suggested, brand_name="Invented Brand"))
 
+    def test_yes_to_named_brand_beats_the_card_on_screen(self):
+        from services.polly import confirmed_brand_name
+
+        history = [{
+            "role": "assistant",
+            "content": "I'd start with **Secretlab**. Want me to draft a pitch for them?",
+            "brands": [{"id": 4, "name": "NordVPN"}],
+        }]
+        self.assertEqual(
+            confirmed_brand_name("yes Secretlab", history, history[0]["brands"]),
+            "Secretlab",
+        )
+        self.assertEqual(confirmed_brand_name("yes", history), "Secretlab")
+        self.assertEqual(confirmed_brand_name("yes NordVPN", history), "")
+
 
 class MailtoTests(unittest.TestCase):
     def test_includes_bcc_subject_body(self):

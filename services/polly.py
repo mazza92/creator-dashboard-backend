@@ -1136,6 +1136,85 @@ def brand_in_suggested(suggested: Optional[List[Dict]], brand: Optional[Dict]) -
     ) is not None
 
 
+def bold_brand_mentions(text: Optional[str]) -> List[str]:
+    """Company names Polly bolded, skipping sentences and categories."""
+    found: List[str] = []
+    seen = set()
+    for match in re.finditer(r"\*\*([^*]{2,48})\*\*", text or ""):
+        name = match.group(1).strip(" .!,")
+        key = name.lower()
+        if not key or key in seen or not candidate_looks_like_brand_name(name):
+            continue
+        seen.add(key)
+        found.append(name)
+    return found
+
+
+def brand_names_agree(left: Optional[str], right: Optional[str]) -> bool:
+    a = (left or "").strip().lower()
+    b = (right or "").strip().lower()
+    if not a or not b:
+        return False
+    return a == b or a in b or b in a
+
+
+def brand_in_text(text: Optional[str], name: Optional[str]) -> bool:
+    needle = (name or "").strip().lower()
+    return bool(needle) and needle in (text or "").lower()
+
+
+_SHORT_YES_RE = re.compile(
+    r"^(yes|yeah|yep|yup|sure|ok|okay|please|go ahead|do it|draft it|pitch them|pitch it)\b",
+    re.I,
+)
+
+
+def confirmed_brand_name(
+    text: str,
+    history: Optional[List[Dict]] = None,
+    suggested: Optional[List[Dict]] = None,
+) -> str:
+    """Brand the user just accepted when it is not the card currently on screen.
+
+    'yes Secretlab' after she wrote **Secretlab** but showed a NordVPN card
+    must pitch Secretlab, not the card.
+    """
+    raw = (text or "").strip()
+    if not raw or is_casual_ack(raw) or is_more_brands_turn(raw) or is_done_turn(raw):
+        return ""
+    last = None
+    for msg in reversed(history or []):
+        if (msg.get("role") or "").lower() == "assistant":
+            last = msg
+            break
+    if not last:
+        return ""
+    card_names = []
+    for row in last.get("brands") or []:
+        if isinstance(row, dict):
+            name = str(row.get("name") or row.get("brand_name") or "").strip()
+            if name:
+                card_names.append(name)
+    pools: List[Dict[str, Any]] = list(names_mentioned_by_assistant([last]))
+    for row in suggested or []:
+        if isinstance(row, dict):
+            pools.append(row)
+    hit = match_named_brand(raw, pools)
+    if hit and not any(brand_names_agree(hit, card) for card in card_names):
+        return hit
+    if hit:
+        return ""
+    if not (_AFFIRM_RE.match(raw) or _SHORT_YES_RE.match(raw)):
+        return ""
+    off_card = [
+        name for name in bold_brand_mentions(last.get("content") or "")
+        if not any(brand_names_agree(name, card) for card in card_names)
+    ]
+    if len(off_card) == 1:
+        return off_card[0]
+    return ""
+
+
 def names_mentioned_by_assistant(history: Optional[List[Dict]]) -> List[Dict[str, Any]]:
     """Brand cards, pitch cards, and **Name** mentions from recent assistant turns."""
     found: List[Dict[str, Any]] = []

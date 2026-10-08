@@ -96,6 +96,10 @@ from services.polly import (
     requested_brand_name,
     names_mentioned_by_assistant,
     resolve_brand,
+    bold_brand_mentions,
+    brand_names_agree,
+    brand_in_text,
+    confirmed_brand_name,
     sanitize_brand_card,
     say_claims_unconfirmed_send,
     unpack_view_result,
@@ -2123,6 +2127,29 @@ def chat():
                     say = with_location_ask(say)
                     notes["location_asked_at"] = utc_iso_now()
                     notes["awaiting_location"] = True
+            if chip_key != "first_matches" and say and not any(
+                brand_in_text(say, (b or {}).get("name")) for b in (brands or [])
+            ):
+                named = bold_brand_mentions(say)[:3]
+                found = []
+                if named:
+                    from pr_crm_routes import get_db_connection
+                    lookup = get_db_connection()
+                    try:
+                        for name in named:
+                            row = _lookup_published_brand(lookup, brand_name=name)
+                            if row and not any(
+                                brand_names_agree(row.get("name"), got.get("name")) for got in found
+                            ):
+                                found.append(row)
+                    finally:
+                        lookup.close()
+                if found:
+                    brands = _hydrate_brand_cards(found)
+                elif brands:
+                    say = persona_brand_intro(
+                        brands, profile_context, deal_intent=notes.get("deal_intent"),
+                    )
             if brands:
                 from services.polly import mark_shown_brands
                 notes = mark_shown_brands(notes, brands)
@@ -2144,6 +2171,14 @@ def chat():
             )
             prior_draft = pending_label
             lookup_id = explicit_brand_id or decision.get("brand_id")
+            confirmed = "" if explicit_brand_id else confirmed_brand_name(
+                user_text, messages, suggested,
+            )
+            if confirmed and not brand_names_agree(confirmed, asked_name):
+                id_row = resolve_brand(suggested, brand_id=lookup_id) if lookup_id else None
+                if not brand_names_agree(confirmed, (id_row or {}).get("name")):
+                    lookup_id = None
+                    asked_name = confirmed
             resolved = resolve_brand(
                 suggested,
                 brand_id=lookup_id,
@@ -2369,6 +2404,9 @@ def chat():
                             pitch.get("location_display") or loc_display or ""
                         )
                         gem_say = (decision.get("say") or "").strip()
+                        pitched_name = resolved.get("name") or asked_name or ""
+                        if gem_say and pitched_name and not brand_in_text(gem_say, pitched_name):
+                            gem_say = ""
                         if (
                             live_brain
                             and gem_say
