@@ -3889,7 +3889,7 @@ def unlock_brand_access(slug):
                 app.logger.warning(f"🚫 Quota limit reached for creator {creator_id}")
                 conn.close()
                 return jsonify({
-                    'error': f"You've used all {DAILY_LIMIT} free application forms today. Come back tomorrow, or go Pro to get placed on 1 live gifted campaign every month, plus unlimited credits on top.",
+                    'error': f"You've used all {DAILY_LIMIT} free application forms today. Come back tomorrow, or go Pro and Polly pitches 20–30 brands a month from your Gmail, plus unlimited applications.",
                     'upgrade_required': True,
                     'current_count': daily_unlocks,
                     'limit': DAILY_LIMIT

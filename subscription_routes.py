@@ -277,7 +277,7 @@ def check_subscription_limits(creator_id, action_type):
         if action_type == 'send_pitch':
             count = creator['pitches_sent_this_week'] or 0
             if count >= FREE_MONTHLY_LIMIT:
-                return False, f"You've used all your free applications this month. Go Pro to get placed on 1 live gifted campaign every month, plus unlimited credits on top.", count, FREE_MONTHLY_LIMIT
+                return False, f"You've used all your free applications this month. Go Pro and Polly pitches 20–30 brands a month from your Gmail, plus unlimited applications.", count, FREE_MONTHLY_LIMIT
             return True, "", count, FREE_MONTHLY_LIMIT
 
     # Pro: unlimited everything

@@ -1,8 +1,8 @@
 """Pro placement — put active Pro creators on live rosters that fit them.
 
-Pro promises one gifted campaign placement a month. We deliver it by
-auto-applying Pro creators to in-niche active rosters (reusing the posts and
-shipping address from their last application) and ranking them first on the
+Sales copy sells Polly autopilot. This still auto-applies Pro creators to
+in-niche active rosters (reusing the posts and
+shipping address from their last application) and ranks them first on the
 roster and in the brand's one-click shortlist.
 
 Runs from the hourly roster cron. Daily and per-roster caps keep brand lists

@@ -357,7 +357,7 @@ def get_pr_ready():
                         "1 sample UGC hook",
                     ],
                     "pro_includes": [
-                        "1 live gifted campaign every month, guaranteed",
+                        "Polly pitches 20–30 brands a month from your Gmail",
                         "full fix coaching + evidence",
                         "engagement stats on portfolio posts",
                         "uncapped Ready score",

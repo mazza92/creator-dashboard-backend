@@ -3,23 +3,24 @@
 {% block content %}
 <p>Hi {{ first_name or "there" }},</p>
 
-<p><strong>Your 3 are out.</strong> You used all 3 free credits this month. Most people never do.</p>
+<p><strong>Your 3 are out.</strong> You used all 3 free pitches this month. Most people never do.</p>
 
-<p>Waiting until {{ reset_date }} does not get you a box. Sending more cold pitches from here is how people stall. That is not what Pro is for anymore.</p>
+<p>The creators who get boxes are the ones who keep pitching. Stopping for {{ days_until_reset }} days is where momentum dies.</p>
 
-<p>If you go Pro today ($19/mo), you get <strong>1 gifting campaign guaranteed each month</strong>. We put you on a live gifted roster. The brand ships product. You post. You do not send a pitch.</p>
+<p>On Pro ($19/mo), Polly keeps going for you on <strong>autopilot</strong>:</p>
 
 <ol class="numbered-list">
-    <li><strong>One campaign, guaranteed.</strong> Every paid month we place you on a live gifted roster that fits your niche.</li>
-    <li><strong>The brand ships. You post.</strong> You never send a pitch. We vet you. The brand picks from the roster.</li>
-    <li><strong>If we miss, I make it right.</strong> Reply that month. I put you on the next campaign or refund the invoice.</li>
+    <li><strong>She picks 20–30 matched brands a month.</strong> Brands that gift creators your size, in your niche.</li>
+    <li><strong>She writes every pitch.</strong> You OK the week in one tap.</li>
+    <li><strong>She sends them from your Gmail.</strong> Replies land in your inbox, not ours.</li>
+    <li><strong>She follows up on day 4.</strong> The step almost everyone forgets.</li>
 </ol>
 
-<p>Unlimited credits sit on top of that, so you can keep applying while the campaign runs.</p>
+<p>Unlimited roster applications and pitches come with it.</p>
 
-<p>Your 3 credits come back on {{ reset_date }} if you'd rather wait. That's {{ days_until_reset }} days from now.</p>
+<p>Your 3 free pitches come back on {{ reset_date }} if you'd rather wait.</p>
 
-<a href="{{ cta_url }}" class="cta-button">Go Pro · 1 gifting campaign / month</a>
+<a href="{{ cta_url }}" class="cta-button">Put Polly on autopilot</a>
 
 <p style="text-align: center; margin-top: 8px; color: #6b7280; font-size: 14px;">$19/mo. Cancel anytime.</p>
 {% endblock %}

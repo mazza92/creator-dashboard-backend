@@ -22,6 +22,8 @@ from services.polly_manager import (
     unsent_drafts,
 )
 from services.polly import (
+    credits_out_offer_due,
+    credits_out_offer_message,
     coaching_moves,
     pitch_coach_line,
     pitch_coaching_context,
@@ -1011,6 +1013,33 @@ def _lookup_similar_brands(query_name, scrape=None, notes=None, creator=None, cr
     return [item[-1] for item in ranked[:limit]]
 
 
+def _deliver_credits_out_offer(conn, creator_id, first, balance, tracker):
+    """Once a month, post the autopilot offer when a free creator has used all 3 credits."""
+    try:
+        thread = load_thread(conn, creator_id)
+        notes = dict(thread.get("notes") or {})
+        month = month_key()
+        if not credits_out_offer_due(notes, balance, month):
+            return False
+        views_n, sent_n = _pipeline_proof(tracker)
+        message = credits_out_offer_message(
+            first, balance, tracker, notes, kit_views=views_n, sent=sent_n,
+        )
+        notes["credits_out_offer_month"] = month
+        messages = list(thread.get("messages") or [])
+        messages.append(message)
+        save_thread(conn, creator_id, messages, thread.get("suggested_brands") or [], notes=notes)
+        _log_polly_event(creator_id, "paywall_shown", {"moment": "credits_out"})
+        return True
+    except Exception as err:
+        print(f"[Polly] credits-out offer skipped: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
 def _deliver_manager_note(conn, creator_id, first, career, tracker, balance, queue):
     """Post the month plan (first open of the month) or a while-you-were-away brief into the thread."""
     try:
@@ -1193,8 +1222,14 @@ def bootstrap():
                 thread = load_thread(conn, creator_id)
         except Exception as err:
             print(f"[Polly] login checkin skipped: {err}")
+        offered = False
+        if not checked_in and _deliver_credits_out_offer(conn, creator_id, first, balance, tracker):
+            offered = True
+            thread = load_thread(conn, creator_id)
+            brief = None
+            auto_action = None
         career = career_snapshot(conn, creator_id, notes, balance)
-        if not checked_in and not empty_thread and career:
+        if not checked_in and not offered and not empty_thread and career:
             posted = _deliver_manager_note(conn, creator_id, first, career, tracker, balance, queue)
             if posted:
                 thread = load_thread(conn, creator_id)

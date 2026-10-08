@@ -8645,7 +8645,7 @@ def reveal_contact():
             return jsonify({
                 'success': False,
                 'error': 'Free tier limit reached',
-                'message': f'You\'ve used all {FREE_LIMIT} free brand contacts. Go Pro to get placed on 1 live gifted campaign every month, plus unlimited credits on top.',
+                'message': f'You\'ve used all {FREE_LIMIT} free brand contacts. Go Pro and Polly pitches 20–30 brands a month from your Gmail, plus unlimited applications.',
                 'current_count': current_count,
                 'limit': FREE_LIMIT,
                 'tier': tier

@@ -2092,7 +2092,7 @@ def send_brand_view_notification(to_email, creator_name, brand_name, brand_categ
                                 With Pro you can:
                             </p>
                             <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
-                                <tr><td style="padding: 0 0 10px 0; font-size: 14px; color: #374151;">&#127873; <strong>Get placed on 1 live gifted campaign</strong> every month, guaranteed</td></tr>
+                                <tr><td style="padding: 0 0 10px 0; font-size: 14px; color: #374151;">&#127873; <strong>Polly pitches 20–30 brands a month</strong> from your Gmail, with day-4 follow-ups</td></tr>
                                 <tr><td style="padding: 0 0 10px 0; font-size: 14px; color: #374151;">&#128065; <strong>See exactly which brand</strong> reviewed you</td></tr>
                                 <tr><td style="padding: 0 0 10px 0; font-size: 14px; color: #374151;">&#10133; <strong>Unlimited credits on top</strong> to apply to more gifted PR lists</td></tr>
                                 <tr><td style="padding: 0 0 10px 0; font-size: 14px; color: #374151;">&#9889; <strong>Priority placement</strong> when brands are picking</td></tr>

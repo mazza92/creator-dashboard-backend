@@ -290,6 +290,136 @@ def polly_funnel(cursor, start: datetime) -> Dict[str, Any]:
     }
 
 
+def autopilot_snapshot(cursor, start: datetime) -> Dict[str, Any]:
+    """Who has Polly autopilot on, Gmail connected, and pitches actually sent."""
+    empty = {
+        "settings_rows": 0,
+        "enabled": 0,
+        "paused": 0,
+        "gmail_live": 0,
+        "ready": 0,
+        "sent": 0,
+        "sent_creators": 0,
+        "queue": {},
+        "creators": [],
+    }
+    if not _table_exists(cursor, "polly_autopilot"):
+        return empty
+    has_gmail = _table_exists(cursor, "polly_gmail_accounts")
+    has_queue = _table_exists(cursor, "polly_autopilot_queue")
+    try:
+        gmail_join = ""
+        gmail_live = "0"
+        ready = "0"
+        if has_gmail:
+            gmail_join = (
+                "LEFT JOIN polly_gmail_accounts g "
+                "ON g.creator_id = a.creator_id AND g.revoked_at IS NULL"
+            )
+            gmail_live = "COUNT(*) FILTER (WHERE g.creator_id IS NOT NULL)"
+            ready = "COUNT(*) FILTER (WHERE a.enabled AND g.creator_id IS NOT NULL)"
+        cursor.execute(
+            f"""
+            SELECT
+                COUNT(*)::int AS settings_rows,
+                COUNT(*) FILTER (WHERE a.enabled)::int AS enabled,
+                COUNT(*) FILTER (WHERE NOT a.enabled)::int AS paused,
+                {gmail_live}::int AS gmail_live,
+                {ready}::int AS ready
+            FROM polly_autopilot a
+            {gmail_join}
+            """
+        )
+        counts = cursor.fetchone() or {}
+        queue = {}
+        sent = 0
+        sent_creators = 0
+        creators: List[Dict[str, Any]] = []
+        if has_queue:
+            cursor.execute(
+                """
+                SELECT status, COUNT(*)::int AS n
+                FROM polly_autopilot_queue
+                GROUP BY 1
+                """
+            )
+            queue = _count_map(cursor.fetchall() or [], "status")
+            cursor.execute(
+                """
+                SELECT COUNT(*)::int AS sent,
+                       COUNT(DISTINCT creator_id)::int AS sent_creators
+                FROM polly_autopilot_queue
+                WHERE status = 'sent' AND sent_at >= %s
+                """,
+                (start,),
+            )
+            sent_row = cursor.fetchone() or {}
+            sent = int(sent_row.get("sent") or 0)
+            sent_creators = int(sent_row.get("sent_creators") or 0)
+            gmail_select = "FALSE AS gmail"
+            gmail_creator_join = ""
+            if has_gmail:
+                gmail_select = "(g.creator_id IS NOT NULL) AS gmail"
+                gmail_creator_join = (
+                    "LEFT JOIN polly_gmail_accounts g "
+                    "ON g.creator_id = a.creator_id AND g.revoked_at IS NULL"
+                )
+            cursor.execute(
+                f"""
+                SELECT a.creator_id, c.username, a.enabled, a.monthly_target,
+                       {gmail_select},
+                       (c.unlocks_tier = 'pro'
+                        OR LOWER(COALESCE(c.subscription_tier, '')) = 'pro') AS pro,
+                       COALESCE(q.drafts, 0)::int AS drafts,
+                       COALESCE(q.approved, 0)::int AS approved,
+                       COALESCE(q.sent, 0)::int AS sent
+                FROM polly_autopilot a
+                JOIN creators c ON c.id = a.creator_id
+                {gmail_creator_join}
+                LEFT JOIN (
+                    SELECT creator_id,
+                           COUNT(*) FILTER (WHERE status = 'draft') AS drafts,
+                           COUNT(*) FILTER (WHERE status = 'approved') AS approved,
+                           COUNT(*) FILTER (WHERE status = 'sent') AS sent
+                    FROM polly_autopilot_queue
+                    GROUP BY 1
+                ) q ON q.creator_id = a.creator_id
+                ORDER BY a.enabled DESC, a.updated_at DESC
+                LIMIT 25
+                """
+            )
+            for row in cursor.fetchall() or []:
+                creators.append({
+                    "creator_id": row.get("creator_id"),
+                    "username": row.get("username") or "",
+                    "enabled": bool(row.get("enabled")),
+                    "gmail": bool(row.get("gmail")),
+                    "pro": bool(row.get("pro")),
+                    "monthly_target": int(row.get("monthly_target") or 0),
+                    "drafts": int(row.get("drafts") or 0),
+                    "approved": int(row.get("approved") or 0),
+                    "sent": int(row.get("sent") or 0),
+                })
+        return {
+            "settings_rows": int(counts.get("settings_rows") or 0),
+            "enabled": int(counts.get("enabled") or 0),
+            "paused": int(counts.get("paused") or 0),
+            "gmail_live": int(counts.get("gmail_live") or 0),
+            "ready": int(counts.get("ready") or 0),
+            "sent": sent,
+            "sent_creators": sent_creators,
+            "queue": queue,
+            "creators": creators,
+        }
+    except Exception as err:
+        print(f"[Polly usage] autopilot snapshot skipped: {err}")
+        try:
+            cursor.connection.rollback()
+        except Exception:
+            pass
+        return empty
+
+
 def polly_beta_snapshot(cursor, days: int = 7) -> Dict[str, Any]:
     start = period_start(days)
     usage = {
@@ -451,11 +581,13 @@ def polly_beta_snapshot(cursor, days: int = 7) -> Dict[str, Any]:
         pain = _count_map(cursor.fetchall() or [], "code")
 
     funnel = polly_funnel(cursor, start)
+    autopilot = autopilot_snapshot(cursor, start)
 
     turns = usage.get("turns") or 0
     errors = usage.get("errors") or 0
     return {
         "funnel": funnel,
+        "autopilot": autopilot,
         "days": days,
         "reach": {
             "openers": usage.get("openers") or 0,

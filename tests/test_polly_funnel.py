@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timezone
 
-from services.polly_usage import FUNNEL_STEPS, funnel_paywall_moment, polly_funnel
+from services.polly_usage import FUNNEL_STEPS, autopilot_snapshot, funnel_paywall_moment, polly_funnel
 
 
 class FunnelPaywallMomentTests(unittest.TestCase):
@@ -68,6 +68,68 @@ class PollyFunnelTests(unittest.TestCase):
         funnel_sql = next(s for s in cursor.sql if "already_pro" in s)
         self.assertIn("pro_since >= first_open", funnel_sql)
         self.assertIn("matches AND pitched AND paywall AND upgraded_after", funnel_sql)
+
+
+class _AutopilotCursor:
+    def __init__(self, tables):
+        self.tables = set(tables)
+        self._one = None
+        self._many = []
+
+    def execute(self, sql, params=None):
+        if "information_schema.tables" in sql:
+            name = (params or [None])[0]
+            self._one = {"ok": 1} if name in self.tables else None
+            self._many = []
+            return
+        if "COUNT(*) FILTER (WHERE a.enabled)" in sql:
+            self._one = {
+                "settings_rows": 2, "enabled": 1, "paused": 1,
+                "gmail_live": 1, "ready": 1,
+            }
+            return
+        if "c.username" in sql:
+            self._many = [{
+                "creator_id": 9, "username": "ada", "enabled": True, "gmail": True,
+                "pro": True, "monthly_target": 24, "drafts": 0, "approved": 3, "sent": 1,
+            }]
+            return
+        if "SELECT status, COUNT" in sql:
+            self._many = [{"status": "approved", "n": 6}, {"status": "sent", "n": 2}]
+            self._one = None
+            return
+        if "sent_at >=" in sql:
+            self._one = {"sent": 1, "sent_creators": 1}
+            return
+        self._one = None
+        self._many = []
+
+    def fetchone(self):
+        return self._one
+
+    def fetchall(self):
+        return self._many
+
+
+class AutopilotSnapshotTests(unittest.TestCase):
+    def test_missing_table_is_empty(self):
+        out = autopilot_snapshot(_AutopilotCursor([]), datetime(2026, 10, 1, tzinfo=timezone.utc))
+        self.assertEqual(out["enabled"], 0)
+        self.assertEqual(out["creators"], [])
+
+    def test_counts_ready_senders_and_lists_accounts(self):
+        out = autopilot_snapshot(
+            _AutopilotCursor(["polly_autopilot", "polly_gmail_accounts", "polly_autopilot_queue"]),
+            datetime(2026, 10, 1, tzinfo=timezone.utc),
+        )
+        self.assertEqual(out["enabled"], 1)
+        self.assertEqual(out["paused"], 1)
+        self.assertEqual(out["gmail_live"], 1)
+        self.assertEqual(out["ready"], 1)
+        self.assertEqual(out["sent"], 1)
+        self.assertEqual(out["queue"], {"approved": 6, "sent": 2})
+        self.assertEqual(out["creators"][0]["username"], "ada")
+        self.assertTrue(out["creators"][0]["gmail"])
 
 
 if __name__ == "__main__":

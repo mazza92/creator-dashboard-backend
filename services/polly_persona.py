@@ -680,6 +680,26 @@ def persona_paywall_say(
     )
 
 
+def persona_credits_out_offer(
+    first_name: Optional[str] = None,
+    reset_label: str = "",
+    kit_views: int = 0,
+    sent: int = 0,
+) -> str:
+    """Once a month, when the 3 free pitches are gone: offer autopilot before they ask."""
+    name = (first_name or "").strip()
+    head = f"{name}, you've" if name else "You've"
+    back = f" They come back on **{reset_label}**." if reset_label else ""
+    proof = persona_pro_proof(kit_views, sent)
+    parts = [
+        f"{head} used your **3 free pitches** this month.{back}",
+        "Want me to keep pitching until then? " + PRO_VALUE_LINE,
+    ]
+    if proof:
+        parts.append(proof)
+    return "\n\n".join(parts)
+
+
 def persona_cant_afford(
     reset_label: str = "",
     follow_brand: Optional[str] = None,

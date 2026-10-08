@@ -5,7 +5,13 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
-from services.polly import is_cant_afford, reads_like_sentence, reset_label
+from services.polly import (
+    credits_out_offer_due,
+    credits_out_offer_message,
+    is_cant_afford,
+    reads_like_sentence,
+    reset_label,
+)
 from services.polly_alerts import chip_link, email_nudges, kit_view_email, nudge_email
 from services.polly_discovery import starters_for
 from services.polly_opener import looks_like_place, single_city_reply, state_opener
@@ -131,6 +137,30 @@ class ProConversionTests(unittest.TestCase):
         self.assertLess(say.index("autopilot"), say.index("unlimited roster applications"))
         self.assertIn("**2** brands opened your kit", say)
         self.assertNotIn("reset", say.lower())
+
+    def test_credits_out_offer_once_a_month_for_free_only(self):
+        out = {"remaining": 0, "reset_at": "2026-11-01T00:00:00+00:00"}
+        self.assertTrue(credits_out_offer_due({}, out, "2026-10"))
+        self.assertFalse(credits_out_offer_due({"credits_out_offer_month": "2026-10"}, out, "2026-10"))
+        self.assertTrue(credits_out_offer_due({"credits_out_offer_month": "2026-09"}, out, "2026-10"))
+        self.assertFalse(credits_out_offer_due({}, {"remaining": 1}, "2026-10"))
+        self.assertFalse(credits_out_offer_due({}, {"remaining": 0, "is_unlimited": True}, "2026-10"))
+        self.assertFalse(credits_out_offer_due({}, None, "2026-10"))
+
+    def test_credits_out_offer_sells_autopilot_with_free_way_out(self):
+        msg = credits_out_offer_message(
+            "Ana", {"remaining": 0, "reset_at": "2026-11-01T00:00:00+00:00"}, None, {}, kit_views=3,
+        )
+        self.assertEqual(msg["kind"], "brief")
+        self.assertIn("Ana, you've used your **3 free pitches**", msg["content"])
+        self.assertIn("Nov 1", msg["content"])
+        self.assertIn("autopilot", msg["content"])
+        self.assertIn("$19/mo", msg["content"])
+        self.assertIn("**3** brands opened your kit", msg["content"])
+        actions = [c["action"] for c in msg["task_chips"]]
+        self.assertEqual(actions[0], "unlock_pro")
+        self.assertEqual(len(actions), 2)
+        self.assertTrue(msg["task_chips"][1]["label"].startswith("Not now"))
 
     def test_scrub_removes_nonexistent_buttons(self):
         out = scrub_polly_voice("Here you go.\n\nTap Save Draft to keep it in your Drafts tab.")

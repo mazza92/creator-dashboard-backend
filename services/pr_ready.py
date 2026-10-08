@@ -242,7 +242,7 @@ def build_monetization_plan(
     return {
         "plan": "pro" if is_pro else "free",
         "price": "$19/mo",
-        "pitch": "Free shows the score. Pro places you on 1 live gifted campaign every month, plus coaching, stats, and unlimited credits on top.",
+        "pitch": "Free shows the score. On Pro, Polly pitches 20–30 brands a month from your Gmail, plus coaching, stats, and unlimited applications.",
         "primary_meter": unlock_meter,
         "secondary_meter": pitch_meter,
         "tools": tools,
@@ -258,7 +258,7 @@ def build_monetization_plan(
             else FREE_KIT_POST_LIMIT_DISPLAY,
         },
         "score_capped": bool(score_capped and not is_pro),
-        "upgrade_headline": "Get placed on a gifted campaign this month",
+        "upgrade_headline": "Put Polly on autopilot",
         "locked_tools": [t for t in tools if not t.get("unlocked")],
     }
 

@@ -370,7 +370,7 @@ def send_lifecycle_email(
         }
         if template_slug == 'max_quota_hit':
             full_context['preheader'] = (
-                'Your 3 are out. Pro guarantees 1 gifting campaign a month.'
+                'Your 3 are out. Polly can keep pitching 20–30 brands a month from your Gmail.'
             )
 
         # Add UTM parameters to CTA URL
@@ -1380,7 +1380,7 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
 
         # Template-specific context
         if template_slug == 'max_quota_hit':
-            context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/for-you?upgrade=pro&ref=gifting_guarantee"
+            context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/for-you?upgrade=pro&ref=quota_autopilot"
         elif template_slug.startswith('max_'):
             context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/pr-ready"
         elif template_slug.startswith('edu_'):

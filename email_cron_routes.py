@@ -705,7 +705,7 @@ def send_limit_warning():
                 <p style="margin: 0 0 16px;">Hey there,</p>
                 <p style="margin: 0 0 16px;">Quick heads up: you've used 2 of your 3 free applications this month. One left.</p>
                 <p style="margin: 0 0 16px;">Once it's gone, you'll need to wait until next month to apply to more brands.</p>
-                <p style="margin: 0 0 16px;">Or skip the wait: with Pro ($19/month) we place you on 1 live gifted campaign every month. The brand ships product, you post, no cold pitching. Unlimited credits come on top.</p>
+                <p style="margin: 0 0 16px;">Or skip the wait: on Pro ($19/month) Polly pitches 20–30 matched brands a month from your Gmail, writes every pitch, and follows up on day 4. Roster applications are unlimited.</p>
                 <p style="margin: 0;">No pressure either way. Just a quick heads up before you hit the wall.</p>
             """,
             'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
@@ -761,7 +761,7 @@ def send_limit_warning():
                     <p style="margin: 0 0 16px;">Hey {name},</p>
                     <p style="margin: 0 0 16px;">Quick heads up: you've used 2 of your 3 free applications this month. One left.</p>
                     <p style="margin: 0 0 16px;">Once it's gone, you'll need to wait until next month to apply to more brands.</p>
-                    <p style="margin: 0 0 16px;">Or skip the wait: with Pro ($19/month) we place you on 1 live gifted campaign every month. The brand ships product, you post, no cold pitching. Unlimited credits come on top.</p>
+                    <p style="margin: 0 0 16px;">Or skip the wait: on Pro ($19/month) Polly pitches 20–30 matched brands a month from your Gmail, writes every pitch, and follows up on day 4. Roster applications are unlimited.</p>
                     <p style="margin: 0;">No pressure either way. Just a quick heads up before you hit the wall.</p>
                 """,
                 'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
@@ -845,7 +845,7 @@ def send_limit_reached():
                 <p style="margin: 0 0 16px;">Hey there,</p>
                 <p style="margin: 0 0 16px;">You've used all 3 of your free unlocks this month.</p>
                 <p style="margin: 0 0 16px;">That actually says something good about you. You're out there pitching, which is exactly how creators land PR packages.</p>
-                <p style="margin: 0 0 16px;">Your unlocks reset next month. Don't want to wait? With Pro ($19/month) we place you on 1 live gifted campaign every month, guaranteed. No cold pitching. Unlimited credits on top, cancel anytime.</p>
+                <p style="margin: 0 0 16px;">Your unlocks reset next month. Don't want to wait? On Pro ($19/month) Polly pitches 20–30 matched brands a month from your Gmail and follows up on day 4. Roster applications are unlimited. Cancel anytime.</p>
                 <p style="margin: 0;">Either way, nice work reaching out to brands. Most people never get this far.</p>
             """,
             'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
@@ -902,7 +902,7 @@ def send_limit_reached():
                     <p style="margin: 0 0 16px;">Hey {name},</p>
                     <p style="margin: 0 0 16px;">You've used all 3 of your free unlocks this month.</p>
                     <p style="margin: 0 0 16px;">That actually says something good about you. You're out there pitching, which is exactly how creators land PR packages.</p>
-                    <p style="margin: 0 0 16px;">Your unlocks reset next month. Don't want to wait? With Pro ($19/month) we place you on 1 live gifted campaign every month, guaranteed. No cold pitching. Unlimited credits on top, cancel anytime.</p>
+                    <p style="margin: 0 0 16px;">Your unlocks reset next month. Don't want to wait? On Pro ($19/month) Polly pitches 20–30 matched brands a month from your Gmail and follows up on day 4. Roster applications are unlimited. Cancel anytime.</p>
                     <p style="margin: 0;">Either way, nice work reaching out to brands. Most people never get this far.</p>
                 """,
                 'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
@@ -1089,7 +1089,7 @@ def send_monthly_reset():
                 <p style="margin: 0 0 16px;">Hey there,</p>
                 <p style="margin: 0 0 16px;">Your 3 free unlocks just reset for the month.</p>
                 <p style="margin: 0 0 16px;">You used all of them last month — that's how creators land PR packages. Most people never send a single pitch.</p>
-                <p style="margin: 0 0 16px;">Want a guaranteed one? With Pro ($19/month) we place you on 1 live gifted campaign every month, plus unlimited credits on top. Either way, you've got 3 fresh ones ready.</p>
+                <p style="margin: 0 0 16px;">Want her to keep going? On Pro ($19/month) Polly pitches 20–30 matched brands a month from your Gmail, plus unlimited applications. Either way, you've got 3 fresh ones ready.</p>
                 <p style="margin: 0;">Good luck this month.</p>
             """,
             'action_url': f"{APP_URL}/creator/dashboard/pr-brands",
@@ -1145,7 +1145,7 @@ def send_monthly_reset():
                     <p style="margin: 0 0 16px;">Hey {name},</p>
                     <p style="margin: 0 0 16px;">Your 3 free unlocks just reset for the month.</p>
                     <p style="margin: 0 0 16px;">You used all of them last month — that's how creators land PR packages. Most people never send a single pitch.</p>
-                    <p style="margin: 0 0 16px;">Want a guaranteed one? With Pro ($19/month) we place you on 1 live gifted campaign every month, plus unlimited credits on top. Either way, you've got 3 fresh ones ready.</p>
+                    <p style="margin: 0 0 16px;">Want her to keep going? On Pro ($19/month) Polly pitches 20–30 matched brands a month from your Gmail, plus unlimited applications. Either way, you've got 3 fresh ones ready.</p>
                     <p style="margin: 0;">Good luck this month.</p>
                 """,
                 'action_url': f"{APP_URL}/creator/dashboard/pr-brands",

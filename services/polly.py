@@ -2336,6 +2336,51 @@ def empty_unlock_starters(
     return chips[:4]
 
 
+def credits_out_offer_due(notes: Optional[Dict], balance: Optional[Dict], month: str) -> bool:
+    """Free creator with no credits left who has not had the autopilot offer this month."""
+    notes = notes if isinstance(notes, dict) else {}
+    return out_of_free_unlocks(balance) and notes.get("credits_out_offer_month") != month
+
+
+def credits_out_offer_message(
+    first_name: Optional[str] = None,
+    balance: Optional[Dict] = None,
+    tracker: Optional[Dict] = None,
+    notes: Optional[Dict] = None,
+    kit_views: int = 0,
+    sent: int = 0,
+) -> Dict[str, Any]:
+    from services.polly_persona import persona_credits_out_offer
+
+    follow = follow_brand_from_tracker(tracker, notes)
+    chips: List[Dict[str, Any]] = [{
+        "id": "unlock_pro",
+        "label": "Put Polly on autopilot · $19/mo",
+        "action": "unlock_pro",
+    }]
+    if follow and follow.get("name"):
+        chips.append({
+            "id": "draft_followup",
+            "label": f"Not now · draft {follow['name']} follow-up",
+            "action": "generate_pitch",
+            "brand_id": follow.get("id"),
+            "brand_name": follow.get("name"),
+            "is_followup": True,
+        })
+    else:
+        chips.append({
+            "id": "week_plan",
+            "label": "Not now · what's free this week?",
+            "action": "coach_week",
+        })
+    return {
+        "role": "assistant",
+        "kind": "brief",
+        "content": persona_credits_out_offer(first_name, reset_label(balance), kit_views, sent),
+        "task_chips": chips,
+    }
+
+
 def empty_unlock_open(
     first_name: Optional[str] = None,
     tracker: Optional[Dict] = None,

@@ -953,7 +953,7 @@ def unlock_brand_access(slug):
                 print(f"🚫 Monthly quota limit reached for creator {creator_id}")
                 conn.close()
                 return jsonify({
-                    'error': f"You've used all {MONTHLY_LIMIT} free brand unlocks this month. Go Pro to get placed on 1 live gifted campaign every month, plus unlimited credits on top.",
+                    'error': f"You've used all {MONTHLY_LIMIT} free brand unlocks this month. Go Pro and Polly pitches 20–30 brands a month from your Gmail, plus unlimited applications.",
                     'upgrade_required': True,
                     'current_count': monthly_unlocks,
                     'limit': MONTHLY_LIMIT

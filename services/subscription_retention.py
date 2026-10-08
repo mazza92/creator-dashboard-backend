@@ -137,7 +137,7 @@ def dunning_email_html(name, amount_label=None):
     update_url = settings_url()
     return f"""
     <p style="margin:0 0 16px;">Hey {who},</p>
-    <p style="margin:0 0 16px;">We could not charge your Newcollab Pro card{amount}. Update your payment method so you keep your guaranteed gifted campaign every month, plus unlimited credits and your pipeline.</p>
+    <p style="margin:0 0 16px;">We could not charge your Newcollab Pro card{amount}. Update your payment method so Polly keeps pitching 20–30 brands a month from your Gmail, with unlimited applications and your pipeline.</p>
     <p style="margin:0 0 16px;"><a href="{update_url}">Update payment method</a></p>
     <p style="margin:0;">If this was a bank decline, retrying from Settings usually clears it in a minute.</p>
     """
@@ -148,8 +148,8 @@ def activation_email_html(name):
     url = discover_url()
     return f"""
     <p style="margin:0 0 16px;">Hey {who},</p>
-    <p style="margin:0 0 16px;">Pro is on. Every month we place you on <strong>1 live gifted campaign</strong>, guaranteed. The brand ships product, you post. No cold pitching.</p>
-    <p style="margin:0 0 16px;">Your credits are unlimited on top of that. This week: send <strong>5 applications</strong> to brands that gift your size. We write the pitch. You tap send. We follow up.</p>
+    <p style="margin:0 0 16px;">Pro is on. Turn on Polly autopilot and she pitches <strong>20–30 brands a month</strong> from your Gmail, then follows up on day 4.</p>
+    <p style="margin:0 0 16px;">Roster applications are unlimited. This week: send <strong>5 applications</strong> to brands that gift your size, or let Polly draft them.</p>
     <p style="margin:0 0 16px;">Brands usually take <strong>2–4 weeks</strong> to reply to applications — silence in week one is normal, not a sign it failed.</p>
     <p style="margin:0 0 16px;"><a href="{url}">Open brands that fit you</a></p>
     <p style="margin:0;">If a card fails later, we will email you before Pro turns off.</p>
@@ -354,7 +354,7 @@ def price_hold_creator_email_html(name):
     return f"""
     <p style="margin:0 0 16px;">Hey {who},</p>
     <p style="margin:0 0 16px;">Your next <strong>3 months of Pro are $12</strong> instead of $19. After that it returns to $19 unless you change it in Settings.</p>
-    <p style="margin:0;">Same guaranteed gifted campaign every month. Same unlimited credits on top. Use the extra time to land the first collab.</p>
+    <p style="margin:0;">Same Polly autopilot, pitching 20–30 brands a month from your Gmail. Same unlimited applications. Use the extra time to land the first collab.</p>
     """
 
 

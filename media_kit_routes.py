@@ -236,7 +236,7 @@ def create_or_update_media_kit():
             conn.close()
             return jsonify({
                 'success': False,
-                'error': 'Free users can only publish once. Go Pro to get placed on 1 live gifted campaign every month, with unlimited kit updates on top.',
+                'error': 'Free users can only publish once. Go Pro and Polly pitches 20–30 brands a month from your Gmail, with unlimited kit updates on top.',
                 'upgrade_required': True
             }), 403
 
@@ -372,7 +372,7 @@ def publish_media_kit():
             conn.close()
             return jsonify({
                 'success': False,
-                'error': 'Free users can only publish once. Go Pro to get placed on 1 live gifted campaign every month, with unlimited kit updates on top.',
+                'error': 'Free users can only publish once. Go Pro and Polly pitches 20–30 brands a month from your Gmail, with unlimited kit updates on top.',
                 'upgrade_required': True
             }), 403
 

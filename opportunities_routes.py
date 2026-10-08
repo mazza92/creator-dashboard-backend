@@ -211,14 +211,14 @@ def _maybe_send_limit_hit_email(creator_id: int, used: int, limit: int = 3):
             except Exception:
                 pass
 
-        subject = 'Get placed on a gifted campaign this month'
+        subject = 'Your free applications are out. Want Polly to keep pitching?'
         body = (
             f"Hey {row.get('username') or 'there'},\n\n"
             f"You've used all {limit} free application credits this month.\n\n"
-            f"With Pro ($19/mo) we place you on 1 live gifted campaign every month, guaranteed. "
-            f"The brand ships product, you post. No cold pitching.\n\n"
-            f"Unlimited credits come on top, so you can keep applying to {niche} brands that are hiring now.\n\n"
-            f"Get placed with Pro: https://app.newcollab.co/creator/dashboard/for-you\n\n"
+            f"On Pro ($19/mo) Polly pitches 20–30 matched brands a month from your Gmail "
+            f"and follows up on day 4.\n\n"
+            f"Roster applications are unlimited, so you can keep applying to {niche} brands that are hiring now.\n\n"
+            f"Put Polly on autopilot: https://app.newcollab.co/creator/dashboard/for-you\n\n"
             f"— NewCollab"
         )
         sent = send_email_notification(row['email'], subject, body)
