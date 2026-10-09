@@ -1759,6 +1759,69 @@ def cron_alerts():
         conn.close()
 
 
+_CHECKIN_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<title>Polly</title></head>
+<body style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;background:#F7F5F0;text-align:center;padding:64px 16px;">
+<form method="post"><input type="hidden" name="t" value="{token}"><input type="hidden" name="src" value="{src}">
+<p style="font-size:16px;color:#374151;">Saving your update for Polly&hellip;</p>
+<button type="submit" style="padding:12px 18px;border-radius:999px;border:0;background:#111827;color:#fff;font-weight:600;">Continue</button>
+</form><script>document.forms[0].submit();</script></body></html>"""
+
+
+def _checkin_already_applied(conn, token_id):
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT 1 FROM polly_usage_events WHERE event = 'checkin_tap' AND meta->>'token' = %s LIMIT 1",
+        (token_id,),
+    )
+    return cur.fetchone() is not None
+
+
+@polly_bp.route("/checkin", methods=["GET", "POST"])
+def checkin_one_tap():
+    """Signed email link: record the outcome (replied, quiet, PR arrived...) without a login."""
+    from html import escape
+    from flask import redirect
+    from pr_crm_routes import get_db_connection
+    from services.checkin_links import next_polly_url, read_token
+    from services.polly_alerts import frontend_url
+    from services.polly_usage import log_usage
+
+    token = (request.values.get("t") or "").strip()
+    src = re.sub(r"[^a-z0-9_]", "", (request.values.get("src") or "").lower())[:24]
+    info = read_token(token)
+    if not info:
+        return redirect(f"{frontend_url()}/creator/dashboard/for-you", code=303)
+    if request.method == "GET":
+        page = _CHECKIN_PAGE.format(token=escape(token, quote=True), src=escape(src, quote=True))
+        return page, 200, {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store"}
+    cid = info["creator_id"]
+    conn = get_db_connection()
+    try:
+        if not _checkin_already_applied(conn, info["token_id"]):
+            res = apply_task_chip(conn, cid, info["chip_id"], info["task_id"], info["brand_id"],
+                                  info["brand_name"])
+            if res.get("unmark_pitched"):
+                thread = load_thread(conn, cid)
+                notes = unmark_pitched(thread.get("notes") or {}, {
+                    "id": info["brand_id"], "name": info["brand_name"]})
+                save_thread(conn, cid, thread.get("messages"), thread.get("suggested_brands"), notes)
+            log_usage(conn, cid, "checkin_tap", intent=info["chip_id"], meta={
+                "token": info["token_id"], "src": src, "brand_id": info["brand_id"],
+                "task_id": info["task_id"]})
+            print(f"[Polly] one-tap checkin creator={cid} chip={info['chip_id']} src={src}")
+    except Exception as err:
+        print(f"[Polly] one-tap checkin failed creator={cid}: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        conn.close()
+    return redirect(next_polly_url(frontend_url(), info, src), code=303)
+
+
 @polly_bp.route("/cron/nudges", methods=["GET", "POST"])
 def cron_nudges():
     if not _cron_authorized():

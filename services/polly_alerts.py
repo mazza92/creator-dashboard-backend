@@ -191,13 +191,19 @@ def _button(label: str, href: str, primary: bool = False) -> str:
     )
 
 
-def render_email(first_name: str, headline: str, body_lines: List[str], buttons: List[Dict[str, str]], unsubscribe_url: str = "") -> str:
+def render_email(first_name: str, headline: str, body_lines: List[str], buttons: List[Dict[str, str]],
+                 unsubscribe_url: str = "", links: Optional[List[Dict[str, str]]] = None) -> str:
     name = escape((first_name or "").strip() or "there")
     paras = "".join(
         f'<p style="margin:0 0 14px 0;font-size:15px;line-height:1.6;color:#374151;">{line}</p>'
         for line in body_lines
     )
     btns = "".join(_button(b["label"], b["href"], primary=(i == 0)) for i, b in enumerate(buttons))
+    if links:
+        btns += '<p style="margin:4px 0 0 0;font-size:13px;color:#6B7280;">' + " &middot; ".join(
+            f'<a href="{escape(l["href"], quote=True)}" style="color:#6B7280;">{escape(l["label"])}</a>'
+            for l in links
+        ) + "</p>"
     unsub = (
         f'<p style="margin:24px 0 0 0;font-size:12px;color:#9CA3AF;">'
         f'<a href="{escape(unsubscribe_url, quote=True)}" style="color:#9CA3AF;">Unsubscribe</a></p>'
@@ -283,14 +289,41 @@ def kit_view_email(
     }
 
 
-def nudge_email(first_name: str, nudge: Dict[str, Any], unsubscribe_url: str = "") -> Dict[str, str]:
+ONE_TAP_KEYS = ("checkin_24h", "follow_up_d4", "follow_up_d10")
+
+
+def _one_tap(creator_id: Any, pairs, nudge: Dict[str, Any], brand: str, kind: str) -> List[Dict[str, str]]:
+    from services.checkin_links import one_tap_url
+
+    out = []
+    for chip_id, label in pairs:
+        href = one_tap_url(creator_id, chip_id, nudge.get("task_id"), nudge.get("brand_id"), brand, kind)
+        if not href:
+            return []
+        out.append({"label": label, "href": href})
+    return out
+
+
+def nudge_email(first_name: str, nudge: Dict[str, Any], unsubscribe_url: str = "",
+                creator_id: Any = None) -> Dict[str, str]:
     import re
+    from services.checkin_links import CHECKIN_BUTTONS, CHECKIN_LINKS, PR_BUTTONS
 
     key = nudge.get("key") or "follow_up_d4"
     brand = nudge.get("brand_name") or "that brand"
     subject = NUDGE_SUBJECTS.get(key, "Update on {brand}?").format(brand=brand)
     message = str(nudge.get("message") or "")
     message_html = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escape(message))
+    if creator_id and key in ONE_TAP_KEYS + ("pr_shipped",):
+        pr = key == "pr_shipped"
+        buttons = _one_tap(creator_id, PR_BUTTONS if pr else CHECKIN_BUTTONS, nudge, brand, key)
+        links = [] if pr else _one_tap(creator_id, CHECKIN_LINKS, nudge, brand, key)
+        if buttons:
+            lines = [message_html, "Tap what happened. That's all I need, no login."]
+            return {
+                "subject": subject,
+                "html": render_email(first_name, subject, lines, buttons, unsubscribe_url, links=links),
+            }
     buttons = []
     for chip in nudge.get("chips") or []:
         cid = chip.get("id")
@@ -450,7 +483,7 @@ def email_nudges(conn, delivered: List[Dict[str, Any]], dry_run: bool = False, s
         if not who:
             continue
         unsub = _unsubscribe_url(who["user_id"])
-        mail = nudge_email(who["first"], nudge, unsub)
+        mail = nudge_email(who["first"], nudge, unsub, creator_id=cid)
         item = {"creator_id": cid, "kind": "nudge", "subject": mail["subject"], "to": who["email"]}
         if dry_run:
             out.append(item)

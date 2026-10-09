@@ -3,6 +3,7 @@
 import os
 import threading
 from datetime import datetime, timezone
+from html import escape
 
 REPLY_STAGES = (
     "replied",
@@ -67,6 +68,37 @@ def should_send_dunning(attempt_count):
     return n in DUNNING_ATTEMPTS
 
 
+def dunning_key_for(event_type, invoice):
+    """Metadata key of the email this invoice event should send, or None.
+
+    Renewals only: a first payment that fails inside Checkout never had Pro.
+    """
+    invoice = invoice or {}
+    if invoice.get("billing_reason") != "subscription_cycle":
+        return None
+    meta = invoice.get("metadata") or {}
+    if event_type == "invoice.payment_action_required":
+        key = "action_required"
+    else:
+        try:
+            attempt = int(invoice.get("attempt_count") or 1)
+        except (TypeError, ValueError):
+            attempt = 1
+        if attempt >= 2 and not invoice.get("next_payment_attempt"):
+            key = "dunning_final"
+        elif should_send_dunning(attempt):
+            key = dunning_metadata_key(attempt)
+        else:
+            return None
+    return None if meta.get(key) == "1" else key
+
+
+def invoice_amount_label(invoice):
+    amount = (invoice or {}).get("amount_due") or 0
+    currency = ((invoice or {}).get("currency") or "usd").upper()
+    return f"{amount / 100:.2f} {currency}" if amount else None
+
+
 def dunning_already_sent(invoice, attempt_count):
     meta = (invoice or {}).get("metadata") or {}
     return meta.get(f"dunning_attempt_{attempt_count}") == "1"
@@ -126,20 +158,53 @@ def settings_url():
     return f"{frontend}/creator/dashboard/settings"
 
 
+def restart_pro_url(campaign="dunning_final"):
+    frontend = (os.getenv("FRONTEND_URL") or "https://app.newcollab.co").rstrip("/")
+    return (f"{frontend}/creator/dashboard/for-you?upgrade=pro"
+            f"&utm_source=email&utm_medium=billing&utm_campaign={campaign}")
+
+
 def discover_url():
     frontend = (os.getenv("FRONTEND_URL") or "https://app.newcollab.co").rstrip("/")
     return f"{frontend}/creator/dashboard/for-you"
 
 
-def dunning_email_html(name, amount_label=None):
-    who = name or "there"
-    amount = f" ({amount_label})" if amount_label else ""
-    update_url = settings_url()
+def _pay_button(href, label):
+    return (
+        f'<p style="margin:0 0 16px;"><a href="{escape(href, quote=True)}" style="display:inline-block;'
+        'padding:12px 18px;border-radius:999px;background:#111827;color:#FFFFFF;font-weight:600;'
+        f'text-decoration:none;">{escape(label)}</a></p>'
+    )
+
+
+def dunning_email_html(name, amount_label=None, pay_url=None, final=False):
+    who = escape(name or "there")
+    amount = f" ({escape(amount_label)})" if amount_label else ""
+    if final:
+        return f"""
+    <p style="margin:0 0 16px;">Hey {who},</p>
+    <p style="margin:0 0 16px;">We tried your Newcollab Pro payment{amount} one last time and it failed, so Pro has switched off. Polly has stopped pitching and following up for you.</p>
+    {_pay_button(restart_pro_url(), "Restart Pro")}
+    <p style="margin:0;">Your pipeline, drafts and kit are all still there. Restarting picks up where you left off.</p>
+    """
+    button = "Pay with another card" if pay_url else "Update payment method"
     return f"""
     <p style="margin:0 0 16px;">Hey {who},</p>
-    <p style="margin:0 0 16px;">We could not charge your Newcollab Pro card{amount}. Update your payment method so Polly keeps pitching 20–30 brands a month from your Gmail, with unlimited applications and your pipeline.</p>
-    <p style="margin:0 0 16px;"><a href="{update_url}">Update payment method</a></p>
-    <p style="margin:0;">If this was a bank decline, retrying from Settings usually clears it in a minute.</p>
+    <p style="margin:0 0 16px;">Your Newcollab Pro payment{amount} didn't go through. Pro is still on for now, but Polly's pitching and follow-ups switch off if we can't collect it.</p>
+    {_pay_button(pay_url or settings_url(), button)}
+    <p style="margin:0 0 16px;">{"No login needed, and you can use a different card." if pay_url else "You can use a different card."}</p>
+    <p style="margin:0;">If it was a low balance, you don't need to do anything: we'll retry automatically over the next few days.</p>
+    """
+
+
+def action_required_email_html(name, amount_label=None, pay_url=None):
+    who = escape(name or "there")
+    amount = f" ({escape(amount_label)})" if amount_label else ""
+    return f"""
+    <p style="margin:0 0 16px;">Hey {who},</p>
+    <p style="margin:0 0 16px;">Your bank wants you to confirm your Newcollab Pro payment{amount}. It takes a few seconds, and Pro stays on once it's done.</p>
+    {_pay_button(pay_url or settings_url(), "Confirm payment")}
+    <p style="margin:0;">No login needed.</p>
     """
 
 

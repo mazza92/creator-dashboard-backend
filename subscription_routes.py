@@ -418,8 +418,11 @@ def create_checkout_session():
         if source:
             metadata['source'] = source
 
+        from services.checkout_recovery import checkout_recovery_kwargs
+
+        promo_kwargs = stripe_checkout_promo_kwargs(offer if apply_winback else None, creator, coupon_id)
         checkout_session = stripe.checkout.Session.create(
-            payment_method_types=['card'],
+            **checkout_recovery_kwargs(promo_codes='discounts' not in promo_kwargs),
             line_items=[{
                 'price': price_id,
                 'quantity': 1,
@@ -429,7 +432,7 @@ def create_checkout_session():
             cancel_url=f"{frontend_url}/creator/dashboard/subscription/cancel",
             metadata=metadata,
             **stripe_checkout_customer_kwargs(offer if apply_winback else None, creator),
-            **stripe_checkout_promo_kwargs(offer if apply_winback else None, creator, coupon_id),
+            **promo_kwargs,
         )
 
         print(f"✅ Created checkout session for creator {creator_id} - {tier} tier")
@@ -1060,6 +1063,16 @@ def stripe_webhook():
                     ),
                 )
 
+        elif event['type'] == 'checkout.session.expired':
+            from services.checkout_recovery import handle_expired_session
+
+            conn = get_db_connection()
+            try:
+                outcome = handle_expired_session(conn, event['data']['object'])
+                print(f"[retention] checkout expired: {outcome}")
+            finally:
+                conn.close()
+
         # Handle subscription deleted/canceled
         elif event['type'] == 'customer.subscription.deleted':
             subscription = event['data']['object']
@@ -1117,25 +1130,25 @@ def stripe_webhook():
             cursor.close()
             conn.close()
 
-        elif event['type'] == 'invoice.payment_failed':
+        elif event['type'] in ('invoice.payment_failed', 'invoice.payment_action_required'):
             from services.subscription_retention import (
-                dunning_already_sent,
+                action_required_email_html,
                 dunning_email_html,
-                dunning_metadata_key,
+                dunning_key_for,
+                invoice_amount_label,
                 invoice_customer_id,
                 invoice_subscription_id,
-                should_send_dunning,
             )
 
             invoice = event['data']['object']
             sub_id = invoice_subscription_id(invoice)
             cust_id = invoice_customer_id(invoice)
-            attempt = invoice.get('attempt_count') or 1
+            key = dunning_key_for(event['type'], invoice)
 
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             creator = _creator_by_stripe(cursor, sub_id, cust_id)
-            if creator:
+            if creator and event['type'] == 'invoice.payment_failed':
                 cursor.execute(
                     '''
                     UPDATE creators
@@ -1145,27 +1158,23 @@ def stripe_webhook():
                     (creator['id'],),
                 )
                 conn.commit()
-                if (
-                    should_send_dunning(attempt)
-                    and not dunning_already_sent(invoice, attempt)
-                    and creator.get('email')
-                ):
-                    amount = invoice.get('amount_due') or 0
-                    currency = (invoice.get('currency') or 'usd').upper()
-                    label = f"{amount / 100:.2f} {currency}" if amount else None
-                    sent = _send_creator_resend(
-                        creator['email'],
-                        'Update your card to keep Pro',
-                        dunning_email_html(creator.get('username'), label),
-                    )
-                    if sent:
-                        try:
-                            stripe.Invoice.modify(
-                                invoice['id'],
-                                metadata={dunning_metadata_key(attempt): '1'},
-                            )
-                        except Exception as meta_err:
-                            print(f"[retention] could not stamp invoice metadata: {meta_err}")
+            if creator and key and creator.get('email'):
+                label = invoice_amount_label(invoice)
+                pay_url = invoice.get('hosted_invoice_url')
+                if key == 'action_required':
+                    subject = 'Confirm your Pro payment'
+                    html = action_required_email_html(creator.get('username'), label, pay_url)
+                elif key == 'dunning_final':
+                    subject = 'Your Pro has switched off'
+                    html = dunning_email_html(creator.get('username'), label, pay_url, final=True)
+                else:
+                    subject = 'Your Pro payment didn\'t go through'
+                    html = dunning_email_html(creator.get('username'), label, pay_url)
+                if _send_creator_resend(creator['email'], subject, html):
+                    try:
+                        stripe.Invoice.modify(invoice['id'], metadata={key: '1'})
+                    except Exception as meta_err:
+                        print(f"[retention] could not stamp invoice metadata: {meta_err}")
             cursor.close()
             conn.close()
 
