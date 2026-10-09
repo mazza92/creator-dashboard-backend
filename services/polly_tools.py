@@ -24,6 +24,7 @@ from services.polly import (
     mark_draft_pending,
     mark_pitched,
     mark_shown_brands,
+    shown_brand_ids,
     next_unlock_brand,
     out_of_free_unlocks,
     paywall_unlock_chips,
@@ -131,6 +132,19 @@ def search_directory(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _shown_rank(brand: Dict[str, Any], notes: Dict[str, Any]) -> int:
+    try:
+        bid = int((brand or {}).get("id") or 0)
+    except (TypeError, ValueError):
+        return 10 ** 9
+    shown = shown_brand_ids(notes)
+    return shown.index(bid) if bid in shown else 10 ** 9
+
+
+def _oldest_shown_first(rows: List[Dict[str, Any]], notes: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return sorted(rows or [], key=lambda b: _shown_rank(b, notes))
+
+
 def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     deal = str(args.get("deal") or "").strip().lower()
     if deal in ("gifted", "paid") and not (deal == "paid" and gifted_only(state.notes)):
@@ -146,30 +160,64 @@ def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     if status == 401:
         state.auth_failed = True
         return {"ok": False, "error": "not authenticated"}
-    rows = drop_shown(drop_pending_draft(rows, state.notes), state.notes)
-    if not rows:
-        rows = drop_shown(drop_pending_draft(drop_pitched(state.suggested, state.notes), state.notes), state.notes)
-    rows = filter_brands_by_prefs(R._hydrate_brand_cards(rows), state.notes)
-    rows = sorted(rows, key=lambda b: 0 if (b or {}).get("source") in ("recruiting", "open_lists") else 1)
-    if (state.chip or {}).get("id") == "first_matches":
-        rows = rows[:3]
-    rows = rows[:6]
+    pool = drop_pending_draft(rows, state.notes)
+    fresh = drop_shown(pool, state.notes)
+    repeated = False
+    widened = False
+    if fresh:
+        picked = fresh
+    elif pool:
+        picked = _oldest_shown_first(pool, state.notes)
+        repeated = True
+    else:
+        queued = drop_pending_draft(drop_pitched(state.suggested, state.notes), state.notes)
+        unseen = drop_shown(queued, state.notes)
+        picked = unseen or _oldest_shown_first(queued, state.notes)
+        repeated = bool(picked) and not unseen
+    if not picked:
+        try:
+            picked = R._fallback_brand_pool(state.notes, state.scrape, state.creator, state.creator_id)
+        except Exception as exc:
+            print(f"[Polly] directory fallback skipped: {exc}")
+            picked = []
+        picked = drop_pending_draft(drop_pitched(picked, state.notes), state.notes)
+        unseen = drop_shown(picked, state.notes)
+        if unseen:
+            picked = unseen
+        else:
+            repeated = bool(picked)
+        widened = bool(picked)
+    hydrated = R._hydrate_brand_cards(picked)
+    rows = filter_brands_by_prefs(hydrated, state.notes) or hydrated
+    rows = sorted(rows, key=lambda b: (
+        0 if (b or {}).get("source") in ("recruiting", "open_lists") else 1,
+        _shown_rank(b, state.notes),
+    ))
+    cap = 3 if (state.chip or {}).get("id") == "first_matches" else 6
+    rows = rows[:cap]
     if not rows:
         if err:
             state.error = err
         return {
             "ok": True,
             "brands": [],
-            "note": "No fresh matches right now. Every match has been shown or pitched.",
+            "note": "The directory could not be loaded. Ask again in a moment.",
         }
     state.brands = rows
     state.notes = mark_shown_brands(state.notes, rows)
-    return {
+    out = {
         "ok": True,
         "brands": [brand_card(r) for r in rows],
         "cards_shown": True,
         "live_rosters": sum(1 for r in rows if r.get("source") in ("recruiting", "open_lists")),
     }
+    if repeated:
+        out["repeated"] = True
+        out["note"] = "These brands were shown before and are still unpitched. The cards are on screen."
+    if widened:
+        out["widened"] = True
+        out["note"] = "The niche pool was used up, so these are the next directory brands. The cards are on screen."
+    return out
 
 
 def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:

@@ -165,6 +165,34 @@ class OrchestratorLoopTests(_Patched):
                 brain.run_turn(state)
 
 
+class SuggestAlwaysReturnsTests(_Patched):
+    NORD = {"id": 4, "name": "NordVPN", "slug": "nordvpn", "category": "tech", "source": "recruiting"}
+    SECRET = {"id": 47, "name": "Secretlab", "slug": "secretlab", "category": "tech", "source": "matched"}
+
+    def test_already_shown_brands_come_back_instead_of_an_empty_roster(self):
+        state = make_state(notes={"shown_brand_ids": [4, 47], "deal_intent": "gifted"})
+        with patch.object(routes_polly, "_suggest_payload", return_value=(200, [self.NORD, self.SECRET], None)):
+            res = tools.run_tool(state, "suggest_brands", {"deal": "gifted"})
+        self.assertEqual([b["name"] for b in state.brands], ["NordVPN", "Secretlab"])
+        self.assertTrue(res["repeated"])
+        self.assertTrue(res["cards_shown"])
+
+    def test_fresh_brands_still_win_over_ones_already_shown(self):
+        state = make_state(notes={"shown_brand_ids": [4]})
+        with patch.object(routes_polly, "_suggest_payload", return_value=(200, [self.NORD, self.SECRET], None)):
+            res = tools.run_tool(state, "suggest_brands", {})
+        self.assertEqual([b["name"] for b in state.brands], ["Secretlab"])
+        self.assertNotIn("repeated", res)
+
+    def test_pitched_brands_stay_out_and_the_directory_fills_the_gap(self):
+        state = make_state(notes={"pitched_brand_ids": [4], "pitched_brand_names": ["NordVPN"]})
+        with patch.object(routes_polly, "_suggest_payload", return_value=(200, [], "Could not load matches")), \
+                patch.object(routes_polly, "_fallback_brand_pool", return_value=[self.SECRET, self.NORD]):
+            res = tools.run_tool(state, "suggest_brands", {"deal": "gifted"})
+        self.assertEqual([b["name"] for b in state.brands], ["Secretlab"])
+        self.assertTrue(res["widened"])
+
+
 class ToolRuleTests(_Patched):
     def test_typed_name_beats_a_wrong_brand_id(self):
         state = make_state(user_text="yes Secretlab")

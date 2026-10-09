@@ -416,6 +416,66 @@ def _fetch_brands_by_category(categories, limit=40, exclude_ids=None):
         conn.close()
 
 
+def _fetch_any_published(limit=24, exclude_ids=None):
+    """Published directory brands, best reply rate first. The last net when the niche pool is empty."""
+    skip = []
+    for item in exclude_ids or []:
+        try:
+            skip.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    from pr_crm_routes import get_db_connection
+    from psycopg2.extras import RealDictCursor
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        params = []
+        exclude_sql = ""
+        if skip:
+            exclude_sql = " AND NOT (id = ANY(%s))"
+            params.append(skip)
+        params.append(limit)
+        cursor.execute(
+            f"""
+            SELECT id, slug, brand_name AS name, logo_url AS logo, description, category,
+                   website, application_form_url, hero_product, target_audience
+            FROM pr_brands
+            WHERE slug IS NOT NULL
+              AND COALESCE(status, 'published') = 'published'
+              {exclude_sql}
+            ORDER BY COALESCE(response_rate, 0) DESC NULLS LAST, id DESC
+            LIMIT %s
+            """,
+            params,
+        )
+        from services.brand_reply_signal import annotate_and_sort
+        return annotate_and_sort(cursor, [dict(row) for row in cursor.fetchall()])
+    except Exception as err:
+        print(f"[Polly] directory pool skipped: {err}")
+        return []
+    finally:
+        conn.close()
+
+
+def _fallback_brand_pool(notes, scrape, creator, creator_id, limit=12):
+    """Brands to show when the curated For You pool has nothing left to offer."""
+    from services.polly import drop_pitched, pitched_id_set
+    exclude = list(pitched_id_set(notes)) + _pipeline_pitched_ids(creator_id)
+    cats = list(required_categories_for_match(notes, scrape) or stated_niches(notes) or [])
+    niche = (scrape or {}).get("primary_niche") or (creator or {}).get("niche")
+    if niche and str(niche).lower() not in {str(c).lower() for c in cats}:
+        cats.append(niche)
+    rows = _fetch_brands_by_category(cats, limit=40, exclude_ids=exclude) if cats else []
+    if len(rows) < 6:
+        seen = {int(r.get("id") or 0) for r in rows}
+        for row in _fetch_any_published(limit=24, exclude_ids=exclude):
+            bid = int(row.get("id") or 0)
+            if bid and bid not in seen:
+                rows.append(row)
+                seen.add(bid)
+    return drop_pitched(rows, notes, extra_ids=exclude)[:limit]
+
+
 def _hydrate_brand_cards(brands):
     """Fill logo/category/description when the client sent id/name/slug only."""
     rows = [dict(b) for b in (brands or []) if isinstance(b, dict)]
