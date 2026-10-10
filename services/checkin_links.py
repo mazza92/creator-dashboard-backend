@@ -19,7 +19,7 @@ TOKEN_TTL_SECONDS = 30 * 24 * 3600
 
 # Outcome chip -> the Polly chip to open afterwards (must exist in Polly.js DEEP_LINK_CHIPS).
 ONE_TAP_NEXT = {
-    "checkin_interested": "help_reply",
+    "checkin_interested": "paid_reply",
     "checkin_question": "help_reply",
     "checkin_passed": "line_up",
     "checkin_quiet": "draft_followup",

@@ -215,10 +215,10 @@ def _maybe_send_limit_hit_email(creator_id: int, used: int, limit: int = 3):
         body = (
             f"Hey {row.get('username') or 'there'},\n\n"
             f"You've used all {limit} free application credits this month.\n\n"
-            f"On Pro ($19/mo) Polly pitches 20–30 matched brands a month from your Gmail "
-            f"and follows up on day 4.\n\n"
+            f"On Pro ($19/mo) Polly runs your week from a Monday board: pitches sent from your Gmail, "
+            f"day-4 follow-ups, and when a brand says yes, the reply that turns it into a paid usage deal.\n\n"
             f"Roster applications are unlimited, so you can keep applying to {niche} brands that are hiring now.\n\n"
-            f"Put Polly on autopilot: https://app.newcollab.co/creator/dashboard/for-you\n\n"
+            f"Get your Monday board: https://app.newcollab.co/creator/dashboard/for-you\n\n"
             f"— NewCollab"
         )
         sent = send_email_notification(row['email'], subject, body)

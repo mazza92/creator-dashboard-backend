@@ -1354,7 +1354,7 @@ def apply_location_to_pitch(
 def last_thread_pitch(history: Optional[List[Dict]] = None) -> Optional[Dict[str, Any]]:
     for msg in reversed(history or []):
         pitch = msg.get("pitch") if isinstance(msg, dict) else None
-        if isinstance(pitch, dict) and (pitch.get("body") or pitch.get("subject")):
+        if isinstance(pitch, dict) and not pitch.get("is_reply") and (pitch.get("body") or pitch.get("subject")):
             return dict(pitch)
     return None
 
@@ -1855,8 +1855,8 @@ def paywall_unlock_chips(brand: Optional[Dict] = None) -> List[Dict[str, Any]]:
     if label_name and len(label_name) > 28:
         label_name = label_name[:26].rstrip() + "…"
     label = (
-        f"Pitch {label_name} + put Polly on autopilot" if label_name
-        else "Put Polly on autopilot · Pro"
+        f"Pitch {label_name} + put Polly to work" if label_name
+        else "Put Polly to work · Pro"
     )
     return [
         {
@@ -2034,7 +2034,7 @@ def credits_out_offer_message(
     follow = follow_brand_from_tracker(tracker, notes)
     chips: List[Dict[str, Any]] = [{
         "id": "unlock_pro",
-        "label": "Put Polly on autopilot · $19/mo",
+        "label": "Put Polly to work · $19/mo",
         "action": "unlock_pro",
     }]
     if follow and follow.get("name"):

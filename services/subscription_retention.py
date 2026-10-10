@@ -213,10 +213,11 @@ def activation_email_html(name):
     url = discover_url()
     return f"""
     <p style="margin:0 0 16px;">Hey {who},</p>
-    <p style="margin:0 0 16px;">Pro is on. Turn on Polly autopilot and she pitches <strong>20–30 brands a month</strong> from your Gmail, then follows up on day 4.</p>
-    <p style="margin:0 0 16px;">Roster applications are unlimited. This week: send <strong>5 applications</strong> to brands that gift your size, or let Polly draft them.</p>
-    <p style="margin:0 0 16px;">Brands usually take <strong>2–4 weeks</strong> to reply to applications — silence in week one is normal, not a sign it failed.</p>
-    <p style="margin:0 0 16px;"><a href="{url}">Open brands that fit you</a></p>
+    <p style="margin:0 0 16px;">Pro is on. The goal this month: <strong>one yes</strong>, then Polly turns it into a paid usage deal.</p>
+    <p style="margin:0 0 16px;">Open Polly for your first <strong>Monday board</strong>. Connect Gmail and publish your kit, then OK this week's pitches in Autopilot. She sends them from your Gmail and follows up. When a brand says yes, she writes the reply with your ad usage rate.</p>
+    <p style="margin:0 0 16px;">Roster applications are unlimited too.</p>
+    <p style="margin:0 0 16px;">Brands usually take <strong>2–4 weeks</strong> to reply — silence in week one is normal, not a sign it failed.</p>
+    <p style="margin:0 0 16px;"><a href="{url}">Open my Monday board</a></p>
     <p style="margin:0;">If a card fails later, we will email you before Pro turns off.</p>
     """
 
@@ -419,7 +420,7 @@ def price_hold_creator_email_html(name):
     return f"""
     <p style="margin:0 0 16px;">Hey {who},</p>
     <p style="margin:0 0 16px;">Your next <strong>3 months of Pro are $12</strong> instead of $19. After that it returns to $19 unless you change it in Settings.</p>
-    <p style="margin:0;">Same Polly autopilot, pitching 20–30 brands a month from your Gmail. Same unlimited applications. Use the extra time to land the first collab.</p>
+    <p style="margin:0;">Same Monday board, same pitches from your Gmail, same paid usage reply when a brand says yes. Use the extra time to land the first collab.</p>
     """
 
 

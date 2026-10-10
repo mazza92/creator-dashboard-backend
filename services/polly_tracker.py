@@ -77,6 +77,8 @@ EVENT_ICONS = {
     "milestone": "🎉",
     "dropped": "⚪",
     "campaign_applied": "🎁",
+    "paid_ask_drafted": "💸",
+    "ad_usage_asked": "💸",
 }
 
 NUDGE_COPY = {
@@ -1006,8 +1008,10 @@ def apply_lifecycle_intent(
         action = "interested+awaiting_pr"
         say_hint = (
             f"That's the one. **{name}** said yes — I'll track the PR. "
-            "When the box lands, tell me and I'll set your content date."
+            "Reply with your address and put a usage rate on the table now: that's how a gifted "
+            "yes turns into paid."
         )
+        chips = [{"id": "paid_reply", "label": f"Write my reply to {name}", "action": "paid_reply"}]
     elif intent == "brand_replied_rejected":
         close_tasks(conn, creator_id, ["follow_up_due", "pitch_sent", "reply_needed"], brand_id,
                     status="dropped", outcome="rejected")
@@ -1080,9 +1084,10 @@ def apply_lifecycle_intent(
         add_event(conn, creator_id, "content_posted", f"Content posted · {name}", brand_id=brand_id, task_id=tid)
         action = "content_posted"
         say_hint = (
-            f"Logged the post. In 30 days we can show **{name}** the numbers and ask for paid. "
-            "Drop me the URL if you have it."
+            f"Logged the post. Now ask **{name}** if they want to run it as an ad: "
+            "that's paid usage on a video you already made."
         )
+        chips = [{"id": "ad_usage", "label": f"Ask {name} to run it as an ad", "action": "ad_usage"}]
     elif intent == "payment_received":
         add_event(conn, creator_id, "milestone", f"Paid · {name}", brand_id=brand_id)
         action = "payment"

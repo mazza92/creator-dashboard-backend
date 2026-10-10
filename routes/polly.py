@@ -68,6 +68,8 @@ from services.polly_discovery import (
     opener as discovery_opener,
     seed_from_survey,
     skip_discovery,
+    is_weak_niche,
+    onboarding_niches,
     starters_for,
     stated_niches,
     utc_now as utc_iso_now,
@@ -357,9 +359,14 @@ def _copy_session():
     return {key: session.get(key) for key in list(session.keys())}
 
 
-def _match_scrape(scrape, notes):
+def _match_scrape(scrape, notes, creator=None):
+    """Scrape with the niches to match on: stated in chat, else a concrete scrape niche, else signup picks."""
     overlay = dict(scrape or {})
     stated = stated_niches(notes)
+    if not stated and is_weak_niche(overlay.get("primary_niche") or "other"):
+        stated = onboarding_niches(creator)
+        if stated:
+            overlay["secondary_niches"] = []
     if stated:
         overlay["primary_niche"] = stated[0]
         secondary = overlay.get("secondary_niches") or []
@@ -461,9 +468,10 @@ def _fallback_brand_pool(notes, scrape, creator, creator_id, limit=12):
     """Brands to show when the curated For You pool has nothing left to offer."""
     from services.polly import drop_pitched, pitched_id_set
     exclude = list(pitched_id_set(notes)) + _pipeline_pitched_ids(creator_id)
-    cats = list(required_categories_for_match(notes, scrape) or stated_niches(notes) or [])
-    niche = (scrape or {}).get("primary_niche") or (creator or {}).get("niche")
-    if niche and str(niche).lower() not in {str(c).lower() for c in cats}:
+    match_scrape = _match_scrape(scrape, notes, creator)
+    cats = list(required_categories_for_match(notes, match_scrape) or stated_niches(notes) or [])
+    niche = match_scrape.get("primary_niche")
+    if niche and not is_weak_niche(niche) and str(niche).lower() not in {str(c).lower() for c in cats}:
         cats.append(niche)
     rows = _fetch_brands_by_category(cats, limit=40, exclude_ids=exclude) if cats else []
     if len(rows) < 6:
@@ -556,7 +564,7 @@ def _pipeline_pitched_ids(creator_id):
 def _suggest_payload(scrape, creator, notes=None, creator_id=None):
     notes = notes or {}
     stated = stated_niches(notes)
-    match_scrape = _match_scrape(scrape, notes)
+    match_scrape = _match_scrape(scrape, notes, creator)
     cats = required_categories_for_match(notes, match_scrape)
     niches = cats or stated or (creator or {}).get("creator_niches") or (creator or {}).get("niche")
     cid = creator_id or (creator or {}).get("id")
@@ -1044,6 +1052,55 @@ def _deliver_manager_note(conn, creator_id, first, career, tracker, balance, que
         return None
 
 
+def _deliver_monday_board(conn, creator_id, first, kit, balance):
+    """Pro: first open of each week posts the Monday board instead of the month/away notes."""
+    if not (balance or {}).get("is_unlimited"):
+        return False
+    from services.pro_manager import board_due, board_message, load_board, week_key
+    try:
+        thread = load_thread(conn, creator_id)
+        notes = dict(thread.get("notes") or {})
+        if not board_due(notes):
+            return False
+        board = load_board(conn, creator_id, kit=kit)
+        notes["board_week"] = week_key()
+        notes["month_plan_month"] = month_key()
+        notes["away_brief_at"] = utc_iso_now()
+        messages = list(thread.get("messages") or []) + [json_safe(board_message(board, first))]
+        save_thread(conn, creator_id, messages, thread.get("suggested_brands") or [], notes=notes)
+        _log_polly_event(creator_id, "manager_note", {"kind": "board", "left": board.get("left")})
+        return True
+    except Exception as err:
+        print(f"[Polly] monday board skipped: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+@polly_bp.route("/board", methods=["GET"])
+def board():
+    """Live Monday board (Pro). The card in the thread refreshes from here."""
+    creator_id, conn, creator = _creator_auth()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    try:
+        balance = _unlock_balance(creator_id, conn=conn)
+        if not balance.get("is_unlimited"):
+            return jsonify({"success": False, "error": "pro_required", "paywall": True}), 402
+        from services.pro_manager import load_board
+        scrape = _load_scrape(conn, (creator or {}).get("user_id") or session.get("user_id"))
+        kit = load_kit_snapshot(conn, creator_id, scrape)
+        return jsonify({"success": True, "board": json_safe(load_board(conn, creator_id, kit=kit))})
+    except Exception as err:
+        print(f"[Polly] board failed: {err}")
+        return jsonify({"success": False, "error": "Could not load your board"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
 @polly_bp.route("/bootstrap", methods=["GET"])
 def bootstrap():
     timer = _StepTimer("bootstrap")
@@ -1148,7 +1205,7 @@ def bootstrap():
                     )
                     starters = list(starters) + [{
                         "id": "unlock_pro",
-                        "label": "Put Polly on autopilot · Pro",
+                        "label": "Put Polly to work · Pro",
                         "action": "unlock_pro",
                     }]
                     _log_polly_event(creator_id, "paywall_shown", {"moment": "kit_view"})
@@ -1193,7 +1250,13 @@ def bootstrap():
             brief = None
             auto_action = None
         career = career_snapshot(conn, creator_id, notes, balance)
-        if not checked_in and not offered and not empty_thread and career:
+        boarded = False
+        if not checked_in and not offered and not empty_thread:
+            boarded = _deliver_monday_board(conn, creator_id, first, kit, balance)
+            if boarded:
+                thread = load_thread(conn, creator_id)
+                brief = None
+        if not checked_in and not offered and not empty_thread and not boarded and career:
             posted = _deliver_manager_note(conn, creator_id, first, career, tracker, balance, queue)
             if posted:
                 thread = load_thread(conn, creator_id)
@@ -1473,6 +1536,13 @@ def _run_chip(state, action, chip_id, data):
         call = ("find_paid_gigs", {"more": chip_id == "more_gigs"})
     elif chip_id == "i_sent_it":
         call = ("log_pitch_sent", {"brand_id": brand_id, "brand_name": brand_name})
+    elif action in ("paid_reply", "ad_usage") and (brand_id or brand_name):
+        call = ("draft_brand_reply", {
+            "brand_id": brand_id, "brand_name": brand_name or "",
+            "moment": "posted" if action == "ad_usage" else "interested",
+        })
+    elif action == "board":
+        call = ("get_coaching_facts", {"topic": "week"})
     elif action in _CHIP_COACH_TOPICS:
         call = ("get_coaching_facts", {"topic": _CHIP_COACH_TOPICS[action]})
     if not call:
@@ -1481,7 +1551,9 @@ def _run_chip(state, action, chip_id, data):
     prior.append({"tool": call[0], "args": call[1], "result": result})
     if chip_id == "first_matches" and state.brands and not state.final_say:
         live = any((b or {}).get("source") in ("recruiting", "open_lists") for b in state.brands)
-        niche = str((stated_niches(state.notes) or [None])[0] or state.scrape.get("primary_niche") or "")
+        niche = str(_match_scrape(state.scrape, state.notes, state.creator).get("primary_niche") or "")
+        if is_weak_niche(niche):
+            niche = ""
         say = persona_first_matches(state.first, state.notes.get("survey"), state.brands,
                                     niche=niche.strip().lower(), live=live)
         shipping = resolve_pitch_location(state.creator, state.scrape, state.notes)
@@ -1573,6 +1645,10 @@ def _finish_turn(state, say, brain, timer, chip_id):
         "kit_actions": json_safe(kit_cta) or [],
         "task_chips": json_safe(task_chips) or [],
     }
+    if state.board:
+        payload["board"] = json_safe(state.board)
+        assistant["kind"] = "board"
+        assistant["board"] = payload["board"]
     if state.paywall_payload and state.paywall_payload.get("preview"):
         assistant["locked_pitch"] = {
             "brand_name": state.paywall_payload.get("brand_name"),

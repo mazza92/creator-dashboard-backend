@@ -1235,16 +1235,6 @@ def scrape_and_enrich_creator(user_id, handle: str, platform: str,
     if is_private:
         raise ValueError(f"Account @{handle} is private")
 
-    # Check minimum followers (legacy path when skip_minimums is off)
-    followers = (
-        raw_scrape.get('followersCount')
-        or raw_scrape.get('followerCount')
-        or raw_scrape.get('subscriberCount')
-        or 0
-    )
-    if not skip_minimums and followers < 500:
-        raise ValueError(f"Account @{handle} has fewer than 500 followers")
-
     # Check minimum posts (legacy path; onboarding uses the 12-post quality bar)
     posts = raw_scrape.get('postsCount') or raw_scrape.get('videoCount', 0)
     if not skip_minimums and posts < 5:
@@ -1253,7 +1243,7 @@ def scrape_and_enrich_creator(user_id, handle: str, platform: str,
     # Step 2: Process scrape
     profile_data = scraper.process_scrape(raw_scrape, platform)
 
-    # Brand-ready bar: 500 followers, 12 posts, recent activity.
+    # Brand-ready bar: 12 posts, recent activity.
     # Visual Gemini is not a reject. IG thumbs are too thin to judge UGC on.
     if not skip_follower_floor:
         assert_onboarding_quality(profile_data, handle, check_visual=False)

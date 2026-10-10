@@ -187,6 +187,41 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIn("skincare", from_scrape)
         self.assertNotIn("fitness", from_scrape)
 
+    def test_vague_scrape_niche_never_becomes_a_category(self):
+        self.assertEqual(required_categories_for_match({}, {"primary_niche": "other"}), [])
+        cats = required_categories_for_match({}, {"primary_niche": "other", "secondary_niches": ["skincare"]})
+        self.assertNotIn("other", cats)
+        self.assertIn("skincare", cats)
+
+    def test_signup_niche_wins_over_vague_scrape(self):
+        from routes.polly import _match_scrape
+        from services.polly_discovery import onboarding_niches
+
+        self.assertEqual(onboarding_niches({"creator_niches": ["Skincare", "other"]}), ["skincare"])
+        self.assertEqual(onboarding_niches({"niche": '["skincare"]'}), ["skincare"])
+        self.assertEqual(onboarding_niches({"niche": "skincare, makeup"}), ["skincare", "makeup"])
+        creator = {"creator_niches": ["skincare"]}
+        scrape = _match_scrape({"primary_niche": "other", "follower_count": 300}, {}, creator)
+        self.assertEqual(scrape["primary_niche"], "skincare")
+        self.assertIn("skincare", required_categories_for_match({}, scrape))
+        concrete = _match_scrape({"primary_niche": "fashion"}, {}, creator)
+        self.assertEqual(concrete["primary_niche"], "fashion")
+        stated = _match_scrape({"primary_niche": "other"}, {"niche": ["haircare"]}, creator)
+        self.assertEqual(stated["primary_niche"], "haircare")
+
+    def test_vague_niche_saved_in_notes_does_not_block_signup_niche(self):
+        from routes.polly import _match_scrape
+        from services.polly_discovery import seed_from_survey, stated_niches
+
+        scrape = {"primary_niche": "other", "secondary_niches": ["content creation", "social media marketing"]}
+        self.assertNotIn("niche", seed_from_survey({}, survey={}, scrape=scrape))
+        notes = {"niche": "other"}
+        self.assertEqual(stated_niches(notes), [])
+        match = _match_scrape(scrape, notes, {"creator_niches": ["fitness"]})
+        self.assertEqual(match["primary_niche"], "fitness")
+        self.assertEqual(match["secondary_niches"], ["fitness"])
+        self.assertEqual(required_categories_for_match(notes, match), ["fitness", "activewear"])
+
 
 if __name__ == "__main__":
     unittest.main()

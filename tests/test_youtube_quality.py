@@ -11,7 +11,6 @@ if str(ROOT) not in sys.path:
 from services.creator_profile_scraper import CreatorProfileScraper
 from services.inhouse_social_scraper import diy_scrape_is_acceptable
 from services.profile_quality import (
-    ProfileQualityError,
     assert_onboarding_quality,
     raw_follower_count,
     visible_post_count,
@@ -273,18 +272,16 @@ class TestYoutubeQualityPipeline(unittest.TestCase):
         self.assertEqual(raw_follower_count({"subscriberCount": 800}), 800)
         self.assertEqual(visible_post_count({"videoCount": 40, "latestVideos": [{}] * 8}), 40)
 
-    def test_youtube_below_subscriber_floor(self):
-        with self.assertRaises(ProfileQualityError) as ctx:
-            assert_onboarding_quality(
-                {
-                    "subscriberCount": 20,
-                    "videoCount": 40,
-                    "latest_post_days_ago": 2,
-                    "recent_posts": [{}] * 12,
-                },
-                "tinyyt",
-            )
-        self.assertEqual(ctx.exception.code, "below_follower_min")
+    def test_youtube_small_channel_is_accepted(self):
+        assert_onboarding_quality(
+            {
+                "subscriberCount": 20,
+                "videoCount": 40,
+                "latest_post_days_ago": 2,
+                "recent_posts": [{}] * 12,
+            },
+            "tinyyt",
+        )
 
     def test_hidden_subscribers_with_videos_is_acceptable_scrape(self):
         profile = {

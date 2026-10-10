@@ -564,6 +564,8 @@ def get_coaching_facts(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]
         return {"ok": False, "error": f"topic must be one of {sorted(_TOPICS)}"}
     from services.polly_kit import kit_actions, kit_context
     from services.polly_tracker import session_context_text
+    if topic == "week" and state.balance.get("is_unlimited"):
+        return _monday_board(state)
     playbook = R._coach_say(intent, state.profile_context, state.notes, state.scrape,
                             kit=state.kit, coach_moves=state.coach_moves) or ""
     if topic in ("kit", "profile", "replies"):
@@ -574,6 +576,26 @@ def get_coaching_facts(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]
         "playbook": playbook[:2500],
         "kit": kit_context(state.kit)[:1500],
         "tracker": session_context_text(state.tracker_ctx)[:1200],
+    }
+
+
+def _monday_board(state: TurnState) -> Dict[str, Any]:
+    """Pro's week is the Monday board, shown as its own card."""
+    from services.pro_manager import board_summary, load_board, week_key
+    try:
+        board = load_board(state.db(), state.creator_id, kit=state.kit)
+    except Exception as err:
+        print(f"[Polly] board load failed: {err}")
+        state.db().rollback()
+        return {"ok": False, "error": "board unavailable"}
+    state.board = board
+    state.notes["board_week"] = week_key()
+    state.final_say = board_summary(board, state.first)
+    return {
+        "ok": True,
+        "topic": "week",
+        "board_card_shown": True,
+        "left_this_week": [t["label"] for t in board["tasks"] if not t["done"]],
     }
 
 
@@ -630,6 +652,105 @@ def fix_draft_handle(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": True, "status": "draft_updated", "brand": updated.get("brand_name")}
 
 
+def _reply_thread(state: TurnState, brand_id: Optional[int], name: str) -> Dict[str, str]:
+    """Inbox and subject of the pitch they're replying to: the Autopilot send, else the chat card."""
+    if brand_id:
+        cur = state.db().cursor()
+        try:
+            cur.execute(
+                "SELECT to_email, subject FROM polly_autopilot_queue "
+                "WHERE creator_id = %s AND brand_id = %s AND status = 'sent' LIMIT 1",
+                (state.creator_id, brand_id),
+            )
+            row = cur.fetchone()
+            if row:
+                return {"email": row[0] or "", "subject": row[1] or ""}
+        except Exception:
+            state.db().rollback()
+    for msg in reversed(state.stored_messages or state.messages or []):
+        pitch = msg.get("pitch") if isinstance(msg, dict) else None
+        if not isinstance(pitch, dict) or pitch.get("is_reply"):
+            continue
+        same_id = brand_id and _int(pitch.get("brand_id")) == brand_id
+        if same_id or brand_names_agree(name, pitch.get("brand_name")):
+            return {"email": pitch.get("email") or "", "subject": pitch.get("subject") or ""}
+    return {"email": "", "subject": ""}
+
+
+def draft_brand_reply(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
+    from services.paid_ask import (
+        ADDRESS_LINE, USAGE_DAYS, ad_usage_ask, free_teaser, interested_reply, mailto, usage_rate,
+    )
+    from services.polly_gigs import creator_followers
+
+    posted = str(args.get("moment") or "").strip().lower() == "posted"
+    name = str(args.get("brand_name") or "").strip()
+    row = find_brand(state, brand_id=args.get("brand_id"), brand_name=name)
+    brand_id = _int((row or {}).get("id") or args.get("brand_id"))
+    brand_name = (row or {}).get("name") or name
+    if not brand_name:
+        return {"ok": False, "error": "Which brand? Pass brand_name."}
+    followers = creator_followers(state.scrape) or None
+    rate = usage_rate(followers)
+    if not state.balance.get("is_unlimited"):
+        state.final_say = free_teaser(brand_name, followers, posted=posted)
+        state.add_chips(paywall_unlock_chips({"id": brand_id, "name": brand_name}))
+        state.paywall_moment = {"moment": "paid_reply", "brand_id": brand_id}
+        return {"ok": True, "status": "pro_only", "brand": brand_name, "usage_rate": rate}
+    thread = _reply_thread(state, brand_id, brand_name)
+    first = state.first or ""
+    if posted:
+        mail = ad_usage_ask(brand_name, first, followers, subject=thread["subject"])
+    else:
+        creator = state.creator or {}
+        full = " ".join(p for p in (creator.get("first_name"), creator.get("last_name")) if p).strip()
+        shipping = resolve_pitch_location(state.creator, state.scrape, state.notes)
+        ship_to = "" if shipping.get("needs_location") else str(shipping.get("display") or "")
+        address = creator.get("shipping_address")
+        mail = interested_reply(brand_name, first, full, ship_to, followers,
+                                subject=thread["subject"], address=address if isinstance(address, dict) else None)
+    state.pitch = {
+        "brand_id": brand_id,
+        "brand_name": brand_name,
+        "subject": mail["subject"],
+        "body": mail["body"],
+        "email": thread["email"] or None,
+        "mailto": mailto(thread["email"], mail["subject"], mail["body"]),
+        "is_reply": True,
+        "reply_kind": "ad_usage" if posted else "interested",
+    }
+    state.brands = []
+    try:
+        tracker.add_event(
+            state.db(), state.creator_id, "ad_usage_asked" if posted else "paid_ask_drafted",
+            f"{'Ad usage ask' if posted else 'Reply + usage rate'} · {brand_name}",
+            brand_id=brand_id, event_data={"usage_rate": rate},
+        )
+    except Exception as err:
+        print(f"[Polly] reply event skipped: {err}")
+        state.db().rollback()
+    needs_street = ADDRESS_LINE in mail["body"]
+    if posted:
+        say = (f"Here's the ask for **{brand_name}**: {USAGE_DAYS} days of ad usage for **${rate}**, "
+               "raw file included. Send it as a reply in your thread with them.")
+    else:
+        say = (f"Here's your reply to **{brand_name}**. It gives your shipping address and offers "
+               f"{USAGE_DAYS} days of ad usage for **${rate}**. Brands that gift often pay for usage, and "
+               "asking now costs nothing.")
+        if needs_street:
+            say += " **Fill in your street address** before you send."
+    state.final_say = say
+    return {
+        "ok": True,
+        "status": "reply_drafted",
+        "brand": brand_name,
+        "moment": "posted" if posted else "interested",
+        "usage_rate": f"${rate} for {USAGE_DAYS} days of ad use",
+        "reply_card_shown": True,
+        "needs_street_address": needs_street,
+    }
+
+
 def offer_pro(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     name = str(args.get("brand_name") or "").strip()
     target = state.paywall_brand()
@@ -642,8 +763,12 @@ def offer_pro(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "ok": True,
         "price": "$19/mo",
-        "pro_does": "Polly on autopilot: picks 20-30 brands a month, writes and sends the pitches "
-                    "from their Gmail, day-4 follow-ups, unlimited roster applications.",
+        "pro_does": "Polly as their manager. Goal: one yes this month, turned into a paid usage deal. "
+                    "Every Monday a board with the week: setup, paid briefs to apply to, and replies to send. "
+                    "Autopilot sends ~6 gifted pitches a week from their Gmail once they OK them, with "
+                    "follow-ups. When a brand says yes, "
+                    "Polly writes the reply with a usage rate to run the video as an ad. 20-30 pitches a "
+                    "month go out in the background. Unlimited roster applications.",
         "free_path": "Follow-ups are free. Publishing the kit is free. Drafts left unsent for 7 days "
                      "give the credit back.",
         "button_shown_for": (target or {}).get("name"),
@@ -754,8 +879,22 @@ TOOLS: List[Dict[str, Any]] = [
         "handler": fix_draft_handle,
     },
     {
+        "name": "draft_brand_reply",
+        "description": "Write the creator's reply to a brand that said yes to gifting (moment=interested: "
+                       "shipping address plus a paid usage rate to run the video as an ad), or the ask "
+                       "after they posted (moment=posted: 'can you run this as an ad?'). Use when they say "
+                       "a brand is interested / said yes and want help replying, or they posted and want "
+                       "to get paid. Shows it as a card on Pro; on free it returns the one-line version.",
+        "parameters": _obj({
+            "brand_name": _STR,
+            "brand_id": _INT,
+            "moment": {**_STR, "enum": ["interested", "posted"]},
+        }, ["brand_name"]),
+        "handler": draft_brand_reply,
+    },
+    {
         "name": "offer_pro",
-        "description": "Show the Pro upgrade button (autopilot, $19/mo) when they ask about Pro, more "
+        "description": "Show the Pro upgrade button ($19/mo) when they ask about Pro, more "
                        "pitches, or credits resetting. Returns the free path too, for when they can't afford it.",
         "parameters": _obj({"brand_name": {**_STR, "description": "Brand they want to pitch next, if any"}}),
         "handler": offer_pro,

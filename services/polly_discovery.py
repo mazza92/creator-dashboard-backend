@@ -138,7 +138,7 @@ def seed_from_survey(
     if challenge and not _filled(out, "biggest_challenge"):
         out["biggest_challenge"] = challenge
     niche = str((scrape or {}).get("primary_niche") or "").strip()
-    if niche and not _filled(out, "niche"):
+    if niche and not is_weak_niche(niche) and not _filled(out, "niche"):
         out["niche"] = niche
     if segment or intents or pains:
         out["survey"] = {"segment": segment, "intent": intents[:3], "pain": pains[:3]}
@@ -295,7 +295,40 @@ def stated_niches(notes: Optional[Dict] = None) -> List[str]:
     out = []
     for item in raw:
         token = str(item).strip().lower()
-        if token and token not in out:
+        if token and not is_weak_niche(token) and token not in out:
+            out.append(token)
+    return out
+
+
+WEAK_NICHES = frozenset({
+    "other", "unknown", "general", "misc", "miscellaneous", "n/a", "na", "none", "ugc", "ugc_creator",
+    "creator", "content creator",
+})
+
+
+def is_weak_niche(value: Any) -> bool:
+    return str(value or "").strip().lower() in WEAK_NICHES
+
+
+def onboarding_niches(creator: Optional[Dict] = None) -> List[str]:
+    """Niches the creator picked at signup (list, JSON or comma string), weak labels dropped."""
+    import json
+
+    creator = creator or {}
+    raw = creator.get("creator_niches") or creator.get("niche") or []
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.startswith("["):
+            try:
+                raw = json.loads(text)
+            except ValueError:
+                raw = [text]
+        else:
+            raw = re.split(r"[,;/|]", text)
+    out: List[str] = []
+    for item in raw if isinstance(raw, (list, tuple)) else [raw]:
+        token = str(item or "").strip().lower()
+        if token and not is_weak_niche(token) and token not in out:
             out.append(token)
     return out
 
@@ -341,6 +374,8 @@ def required_categories_for_match(
             tokens.append(token)
     cats = []
     for niche in tokens:
+        if is_weak_niche(niche):
+            continue
         for cat in NICHE_CATEGORIES.get(niche, [niche] if niche else []):
             if cat and cat not in cats:
                 cats.append(cat)

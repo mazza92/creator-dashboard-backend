@@ -110,12 +110,14 @@ APP MAP (the only screens that exist — never invent others):
   other creators this round.
 - Credits: free plan = 3 credits a month; a credit is used when a new brand's
   pitch is drafted or a gifted list is applied to. Follow-ups never use a credit.
-  Pro = $19/mo: Polly on autopilot. You run their brand outreach like a
-  manager: pick 20–30 matched brands a month, write every pitch, send them from
-  their own Gmail once they OK the week's batch, follow up on day 4 in the same
-  thread, and log everything on Timeline. Plus unlimited roster applications and
-  pitches. When Pro comes up, lead with you doing the outreach for them — never
-  with "unlimited credits". Never promise a guaranteed placement or a box.
+  Pro = $19/mo: you work as their manager toward one yes this month, then turn
+  it into a paid usage deal. Every Monday they get a board with the week: one
+  tap OKs the gifted pitches you wrote (sent from their own Gmail, followed up on
+  day 4 in the same thread), plus paid briefs to apply to. When a brand says
+  yes, you write the reply with their shipping details and a rate to run the
+  video as an ad. 20–30 pitches a month go out in the background, and roster
+  applications are unlimited. When Pro comes up, lead with the yes and the paid
+  usage, never with "unlimited credits". Never promise a guaranteed placement or a box.
 - If they ask where something is and it isn't on this map, say plainly it
   doesn't exist and give the real path.
 
@@ -578,9 +580,10 @@ def persona_empty_unlock_brief(
 
 
 PRO_VALUE_LINE = (
-    "Pro is **$19/mo** and I run your outreach on **autopilot**: I pick **20–30 matched brands "
-    "a month**, write every pitch, send them from your Gmail once you OK the week, and follow up "
-    "on day 4. Plus unlimited roster applications and pitches."
+    "Pro is **$19/mo** and I work as your manager toward **one yes this month**, then turn it into "
+    "a paid usage deal. Every Monday you get a board with the week, and Autopilot sends the pitches you "
+    "OK from your Gmail, with follow-ups. When a brand says yes, I write the reply with your ad usage rate. "
+    "Unlimited roster applications too."
 )
 
 
@@ -725,8 +728,8 @@ def persona_cant_afford(
     if reset_label:
         lines.append(f"{n}. Your free credits come back on **{reset_label}**.")
     lines.append(
-        "\nWhen you'd rather I do the pitching for you, Pro puts me on autopilot — "
-        "$19/mo, cancel anytime. No pressure."
+        "\nWhen you'd rather I run your week for you, Pro is $19/mo: a Monday board, pitches sent "
+        "from your Gmail, and the reply that turns a yes into paid. Cancel anytime. No pressure."
     )
     return "\n".join(lines)
 
@@ -751,12 +754,12 @@ def persona_paywall_retry(brand_name: Optional[str] = None) -> str:
     name = (brand_name or "").strip()
     if name:
         return (
-            f"On Pro I write **{name}** right away, then keep pitching 20–30 brands a month "
-            "for you from your Gmail. Tap the chip and we're on."
+            f"On Pro I write **{name}** right away, then put the rest of your week on a Monday board "
+            "and send it from your Gmail. Tap the chip and we're on."
         )
     return (
-        "On Pro I do the outreach for you: 20–30 matched brands a month, sent from your Gmail, "
-        "with day-4 follow-ups. Tap unlock and I'll start this week's batch."
+        "On Pro I run your week: a Monday board, pitches sent from your Gmail with day-4 follow-ups, "
+        "and the reply that turns a yes into paid. Tap unlock and I'll start this week's board."
     )
 
 
@@ -770,8 +773,8 @@ def persona_unlocks_after_send(balance: Optional[Dict[str, Any]] = None) -> str:
         remaining = 0
     if remaining <= 0:
         return (
-            "That's the last free unlock. Unlock Pro and I take over the outreach: 20–30 brands a "
-            "month pitched from your Gmail, with the follow-ups, plus unlimited roster applications."
+            "That's the last free unlock. Unlock Pro and I run your week from a Monday board: pitches sent "
+            "from your Gmail with the follow-ups, and when a brand says yes I write the paid usage ask."
         )
     if remaining == 1:
         return "You've got **1 free unlock** left."

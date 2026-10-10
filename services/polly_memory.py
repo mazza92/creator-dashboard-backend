@@ -91,10 +91,12 @@ def _clean_message(msg: Any) -> Optional[Dict[str, Any]]:
     if isinstance(locked, dict) and locked.get("lines"):
         out["locked_pitch"] = locked
     kind = msg.get("kind")
-    if kind in ("nudge", "brief", "alert"):
+    if kind in ("nudge", "brief", "alert", "board"):
         out["kind"] = kind
         if msg.get("brief"):
             out["brief"] = msg.get("brief")
+        if kind == "board" and isinstance(msg.get("board"), dict):
+            out["board"] = msg["board"]
     return out
 
 

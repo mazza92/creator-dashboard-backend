@@ -3889,7 +3889,7 @@ def unlock_brand_access(slug):
                 app.logger.warning(f"🚫 Quota limit reached for creator {creator_id}")
                 conn.close()
                 return jsonify({
-                    'error': f"You've used all {DAILY_LIMIT} free application forms today. Come back tomorrow, or go Pro and Polly pitches 20–30 brands a month from your Gmail, plus unlimited applications.",
+                    'error': f"You've used all {DAILY_LIMIT} free application forms today. Come back tomorrow, or go Pro and Polly runs your week: pitches from your Gmail, follow-ups, and the reply that turns a yes into paid. Applications are unlimited.",
                     'upgrade_required': True,
                     'current_count': daily_unlocks,
                     'limit': DAILY_LIMIT
@@ -6377,7 +6377,6 @@ def register_creator():
             return jsonify({'error': 'Invalid JSON format'}), 400
 
         from services.profile_quality import (
-            MIN_FOLLOWERS,
             ONBOARDING_PLATFORMS,
             UNSUPPORTED_ONBOARDING_PLATFORM_MESSAGE,
         )
@@ -6393,17 +6392,6 @@ def register_creator():
                 link['handle'] = normalize_social_handle(raw_handle, link.get('platform'))
                 if raw_handle != link['handle']:
                     app.logger.info(f"📝 Handle normalized: '{raw_handle}' -> '{link['handle']}'")
-
-        reported_followers = [
-            int(link.get('followersCount') or 0)
-            for link in social_links
-            if str(link.get('followersCount', '')).replace('.', '', 1).isdigit()
-        ]
-        if reported_followers and max(reported_followers) < MIN_FOLLOWERS:
-            conn.close()
-            return jsonify({
-                'error': f'You need at least {MIN_FOLLOWERS} followers on Instagram, TikTok, or YouTube to join.'
-            }), 400
 
         metrics = {
             "total_posts": int(request.form.get('totalPosts', 0)),

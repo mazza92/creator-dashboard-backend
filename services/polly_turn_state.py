@@ -64,6 +64,7 @@ class TurnState:
     gigs_has_more: bool = False
     pitch: Optional[Dict[str, Any]] = None
     pitch_update: Optional[Dict[str, Any]] = None
+    board: Optional[Dict[str, Any]] = None
     paywall: bool = False
     paywall_payload: Optional[Dict[str, Any]] = None
     task_chips: List[Dict[str, Any]] = field(default_factory=list)

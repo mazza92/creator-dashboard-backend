@@ -5,18 +5,23 @@ import os
 from flask import Blueprint, jsonify, redirect, request
 
 from services.polly_autopilot import (
+    FOLLOWUP_GAPS,
+    TARGET_MAX,
+    TARGET_MIN,
     add_draft,
     approve,
     batch_size,
     list_items,
     month_counts,
+    per_week,
     queued_brand_ids,
+    sends_per_day,
     set_enabled,
-    set_monthly_target,
     settings,
     skip_item,
     update_draft,
 )
+from services.polly_autopilot import update_settings as save_settings
 from services.polly_gmail import (
     GmailError,
     auth_url,
@@ -31,6 +36,7 @@ from services.polly_gmail import (
 autopilot_bp = Blueprint("polly_autopilot", __name__, url_prefix="/api/polly/autopilot")
 
 POLLY_PATH = "/creator/dashboard/for-you"
+PLAN_ALTERNATES = 4
 
 
 def _frontend(path: str) -> str:
@@ -47,10 +53,45 @@ def _is_pro(creator_id, conn) -> bool:
     return bool(_unlock_balance(creator_id, conn=conn).get("is_unlimited"))
 
 
+NICHE_OPTIONS = ("skincare", "makeup", "haircare", "fashion", "fitness", "food", "wellness", "lifestyle", "tech")
+
+
+def _targeting(conn, creator_id):
+    from services.polly_discovery import stated_niches
+    from services.polly_memory import load_thread
+    from services.polly_prefs import CATEGORY_WORDS, get_prefs
+
+    notes = load_thread(conn, creator_id).get("notes") or {}
+    return {
+        "niches": stated_niches(notes),
+        "avoid_categories": list(get_prefs(notes).get("avoid_categories") or []),
+        "niche_options": list(NICHE_OPTIONS),
+        "avoid_options": list(CATEGORY_WORDS),
+    }
+
+
+def _save_targeting(conn, creator_id, body):
+    from services.polly_memory import load_thread, save_thread
+    from services.polly_prefs import CATEGORY_WORDS, get_prefs
+
+    if "niches" not in body and "avoid_categories" not in body:
+        return
+    thread = load_thread(conn, creator_id)
+    notes = dict(thread.get("notes") or {})
+    if isinstance(body.get("niches"), list):
+        notes["niche"] = [n for n in dict.fromkeys(str(x).strip().lower() for x in body["niches"]) if n in NICHE_OPTIONS]
+    if isinstance(body.get("avoid_categories"), list):
+        prefs = get_prefs(notes)
+        prefs["avoid_categories"] = [c for c in dict.fromkeys(str(x) for x in body["avoid_categories"]) if c in CATEGORY_WORDS]
+        notes["prefs"] = prefs
+    save_thread(conn, creator_id, thread.get("messages") or [], thread.get("suggested_brands") or [], notes=notes)
+
+
 def _status_payload(conn, creator_id, is_pro):
     account = load_account(conn, creator_id) if gmail_configured() else None
     prefs = settings(conn, creator_id)
     counts = month_counts(conn, creator_id)
+    target = prefs["monthly_target"]
     return {
         "success": True,
         "available": gmail_configured(),
@@ -62,9 +103,17 @@ def _status_payload(conn, creator_id, is_pro):
             "needs_reconnect": bool(account and account.get("revoked_at")),
         },
         "enabled": prefs["enabled"],
-        "monthly_target": prefs["monthly_target"],
+        "monthly_target": target,
+        "deal_focus": prefs["deal_focus"],
+        "send_days": prefs["send_days"],
+        "followups": prefs["followups"],
+        "per_week": per_week(target),
+        "per_day": sends_per_day(target, prefs["send_days"]),
+        "target_range": [TARGET_MIN, TARGET_MAX],
+        "max_followups": len(FOLLOWUP_GAPS),
+        "targeting": _targeting(conn, creator_id) if is_pro else None,
         "month": counts,
-        "next_batch": batch_size(counts, prefs["monthly_target"]),
+        "next_batch": batch_size(counts, target),
         "items": list_items(conn, creator_id),
     }
 
@@ -163,11 +212,8 @@ def update_settings():
         body = request.get_json(silent=True) or {}
         if "enabled" in body:
             set_enabled(conn, creator_id, bool(body.get("enabled")))
-        if "monthly_target" in body:
-            try:
-                set_monthly_target(conn, creator_id, int(body.get("monthly_target")))
-            except (TypeError, ValueError):
-                return jsonify({"success": False, "error": "monthly_target must be 12 or 24"}), 400
+        save_settings(conn, creator_id, body)
+        _save_targeting(conn, creator_id, body)
         return jsonify(_status_payload(conn, creator_id, True))
     finally:
         conn.close()
@@ -212,8 +258,10 @@ def plan():
         skip = set(queued_brand_ids(conn, creator_id))
         pool = [b for b in brands or [] if b.get("id") and int(b["id"]) not in skip]
         emailable = _brands_with_email(conn, [int(b["id"]) for b in pool])
-        picks = [b for b in pool if int(b["id"]) in emailable][:size]
-        return jsonify({"success": True, "brands": json_safe(picks), "error": None if picks else error})
+        matched = [b for b in pool if int(b["id"]) in emailable]
+        picks, alternates = matched[:size], matched[size:size + PLAN_ALTERNATES]
+        return jsonify({"success": True, "brands": json_safe(picks), "alternates": json_safe(alternates),
+                        "size": size, "error": None if picks else error})
     finally:
         conn.close()
 
@@ -225,6 +273,7 @@ def draft():
     from services.polly import (
         apply_gifted_ask_to_pitch,
         apply_location_to_pitch,
+        apply_paid_ask_to_pitch,
         pitch_from_package_response,
         pitch_has_placeholder,
         resolve_pitch_location,
@@ -254,7 +303,15 @@ def draft():
             return jsonify({"success": False, "error": pkg.get("error") or "draft_failed"}), 502
         pitch = pitch_from_package_response(pkg) or {}
         loc_display = str(shipping.get("display") or "").strip()
-        if notes.get("deal_intent") != "paid":
+        focus = settings(conn, creator_id)["deal_focus"]
+        if focus == "auto":
+            focus = "paid" if notes.get("deal_intent") == "paid" else "gifted"
+        if focus == "paid":
+            from services.polly_kit import load_kit_snapshot
+
+            pitch = apply_paid_ask_to_pitch(pitch, kit=load_kit_snapshot(conn, creator_id), scrape=scrape,
+                                            location_display=loc_display or None)
+        else:
             pitch = apply_gifted_ask_to_pitch(pitch, location_display=loc_display or None)
         if loc_display:
             pitch = apply_location_to_pitch(pitch, shipping.get("city") or "", shipping.get("country") or "", loc_display)

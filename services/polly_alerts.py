@@ -726,7 +726,7 @@ def email_month_reports(conn, limit: int = 40, dry_run: bool = False, send_fn: O
     for row in [dict(r) for r in cur.fetchall()]:
         cid = row["creator_id"]
         who = _recipient(conn, cid)
-        if not who:
+        if not who or who["is_pro"]:
             continue
         last = load_last_month(conn, cid)
         if not any(last.values()):
@@ -788,7 +788,11 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
                 conn.rollback()
             except Exception:
                 pass
-        for job in (email_month_reports, email_unsent_briefs):
+        from services.autopilot_report import email_autopilot_reports
+        from services.pro_manager import email_monday_boards, email_renewal_notes
+
+        for job in (email_month_reports, email_unsent_briefs, email_renewal_notes, email_monday_boards,
+                    email_autopilot_reports):
             try:
                 emails += job(conn, dry_run=dry_run, send_fn=send_fn, test_email=test_email)
             except Exception as err:

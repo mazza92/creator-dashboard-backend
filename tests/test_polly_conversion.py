@@ -111,7 +111,8 @@ class ProConversionTests(unittest.TestCase):
         say = persona_paywall_say("Glow Co", kit_views=2)
         self.assertIn("Glow Co", say)
         self.assertIn("$19/mo", say)
-        self.assertLess(say.index("autopilot"), say.index("unlimited roster applications"))
+        self.assertLess(say.index("one yes this month"), say.index("paid usage deal"))
+        self.assertLess(say.index("Monday"), say.index("Unlimited roster applications"))
         self.assertIn("**2** brands opened your kit", say)
         self.assertNotIn("reset", say.lower())
 
@@ -124,14 +125,14 @@ class ProConversionTests(unittest.TestCase):
         self.assertFalse(credits_out_offer_due({}, {"remaining": 0, "is_unlimited": True}, "2026-10"))
         self.assertFalse(credits_out_offer_due({}, None, "2026-10"))
 
-    def test_credits_out_offer_sells_autopilot_with_free_way_out(self):
+    def test_credits_out_offer_sells_the_manager_with_free_way_out(self):
         msg = credits_out_offer_message(
             "Ana", {"remaining": 0, "reset_at": "2026-11-01T00:00:00+00:00"}, None, {}, kit_views=3,
         )
         self.assertEqual(msg["kind"], "brief")
         self.assertIn("Ana, you've used your **3 free pitches**", msg["content"])
         self.assertIn("Nov 1", msg["content"])
-        self.assertIn("autopilot", msg["content"])
+        self.assertIn("Monday", msg["content"])
         self.assertIn("$19/mo", msg["content"])
         self.assertIn("**3** brands opened your kit", msg["content"])
         actions = [c["action"] for c in msg["task_chips"]]

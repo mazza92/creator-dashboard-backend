@@ -1,9 +1,10 @@
 """Onboarding quality bar for brand-ready creator accounts.
 
 Hard rejects, in order:
-  1. 500+ followers (when a count was scraped)
-  2. 12+ public posts
-  3. A post in the last 30 days (only when we have a real date)
+  1. 12+ public posts
+  2. A post in the last 30 days (only when we have a real date)
+
+Accounts under 500 followers are let in and reviewed by the team.
 
 Visual Gemini review is advisory only. Instagram covers and UGC
 thumbnails are too incomplete to reject creators on.
@@ -319,16 +320,6 @@ def assert_onboarding_quality(profile: dict, handle: str, *, check_visual: bool 
     posts = visible_post_count(profile)
     days_ago = latest_post_age_days(profile)
 
-    if fails_follower_floor(followers):
-        raise ProfileQualityError(
-            "below_follower_min",
-            handle,
-            follower_count=followers,
-            post_count=posts,
-            latest_post_days_ago=days_ago,
-            message=f"Account @{handle} has fewer than {MIN_FOLLOWERS} followers",
-        )
-
     if fails_post_floor(posts):
         raise ProfileQualityError(
             "below_post_min",
@@ -400,12 +391,7 @@ def resolve_verified_onboarding_followers(
             candidates.append(q_followers)
 
     for count in candidates:
-        if count <= 0:
-            continue
-        if fails_follower_floor(count) and not skip_follower_floor:
-            raise ValueError(
-                f"You need at least {MIN_FOLLOWERS} followers on Instagram, TikTok, or YouTube to join."
-            )
-        return count
+        if count > 0:
+            return count
 
     raise ValueError(UNVERIFIED_ONBOARDING_MESSAGE)

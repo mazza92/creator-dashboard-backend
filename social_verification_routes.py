@@ -631,9 +631,10 @@ def validate_social_gates(data: dict, platform: str, user_country: str) -> dict:
     Gates:
     1. OAuth connected (access token exists)
     2. Account is public
-    3. Follower count >= 500
-    4. Media/post count >= 5
-    5. Region allowed (US, UK, AU, NZ, Europe)
+    3. Media/post count >= 5
+    4. Region allowed (US, UK, AU, NZ, Europe)
+
+    follower_min is recorded for team review but no longer blocks signup.
     """
     # Normalize country code
     country_code = (user_country or '').upper().strip()
@@ -646,7 +647,7 @@ def validate_social_gates(data: dict, platform: str, user_country: str) -> dict:
         "content_min": (data.get("media_count") or 0) >= MIN_POSTS,
     }
 
-    passed = all(gates.values())
+    passed = all(v for k, v in gates.items() if k != "follower_min")
     failure_reason = None
 
     if not passed:
@@ -657,8 +658,6 @@ def validate_social_gates(data: dict, platform: str, user_country: str) -> dict:
             failure_reason = "oauth_expired"
         elif not gates["account_public"]:
             failure_reason = "private"
-        elif not gates["follower_min"]:
-            failure_reason = "below_follower_min"
         elif not gates["content_min"]:
             failure_reason = "below_post_min"
 

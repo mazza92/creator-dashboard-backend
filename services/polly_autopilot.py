@@ -1,5 +1,5 @@
-"""Polly Autopilot (Pro): approved pitches go out from the creator's Gmail, one a weekday,
-with a day-4 follow-up in the same thread unless the brand replied."""
+"""Polly Autopilot (Pro): approved pitches go out from the creator's Gmail on their send days,
+with up to two follow-ups (day 4, day 10) in the same thread unless the brand replied."""
 
 from __future__ import annotations
 
@@ -11,16 +11,22 @@ from psycopg2.extras import RealDictCursor
 
 DEFAULT_MONTHLY_TARGET = 24
 WEEK_BATCH = 6
-PACE_TARGETS = (12, 24)
+TARGET_MIN = 8
+TARGET_MAX = 30
 MAX_SENDS_PER_DAY = 2
 SEND_WINDOW_UTC = (14, 17)
-FOLLOWUP_AFTER = timedelta(days=4)
+WEEKDAYS = (0, 1, 2, 3, 4)
+DEAL_FOCUS = ("auto", "gifted", "paid")
+DEFAULT_FOLLOWUPS = 2
+# Gap before each follow-up: day 4 after the pitch, then 6 more days (day 10).
+FOLLOWUP_GAPS = (timedelta(days=4), timedelta(days=6))
+FOLLOWUP_AFTER = FOLLOWUP_GAPS[0]
 HEADSUP_BEFORE = timedelta(days=1)
 HEADSUP_MIN_NOTICE = timedelta(hours=20)
 NUDGE_HOLD = timedelta(days=5)
 
-REPLY_EVENTS = ("brand_replied_interested", "brand_replied_question", "brand_replied_rejected",
-                "dropped", "email_bounced", "pitch_not_sent")
+REPLIED_EVENTS = ("brand_replied_interested", "brand_replied_question", "brand_replied_rejected")
+REPLY_EVENTS = REPLIED_EVENTS + ("dropped", "email_bounced", "pitch_not_sent")
 
 _TABLES_READY = False
 
@@ -78,6 +84,12 @@ def ensure_autopilot_tables(conn) -> None:
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_polly_autopilot_due ON polly_autopilot_queue (status, scheduled_for)"
     )
+    cur.execute("ALTER TABLE polly_autopilot ADD COLUMN IF NOT EXISTS deal_focus TEXT NOT NULL DEFAULT 'auto'")
+    cur.execute("ALTER TABLE polly_autopilot ADD COLUMN IF NOT EXISTS send_days TEXT NOT NULL DEFAULT '01234'")
+    cur.execute(
+        f"ALTER TABLE polly_autopilot ADD COLUMN IF NOT EXISTS followups INTEGER NOT NULL DEFAULT {DEFAULT_FOLLOWUPS}"
+    )
+    cur.execute("ALTER TABLE polly_autopilot_queue ADD COLUMN IF NOT EXISTS followups_sent INTEGER NOT NULL DEFAULT 0")
     conn.commit()
     _TABLES_READY = True
 
@@ -86,15 +98,70 @@ def ensure_autopilot_tables(conn) -> None:
 # Settings + queue
 # ---------------------------------------------------------------------------
 
+def parse_send_days(raw: Any) -> List[int]:
+    days = sorted({int(ch) for ch in str(raw or "") if ch.isdigit() and int(ch) in WEEKDAYS})
+    return days or list(WEEKDAYS)
+
+
+def clamp_target(target: Any) -> int:
+    try:
+        return max(TARGET_MIN, min(TARGET_MAX, int(target)))
+    except (TypeError, ValueError):
+        return DEFAULT_MONTHLY_TARGET
+
+
+def per_week(target: int) -> int:
+    return max(1, -(-int(target) // 4))
+
+
 def settings(conn, creator_id: int) -> Dict[str, Any]:
     ensure_autopilot_tables(conn)
     cur = _cursor(conn)
-    cur.execute("SELECT enabled, monthly_target FROM polly_autopilot WHERE creator_id = %s", (creator_id,))
-    row = cur.fetchone()
+    cur.execute(
+        "SELECT enabled, monthly_target, deal_focus, send_days, followups FROM polly_autopilot WHERE creator_id = %s",
+        (creator_id,),
+    )
+    row = cur.fetchone() or {}
+    focus = row.get("deal_focus") if row.get("deal_focus") in DEAL_FOCUS else "auto"
+    followups = row.get("followups")
     return {
         "enabled": bool(row["enabled"]) if row else True,
         "monthly_target": int(row["monthly_target"]) if row else DEFAULT_MONTHLY_TARGET,
+        "deal_focus": focus,
+        "send_days": parse_send_days(row.get("send_days")),
+        "followups": int(followups) if followups is not None else DEFAULT_FOLLOWUPS,
     }
+
+
+def update_settings(conn, creator_id: int, patch: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate and save any of: monthly_target, deal_focus, send_days, followups."""
+    cols: Dict[str, Any] = {}
+    if "monthly_target" in patch:
+        cols["monthly_target"] = clamp_target(patch["monthly_target"])
+    if patch.get("deal_focus") in DEAL_FOCUS:
+        cols["deal_focus"] = patch["deal_focus"]
+    if "send_days" in patch:
+        raw = patch["send_days"]
+        days = parse_send_days("".join(str(d) for d in raw) if isinstance(raw, (list, tuple)) else raw)
+        cols["send_days"] = "".join(str(d) for d in days)
+    if "followups" in patch:
+        try:
+            cols["followups"] = max(0, min(len(FOLLOWUP_GAPS), int(patch["followups"])))
+        except (TypeError, ValueError):
+            pass
+    if cols:
+        ensure_autopilot_tables(conn)
+        names = list(cols)
+        cur = _cursor(conn)
+        cur.execute(
+            f"""
+            INSERT INTO polly_autopilot (creator_id, {', '.join(names)}) VALUES (%s, {', '.join(['%s'] * len(names))})
+            ON CONFLICT (creator_id) DO UPDATE SET {', '.join(f'{n} = EXCLUDED.{n}' for n in names)}, updated_at = NOW()
+            """,
+            (creator_id, *[cols[n] for n in names]),
+        )
+        conn.commit()
+    return settings(conn, creator_id)
 
 
 def set_enabled(conn, creator_id: int, enabled: bool) -> None:
@@ -117,15 +184,21 @@ def month_counts(conn, creator_id: int) -> Dict[str, int]:
         """
         SELECT
           COUNT(*) FILTER (WHERE status = 'sent' AND sent_at >= date_trunc('month', NOW())) AS sent,
-          COUNT(*) FILTER (WHERE followup_sent_at >= date_trunc('month', NOW())) AS followups,
+          COALESCE(SUM(GREATEST(followups_sent, 1)) FILTER (
+              WHERE followup_sent_at >= date_trunc('month', NOW())), 0) AS followups,
           COUNT(*) FILTER (WHERE status = 'approved') AS scheduled,
-          COUNT(*) FILTER (WHERE status = 'draft') AS drafts
-        FROM polly_autopilot_queue WHERE creator_id = %s
+          COUNT(*) FILTER (WHERE status = 'draft') AS drafts,
+          COUNT(*) FILTER (WHERE status = 'sent' AND sent_at >= date_trunc('month', NOW()) AND EXISTS (
+              SELECT 1 FROM polly_timeline_events e
+              WHERE e.creator_id = q.creator_id AND e.brand_id = q.brand_id
+                AND e.event_type = ANY(%s) AND e.occurred_at >= q.sent_at
+          )) AS replied
+        FROM polly_autopilot_queue q WHERE creator_id = %s
         """,
-        (creator_id,),
+        (list(REPLIED_EVENTS), creator_id),
     )
     row = cur.fetchone() or {}
-    return {k: int(row.get(k) or 0) for k in ("sent", "followups", "scheduled", "drafts")}
+    return {k: int(row.get(k) or 0) for k in ("sent", "followups", "scheduled", "drafts", "replied")}
 
 
 def queued_brand_ids(conn, creator_id: int) -> List[int]:
@@ -139,25 +212,18 @@ def queued_brand_ids(conn, creator_id: int) -> List[int]:
 
 
 def set_monthly_target(conn, creator_id: int, target: int) -> int:
-    target = int(target) if int(target) in PACE_TARGETS else DEFAULT_MONTHLY_TARGET
-    ensure_autopilot_tables(conn)
-    cur = _cursor(conn)
-    cur.execute(
-        """
-        INSERT INTO polly_autopilot (creator_id, monthly_target) VALUES (%s, %s)
-        ON CONFLICT (creator_id) DO UPDATE SET monthly_target = EXCLUDED.monthly_target, updated_at = NOW()
-        """,
-        (creator_id, target),
-    )
-    conn.commit()
-    return target
+    return update_settings(conn, creator_id, {"monthly_target": target})["monthly_target"]
 
 
 def batch_size(counts: Dict[str, int], target: int) -> int:
     """How many new brands to plan now: a week's worth, never past the monthly target."""
     left = max(0, int(target) - counts.get("sent", 0) - counts.get("scheduled", 0) - counts.get("drafts", 0))
-    week = WEEK_BATCH if int(target) >= DEFAULT_MONTHLY_TARGET else max(1, -(-int(target) // 4))
-    return min(week, left)
+    return min(per_week(target), left)
+
+
+def sends_per_day(target: int, days: List[int]) -> int:
+    """One a send day, two when the week's batch doesn't fit."""
+    return 1 if per_week(target) <= len(days or WEEKDAYS) else MAX_SENDS_PER_DAY
 
 
 def add_draft(conn, creator_id: int, brand_id: int, brand_name: str, to_email: str,
@@ -233,27 +299,35 @@ def skip_item(conn, creator_id: int, item_id: int) -> bool:
     return cur.rowcount > 0
 
 
-def next_slots(count: int, after: datetime, rng: Optional[random.Random] = None) -> List[datetime]:
-    """One weekday send slot per day in the afternoon UTC window (US morning, EU afternoon)."""
+def next_slots(count: int, after: datetime, rng: Optional[random.Random] = None,
+               days: Optional[List[int]] = None, per_day: int = 1) -> List[datetime]:
+    """Send slots on the creator's send days in the afternoon UTC window (US morning, EU afternoon)."""
     rng = rng or random.Random()
+    allowed = set(days or WEEKDAYS)
     slots: List[datetime] = []
     day = after.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     while len(slots) < count:
-        if day.weekday() < 5:
-            slot = day.replace(hour=rng.randint(SEND_WINDOW_UTC[0], SEND_WINDOW_UTC[1] - 1),
-                               minute=rng.randint(0, 59))
-            if slot > after:
-                slots.append(slot)
+        if day.weekday() in allowed:
+            picked = []
+            for _ in range(max(1, per_day)):
+                slot = day.replace(hour=rng.randint(SEND_WINDOW_UTC[0], SEND_WINDOW_UTC[1] - 1),
+                                   minute=rng.randint(0, 59))
+                if slot > after and slot not in picked:
+                    picked.append(slot)
+            slots.extend(sorted(picked)[:count - len(slots)])
         day += timedelta(days=1)
     return slots
 
 
 def approve(conn, creator_id: int, item_ids: List[int], now: Optional[datetime] = None) -> List[Dict[str, Any]]:
-    """Schedule approved drafts after anything already queued, one per weekday."""
+    """Schedule approved drafts after anything already queued, on the creator's send days."""
     now = now or utc_now()
     ids = [int(i) for i in item_ids or [] if str(i).isdigit()]
     if not ids:
         return []
+    prefs = settings(conn, creator_id)
+    days = prefs["send_days"]
+    per_day = sends_per_day(prefs["monthly_target"], days)
     cur = _cursor(conn)
     cur.execute(
         "SELECT MAX(scheduled_for) AS last FROM polly_autopilot_queue WHERE creator_id = %s AND status = 'approved'",
@@ -267,7 +341,7 @@ def approve(conn, creator_id: int, item_ids: List[int], now: Optional[datetime] 
     )
     rows = [r["id"] for r in cur.fetchall()]
     out = []
-    for item_id, slot in zip(rows, next_slots(len(rows), start)):
+    for item_id, slot in zip(rows, next_slots(len(rows), start, days=days, per_day=per_day)):
         cur.execute(
             """
             UPDATE polly_autopilot_queue SET status = 'approved', approved_at = NOW(), scheduled_for = %s
@@ -286,19 +360,23 @@ def approve(conn, creator_id: int, item_ids: List[int], now: Optional[datetime] 
 # Follow-up copy
 # ---------------------------------------------------------------------------
 
-def compose_followup(first_name: str, brand_name: str, subject: str) -> Dict[str, str]:
+def compose_followup(first_name: str, brand_name: str, subject: str, wave: int = 1) -> Dict[str, str]:
     name = (brand_name or "your team").strip()
     subj = (subject or f"{name} collab").strip()
     if not subj.lower().startswith("re:"):
         subj = f"Re: {subj}"
     sign = (first_name or "").strip()
-    body = (
-        "Hi,\n\n"
-        f"Bumping my note below in case it got buried. I'd still love to create for {name}. "
-        "Happy to share a quick concept first if that helps.\n\n"
-        "Thanks!"
-        + (f"\n{sign}" if sign else "")
-    )
+    if wave >= 2:
+        middle = (
+            f"One last nudge on this. If the timing isn't right for {name}, no worries at all. "
+            "If it is, I'd love to send over a quick concept."
+        )
+    else:
+        middle = (
+            f"Bumping my note below in case it got buried. I'd still love to create for {name}. "
+            "Happy to share a quick concept first if that helps."
+        )
+    body = "Hi,\n\n" + middle + "\n\nThanks!" + (f"\n{sign}" if sign else "")
     return {"subject": subj, "body": body}
 
 
@@ -342,6 +420,7 @@ def _already_pitched(conn, creator_id: int, brand_id: int) -> bool:
 
 
 def _followed_up_by_hand(conn, creator_id: int, brand_id: int, sent_at: Optional[datetime]) -> bool:
+    """``sent_at`` is our last email in the thread, so our own follow-up events don't count."""
     if not sent_at:
         return False
     cur = _cursor(conn)
@@ -458,7 +537,7 @@ def run_autopilot(
     out = {"pitches": 0, "headsups": 0, "followups": 0, "skipped": 0, "failed": 0}
 
     pitches = _due(conn, f"""
-        SELECT DISTINCT ON (q.creator_id) q.*
+        SELECT DISTINCT ON (q.creator_id) q.*, a.followups
         FROM polly_autopilot_queue q {_ACTIVE_JOIN}
         WHERE q.status = 'approved' AND q.scheduled_for <= %s AND COALESCE(a.enabled, TRUE)
           AND (SELECT COUNT(*) FROM polly_autopilot_queue s
@@ -482,13 +561,16 @@ def run_autopilot(
                                 "**Autopilot** and I'll pick up where I left off.", [])
             out["failed"] += 1
             continue
+        follows = item.get("followups") if item.get("followups") is not None else DEFAULT_FOLLOWUPS
         _set(conn, item["id"], status="sent", sent_at=now, gmail_id=sent.get("gmail_id"),
              thread_id=sent.get("thread_id"), message_id=sent.get("message_id"), error=None,
-             followup_status="scheduled", followup_due_at=now + FOLLOWUP_AFTER)
+             **({"followup_status": "scheduled", "followup_due_at": now + FOLLOWUP_GAPS[0]} if follows else {}))
         record_pitch_sent(conn, cid, {"id": bid, "name": name}, drafted=False)
-        _hold_day4_nudge(conn, cid, bid, now + NUDGE_HOLD)
-        note(conn, cid, f"✉️ Sent your **{name}** pitch from your Gmail. It's on your Timeline, "
-                        "and I'll follow up on day 4 if they're quiet.", [], pitched={"id": bid, "name": name})
+        if follows:
+            _hold_day4_nudge(conn, cid, bid, now + NUDGE_HOLD)
+        tail = ", and I'll follow up on day 4 if they're quiet." if follows else "."
+        note(conn, cid, f"✉️ Sent your **{name}** pitch from your Gmail. It's on your Timeline{tail}",
+             [], pitched={"id": bid, "name": name})
         out["pitches"] += 1
 
     warn = _due(conn, f"""
@@ -515,17 +597,19 @@ def run_autopilot(
         out["headsups"] += 1
 
     follow = _due(conn, f"""
-        SELECT q.* FROM polly_autopilot_queue q {_ACTIVE_JOIN}
+        SELECT q.*, a.followups FROM polly_autopilot_queue q {_ACTIVE_JOIN}
         WHERE q.followup_status = 'headsup' AND q.followup_due_at <= %s AND COALESCE(a.enabled, TRUE)
         LIMIT %s
     """, (now, limit))
     for item in follow:
         cid, bid, name = item["creator_id"], item["brand_id"], item.get("brand_name") or "the brand"
-        if _brand_closed(conn, cid, bid, item.get("sent_at")) or _followed_up_by_hand(conn, cid, bid, item.get("sent_at")):
+        last_ours = item.get("followup_sent_at") or item.get("sent_at")
+        if _brand_closed(conn, cid, bid, item.get("sent_at")) or _followed_up_by_hand(conn, cid, bid, last_ours):
             _set(conn, item["id"], followup_status="cancelled")
             continue
+        wave = int(item.get("followups_sent") or 0) + 1
         names = _creator_names(conn, cid)
-        mail = compose_followup(names["first"], name, item["subject"])
+        mail = compose_followup(names["first"], name, item["subject"], wave=wave)
         try:
             send(conn, cid, item["to_email"], mail["subject"], mail["body"], from_name=names["full"],
                  thread_id=item.get("thread_id") or "", in_reply_to=item.get("message_id") or "")
@@ -533,8 +617,14 @@ def run_autopilot(
             _set(conn, item["id"], error=str(err)[:300])
             out["failed"] += 1
             continue
-        _set(conn, item["id"], followup_status="sent", followup_sent_at=now, error=None)
-        _close_day4_task(conn, cid, bid)
+        allowed = item.get("followups") if item.get("followups") is not None else DEFAULT_FOLLOWUPS
+        if wave < min(int(allowed), len(FOLLOWUP_GAPS)):
+            _set(conn, item["id"], followup_status="scheduled", followup_due_at=now + FOLLOWUP_GAPS[wave],
+                 followup_sent_at=now, followups_sent=wave, error=None)
+        else:
+            _set(conn, item["id"], followup_status="sent", followup_sent_at=now, followups_sent=wave, error=None)
+        if wave == 1:
+            _close_day4_task(conn, cid, bid)
         add_event(conn, cid, "pitch_sent", f"Follow-up sent · {name}", brand_id=bid,
                   polly_notes="Sent by Polly Autopilot in the same Gmail thread.")
         note(conn, cid, f"🔁 Followed up with **{name}** in the same Gmail thread.", [])
@@ -543,7 +633,7 @@ def run_autopilot(
 
 
 _SETTABLE = {"status", "sent_at", "gmail_id", "thread_id", "message_id", "error", "followup_status",
-             "followup_due_at", "headsup_at", "followup_sent_at"}
+             "followup_due_at", "headsup_at", "followup_sent_at", "followups_sent"}
 
 
 def _set(conn, item_id: int, **fields) -> None:

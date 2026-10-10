@@ -370,7 +370,7 @@ def send_lifecycle_email(
         }
         if template_slug == 'max_quota_hit':
             full_context['preheader'] = (
-                'Your 3 are out. Polly can keep pitching 20–30 brands a month from your Gmail.'
+                'Your 3 are out. On Pro, Polly runs your week and turns a yes into paid.'
             )
 
         # Add UTM parameters to CTA URL

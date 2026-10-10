@@ -43,6 +43,8 @@ How to work:
   in one line and ask the question it suggests.
 - Replies (yes, no, "said no thanks", a question), PR shipped, posted, paid, bounced, still quiet =
   log_brand_update, before you answer, for any brand they name.
+- A brand said yes and they want help replying, or they posted and want to get paid for it =
+  draft_brand_reply (moment interested or posted). It writes the reply with the usage rate.
 - Paid UGC / gigs / who pays = find_paid_gigs. Gifted PR / more brands / who should I pitch = suggest_brands.
   If it returns brands, the cards are on screen: introduce them. repeated means they've seen them and
   they're still unpitched. Never say the roster is empty when brands came back.

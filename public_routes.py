@@ -5,7 +5,7 @@ No authentication required - open to Google crawlers
 
 from flask import Blueprint, request, jsonify, Response
 from psycopg2.extras import RealDictCursor
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 import hashlib
 import hmac
 import os
@@ -353,6 +353,15 @@ def submit_to_indexnow(urls):
         print(f"❌ IndexNow: Error submitting URLs: {str(e)}")
         return False
 
+DIRECTORY_SHUFFLE_HOURS = 6
+
+
+def directory_shuffle_seed(now=None):
+    """Changes every DIRECTORY_SHUFFLE_HOURS so directory order within a tier rotates."""
+    now = now or datetime.utcnow()
+    return f"{now:%Y%m%d}-{now.hour // DIRECTORY_SHUFFLE_HOURS}"
+
+
 @public_bp.route('/brands', methods=['GET'])
 @scraper_rate_limit
 def get_public_brands():
@@ -556,32 +565,26 @@ def get_public_brands():
                 """
                 params.extend([limit, offset])
         else:
+            # Live rosters first, then brands that reply, then the creator's niches.
+            # Inside each tier the order rotates every few hours so the feed never looks frozen;
+            # the seed is fixed within a window so pagination stays consistent.
+            niche_order = "CASE WHEN LOWER(b.category) = ANY(%s) THEN 0 ELSE 1 END," if prefer_niches else ""
+            query += f"""
+                ORDER BY
+                    COALESCE(roster_demand.spotlighted, 0) DESC,
+                    COALESCE(roster_demand.is_open, 0) DESC,
+                    (COALESCE(roster_demand.hunger, 0) > 0) DESC,
+                    {reply_order}
+                    {niche_order}
+                    COALESCE(b.is_featured, FALSE) DESC,
+                    md5(b.id::text || %s),
+                    b.brand_name ASC
+                LIMIT %s OFFSET %s
+            """
+            params.extend([reply_ids['replies'], reply_ids['cold']])
             if prefer_niches:
-                query += f"""
-                    ORDER BY
-                        COALESCE(roster_demand.spotlighted, 0) DESC,
-                        COALESCE(roster_demand.hunger, 0) DESC,
-                        {reply_order}
-                        CASE WHEN LOWER(b.category) = ANY(%s) THEN 0 ELSE 1 END,
-                        b.is_featured DESC,
-                        b.created_at DESC NULLS LAST,
-                        b.brand_name ASC
-                    LIMIT %s OFFSET %s
-                """
-                params.extend([reply_ids['replies'], reply_ids['cold'], prefer_niches, limit, offset])
-            else:
-                # Default: underfilled rosters, brands that reply, featured, then most recently added
-                query += f"""
-                    ORDER BY
-                        COALESCE(roster_demand.spotlighted, 0) DESC,
-                        COALESCE(roster_demand.hunger, 0) DESC,
-                        {reply_order}
-                        b.is_featured DESC,
-                        b.created_at DESC NULLS LAST,
-                        b.brand_name ASC
-                    LIMIT %s OFFSET %s
-                """
-                params.extend([reply_ids['replies'], reply_ids['cold'], limit, offset])
+                params.append(prefer_niches)
+            params.extend([directory_shuffle_seed(), limit, offset])
 
         cursor.execute(query, params)
         brands = annotate_reply([dict(b) for b in cursor.fetchall()], load_reply_stats(cursor))
@@ -953,7 +956,7 @@ def unlock_brand_access(slug):
                 print(f"🚫 Monthly quota limit reached for creator {creator_id}")
                 conn.close()
                 return jsonify({
-                    'error': f"You've used all {MONTHLY_LIMIT} free brand unlocks this month. Go Pro and Polly pitches 20–30 brands a month from your Gmail, plus unlimited applications.",
+                    'error': f"You've used all {MONTHLY_LIMIT} free brand unlocks this month. Go Pro and Polly runs your week: pitches from your Gmail, follow-ups, and the reply that turns a yes into paid. Applications are unlimited.",
                     'upgrade_required': True,
                     'current_count': monthly_unlocks,
                     'limit': MONTHLY_LIMIT

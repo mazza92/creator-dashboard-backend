@@ -357,7 +357,7 @@ def get_pr_ready():
                         "1 sample UGC hook",
                     ],
                     "pro_includes": [
-                        "Polly pitches 20–30 brands a month from your Gmail",
+                        "a Monday board: Polly sends your pitches from Gmail and writes the paid usage ask when a brand says yes",
                         "full fix coaching + evidence",
                         "engagement stats on portfolio posts",
                         "uncapped Ready score",

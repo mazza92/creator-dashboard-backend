@@ -71,10 +71,8 @@ class TestPostAndRecency(unittest.TestCase):
 
 
 class TestAssertQuality(unittest.TestCase):
-    def test_follower_reject(self):
-        with self.assertRaises(ProfileQualityError) as ctx:
-            assert_onboarding_quality(_ok_profile(followersCount=20), "4lla.pam")
-        self.assertEqual(ctx.exception.code, "below_follower_min")
+    def test_small_account_passes(self):
+        assert_onboarding_quality(_ok_profile(followersCount=20), "4lla.pam")
 
     def test_post_reject(self):
         with self.assertRaises(ProfileQualityError) as ctx:
@@ -276,16 +274,15 @@ class TestOnboardingPlatformGate(unittest.TestCase):
         )
         self.assertEqual(count, 1500)
 
-    def test_scraped_below_floor_still_rejects(self):
+    def test_scraped_below_500_is_accepted(self):
         from services.profile_quality import resolve_verified_onboarding_followers
 
-        with self.assertRaises(ValueError) as ctx:
-            resolve_verified_onboarding_followers(
-                username="tiny",
-                platform="youtube",
-                quality_session={"handle": "tiny", "platform": "youtube", "followers": 20},
-            )
-        self.assertIn("500", str(ctx.exception))
+        count = resolve_verified_onboarding_followers(
+            username="tiny",
+            platform="youtube",
+            quality_session={"handle": "tiny", "platform": "youtube", "followers": 20},
+        )
+        self.assertEqual(count, 20)
 
     def test_local_skip_allows_below_floor(self):
         from services.profile_quality import resolve_verified_onboarding_followers
