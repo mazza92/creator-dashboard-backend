@@ -81,83 +81,102 @@ def _recipient_waitlisted(to_email):
         conn.close()
 
 
+def _context_with_unsubscribe(to_email, context):
+    """Copy context and add an unsubscribe link when we know the user."""
+    context = dict(context or {})
+    if context.get('unsubscribe_url'):
+        return context
+    try:
+        from public_routes import make_unsubscribe_token
+        backend_url = os.getenv('BACKEND_URL', 'https://api.newcollab.co')
+        uid = context.get('user_id')
+        if not uid and to_email:
+            try:
+                _conn = psycopg2.connect(
+                    host=os.getenv('DB_HOST'), port=os.getenv('DB_PORT', 5432),
+                    database=os.getenv('DB_NAME'), user=os.getenv('DB_USER'),
+                    password=os.getenv('DB_PASSWORD'),
+                )
+                _cur = _conn.cursor()
+                _cur.execute("SELECT id FROM users WHERE email = %s LIMIT 1", (to_email.strip().lower(),))
+                row = _cur.fetchone()
+                if row:
+                    uid = row[0]
+                _cur.close()
+                _conn.close()
+            except Exception:
+                pass
+        if uid:
+            token = make_unsubscribe_token(str(uid))
+            context['unsubscribe_url'] = f"{backend_url}/api/public/unsubscribe?uid={uid}&token={token}"
+        else:
+            context['unsubscribe_url'] = None
+    except Exception:
+        context['unsubscribe_url'] = None
+    return context
+
+
+def render_email_template(to_email, template_name, context):
+    context = _context_with_unsubscribe(to_email, context)
+    env = Environment(loader=FileSystemLoader('templates'))
+    html_content = env.get_template(template_name).render(**context)
+    return html_content, context.get('unsubscribe_url')
+
+
+def _send_smtp_html(to_email, subject, html_content):
+    smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+    smtp_port = int(os.getenv('SMTP_PORT', 587))
+    smtp_username = os.getenv('SMTP_USERNAME')
+    smtp_password = os.getenv('SMTP_PASSWORD')
+    sender_name = os.getenv('EMAIL_SENDER_NAME', 'NewCollab')
+
+    msg = MIMEMultipart('alternative')
+    msg['From'] = f"{sender_name} <{smtp_username}>"
+    msg['To'] = to_email
+    msg['Subject'] = subject
+    msg.attach(MIMEText(html_content, 'html'))
+
+    with smtplib.SMTP(smtp_server, smtp_port) as server:
+        server.starttls()
+        server.login(smtp_username, smtp_password)
+        server.send_message(msg)
+
+
 def send_template_email(to_email, template_name, subject, context):
     """
-    Send an email using a Jinja2 template.
-    Automatically injects unsubscribe_url into context when user_id is present.
-
-    Args:
-        to_email: Recipient email address
-        template_name: Name of the template file (e.g., 'onboarding_reminder.html')
-        subject: Email subject line
-        context: Dictionary of variables to pass to the template
-
-    Returns:
-        Tuple of (success: bool, error_message: str or None)
+    Send an email using a Jinja2 template over SMTP.
+    Skips creators who are still on the waitlist.
     """
     try:
         if _recipient_waitlisted(to_email):
             return False, "Waitlisted creator - skipped"
-
-        # Auto-inject unsubscribe_url for every outgoing email.
-        # Resolves user_id from context if present, otherwise looks it up by email.
-        if 'unsubscribe_url' not in context:
-            try:
-                from public_routes import make_unsubscribe_token
-                backend_url = os.getenv('BACKEND_URL', 'https://api.newcollab.co')
-
-                uid = context.get('user_id')
-
-                # Fall back: look up user_id by recipient email
-                if not uid:
-                    try:
-                        _conn = psycopg2.connect(
-                            host=os.getenv('DB_HOST'), port=os.getenv('DB_PORT', 5432),
-                            database=os.getenv('DB_NAME'), user=os.getenv('DB_USER'),
-                            password=os.getenv('DB_PASSWORD'),
-                        )
-                        _cur = _conn.cursor()
-                        _cur.execute("SELECT id FROM users WHERE email = %s LIMIT 1", (to_email.strip().lower(),))
-                        row = _cur.fetchone()
-                        if row:
-                            uid = row[0]
-                        _cur.close()
-                        _conn.close()
-                    except Exception:
-                        pass
-
-                if uid:
-                    token = make_unsubscribe_token(str(uid))
-                    context = {**context, 'unsubscribe_url': f"{backend_url}/api/public/unsubscribe?uid={uid}&token={token}"}
-                else:
-                    context = {**context, 'unsubscribe_url': None}
-            except Exception:
-                context = {**context, 'unsubscribe_url': None}
-
-        env = Environment(loader=FileSystemLoader('templates'))
-        template = env.get_template(template_name)
-
-        html_content = template.render(**context)
-
-        smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
-        smtp_port = int(os.getenv('SMTP_PORT', 587))
-        smtp_username = os.getenv('SMTP_USERNAME')
-        smtp_password = os.getenv('SMTP_PASSWORD')
-        sender_name = os.getenv('EMAIL_SENDER_NAME', 'NewCollab')
-
-        msg = MIMEMultipart('alternative')
-        msg['From'] = f"{sender_name} <{smtp_username}>"
-        msg['To'] = to_email
-        msg['Subject'] = subject
-
-        msg.attach(MIMEText(html_content, 'html'))
-
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.starttls()
-            server.login(smtp_username, smtp_password)
-            server.send_message(msg)
-
+        html_content, _unsubscribe = render_email_template(to_email, template_name, context)
+        _send_smtp_html(to_email, subject, html_content)
         return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def send_template_email_resend(to_email, template_name, subject, context, *, allow_waitlisted=False, tags=None):
+    """
+    Send the same Jinja template through Resend.
+    Resume-onboarding uses allow_waitlisted because those creators are the audience.
+    """
+    try:
+        if not allow_waitlisted and _recipient_waitlisted(to_email):
+            return False, "Waitlisted creator - skipped"
+        from services.resend_mail import send_resend_email
+        html_content, unsubscribe_url = render_email_template(to_email, template_name, context)
+        result = send_resend_email(
+            to_email,
+            subject,
+            html_content,
+            unsubscribe_url=unsubscribe_url,
+            tags=tags,
+        )
+        if result.get('success'):
+            return True, None
+        return False, result.get('error') or 'Resend send failed'
     except Exception as e:
         return False, str(e)
 

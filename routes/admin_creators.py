@@ -263,7 +263,7 @@ def _enrich_review_row(row):
 
 DEFAULT_RESUME_SINCE = date(2026, 8, 12)
 DEFAULT_RESUME_UNTIL = date(2026, 8, 13)
-MAX_RESUME_ONBOARDING_SEND = 200
+MAX_RESUME_ONBOARDING_SEND = 500
 RESUME_ONBOARDING_SUBJECT = "Your Newcollab account is ready. Log in to finish"
 
 
@@ -285,6 +285,14 @@ def _resume_onboarding_login_urls():
         f'{RESUME_ONBOARDING_APP_URL}/login',
         f'{RESUME_ONBOARDING_APP_URL}/forgot-password',
     )
+
+
+_NOT_TEST_EMAIL_SQL = """
+    NOT (
+        LOWER(COALESCE(u.email, '')) = 'team@newcollab.co'
+        OR LOWER(COALESCE(u.email, '')) ~ '^team\\+[^@]+@newcollab\\.co$'
+    )
+"""
 
 
 def _is_ready_profile_sql():
@@ -351,6 +359,19 @@ def _resume_onboarding_email_context(recipient):
     login_url, forgot_url = _resume_onboarding_login_urls()
     first_name = (recipient.get('first_name') or '').strip()
     greeting = f'Hi {html_lib.escape(first_name)}' if first_name else 'Hi'
+    if recipient.get('is_google'):
+        return {
+            'user_id': recipient.get('user_id'),
+            'preheader': 'Log in with Google and connect Instagram or TikTok.',
+            'subject': RESUME_ONBOARDING_SUBJECT,
+            'action_url': login_url,
+            'action_text': 'Continue with Google',
+            'message': (
+                f'<p>{greeting},</p>'
+                f'<p>You started a creator account with Google. '
+                f'Log in with that same Google account and connect your Instagram or TikTok to finish.</p>'
+            ),
+        }
     return {
         'user_id': recipient.get('user_id'),
         'preheader': 'Log in to resume where you were.',
@@ -364,6 +385,80 @@ def _resume_onboarding_email_context(recipient):
             f'<p>You started setting up your creator account on Newcollab. Log in to resume where you were.</p>'
         ),
     }
+
+
+def _fetch_aborted_google_signups(cursor, *, skip_reminded_within_hours=2):
+    """Google accounts that never connected a social profile."""
+    cursor.execute(f"""
+        SELECT
+            c.id AS creator_id,
+            u.id AS user_id,
+            u.email,
+            u.first_name,
+            c.username,
+            u.created_at AS signup_date,
+            TRUE AS is_google
+        FROM creators c
+        JOIN users u ON c.user_id = u.id
+        WHERE c.approval_status = 'pending'
+          AND u.password LIKE 'GOOGLE_AUTH_%%'
+          AND u.email IS NOT NULL
+          AND BTRIM(u.email) <> ''
+          AND u.unsubscribed_at IS NULL
+          AND {_NOT_TEST_EMAIL_SQL}
+          AND {_is_incomplete_onboarding_sql()}
+          AND NULLIF(BTRIM(COALESCE(c.social_platform, '')), '') IS NULL
+          AND (
+            c.social_links IS NULL
+            OR BTRIM(c.social_links::text) IN ('', '[]', 'null', '{{}}', '""')
+          )
+          AND COALESCE(c.followers_count, 0) = 0
+          AND COALESCE(c.social_follower_count, 0) = 0
+          AND (
+            c.last_reminder_sent IS NULL
+            OR c.last_reminder_sent < NOW() - (%s * INTERVAL '1 hour')
+          )
+        ORDER BY u.created_at DESC
+        LIMIT {MAX_RESUME_ONBOARDING_SEND}
+    """, (int(skip_reminded_within_hours),))
+    return [_serialize_row(row) for row in cursor.fetchall()]
+
+
+def deliver_resume_onboarding(recipients, *, stamp_cursor=None, stamp_conn=None, sleep_seconds=0.4):
+    """Send resume-onboarding through Resend. Pending creators are included."""
+    from email_cron_routes import send_template_email_resend
+
+    sent = 0
+    failed = []
+    for recipient in recipients:
+        email = (recipient.get('email') or '').strip()
+        if not email:
+            failed.append({'error': 'Missing email'})
+            continue
+        success, error = send_template_email_resend(
+            email,
+            'resume_onboarding.html',
+            RESUME_ONBOARDING_SUBJECT,
+            _resume_onboarding_email_context(recipient),
+            allow_waitlisted=True,
+            tags=[{'name': 'type', 'value': 'resume_onboarding'}],
+        )
+        if success:
+            sent += 1
+            if stamp_cursor is not None and recipient.get('creator_id'):
+                stamp_cursor.execute("""
+                    UPDATE creators
+                    SET last_reminder_sent = NOW(),
+                        last_any_email_sent = NOW()
+                    WHERE id = %s
+                """, (recipient['creator_id'],))
+                if stamp_conn is not None:
+                    stamp_conn.commit()
+        else:
+            failed.append({'error': error or 'send failed'})
+        if sleep_seconds:
+            time.sleep(sleep_seconds)
+    return sent, failed
 
 
 _HANDLE_URL_RE = re.compile(
@@ -756,18 +851,21 @@ def send_resume_onboarding():
         since_date, until_date = until_date, since_date
 
     try:
-        from email_cron_routes import send_template_email
+        from email_cron_routes import send_template_email_resend
 
         if test_email:
             sample = {
                 'user_id': None,
                 'first_name': 'Nyakallo',
+                'is_google': bool(data.get('aborted_google', True)),
             }
-            success, error = send_template_email(
-                to_email=test_email,
-                template_name='resume_onboarding.html',
-                subject=RESUME_ONBOARDING_SUBJECT,
-                context=_resume_onboarding_email_context(sample),
+            success, error = send_template_email_resend(
+                test_email,
+                'resume_onboarding.html',
+                RESUME_ONBOARDING_SUBJECT,
+                _resume_onboarding_email_context(sample),
+                allow_waitlisted=True,
+                tags=[{'name': 'type', 'value': 'resume_onboarding'}],
             )
             if not success:
                 return jsonify({'error': error or 'Failed to send test email'}), 500
@@ -779,9 +877,12 @@ def send_resume_onboarding():
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        recipients = _fetch_resume_onboarding_cohort(
-            cursor, since_date, until_date, include_sent=include_sent
-        )
+        if data.get('aborted_google'):
+            recipients = _fetch_aborted_google_signups(cursor)
+        else:
+            recipients = _fetch_resume_onboarding_cohort(
+                cursor, since_date, until_date, include_sent=include_sent
+            )
 
         if dry_run:
             conn.close()
@@ -794,32 +895,9 @@ def send_resume_onboarding():
                 'recipients': recipients,
             })
 
-        sent = 0
-        failed = []
-        for recipient in recipients:
-            email = (recipient.get('email') or '').strip()
-            if not email:
-                failed.append({'email': None, 'error': 'Missing email'})
-                continue
-            success, error = send_template_email(
-                to_email=email,
-                template_name='resume_onboarding.html',
-                subject=RESUME_ONBOARDING_SUBJECT,
-                context=_resume_onboarding_email_context(recipient),
-            )
-            if success:
-                cursor.execute("""
-                    UPDATE creators
-                    SET last_reminder_sent = NOW(),
-                        last_any_email_sent = NOW()
-                    WHERE id = %s
-                """, (recipient['creator_id'],))
-                conn.commit()
-                sent += 1
-            else:
-                failed.append({'email': email, 'error': error})
-            time.sleep(0.4)
-
+        sent, failed = deliver_resume_onboarding(
+            recipients, stamp_cursor=cursor, stamp_conn=conn, sleep_seconds=0.4,
+        )
         conn.close()
         return jsonify({
             'success': True,
@@ -1084,7 +1162,7 @@ def get_approval_queue():
         niche = (request.args.get('niche') or request.args.get('filter_niche') or '').strip()
         q = request.args.get('q', '').strip()
 
-        where = ["c.approval_status = 'pending'"]
+        where = ["c.approval_status = 'pending'", _is_ready_profile_sql()]
         params = []
         if ready_only:
             where.append(_is_ready_profile_sql())

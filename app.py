@@ -1083,7 +1083,7 @@ def google_signup():
 
             # Determine redirect URL based on role and onboarding status
             if role == 'creator':
-                if not onboarding_complete:
+                if not onboarding_complete and approval_status not in ('approved', 'pro_approved', 'rejected'):
                     redirect_url = '/onboarding'
                 elif approval_status in ('pending', 'rejected'):
                     redirect_url = '/creator/waitlist'
@@ -1137,7 +1137,7 @@ def google_signup():
             cursor.execute(
                 '''
                 INSERT INTO creators (user_id, username, approval_status)
-                VALUES (%s, %s, 'pending')
+                VALUES (%s, %s, NULL)
                 RETURNING id
                 ''',
                 (user_id, temp_username)
@@ -1602,7 +1602,7 @@ def login():
 
         # Determine redirect URL based on role and onboarding status
         if user_role == 'creator':
-            if not onboarding_complete:
+            if not onboarding_complete and approval_status not in ('approved', 'pro_approved', 'rejected'):
                 redirect_url = '/onboarding'
             elif approval_status in ('pending', 'rejected'):
                 redirect_url = '/creator/waitlist'
@@ -2718,14 +2718,14 @@ def onboarding_step1():
                      social_platform, social_handle, social_follower_count, social_verified, user_id)
                 )
         else:
-            # Insert new creator record with scraped avatar
-            # Set approval_status = 'pending' for new creators (waitlist system)
+            # Insert new creator record with scraped avatar.
+            # Stay off the review queue until step 3 saves a niche.
             cursor.execute(
                 '''
                 INSERT INTO creators (user_id, username, followers_count, platforms, social_links,
                                       social_platform, social_handle, social_follower_count, social_verified, image_profile,
                                       approval_status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
                 RETURNING id
                 ''',
                 (user_id, username, followers, json.dumps(platforms_list), json.dumps(social_links),
@@ -3018,7 +3018,22 @@ def onboarding_step3():
         # Set both niche (JSON string for legacy) and creator_niches (array for For You)
         # This ensures consistency: For You page sees niches immediately
         cursor.execute(
-            'UPDATE creators SET niche = %s, creator_niches = %s WHERE user_id = %s RETURNING id',
+            '''
+            UPDATE creators
+            SET niche = %s,
+                creator_niches = %s,
+                approval_status = CASE
+                    WHEN approval_status IS NULL OR BTRIM(approval_status) = '' THEN 'pending'
+                    ELSE approval_status
+                END,
+                waitlist_joined_at = CASE
+                    WHEN approval_status IS NULL OR BTRIM(approval_status) = ''
+                        THEN COALESCE(waitlist_joined_at, NOW())
+                    ELSE waitlist_joined_at
+                END
+            WHERE user_id = %s
+            RETURNING id
+            ''',
             (json.dumps(niches), niches, user_id)
         )
         result = cursor.fetchone()
@@ -7441,7 +7456,10 @@ def verify_email():
         base_url = os.getenv('BASE_URL', 'https://newcollab.co')
 
         # Redirect to onboarding if not completed, otherwise waitlist or dashboard
-        if not onboarding_completed:
+        if (
+            not onboarding_completed
+            and not (user['role'] == 'creator' and approval_status in ('approved', 'pro_approved', 'rejected'))
+        ):
             redirect_url = '/onboarding' if user['role'] == 'creator' else '/brand/onboarding'
         elif user['role'] == 'creator' and approval_status in ('pending', 'rejected'):
             redirect_url = '/creator/waitlist'
