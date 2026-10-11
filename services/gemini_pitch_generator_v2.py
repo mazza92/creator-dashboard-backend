@@ -829,6 +829,8 @@ class GeminiPitchGeneratorV2:
             ],
             config=config
         )
+        from services.gemini_usage import record_gemini_usage
+        record_gemini_usage("pitches", model, response)
 
         # Check for safety block
         if response.candidates:

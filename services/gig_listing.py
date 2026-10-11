@@ -592,6 +592,8 @@ def llm_rewrite_listings(cards: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any
             print(f"[Polly] gig listing LLM HTTP {resp.status_code}")
             return {}
         data = resp.json()
+        from services.gemini_usage import record_gemini_usage
+        record_gemini_usage("gigs", model, data)
         text = (
             data.get("candidates", [{}])[0]
             .get("content", {})

@@ -464,6 +464,8 @@ def call_gemini(prompt: str, system_prompt: str = AI_DEPTH_SYSTEM_PROMPT) -> Dic
         response.raise_for_status()
 
         result = response.json()
+        from services.gemini_usage import record_gemini_usage
+        record_gemini_usage("brand_depth", GEMINI_MODEL, result)
         text = result.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
 
         # Parse JSON from response

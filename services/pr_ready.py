@@ -1065,6 +1065,8 @@ def _call_gemini_json(system_prompt: str, user_prompt: str) -> Dict[str, Any]:
     resp = requests.post(url, json=payload, timeout=45)
     resp.raise_for_status()
     data = resp.json()
+    from services.gemini_usage import record_gemini_usage
+    record_gemini_usage("pr_ready", GEMINI_MODEL, data)
     text = (
         data.get("candidates", [{}])[0]
         .get("content", {})

@@ -6,6 +6,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from datetime import datetime, timezone
+
+from services.gemini_usage import gemini_spend, priced_from_response
 from services.polly_llm_cost import (
     estimate_usd,
     rollup_usage,
@@ -57,6 +60,62 @@ class PollyLlmCostTests(unittest.TestCase):
         self.assertEqual(out["calls"], 2)
         self.assertEqual(out["input_tokens"], 150)
         self.assertAlmostEqual(out["usd"], 0.003)
+
+
+class _SpendCursor:
+    def __init__(self, exists, rows):
+        self.exists = exists
+        self.rows = rows
+        self._one = None
+
+    def execute(self, sql, params=None):
+        if "information_schema.tables" in sql:
+            self._one = {"ok": 1} if self.exists else None
+        else:
+            self._one = None
+
+    def fetchone(self):
+        return self._one
+
+    def fetchall(self):
+        return self.rows
+
+
+class GeminiUsageTests(unittest.TestCase):
+    def test_prices_a_response_and_an_sdk_object(self):
+        priced = priced_from_response("gemini-2.5-flash", {
+            "usageMetadata": {"promptTokenCount": 1000, "candidatesTokenCount": 100},
+        })
+        self.assertEqual(priced["input_tokens"], 1000)
+        self.assertEqual(priced["output_tokens"], 100)
+        self.assertGreater(priced["usd"], 0)
+
+        class Meta:
+            prompt_token_count = 500
+            candidates_token_count = 50
+            thoughts_token_count = 0
+            cached_content_token_count = 0
+
+        class Response:
+            usage_metadata = Meta()
+
+        sdk = priced_from_response("gemini-2.5-flash", Response())
+        self.assertEqual(sdk["input_tokens"], 500)
+        self.assertEqual(priced_from_response("gemini-2.5-flash", {}), {})
+
+    def test_spend_sums_logged_calls(self):
+        out = gemini_spend(
+            _SpendCursor(True, [{
+                "source": "pitches", "calls": 4, "usd": 1.25,
+                "input_tokens": 100, "output_tokens": 20,
+            }]),
+            datetime(2026, 9, 14, tzinfo=timezone.utc),
+        )
+        self.assertEqual(out["calls"], 4)
+        self.assertAlmostEqual(out["usd"], 1.25)
+        self.assertEqual(out["sources"][0]["source"], "pitches")
+        missing = gemini_spend(_SpendCursor(False, []), datetime(2026, 9, 14, tzinfo=timezone.utc))
+        self.assertEqual(missing["calls"], 0)
 
 
 if __name__ == "__main__":

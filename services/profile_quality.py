@@ -303,6 +303,8 @@ def _gemini_visual_review(images):
     )
     resp.raise_for_status()
     data = resp.json()
+    from services.gemini_usage import record_gemini_usage
+    record_gemini_usage("signup_photos", "gemini-2.5-flash", data)
     text = (
         data.get("candidates", [{}])[0]
         .get("content", {})

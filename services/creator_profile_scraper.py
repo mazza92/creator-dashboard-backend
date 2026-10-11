@@ -609,6 +609,8 @@ Analyze and return JSON only.'''
             response.raise_for_status()
 
             result = response.json()
+            from services.gemini_usage import record_gemini_usage
+            record_gemini_usage("profile", GEMINI_VISION_MODEL, result)
 
             # Extract text from response
             candidates = result.get('candidates', [])

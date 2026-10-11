@@ -227,6 +227,8 @@ class _Gemini:
                 from services.polly_llm_cost import usage_from_gemini
                 usage = usage_from_gemini(data, model)
                 polly.remember_polly_brain("gemini", model, usage)
+                from services.gemini_usage import record_gemini_usage
+                record_gemini_usage("polly", model, data)
                 print(f"[Polly] brain=gemini model={model} in={usage.get('input_tokens')} "
                       f"out={usage.get('output_tokens')} usd={usage.get('usd')}")
                 return data

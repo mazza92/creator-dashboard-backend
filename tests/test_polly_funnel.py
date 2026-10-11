@@ -64,6 +64,8 @@ class PollyFunnelTests(unittest.TestCase):
         self.assertEqual(out["kit_viewed"], 5)
         self.assertEqual(out["paywall_moments"], {"pitch": 8, "after_send": 4})
         self.assertEqual(out["upgrade_moments"], {"pitch": 2, "no_polly_paywall": 1})
+        self.assertEqual(out["upgraded_from_prompt"], 2)
+        self.assertEqual(out["upgraded_without_prompt"], 1)
         self.assertEqual(out["checkout_sources"], {"polly": 2, "directory": 1})
         funnel_sql = next(s for s in cursor.sql if "already_pro" in s)
         self.assertIn("pro_since >= first_open", funnel_sql)

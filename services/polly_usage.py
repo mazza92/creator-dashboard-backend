@@ -260,6 +260,9 @@ def polly_funnel(cursor, start: datetime) -> Dict[str, Any]:
             (start,),
         )
         upgrade_moments = _count_map(cursor.fetchall() or [], "moment")
+        upgraded_from_prompt = sum(
+            n for moment, n in upgrade_moments.items() if moment != "no_polly_paywall"
+        )
         cursor.execute(
             """
             SELECT COALESCE(NULLIF(intent, ''), 'unknown') AS source,
@@ -286,6 +289,8 @@ def polly_funnel(cursor, start: datetime) -> Dict[str, Any]:
         "kit_viewed": int(row.get("kit_viewed") or 0),
         "paywall_moments": paywall_moments,
         "upgrade_moments": upgrade_moments,
+        "upgraded_from_prompt": int(upgraded_from_prompt),
+        "upgraded_without_prompt": int(upgrade_moments.get("no_polly_paywall") or 0),
         "checkout_sources": checkout_sources,
     }
 
@@ -496,12 +501,60 @@ def polly_beta_snapshot(cursor, days: int = 7) -> Dict[str, Any]:
                 (start,),
             )
             cost_row = cursor.fetchone() or {}
+            cursor.execute(
+                """
+                SELECT
+                    COALESCE(NULLIF(meta->>'model', ''), llm, 'gemini') AS model,
+                    COALESCE(SUM(NULLIF(meta->>'usd', '')::numeric), 0)::float AS usd,
+                    COALESCE(SUM(NULLIF(meta->>'input_tokens', '')::int), 0)::int AS input_tokens,
+                    COALESCE(SUM(NULLIF(meta->>'output_tokens', '')::int), 0)::int AS output_tokens,
+                    COUNT(*)::int AS turns
+                FROM polly_usage_events
+                WHERE created_at >= %s AND event = 'chat'
+                  AND (llm = 'gemini' OR COALESCE(meta->>'model', '') ILIKE 'gemini%%')
+                  AND (
+                    COALESCE(NULLIF(meta->>'usd', '')::numeric, 0) > 0
+                    OR COALESCE(NULLIF(meta->>'input_tokens', '')::int, 0) > 0
+                  )
+                GROUP BY 1
+                ORDER BY usd DESC
+                """,
+                (start,),
+            )
+            models = []
+            gemini_usd = gemini_in = gemini_out = gemini_turns = 0
+            for model_row in cursor.fetchall() or []:
+                models.append({
+                    "model": model_row.get("model") or "gemini",
+                    "usd": round(float(model_row.get("usd") or 0), 6),
+                    "input_tokens": int(model_row.get("input_tokens") or 0),
+                    "output_tokens": int(model_row.get("output_tokens") or 0),
+                    "turns": int(model_row.get("turns") or 0),
+                })
+                gemini_usd += float(model_row.get("usd") or 0)
+                gemini_in += int(model_row.get("input_tokens") or 0)
+                gemini_out += int(model_row.get("output_tokens") or 0)
+                gemini_turns += int(model_row.get("turns") or 0)
+            cursor.execute(
+                """
+                SELECT COUNT(*)::int AS n
+                FROM polly_usage_events
+                WHERE created_at >= %s AND event = 'chat'
+                  AND COALESCE(NULLIF(meta->>'usd', '')::numeric, 0) = 0
+                  AND COALESCE(NULLIF(meta->>'input_tokens', '')::int, 0) = 0
+                """,
+                (start,),
+            )
+            unpriced = int((cursor.fetchone() or {}).get("n") or 0)
             usage["cost"] = {
                 "usd": round(float(cost_row.get("usd") or 0), 6),
-                "input_tokens": int(cost_row.get("input_tokens") or 0),
-                "output_tokens": int(cost_row.get("output_tokens") or 0),
-                "priced_turns": int(cost_row.get("priced_turns") or 0),
-                "source": "gemini_anthropic_usage",
+                "gemini_usd": round(gemini_usd, 6),
+                "input_tokens": gemini_in,
+                "output_tokens": gemini_out,
+                "priced_turns": gemini_turns,
+                "unpriced_turns": unpriced,
+                "models": models,
+                "source": "gemini_token_rates",
             }
         except Exception as err:
             print(f"[Polly usage] cost rollup skipped: {err}")
@@ -582,6 +635,8 @@ def polly_beta_snapshot(cursor, days: int = 7) -> Dict[str, Any]:
 
     funnel = polly_funnel(cursor, start)
     autopilot = autopilot_snapshot(cursor, start)
+    from services.gemini_usage import gemini_spend
+    gemini_calls = gemini_spend(cursor, start)
 
     turns = usage.get("turns") or 0
     errors = usage.get("errors") or 0
@@ -610,6 +665,7 @@ def polly_beta_snapshot(cursor, days: int = 7) -> Dict[str, Any]:
             "source": "gemini_anthropic_usage",
         },
         "intents": usage.get("intents") or {},
+        "gemini_calls": gemini_calls,
         "outcomes": outcomes,
         "applies": applies,
         "pain": pain,

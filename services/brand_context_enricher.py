@@ -154,6 +154,8 @@ Analyze their aesthetic and return the JSON.'''
             response.raise_for_status()
 
             result = response.json()
+            from services.gemini_usage import record_gemini_usage
+            record_gemini_usage("brand_pages", GEMINI_VISION_MODEL, result)
             text = result.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
 
             # Parse JSON

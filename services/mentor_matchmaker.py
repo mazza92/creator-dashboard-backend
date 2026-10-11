@@ -208,6 +208,8 @@ def _call_gemini_rank(prompt: str) -> List[int]:
         response = requests.post(url, json=payload, timeout=45)
     response.raise_for_status()
     result = response.json()
+    from services.gemini_usage import record_gemini_usage
+    record_gemini_usage("for_you", model, result)
     candidates = result.get('candidates') or []
     if not candidates:
         raise ValueError(f'Gemini returned no candidates: {result.get("promptFeedback")}')

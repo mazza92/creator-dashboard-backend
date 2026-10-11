@@ -952,6 +952,8 @@ class GeminiPitchGenerator:
                 contents=json.dumps(input_payload),
                 config=types.GenerateContentConfig(**config_kwargs),
             )
+            from services.gemini_usage import record_gemini_usage
+            record_gemini_usage("pitches", GEMINI_MODEL, response)
 
             if response and response.text:
                 parsed = _extract_json(response.text)
@@ -971,6 +973,8 @@ class GeminiPitchGenerator:
                 json.dumps(input_payload),
                 generation_config=generation_config,
             )
+            from services.gemini_usage import record_gemini_usage
+            record_gemini_usage("pitches", GEMINI_MODEL, response)
 
             if response and response.text:
                 parsed = _extract_json(response.text)
