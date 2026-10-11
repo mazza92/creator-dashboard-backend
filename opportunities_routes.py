@@ -715,7 +715,8 @@ def _opportunity_card(opp, creator_tokens: set, applied_ids: set) -> tuple:
         'source_platform': source_platform,
         'apply_mode': apply_mode,
         'is_sourced': is_sourced,
-        'posted_at': opp['created_at'].isoformat() if opp.get('created_at') else None,
+        'posted_at': (opp.get('published_at') or opp.get('created_at')).isoformat()
+        if (opp.get('published_at') or opp.get('created_at')) else None,
     }
     return serialized, is_match
 
@@ -776,7 +777,7 @@ def fetch_live_opportunity_cards(creator_id, extra_tokens=None):
             pr_value_usd, creator_count_range, shipping_regions, follower_ranges,
             content_types, creator_niches, additional_notes,
             spots_total, spots_filled, closes_at,
-            created_at, listing_brief
+            created_at, published_at, listing_brief
         FROM opportunities
         WHERE status = 'live'
           AND (closes_at IS NULL OR closes_at > NOW())

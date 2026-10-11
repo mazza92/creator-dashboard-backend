@@ -12,6 +12,7 @@ from services.polly_gigs import (
     gig_fingerprints_from_history,
     is_paid_listing,
     last_assistant_had_gigs,
+    newest_published,
     source_platform_label,
     wants_more_gigs,
 )
@@ -64,6 +65,15 @@ class PollyGigsTests(unittest.TestCase):
             "posted_at": "2026-10-02T12:00:00+00:00",
         })
         self.assertEqual(dated["posted_at"], "2026-10-02T12:00:00+00:00")
+
+    def test_paid_gigs_newest_published_first(self):
+        rows = newest_published([
+            {"id": 1, "posted_at": "2026-09-01T00:00:00+00:00"},
+            {"id": 2, "published_at": "2026-10-09T00:00:00+00:00", "posted_at": "2026-01-01T00:00:00+00:00"},
+            {"id": 3, "created_at": "2026-10-01T00:00:00+00:00"},
+            {"id": 4},
+        ])
+        self.assertEqual([row["id"] for row in rows], [2, 3, 1, 4])
 
     def test_placeholder_listing_gets_a_readable_structure(self):
         from services.gig_listing import apply_llm_rewrite, rewrite_is_grounded

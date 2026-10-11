@@ -451,7 +451,7 @@ def _scanner_fallback_cards(creator_id) -> List[Dict[str, Any]]:
                 pr_value_usd, creator_count_range, shipping_regions, follower_ranges,
                 content_types, creator_niches, additional_notes,
                 spots_total, spots_filled, closes_at,
-                created_at, listing_brief
+                created_at, published_at, listing_brief
             FROM opportunities
             WHERE status = 'live'
               AND additional_notes ILIKE %s
@@ -481,6 +481,34 @@ def _scanner_fallback_cards(creator_id) -> List[Dict[str, Any]]:
 
 
 GIG_PAGE_SIZE = 6
+
+
+def published_stamp(opp: Optional[Dict[str, Any]]) -> float:
+    """Seconds since epoch for the date a brief went live. Missing dates sort last."""
+    raw = (opp or {}).get("published_at") or (opp or {}).get("posted_at") or (opp or {}).get("created_at")
+    if hasattr(raw, "timestamp"):
+        try:
+            return float(raw.timestamp())
+        except (OSError, OverflowError, ValueError):
+            return 0.0
+    text = str(raw or "").strip()
+    if not text:
+        return 0.0
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def newest_published(rows: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    def key(opp):
+        try:
+            ident = int(opp.get("id") or 0)
+        except (TypeError, ValueError):
+            ident = 0
+        return (published_stamp(opp), ident)
+    return sorted(rows or [], key=key, reverse=True)
 
 
 def list_polly_gigs(
@@ -514,17 +542,15 @@ def list_polly_gigs(
             print(f"[Polly] gigs scanner fallback failed: {err}")
     followers = creator_followers(scrape)
     paid = [c for c in ranked if is_paid_listing(c) and gig_fits_creator(c, followers)]
-    sourced = [c for c in paid if c.get("is_sourced")]
-    native = [c for c in paid if not c.get("is_sourced")]
-    open_first = [c for c in sourced + native if not c.get("already_applied")]
-    pool = open_first or (sourced + native)
+    open_first = newest_published([c for c in paid if not c.get("already_applied")])
+    pool = open_first or newest_published(paid)
     skip = set(exclude_ids or [])
     skip |= set(shown_gig_ids(notes))
     skip |= set(gig_ids_from_history(history))
     seen_fp = gig_fingerprints_from_history(history)
     print(
         f"[Polly] gigs pool={len(ranked)} paid={len(paid)} "
-        f"sourced={len(sourced)} open={len(open_first)} skip={len(skip)}"
+        f"open={len(open_first)} skip={len(skip)}"
     )
     cards = []
     seen = set()
