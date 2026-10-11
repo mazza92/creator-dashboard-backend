@@ -161,6 +161,27 @@ def _instagram_oauth_config(return_url=None):
     return app_id, secret, redirect_uri
 
 
+def instagram_authorize_url(app_id, redirect_uri, scopes, state):
+    """Instagram business login.
+
+    Logged-in phones skip the consent page and bounce /oauth/authorize to
+    /consent, which iOS opens in the Instagram app. That app shows a loading
+    grid and never returns. force_reauth keeps the login page, and #weblink
+    is the universal-link exclusion that leaves the flow in the browser.
+    """
+    return (
+        "https://www.instagram.com/oauth/authorize?"
+        f"client_id={app_id}"
+        f"&redirect_uri={quote(redirect_uri)}"
+        f"&scope={quote(scopes, safe=',')}"
+        f"&response_type=code"
+        f"&enable_fb_login=false"
+        f"&force_reauth=true"
+        f"&state={quote(state, safe='')}"
+        "#weblink"
+    )
+
+
 def _instagram_oauth_enabled():
     flag = (os.getenv('INSTAGRAM_OAUTH_ENABLED') or '').strip().lower()
     if flag in ('0', 'false', 'no', 'off'):
@@ -1062,19 +1083,7 @@ def connect_instagram():
             pass
 
         _log(f"[ig-login] Connect user_id={user_id} creator_id={creator_id} scopes={scopes}")
-        # Instagram Login needs the Instagram App ID + secret from
-        # API setup with Instagram login — not Settings → Basic (Meta App ID).
-        # enable_fb_login=0 stops Instagram from treating this as Facebook Login.
-        auth_url = (
-            f"https://www.instagram.com/oauth/authorize?"
-            f"client_id={app_id}"
-            f"&redirect_uri={quote(redirect_uri)}"
-            f"&scope={scopes}"
-            f"&response_type=code"
-            f"&enable_fb_login=0"
-            f"&state={state}"
-        )
-        return redirect(auth_url)
+        return redirect(instagram_authorize_url(app_id, redirect_uri, scopes, state))
     except Exception as e:
         _log(f"[ig-login] Connect exception: {e}")
         import traceback

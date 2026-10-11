@@ -168,6 +168,14 @@ class InstagramConnectConfigTests(unittest.TestCase):
         self.assertTrue(_skip_onboarding_quality_locally("http://localhost:3000/onboarding"))
         self.assertFalse(_skip_onboarding_quality_locally("https://app.newcollab.co/onboarding"))
 
+    def test_authorize_url_stays_in_the_browser(self):
+        from social_verification_routes import instagram_authorize_url
+        url = instagram_authorize_url("123", "https://api.newcollab.co/api/social/callback/instagram", "instagram_business_basic", "abc")
+        self.assertIn("force_reauth=true", url)
+        self.assertIn("enable_fb_login=false", url)
+        self.assertTrue(url.endswith("#weblink"))
+        self.assertNotIn("force_authentication", url)
+
     def test_instagram_oauth_enabled_with_creds(self):
         from social_verification_routes import _instagram_oauth_enabled
         with patch("social_verification_routes._instagram_oauth_config", return_value=("id", "secret", "https://x")):
