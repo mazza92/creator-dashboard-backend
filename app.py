@@ -984,6 +984,30 @@ def normalize_instagram_url(url):
         return None
 
 
+def _placeholder_username(cursor, email):
+    """Free username for a creator row created before onboarding step 1."""
+    base = re.sub(r'[^a-z0-9._]', '', (email or '').split('@')[0].lower())[:40] or 'creator'
+    candidate = base
+    for _ in range(10):
+        cursor.execute('SELECT 1 FROM creators WHERE LOWER(username) = LOWER(%s)', (candidate,))
+        if not cursor.fetchone():
+            return candidate
+        candidate = f"{base}_{uuid.uuid4().hex[:6]}"
+    return f"creator_{uuid.uuid4().hex[:12]}"
+
+
+def _create_pending_creator(cursor, user_id, email):
+    cursor.execute(
+        '''
+        INSERT INTO creators (user_id, username, approval_status)
+        VALUES (%s, %s, 'pending')
+        RETURNING id
+        ''',
+        (user_id, _placeholder_username(cursor, email)),
+    )
+    return cursor.fetchone()['id']
+
+
 # Google Sign-In endpoint (existing users only)
 @app.route('/google-signup', methods=['POST', 'OPTIONS'])
 def google_signup():
@@ -1036,7 +1060,7 @@ def google_signup():
             app.logger.error(f"Invalid token issuer: {idinfo['iss']}, expected: https://securetoken.google.com/{client_id}")
             return jsonify({'error': 'Invalid token issuer'}), 401
 
-        if idinfo['email'] != email:
+        if (idinfo.get('email') or '').strip().lower() != (email or '').strip().lower():
             app.logger.error(f"Email mismatch: token_email={idinfo['email']}, provided_email={email}")
             return jsonify({'error': 'Email mismatch'}), 401
 
@@ -1071,9 +1095,12 @@ def google_signup():
                     )
                     approval_status = creator.get('approval_status')
                 else:
-                    app.logger.error(f"No creator record found for user_id: {user_id}")
-                    conn.close()
-                    return jsonify({'error': 'Creator profile not found. Please complete registration.'}), 404
+                    # Email signup that never reached onboarding step 1.
+                    creator_id = _create_pending_creator(cursor, user_id, email)
+                    onboarding_complete = False
+                    approval_status = 'pending'
+                    cursor.execute("UPDATE users SET is_verified = TRUE WHERE id = %s", (user_id,))
+                    app.logger.info(f"Created missing creator {creator_id} for Google login user {user_id}")
 
             # Update last_login timestamp for Google OAuth login
             cursor.execute("UPDATE users SET last_login = NOW() WHERE id = %s", (user_id,))
@@ -1130,19 +1157,8 @@ def google_signup():
             user_id = cursor.fetchone()['id']
             app.logger.info(f"Created new user with ID: {user_id}")
 
-            # Generate a temporary username from email (before @)
-            temp_username = email.split('@')[0][:50]
-
-            # Create creator profile (minimal - they'll update in onboarding)
-            cursor.execute(
-                '''
-                INSERT INTO creators (user_id, username, approval_status)
-                VALUES (%s, %s, NULL)
-                RETURNING id
-                ''',
-                (user_id, temp_username)
-            )
-            creator_id = cursor.fetchone()['id']
+            # Minimal creator profile; onboarding step 1 sets the real handle.
+            creator_id = _create_pending_creator(cursor, user_id, email)
             app.logger.info(f"Created new creator with ID: {creator_id}")
 
             conn.commit()
@@ -2643,11 +2659,26 @@ def onboarding_step1():
             session.clear()
             return jsonify({'error': 'User not found. Please log in again.'}), 401
 
-        # Check username uniqueness
-        cursor.execute("SELECT id FROM creators WHERE username = %s AND user_id != %s", (username, user_id))
-        if cursor.fetchone():
-            conn.close()
-            return jsonify({'error': 'Username already taken'}), 409
+        # Check username uniqueness. A handle held by an unfinished pending
+        # account (placeholder or abandoned duplicate) is released.
+        cursor.execute(
+            '''
+            SELECT id, approval_status, COALESCE(NULLIF(TRIM(niche), ''), '') AS niche
+            FROM creators WHERE username = %s AND user_id != %s
+            ''',
+            (username, user_id),
+        )
+        holder = cursor.fetchone()
+        if holder:
+            if holder['approval_status'] == 'pending' and not holder['niche']:
+                cursor.execute(
+                    "UPDATE creators SET username = %s WHERE id = %s",
+                    (f"{username[:40]}_{holder['id']}", holder['id']),
+                )
+                app.logger.info(f"Released handle '{username}' from unfinished creator {holder['id']}")
+            else:
+                conn.close()
+                return jsonify({'error': 'Username already taken'}), 409
 
         # Build social_links JSON for the primary platform
         social_links = []
@@ -2719,13 +2750,13 @@ def onboarding_step1():
                 )
         else:
             # Insert new creator record with scraped avatar.
-            # Stay off the review queue until step 3 saves a niche.
+            # Pending means waiting for review; the queue only lists finished profiles.
             cursor.execute(
                 '''
                 INSERT INTO creators (user_id, username, followers_count, platforms, social_links,
                                       social_platform, social_handle, social_follower_count, social_verified, image_profile,
                                       approval_status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending')
                 RETURNING id
                 ''',
                 (user_id, username, followers, json.dumps(platforms_list), json.dumps(social_links),
