@@ -16,6 +16,7 @@ from services.profile_quality import (
     visible_post_count,
 )
 from services.youtube_scraper import (
+    _channel_urls,
     extract_yt_initial_data,
     parse_compact_count,
     profile_from_yt_initial_data,
@@ -326,6 +327,11 @@ class TestTiktokQualityMapping(unittest.TestCase):
         from services.profile_quality import _thumb_headers
         headers = _thumb_headers("https://p16-sign.tiktokcdn.com/cover.jpg")
         self.assertEqual(headers["Referer"], "https://www.tiktok.com/")
+
+    def test_channel_urls_include_mobile(self):
+        urls = _channel_urls("lifewithlytic")
+        self.assertIn("https://www.youtube.com/@lifewithlytic/videos", urls)
+        self.assertIn("https://m.youtube.com/@lifewithlytic/videos", urls)
 
 
 if __name__ == "__main__":

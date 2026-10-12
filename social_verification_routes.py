@@ -192,22 +192,36 @@ def _instagram_oauth_enabled():
     return bool(app_id and secret)
 
 
+def instagram_handle_from_creator_row(social_handle, username, social_platform):
+    """Handle safe to scrape after Graph denies the token.
+
+    Google signup stores the email prefix as username before the creator
+    connects a real account. Using that prefix scrapes the wrong profile.
+    """
+    social = str(social_handle or '').strip().lstrip('@')
+    if social:
+        return social
+    if str(social_platform or '').strip().lower() == 'instagram':
+        return str(username or '').strip().lstrip('@')
+    return ''
+
+
 def _lookup_creator_instagram_handle(creator_id=None, user_id=None):
-    """Existing @handle so Graph-denied OAuth can finish via public scrape."""
+    """Existing Instagram @handle so Graph-denied OAuth can finish via public scrape."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         row = None
         if creator_id:
             cursor.execute(
-                'SELECT social_handle, username FROM creators WHERE id = %s',
+                'SELECT social_handle, username, social_platform FROM creators WHERE id = %s',
                 (creator_id,),
             )
             row = cursor.fetchone()
         elif user_id:
             cursor.execute(
                 '''
-                SELECT social_handle, username FROM creators
+                SELECT social_handle, username, social_platform FROM creators
                 WHERE user_id = %s
                 ORDER BY id DESC LIMIT 1
                 ''',
@@ -218,9 +232,19 @@ def _lookup_creator_instagram_handle(creator_id=None, user_id=None):
         conn.close()
         if not row:
             return ''
-        data = row if isinstance(row, dict) else {'social_handle': row[0], 'username': row[1]}
-        handle = str(data.get('social_handle') or data.get('username') or '').strip().lstrip('@')
-        return handle
+        if isinstance(row, dict):
+            data = row
+        else:
+            data = {
+                'social_handle': row[0],
+                'username': row[1],
+                'social_platform': row[2] if len(row) > 2 else None,
+            }
+        return instagram_handle_from_creator_row(
+            data.get('social_handle'),
+            data.get('username'),
+            data.get('social_platform'),
+        )
     except Exception as exc:
         _log(f"[ig-login] handle lookup failed: {exc}")
         return ''
@@ -248,7 +272,19 @@ def _finish_instagram_html_fallback(user_id, handle, return_url, from_settings):
     profile_data = profile_data or {}
     followers = int(profile_data.get('follower_count') or 0)
     posts = int(profile_data.get('post_count') or 0)
-    handle_q = quote(str(profile_data.get('handle') or handle).lstrip('@'))
+    resolved = str(profile_data.get('handle') or handle).lstrip('@')
+    # step1 rejects the save unless this session proof exists.
+    _store_onboarding_oauth_proof(
+        'instagram',
+        {
+            'username': resolved,
+            'follower_count': followers,
+            'media_count': posts,
+            'avatar_url': profile_data.get('avatarUrl') or profile_data.get('avatar_url') or '',
+        },
+        {'passed': True, 'failure_reason': None},
+    )
+    handle_q = quote(resolved)
     _log(f"[ig-login] HTML fallback @{handle} followers={followers} posts={posts}")
     return redirect(
         f"{return_url}?social=success&platform=instagram"
@@ -604,7 +640,10 @@ def is_request_from_restricted_region(timeout=3):
     code = detect_country_from_ip(timeout=timeout)
     if not code:
         return False
-    return not region_code_is_allowed(code)
+    blocked = not region_code_is_allowed(code)
+    if blocked:
+        _log(f"🚫 Region blocked: {code}")
+    return blocked
 
 
 def should_block_auth_for_region(stored_country, timeout=1.0):

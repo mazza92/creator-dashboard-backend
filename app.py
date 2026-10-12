@@ -2646,6 +2646,7 @@ def onboarding_step1():
                 ),
             )
         except ValueError as e:
+            app.logger.warning(f"⚠️ Onboarding step1 rejected @{username} on {platform}: {e}")
             return jsonify({'error': str(e)}), 400
 
         conn = get_db_connection()

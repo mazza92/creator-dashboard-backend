@@ -492,14 +492,22 @@ def _clean_yt_handle(handle: str) -> str:
 def _channel_urls(handle: str) -> List[str]:
     h = _clean_yt_handle(handle)
     if h.lower().startswith("channel/"):
-        base = f"https://www.youtube.com/{h}"
-        return [f"{base}/videos", base, f"{base}/shorts"]
-    if h.startswith("UC") and len(h) >= 22 and "/" not in h:
-        base = f"https://www.youtube.com/channel/{h}"
-        return [f"{base}/videos", base, f"{base}/shorts"]
-    encoded = quote(h)
-    base = f"https://www.youtube.com/@{encoded}"
-    return [f"{base}/videos", base, f"{base}/shorts"]
+        bases = [f"https://www.youtube.com/{h}", f"https://m.youtube.com/{h}"]
+    elif h.startswith("UC") and len(h) >= 22 and "/" not in h:
+        bases = [
+            f"https://www.youtube.com/channel/{h}",
+            f"https://m.youtube.com/channel/{h}",
+        ]
+    else:
+        encoded = quote(h)
+        bases = [
+            f"https://www.youtube.com/@{encoded}",
+            f"https://m.youtube.com/@{encoded}",
+        ]
+    urls = []
+    for base in bases:
+        urls.extend([f"{base}/videos", base, f"{base}/shorts"])
+    return urls
 
 
 def _session() -> requests.Session:
@@ -511,12 +519,25 @@ def _session() -> requests.Session:
         "Accept-Encoding": "gzip, deflate",
     })
     session.cookies.set("CONSENT", "YES+cb.20210328-17-p0.en+FX+410", domain=".youtube.com")
-    session.cookies.set("SOCS", "CAI", domain=".youtube.com")
+    # Current consent cookie. The old SOCS=CAI value is ignored and YouTube
+    # returns a consent shell with no ytInitialData.
+    session.cookies.set(
+        "SOCS",
+        "CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjQwMTIyLjA4X3AxGgJlbiACGgYIgJ3_rAY",
+        domain=".youtube.com",
+    )
     return session
 
 
+_MOBILE_UA = (
+    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
+)
+
+
 def _fetch_html(session: requests.Session, url: str) -> str:
-    resp = session.get(url, params={"hl": "en", "gl": "US"}, timeout=20)
+    headers = {"User-Agent": _MOBILE_UA} if "m.youtube.com" in url else None
+    resp = session.get(url, params={"hl": "en", "gl": "US"}, headers=headers, timeout=20)
     if resp.status_code == 404:
         return ""
     resp.raise_for_status()
@@ -577,6 +598,10 @@ def scrape_youtube(handle: str, results_limit: int = 12) -> Dict[str, Any]:
     if last_html and _page_unavailable(last_html) and not merged:
         raise InHouseScrapeError(f"YouTube channel @{handle} not found")
     if not merged:
+        print(
+            f"[InHouse/YT] @{handle} no channel data "
+            f"html_len={len(last_html or '')} has_initial={'ytInitialData' in (last_html or '')}"
+        )
         raise InHouseScrapeError(f"No YouTube data for @{handle}")
 
     merged["latestVideos"] = videos[:limit]

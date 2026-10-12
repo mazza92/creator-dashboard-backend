@@ -195,6 +195,21 @@ class InstagramConnectConfigTests(unittest.TestCase):
             }),
         )
 
+    def test_graph_fallback_ignores_google_placeholder_username(self):
+        from social_verification_routes import instagram_handle_from_creator_row
+        self.assertEqual(
+            instagram_handle_from_creator_row(None, "royalsrapids", None),
+            "",
+        )
+        self.assertEqual(
+            instagram_handle_from_creator_row("real.handle", "royalsrapids", None),
+            "real.handle",
+        )
+        self.assertEqual(
+            instagram_handle_from_creator_row("", "smallkidsbigdays", "instagram"),
+            "smallkidsbigdays",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
