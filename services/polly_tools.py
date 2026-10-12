@@ -7,6 +7,7 @@ Credits, paywall and send-logging rules are enforced here, not by the model.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
@@ -16,6 +17,7 @@ from services.polly import (
     apply_location_to_pitch,
     apply_paid_ask_to_pitch,
     brand_names_agree,
+    build_mailto,
     cold_brand_chips,
     drop_pending_draft,
     drop_pitched,
@@ -27,6 +29,7 @@ from services.polly import (
     shown_brand_ids,
     next_unlock_brand,
     out_of_free_unlocks,
+    parse_location_reply,
     paywall_unlock_chips,
     pitch_coach_line,
     pitch_confirm_chips,
@@ -220,14 +223,35 @@ def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$")
+
+
+def clean_email(raw: Any) -> str:
+    text = str(raw or "").strip().strip("<>.,;").replace("mailto:", "")
+    return text.lower() if _EMAIL_RE.match(text) else ""
+
+
+def _with_inbox(pitch: Dict[str, Any], email: str) -> Dict[str, Any]:
+    out = dict(pitch)
+    out["email"] = email
+    out["mailto"] = build_mailto(email, out.get("subject") or "", out.get("body") or "")
+    out["manual_email"] = True
+    return out
+
+
 def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     R = _routes()
     followup = bool(args.get("followup"))
     name = str(args.get("brand_name") or "").strip()
+    to_email = clean_email(args.get("to_email"))
+    if args.get("to_email") and not to_email:
+        return {"ok": False, "status": "invalid_email", "given": str(args.get("to_email"))[:120],
+                "explain": "That isn't a full email address. Ask them to paste it exactly."}
     row = find_brand(state, brand_id=args.get("brand_id"), brand_name=name)
     if not row and not name and not args.get("brand_id"):
         return {"ok": False, "error": "Say which brand. Pass brand_name or brand_id."}
-    if not row:
+    manual = not row and bool(name) and not followup
+    if not row and not (manual and to_email):
         similar = _similar(state, name) if name else []
         if similar:
             state.show_brands(similar)
@@ -236,11 +260,16 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
             "status": "not_in_directory",
             "searched_for": name or args.get("brand_id"),
             "similar_in_directory": [brand_card(r) for r in similar[:3]],
+            "explain": "No draft was written. If they have this brand's email, ask for it and call "
+                       "draft_pitch again with to_email. Don't say a draft is coming until then.",
         }
-    brand_id = row.get("id")
-    brand_name = row.get("name") or name
+    brand_id = row.get("id") if row else None
+    brand_name = (row or {}).get("name") or name
     prior = state.draft()
     prior_name = (prior or {}).get("name") if prior and not brand_names_agree(prior.get("name"), brand_name) else None
+
+    if manual:
+        return _draft_manual(state, brand_name, to_email, prior_name)
 
     if followup:
         try:
@@ -260,12 +289,7 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
             return {"ok": True, "status": "followup_too_early", "brand": brand_name,
                     "follow_up_ready_on": unlocks_at.date().isoformat()}
 
-    shipping = resolve_pitch_location(state.creator, state.scrape, state.notes)
-    loc_display = ""
-    if not shipping.get("needs_location"):
-        loc_display = str(shipping.get("display") or "").strip()
-        if pitch_has_placeholder(loc_display):
-            loc_display = ""
+    shipping, loc_display = _pitch_location(state)
 
     cold = {}
     if not followup and not args.get("confirm_cold") and not (state.chip or {}).get("confirm_cold"):
@@ -321,24 +345,10 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     pitch = pitch_from_followup_response(pkg, row) if followup else pitch_from_package_response(pkg)
     if not pitch:
         return {"ok": False, "status": "failed", "brand": brand_name, "error": "empty pitch"}
-    pitch_paid = (
-        state.notes.get("deal_intent") == "paid"
-        and not gifted_only(state.notes)
-        and paid_first(state.notes)
-    )
-    if not followup:
-        if pitch_paid:
-            pitch = apply_paid_ask_to_pitch(pitch, kit=state.kit, scrape=state.scrape,
-                                            location_display=loc_display or None)
-        elif state.notes.get("deal_intent") == "gifted":
-            pitch = apply_gifted_ask_to_pitch(pitch, location_display=loc_display or None)
-        if loc_display:
-            pitch = apply_location_to_pitch(pitch, shipping.get("city") or "",
-                                            shipping.get("country") or "", loc_display)
-    needs_loc = pitch_has_placeholder(pitch.get("body") or "")
-    pitch["needs_location"] = needs_loc
-    if loc_display and not needs_loc:
-        pitch["location_display"] = loc_display
+    directory_inbox = pitch.get("email") or None
+    pitch, pitch_paid = _dress_pitch(state, pitch, shipping, loc_display, followup)
+    if to_email:
+        pitch = _with_inbox(pitch, to_email)
     pitch["brand_id"] = pitch.get("brand_id") or brand_id
     pitch["brand_name"] = pitch.get("brand_name") or brand_name
     if followup:
@@ -357,12 +367,89 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         "brand": brand_name,
         "is_followup": followup,
         "inbox": pitch.get("email") or None,
+        "inbox_from_creator": bool(to_email),
+        "directory_inbox": directory_inbox if to_email and directory_inbox != to_email else None,
         "opens_in_mail_app": bool(pitch.get("mailto")),
-        "needs_city_and_country": needs_loc,
+        "needs_city_and_country": pitch["needs_location"],
         "ships_from": pitch.get("location_display") or None,
         "paid_ask": bool(pitch_paid and not followup),
         "parked_previous_draft": prior_name,
         "coach_tip": "" if followup else (pitch_coach_line(pkg, brand_name) or ""),
+        "pitch_card_shown": True,
+    }
+
+
+def _dress_pitch(state: TurnState, pitch: Dict[str, Any], shipping: Dict[str, Any],
+                 loc_display: str, followup: bool = False):
+    """Deal ask + shipping line on a fresh pitch. Returns (pitch, paid_ask)."""
+    pitch_paid = (
+        state.notes.get("deal_intent") == "paid"
+        and not gifted_only(state.notes)
+        and paid_first(state.notes)
+    )
+    if not followup:
+        if pitch_paid:
+            pitch = apply_paid_ask_to_pitch(pitch, kit=state.kit, scrape=state.scrape,
+                                            location_display=loc_display or None)
+        elif state.notes.get("deal_intent") == "gifted":
+            pitch = apply_gifted_ask_to_pitch(pitch, location_display=loc_display or None)
+        if loc_display:
+            pitch = apply_location_to_pitch(pitch, shipping.get("city") or "",
+                                            shipping.get("country") or "", loc_display)
+    needs_loc = pitch_has_placeholder(pitch.get("body") or "")
+    pitch["needs_location"] = needs_loc
+    if loc_display and not needs_loc:
+        pitch["location_display"] = loc_display
+    return pitch, pitch_paid
+
+
+def _pitch_location(state: TurnState):
+    shipping = resolve_pitch_location(state.creator, state.scrape, state.notes)
+    loc_display = ""
+    if not shipping.get("needs_location"):
+        loc_display = str(shipping.get("display") or "").strip()
+        if pitch_has_placeholder(loc_display):
+            loc_display = ""
+    return shipping, loc_display
+
+
+def _draft_manual(state: TurnState, brand_name: str, to_email: str,
+                  prior_name: Optional[str]) -> Dict[str, Any]:
+    """Pitch a brand that isn't in the directory, to the inbox the creator gave."""
+    R = _routes()
+    shipping, loc_display = _pitch_location(state)
+    base = R._manual_pitch(state.creator_id, brand_name,
+                           city=shipping.get("city") or "", country=shipping.get("country") or "")
+    if not base or not (base.get("subject") or base.get("body")):
+        return {"ok": False, "status": "failed", "brand": brand_name, "error": "pitch generator failed"}
+    pitch = {
+        "brand_id": None,
+        "brand_name": brand_name,
+        "brand_logo": None,
+        "subject": base.get("subject") or "",
+        "body": base.get("body") or "",
+    }
+    pitch, pitch_paid = _dress_pitch(state, pitch, shipping, loc_display)
+    pitch = _with_inbox(pitch, to_email)
+    pitch["off_directory"] = True
+    state.notes = mark_draft_pending(state.notes, {"id": None, "name": brand_name})
+    state.pitch = pitch
+    state.brands = []
+    state.add_chips(pitch_confirm_chips({"id": None, "name": brand_name}))
+    R._log_polly_event(state.creator_id, "manual_pitch_drafted", {"brand_name": brand_name[:120]})
+    return {
+        "ok": True,
+        "status": "drafted",
+        "brand": brand_name,
+        "off_directory": True,
+        "inbox": to_email,
+        "inbox_from_creator": True,
+        "opens_in_mail_app": bool(pitch.get("mailto")),
+        "needs_city_and_country": pitch["needs_location"],
+        "ships_from": pitch.get("location_display") or None,
+        "paid_ask": bool(pitch_paid),
+        "parked_previous_draft": prior_name,
+        "used_free_pitch": False,
         "pitch_card_shown": True,
     }
 
@@ -386,7 +473,7 @@ def log_pitch_sent(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
             if row:
                 target = {"id": row.get("id"), "name": row.get("name"), "needs_location": False}
             elif named:
-                return {"ok": False, "status": "unknown_brand", "brand": named}
+                target = {"id": None, "name": named, "needs_location": False}
     else:
         target = draft
 
@@ -417,7 +504,12 @@ def log_pitch_sent(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
                 "explain": "The draft still says [CITY, COUNTRY]. Ask for city and country before it goes out."}
 
     try:
-        already = (_int(target.get("id")) or 0) in pitched_id_set(state.notes)
+        target_id = _int(target.get("id"))
+        if target_id:
+            already = target_id in pitched_id_set(state.notes)
+        else:
+            sent_names = {str(n).strip().lower() for n in state.notes.get("pitched_brand_names") or []}
+            already = name.strip().lower() in sent_names
     except Exception:
         already = False
     state.notes = mark_pitched(state.notes, target)
@@ -605,6 +697,9 @@ def save_profile_facts(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]
     city = str(args.get("city") or "").strip()
     country = str(args.get("country") or "").strip()
     draft_updated = False
+    rejected_location = bool(city and country) and not parse_location_reply(f"{city}, {country}")
+    if rejected_location:
+        city = country = ""
     if city and country:
         display = f"{city}, {country}"
         state.notes["location"] = display
@@ -634,7 +729,10 @@ def save_profile_facts(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]
     if patch:
         state.notes = merge_notes_patch(state.notes, patch)
         saved.extend(sorted(patch))
-    return {"ok": True, "saved": saved, "draft_city_filled": draft_updated}
+    out = {"ok": True, "saved": saved, "draft_city_filled": draft_updated}
+    if rejected_location:
+        out["location_not_saved"] = "That isn't a city and country. Ask where they ship from."
+    return out
 
 
 def fix_draft_handle(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -809,13 +907,18 @@ TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "draft_pitch",
-        "description": "Write the pitch email for one directory brand and show it as a card. Only when "
-                       "they want to pitch/contact that brand (or tapped its button). Server checks credits; "
-                       "if they're out it returns locked and shows the paywall. Use followup=true for a "
-                       "follow-up to a brand they already pitched.",
+        "description": "Write the pitch email for one brand and show it as a card. Only when they want "
+                       "to pitch/contact that brand (or tapped its button). The card exists only after this "
+                       "returns status=drafted; never say a pitch is ready or coming without calling it. "
+                       "Brands outside the directory need to_email (ask them for the brand's PR email). "
+                       "When they give an address for any brand (a different inbox, a retry after a "
+                       "bounce), pass it as to_email; their address wins over the directory's. Server "
+                       "checks credits; if they're out it returns locked and shows the paywall. Use "
+                       "followup=true for a follow-up to a directory brand they already pitched.",
         "parameters": _obj({
             "brand_name": {**_STR, "description": "The company they mean, exactly as named"},
             "brand_id": {**_INT, "description": "Directory id, only if it is that same company"},
+            "to_email": {**_STR, "description": "Inbox the creator gave for this brand, exactly as typed"},
             "followup": _BOOL,
             "confirm_cold": {**_BOOL, "description": "They chose to pitch anyway after a low-reply warning"},
         }),
@@ -824,8 +927,9 @@ TOOLS: List[Dict[str, Any]] = [
     {
         "name": "log_pitch_sent",
         "description": "Record that the creator sent a pitch from their inbox ('I sent it', 'done', "
-                       "'emailed them'). Omit the brand to log the unsent draft. Refuses if the latest pitch "
-                       "is locked or the draft still needs a city. Only this tool may log a send.",
+                       "'emailed them'), including brands outside the directory they emailed themselves. "
+                       "Omit the brand to log the unsent draft. Refuses if the latest pitch is locked or "
+                       "the draft still needs a city. Only this tool may log a send.",
         "parameters": _obj({"brand_name": _STR, "brand_id": _INT}),
         "handler": log_pitch_sent,
     },

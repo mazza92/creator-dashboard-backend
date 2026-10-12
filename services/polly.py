@@ -94,6 +94,13 @@ _CHIP_SKIP_LABELS = frozenset({
     "find me 3 brands to pitch today", "write a pitch for a brand i name",
     "help me get more replies from brands",
 })
+_NOT_PLACE_WORDS = frozenset({
+    "i", "my", "we", "you", "they", "them", "he", "she", "it", "this", "that",
+    "replied", "reply", "sent", "send", "said", "says", "bounced", "bounce", "passed",
+    "quiet", "waiting", "still", "nothing", "yes", "no", "not", "yet", "thanks",
+    "pitch", "pitched", "email", "emailed", "brand", "brands", "shipped", "posted", "paid",
+    "interested", "declined", "got", "did", "done", "please", "okay",
+})
 _CONTACT_RE = re.compile(
     r"\b(contact|pitch|email|reach out|write to|mailto|message|send (it|this|the pitch)|open (the )?mail)\b",
     re.I,
@@ -1302,6 +1309,9 @@ def parse_location_reply(text: str) -> Optional[Dict[str, str]]:
         return None
     if city.lower() in _CHIP_SKIP_LABELS or country.lower() in {"me", "it", "this"}:
         return None
+    words = {w.lower() for w in re.findall(r"[A-Za-z']+", f"{city} {country}")}
+    if words & _NOT_PLACE_WORDS or "@" in raw:
+        return None
     return {"city": city[:80], "country": country[:80]}
 
 
@@ -1313,8 +1323,15 @@ def resolve_pitch_location(
     creator = dict(creator or {})
     scrape = scrape or {}
     notes = notes or {}
-    city = str(creator.get("city") or scrape.get("city") or "").strip()
-    country = str(creator.get("country") or scrape.get("country") or "").strip()
+    addr = creator.get("shipping_address")
+    if isinstance(addr, str):
+        try:
+            addr = json.loads(addr)
+        except (TypeError, ValueError):
+            addr = None
+    addr = addr if isinstance(addr, dict) else {}
+    city = str(creator.get("city") or addr.get("city") or scrape.get("city") or "").strip()
+    country = str(creator.get("country") or addr.get("country") or scrape.get("country") or "").strip()
     parsed = parse_location_reply(str(notes.get("location") or ""))
     if parsed:
         city = city or parsed.get("city") or ""

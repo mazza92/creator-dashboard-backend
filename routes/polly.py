@@ -727,6 +727,39 @@ def _invoke_generate_pr_package(brand_id, slug=None, city="", country=""):
     return status, data
 
 
+def _manual_pitch(creator_id, brand_name, city="", country=""):
+    """Gifted-PR template for a brand outside the directory. No credit, no package row."""
+    from psycopg2.extras import RealDictCursor
+    from pr_crm_routes import _irresistible_pr_package_pitches, get_db_connection
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute(
+            """
+            SELECT c.*, u.first_name, u.last_name, u.email, u.country
+            FROM creators c
+            JOIN users u ON c.user_id = u.id
+            WHERE c.id = %s
+            """,
+            (creator_id,),
+        )
+        creator = cursor.fetchone()
+        if not creator:
+            return None
+        pitch, _slots = _irresistible_pr_package_pitches(
+            {"name": brand_name}, dict(creator), city=city, country=country, cursor=cursor,
+        )
+        conn.rollback()
+        return pitch
+    except Exception as err:
+        print(f"[Polly] manual pitch failed: {err}")
+        conn.rollback()
+        return None
+    finally:
+        conn.close()
+
+
 def _invoke_generate_followup(brand_id, slug=None):
     from flask import session as flask_session
     from pr_crm_routes import generate_pitch as generate_pitch_view

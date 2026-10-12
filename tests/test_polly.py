@@ -618,6 +618,15 @@ class HeuristicIntentTests(unittest.TestCase):
         self.assertEqual(parse_location_reply("I'm in Austin, United States")["country"], "United States")
         self.assertIsNone(parse_location_reply("Pitch DOTSHOP for me"))
         self.assertIsNone(parse_location_reply("I sent it"))
+        self.assertIsNone(parse_location_reply("They replied"))
+        self.assertIsNone(parse_location_reply("Still no reply"))
+        self.assertEqual(parse_location_reply("Austin, TX")["country"], "TX")
+        from services.polly import resolve_pitch_location
+        shipped = resolve_pitch_location(
+            {"shipping_address": {"city": "Hayward", "country": "United States"}},
+            {}, {"location": "Lyon, France"},
+        )
+        self.assertEqual(shipped["display"], "Hayward, United States")
         self.assertTrue(pitch_has_placeholder("plus product shipping to [CITY, COUNTRY] if you want it in-shot."))
 
     def test_gifted_named_brand_is_pitch_not_paid_gigs(self):

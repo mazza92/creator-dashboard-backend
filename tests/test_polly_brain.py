@@ -209,6 +209,65 @@ class ToolRuleTests(_Patched):
         self.assertIsNone(state.pitch)
         self.assertEqual([b["name"] for b in state.brands], ["Secretlab"])
 
+    def test_off_directory_brand_with_email_gets_a_pitch_to_that_inbox(self):
+        state = make_state(user_text="pitch Shake Shack at pr@shakeshack.com")
+        manual = {"subject": "Gifted collab", "body": "Hi Shake Shack,\n\nNo fee. Just product + shipping to Hayward, United States."}
+        with patch.object(routes_polly, "_manual_pitch", return_value=manual) as built, \
+                patch.object(routes_polly, "_invoke_generate_pr_package") as gen:
+            res = tools.run_tool(state, "draft_pitch",
+                                 {"brand_name": "Shake Shack", "to_email": " PR@ShakeShack.com "})
+        gen.assert_not_called()
+        built.assert_called_once()
+        self.assertEqual(res["status"], "drafted")
+        self.assertTrue(res["off_directory"])
+        self.assertEqual(state.pitch["email"], "pr@shakeshack.com")
+        self.assertTrue(state.pitch["mailto"].startswith("mailto:pr@shakeshack.com?"))
+        self.assertIsNone(state.pitch["brand_id"])
+        self.assertEqual(state.notes["pending_pitch"]["name"], "Shake Shack")
+
+    def test_off_directory_brand_without_email_writes_nothing(self):
+        state = make_state()
+        with patch.object(routes_polly, "_manual_pitch") as built:
+            res = tools.run_tool(state, "draft_pitch", {"brand_name": "Shake Shack"})
+        built.assert_not_called()
+        self.assertEqual(res["status"], "not_in_directory")
+        self.assertIn("to_email", res["explain"])
+        self.assertIsNone(state.pitch)
+
+    def test_creator_inbox_overrides_the_directory_email(self):
+        state = make_state()
+        with patch.object(routes_polly, "_invoke_generate_pr_package", return_value=_pkg("Secretlab", 47)):
+            res = tools.run_tool(state, "draft_pitch",
+                                 {"brand_name": "Secretlab", "to_email": "social@secretlab.example"})
+        self.assertEqual(res["status"], "drafted")
+        self.assertEqual(state.pitch["email"], "social@secretlab.example")
+        self.assertIn("mailto:social@secretlab.example", state.pitch["mailto"])
+        self.assertEqual(res["directory_inbox"], "pr@x.example")
+        self.assertEqual(state.pitch["brand_id"], 47)
+
+    def test_bad_email_is_refused(self):
+        state = make_state()
+        res = tools.run_tool(state, "draft_pitch", {"brand_name": "Secretlab", "to_email": "social@"})
+        self.assertEqual(res["status"], "invalid_email")
+        self.assertIsNone(state.pitch)
+
+    def test_sent_to_an_off_directory_brand_is_logged(self):
+        state = make_state(user_text="I emailed Shake Shack")
+        res = tools.run_tool(state, "log_pitch_sent", {"brand_name": "Shake Shack"})
+        self.assertEqual(res["status"], "logged")
+        self.assertIn("Shake Shack", state.notes["pitched_brand_names"])
+        self.record_sent.assert_called_once()
+        again = tools.run_tool(state, "log_pitch_sent", {"brand_name": "Shake Shack"})
+        self.assertEqual(again["status"], "already_logged")
+
+    def test_status_chip_is_not_saved_as_a_location(self):
+        state = make_state()
+        with patch.object(routes_polly, "_persist_shipping_location") as persist:
+            res = tools.run_tool(state, "save_profile_facts", {"city": "They", "country": "replied"})
+        persist.assert_not_called()
+        self.assertNotIn("location", state.notes)
+        self.assertIn("location_not_saved", res)
+
     def test_search_not_found_lists_similar(self):
         state = make_state()
         res = tools.run_tool(state, "search_directory", {"name": "Zorblax"})
