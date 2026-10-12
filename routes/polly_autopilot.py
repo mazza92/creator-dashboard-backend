@@ -481,6 +481,7 @@ def _fill_creator(conn, row, creator, budget):
         if len(names) >= row["need"] or attempts >= budget:
             break
         attempts += 1
+        conn.commit()  # don't sit in an open transaction while the pitch generates
         item, error = _write_draft(conn, creator_id, creator, int(brand["id"]), notes, scrape)
         if item:
             approve(conn, creator_id, [item["id"]])

@@ -272,7 +272,7 @@ class AutoFillTests(unittest.TestCase):
 
     def _run(self, rows, budget=2):
         with self.app.app_context(), mock.patch.object(rpa, "fill_candidates", return_value=rows):
-            return rpa.auto_fill(object(), now=self.NOW, budget=budget,
+            return rpa.auto_fill(mock.MagicMock(), now=self.NOW, budget=budget,
                                  note_fn=lambda c, cid, text, chips: self.notes.append(text),
                                  email_fn=lambda c, cid, names: self.emails.append(names))
 

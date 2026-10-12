@@ -35,6 +35,15 @@ REPLIED_EVENTS = ("brand_replied_interested", "brand_replied_question", "brand_r
 REPLY_EVENTS = REPLIED_EVENTS + ("dropped", "email_bounced", "pitch_not_sent")
 
 _TABLES_READY = False
+_ADDED_COLUMNS = (
+    ("polly_autopilot", "deal_focus", "TEXT NOT NULL DEFAULT 'auto'"),
+    ("polly_autopilot", "send_days", "TEXT NOT NULL DEFAULT '01234'"),
+    ("polly_autopilot", "followups", f"INTEGER NOT NULL DEFAULT {DEFAULT_FOLLOWUPS}"),
+    ("polly_autopilot", "filled_at", "TIMESTAMPTZ"),
+    ("polly_autopilot", "fill_blocked", "TEXT"),
+    ("polly_autopilot_queue", "followups_sent", "INTEGER NOT NULL DEFAULT 0"),
+    ("polly_autopilot_queue", "announced_at", "TIMESTAMPTZ"),
+)
 
 
 def utc_now() -> datetime:
@@ -87,18 +96,22 @@ def ensure_autopilot_tables(conn) -> None:
         )
         """
     )
+    cur.execute("SELECT 1 FROM pg_indexes WHERE indexname = 'idx_polly_autopilot_due'")
+    if not cur.fetchone():
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_polly_autopilot_due ON polly_autopilot_queue (status, scheduled_for)"
+        )
+    # ALTER takes an exclusive lock even when the column exists, so only run the missing ones.
     cur.execute(
-        "CREATE INDEX IF NOT EXISTS idx_polly_autopilot_due ON polly_autopilot_queue (status, scheduled_for)"
+        """
+        SELECT table_name || '.' || column_name AS col FROM information_schema.columns
+        WHERE table_name IN ('polly_autopilot', 'polly_autopilot_queue')
+        """
     )
-    cur.execute("ALTER TABLE polly_autopilot ADD COLUMN IF NOT EXISTS deal_focus TEXT NOT NULL DEFAULT 'auto'")
-    cur.execute("ALTER TABLE polly_autopilot ADD COLUMN IF NOT EXISTS send_days TEXT NOT NULL DEFAULT '01234'")
-    cur.execute(
-        f"ALTER TABLE polly_autopilot ADD COLUMN IF NOT EXISTS followups INTEGER NOT NULL DEFAULT {DEFAULT_FOLLOWUPS}"
-    )
-    cur.execute("ALTER TABLE polly_autopilot_queue ADD COLUMN IF NOT EXISTS followups_sent INTEGER NOT NULL DEFAULT 0")
-    cur.execute("ALTER TABLE polly_autopilot ADD COLUMN IF NOT EXISTS filled_at TIMESTAMPTZ")
-    cur.execute("ALTER TABLE polly_autopilot ADD COLUMN IF NOT EXISTS fill_blocked TEXT")
-    cur.execute("ALTER TABLE polly_autopilot_queue ADD COLUMN IF NOT EXISTS announced_at TIMESTAMPTZ")
+    have = {r["col"] for r in cur.fetchall()}
+    for table, column, ddl in _ADDED_COLUMNS:
+        if f"{table}.{column}" not in have:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl}")
     conn.commit()
     _TABLES_READY = True
 
@@ -493,7 +506,7 @@ def post_thread_note(conn, creator_id: int, text: str, chips: Optional[List[Dict
 
     thread = load_thread(conn, creator_id)
     messages = list(thread.get("messages") or [])
-    messages.append({"role": "assistant", "kind": "alert", "content": text, "task_chips": chips or []})
+    messages.append({"role": "assistant", "kind": "autopilot", "content": text, "task_chips": chips or []})
     notes = thread.get("notes") or {}
     if pitched:
         notes = mark_pitched(notes, pitched)

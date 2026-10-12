@@ -91,7 +91,7 @@ def _clean_message(msg: Any) -> Optional[Dict[str, Any]]:
     if isinstance(locked, dict) and locked.get("lines"):
         out["locked_pitch"] = locked
     kind = msg.get("kind")
-    if kind in ("nudge", "brief", "alert", "board"):
+    if kind in ("nudge", "brief", "alert", "autopilot", "board"):
         out["kind"] = kind
         if msg.get("brief"):
             out["brief"] = msg.get("brief")
