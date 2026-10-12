@@ -775,6 +775,20 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
                 conn.rollback()
             except Exception:
                 pass
+        try:
+            from flask import has_app_context
+            from services.polly_gmail import gmail_configured
+
+            if gmail_configured() and has_app_context():
+                from routes.polly_autopilot import auto_fill
+
+                autopilot["fill"] = auto_fill(conn)
+        except Exception as err:
+            print(f"[Polly alerts] autopilot fill skipped: {err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         nudged = process_due_nudges(conn, creator_limit=limit, delivered=delivered)
     emails = []
     if can_email:

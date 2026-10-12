@@ -1,5 +1,6 @@
-"""Polly Autopilot (Pro): approved pitches go out from the creator's Gmail on their send days,
-with up to two follow-ups (day 4, day 10) in the same thread unless the brand replied."""
+"""Polly Autopilot (Pro): the cron keeps a week of drafts written, sends them from the creator's Gmail
+on their send days 24h later unless skipped, with up to two follow-ups (day 4, day 10) in the same
+thread unless the brand replied."""
 
 from __future__ import annotations
 
@@ -24,6 +25,11 @@ FOLLOWUP_AFTER = FOLLOWUP_GAPS[0]
 HEADSUP_BEFORE = timedelta(days=1)
 HEADSUP_MIN_NOTICE = timedelta(hours=20)
 NUDGE_HOLD = timedelta(days=5)
+# Drafts go out on their own after this, unless the creator skips them first.
+AUTO_APPROVE_AFTER = timedelta(hours=24)
+AUTO_FILL_EVERY = timedelta(hours=1)
+AUTO_DRAFTS_PER_RUN = 2
+FILL_BLOCKED_WAIT = timedelta(hours=5)
 
 REPLIED_EVENTS = ("brand_replied_interested", "brand_replied_question", "brand_replied_rejected")
 REPLY_EVENTS = REPLIED_EVENTS + ("dropped", "email_bounced", "pitch_not_sent")
@@ -90,6 +96,9 @@ def ensure_autopilot_tables(conn) -> None:
         f"ALTER TABLE polly_autopilot ADD COLUMN IF NOT EXISTS followups INTEGER NOT NULL DEFAULT {DEFAULT_FOLLOWUPS}"
     )
     cur.execute("ALTER TABLE polly_autopilot_queue ADD COLUMN IF NOT EXISTS followups_sent INTEGER NOT NULL DEFAULT 0")
+    cur.execute("ALTER TABLE polly_autopilot ADD COLUMN IF NOT EXISTS filled_at TIMESTAMPTZ")
+    cur.execute("ALTER TABLE polly_autopilot ADD COLUMN IF NOT EXISTS fill_blocked TEXT")
+    cur.execute("ALTER TABLE polly_autopilot_queue ADD COLUMN IF NOT EXISTS announced_at TIMESTAMPTZ")
     conn.commit()
     _TABLES_READY = True
 
@@ -221,26 +230,36 @@ def batch_size(counts: Dict[str, int], target: int) -> int:
     return min(per_week(target), left)
 
 
+def refill_size(counts: Dict[str, int], target: int) -> int:
+    """How many drafts the cron writes so a week's worth is always waiting, never past the target."""
+    pending = counts.get("scheduled", 0) + counts.get("drafts", 0)
+    left = int(target) - counts.get("sent", 0) - pending
+    return max(0, min(per_week(target) - pending, left))
+
+
 def sends_per_day(target: int, days: List[int]) -> int:
     """One a send day, two when the week's batch doesn't fit."""
     return 1 if per_week(target) <= len(days or WEEKDAYS) else MAX_SENDS_PER_DAY
 
 
 def add_draft(conn, creator_id: int, brand_id: int, brand_name: str, to_email: str,
-              subject: str, body: str) -> Dict[str, Any]:
+              subject: str, body: str, announced: bool = False) -> Dict[str, Any]:
+    """``announced`` when the creator wrote it in the panel, so the cron doesn't email about it."""
     ensure_autopilot_tables(conn)
     cur = _cursor(conn)
     cur.execute(
         """
-        INSERT INTO polly_autopilot_queue (creator_id, brand_id, brand_name, to_email, subject, body, status)
-        VALUES (%s, %s, %s, %s, %s, %s, 'draft')
+        INSERT INTO polly_autopilot_queue
+          (creator_id, brand_id, brand_name, to_email, subject, body, status, announced_at)
+        VALUES (%s, %s, %s, %s, %s, %s, 'draft', CASE WHEN %s THEN NOW() END)
         ON CONFLICT (creator_id, brand_id) DO UPDATE
           SET brand_name = EXCLUDED.brand_name, to_email = EXCLUDED.to_email, subject = EXCLUDED.subject,
-              body = EXCLUDED.body, status = 'draft', error = NULL, created_at = NOW()
+              body = EXCLUDED.body, status = 'draft', error = NULL, created_at = NOW(),
+              announced_at = EXCLUDED.announced_at
           WHERE polly_autopilot_queue.status IN ('draft', 'skipped', 'failed')
         RETURNING id, brand_id, brand_name, to_email, subject, body, status
         """,
-        (creator_id, brand_id, brand_name, to_email, subject, body),
+        (creator_id, brand_id, brand_name, to_email, subject, body, bool(announced)),
     )
     row = cur.fetchone()
     conn.commit()
@@ -504,6 +523,37 @@ def _default_headsup_email(conn, creator_id: int, brand_id: int, brand_name: str
     _log_email(conn, creator_id, "autopilot_headsup", brand_id, None, subject, result)
 
 
+def drafts_note(brand_names: List[str]) -> str:
+    names = ", ".join(f"**{n}**" for n in brand_names)
+    count = len(brand_names)
+    return (f"✍️ I wrote {count} new pitch{'es' if count != 1 else ''} for you: {names}. "
+            "They go out from your Gmail on your send days starting tomorrow. "
+            "Open **Autopilot** to edit or skip any before then.")
+
+
+def _default_drafts_email(conn, creator_id: int, brand_names: List[str]) -> None:
+    from services.polly_alerts import POLLY_PATH, _default_send, _log_email, _recipient, _unsubscribe_url, frontend_url, render_email
+    from html import escape
+
+    who = _recipient(conn, creator_id)
+    if not who or not brand_names:
+        return
+    unsub = _unsubscribe_url(who["user_id"])
+    count = len(brand_names)
+    subject = f"I wrote {count} new pitch{'es' if count != 1 else ''} for you"
+    lines = [
+        "Autopilot picked this week's brands and wrote your pitches: "
+        + ", ".join(f"<strong>{escape(n)}</strong>" for n in brand_names) + ".",
+        "They go out from your Gmail on your send days starting tomorrow. "
+        "If you'd rather change one or skip a brand, do it before then.",
+    ]
+    href = f"{frontend_url()}{POLLY_PATH}?autopilot=review&utm_source=email&utm_medium=polly_alert&utm_campaign=autopilot_drafts"
+    buttons = [{"label": "Review pitches", "href": href}]
+    result = _default_send(who["email"], subject, render_email(who["first"], subject, lines, buttons, unsub),
+                           unsub, "autopilot_drafts")
+    _log_email(conn, creator_id, "autopilot_drafts", None, None, subject, result)
+
+
 def _due(conn, sql: str, params: tuple) -> List[Dict[str, Any]]:
     cur = _cursor(conn)
     cur.execute(sql, params)
@@ -514,6 +564,65 @@ _ACTIVE_JOIN = """
     LEFT JOIN polly_autopilot a ON a.creator_id = q.creator_id
     JOIN polly_gmail_accounts g ON g.creator_id = q.creator_id AND g.revoked_at IS NULL
 """
+
+
+def auto_approve_due(conn, now: Optional[datetime] = None) -> int:
+    """Drafts nobody skipped within AUTO_APPROVE_AFTER get scheduled like a manual OK."""
+    now = now or utc_now()
+    rows = _due(conn, f"""
+        SELECT q.creator_id, ARRAY_AGG(q.id ORDER BY q.id) AS ids
+        FROM polly_autopilot_queue q {_ACTIVE_JOIN}
+        WHERE q.status = 'draft' AND q.created_at <= %s AND COALESCE(a.enabled, TRUE)
+        GROUP BY q.creator_id
+    """, (now - AUTO_APPROVE_AFTER,))
+    return sum(len(approve(conn, r["creator_id"], list(r["ids"]), now=now)) for r in rows)
+
+
+def fill_candidates(conn, now: Optional[datetime] = None, limit: int = 20) -> List[Dict[str, Any]]:
+    """Enabled creators with Gmail whose pipeline is short of a week's worth, least recently filled first."""
+    ensure_autopilot_tables(conn)
+    now = now or utc_now()
+    rows = _due(conn, """
+        SELECT a.creator_id, a.monthly_target, a.fill_blocked
+        FROM polly_autopilot a
+        JOIN polly_gmail_accounts g ON g.creator_id = a.creator_id AND g.revoked_at IS NULL
+        WHERE a.enabled AND (a.filled_at IS NULL OR a.filled_at <= %s)
+        ORDER BY a.filled_at NULLS FIRST
+        LIMIT %s
+    """, (now - AUTO_FILL_EVERY, limit))
+    out = []
+    for row in rows:
+        need = refill_size(month_counts(conn, row["creator_id"]), int(row["monthly_target"]))
+        if need > 0:
+            out.append({**row, "need": need})
+        else:
+            mark_filled(conn, row["creator_id"], now, None)
+    return out
+
+
+def claim_unannounced_drafts(conn, creator_id: int, now: datetime) -> List[str]:
+    """Brand names of drafts the creator hasn't been told about yet, marked as told."""
+    cur = _cursor(conn)
+    cur.execute(
+        """
+        UPDATE polly_autopilot_queue SET announced_at = %s
+        WHERE creator_id = %s AND status = 'draft' AND announced_at IS NULL
+        RETURNING brand_name
+        """,
+        (now, creator_id),
+    )
+    names = [r["brand_name"] or "a brand" for r in cur.fetchall()]
+    conn.commit()
+    return names
+
+
+def mark_filled(conn, creator_id: int, now: datetime, blocked: Optional[str]) -> None:
+    cur = _cursor(conn)
+    cur.execute(
+        "UPDATE polly_autopilot SET filled_at = %s, fill_blocked = %s WHERE creator_id = %s",
+        (now, blocked, creator_id),
+    )
+    conn.commit()
 
 
 def run_autopilot(
@@ -534,7 +643,8 @@ def run_autopilot(
     send = send_fn or send_email
     headsup = headsup_fn or _default_headsup_email
     note = note_fn or post_thread_note
-    out = {"pitches": 0, "headsups": 0, "followups": 0, "skipped": 0, "failed": 0}
+    out = {"approved": auto_approve_due(conn, now), "pitches": 0, "headsups": 0, "followups": 0,
+           "skipped": 0, "failed": 0}
 
     pitches = _due(conn, f"""
         SELECT DISTINCT ON (q.creator_id) q.*, a.followups

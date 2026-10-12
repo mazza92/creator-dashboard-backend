@@ -390,9 +390,9 @@ def _idle_renewal_lines(renews_at: datetime, views: int, next_brands: List[str],
                         gmail_connected: bool) -> List[str]:
     """Nothing went out this period: say why plainly and make restarting one tap."""
     why = (
-        "because Gmail isn't connected yet. It takes a minute, then you OK the week's pitches in Autopilot."
+        "because Gmail isn't connected yet. It takes a minute, then I write and send the week's pitches for you."
         if not gmail_connected
-        else "because no pitches have been OK'd yet. Open Autopilot and OK this week's pitches."
+        else "because I couldn't line up pitches yet. Open Autopilot and check your brands and location."
     )
     lines = [
         f"Your Pro month renews on **{_date_label(renews_at)}**.",

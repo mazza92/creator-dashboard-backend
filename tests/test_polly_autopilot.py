@@ -6,6 +6,8 @@ from email import message_from_bytes
 from random import Random
 from unittest import mock
 
+import routes.polly_autopilot as rpa
+import services.polly_autopilot as pa
 from services.autopilot_report import next_step, report_note, report_sections, report_subject
 from services.polly_autopilot import (
     TARGET_MAX,
@@ -14,8 +16,10 @@ from services.polly_autopilot import (
     batch_size,
     clamp_target,
     compose_followup,
+    drafts_note,
     next_slots,
     parse_send_days,
+    refill_size,
     sends_per_day,
 )
 from services.polly_gmail import build_raw, gmail_configured, make_state, read_state
@@ -139,6 +143,96 @@ class GmailMessageTests(unittest.TestCase):
                 "POLLY_GMAIL_TOKEN_KEY", "SOCIAL_TOKEN_ENCRYPTION_KEY")
         with mock.patch.dict(os.environ, {k: "" for k in keys}):
             self.assertFalse(gmail_configured())
+
+
+class RefillTests(unittest.TestCase):
+    def test_keeps_a_week_lined_up(self):
+        self.assertEqual(refill_size({"sent": 4, "scheduled": 2, "drafts": 0}, 24), 4)
+        self.assertEqual(refill_size({"sent": 0, "scheduled": 6, "drafts": 0}, 24), 0)
+        self.assertEqual(refill_size({"sent": 0, "scheduled": 2, "drafts": 5}, 24), 0)
+
+    def test_never_past_the_month_target(self):
+        self.assertEqual(refill_size({"sent": 21, "scheduled": 1, "drafts": 0}, 24), 2)
+        self.assertEqual(refill_size({"sent": 24}, 24), 0)
+
+    def test_drafts_note_names_brands(self):
+        note = drafts_note(["Glow", "Kind"])
+        self.assertIn("2 new pitches", note)
+        self.assertIn("**Glow**, **Kind**", note)
+        self.assertIn("skip", note)
+
+
+class AutoApproveTests(unittest.TestCase):
+    def test_old_drafts_are_scheduled(self):
+        now = datetime(2026, 10, 12, 9, 0, tzinfo=timezone.utc)
+        with mock.patch.object(pa, "_due", return_value=[{"creator_id": 7, "ids": [3, 4]}]) as due, \
+                mock.patch.object(pa, "approve", return_value=[{"id": 3}, {"id": 4}]) as appr:
+            self.assertEqual(pa.auto_approve_due(object(), now), 2)
+        self.assertEqual(due.call_args[0][2], (now - pa.AUTO_APPROVE_AFTER,))
+        appr.assert_called_once_with(mock.ANY, 7, [3, 4], now=now)
+
+
+class AutoFillTests(unittest.TestCase):
+    NOW = datetime(2026, 10, 12, 9, 0, tzinfo=timezone.utc)
+
+    def setUp(self):
+        from flask import Flask
+
+        self.app = Flask(__name__)
+        self.app.secret_key = "test"
+        self.notes, self.emails, self.marked = [], [], []
+        self.drafted = []
+        patches = [
+            mock.patch.object(rpa, "_is_pro", return_value=True),
+            mock.patch.object(rpa, "_load_creator", return_value={"id": 7, "user_id": 70}),
+            mock.patch.object(rpa, "_creator_context", return_value=({}, {})),
+            mock.patch("services.polly.resolve_pitch_location", return_value={"city": "Paris"}),
+            mock.patch.object(rpa, "_pick_brands",
+                              return_value=([{"id": i, "name": f"B{i}"} for i in range(1, 9)], None)),
+            mock.patch.object(rpa, "_write_draft", side_effect=self._write),
+            mock.patch.object(rpa, "mark_filled", side_effect=lambda c, cid, at, b: self.marked.append((cid, at, b))),
+            mock.patch.object(rpa, "claim_unannounced_drafts",
+                              side_effect=lambda c, cid, now: [f"B{i}" for i in self.drafted]),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _write(self, conn, cid, creator, brand_id, notes, scrape, announced=False):
+        from flask import session
+
+        self.assertEqual(session["creator_id"], cid)
+        self.drafted.append(brand_id)
+        return {"brand_name": f"B{brand_id}"}, None
+
+    def _run(self, rows, budget=2):
+        with self.app.app_context(), mock.patch.object(rpa, "fill_candidates", return_value=rows):
+            return rpa.auto_fill(object(), now=self.NOW, budget=budget,
+                                 note_fn=lambda c, cid, text, chips: self.notes.append(text),
+                                 email_fn=lambda c, cid, names: self.emails.append(names))
+
+    def test_budget_spreads_a_big_refill_and_waits_to_announce(self):
+        out = self._run([{"creator_id": 7, "need": 4, "fill_blocked": None}])
+        self.assertEqual(out["drafted"], 2)
+        self.assertEqual(self.drafted, [1, 2])
+        self.assertEqual(self.marked, [])
+        self.assertEqual(self.notes, [])
+
+    def test_finished_refill_announces_once(self):
+        out = self._run([{"creator_id": 7, "need": 2, "fill_blocked": None}], budget=4)
+        self.assertEqual(out["drafted"], 2)
+        self.assertEqual(self.marked, [(7, self.NOW, None)])
+        self.assertEqual(self.emails, [["B1", "B2"]])
+        self.assertIn("**B1**, **B2**", self.notes[0])
+
+    def test_missing_location_asks_once(self):
+        with mock.patch("services.polly.resolve_pitch_location", return_value={"needs_location": True}):
+            self._run([{"creator_id": 7, "need": 6, "fill_blocked": None}])
+            self._run([{"creator_id": 7, "need": 6, "fill_blocked": "needs_location"}])
+        self.assertEqual(self.drafted, [])
+        self.assertEqual(len(self.notes), 1)
+        self.assertIn("city", self.notes[0])
+        self.assertEqual(self.marked[0], (7, self.NOW + pa.FILL_BLOCKED_WAIT, "needs_location"))
 
 
 if __name__ == "__main__":

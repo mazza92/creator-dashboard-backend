@@ -1,25 +1,35 @@
-"""Polly Autopilot API (Pro): connect Gmail, plan the week's brands, draft, approve, send."""
+"""Polly Autopilot API (Pro): connect Gmail, plan the week's brands, draft, approve, send.
+``auto_fill`` runs the same plan + draft from the cron."""
 
 import os
 
 from flask import Blueprint, jsonify, redirect, request
 
 from services.polly_autopilot import (
+    AUTO_DRAFTS_PER_RUN,
+    FILL_BLOCKED_WAIT,
     FOLLOWUP_GAPS,
     TARGET_MAX,
     TARGET_MIN,
+    _default_drafts_email,
     add_draft,
     approve,
     batch_size,
+    claim_unannounced_drafts,
+    drafts_note,
+    fill_candidates,
     list_items,
+    mark_filled,
     month_counts,
     per_week,
+    post_thread_note,
     queued_brand_ids,
     sends_per_day,
     set_enabled,
     settings,
     skip_item,
     update_draft,
+    utc_now,
 )
 from services.polly_autopilot import update_settings as save_settings
 from services.polly_gmail import (
@@ -238,11 +248,79 @@ def _brands_with_email(conn, ids):
     return {int(r["id"]): r for r in cur.fetchall() if r.get("email")}
 
 
+def _creator_context(conn, creator):
+    from routes.polly import _load_scrape
+    from services.polly_memory import load_thread
+
+    notes = load_thread(conn, creator["id"]).get("notes") or {}
+    return notes, _load_scrape(conn, creator.get("user_id"))
+
+
+def _pick_brands(conn, creator_id, creator, notes, scrape):
+    """Matched, emailable brands not pitched or queued already, best first. (brands, error)."""
+    from routes.polly import _suggest_payload
+
+    _status, brands, error = _suggest_payload(scrape, creator, notes, creator_id)
+    skip = set(queued_brand_ids(conn, creator_id))
+    pool = [b for b in brands or [] if b.get("id") and int(b["id"]) not in skip]
+    emailable = _brands_with_email(conn, [int(b["id"]) for b in pool])
+    return [b for b in pool if int(b["id"]) in emailable], error
+
+
+def _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=False):
+    """Generate and queue one pitch. (item, error code)."""
+    from routes.polly import _invoke_generate_pr_package
+    from services.polly import (
+        apply_gifted_ask_to_pitch,
+        apply_location_to_pitch,
+        apply_paid_ask_to_pitch,
+        pitch_from_package_response,
+        pitch_has_placeholder,
+        resolve_pitch_location,
+    )
+
+    brand = _brands_with_email(conn, [brand_id]).get(brand_id)
+    if not brand:
+        return None, "no_contact_email"
+    shipping = resolve_pitch_location(creator, scrape, notes)
+    if shipping.get("needs_location"):
+        return None, "needs_location"
+    status, pkg = _invoke_generate_pr_package(
+        brand_id, city=shipping.get("city") or "", country=shipping.get("country") or "",
+    )
+    if status != 200 or not pkg.get("success"):
+        return None, pkg.get("error") or "draft_failed"
+    pitch = pitch_from_package_response(pkg) or {}
+    loc_display = str(shipping.get("display") or "").strip()
+    focus = settings(conn, creator_id)["deal_focus"]
+    if focus == "auto":
+        focus = "paid" if notes.get("deal_intent") == "paid" else "gifted"
+    if focus == "paid":
+        from services.polly_kit import load_kit_snapshot
+
+        pitch = apply_paid_ask_to_pitch(pitch, kit=load_kit_snapshot(conn, creator_id), scrape=scrape,
+                                        location_display=loc_display or None)
+    else:
+        pitch = apply_gifted_ask_to_pitch(pitch, location_display=loc_display or None)
+    if loc_display:
+        pitch = apply_location_to_pitch(pitch, shipping.get("city") or "", shipping.get("country") or "", loc_display)
+    body = pitch.get("body") or ""
+    if not body or pitch_has_placeholder(body):
+        return None, "needs_location"
+    item = add_draft(
+        conn, creator_id, brand_id, brand["brand_name"], pitch.get("email") or brand["email"],
+        pitch.get("subject") or f"{brand['brand_name']} collab", body, announced=announced,
+    )
+    return (item, None) if item else (None, "already_queued")
+
+
+_DRAFT_STATUS = {"no_contact_email": 422, "needs_location": 409, "already_queued": 409}
+
+
 @autopilot_bp.route("/plan", methods=["POST"])
 def plan():
     """This week's picks: matched, emailable, not pitched or queued already."""
-    from routes.polly import _load_scrape, _suggest_payload, json_safe
-    from services.polly_memory import load_thread
+    from routes.polly import json_safe
 
     creator_id, conn, creator, err = _guard()
     if err:
@@ -252,13 +330,8 @@ def plan():
         size = batch_size(month_counts(conn, creator_id), prefs["monthly_target"])
         if size <= 0:
             return jsonify({"success": True, "brands": [], "reason": "target_reached"})
-        notes = load_thread(conn, creator_id).get("notes") or {}
-        scrape = _load_scrape(conn, (creator or {}).get("user_id"))
-        _status, brands, error = _suggest_payload(scrape, creator, notes, creator_id)
-        skip = set(queued_brand_ids(conn, creator_id))
-        pool = [b for b in brands or [] if b.get("id") and int(b["id"]) not in skip]
-        emailable = _brands_with_email(conn, [int(b["id"]) for b in pool])
-        matched = [b for b in pool if int(b["id"]) in emailable]
+        notes, scrape = _creator_context(conn, creator)
+        matched, error = _pick_brands(conn, creator_id, creator, notes, scrape)
         picks, alternates = matched[:size], matched[size:size + PLAN_ALTERNATES]
         return jsonify({"success": True, "brands": json_safe(picks), "alternates": json_safe(alternates),
                         "size": size, "error": None if picks else error})
@@ -269,17 +342,6 @@ def plan():
 @autopilot_bp.route("/draft", methods=["POST"])
 def draft():
     """Write one pitch for the batch. The frontend calls this per brand so progress shows."""
-    from routes.polly import _invoke_generate_pr_package, _load_scrape
-    from services.polly import (
-        apply_gifted_ask_to_pitch,
-        apply_location_to_pitch,
-        apply_paid_ask_to_pitch,
-        pitch_from_package_response,
-        pitch_has_placeholder,
-        resolve_pitch_location,
-    )
-    from services.polly_memory import load_thread
-
     creator_id, conn, creator, err = _guard()
     if err:
         return err
@@ -288,45 +350,109 @@ def draft():
             brand_id = int((request.get_json(silent=True) or {}).get("brand_id"))
         except (TypeError, ValueError):
             return jsonify({"success": False, "error": "brand_id required"}), 400
-        brand = _brands_with_email(conn, [brand_id]).get(brand_id)
-        if not brand:
-            return jsonify({"success": False, "error": "no_contact_email"}), 422
-        notes = load_thread(conn, creator_id).get("notes") or {}
-        scrape = _load_scrape(conn, (creator or {}).get("user_id"))
-        shipping = resolve_pitch_location(creator, scrape, notes)
-        if shipping.get("needs_location"):
-            return jsonify({"success": False, "error": "needs_location"}), 409
-        status, pkg = _invoke_generate_pr_package(
-            brand_id, city=shipping.get("city") or "", country=shipping.get("country") or "",
-        )
-        if status != 200 or not pkg.get("success"):
-            return jsonify({"success": False, "error": pkg.get("error") or "draft_failed"}), 502
-        pitch = pitch_from_package_response(pkg) or {}
-        loc_display = str(shipping.get("display") or "").strip()
-        focus = settings(conn, creator_id)["deal_focus"]
-        if focus == "auto":
-            focus = "paid" if notes.get("deal_intent") == "paid" else "gifted"
-        if focus == "paid":
-            from services.polly_kit import load_kit_snapshot
-
-            pitch = apply_paid_ask_to_pitch(pitch, kit=load_kit_snapshot(conn, creator_id), scrape=scrape,
-                                            location_display=loc_display or None)
-        else:
-            pitch = apply_gifted_ask_to_pitch(pitch, location_display=loc_display or None)
-        if loc_display:
-            pitch = apply_location_to_pitch(pitch, shipping.get("city") or "", shipping.get("country") or "", loc_display)
-        body = pitch.get("body") or ""
-        if not body or pitch_has_placeholder(body):
-            return jsonify({"success": False, "error": "needs_location"}), 409
-        item = add_draft(
-            conn, creator_id, brand_id, brand["brand_name"], pitch.get("email") or brand["email"],
-            pitch.get("subject") or f"{brand['brand_name']} collab", body,
-        )
-        if not item:
-            return jsonify({"success": False, "error": "already_queued"}), 409
+        notes, scrape = _creator_context(conn, creator)
+        item, error = _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=True)
+        if error:
+            return jsonify({"success": False, "error": error}), _DRAFT_STATUS.get(error, 502)
         return jsonify({"success": True, "item": item})
     finally:
         conn.close()
+
+
+def _load_creator(conn, creator_id):
+    from psycopg2.extras import RealDictCursor
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute(
+        """
+        SELECT c.id, c.user_id, c.niche, c.creator_niches,
+               to_jsonb(c) -> 'shipping_address' AS shipping_address,
+               u.first_name, u.last_name, u.country
+        FROM creators c
+        JOIN users u ON u.id = c.user_id
+        WHERE c.id = %s
+        """,
+        (creator_id,),
+    )
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+_BLOCKED_NOTES = {
+    "needs_location": "I'm ready to write this week's Autopilot pitches, but I need the city you'd want "
+                      "products shipped to. Tell me where you're based and I'll get them written.",
+    "no_brands": "I couldn't find new matched brands with a verified email for Autopilot this week. "
+                 "Add a niche in **Autopilot** settings and I'll look again.",
+}
+
+
+def _fill_creator(conn, row, creator, budget):
+    """Draft up to ``row['need']`` pitches, at most ``budget`` attempts. (names, blocked, attempts, failed)."""
+    creator_id = row["creator_id"]
+    notes, scrape = _creator_context(conn, creator)
+    from services.polly import resolve_pitch_location
+
+    if resolve_pitch_location(creator, scrape, notes).get("needs_location"):
+        return [], "needs_location", 0, False
+    matched, _error = _pick_brands(conn, creator_id, creator, notes, scrape)
+    if not matched:
+        return [], "no_brands", 0, False
+    names, attempts, failed = [], 0, False
+    for brand in matched:
+        if len(names) >= row["need"] or attempts >= budget:
+            break
+        attempts += 1
+        item, error = _write_draft(conn, creator_id, creator, int(brand["id"]), notes, scrape)
+        if item:
+            names.append(item.get("brand_name") or brand.get("name") or "a brand")
+        elif error == "needs_location":
+            return names, "needs_location", attempts, True
+        else:
+            print(f"[Polly autopilot] auto draft failed creator={creator_id} brand={brand.get('id')}: {error}")
+            failed = True
+    return names, None, attempts, failed
+
+
+def auto_fill(conn, now=None, budget=AUTO_DRAFTS_PER_RUN, note_fn=None, email_fn=None):
+    """Cron: keep each enabled creator a week of drafts ahead, so the monthly target is reached
+    without anyone coming back to plan. Drafts then auto-approve after AUTO_APPROVE_AFTER."""
+    from flask import current_app, session
+
+    now = now or utc_now()
+    note = note_fn or post_thread_note
+    email = email_fn or _default_drafts_email
+    out = {"drafted": 0, "creators": 0, "blocked": 0}
+    for row in fill_candidates(conn, now):
+        if budget <= 0:
+            break
+        creator_id = row["creator_id"]
+        creator = _load_creator(conn, creator_id) if _is_pro(creator_id, conn) else None
+        if not creator:
+            mark_filled(conn, creator_id, now + FILL_BLOCKED_WAIT, "not_pro")
+            continue
+        with current_app.test_request_context("/api/polly/autopilot/fill", method="POST"):
+            session["creator_id"] = creator_id
+            session["user_id"] = creator["user_id"]
+            names, blocked, attempts, failed = _fill_creator(conn, row, creator, budget)
+        budget -= attempts
+        out["drafted"] += len(names)
+        out["creators"] += 1 if names else 0
+        if blocked:
+            out["blocked"] += 1
+            if blocked != row.get("fill_blocked") and blocked in _BLOCKED_NOTES:
+                note(conn, creator_id, _BLOCKED_NOTES[blocked], [])
+        if not (blocked or failed or len(names) >= row["need"]):
+            continue
+        mark_filled(conn, creator_id, now + FILL_BLOCKED_WAIT if blocked and not names else now, blocked)
+        fresh = claim_unannounced_drafts(conn, creator_id, now)
+        if fresh:
+            note(conn, creator_id, drafts_note(fresh), [])
+            try:
+                email(conn, creator_id, fresh)
+            except Exception as err:
+                print(f"[Polly autopilot] drafts email skipped: {err}")
+                conn.rollback()
+    return out
 
 
 @autopilot_bp.route("/items/<int:item_id>", methods=["PATCH"])

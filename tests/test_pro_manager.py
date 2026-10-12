@@ -138,7 +138,7 @@ class RenewalTests(unittest.TestCase):
         self.assertNotIn("0 brands", text)
         self.assertNotIn("still live", text)
         waiting = "\n".join(renewal_lines({"pitched": 0}, renews, [], gmail_connected=True))
-        self.assertIn("no pitches have been OK'd", waiting)
+        self.assertIn("couldn't line up pitches", waiting)
         self.assertIn("Monday board", waiting)
 
     def test_replies_point_at_the_paid_ask(self):

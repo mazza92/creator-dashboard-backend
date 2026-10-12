@@ -101,8 +101,9 @@ def report_sections(facts: Dict[str, Any]) -> List[Dict[str, str]]:
         out.append({"label": "Next up",
                     "text": f"{_plural(len(scheduled), 'pitch', 'pitches')} scheduled: {_names(scheduled)}."})
     if drafts:
-        out.append({"label": "Your OK",
-                    "text": f"{_plural(len(drafts), 'pitch', 'pitches')} written and waiting for your OK."})
+        out.append({"label": "Written",
+                    "text": f"{_plural(len(drafts), 'pitch', 'pitches')} written. They send on your next send days "
+                            "unless you skip them in Autopilot."})
     month, target = facts.get("month") or {}, int(facts.get("target") or 0)
     if target:
         line = f"{month.get('sent', 0)} of {target} brands pitched"
