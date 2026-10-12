@@ -242,6 +242,7 @@ FOR_YOU_RELATED_NICHES = {
 # - Keep Good Match + Growth Match (unlock still useful: Pitch + tips)
 # - Drop Stretch / Not Recommended (Theory EU-style mismatches)
 FOR_YOU_MIN_FIT_SCORE = 35  # growth_match floor
+FOR_YOU_DEEP_LIMIT = 30  # ?pool=autopilot: Autopilot's pipeline pool
 FOR_YOU_EXCLUDE_TIERS = frozenset({'stretch_match', 'not_recommended'})
 # Hard-block categories that are never right for parenting/mom-finds creators
 FOR_YOU_PARENTING_BLOCKED_CATEGORIES = frozenset({
@@ -8787,6 +8788,14 @@ def get_for_you():
             exclude_ids.extend(r['brand_id'] for r in already_applied)
         except Exception:
             pass
+        # pool=autopilot: same matching, deeper list, minus brands already queued for sending.
+        deep_pool = request.args.get('pool') == 'autopilot'
+        pool_limit = FOR_YOU_DEEP_LIMIT if deep_pool else 8
+        candidate_limit = 240 if deep_pool else 90
+        if deep_pool:
+            for raw_id in str(request.args.get('exclude') or '').split(','):
+                if raw_id.strip().isdigit():
+                    exclude_ids.append(int(raw_id))
         exclude_ids = list({i for i in exclude_ids if i}) or [0]
 
         # ── Section 1: Most Contacted Brands ─────────────────────────────
@@ -9047,7 +9056,7 @@ def get_for_you():
                   AND b.id != ALL(%s)
                   {brand_filter_sql}
                 ORDER BY {hunger_order}md5(concat_ws(':', b.id::text, %s))
-                LIMIT 90
+                LIMIT {candidate_limit}
             """, tuple(query_params))
             matched = cursor.fetchall()
         else:
@@ -9220,13 +9229,19 @@ def get_for_you():
                     f"intent={prep.get('match_intent_lanes')}"
                 )
 
-                filtered_matched = _rank_for_you_with_mentor(
-                    matched,
-                    creator_profile_dict,
-                    niches=interest_niches,
-                    followers=followers or 0,
-                    creator_id=creator_id,
-                )
+                if deep_pool:
+                    from services.mentor_matchmaker import rank_matches_deep
+                    filtered_matched = rank_matches_deep(
+                        prep, [dict(r) for r in matched], niches=list(interest_niches or []), limit=pool_limit,
+                    )
+                else:
+                    filtered_matched = _rank_for_you_with_mentor(
+                        matched,
+                        creator_profile_dict,
+                        niches=interest_niches,
+                        followers=followers or 0,
+                        creator_id=creator_id,
+                    )
 
                 # If thin (<6), expand SQL pool from effective primary + interests and retry
                 if len(filtered_matched) < 6:
@@ -9254,24 +9269,31 @@ def get_for_you():
                               AND LOWER(b.category) = ANY(%s)
                               AND b.id != ALL(%s)
                             ORDER BY COALESCE(roster_demand.hunger, 0) DESC, md5(concat_ws(':', b.id::text, %s))
-                            LIMIT 90
+                            LIMIT {candidate_limit}
                         """, (related_list, exclude_ids, f"{creator_id}:{datetime.utcnow().strftime('%G-%V')}"))
                         retry_rows = cursor.fetchall()
                         matched = retry_rows
                         # Rank with prepared profile so inferred primary is used
                         try:
                             from services.mentor_matchmaker import (
+                                rank_matches_deep,
                                 rank_matches_with_mentor,
                                 invalidate_mentor_matches,
                             )
-                            invalidate_mentor_matches(creator_id)
-                            retry_ranked = rank_matches_with_mentor(
-                                creator_profile=prep,
-                                candidate_brands=[dict(r) for r in retry_rows],
-                                niches=list(interest_niches or []),
-                                creator_id=creator_id,
-                                force_refresh=True,
-                            )
+                            if deep_pool:
+                                retry_ranked = rank_matches_deep(
+                                    prep, [dict(r) for r in retry_rows],
+                                    niches=list(interest_niches or []), limit=pool_limit,
+                                )
+                            else:
+                                invalidate_mentor_matches(creator_id)
+                                retry_ranked = rank_matches_with_mentor(
+                                    creator_profile=prep,
+                                    candidate_brands=[dict(r) for r in retry_rows],
+                                    niches=list(interest_niches or []),
+                                    creator_id=creator_id,
+                                    force_refresh=True,
+                                )
                             if len(retry_ranked) > len(filtered_matched):
                                 filtered_matched = retry_ranked
                         except Exception as retry_err:
@@ -9326,7 +9348,8 @@ def get_for_you():
                 open_pool.append(scored_by_id.get(raw.get('id')) or raw)
             open_lists = pick_open_lists(open_pool, limit=8, min_fit=0)
             filtered_matched = prefer_hungry_rosters(
-                filtered_matched, limit=8, max_hungry=6, min_fit=FOR_YOU_MIN_FIT_SCORE
+                filtered_matched, limit=pool_limit, max_hungry=max(6, pool_limit // 2),
+                min_fit=FOR_YOU_MIN_FIT_SCORE,
             )
 
         recruiting = []

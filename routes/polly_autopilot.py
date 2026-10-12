@@ -72,8 +72,15 @@ def _targeting(conn, creator_id):
     from services.polly_prefs import CATEGORY_WORDS, get_prefs
 
     notes = load_thread(conn, creator_id).get("notes") or {}
+    niches = [n for n in stated_niches(notes) if n in NICHE_OPTIONS]
+    if not niches:
+        cur = conn.cursor()
+        cur.execute("SELECT creator_niches FROM creators WHERE id = %s", (creator_id,))
+        row = cur.fetchone()
+        niches = [n for n in dict.fromkeys(str(x).strip().lower() for x in (row[0] if row and row[0] else []))
+                  if n in NICHE_OPTIONS]
     return {
-        "niches": stated_niches(notes),
+        "niches": niches,
         "avoid_categories": list(get_prefs(notes).get("avoid_categories") or []),
         "niche_options": list(NICHE_OPTIONS),
         "avoid_options": list(CATEGORY_WORDS),
@@ -88,13 +95,36 @@ def _save_targeting(conn, creator_id, body):
         return
     thread = load_thread(conn, creator_id)
     notes = dict(thread.get("notes") or {})
+    prefs = get_prefs(notes)
+    niches = list(notes.get("niche") or []) if isinstance(notes.get("niche"), list) else []
+    before = list(niches)
+    avoid = list(prefs.get("avoid_categories") or [])
+    # The list just edited wins when a category is in both.
     if isinstance(body.get("niches"), list):
-        notes["niche"] = [n for n in dict.fromkeys(str(x).strip().lower() for x in body["niches"]) if n in NICHE_OPTIONS]
+        niches = [n for n in dict.fromkeys(str(x).strip().lower() for x in body["niches"]) if n in NICHE_OPTIONS]
+        avoid = [c for c in avoid if c not in niches]
     if isinstance(body.get("avoid_categories"), list):
-        prefs = get_prefs(notes)
-        prefs["avoid_categories"] = [c for c in dict.fromkeys(str(x) for x in body["avoid_categories"]) if c in CATEGORY_WORDS]
-        notes["prefs"] = prefs
+        avoid = [c for c in dict.fromkeys(str(x) for x in body["avoid_categories"]) if c in CATEGORY_WORDS]
+        niches = [n for n in niches if n not in avoid]
+    notes["niche"] = niches
+    prefs["avoid_categories"] = avoid
+    notes["prefs"] = prefs
     save_thread(conn, creator_id, thread.get("messages") or [], thread.get("suggested_brands") or [], notes=notes)
+    if isinstance(body.get("niches"), list) or niches != before:
+        _sync_for_you_niches(conn, creator_id, niches)
+
+
+def _sync_for_you_niches(conn, creator_id, niches):
+    """For You matches on creators.creator_niches, so Autopilot targeting and For You stay one pool."""
+    from routes.polly import _FOR_YOU_CACHE, _FOR_YOU_LOCK
+    from services.mentor_matchmaker import invalidate_mentor_matches
+
+    cur = conn.cursor()
+    cur.execute("UPDATE creators SET creator_niches = %s WHERE id = %s", (list(niches), creator_id))
+    conn.commit()
+    with _FOR_YOU_LOCK:
+        _FOR_YOU_CACHE.pop(int(creator_id), None)
+    invalidate_mentor_matches(creator_id)
 
 
 def _status_payload(conn, creator_id, is_pro):
@@ -256,15 +286,63 @@ def _creator_context(conn, creator):
     return notes, _load_scrape(conn, creator.get("user_id"))
 
 
-def _pick_brands(conn, creator_id, creator, notes, scrape):
-    """Matched, emailable brands not pitched or queued already, best first. (brands, error)."""
-    from routes.polly import _suggest_payload
+POOL_SECTIONS = ("recruiting", "open_lists", "matched")
+POOL_SIZE = 60
+# For You's growth_match floor. Live rosters For You didn't score stay out of the pipeline.
+MIN_FIT = 35
 
-    _status, brands, error = _suggest_payload(scrape, creator, notes, creator_id)
-    skip = set(queued_brand_ids(conn, creator_id))
-    pool = [b for b in brands or [] if b.get("id") and int(b["id"]) not in skip]
-    emailable = _brands_with_email(conn, [int(b["id"]) for b in pool])
-    return [b for b in pool if int(b["id"]) in emailable], error
+
+def _fit(brand):
+    try:
+        return int(brand.get("match_score") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _for_you_pool(exclude_ids):
+    """The creator's For You matches (same scoring and cutoffs), deeper than the 8 cards shown."""
+    from flask import current_app, session as flask_session
+    from pr_crm_routes import get_for_you
+    from routes.polly import _copy_session, unpack_view_result
+
+    saved = _copy_session()
+    headers = {}
+    for key in ("Authorization", "Cookie"):
+        if request.headers.get(key):
+            headers[key] = request.headers.get(key)
+    query = {"pool": "autopilot", "exclude": ",".join(str(int(i)) for i in exclude_ids)}
+    with current_app.test_request_context("/api/pr-crm/for-you", query_string=query, headers=headers):
+        flask_session.update(saved)
+        return unpack_view_result(get_for_you())
+
+
+def _pick_brands(conn, creator_id, creator, notes, scrape):
+    """For You matches that are emailable and not pitched, queued or blocked, best first. (brands, error)."""
+    from routes.polly import _match_scrape, _pipeline_pitched_ids
+    from services.polly import drop_pitched, flatten_for_you
+    from services.polly_discovery import required_categories_for_match, stated_niches
+    from services.polly_prefs import filter_brands_by_prefs
+
+    queued = queued_brand_ids(conn, creator_id)
+    status, data = _for_you_pool(queued)
+    if status != 200 or not (data or {}).get("success"):
+        return [], (data or {}).get("error") or "Could not load matches"
+    match_scrape = _match_scrape(scrape, notes, creator)
+    cats = required_categories_for_match(notes, match_scrape)
+    exclude = list(queued) + list(_pipeline_pitched_ids(creator_id) or [])
+    brands = flatten_for_you(
+        {key: data.get(key) for key in POOL_SECTIONS},
+        limit=POOL_SIZE,
+        scrape=match_scrape,
+        niches=cats or stated_niches(notes) or (creator or {}).get("creator_niches"),
+        required_categories=cats,
+        exclude_ids=exclude,
+    )
+    brands = filter_brands_by_prefs(drop_pitched(brands, notes, extra_ids=exclude), notes)
+    brands = [b for b in brands if _fit(b) >= MIN_FIT]
+    emailable = _brands_with_email(conn, [int(b["id"]) for b in brands if b.get("id")])
+    matched = [b for b in brands if b.get("id") and int(b["id"]) in emailable]
+    return matched, None if matched else "no_matches"
 
 
 def _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=False):
@@ -354,7 +432,8 @@ def draft():
         item, error = _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=True)
         if error:
             return jsonify({"success": False, "error": error}), _DRAFT_STATUS.get(error, 502)
-        return jsonify({"success": True, "item": item})
+        scheduled = approve(conn, creator_id, [item["id"]])
+        return jsonify({"success": True, "item": item, "scheduled": scheduled})
     finally:
         conn.close()
 
@@ -404,6 +483,7 @@ def _fill_creator(conn, row, creator, budget):
         attempts += 1
         item, error = _write_draft(conn, creator_id, creator, int(brand["id"]), notes, scrape)
         if item:
+            approve(conn, creator_id, [item["id"]])
             names.append(item.get("brand_name") or brand.get("name") or "a brand")
         elif error == "needs_location":
             return names, "needs_location", attempts, True
@@ -414,8 +494,8 @@ def _fill_creator(conn, row, creator, budget):
 
 
 def auto_fill(conn, now=None, budget=AUTO_DRAFTS_PER_RUN, note_fn=None, email_fn=None):
-    """Cron: keep each enabled creator a week of drafts ahead, so the monthly target is reached
-    without anyone coming back to plan. Drafts then auto-approve after AUTO_APPROVE_AFTER."""
+    """Cron: keep each enabled creator a week of scheduled pitches ahead, so the monthly target is
+    reached without anyone coming back to plan or approve."""
     from flask import current_app, session
 
     now = now or utc_now()

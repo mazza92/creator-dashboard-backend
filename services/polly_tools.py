@@ -765,8 +765,8 @@ def offer_pro(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         "price": "$19/mo",
         "pro_does": "Polly as their manager. Goal: one yes this month, turned into a paid usage deal. "
                     "Every Monday a board with the week: setup, paid briefs to apply to, and replies to send. "
-                    "Autopilot sends ~6 gifted pitches a week from their Gmail once they OK them, with "
-                    "follow-ups. When a brand says yes, "
+                    "Autopilot picks brands from their settings and sends ~6 gifted pitches a week from their "
+                    "Gmail with no approval step, plus follow-ups. When a brand says yes, "
                     "Polly writes the reply with a usage rate to run the video as an ad. 20-30 pitches a "
                     "month go out in the background. Unlimited roster applications.",
         "free_path": "Follow-ups are free. Publishing the kit is free. Drafts left unsent for 7 days "

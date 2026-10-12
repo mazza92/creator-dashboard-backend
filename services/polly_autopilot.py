@@ -1,6 +1,6 @@
-"""Polly Autopilot (Pro): the cron keeps a week of drafts written, sends them from the creator's Gmail
-on their send days 24h later unless skipped, with up to two follow-ups (day 4, day 10) in the same
-thread unless the brand replied."""
+"""Polly Autopilot (Pro): the cron keeps a week of pitches written and scheduled, sends them from the
+creator's Gmail on their send days with no approval step, with up to two follow-ups (day 4, day 10)
+in the same thread unless the brand replied."""
 
 from __future__ import annotations
 
@@ -25,8 +25,8 @@ FOLLOWUP_AFTER = FOLLOWUP_GAPS[0]
 HEADSUP_BEFORE = timedelta(days=1)
 HEADSUP_MIN_NOTICE = timedelta(hours=20)
 NUDGE_HOLD = timedelta(days=5)
-# Drafts go out on their own after this, unless the creator skips them first.
-AUTO_APPROVE_AFTER = timedelta(hours=24)
+# Autopilot needs no approval: any draft left in the queue is scheduled on the next run.
+AUTO_APPROVE_AFTER = timedelta(0)
 AUTO_FILL_EVERY = timedelta(hours=1)
 AUTO_DRAFTS_PER_RUN = 2
 FILL_BLOCKED_WAIT = timedelta(hours=5)
@@ -526,9 +526,9 @@ def _default_headsup_email(conn, creator_id: int, brand_id: int, brand_name: str
 def drafts_note(brand_names: List[str]) -> str:
     names = ", ".join(f"**{n}**" for n in brand_names)
     count = len(brand_names)
-    return (f"✍️ I wrote {count} new pitch{'es' if count != 1 else ''} for you: {names}. "
-            "They go out from your Gmail on your send days starting tomorrow. "
-            "Open **Autopilot** to edit or skip any before then.")
+    return (f"✍️ Autopilot update: I lined up {count} new pitch{'es' if count != 1 else ''}: {names}. "
+            "They go out from your Gmail on your send days, and I'll follow up if they're quiet. "
+            "Nothing for you to do. Tweak brands or target any time in **Autopilot** settings.")
 
 
 def _default_drafts_email(conn, creator_id: int, brand_names: List[str]) -> None:
@@ -540,15 +540,15 @@ def _default_drafts_email(conn, creator_id: int, brand_names: List[str]) -> None
         return
     unsub = _unsubscribe_url(who["user_id"])
     count = len(brand_names)
-    subject = f"I wrote {count} new pitch{'es' if count != 1 else ''} for you"
+    subject = f"Autopilot lined up {count} more pitch{'es' if count != 1 else ''}"
     lines = [
-        "Autopilot picked this week's brands and wrote your pitches: "
+        "I picked this week's brands and wrote your pitches: "
         + ", ".join(f"<strong>{escape(n)}</strong>" for n in brand_names) + ".",
-        "They go out from your Gmail on your send days starting tomorrow. "
-        "If you'd rather change one or skip a brand, do it before then.",
+        "They go out from your Gmail on your send days, and I follow up in the same thread if a brand is quiet. "
+        "Nothing for you to do.",
     ]
     href = f"{frontend_url()}{POLLY_PATH}?autopilot=review&utm_source=email&utm_medium=polly_alert&utm_campaign=autopilot_drafts"
-    buttons = [{"label": "Review pitches", "href": href}]
+    buttons = [{"label": "See the schedule", "href": href}]
     result = _default_send(who["email"], subject, render_email(who["first"], subject, lines, buttons, unsub),
                            unsub, "autopilot_drafts")
     _log_email(conn, creator_id, "autopilot_drafts", None, None, subject, result)
@@ -601,17 +601,18 @@ def fill_candidates(conn, now: Optional[datetime] = None, limit: int = 20) -> Li
 
 
 def claim_unannounced_drafts(conn, creator_id: int, now: datetime) -> List[str]:
-    """Brand names of drafts the creator hasn't been told about yet, marked as told."""
+    """Brand names of queued pitches the creator hasn't been told about yet, marked as told."""
     cur = _cursor(conn)
     cur.execute(
         """
         UPDATE polly_autopilot_queue SET announced_at = %s
-        WHERE creator_id = %s AND status = 'draft' AND announced_at IS NULL
-        RETURNING brand_name
+        WHERE creator_id = %s AND status IN ('draft', 'approved') AND announced_at IS NULL
+        RETURNING brand_name, scheduled_for
         """,
         (now, creator_id),
     )
-    names = [r["brand_name"] or "a brand" for r in cur.fetchall()]
+    rows = sorted(cur.fetchall(), key=lambda r: r["scheduled_for"] or now)
+    names = [r["brand_name"] or "a brand" for r in rows]
     conn.commit()
     return names
 

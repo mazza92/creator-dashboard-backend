@@ -584,5 +584,30 @@ Return JSON with every ID from the list:
     return ranked
 
 
+def rank_matches_deep(
+    creator_profile: Dict,
+    candidate_brands: List[Dict],
+    niches: Optional[List[str]] = None,
+    limit: int = 30,
+) -> List[Dict]:
+    """Same brand-aware scores and cutoffs as the For You cards, without the 8-card cap,
+    the LLM reorder or the per-creator cache. Used to fill the Autopilot pipeline."""
+    interest_niches = niches or []
+    profile = creator_profile or {}
+    scored = []
+    for brand in candidate_brands or []:
+        b, fit = _apply_brand_score(brand, profile, interest_niches)
+        if fit['overall_score'] < 35 or fit['tier'] in ('stretch_match', 'not_recommended'):
+            continue
+        b['mentor_why'] = None
+        b['match_source'] = 'calculator'
+        scored.append(b)
+    scored.sort(key=lambda x: x.get('match_score') or 0, reverse=True)
+    return diversify_matches(
+        scored, limit=limit, max_per_raw=max(2, limit // 4), max_per_family=max(5, limit // 2),
+        interest_niches=interest_niches,
+    )
+
+
 def invalidate_mentor_matches(creator_id: int) -> None:
     _MATCH_CACHE.pop(int(creator_id), None)
