@@ -183,11 +183,11 @@ def instagram_authorize_url(app_id, redirect_uri, scopes, state):
 
 
 def _instagram_oauth_enabled():
+    """Opt-in: Graph calls fail for non-tester accounts until instagram_business_basic
+    has Advanced Access. While off, Instagram connects through the in-house scraper."""
     flag = (os.getenv('INSTAGRAM_OAUTH_ENABLED') or '').strip().lower()
-    if flag in ('0', 'false', 'no', 'off'):
+    if flag not in ('1', 'true', 'yes', 'on'):
         return False
-    if flag in ('1', 'true', 'yes', 'on'):
-        return True
     app_id, secret, _redirect = _instagram_oauth_config()
     return bool(app_id and secret)
 
@@ -934,7 +934,8 @@ def check_region():
     return jsonify({
         'allowed': is_allowed,
         'country': country_code,
-        'failure_reason': 'restricted_region' if not is_allowed else None
+        'failure_reason': 'restricted_region' if not is_allowed else None,
+        'instagram_oauth': _instagram_oauth_enabled(),
     })
 
 
@@ -1081,13 +1082,36 @@ def verify_handle():
 # INSTAGRAM OAUTH ENDPOINTS (Instagram Login — TikTok Login Kit analog)
 # ============================================================================
 
+def _connect_instagram_via_scraper(user_id, creator_id, return_url, from_settings):
+    """Instagram connect while Instagram Login is off: refresh the stored @handle in-house."""
+    from services.profile_quality import ProfileQualityError
+
+    fail = lambda reason: redirect(
+        f"{return_url}?social=failed&reason={reason}&platform=instagram"
+    )
+    handle = _lookup_creator_instagram_handle(creator_id, user_id)
+    if not handle:
+        _log(f"[ig-login] login off, no stored handle user_id={user_id}")
+        return fail('instagram_login_paused')
+    try:
+        _log(f"[ig-login] login off; in-house scrape @{handle}")
+        return _finish_instagram_html_fallback(user_id, handle, return_url, from_settings)
+    except ProfileQualityError as qe:
+        _log(f"[ig-login] in-house scrape quality failed: {qe.code}")
+        return fail({
+            'below_follower_min': 'below_follower_min',
+            'below_post_min': 'below_post_min',
+            'inactive': 'inactive',
+        }.get(qe.code, 'below_post_min'))
+    except Exception as scrape_err:
+        _log(f"[ig-login] in-house scrape failed: {scrape_err}")
+        return fail('scrape_failed')
+
+
 @social_verification_bp.route('/connect/instagram', methods=['GET'])
 def connect_instagram():
     """Initiate Instagram Login (professional Creator/Business accounts)."""
     return_url = request.args.get('return_url', f"{FRONTEND_URL}/onboarding")
-    if not _instagram_oauth_enabled():
-        _log("[ig-login] Connect blocked: Instagram credentials missing")
-        return redirect(f"{return_url}?social=failed&reason=oauth_error&platform=instagram")
     try:
         user_id = _session_get('user_id')
         creator_id = get_creator_id_from_session()
@@ -1097,6 +1121,14 @@ def connect_instagram():
         user_country = get_user_country_from_session()
         if user_country and not region_code_is_allowed(user_country):
             return redirect(f"{return_url}?social=failed&reason=restricted_region&platform=instagram")
+
+        if not _instagram_oauth_enabled():
+            return _connect_instagram_via_scraper(
+                user_id,
+                creator_id,
+                return_url,
+                _is_settings_return(return_url, request.args.get('source')),
+            )
 
         app_id, _secret, redirect_uri = _instagram_oauth_config(return_url)
         if not app_id:

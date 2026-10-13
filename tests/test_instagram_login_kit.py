@@ -176,11 +176,60 @@ class InstagramConnectConfigTests(unittest.TestCase):
         self.assertTrue(url.endswith("#weblink"))
         self.assertNotIn("force_authentication", url)
 
-    def test_instagram_oauth_enabled_with_creds(self):
+    def test_instagram_oauth_is_opt_in(self):
         from social_verification_routes import _instagram_oauth_enabled
         with patch("social_verification_routes._instagram_oauth_config", return_value=("id", "secret", "https://x")):
-            with patch.dict("os.environ", {"INSTAGRAM_OAUTH_ENABLED": ""}, clear=False):
+            for flag in ("", "0", "off"):
+                with patch.dict("os.environ", {"INSTAGRAM_OAUTH_ENABLED": flag}, clear=False):
+                    self.assertFalse(_instagram_oauth_enabled(), flag)
+            with patch.dict("os.environ", {"INSTAGRAM_OAUTH_ENABLED": "1"}, clear=False):
                 self.assertTrue(_instagram_oauth_enabled())
+        with patch("social_verification_routes._instagram_oauth_config", return_value=("", "", "https://x")):
+            with patch.dict("os.environ", {"INSTAGRAM_OAUTH_ENABLED": "1"}, clear=False):
+                self.assertFalse(_instagram_oauth_enabled())
+
+    def _connect(self, handle="", finish=None):
+        from flask import Flask
+        import social_verification_routes as svr
+        app = Flask(__name__)
+        app.secret_key = "test"
+        finish = finish or (lambda *a: svr.redirect("https://app.test/ok"))
+        with app.test_request_context(
+            "/api/social/connect/instagram?return_url=https://app.test/creator/dashboard/settings&source=settings"
+        ), patch.dict("os.environ", {"INSTAGRAM_OAUTH_ENABLED": ""}, clear=False), \
+                patch.object(svr, "_session_get", return_value=7), \
+                patch.object(svr, "get_creator_id_from_session", return_value=3), \
+                patch.object(svr, "get_user_country_from_session", return_value="US"), \
+                patch.object(svr, "_lookup_creator_instagram_handle", return_value=handle), \
+                patch.object(svr, "_finish_instagram_html_fallback", side_effect=finish) as fin, \
+                patch.object(svr, "instagram_authorize_url") as auth:
+            resp = svr.connect_instagram()
+            return resp, fin, auth
+
+    def test_connect_uses_in_house_scraper_when_login_off(self):
+        resp, fin, auth = self._connect(handle="real.handle")
+        auth.assert_not_called()
+        fin.assert_called_once_with(7, "real.handle", "https://app.test/creator/dashboard/settings", True)
+        self.assertEqual(resp.location, "https://app.test/ok")
+
+    def test_connect_without_handle_asks_for_username(self):
+        resp, fin, auth = self._connect(handle="")
+        auth.assert_not_called()
+        fin.assert_not_called()
+        self.assertIn("reason=instagram_login_paused", resp.location)
+
+    def test_connect_scrape_failure_redirects_with_reason(self):
+        from services.profile_quality import ProfileQualityError
+
+        def boom(*_a):
+            raise RuntimeError("walled")
+        resp, _fin, _auth = self._connect(handle="real.handle", finish=boom)
+        self.assertIn("reason=scrape_failed", resp.location)
+
+        def inactive(*_a):
+            raise ProfileQualityError("inactive", "inactive")
+        resp, _fin, _auth = self._connect(handle="real.handle", finish=inactive)
+        self.assertIn("reason=inactive", resp.location)
 
     def test_graph_error_includes_meta_code(self):
         from services.instagram_login_kit import _graph_error
