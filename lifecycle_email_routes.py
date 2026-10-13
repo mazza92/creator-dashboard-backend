@@ -8,6 +8,7 @@ import os
 import traceback
 from flask import Blueprint, request, jsonify
 from functools import wraps
+from services.admin_auth import admin_token_valid
 
 # Track import errors for debugging
 _import_error = None
@@ -52,8 +53,6 @@ lifecycle_email_bp = Blueprint('lifecycle_email', __name__)
 
 # Admin token for cron jobs
 CRON_TOKEN = os.getenv('CRON_SECRET', 'lifecycle-cron-secret-2026')
-ADMIN_TOKEN = os.getenv('ADMIN_TOKEN', 'pr-hunter-admin-2026')
-
 
 @lifecycle_email_bp.route('/api/lifecycle-email/health', methods=['GET'])
 def lifecycle_health():
@@ -74,9 +73,9 @@ def require_cron_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         token = request.headers.get('X-Cron-Token') or request.args.get('cron_token')
-        print(f"[CRON AUTH] Received token: '{token}', Expected: '{CRON_TOKEN}', Headers: {dict(request.headers)}")
-        if token != CRON_TOKEN:
-            return jsonify({'error': 'Unauthorized', 'debug': f'received={token}, expected_len={len(CRON_TOKEN)}'}), 401
+        if not token or token != CRON_TOKEN:
+            print("[CRON AUTH] rejected lifecycle cron call")
+            return jsonify({'error': 'Unauthorized'}), 401
         return f(*args, **kwargs)
     return decorated
 
@@ -86,7 +85,7 @@ def require_admin_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         token = request.headers.get('X-Admin-Token') or request.args.get('admin_token')
-        if token != ADMIN_TOKEN:
+        if not admin_token_valid(token):
             return jsonify({'error': 'Unauthorized'}), 401
         return f(*args, **kwargs)
     return decorated

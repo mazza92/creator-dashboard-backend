@@ -4,6 +4,7 @@ Admin API Routes for Creator Management (scan/search)
 
 from flask import Blueprint, request, jsonify, session
 from functools import wraps
+from services.admin_auth import admin_token_valid
 from psycopg2.extras import RealDictCursor
 import psycopg2
 import os
@@ -37,7 +38,7 @@ def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         admin_token = request.headers.get('X-Admin-Token')
-        if admin_token == 'pr-hunter-admin-2026':
+        if admin_token_valid(admin_token):
             return f(*args, **kwargs)
 
         # Check session-based auth as fallback

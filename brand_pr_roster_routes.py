@@ -17,6 +17,7 @@ import threading
 import traceback
 from datetime import datetime, timezone
 from functools import wraps
+from services.admin_auth import admin_token_valid
 
 from flask import Blueprint, Response, current_app, jsonify, request, session
 from psycopg2.extras import RealDictCursor, Json
@@ -75,7 +76,7 @@ def _admin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         admin_token = request.headers.get("X-Admin-Token")
-        if admin_token == "pr-hunter-admin-2026":
+        if admin_token_valid(admin_token):
             return f(*args, **kwargs)
 
         user_id = session.get("user_id")
@@ -310,7 +311,7 @@ def _is_internal_roster_request() -> bool:
 
     if not has_request_context():
         return False
-    if request.headers.get("X-Admin-Token"):
+    if admin_token_valid(request.headers.get("X-Admin-Token")):
         return True
     return bool(session.get("user_id")) and session.get("user_role") != "brand"
 
@@ -2579,10 +2580,9 @@ def _waiting_email_cron_authorized() -> bool:
         os.getenv("CRON_SECRET"),
         os.getenv("EMAIL_CRON_SECRET"),
         "newcollab-cron-2026",
-        "pr-hunter-admin-2026",
         os.getenv("ADMIN_TOKEN"),
     }
-    allowed.discard(None)
+    allowed -= {None, ""}
     secret = (
         request.headers.get("X-Cron-Secret")
         or request.headers.get("X-Cron-Token")

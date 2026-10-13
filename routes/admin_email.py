@@ -6,6 +6,7 @@ Creator campaigns send through Resend. Brand outreach still uses Gmail SMTP.
 
 from flask import Blueprint, request, jsonify, session
 from functools import wraps
+from services.admin_auth import admin_token_valid
 from psycopg2.extras import RealDictCursor, execute_values
 from datetime import datetime, timedelta
 import sys
@@ -116,7 +117,7 @@ def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         admin_token = request.headers.get('X-Admin-Token')
-        if admin_token == 'pr-hunter-admin-2026':
+        if admin_token_valid(admin_token):
             return f(*args, **kwargs)
 
         user_id = session.get('user_id')
@@ -1392,7 +1393,7 @@ def _cron_authorized():
         os.getenv('EMAIL_CRON_SECRET'),
         'newcollab-cron-2026',
     }
-    allowed.discard(None)
+    allowed -= {None, ''}
     secret = request.headers.get('X-Cron-Secret') or request.args.get('secret')
     auth = request.headers.get('Authorization') or ''
     bearer = auth.split(' ', 1)[1].strip() if auth.lower().startswith('bearer ') else ''

@@ -5,6 +5,7 @@ Handles candidate management, approval workflow, and hunt triggers
 
 from flask import Blueprint, request, jsonify, session
 from functools import wraps
+from services.admin_auth import admin_token_valid
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
 import sys
@@ -43,7 +44,7 @@ def admin_required(f):
     def decorated_function(*args, **kwargs):
         # Option 1: Check for admin token header (used by standalone /supply page)
         admin_token = request.headers.get('X-Admin-Token')
-        if admin_token == 'pr-hunter-admin-2026':
+        if admin_token_valid(admin_token):
             return f(*args, **kwargs)
 
         # Option 2: Check session-based auth

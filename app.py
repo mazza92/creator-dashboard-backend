@@ -378,6 +378,8 @@ def instagram_webhook_alias():
     """Alias route for Instagram webhook at /api/instagram/webhook"""
     return instagram_webhook()
 
+from services.admin_auth import admin_auth_bp
+app.register_blueprint(admin_auth_bp)
 app.register_blueprint(admin_pr_hunter_bp)
 app.register_blueprint(admin_brands_bp)
 app.register_blueprint(admin_reports_bp)
@@ -428,7 +430,7 @@ def handle_options():
         return _cors_preflight_response()
 
 def log_request():
-    app.logger.info(f"🟢 Raw request: Method={request.method}, Path={request.path}, FullPath={request.full_path}, URL={request.url}, BaseURL={request.base_url}, Headers={dict(request.headers)}, Args={request.args}")
+    app.logger.info(f"🟢 Raw request: Method={request.method}, Path={request.path}, FullPath={request.full_path}, URL={request.url}, BaseURL={request.base_url}, Args={request.args}")
 
 
 # Add CORS headers to all responses
@@ -1120,7 +1122,7 @@ def google_signup():
                 redirect_url = '/brand/dashboard/overview'
 
             app.logger.info(f"Logged in existing user: {user_id}, role: {role}, creator_id: {creator_id}, onboarding: {onboarding_complete}")
-            app.logger.debug(f"Session before response: {session}")
+            app.logger.debug(f"Session before response: {sorted(session.keys())}")
             conn.close()
 
             return _auth_json_response({
@@ -1691,10 +1693,6 @@ def get_profile():
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         return response, 200
-
-    app.logger.info(f"🔍 Request headers: {request.headers}")
-    app.logger.info(f"🔍 Cookies received: {request.cookies}")
-    app.logger.info(f"🔍 Session contents: {session}")
 
     _maybe_restore_user_session_from_redis()
 
@@ -4484,7 +4482,7 @@ def get_notifications():
             return jsonify({'error': 'user_id and user_role are required'}), 400
 
         if user_role != session.get('user_role') or str(user_id) != str(session.get('user_id')):
-            app.logger.error(f"Unauthorized access: user_id={user_id}, user_role={user_role}, session={dict(session)}")
+            app.logger.error(f"Unauthorized access: user_id={user_id}, user_role={user_role}, session={sorted(session.keys())}")
             return jsonify({'error': 'Unauthorized'}), 403
 
         conn = get_db_connection()
@@ -4722,7 +4720,7 @@ def get_campaign_invites(creator_id):
     try:
         user_role = session.get('user_role')
         session_creator_id = session.get('creator_id')
-        app.logger.debug(f"Session data: {dict(session)}")
+        app.logger.debug(f"Session data: {sorted(session.keys())}")
 
         if not user_role or user_role != 'creator':
             app.logger.error(f"Unauthorized access to campaign invites: user_role={user_role}")
@@ -4917,7 +4915,7 @@ def accept_booking(booking_id):
     try:
         user_role = session.get('user_role')
         creator_id = session.get('creator_id')
-        app.logger.debug(f"Session data: {dict(session)}")
+        app.logger.debug(f"Session data: {sorted(session.keys())}")
 
         if user_role != 'creator':
             app.logger.error(f"Unauthorized: user_role={user_role} cannot accept booking")
@@ -8937,7 +8935,7 @@ def submit_sponsor_draft():
     try:
         # Log request details
         app.logger.info(f"📌 Attempting to create sponsor draft")
-        app.logger.info(f"📌 Session Data: {dict(session)}")
+        app.logger.info(f"📌 Session Data: {sorted(session.keys())}")
         app.logger.info(f"📌 Form Data: {request.form.to_dict()}")
         app.logger.info(f"📌 Files Received: {request.files}")
 
@@ -9587,9 +9585,9 @@ def delete_sponsor_draft(draft_id):
 @app.route('/sponsor-drafts', methods=['GET'])
 def get_sponsor_drafts():
     try:
-        app.logger.info(f"🟢 Accessing /sponsor-drafts with session: {dict(session)}")
+        app.logger.info(f"🟢 Accessing /sponsor-drafts with session: {sorted(session.keys())}")
         if 'user_id' not in session or 'user_role' not in session or session['user_role'] != 'brand':
-            app.logger.warning(f"Unauthorized access to /sponsor-drafts: session={dict(session)}")
+            app.logger.warning(f"Unauthorized access to /sponsor-drafts: session={sorted(session.keys())}")
             return jsonify({"error": "Unauthorized"}), 403
 
         brand_id = session.get('brand_id')
@@ -9655,9 +9653,9 @@ def get_sponsor_drafts():
 @app.route('/my-sponsor-bids', methods=['GET'])
 def get_my_sponsor_bids():
     try:
-        app.logger.info(f"🟢 Accessing /my-sponsor-bids with session: {dict(session)}")
+        app.logger.info(f"🟢 Accessing /my-sponsor-bids with session: {sorted(session.keys())}")
         if 'user_id' not in session or 'user_role' not in session or session['user_role'] != 'brand':
-            app.logger.warning(f"Unauthorized access to /my-sponsor-bids: session={dict(session)}")
+            app.logger.warning(f"Unauthorized access to /my-sponsor-bids: session={sorted(session.keys())}")
             return jsonify({"error": "Unauthorized"}), 403
 
         brand_id = session.get('brand_id')
@@ -9962,7 +9960,7 @@ def complete_booking_payment(booking_id):
 
     try:
         brand_id = session.get('brand_id')
-        app.logger.debug(f"Session data for booking {booking_id}: {dict(session)}")
+        app.logger.debug(f"Session data for booking {booking_id}: {sorted(session.keys())}")
         if not brand_id:
             app.logger.error(f"No brand_id in session for booking {booking_id}")
             return jsonify({"error": "Unauthorized: No brand ID in session"}), 403
@@ -10669,11 +10667,6 @@ def get_creator_offers():
 @app.route('/create-offer', methods=['POST'])
 def create_offer():
     try:
-        # ✅ Debugging session before using it
-        print(f"📌 [HEADERS DEBUG] Request Headers: {dict(request.headers)}")
-        print(f"📌 [COOKIES DEBUG] Request Cookies: {request.cookies}")
-        print(f"📌 [SESSION DEBUG] Current Session: {dict(session)}")
-
         creator_id = session.get("creator_id")  # ✅ Get from session
 
         if not creator_id:
@@ -11540,7 +11533,7 @@ def update_booking(booking_id):
 
         # Validate session
         if 'user_id' not in session or 'brand_id' not in session:
-            app.logger.warning(f"Unauthorized update attempt: session={dict(session)}")
+            app.logger.warning(f"Unauthorized update attempt: session={sorted(session.keys())}")
             return jsonify({'error': 'Unauthorized'}), 403
 
         # Validate required fields
@@ -11747,7 +11740,7 @@ def get_bookings():
         session_creator_id = session.get('creator_id')
         session_brand_id = session.get('brand_id')
 
-        app.logger.debug(f"Session data: {dict(session)}")
+        app.logger.debug(f"Session data: {sorted(session.keys())}")
 
         if not user_role:
             app.logger.error("Unauthorized: No user role in session")
@@ -12161,7 +12154,7 @@ def create_paypal_payment():
 
     try:
         brand_id = session.get('brand_id')
-        app.logger.debug(f"Session data: {dict(session)}")
+        app.logger.debug(f"Session data: {sorted(session.keys())}")
         if not brand_id:
             app.logger.error("No brand ID in session")
             return jsonify({"error": "Unauthorized: No brand ID in session"}), 403
@@ -12537,10 +12530,6 @@ def confirm_stripe_account():
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         return response, 200
 
-    app.logger.info(f"🔍 Request headers: {request.headers}")
-    app.logger.info(f"🔍 Cookies received: {request.cookies}")
-    app.logger.info(f"🔍 Session contents: {session}")
-
     _maybe_restore_user_session_from_redis()
 
     creator_id = session.get('creator_id')
@@ -12603,8 +12592,6 @@ def confirm_stripe_account():
 
 @app.route('/debug/session', methods=['GET'])
 def debug_session():
-    print(f"📌 [SESSION DEBUG] Full Session Data: {dict(session)}")
-    print(f"📌 [SESSION DEBUG] Cookies: {request.cookies}")
     return jsonify({
         "user_id": session.get('user_id'),
         "user_role": session.get('user_role'),

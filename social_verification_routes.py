@@ -1584,8 +1584,7 @@ def callback_tiktok():
 
         user_info = user_data.get('data', {}).get('user', {}) or {}
 
-        # DEBUG: Log raw TikTok API response
-        _log(f"🔍 TikTok user_info: {json.dumps(user_info, indent=2)}")
+        _log(f"🔍 TikTok user_info keys: {sorted(user_info.keys())}")
 
         handle = _tiktok_handle_from_user_info(user_info)
         open_id = user_info.get('open_id')

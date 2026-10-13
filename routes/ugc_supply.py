@@ -7,6 +7,7 @@ Prefix: /api/admin/ugc-supply
 """
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+from services.admin_auth import admin_token_valid
 
 from flask import Blueprint, jsonify, request, session
 from psycopg2.extras import RealDictCursor
@@ -48,7 +49,7 @@ def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         admin_token = request.headers.get("X-Admin-Token")
-        if admin_token == "pr-hunter-admin-2026":
+        if admin_token_valid(admin_token):
             return f(*args, **kwargs)
 
         user_id = session.get("user_id")

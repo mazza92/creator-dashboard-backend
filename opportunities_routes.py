@@ -6,6 +6,7 @@ Brand casting calls / job board layer for PR opportunities
 from flask import Blueprint, request, jsonify, session
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from functools import wraps
+from services.admin_auth import admin_token_valid
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import os
@@ -415,7 +416,7 @@ def admin_required(f):
     def decorated_function(*args, **kwargs):
         # Check X-Admin-Token header first
         admin_token = request.headers.get('X-Admin-Token')
-        if admin_token == 'pr-hunter-admin-2026':
+        if admin_token_valid(admin_token):
             return f(*args, **kwargs)
 
         # Check session-based auth as fallback

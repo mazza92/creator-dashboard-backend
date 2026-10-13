@@ -21,7 +21,7 @@ from typing import Any
 import requests
 
 API_BASE = os.getenv("API_BASE", "http://localhost:5000").rstrip("/")
-ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "pr-hunter-admin-2026")
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 DAYS = int(os.getenv("REPORT_DAYS", "90"))
 TOP_LIMIT = int(os.getenv("REPORT_LIMIT", "500"))
 BRAND_LIMIT = int(os.getenv("REPORT_BRAND_LIMIT", "100"))

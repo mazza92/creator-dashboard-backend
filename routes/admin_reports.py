@@ -5,6 +5,7 @@ KPI Dashboard for tracking creator usage and monetization metrics
 
 from flask import Blueprint, request, jsonify, session
 from functools import wraps
+from services.admin_auth import admin_token_valid
 from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta
 import sys
@@ -32,7 +33,7 @@ def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         admin_token = request.headers.get('X-Admin-Token')
-        if admin_token == 'pr-hunter-admin-2026':
+        if admin_token_valid(admin_token):
             return f(*args, **kwargs)
 
         user_id = session.get('user_id')

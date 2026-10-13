@@ -270,8 +270,8 @@ def _cron_authorized():
     ua = (request.headers.get("User-Agent") or "").lower()
     if ua.startswith("vercel-cron"):
         return True
-    allowed = {os.getenv("CRON_SECRET"), os.getenv("ADMIN_TOKEN"), "pr-hunter-admin-2026"}
-    allowed.discard(None)
+    allowed = {os.getenv("CRON_SECRET"), os.getenv("ADMIN_TOKEN")}
+    allowed -= {None, ""}
     provided = (
         request.headers.get("X-Cron-Secret")
         or request.headers.get("X-Admin-Token")

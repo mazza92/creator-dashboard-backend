@@ -6,6 +6,7 @@ v1: manual admin push, no brand notification email.
 from flask import Blueprint, request, jsonify, session
 from flask_jwt_extended import get_jwt_identity
 from functools import wraps
+from services.admin_auth import admin_token_valid
 from psycopg2.extras import RealDictCursor
 from urllib.parse import urlparse
 from datetime import datetime
@@ -117,7 +118,7 @@ def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         admin_token = request.headers.get('X-Admin-Token')
-        if admin_token == 'pr-hunter-admin-2026':
+        if admin_token_valid(admin_token):
             return f(*args, **kwargs)
         user_id = session.get('user_id')
         if not user_id:

@@ -30,7 +30,7 @@ def get_db_connection():
 
 # API configuration
 API_BASE = os.getenv('API_BASE_URL', 'http://localhost:5000')
-ADMIN_TOKEN = os.getenv('ADMIN_TOKEN', 'pr-hunter-admin-2026')
+ADMIN_TOKEN = os.getenv('ADMIN_TOKEN', '')
 
 def get_brands_without_cover_image():
     """Fetch all published brands with empty cover_image_url"""

@@ -143,12 +143,10 @@ def track_waitlist_view():
 # ADMIN ENDPOINTS - Approval Queue Management
 # =============================================================================
 
-ADMIN_TOKEN = 'pr-hunter-admin-2026'
-
-
 def _admin_authorized():
     """Same gate as /api/admin/creators: X-Admin-Token or team@ session."""
-    if request.headers.get('X-Admin-Token') == ADMIN_TOKEN:
+    from services.admin_auth import admin_token_valid
+    if admin_token_valid(request.headers.get('X-Admin-Token')):
         return True
     user_id = session.get('user_id')
     if not user_id or not get_db_connection:
