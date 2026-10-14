@@ -3,6 +3,7 @@
 import sys
 import unittest
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -114,15 +115,33 @@ class TestQuotaTrialArms(unittest.TestCase):
             self.assertFalse(qt.trial_eligible(cursor, 5))
         cursor.execute.assert_not_called()
         cursor.fetchone.return_value = (1,)
-        with patch.object(qt, "active_arm", return_value="trial"):
+        with patch.object(qt, "active_arm", return_value="trial"), \
+                patch("services.unlock_quota.count_delivered_unlocks_all_time", return_value=3):
             self.assertTrue(qt.trial_eligible(cursor, 5))
         sql = cursor.execute.call_args.args[0]
-        self.assertIn("max_quota_hit_trial", sql)
         self.assertIn("subscription_started_at IS NULL", sql)
+        self.assertIn("stripe_customer_id IS NULL", sql)
+        self.assertIn("created_at <=", sql)
+        self.assertEqual(cursor.execute.call_args.args[1], (5, qt.MIN_ACCOUNT_AGE_DAYS))
+
+    def test_trial_needs_real_usage(self):
+        cursor = MagicMock()
+        cursor.fetchone.return_value = (1,)
+        with patch.object(qt, "active_arm", return_value="trial"), \
+                patch("services.unlock_quota.count_delivered_unlocks_all_time", return_value=2):
+            self.assertFalse(qt.trial_eligible(cursor, 5))
+
+    def test_trial_skips_paid_or_new_accounts(self):
+        cursor = MagicMock()
+        cursor.fetchone.return_value = None
+        with patch.object(qt, "active_arm", return_value="trial"), \
+                patch("services.unlock_quota.count_delivered_unlocks_all_time", return_value=9) as count:
+            self.assertFalse(qt.trial_eligible(cursor, 5))
+        count.assert_not_called()
 
 
 class TestQuotaEmailArms(unittest.TestCase):
-    def _send(self, arm, paywall_sent=False):
+    def _send(self, arm, paywall_sent=False, eligible=True):
         cursor = MagicMock()
         cursor.fetchone.side_effect = [QUOTA_TEMPLATE, None, {'user_id': 3, 'approval_status': 'approved'},
                                        (1,) if paywall_sent else None]
@@ -131,6 +150,7 @@ class TestQuotaEmailArms(unittest.TestCase):
         with patch.object(engine, 'get_db_connection', return_value=conn), \
                 patch.object(engine, 'check_throttling', return_value=(True, '')), \
                 patch('services.quota_trial_test.active_arm', return_value=arm), \
+                patch('services.quota_trial_test.trial_eligible', return_value=eligible), \
                 patch.object(engine, 'render_template', return_value='<p>x</p>') as render, \
                 patch.object(engine, '_deliver_email', return_value=(False, 'stop')) as deliver:
             result = engine.send_lifecycle_email('a@b.com', 'max_quota_hit', {'cta_url': 'https://app/x'}, 7,
@@ -153,6 +173,12 @@ class TestQuotaEmailArms(unittest.TestCase):
         self.assertIn('utm_campaign=max_quota_hit_trial', ctx['cta_url'])
         self.assertIn('free for 7 days', ctx['preheader'])
         deliver.assert_called_once()
+
+    def test_trial_arm_not_yet_eligible_gets_control_copy(self):
+        _result, _cursor, render, _deliver = self._send('trial', eligible=False)
+        ctx = render.call_args.args[1]
+        self.assertEqual(ctx['quota_arm'], 'control')
+        self.assertIn('utm_campaign=max_quota_hit_control', ctx['cta_url'])
 
     def test_skips_when_paywall_followup_sent(self):
         (ok, msg), _cursor, _render, deliver = self._send('control', paywall_sent=True)
@@ -241,6 +267,105 @@ class TestTrialOfferInApp(unittest.TestCase):
         self.assertIn("Pro is **$19/mo** and I work as your manager", control["content"])
         self.assertNotIn("free for 7 days", control["content"])
         self.assertEqual(control["task_chips"][0]["label"], "Put Polly to work · $19/mo")
+
+
+class TestTrialJourney(unittest.TestCase):
+    ENDS = datetime(2026, 10, 21, 15, 0, tzinfo=timezone.utc)
+
+    def test_started_email_sets_expectations(self):
+        from services.pro_trial import trial_started_email
+        html = trial_started_email("Ana", self.ENDS)["html"]
+        self.assertIn("Connect Gmail", html)
+        self.assertIn("Nothing to approve", html)
+        self.assertIn("Wednesday, Oct 21", html)
+        self.assertIn("autopilot=pro_started", html)
+
+    def test_ending_email_recaps_and_states_charge(self):
+        from services.pro_trial import trial_ending_email
+        mail = trial_ending_email("Ana", self.ENDS, {"sent": 5, "followups": 2, "replies": 1, "kit_views": 3,
+                                                     "lined_up": 4, "gmail": True})
+        self.assertEqual(mail["subject"], "Your free week: 5 pitches sent")
+        self.assertIn("1 brand</strong> replied", mail["html"])
+        self.assertIn("$19/mo", mail["html"])
+        self.assertIn("Cancel in Settings", mail["html"])
+        self.assertIn("Manage subscription", mail["html"])
+
+    def test_ending_email_without_sends_pushes_gmail(self):
+        from services.pro_trial import trial_ending_email
+        mail = trial_ending_email("Ana", self.ENDS, {"sent": 0, "gmail": False})
+        self.assertIn("haven't sent anything", mail["subject"])
+        self.assertIn("Connect Gmail", mail["html"])
+
+    def _journey(self, started_ago, gmail=False, nudged=False, reminded=False, recipient=True):
+        from services import pro_trial
+        now = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+        cur = MagicMock()
+        cur.fetchall.return_value = [{"creator_id": 4, "started": now - started_ago, "gmail": gmail,
+                                      "nudged": nudged, "reminded": reminded}]
+        conn = MagicMock()
+        conn.cursor.return_value = cur
+        who = {"user_id": 9, "email": "a@x.co", "first": "Ana", "is_pro": True} if recipient else None
+        send = MagicMock(return_value={"success": True, "message_id": "re_1"})
+        with patch.object(pro_trial, "_now", return_value=now), \
+                patch.object(polly_alerts, "ensure_alert_tables"), \
+                patch.object(polly_alerts, "_recipient", return_value=who), \
+                patch.object(polly_alerts, "_recently_emailed", return_value=False), \
+                patch.object(polly_alerts, "_unsubscribe_url", return_value=""), \
+                patch.object(polly_alerts, "_log_email"), \
+                patch.object(pro_trial, "_billing_recipient", return_value={"user_id": 9, "email": "a@x.co",
+                                                                               "first": "Ana"}) as billing, \
+                patch.object(pro_trial, "trial_facts", return_value={"sent": 2, "gmail": True}):
+            out = pro_trial.email_trial_journey(conn, send_fn=send)
+        return [o["kind"] for o in out], billing
+
+    def test_gmail_nudge_day_one(self):
+        from datetime import timedelta
+        self.assertEqual(self._journey(timedelta(hours=30))[0], ["trial_gmail"])
+        self.assertEqual(self._journey(timedelta(hours=30), gmail=True)[0], [])
+        self.assertEqual(self._journey(timedelta(hours=30), nudged=True)[0], [])
+        self.assertEqual(self._journey(timedelta(hours=10))[0], [])
+
+    def test_ending_reminder_day_five_once(self):
+        from datetime import timedelta
+        self.assertEqual(self._journey(timedelta(days=5, hours=2), gmail=True)[0], ["trial_ending"])
+        self.assertEqual(self._journey(timedelta(days=5, hours=2), reminded=True)[0], [])
+        self.assertEqual(self._journey(timedelta(days=7, hours=1))[0], [])
+
+    def test_ending_reminder_reaches_unsubscribed(self):
+        from datetime import timedelta
+        kinds, billing = self._journey(timedelta(days=5, hours=2), recipient=False)
+        self.assertEqual(kinds, ["trial_ending"])
+        billing.assert_called_once()
+        self.assertEqual(self._journey(timedelta(hours=30), recipient=False)[0], [])
+
+    def test_in_alert_cron(self):
+        import inspect
+        self.assertIn("email_trial_journey", inspect.getsource(polly_alerts.run_alerts))
+
+    def test_checkout_webhook_sends_trial_welcome(self):
+        from flask import Flask
+        import subscription_routes as sr
+
+        app = Flask(__name__)
+        app.register_blueprint(sr.subscription_bp, url_prefix='/api/subscription')
+        event = {'type': 'checkout.session.completed', 'data': {'object': {
+            'metadata': {'creator_id': '5', 'tier': 'pro', 'trial': '7', 'interval': 'monthly'},
+            'subscription': 'sub_1', 'customer': 'cus_1', 'amount_total': 0, 'id': 'cs_1'}}}
+        cursor = MagicMock()
+        cursor.fetchone.return_value = None
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        with patch.object(sr, 'get_db_connection', return_value=conn), \
+                patch.dict('os.environ', {'STRIPE_WEBHOOK_SECRET_SUBSCRIPTION': 'whsec'}), \
+                patch.object(sr.stripe.Webhook, 'construct_event', return_value=event), \
+                patch.object(sr, 'send_ga4_event'), \
+                patch.object(sr, 'send_pro_subscriber_notification'), \
+                patch.object(sr, '_send_creator_resend') as activation, \
+                patch('services.pro_trial.send_trial_started', return_value=True) as welcome:
+            app.test_client().post('/api/subscription/webhook', data=b'{}', headers={'Stripe-Signature': 'x'})
+        welcome.assert_called_once()
+        self.assertEqual(welcome.call_args.args[1], 5)
+        activation.assert_not_called()
 
 
 class TestCancelClearsUnlockTier(unittest.TestCase):

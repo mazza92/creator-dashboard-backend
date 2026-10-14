@@ -865,8 +865,8 @@ def offer_pro(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
                     "Every Monday a board with the week: setup, paid briefs to apply to, and replies to send. "
                     "Autopilot picks brands from their settings and sends ~6 gifted pitches a week from their "
                     "Gmail with no approval step, plus follow-ups. When a brand says yes, "
-                    "Polly writes the reply with a usage rate to run the video as an ad. 20-30 pitches a "
-                    "month go out in the background. Unlimited roster applications.",
+                    "Polly writes the reply with a usage rate to run the video as an ad. To change who gets "
+                    "pitched they adjust niche and targets in Settings. Unlimited roster applications.",
         "free_path": "Follow-ups are free. Publishing the kit is free. Drafts left unsent for 7 days "
                      "give the credit back.",
         "button_shown_for": (target or {}).get("name"),

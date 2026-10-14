@@ -1069,6 +1069,13 @@ def stripe_webhook():
             conn.commit()
             cursor.close()
             _log_checkout_source(conn, creator_id, meta, session.get('id'))
+            if meta.get('trial') and creator_id:
+                try:
+                    from services.pro_trial import send_trial_started
+                    send_trial_started(conn, int(creator_id))
+                except Exception as err:
+                    print(f"[subscription] trial welcome skipped: {err}")
+                    conn.rollback()
             conn.close()
 
             print(f"✅ Updated creator {creator_id} to {tier} tier")

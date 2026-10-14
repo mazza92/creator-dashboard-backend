@@ -381,8 +381,10 @@ def send_lifecycle_email(
             """, (creator_id,))
             if cursor.fetchone():
                 return False, "Polly already sent the paywall follow-up this month"
-            from services.quota_trial_test import active_arm
+            from services.quota_trial_test import active_arm, trial_eligible
             arm = active_arm(creator_id)
+            if arm == 'trial' and not trial_eligible(cursor, creator_id):
+                arm = 'control'
             utm_campaign = f"max_quota_hit_{arm}"
             if arm == 'holdout':
                 cursor.execute("""

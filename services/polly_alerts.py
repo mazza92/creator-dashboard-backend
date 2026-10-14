@@ -44,8 +44,8 @@ QUOTA_EMAIL_OVERLAP = timedelta(days=3)
 CHECKOUT_RECOVERY_OVERLAP = timedelta(days=7)
 
 PRO_LINE = (
-    "On Pro ($19/mo) I find 20–30 matched brands a month, send the pitches you OK from your Gmail "
-    "and follow up on day 4 for you."
+    "On Pro ($19/mo) I pick about 6 matched brands a week, write and send every pitch from your Gmail "
+    "and follow up on day 4. Nothing to approve."
 )
 
 EMAIL_CHIP_IDS = (
@@ -273,7 +273,7 @@ def kit_view_email(
         }]
         links = None
         if not is_pro:
-            lines.append("On Pro the brand's name shows right here, and I line up 20–30 brands like this a month.")
+            lines.append("On Pro the brand's name shows right here, and I pitch about 6 brands like this a week for you.")
             links = [{"label": "See what Pro does ($19/mo)", "href": upgrade_link("kit_view_pro")}]
         return {
             "subject": subject,
@@ -307,7 +307,7 @@ def kit_view_email(
         buttons = [
             {"label": "See who & follow up", "href": chip_link("draft_followup", brand_id=brand_id, kind="kit_view")},
         ]
-        lines.append("On Pro the brand's name shows right here, and I line up 20–30 brands like this a month.")
+        lines.append("On Pro the brand's name shows right here, and I pitch about 6 brands like this a week for you.")
     links = None if is_pro else [{"label": "See what Pro does ($19/mo)", "href": upgrade_link("kit_view_pro")}]
     return {
         "subject": subject,
@@ -941,9 +941,10 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
                 pass
         from services.autopilot_report import email_autopilot_reports
         from services.pro_manager import email_monday_boards, email_renewal_notes
+        from services.pro_trial import email_trial_journey
 
-        for job in (email_month_reports, email_unsent_briefs, email_renewal_notes, email_monday_boards,
-                    email_autopilot_reports, email_paywall_followups):
+        for job in (email_trial_journey, email_month_reports, email_unsent_briefs, email_renewal_notes,
+                    email_monday_boards, email_autopilot_reports, email_paywall_followups):
             try:
                 emails += job(conn, dry_run=dry_run, send_fn=send_fn, test_email=test_email)
             except Exception as err:

@@ -111,12 +111,13 @@ APP MAP (the only screens that exist — never invent others):
 - Credits: free plan = 3 credits a month; a credit is used when a new brand's
   pitch is drafted or a gifted list is applied to. Follow-ups never use a credit.
   Pro = $19/mo: you work as their manager toward one yes this month, then turn
-  it into a paid usage deal. Every Monday they get a board with the week: one
-  tap OKs the gifted pitches you wrote (sent from their own Gmail, followed up on
-  day 4 in the same thread), plus paid briefs to apply to. When a brand says
+  it into a paid usage deal. Autopilot picks about 6 matched brands a week from
+  their settings, writes the gifted pitches and sends them from their own Gmail
+  with no approval step, then follows up on day 4 in the same thread. To change
+  who gets pitched they adjust niche and targets in Settings. Every Monday they
+  get a board with the week, plus paid briefs to apply to. When a brand says
   yes, you write the reply with their shipping details and a rate to run the
-  video as an ad. 20–30 pitches a month go out in the background, and roster
-  applications are unlimited. When Pro comes up, lead with the yes and the paid
+  video as an ad. Roster applications are unlimited. When Pro comes up, lead with the yes and the paid
   usage, never with "unlimited credits". Never promise a guaranteed placement or a box.
 - If they ask where something is and it isn't on this map, say plainly it
   doesn't exist and give the real path.
@@ -581,9 +582,10 @@ def persona_empty_unlock_brief(
 
 _PRO_VALUE_BODY = (
     "I work as your manager toward **one yes this month**, then turn it into "
-    "a paid usage deal. Every Monday you get a board with the week, and Autopilot sends the pitches you "
-    "OK from your Gmail, with follow-ups. When a brand says yes, I write the reply with your ad usage rate. "
-    "Unlimited roster applications too."
+    "a paid usage deal. Autopilot picks about 6 matched brands a week and sends the pitches from your Gmail, "
+    "with follow-ups. Nothing to approve: set your niche and targets in Settings and I adjust. "
+    "Every Monday you get a board with the week. "
+    "When a brand says yes, I write the reply with your ad usage rate. Unlimited roster applications too."
 )
 PRO_VALUE_LINE = "Pro is **$19/mo** and " + _PRO_VALUE_BODY
 PRO_TRIAL_LINE = (
