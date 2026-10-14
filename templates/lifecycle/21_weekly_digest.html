@@ -23,7 +23,7 @@
         </tr>
         <tr>
             <td style="padding: 4px 0;">
-                <span style="color: #6b7280; font-size: 13px;">Credits:</span>
+                <span style="color: #6b7280; font-size: 13px;">Free pitches:</span>
             </td>
             <td style="padding: 4px 0; text-align: right;">
                 {% if is_pro %}
@@ -70,7 +70,7 @@
 </div>
 {% endif %}
 
-<p style="margin: 24px 0 8px 0; font-size: 13px; color: #6b7280;">FOR YOU THIS WEEK</p>
+<p style="margin: 24px 0 8px 0; font-size: 13px; color: #6b7280;">POLLY'S PICKS THIS WEEK</p>
 <div class="brand-list">
 {% for brand in new_brands %}
     <div class="brand-item">
@@ -87,5 +87,7 @@
 </div>
 {% endif %}
 
-<a href="{{ cta_url }}" class="cta-button">See live campaigns</a>
+<p>Polly can write the pitch to any of these. You read it before it goes out.</p>
+
+<a href="{{ cta_url }}" class="cta-button">Pitch this week's picks</a>
 {% endblock %}

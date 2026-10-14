@@ -348,6 +348,9 @@ def send_lifecycle_email(
         if not template.get('exempt_from_daily_cap') and is_quiet_hours():
             return False, "Quiet hours - email queued"
 
+        if template_slug not in POLLY_GAP_EXEMPT and _polly_emailed_recently(cursor, creator_id):
+            return False, "Polly emailed in the last 24h"
+
         cursor.execute("SELECT user_id, approval_status FROM creators WHERE id = %s", (creator_id,))
         creator_row = cursor.fetchone()
         if creator_row and creator_row.get('approval_status') in WAITLISTED_STATUSES:
@@ -384,8 +387,9 @@ def send_lifecycle_email(
         subject = render_subject(template['subject_template'], full_context)
         html_content = render_template(template['body_template_file'], full_context)
 
-        # Send via SMTP
-        success, message_id = _send_smtp(to_email, subject, html_content)
+        success, message_id = _deliver_email(
+            to_email, subject, html_content, template_slug, unsubscribe_url
+        )
 
         if success:
             # Log the send
@@ -421,6 +425,37 @@ def send_lifecycle_email(
         return False, str(e)
     finally:
         conn.close()
+
+
+def _deliver_email(
+    to_email: str,
+    subject: str,
+    html_content: str,
+    template_slug: str,
+    unsubscribe_url: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """Resend when configured (opens/clicks tracked via webhook), else SMTP."""
+    from services.resend_mail import resend_configured, send_resend_email
+
+    if not resend_configured():
+        return _send_smtp(to_email, subject, html_content)
+    result = send_resend_email(
+        to_email,
+        subject,
+        html_content,
+        unsubscribe_url=unsubscribe_url,
+        tags=[
+            {'name': 'category', 'value': 'lifecycle'},
+            {'name': 'template', 'value': template_slug},
+        ],
+        reply_to='team@newcollab.co',
+        from_name=EMAIL_SENDER_NAME,
+    )
+    if result.get('success'):
+        return True, result.get('message_id') or ''
+    if result.get('retryable') and SMTP_PASSWORD:
+        return _send_smtp(to_email, subject, html_content)
+    return False, result.get('error') or 'Resend send failed'
 
 
 def _send_smtp(to_email: str, subject: str, html_content: str) -> Tuple[bool, str]:
@@ -563,6 +598,46 @@ def get_eligible_emails(creator_id: int) -> List[Dict[str, Any]]:
         conn.close()
 
 
+# Polly owns brand-level emails (unsent pitches, check-ins, kit views). Lifecycle
+# stays account-level and steps aside for a day after any Polly email.
+POLLY_EMAIL_GAP_HOURS = 24
+POLLY_GAP_EXEMPT = ('email_verification', 'welcome_manager', 'max_quota_hit')
+POLLY_LINE_UP_PATH = '/creator/dashboard/for-you?chip=line_up'
+
+
+def _polly_emailed_recently(cursor, creator_id: int, hours: int = POLLY_EMAIL_GAP_HOURS) -> bool:
+    cursor.execute("""
+        SELECT 1 FROM polly_email_log
+        WHERE creator_id = %s AND sent_at >= NOW() - make_interval(hours => %s)
+        LIMIT 1
+    """, (creator_id, hours))
+    return cursor.fetchone() is not None
+
+
+def _has_opened_polly(cursor, creator_id: int) -> bool:
+    cursor.execute("""
+        SELECT 1 FROM polly_usage_events
+        WHERE creator_id = %s AND event = 'open'
+        LIMIT 1
+    """, (creator_id,))
+    return cursor.fetchone() is not None
+
+
+def _reengagement_sent_since_last_login(cursor, creator_id: int) -> bool:
+    """One win-back email per dormant stretch, across all reengagement_* templates."""
+    cursor.execute("""
+        SELECT 1 FROM lifecycle_email_sends s
+        JOIN creators c ON c.id = s.creator_id
+        JOIN users u ON u.id = c.user_id
+        WHERE s.creator_id = %s
+          AND s.template_slug LIKE 'reengagement%%'
+          AND s.status = 'sent'
+          AND s.sent_at >= COALESCE(u.last_login, c.created_at)
+        LIMIT 1
+    """, (creator_id,))
+    return cursor.fetchone() is not None
+
+
 def evaluate_trigger(creator: Dict, template: Dict, cursor) -> bool:
     """Evaluate if a template's trigger conditions are met for a creator."""
     trigger_type = template.get('trigger_type')
@@ -636,6 +711,9 @@ def evaluate_trigger(creator: Dict, template: Dict, cursor) -> bool:
             total_unlocks = unlock_row['total'] if unlock_row else 0
             if total_unlocks > 0:
                 return False
+        elif condition == 'polly_never_opened':
+            if _has_opened_polly(cursor, creator_id):
+                return False
         elif condition == 'incomplete_profile':
             # Check if profile is incomplete (simplified check)
             if creator.get('bio') and creator.get('instagram_handle'):
@@ -682,6 +760,10 @@ def evaluate_trigger(creator: Dict, template: Dict, cursor) -> bool:
         # Check dormant days
         if conditions.get('days_dormant'):
             if (creator.get('days_since_login', 0) or 0) < conditions['days_dormant']:
+                return False
+
+        if conditions.get('one_time_per_dormancy') or slug.startswith('reengagement_'):
+            if _reengagement_sent_since_last_login(cursor, creator_id):
                 return False
 
         return True
@@ -852,6 +934,7 @@ def process_daily_lifecycle_emails(
                     template_slug=template['slug'],
                     context=context,
                     creator_id=creator['id'],
+                    brand_id=context.get('brand_id'),
                     dedup_key=f"{template['slug']}_{creator['id']}_{date.today().isoformat()}" if not template['trigger_conditions'].get('one_time') else f"{template['slug']}_{creator['id']}"
                 )
 
@@ -929,6 +1012,8 @@ def process_weekly_digest(
         else:
             # Get verified creators - exclude unsubscribed
             effective_limit = limit if limit else batch_size
+            # Each cron call takes the next creators not yet handled this week, so
+            # small repeated batches walk the whole list instead of re-picking the same ids.
             cursor.execute(f"""
                 SELECT c.id, c.user_id, u.email
                 FROM creators c
@@ -936,10 +1021,26 @@ def process_weekly_digest(
                 LEFT JOIN email_preferences ep ON ep.creator_id = c.id
                 WHERE u.is_verified = true
                 AND ep.unsubscribed_at IS NULL
+                AND COALESCE(c.subscription_tier, 'free') NOT IN ('pro', 'elite')
                 AND {WAITLIST_EXCLUDE_SQL}
-                ORDER BY c.id
+                AND NOT EXISTS (
+                    SELECT 1 FROM lifecycle_email_sends s
+                    WHERE s.creator_id = c.id
+                      AND s.template_slug = 'weekly_digest'
+                      AND s.sent_at >= date_trunc('week', NOW())
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM polly_email_log l
+                    WHERE l.creator_id = c.id
+                      AND l.sent_at >= NOW() - make_interval(hours => %s)
+                )
+                AND NOT (
+                    c.lifecycle_last_email_date = CURRENT_DATE
+                    AND COALESCE(c.lifecycle_emails_sent_today, 0) >= %s
+                )
+                ORDER BY u.last_login DESC NULLS LAST, c.id
                 LIMIT %s
-            """, (effective_limit,))
+            """, (POLLY_EMAIL_GAP_HOURS, MAX_EMAILS_PER_DAY, effective_limit))
 
         creators = cursor.fetchall()
         stats['total_eligible'] = len(creators)
@@ -1409,70 +1510,48 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
                 print(f"[FOLLOWUP] Error fetching pending brands: {e}")
                 context['pending_brands'] = []
             context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/pr-pipeline"
-        elif template_slug in ('pitch_brand', 'brand_waiting', 'did_reply', 'celebration_reply', 'celebration_first_box'):
+        elif template_slug == 'meet_manager':
+            context['cta_url'] = f"{FRONTEND_URL}{POLLY_LINE_UP_PATH}"
+        elif template_slug in ('brand_waiting', 'did_reply', 'celebration_reply', 'celebration_first_box'):
             # Brand-specific emails - get the most recent brand from pipeline
             try:
-                if template_slug == 'pitch_brand':
-                    # Brand saved but not pitched (2+ days ago)
+                if template_slug == 'brand_waiting':
                     cursor.execute("""
-                        SELECT p.brand_name, p.created_at,
-                               EXTRACT(DAY FROM NOW() - p.created_at)::int AS days_ago,
-                               COALESCE(b.response_rate, 15) AS response_rate
+                        SELECT b.brand_name,
+                               EXTRACT(DAY FROM NOW() - p.created_at)::int AS days_ago
                         FROM creator_pipeline p
-                        LEFT JOIN pr_brands b ON p.brand_name = b.brand_name
-                        WHERE p.creator_id = %s AND p.stage = 'saved'
-                        ORDER BY p.created_at DESC LIMIT 1
-                    """, (creator_id,))
-                elif template_slug == 'brand_waiting':
-                    # Brand saved 6+ days ago, not pitched
-                    cursor.execute("""
-                        SELECT p.brand_name, p.created_at,
-                               EXTRACT(DAY FROM NOW() - p.created_at)::int AS days_ago,
-                               COALESCE(b.response_rate, 15) AS response_rate
-                        FROM creator_pipeline p
-                        LEFT JOIN pr_brands b ON p.brand_name = b.brand_name
+                        JOIN pr_brands b ON b.id = p.brand_id
                         WHERE p.creator_id = %s AND p.stage = 'saved'
                         AND p.created_at < NOW() - INTERVAL '5 days'
                         ORDER BY p.created_at ASC LIMIT 1
                     """, (creator_id,))
                 elif template_slug == 'did_reply':
-                    # Brand pitched 2+ weeks ago
                     cursor.execute("""
-                        SELECT p.brand_name, p.pitched_at,
-                               EXTRACT(DAY FROM NOW() - p.pitched_at)::int AS days_ago,
-                               COALESCE(b.response_rate, 15) AS response_rate
+                        SELECT b.brand_name,
+                               EXTRACT(DAY FROM NOW() - p.pitched_at)::int AS days_ago
                         FROM creator_pipeline p
-                        LEFT JOIN pr_brands b ON p.brand_name = b.brand_name
+                        JOIN pr_brands b ON b.id = p.brand_id
                         WHERE p.creator_id = %s AND p.stage = 'pitched'
                         AND p.pitched_at < NOW() - INTERVAL '13 days'
                         ORDER BY p.pitched_at ASC LIMIT 1
                     """, (creator_id,))
                 else:
-                    # Celebration emails - get most recent replied/won brand
                     cursor.execute("""
-                        SELECT p.brand_name, p.updated_at,
-                               0 AS days_ago,
-                               COALESCE(b.response_rate, 15) AS response_rate
+                        SELECT b.brand_name, 0 AS days_ago
                         FROM creator_pipeline p
-                        LEFT JOIN pr_brands b ON p.brand_name = b.brand_name
+                        JOIN pr_brands b ON b.id = p.brand_id
                         WHERE p.creator_id = %s AND p.stage IN ('replied', 'won')
                         ORDER BY p.updated_at DESC LIMIT 1
                     """, (creator_id,))
 
                 brand_row = cursor.fetchone()
-                if brand_row:
-                    context['brand_name'] = brand_row['name'] if 'name' in brand_row else brand_row['brand_name']
-                    context['brand_response_rate'] = brand_row['response_rate'] or 15
-                    context['days_since_action'] = brand_row['days_ago'] or 2
-                else:
-                    context['brand_name'] = 'your saved brand'
-                    context['brand_response_rate'] = 15
-                    context['days_since_action'] = 2
+                context['brand_name'] = (brand_row or {}).get('brand_name') or 'your brand'
+                context['days_since_action'] = (brand_row or {}).get('days_ago') or 0
             except Exception as e:
+                conn.rollback()
                 print(f"[BRAND EMAIL] Error fetching brand context: {e}")
-                context['brand_name'] = 'your saved brand'
-                context['brand_response_rate'] = 15
-                context['days_since_action'] = 2
+                context['brand_name'] = 'your brand'
+                context['days_since_action'] = 0
 
             context['reply_url'] = f"{FRONTEND_URL}/creator/dashboard/pr-pipeline?action=replied"
             context['followup_url'] = f"{FRONTEND_URL}/creator/dashboard/pr-pipeline?action=followup"
@@ -1557,7 +1636,8 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
             except Exception as e:
                 print(f"[REENGAGEMENT] Error fetching top brands: {e}")
                 context['top_new_brands'] = []
-            context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/pr-ready"
+            context['N_new_brands'] = context.get('new_brands_count') or ''
+            context['cta_url'] = f"{FRONTEND_URL}{POLLY_LINE_UP_PATH}"
 
         return context
     finally:

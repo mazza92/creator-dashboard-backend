@@ -38,14 +38,15 @@ def is_transient_send_error(error):
     return any(marker in text for marker in TRANSIENT_ERROR_MARKERS)
 
 
-def campaign_from_header():
+def campaign_from_header(from_name=None):
     from_email = (
         os.getenv('RESEND_FROM_EMAIL')
         or os.getenv('SMTP_USERNAME')
         or DEFAULT_FROM_EMAIL
     ).strip()
     from_name = (
-        os.getenv('RESEND_FROM_NAME')
+        from_name
+        or os.getenv('RESEND_FROM_NAME')
         or os.getenv('EMAIL_SENDER_NAME')
         or DEFAULT_FROM_NAME
     ).strip()
@@ -65,6 +66,8 @@ def send_resend_email(
     html_content,
     unsubscribe_url=None,
     tags=None,
+    reply_to=None,
+    from_name=None,
 ):
     """
     Send one email via Resend.
@@ -91,11 +94,13 @@ def send_resend_email(
         }
 
     payload = {
-        'from': campaign_from_header(),
+        'from': campaign_from_header(from_name),
         'to': [to_email],
         'subject': subject,
         'html': html_content,
     }
+    if reply_to:
+        payload['reply_to'] = reply_to
 
     unsub = unsubscribe_url or extract_unsubscribe_url(html_content)
     if unsub:

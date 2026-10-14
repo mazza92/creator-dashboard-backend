@@ -327,6 +327,7 @@ def _log_checkout_source(conn, creator_id, metadata, session_id=None):
             return
         log_usage(conn, cid, 'checkout_completed', intent=meta.get('source') or 'unknown', meta={
             'source': meta.get('source') or 'unknown',
+            'email_campaign': meta.get('email_campaign'),
             'interval': meta.get('interval'),
             'session_id': str(session_id or ''),
         })
@@ -417,6 +418,9 @@ def create_checkout_session():
         source = re.sub(r'[^a-z0-9_]', '', str(body.get('source') or '').lower())[:40]
         if source:
             metadata['source'] = source
+        email_campaign = re.sub(r'[^a-z0-9_]', '', str(body.get('email_campaign') or '').lower())[:40]
+        if email_campaign:
+            metadata['email_campaign'] = email_campaign
 
         from services.checkout_recovery import checkout_recovery_kwargs
 

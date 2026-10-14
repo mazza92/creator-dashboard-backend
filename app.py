@@ -83,6 +83,7 @@ from routes.admin_reports import admin_reports_bp
 from routes.admin_email import admin_email_bp
 from routes.admin_creators import admin_creators_bp
 from routes.ugc_supply import ugc_supply_bp
+from routes.resend_webhooks import resend_webhooks_bp
 from content_submission_routes import content_hub_bp
 from creator_approval_routes import creator_approval_bp, init_approval_routes
 
@@ -367,6 +368,7 @@ app.register_blueprint(pool_bp)
 app.register_blueprint(indexnow_bp)
 app.register_blueprint(email_cron_bp)
 app.register_blueprint(lifecycle_email_bp)
+app.register_blueprint(resend_webhooks_bp)
 app.register_blueprint(social_verification_bp)
 if pr_ready_bp is not None:
     app.register_blueprint(pr_ready_bp)

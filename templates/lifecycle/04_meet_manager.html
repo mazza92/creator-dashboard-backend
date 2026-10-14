@@ -3,13 +3,17 @@
 {% block content %}
 <p>Hi {{ first_name or "there" }},</p>
 
-<p>I noticed you signed up but haven't set up your plan yet. Not chasing you. Just want to say two things.</p>
+<p>You signed up a few days ago but haven't met Polly yet. Polly is the manager inside Newcollab. She does the outreach work most creators never get round to:</p>
 
-<p>First, most creators who land brand deals through Newcollab do the exact same 2 things in their first week: fix their bio for brand outreach, and publish a portfolio brands can actually look at. Those 2 things take 15 minutes and move your reply chance up meaningfully.</p>
+<ol class="numbered-list">
+    <li><strong>She finds brands</strong> that gift creators your size, in your niche, with a real contact.</li>
+    <li><strong>She writes the pitch</strong> from your profile. You read it and send it from your own email.</li>
+    <li><strong>She keeps track</strong> and tells you when to follow up or when a brand looked at your kit.</li>
+</ol>
 
-<p>Second, I'm not a template or a chatbot. I'm the manager. Every action in your plan is picked because it's the highest-leverage next move for your specific profile. If something in the plan feels wrong, hit reply on this email and tell me.</p>
+<p>Your first step takes a minute: tap below and Polly lines up brands for you. Your first {{ unlocks_quota if unlocks_quota and unlocks_quota != '∞' else 3 }} pitches this month are free.</p>
 
-<p>Here when you're ready.</p>
+<a href="{{ cta_url }}" class="cta-button">Line up my brands</a>
 
-<a href="{{ cta_url }}" class="cta-button">See my plan</a>
+<p style="color: #6b7280; font-size: 14px;">Not for you? Reply and tell me why. I read every answer.</p>
 {% endblock %}
