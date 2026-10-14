@@ -591,7 +591,7 @@ def brand_submit():
         # Notify admin
         notes = (data.get('additional_notes') or '').strip()
         send_brand_notice(
-            'mahery@newcollab.co',
+            'team@newcollab.co',
             f'New opportunity to review: {data["brand_name"]}',
             f'{data["brand_name"]} ({data["brand_email"]}, {data["brand_website"]}) submitted '
             f'{data["product_name"]}.\n\n'
@@ -1604,7 +1604,7 @@ def admin_ingest():
 
         if created or went_live:
             send_email_notification(
-                'mahery@newcollab.co',
+                'team@newcollab.co',
                 f'{len(created)} sourced gigs live in Polly',
                 f'{len(created)} new scanner listings are live on Opportunities and Polly.\n'
                 f'Backlog promoted: {went_live}.\n\n'
