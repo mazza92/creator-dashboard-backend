@@ -1027,14 +1027,21 @@ def _deliver_credits_out_offer(conn, creator_id, first, balance, tracker):
         if not credits_out_offer_due(notes, balance, month):
             return False
         views_n, sent_n = _pipeline_proof(tracker)
+        trial = False
+        try:
+            from services.quota_trial_test import trial_eligible
+            trial = trial_eligible(conn.cursor(), creator_id)
+        except Exception as err:
+            print(f"[Polly] trial check skipped: {err}")
+            conn.rollback()
         message = credits_out_offer_message(
-            first, balance, tracker, notes, kit_views=views_n, sent=sent_n,
+            first, balance, tracker, notes, kit_views=views_n, sent=sent_n, trial=trial,
         )
         notes["credits_out_offer_month"] = month
         messages = list(thread.get("messages") or [])
         messages.append(message)
         save_thread(conn, creator_id, messages, thread.get("suggested_brands") or [], notes=notes)
-        _log_polly_event(creator_id, "paywall_shown", {"moment": "credits_out"})
+        _log_polly_event(creator_id, "paywall_shown", {"moment": "credits_out", "trial": trial})
         return True
     except Exception as err:
         print(f"[Polly] credits-out offer skipped: {err}")

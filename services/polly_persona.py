@@ -579,11 +579,16 @@ def persona_empty_unlock_brief(
     return "Kit, rates, and follow-ups are all free. Let's keep the pipeline moving."
 
 
-PRO_VALUE_LINE = (
-    "Pro is **$19/mo** and I work as your manager toward **one yes this month**, then turn it into "
+_PRO_VALUE_BODY = (
+    "I work as your manager toward **one yes this month**, then turn it into "
     "a paid usage deal. Every Monday you get a board with the week, and Autopilot sends the pitches you "
     "OK from your Gmail, with follow-ups. When a brand says yes, I write the reply with your ad usage rate. "
     "Unlimited roster applications too."
+)
+PRO_VALUE_LINE = "Pro is **$19/mo** and " + _PRO_VALUE_BODY
+PRO_TRIAL_LINE = (
+    "Try Pro **free for 7 days**, then $19/mo. Cancel before day 7 and you pay nothing. "
+    + _PRO_VALUE_BODY
 )
 
 
@@ -688,6 +693,7 @@ def persona_credits_out_offer(
     reset_label: str = "",
     kit_views: int = 0,
     sent: int = 0,
+    trial: bool = False,
 ) -> str:
     """Once a month, when the 3 free pitches are gone: offer autopilot before they ask."""
     name = (first_name or "").strip()
@@ -696,7 +702,7 @@ def persona_credits_out_offer(
     proof = persona_pro_proof(kit_views, sent)
     parts = [
         f"{head} used your **3 free pitches** this month.{back}",
-        "Want me to keep pitching until then? " + PRO_VALUE_LINE,
+        "Want me to keep pitching until then? " + (PRO_TRIAL_LINE if trial else PRO_VALUE_LINE),
     ]
     if proof:
         parts.append(proof)

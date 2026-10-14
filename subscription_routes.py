@@ -339,6 +339,29 @@ def _log_checkout_source(conn, creator_id, metadata, session_id=None):
             pass
 
 
+@subscription_bp.route('/trial-offer', methods=['GET'])
+def trial_offer():
+    """Same check as create-checkout, so the paywall only promises a trial checkout will honour."""
+    from services.quota_trial_test import TRIAL_DAYS, trial_eligible
+
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'trial_days': 0})
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        eligible = trial_eligible(cursor, creator_id)
+        cursor.close()
+        return jsonify({'trial_days': TRIAL_DAYS if eligible else 0})
+    except Exception as e:
+        print(f"⚠️ trial offer check failed for creator {creator_id}: {e}")
+        return jsonify({'trial_days': 0})
+    finally:
+        if conn:
+            conn.close()
+
+
 @subscription_bp.route('/create-checkout', methods=['POST'])
 def create_checkout_session():
     """Create Stripe Checkout session for subscription"""
@@ -528,6 +551,7 @@ def create_portal_session():
                     SET stripe_customer_id = NULL,
                         stripe_subscription_id = NULL,
                         subscription_tier = 'free',
+                        unlocks_tier = 'free',
                         subscription_status = 'inactive'
                     WHERE id = %s
                 ''', (creator_id,))
@@ -1104,6 +1128,7 @@ def stripe_webhook():
             cursor.execute('''
                 UPDATE creators
                 SET subscription_tier = 'free',
+                    unlocks_tier = 'free',
                     subscription_status = 'canceled',
                     subscription_ends_at = NOW()
                 WHERE stripe_subscription_id = %s
@@ -1134,6 +1159,7 @@ def stripe_webhook():
                 cursor.execute('''
                     UPDATE creators
                     SET subscription_tier = 'free',
+                        unlocks_tier = 'free',
                         subscription_status = %s,
                         subscription_ends_at = NOW()
                     WHERE stripe_subscription_id = %s

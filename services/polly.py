@@ -2045,13 +2045,14 @@ def credits_out_offer_message(
     notes: Optional[Dict] = None,
     kit_views: int = 0,
     sent: int = 0,
+    trial: bool = False,
 ) -> Dict[str, Any]:
     from services.polly_persona import persona_credits_out_offer
 
     follow = follow_brand_from_tracker(tracker, notes)
     chips: List[Dict[str, Any]] = [{
         "id": "unlock_pro",
-        "label": "Put Polly to work · $19/mo",
+        "label": "Start my free week" if trial else "Put Polly to work · $19/mo",
         "action": "unlock_pro",
     }]
     if follow and follow.get("name"):
@@ -2072,7 +2073,7 @@ def credits_out_offer_message(
     return {
         "role": "assistant",
         "kind": "brief",
-        "content": persona_credits_out_offer(first_name, reset_label(balance), kit_views, sent),
+        "content": persona_credits_out_offer(first_name, reset_label(balance), kit_views, sent, trial=trial),
         "task_chips": chips,
     }
 
