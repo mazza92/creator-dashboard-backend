@@ -1355,29 +1355,6 @@ def _build_roster_response(cursor, campaign, *, include_hidden=False):
     ]
     with_rate = sum(1 for c in cards if c.get("engagement_label"))
     current_app.logger.info("[roster] engagement %s/%s cards have a rate", with_rate, len(cards))
-    for row, card in zip(rows, cards):
-        if card.get("engagement_label"):
-            continue
-        posts = _as_post_list(row.get("recent_posts"))
-        sample = next((p for p in posts if isinstance(p, dict)), None) or {}
-        like_sum = sum(
-            _post_stat(p, "likes", "likesCount", "diggCount", "likeCount", "like_count", "heartCount")
-            for p in posts
-            if isinstance(p, dict)
-        )
-        current_app.logger.info(
-            "[roster] missing engagement handle=%s er=%s scraped=%s recent_posts=%s "
-            "portfolio=%s likes=%s posts=%s like_sum=%s post0_keys=%s",
-            card.get("handle"),
-            row.get("engagement_rate"),
-            row.get("scraped_engagement_rate"),
-            len(posts),
-            len(_as_post_list(row.get("portfolio_posts"))),
-            row.get("total_likes"),
-            row.get("total_posts"),
-            like_sum,
-            list(sample.keys())[:12],
-        )
     payload = _campaign_public(campaign, cards)
     try:
         payload["billing"] = billing_public_summary(cursor, campaign["brand_id"])

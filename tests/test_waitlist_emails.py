@@ -12,7 +12,7 @@ class TestWaitlistEmails(unittest.TestCase):
 
     def test_approved_points_at_for_you(self):
         ctx = waitlist_email_context('approved', 'Test')
-        self.assertTrue(ctx['action_url'].endswith('/creator/dashboard/for-you'))
+        self.assertTrue(ctx['action_url'].endswith('/creator/dashboard/for-you?chip=line_up'))
         self.assertIn('approved', ctx['message'].lower())
 
     def test_pro_copy_is_distinct(self):

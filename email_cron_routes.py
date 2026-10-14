@@ -5,6 +5,7 @@ Handles automated email campaigns and reminders
 
 from flask import Blueprint, jsonify, request
 import os
+import re
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -142,15 +143,40 @@ def _send_smtp_html(to_email, subject, html_content):
         server.send_message(msg)
 
 
-def send_template_email(to_email, template_name, subject, context):
+def _template_tags(template_name, tags):
+    if tags:
+        return tags
+    stem = re.sub(r'[^A-Za-z0-9_-]', '_', os.path.splitext(os.path.basename(template_name or ''))[0])[:60]
+    return [
+        {'name': 'category', 'value': 'transactional'},
+        {'name': 'template', 'value': stem or 'unknown'},
+    ]
+
+
+def send_template_email(to_email, template_name, subject, context, *, allow_waitlisted=False, tags=None):
     """
-    Send an email using a Jinja2 template over SMTP.
-    Skips creators who are still on the waitlist.
+    Send an email using a Jinja2 template. Resend when configured (opens/clicks
+    tracked), Gmail SMTP otherwise or when Resend has a transient failure.
+    Skips creators who are still on the waitlist unless allow_waitlisted.
     """
     try:
-        if _recipient_waitlisted(to_email):
+        if not allow_waitlisted and _recipient_waitlisted(to_email):
             return False, "Waitlisted creator - skipped"
-        html_content, _unsubscribe = render_email_template(to_email, template_name, context)
+        html_content, unsubscribe_url = render_email_template(to_email, template_name, context)
+        from services.resend_mail import resend_configured, send_resend_email
+        if resend_configured():
+            result = send_resend_email(
+                to_email,
+                subject,
+                html_content,
+                unsubscribe_url=unsubscribe_url,
+                tags=_template_tags(template_name, tags),
+                reply_to='team@newcollab.co',
+            )
+            if result.get('success'):
+                return True, None
+            if not (result.get('retryable') and os.getenv('SMTP_PASSWORD')):
+                return False, result.get('error') or 'Resend send failed'
         _send_smtp_html(to_email, subject, html_content)
         return True, None
     except Exception as e:

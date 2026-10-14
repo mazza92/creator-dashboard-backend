@@ -1,7 +1,8 @@
 """Transactional waitlist emails — joined, approved, rejected.
 
 Uses the same welcome_email.html shell as resume-onboarding so branding stays consistent.
-Lifecycle product emails (unlocks, matches) stay off until the creator is approved.
+Lifecycle product emails stay off until the creator is approved; these status emails
+are exempt from that gate because the waitlisted creator is the audience.
 """
 from html import escape
 
@@ -32,14 +33,17 @@ def waitlist_email_context(kind, name, reason=None, as_pro=False):
             else 'Your creator profile has been approved.'
         )
         return {
-            'subject': "You're in — start browsing brands",
-            'preheader': 'Your Newcollab profile is approved.',
-            'action_url': f'{WAITLIST_APP_URL}/creator/dashboard/for-you',
-            'action_text': 'See your brand matches',
+            'subject': "You're in. Polly has brands lined up for you",
+            'preheader': 'Your Newcollab profile is approved. Meet Polly, your manager.',
+            'action_url': f'{WAITLIST_APP_URL}/creator/dashboard/for-you?chip=line_up',
+            'action_text': 'Meet Polly',
             'message': (
                 f'<p>Hi {safe_name},</p>'
                 f'<p>{opener}</p>'
-                f'<p>You can now browse gifting brands, pitch matches for your niche, and track follow-ups in one place.</p>'
+                f'<p>Polly, your Newcollab manager, finds brands that gift creators your size, '
+                f'writes each pitch from your profile, and tells you when to follow up. '
+                f'You read every pitch and send it from your own email.</p>'
+                f'<p>Open Polly and she will line up your first brands.</p>'
             ),
         }
     if kind == 'rejected':
@@ -78,6 +82,11 @@ def send_waitlist_email(kind, email, name, user_id=None, reason=None, as_pro=Fal
                 'action_url': ctx['action_url'],
                 'action_text': ctx['action_text'],
             },
+            allow_waitlisted=True,
+            tags=[
+                {'name': 'category', 'value': 'waitlist'},
+                {'name': 'template', 'value': f'waitlist_{kind}'},
+            ],
         )
         if not success:
             print(f'Waitlist {kind} email failed for {email}: {err}')
