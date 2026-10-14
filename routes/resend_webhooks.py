@@ -1,4 +1,4 @@
-"""Resend delivery webhook: records lifecycle email opens and clicks."""
+"""Resend delivery webhook: records opens and clicks on lifecycle and Polly emails."""
 
 import base64
 import hashlib
@@ -46,25 +46,34 @@ def verify_signature(payload, msg_id, timestamp, signature_header, secret, now=N
     return False
 
 
+# (table, message id column): lifecycle sends first, then Polly's own emails.
+ENGAGEMENT_TABLES = (
+    ('lifecycle_email_sends', 'provider_message_id'),
+    ('polly_email_log', 'message_id'),
+)
+
+
 def record_engagement(cursor, event_type, email_id, link=None):
-    """Stamp first open/click on the matching lifecycle send. Returns rows updated."""
+    """Stamp first open/click on the matching lifecycle or Polly send. Returns rows updated."""
     if event_type == 'email.opened':
-        cursor.execute("""
-            UPDATE lifecycle_email_sends
-            SET opened_at = COALESCE(opened_at, NOW())
-            WHERE provider_message_id = %s
-        """, (email_id,))
+        sets, args = 'opened_at = COALESCE(opened_at, NOW())', ()
     elif event_type == 'email.clicked':
-        cursor.execute("""
-            UPDATE lifecycle_email_sends
-            SET opened_at = COALESCE(opened_at, NOW()),
-                clicked_at = COALESCE(clicked_at, NOW()),
-                clicked_url = COALESCE(clicked_url, %s)
-            WHERE provider_message_id = %s
-        """, ((link or '')[:2000] or None, email_id))
+        sets = (
+            'opened_at = COALESCE(opened_at, NOW()), '
+            'clicked_at = COALESCE(clicked_at, NOW()), '
+            'clicked_url = COALESCE(clicked_url, %s)'
+        )
+        args = ((link or '')[:2000] or None,)
     else:
         return 0
-    return cursor.rowcount
+    for table, id_column in ENGAGEMENT_TABLES:
+        cursor.execute(
+            f'UPDATE {table} SET {sets} WHERE {id_column} = %s',
+            args + (email_id,),
+        )
+        if cursor.rowcount:
+            return cursor.rowcount
+    return 0
 
 
 @resend_webhooks_bp.route('/api/webhooks/resend', methods=['POST'])

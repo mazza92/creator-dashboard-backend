@@ -222,6 +222,20 @@ class TestResendWebhook(unittest.TestCase):
         self.assertIn('opened_at = COALESCE(opened_at, NOW())', sql)
         self.assertEqual(args, ('https://newcollab.co/x', 're_1'))
 
+    def test_falls_back_to_polly_email_log(self):
+        cursor = MagicMock()
+        type(cursor).rowcount = property(lambda self: 1 if 'polly_email_log' in self.execute.call_args.args[0] else 0)
+        self.assertEqual(record_engagement(cursor, 'email.opened', 're_7'), 1)
+        tables = [c.args[0].split()[1] for c in cursor.execute.call_args_list]
+        self.assertEqual(tables, ['lifecycle_email_sends', 'polly_email_log'])
+        self.assertIn('WHERE message_id = %s', cursor.execute.call_args.args[0])
+        self.assertEqual(cursor.execute.call_args.args[1], ('re_7',))
+
+    def test_unknown_message_updates_nothing(self):
+        cursor = MagicMock(rowcount=0)
+        self.assertEqual(record_engagement(cursor, 'email.clicked', 're_x', 'https://x'), 0)
+        self.assertEqual(cursor.execute.call_count, 2)
+
     def test_other_events_ignored(self):
         cursor = MagicMock()
         self.assertEqual(record_engagement(cursor, 'email.delivered', 're_1'), 0)
