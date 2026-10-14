@@ -370,6 +370,13 @@ def create_checkout_session():
             WHERE c.id = %s
         ''', (creator_id,))
         creator = cursor.fetchone()
+        offer_trial = False
+        if creator and offer != 'winback':
+            try:
+                from services.quota_trial_test import trial_eligible
+                offer_trial = trial_eligible(cursor, creator_id)
+            except Exception as e:
+                print(f"⚠️ quota trial check failed for creator {creator_id}: {e}")
         cursor.close()
         conn.close()
 
@@ -423,6 +430,12 @@ def create_checkout_session():
             metadata['email_campaign'] = email_campaign
 
         from services.checkout_recovery import checkout_recovery_kwargs
+        from services.quota_trial_test import TRIAL_DAYS
+
+        trial_kwargs = {}
+        if offer_trial and not apply_winback:
+            metadata['trial'] = str(TRIAL_DAYS)
+            trial_kwargs = {'subscription_data': {'trial_period_days': TRIAL_DAYS}}
 
         promo_kwargs = stripe_checkout_promo_kwargs(offer if apply_winback else None, creator, coupon_id)
         checkout_session = stripe.checkout.Session.create(
@@ -437,13 +450,15 @@ def create_checkout_session():
             metadata=metadata,
             **stripe_checkout_customer_kwargs(offer if apply_winback else None, creator),
             **promo_kwargs,
+            **trial_kwargs,
         )
 
         print(f"✅ Created checkout session for creator {creator_id} - {tier} tier")
 
         return jsonify({
             'checkout_url': checkout_session.url,
-            'session_id': checkout_session.id
+            'session_id': checkout_session.id,
+            'trial_days': TRIAL_DAYS if trial_kwargs else 0,
         })
 
     except stripe.error.InvalidRequestError as e:

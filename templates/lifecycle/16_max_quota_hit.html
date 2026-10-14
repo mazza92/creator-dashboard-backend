@@ -7,7 +7,11 @@
 
 <p>The creators who get boxes are the ones who keep pitching. Stopping for {{ days_until_reset }} days is where momentum dies.</p>
 
+{% if quota_arm == 'trial' %}
+<p>So try Pro free for 7 days. Polly keeps going for you on <strong>autopilot</strong>:</p>
+{% else %}
 <p>On Pro ($19/mo), Polly keeps going for you on <strong>autopilot</strong>:</p>
+{% endif %}
 
 <ol class="numbered-list">
     <li><strong>She picks 20–30 matched brands a month.</strong> Brands that gift creators your size, in your niche.</li>
@@ -20,7 +24,13 @@
 
 <p>Your 3 free pitches come back on {{ reset_date }} if you'd rather wait.</p>
 
+{% if quota_arm == 'trial' %}
+<a href="{{ cta_url }}" class="cta-button">Start my free week</a>
+
+<p style="text-align: center; margin-top: 8px; color: #6b7280; font-size: 14px;">Free for 7 days, then $19/mo. Cancel before day 7 and you pay nothing.</p>
+{% else %}
 <a href="{{ cta_url }}" class="cta-button">Put Polly on autopilot</a>
 
 <p style="text-align: center; margin-top: 8px; color: #6b7280; font-size: 14px;">$19/mo. Cancel anytime.</p>
+{% endif %}
 {% endblock %}

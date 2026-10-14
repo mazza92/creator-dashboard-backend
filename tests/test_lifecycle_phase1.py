@@ -122,11 +122,12 @@ class TestPollyEmailGap(unittest.TestCase):
         cursor = MagicMock()
         template = {'slug': 'max_quota_hit', 'feature_flag': None, 'exempt_from_daily_cap': True,
                     'subject_template': 'Hi', 'body_template_file': 'lifecycle/16_max_quota_hit.html'}
-        cursor.fetchone.side_effect = [template, {'user_id': 3, 'approval_status': 'approved'}]
+        cursor.fetchone.side_effect = [template, {'user_id': 3, 'approval_status': 'approved'}, None]
         conn = MagicMock()
         conn.cursor.return_value = cursor
         with patch.object(engine, 'get_db_connection', return_value=conn), \
                 patch.object(engine, 'check_throttling', return_value=(True, '')), \
+                patch('services.quota_trial_test.active_arm', return_value='control'), \
                 patch.object(engine, '_polly_emailed_recently') as polly_check, \
                 patch.object(engine, '_deliver_email', return_value=(False, 'stop')) as deliver:
             engine.send_lifecycle_email('a@b.com', 'max_quota_hit', {}, 7)

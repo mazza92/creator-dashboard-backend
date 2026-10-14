@@ -371,13 +371,36 @@ def send_lifecycle_email(
             'subject': template.get('subject_template', ''),
             **context
         }
+        utm_campaign = template_slug
         if template_slug == 'max_quota_hit':
+            cursor.execute("""
+                SELECT 1 FROM polly_email_log
+                WHERE creator_id = %s AND kind = 'paywall_followup' AND ok
+                  AND sent_at >= date_trunc('month', NOW())
+                LIMIT 1
+            """, (creator_id,))
+            if cursor.fetchone():
+                return False, "Polly already sent the paywall follow-up this month"
+            from services.quota_trial_test import active_arm
+            arm = active_arm(creator_id)
+            utm_campaign = f"max_quota_hit_{arm}"
+            if arm == 'holdout':
+                cursor.execute("""
+                    INSERT INTO lifecycle_email_sends
+                    (creator_id, template_slug, email_address, status, dedup_key, utm_campaign)
+                    VALUES (%s, %s, %s, 'holdout', %s, %s)
+                """, (creator_id, template_slug, to_email, dedup_key, utm_campaign))
+                conn.commit()
+                return False, "Experiment holdout - no email"
+            full_context['quota_arm'] = arm
             full_context['preheader'] = (
+                'Your 3 are out. Try Pro free for 7 days: Polly keeps pitching for you.'
+                if arm == 'trial' else
                 'Your 3 are out. On Pro, Polly runs your week and turns a yes into paid.'
             )
 
         # Add UTM parameters to CTA URL
-        utm = f"utm_source=email&utm_medium=lifecycle&utm_campaign={template_slug}"
+        utm = f"utm_source=email&utm_medium=lifecycle&utm_campaign={utm_campaign}"
         if '?' in full_context['cta_url']:
             full_context['cta_url'] += f"&{utm}"
         else:
@@ -400,7 +423,7 @@ def send_lifecycle_email(
                 VALUES (%s, %s, %s, %s, %s, %s, %s, 'sent', %s, %s)
             """, (
                 creator_id, template_slug, brand_id, context.get('brand_slug'),
-                to_email, subject, message_id, dedup_key, template_slug
+                to_email, subject, message_id, dedup_key, utm_campaign
             ))
 
             # Update throttle counters

@@ -37,6 +37,16 @@ BRIEF_AFTER_DRAFT = timedelta(hours=20)
 BRIEF_QUIET_OPEN = timedelta(hours=24)
 OTHER_ALERT_GAP = timedelta(hours=12)
 MONTH_REPORT_DAYS = (1, 2, 3)
+PAYWALL_FOLLOWUP_AFTER = timedelta(hours=2)
+PAYWALL_FOLLOWUP_WINDOW = timedelta(hours=48)
+PAYWALL_FOLLOWUP_EVERY = timedelta(days=30)
+QUOTA_EMAIL_OVERLAP = timedelta(days=3)
+CHECKOUT_RECOVERY_OVERLAP = timedelta(days=7)
+
+PRO_LINE = (
+    "On Pro ($19/mo) I find 20–30 matched brands a month, send the pitches you OK from your Gmail "
+    "and follow up on day 4 for you."
+)
 
 EMAIL_CHIP_IDS = (
     "checkin_replied", "checkin_quiet", "draft_followup", "checkin_not_sent",
@@ -172,6 +182,16 @@ def chip_link(chip_id: str, task_id: Any = None, brand_id: Any = None, brand_nam
     return f"{frontend_url()}{POLLY_PATH}?{urlencode(params)}"
 
 
+def upgrade_link(campaign: str) -> str:
+    params = {
+        "upgrade": "pro",
+        "utm_source": "email",
+        "utm_medium": "polly_alert",
+        "utm_campaign": campaign,
+    }
+    return f"{frontend_url()}{POLLY_PATH}?{urlencode(params)}"
+
+
 def _unsubscribe_url(user_id: Any) -> str:
     try:
         from public_routes import make_unsubscribe_token
@@ -251,9 +271,13 @@ def kit_view_email(
             "href": chip_link("checkin_replied", brand_id=brand_id, brand_name=brand_name if is_pro else "",
                               kind="kit_view"),
         }]
+        links = None
+        if not is_pro:
+            lines.append("On Pro the brand's name shows right here, and I line up 20–30 brands like this a month.")
+            links = [{"label": "See what Pro does ($19/mo)", "href": upgrade_link("kit_view_pro")}]
         return {
             "subject": subject,
-            "html": render_email(first_name, subject, lines, buttons, unsubscribe_url),
+            "html": render_email(first_name, subject, lines, buttons, unsubscribe_url, links=links),
         }
     if is_pro:
         subject = f"{brand_name} just opened your kit"
@@ -283,9 +307,11 @@ def kit_view_email(
         buttons = [
             {"label": "See who & follow up", "href": chip_link("draft_followup", brand_id=brand_id, kind="kit_view")},
         ]
+        lines.append("On Pro the brand's name shows right here, and I line up 20–30 brands like this a month.")
+    links = None if is_pro else [{"label": "See what Pro does ($19/mo)", "href": upgrade_link("kit_view_pro")}]
     return {
         "subject": subject,
-        "html": render_email(first_name, headline, lines, buttons, unsubscribe_url),
+        "html": render_email(first_name, headline, lines, buttons, unsubscribe_url, links=links),
     }
 
 
@@ -305,7 +331,7 @@ def _one_tap(creator_id: Any, pairs, nudge: Dict[str, Any], brand: str, kind: st
 
 
 def nudge_email(first_name: str, nudge: Dict[str, Any], unsubscribe_url: str = "",
-                creator_id: Any = None) -> Dict[str, str]:
+                creator_id: Any = None, is_pro: bool = True) -> Dict[str, str]:
     import re
     from services.checkin_links import CHECKIN_BUTTONS, CHECKIN_LINKS, PR_BUTTONS
 
@@ -338,9 +364,13 @@ def nudge_email(first_name: str, nudge: Dict[str, Any], unsubscribe_url: str = "
     if not buttons:
         buttons = [{"label": "Open Polly", "href": chip_link("checkin_replied", nudge.get("task_id"), nudge.get("brand_id"), brand, kind=key)}]
     lines = [message_html, "One tap and I'll take the next step."]
+    links = None
+    if key == "reply_needed" and not is_pro:
+        lines.append("On Pro I write the reply with your ad usage rate, so a yes can turn into a paid deal.")
+        links = [{"label": "Get Pro ($19/mo)", "href": upgrade_link("reply_needed_pro")}]
     return {
         "subject": subject,
-        "html": render_email(first_name, subject, lines, buttons, unsubscribe_url),
+        "html": render_email(first_name, subject, lines, buttons, unsubscribe_url, links=links),
     }
 
 
@@ -483,7 +513,7 @@ def email_nudges(conn, delivered: List[Dict[str, Any]], dry_run: bool = False, s
         if not who:
             continue
         unsub = _unsubscribe_url(who["user_id"])
-        mail = nudge_email(who["first"], nudge, unsub, creator_id=cid)
+        mail = nudge_email(who["first"], nudge, unsub, creator_id=cid, is_pro=who["is_pro"])
         item = {"creator_id": cid, "kind": "nudge", "subject": mail["subject"], "to": who["email"]}
         if dry_run:
             out.append(item)
@@ -753,6 +783,113 @@ def email_month_reports(conn, limit: int = 40, dry_run: bool = False, send_fn: O
     return out
 
 
+def paywall_followup_email(first_name: str, moment: str, brand_name: str = "",
+                           unsubscribe_url: str = "") -> Dict[str, str]:
+    """The paywall showed up and they left. One email, tied to what they were doing."""
+    brand = (brand_name or "").strip()
+    b = escape(brand)
+    if moment == "credits_out":
+        subject = "I've got more brands lined up for you"
+        lines = ["You used your 3 free pitches this month, so I stopped. I still have matched brands waiting."]
+        label = "Keep Polly pitching"
+    elif moment == "pitch" and brand:
+        subject = f"Your {brand} pitch is one tap away"
+        lines = [f"You went to pitch <strong>{b}</strong> and hit the free limit. The pitch is ready when you are."]
+        label = f"Pitch {brand}"
+    elif moment == "after_send":
+        subject = "Nice pitch. Want me to send the next one?"
+        nxt = f" <strong>{b}</strong> is next on my list." if brand else ""
+        lines = [f"Your pitch is out. That's the step most creators never take.{nxt}"]
+        label = "Send the next pitch"
+    elif moment == "paid_reply" and brand:
+        subject = f"Don't let {brand} become a free box"
+        lines = [
+            f"When <strong>{b}</strong> says yes, the reply decides if it's a free box or a paid deal. "
+            "On Pro I write it with your ad usage rate."
+        ]
+        label = f"Write my {brand} reply"
+    else:
+        subject = "Want me to run your outreach?"
+        lines = ["You had a look at Pro earlier. Here's what it actually does."]
+        label = "Put Polly on autopilot"
+    lines += [PRO_LINE, "Cancel anytime. Your free pitches still come back next month if you'd rather wait."]
+    buttons = [{"label": label, "href": upgrade_link(f"paywall_{moment or 'other'}")}]
+    return {
+        "subject": subject,
+        "html": render_email(first_name, subject, lines, buttons, unsubscribe_url),
+    }
+
+
+def email_paywall_followups(conn, limit: int = 25, dry_run: bool = False, send_fn: Optional[Callable] = None,
+                            test_email: str = "") -> List[Dict[str, Any]]:
+    """Free creators who saw the paywall 2–48h ago and didn't buy. Once per 30 days."""
+    ensure_alert_tables(conn)
+    send = send_fn or _default_send
+    cur = _cursor(conn)
+    now = utc_now()
+    cur.execute(
+        """
+        SELECT DISTINCT ON (e.creator_id)
+               e.creator_id, e.meta->>'moment' AS moment,
+               NULLIF(e.meta->>'brand_id', '') AS brand_id, b.brand_name
+        FROM polly_usage_events e
+        LEFT JOIN pr_brands b ON b.id::text = e.meta->>'brand_id'
+        WHERE e.event = 'paywall_shown' AND e.creator_id IS NOT NULL
+          AND e.created_at > %(window)s AND e.created_at < %(after)s
+          AND NOT EXISTS (SELECT 1 FROM polly_usage_events x
+                          WHERE x.creator_id = e.creator_id AND x.event = 'paywall_shown'
+                            AND x.created_at >= %(after)s)
+          AND NOT EXISTS (SELECT 1 FROM polly_usage_events x
+                          WHERE x.creator_id = e.creator_id AND x.event = 'checkout_completed'
+                            AND x.created_at > e.created_at)
+          AND NOT EXISTS (SELECT 1 FROM polly_email_log l
+                          WHERE l.creator_id = e.creator_id AND l.ok AND (
+                              (l.kind = 'paywall_followup' AND l.sent_at > %(every)s)
+                              OR (l.kind = 'checkout_recovery' AND l.sent_at > %(recovery)s)
+                              OR l.sent_at > %(gap)s))
+          AND NOT EXISTS (SELECT 1 FROM lifecycle_email_sends s
+                          WHERE s.creator_id = e.creator_id AND (
+                              (s.template_slug = 'max_quota_hit' AND s.status = 'sent' AND s.sent_at > %(quota)s)
+                              OR (s.template_slug = 'max_quota_hit' AND e.meta->>'moment' = 'credits_out'
+                                  AND s.sent_at >= date_trunc('month', NOW()))
+                              OR (s.template_slug = 'max_quota_hit' AND s.status = 'holdout' AND s.sent_at > %(every)s)
+                              OR (s.status = 'sent' AND s.sent_at > %(gap)s)))
+        ORDER BY e.creator_id, e.created_at DESC
+        LIMIT %(limit)s
+        """,
+        {
+            "window": now - PAYWALL_FOLLOWUP_WINDOW,
+            "after": now - PAYWALL_FOLLOWUP_AFTER,
+            "every": now - PAYWALL_FOLLOWUP_EVERY,
+            "recovery": now - CHECKOUT_RECOVERY_OVERLAP,
+            "gap": now - OTHER_ALERT_GAP,
+            "quota": now - QUOTA_EMAIL_OVERLAP,
+            "limit": limit,
+        },
+    )
+    out = []
+    for row in [dict(r) for r in cur.fetchall()]:
+        cid = row["creator_id"]
+        who = _recipient(conn, cid)
+        if not who or who["is_pro"]:
+            continue
+        unsub = _unsubscribe_url(who["user_id"])
+        moment = row.get("moment") or ""
+        mail = paywall_followup_email(who["first"], moment, row.get("brand_name") or "", unsub)
+        item = {"creator_id": cid, "kind": "paywall_followup", "moment": moment,
+                "subject": mail["subject"], "to": who["email"]}
+        if dry_run:
+            out.append(item)
+            continue
+        brand_id = row.get("brand_id")
+        result = send(test_email or who["email"], mail["subject"], mail["html"], unsub, "paywall_followup")
+        _log_email(conn, cid, "paywall_followup", int(brand_id) if str(brand_id or "").isdigit() else None,
+                   None, mail["subject"], result)
+        item["ok"] = bool(result.get("success"))
+        out.append(item)
+    return out
+
+
 def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "", send_fn: Optional[Callable] = None) -> Dict[str, Any]:
     """Cron entry: post due nudges in-thread, email them + kit views."""
     from services.polly_tracker import process_due_nudges
@@ -806,7 +943,7 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
         from services.pro_manager import email_monday_boards, email_renewal_notes
 
         for job in (email_month_reports, email_unsent_briefs, email_renewal_notes, email_monday_boards,
-                    email_autopilot_reports):
+                    email_autopilot_reports, email_paywall_followups):
             try:
                 emails += job(conn, dry_run=dry_run, send_fn=send_fn, test_email=test_email)
             except Exception as err:
