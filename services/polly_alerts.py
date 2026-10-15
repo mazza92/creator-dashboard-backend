@@ -939,12 +939,13 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
                 conn.rollback()
             except Exception:
                 pass
+        from services.autopilot_health import email_autopilot_blocked
         from services.autopilot_report import email_autopilot_reports
         from services.pro_manager import email_monday_boards, email_renewal_notes
         from services.pro_trial import email_trial_journey
 
-        for job in (email_trial_journey, email_month_reports, email_unsent_briefs, email_renewal_notes,
-                    email_monday_boards, email_autopilot_reports, email_paywall_followups):
+        for job in (email_trial_journey, email_autopilot_blocked, email_month_reports, email_unsent_briefs,
+                    email_renewal_notes, email_monday_boards, email_autopilot_reports, email_paywall_followups):
             try:
                 emails += job(conn, dry_run=dry_run, send_fn=send_fn, test_email=test_email)
             except Exception as err:
