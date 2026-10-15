@@ -5,6 +5,23 @@ Falls back to None if Stripe is not configured or the API call fails.
 import os
 
 
+def fetch_trial_cancel_flags():
+    """{subscription_id: True if the trialist already cancelled}, or None when Stripe is unavailable."""
+    secret_key = os.getenv('STRIPE_SECRET_KEY')
+    if not secret_key or not secret_key.startswith('sk_'):
+        return None
+    try:
+        import stripe
+        stripe.api_key = secret_key
+        return {
+            sub['id']: bool(sub.get('cancel_at_period_end') or sub.get('cancel_at'))
+            for sub in stripe.Subscription.list(status='trialing', limit=100).auto_paging_iter()
+        }
+    except Exception as e:
+        print(f'[MRR] Stripe trial lookup failed: {e}')
+        return None
+
+
 def fetch_stripe_mrr():
     """
     Returns dict with mrr_dollars, active_subscriptions, source='stripe',

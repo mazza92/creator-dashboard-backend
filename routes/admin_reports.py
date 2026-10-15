@@ -1830,15 +1830,16 @@ def get_founder_dashboard():
             current_mrr = pro_count * pro_price
 
         total_paid_subs = pro_count
-        goal_mrr = 1000
-        progress_pct = min(round((current_mrr / goal_mrr) * 100, 1), 100)
+        from services.founder_metrics import milestones as mrr_milestones
+        stage = mrr_milestones(current_mrr, pro_price)
+        goal_mrr = stage['goal']
+        progress_pct = stage['progress_pct']
 
         # Conversion rate (paid / total)
         total_creators = free_count + pro_count
         conversion_rate = round((total_paid_subs / max(total_creators, 1)) * 100, 2)
 
-        # Need X more subs to hit goal
-        subs_needed = max(0, int((goal_mrr - current_mrr) / pro_price))
+        subs_needed = stage['subs_needed']
 
         # ================== AT-LIMIT USERS (Hot Leads) ==================
         # Free users who used all 3 free credits this calendar month vs last month.
@@ -2204,6 +2205,16 @@ def get_founder_dashboard():
             from services.onboarding_survey_insights import empty_survey_insights
             onboarding_survey = empty_survey_insights(error=str(survey_err))
 
+        try:
+            from services.founder_metrics import founder_metrics
+            from utils.stripe_mrr import fetch_trial_cancel_flags
+            growth = founder_metrics(cursor, current_mrr, pro_price, start_date,
+                                     cancel_flags=fetch_trial_cancel_flags())
+        except Exception as growth_err:
+            print(f"[FOUNDER] trial/milestone metrics failed: {growth_err}")
+            conn.rollback()
+            growth = {"milestones": stage, "pace": None, "trials": None}
+
         conn.close()
 
         # ================== TRAFFIC from GA4 ==================
@@ -2245,6 +2256,9 @@ def get_founder_dashboard():
             traffic = {"connected": False, "error": str(e)}
 
         return jsonify({
+            'milestones': growth['milestones'],
+            'pace': growth['pace'],
+            'trials': growth['trials'],
             'mrr': {
                 'current': current_mrr,
                 'goal': goal_mrr,
