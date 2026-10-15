@@ -10,12 +10,17 @@ from typing import Any, Callable, Dict, List, Optional
 
 from psycopg2.extras import RealDictCursor
 
-DEFAULT_MONTHLY_TARGET = 24
-WEEK_BATCH = 6
-TARGET_MIN = 8
-TARGET_MAX = 30
-MAX_SENDS_PER_DAY = 2
-SEND_WINDOW_UTC = (14, 17)
+TARGET_OPTIONS = (30, 60, 100, 150)
+DEFAULT_MONTHLY_TARGET = 60
+# Rows saved before the volume options still hold the old default; they never chose it.
+LEGACY_DEFAULT_TARGET = 24
+WEEK_BATCH = 15
+TARGET_MIN = TARGET_OPTIONS[0]
+TARGET_MAX = TARGET_OPTIONS[-1]
+MAX_SENDS_PER_DAY = 8
+# The browser writes about 20 seconds a pitch, so "start now" writes a few and the cron does the rest.
+MANUAL_BATCH = 6
+SEND_WINDOW_UTC = (13, 21)
 WEEKDAYS = (0, 1, 2, 3, 4)
 DEAL_FOCUS = ("auto", "gifted", "paid")
 DEFAULT_FOLLOWUPS = 2
@@ -64,7 +69,7 @@ def ensure_autopilot_tables(conn) -> None:
         CREATE TABLE IF NOT EXISTS polly_autopilot (
             creator_id INTEGER PRIMARY KEY,
             enabled BOOLEAN NOT NULL DEFAULT TRUE,
-            monthly_target INTEGER NOT NULL DEFAULT 24,
+            monthly_target INTEGER NOT NULL DEFAULT 60,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """
@@ -126,10 +131,19 @@ def parse_send_days(raw: Any) -> List[int]:
 
 
 def clamp_target(target: Any) -> int:
+    """Snap to the next volume option up, so any saved number lands on 30, 60, 100 or 150."""
     try:
-        return max(TARGET_MIN, min(TARGET_MAX, int(target)))
+        value = int(target)
     except (TypeError, ValueError):
         return DEFAULT_MONTHLY_TARGET
+    return next((opt for opt in TARGET_OPTIONS if value <= opt), TARGET_MAX)
+
+
+def effective_target(stored: Any) -> int:
+    """The target a saved row means today."""
+    if stored is None or stored == LEGACY_DEFAULT_TARGET:
+        return DEFAULT_MONTHLY_TARGET
+    return clamp_target(stored)
 
 
 def per_week(target: int) -> int:
@@ -148,7 +162,7 @@ def settings(conn, creator_id: int) -> Dict[str, Any]:
     followups = row.get("followups")
     return {
         "enabled": bool(row["enabled"]) if row else True,
-        "monthly_target": int(row["monthly_target"]) if row else DEFAULT_MONTHLY_TARGET,
+        "monthly_target": effective_target(row.get("monthly_target")),
         "deal_focus": focus,
         "send_days": parse_send_days(row.get("send_days")),
         "followups": int(followups) if followups is not None else DEFAULT_FOLLOWUPS,
@@ -251,8 +265,8 @@ def refill_size(counts: Dict[str, int], target: int) -> int:
 
 
 def sends_per_day(target: int, days: List[int]) -> int:
-    """One a send day, two when the week's batch doesn't fit."""
-    return 1 if per_week(target) <= len(days or WEEKDAYS) else MAX_SENDS_PER_DAY
+    """Enough per send day to fit the week's batch, never more than MAX_SENDS_PER_DAY."""
+    return min(MAX_SENDS_PER_DAY, max(1, -(-per_week(target) // len(days or WEEKDAYS))))
 
 
 def add_draft(conn, creator_id: int, brand_id: int, brand_name: str, to_email: str,
@@ -605,7 +619,8 @@ def fill_candidates(conn, now: Optional[datetime] = None, limit: int = 20) -> Li
     """, (now - AUTO_FILL_EVERY, limit))
     out = []
     for row in rows:
-        need = refill_size(month_counts(conn, row["creator_id"]), int(row["monthly_target"]))
+        row["monthly_target"] = effective_target(row["monthly_target"])
+        need = refill_size(month_counts(conn, row["creator_id"]), row["monthly_target"])
         if need > 0:
             out.append({**row, "need": need})
         else:

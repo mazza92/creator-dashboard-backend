@@ -44,8 +44,9 @@ QUOTA_EMAIL_OVERLAP = timedelta(days=3)
 CHECKOUT_RECOVERY_OVERLAP = timedelta(days=7)
 
 PRO_LINE = (
-    "On Pro ($19/mo) I pick about 6 matched brands a week, write and send every pitch from your Gmail "
-    "and follow up on day 4. Nothing to approve."
+    "On Pro ($19/mo) I pitch 60 matched brands a month for you, about 3 every weekday, each one written "
+    "for that brand and sent from your Gmail, with follow-ups on day 4 and day 10. That's about 20 hours "
+    "a month you get back. Nothing to approve."
 )
 
 EMAIL_CHIP_IDS = (
@@ -273,7 +274,7 @@ def kit_view_email(
         }]
         links = None
         if not is_pro:
-            lines.append("On Pro the brand's name shows right here, and I pitch about 6 brands like this a week for you.")
+            lines.append("On Pro the brand's name shows right here, and I pitch 60 brands like this a month for you.")
             links = [{"label": "See what Pro does ($19/mo)", "href": upgrade_link("kit_view_pro")}]
         return {
             "subject": subject,
@@ -307,7 +308,7 @@ def kit_view_email(
         buttons = [
             {"label": "See who & follow up", "href": chip_link("draft_followup", brand_id=brand_id, kind="kit_view")},
         ]
-        lines.append("On Pro the brand's name shows right here, and I pitch about 6 brands like this a week for you.")
+        lines.append("On Pro the brand's name shows right here, and I pitch 60 brands like this a month for you.")
     links = None if is_pro else [{"label": "See what Pro does ($19/mo)", "href": upgrade_link("kit_view_pro")}]
     return {
         "subject": subject,

@@ -56,8 +56,11 @@ def trial_started_email(first_name: str, ends_at: datetime, unsubscribe_url: str
 
     subject = "Your free week of Pro has started"
     lines = [
-        "I'm on it. Connect Gmail and I'll start pitching this week: about 6 matched brands a week, "
-        "written and sent from your own address, with follow-ups. Nothing to approve.",
+        "I'm on it. Connect Gmail and I start pitching for you: 60 matched brands a month, about 3 every "
+        "weekday, each pitch written for that brand and sent from your own address, with follow-ups. "
+        "Nothing to approve.",
+        "By the end of your free week that's up to 15 brands pitched, about 5 hours of research and writing "
+        "you didn't have to do.",
         "Want different brands? Change your niche and targets in Settings and I'll adjust.",
         f"Your free week ends on <strong>{escape(_date_label(ends_at))}</strong>. "
         "I'll email you 2 days before with what I did, so you can decide.",

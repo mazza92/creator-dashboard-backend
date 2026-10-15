@@ -232,7 +232,7 @@ def board_from_facts(facts: Dict[str, Any], now: Optional[datetime] = None) -> D
 
 def load_board_facts(conn, creator_id: int, kit: Optional[Dict[str, Any]] = None,
                      now: Optional[datetime] = None) -> Dict[str, Any]:
-    from services.polly_autopilot import batch_size, list_items, month_counts, settings
+    from services.polly_autopilot import batch_size, effective_target, list_items, month_counts, settings
     from services.polly_gmail import gmail_configured, load_account
 
     now = now or utc_now()
@@ -249,7 +249,7 @@ def load_board_facts(conn, creator_id: int, kit: Optional[Dict[str, Any]] = None
         sent_at = _aware(datetime.fromisoformat(str(item["sent_at"])))
         if sent_at >= start:
             sent_week += 1
-    target = int(prefs.get("monthly_target") or 24)
+    target = effective_target(prefs.get("monthly_target"))
     return {
         "gmail_available": available,
         "gmail_connected": bool(account and not account.get("revoked_at")),

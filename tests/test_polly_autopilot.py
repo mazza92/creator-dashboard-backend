@@ -10,6 +10,7 @@ import routes.polly_autopilot as rpa
 import services.polly_autopilot as pa
 from services.autopilot_report import next_step, report_note, report_sections, report_subject
 from services.polly_autopilot import (
+    MAX_SENDS_PER_DAY,
     TARGET_MAX,
     TARGET_MIN,
     WEEK_BATCH,
@@ -17,6 +18,7 @@ from services.polly_autopilot import (
     clamp_target,
     compose_followup,
     drafts_note,
+    effective_target,
     next_slots,
     parse_send_days,
     refill_size,
@@ -30,7 +32,7 @@ class SlotTests(unittest.TestCase):
         friday = datetime(2026, 10, 9, 18, 0, tzinfo=timezone.utc)
         slots = next_slots(3, friday, rng=Random(1))
         self.assertEqual([s.strftime("%a %d") for s in slots], ["Mon 12", "Tue 13", "Wed 14"])
-        self.assertTrue(all(14 <= s.hour < 17 for s in slots))
+        self.assertTrue(all(13 <= s.hour < 21 for s in slots))
 
     def test_today_counts_when_window_not_passed(self):
         tuesday_morning = datetime(2026, 10, 6, 8, 0, tzinfo=timezone.utc)
@@ -50,11 +52,18 @@ class SlotTests(unittest.TestCase):
 
 
 class SettingsTests(unittest.TestCase):
-    def test_target_is_clamped(self):
+    def test_target_snaps_to_volume_options(self):
         self.assertEqual(clamp_target(2), TARGET_MIN)
-        self.assertEqual(clamp_target(99), TARGET_MAX)
-        self.assertEqual(clamp_target("20"), 20)
-        self.assertEqual(clamp_target("x"), 24)
+        self.assertEqual(clamp_target(999), TARGET_MAX)
+        self.assertEqual(clamp_target("60"), 60)
+        self.assertEqual(clamp_target(61), 100)
+        self.assertEqual(clamp_target("x"), 60)
+
+    def test_old_default_becomes_new_default(self):
+        self.assertEqual(effective_target(24), 60)
+        self.assertEqual(effective_target(None), 60)
+        self.assertEqual(effective_target(30), 30)
+        self.assertEqual(effective_target(8), 30)
 
     def test_send_days_parse(self):
         self.assertEqual(parse_send_days("024"), [0, 2, 4])
@@ -62,22 +71,23 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(parse_send_days(""), [0, 1, 2, 3, 4])
 
     def test_sends_per_day(self):
-        self.assertEqual(sends_per_day(24, [0, 1, 2, 3, 4]), 2)
-        self.assertEqual(sends_per_day(20, [0, 1, 2, 3, 4]), 1)
-        self.assertEqual(sends_per_day(12, [0, 2]), 2)
+        weekdays = [0, 1, 2, 3, 4]
+        self.assertEqual(sends_per_day(30, weekdays), 2)
+        self.assertEqual(sends_per_day(60, weekdays), 3)
+        self.assertEqual(sends_per_day(100, weekdays), 5)
+        self.assertEqual(sends_per_day(150, weekdays), 8)
+        self.assertEqual(sends_per_day(150, [0, 2]), MAX_SENDS_PER_DAY)
 
 
 class BatchTests(unittest.TestCase):
     def test_bigger_targets_get_bigger_weeks(self):
         self.assertEqual(batch_size({"sent": 0}, 30), 8)
-        self.assertEqual(batch_size({"sent": 0}, 8), 2)
+        self.assertEqual(batch_size({"sent": 0}, 150), 38)
 
     def test_week_batch_capped_by_month_target(self):
-        self.assertEqual(batch_size({"sent": 0, "scheduled": 0, "drafts": 0}, 24), WEEK_BATCH)
-        self.assertEqual(batch_size({"sent": 18, "scheduled": 2, "drafts": 1}, 24), 3)
-        self.assertEqual(batch_size({"sent": 24}, 24), 0)
-        self.assertEqual(batch_size({"sent": 0}, 12), 3)
-        self.assertEqual(batch_size({"sent": 11}, 12), 1)
+        self.assertEqual(batch_size({"sent": 0, "scheduled": 0, "drafts": 0}, 60), WEEK_BATCH)
+        self.assertEqual(batch_size({"sent": 50, "scheduled": 4, "drafts": 1}, 60), 5)
+        self.assertEqual(batch_size({"sent": 60}, 60), 0)
 
 
 class FollowupCopyTests(unittest.TestCase):

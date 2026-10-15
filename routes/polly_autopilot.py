@@ -9,8 +9,10 @@ from services.polly_autopilot import (
     AUTO_DRAFTS_PER_RUN,
     FILL_BLOCKED_WAIT,
     FOLLOWUP_GAPS,
+    MANUAL_BATCH,
     TARGET_MAX,
     TARGET_MIN,
+    TARGET_OPTIONS,
     _default_drafts_email,
     add_draft,
     approve,
@@ -150,6 +152,7 @@ def _status_payload(conn, creator_id, is_pro):
         "per_week": per_week(target),
         "per_day": sends_per_day(target, prefs["send_days"]),
         "target_range": [TARGET_MIN, TARGET_MAX],
+        "target_options": list(TARGET_OPTIONS),
         "max_followups": len(FOLLOWUP_GAPS),
         "targeting": _targeting(conn, creator_id) if is_pro else None,
         "month": counts,
@@ -405,7 +408,7 @@ def plan():
         return err
     try:
         prefs = settings(conn, creator_id)
-        size = batch_size(month_counts(conn, creator_id), prefs["monthly_target"])
+        size = min(MANUAL_BATCH, batch_size(month_counts(conn, creator_id), prefs["monthly_target"]))
         if size <= 0:
             return jsonify({"success": True, "brands": [], "reason": "target_reached"})
         notes, scrape = _creator_context(conn, creator)

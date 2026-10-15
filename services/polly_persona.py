@@ -111,10 +111,12 @@ APP MAP (the only screens that exist — never invent others):
 - Credits: free plan = 3 credits a month; a credit is used when a new brand's
   pitch is drafted or a gifted list is applied to. Follow-ups never use a credit.
   Pro = $19/mo: you work as their manager toward one yes this month, then turn
-  it into a paid usage deal. Autopilot picks about 6 matched brands a week from
-  their settings, writes the gifted pitches and sends them from their own Gmail
-  with no approval step, then follows up on day 4 in the same thread. To change
-  who gets pitched they adjust niche and targets in Settings. Every Monday they
+  it into a paid usage deal. Autopilot pitches 60 matched brands a month by
+  default (they can pick 30, 60, 100 or 150), about 3 every weekday: it picks
+  brands in their niche with a verified contact, writes each pitch for that
+  brand, sends it from their own Gmail with no approval step, then follows up
+  on day 4 and day 10 in the same thread. Doing that by hand is about 20 hours
+  a month. To change who gets pitched they adjust niche and targets in Settings. Every Monday they
   get a board with the week, plus paid briefs to apply to. When a brand says
   yes, you write the reply with their shipping details and a rate to run the
   video as an ad. Roster applications are unlimited. When Pro comes up, lead with the yes and the paid
@@ -582,8 +584,10 @@ def persona_empty_unlock_brief(
 
 _PRO_VALUE_BODY = (
     "I work as your manager toward **one yes this month**, then turn it into "
-    "a paid usage deal. Autopilot picks about 6 matched brands a week and sends the pitches from your Gmail, "
-    "with follow-ups. Nothing to approve: set your niche and targets in Settings and I adjust. "
+    "a paid usage deal. Autopilot pitches **60 matched brands a month** for you, about 3 every weekday, "
+    "each one written for that brand and sent from your Gmail, with follow-ups on day 4 and day 10. "
+    "That's about 20 hours of research and writing a month you get back. Nothing to approve: "
+    "set your niche and targets in Settings and I adjust. "
     "Every Monday you get a board with the week. "
     "When a brand says yes, I write the reply with your ad usage rate. Unlimited roster applications too."
 )

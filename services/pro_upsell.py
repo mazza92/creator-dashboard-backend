@@ -37,7 +37,7 @@ def pro_week_email(first_name: str, facts: Dict[str, Any], trial: bool = False,
     names = [n for n in (facts.get("brand_names") or []) if n][:2]
     matched = int(facts.get("matched") or 0)
 
-    subject = "Try a week of me pitching for you, free" if trial else "Want me to pitch for you every week?"
+    subject = "Try a week of me pitching for you, free" if trial else "Want me to pitch 60 brands a month for you?"
     if pitched:
         lines = [f"You've had me write {_plural(pitched, 'pitch')} so far. On the free plan that's "
                  f"{FREE_PITCHES} a month, and you send each one yourself."]
@@ -50,10 +50,12 @@ def pro_week_email(first_name: str, facts: Dict[str, Any], trial: bool = False,
         tail = f", plus {_plural(more, 'other brand')}," if more > 0 else ""
         lines.append(f"I already have {shown}{tail} matched to you and waiting.")
     lines += [
-        "On Pro I run it for you on <strong>Autopilot</strong>: about 6 matched brands a week, every pitch "
-        "written and sent from your Gmail, and a follow-up on day 4. Nothing to approve.",
-        "Replies land in your own inbox. The creators who get boxes are the ones who keep pitching every week, "
-        "and that's the part I take off your plate.",
+        "On Pro I run it for you on <strong>Autopilot</strong>: <strong>60 matched brands a month</strong>, "
+        "about 3 every weekday. Each one fits your niche and has a verified contact, each pitch is written for "
+        "that brand, sent from your Gmail and followed up on day 4 and day 10. Nothing to approve.",
+        "Doing that yourself is about 20 hours a month of finding brands, hunting contacts and writing pitches. "
+        "The creators who land boxes and paid deals are the ones who pitch every week without fail, "
+        "and that's the part I take off your plate. Replies land in your own inbox.",
     ]
     if trial:
         lines.append("Try it free for 7 days. Cancel before day 7 and you pay nothing.")

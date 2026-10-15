@@ -316,9 +316,9 @@ class TestTrialJourney(unittest.TestCase):
     def test_first_sent_waits_for_send_window_to_close(self):
         from services.pro_trial import first_sent_ready_at
         self.assertEqual(first_sent_ready_at(datetime(2026, 10, 15, 14, 14, tzinfo=timezone.utc)),
-                         datetime(2026, 10, 15, 17, 0, tzinfo=timezone.utc))
-        self.assertEqual(first_sent_ready_at(datetime(2026, 10, 15, 19, 0, tzinfo=timezone.utc)),
-                         datetime(2026, 10, 15, 20, 0, tzinfo=timezone.utc))
+                         datetime(2026, 10, 15, 21, 0, tzinfo=timezone.utc))
+        self.assertEqual(first_sent_ready_at(datetime(2026, 10, 15, 21, 30, tzinfo=timezone.utc)),
+                         datetime(2026, 10, 15, 22, 30, tzinfo=timezone.utc))
 
     def test_ending_email_without_sends_pushes_gmail(self):
         from services.pro_trial import trial_ending_email

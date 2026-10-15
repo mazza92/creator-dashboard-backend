@@ -12,7 +12,9 @@ FACTS = {"pitched": 2, "left": 1, "matched": 5, "brand_names": ["Glossier", "Tow
 class TestCopy(unittest.TestCase):
     def test_pro_offer(self):
         mail = pu.pro_week_email("Ana", FACTS)
-        self.assertEqual(mail["subject"], "Want me to pitch for you every week?")
+        self.assertEqual(mail["subject"], "Want me to pitch 60 brands a month for you?")
+        self.assertIn("60 matched brands a month", mail["html"])
+        self.assertIn("about 20 hours a month", mail["html"])
         self.assertIn("write 2 pitches so far", mail["html"])
         self.assertIn("<strong>Glossier</strong> and <strong>Tower 28</strong>, plus 3 other brands,", mail["html"])
         self.assertIn("Autopilot", mail["html"])

@@ -393,6 +393,8 @@ def autopilot_snapshot(cursor, start: datetime) -> Dict[str, Any]:
                 LIMIT 25
                 """
             )
+            from services.polly_autopilot import effective_target
+
             for row in cursor.fetchall() or []:
                 creators.append({
                     "creator_id": row.get("creator_id"),
@@ -400,7 +402,7 @@ def autopilot_snapshot(cursor, start: datetime) -> Dict[str, Any]:
                     "enabled": bool(row.get("enabled")),
                     "gmail": bool(row.get("gmail")),
                     "pro": bool(row.get("pro")),
-                    "monthly_target": int(row.get("monthly_target") or 0),
+                    "monthly_target": effective_target(row.get("monthly_target")),
                     "drafts": int(row.get("drafts") or 0),
                     "approved": int(row.get("approved") or 0),
                     "sent": int(row.get("sent") or 0),
