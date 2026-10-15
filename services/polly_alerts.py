@@ -890,6 +890,18 @@ def email_paywall_followups(conn, limit: int = 25, dry_run: bool = False, send_f
     return out
 
 
+def email_weekly_digests(conn, dry_run: bool = False, send_fn: Optional[Callable] = None, test_email: str = "",
+                         now: Optional[datetime] = None, limit: int = 25) -> List[Dict[str, Any]]:
+    """Monday picks for free creators, in batches across the day (the lifecycle digest)."""
+    if (now or utc_now()).weekday() != 0 or send_fn or test_email:
+        return []
+    from lifecycle_email_engine import process_weekly_digest
+
+    stats = process_weekly_digest(batch_size=limit, limit=limit, dry_run=dry_run, skip_day_check=True)
+    sent = int(stats.get("sent") or 0)
+    return [{"kind": "weekly_digest", "sent": sent}] if sent else []
+
+
 def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "", send_fn: Optional[Callable] = None) -> Dict[str, Any]:
     """Cron entry: post due nudges in-thread, email them + kit views."""
     from services.polly_tracker import process_due_nudges
@@ -943,9 +955,11 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
         from services.autopilot_report import email_autopilot_reports
         from services.pro_manager import email_monday_boards, email_renewal_notes
         from services.pro_trial import email_trial_journey
+        from services.pro_upsell import email_pro_week
 
         for job in (email_trial_journey, email_autopilot_blocked, email_month_reports, email_unsent_briefs,
-                    email_renewal_notes, email_monday_boards, email_autopilot_reports, email_paywall_followups):
+                    email_renewal_notes, email_monday_boards, email_autopilot_reports, email_paywall_followups,
+                    email_pro_week, email_weekly_digests):
             try:
                 emails += job(conn, dry_run=dry_run, send_fn=send_fn, test_email=test_email)
             except Exception as err:

@@ -351,10 +351,16 @@ def send_lifecycle_email(
         if template_slug not in POLLY_GAP_EXEMPT and _polly_emailed_recently(cursor, creator_id):
             return False, "Polly emailed in the last 24h"
 
-        cursor.execute("SELECT user_id, approval_status FROM creators WHERE id = %s", (creator_id,))
+        cursor.execute("""
+            SELECT c.user_id, c.approval_status, u.unsubscribed_at
+            FROM creators c LEFT JOIN users u ON u.id = c.user_id
+            WHERE c.id = %s
+        """, (creator_id,))
         creator_row = cursor.fetchone()
         if creator_row and creator_row.get('approval_status') in WAITLISTED_STATUSES:
             return False, f"Waitlisted ({creator_row['approval_status']}) - no lifecycle emails"
+        if creator_row and creator_row.get('unsubscribed_at') and template_slug != 'email_verification':
+            return False, "Unsubscribed"
         user_id = creator_row['user_id'] if creator_row else creator_id
 
         # Generate signed unsubscribe URL
@@ -1046,7 +1052,10 @@ def process_weekly_digest(
                 LEFT JOIN email_preferences ep ON ep.creator_id = c.id
                 WHERE u.is_verified = true
                 AND ep.unsubscribed_at IS NULL
+                AND u.unsubscribed_at IS NULL
                 AND COALESCE(c.subscription_tier, 'free') NOT IN ('pro', 'elite')
+                AND COALESCE(c.unlocks_tier, 'free') <> 'pro'
+                AND COALESCE(u.last_login, c.created_at) > NOW() - INTERVAL '30 days'
                 AND {WAITLIST_EXCLUDE_SQL}
                 AND NOT EXISTS (
                     SELECT 1 FROM lifecycle_email_sends s

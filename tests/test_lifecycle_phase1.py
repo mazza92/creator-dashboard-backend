@@ -134,6 +134,35 @@ class TestPollyEmailGap(unittest.TestCase):
         polly_check.assert_not_called()
         deliver.assert_called_once()
 
+    def test_unsubscribe_link_stops_lifecycle_email(self):
+        cursor = MagicMock()
+        template = {'slug': 'weekly_digest', 'feature_flag': None, 'exempt_from_daily_cap': True,
+                    'subject_template': 'Hi', 'body_template_file': 'lifecycle/21_weekly_digest.html'}
+        cursor.fetchone.side_effect = [template, None,
+                                       {'user_id': 3, 'approval_status': 'approved', 'unsubscribed_at': '2026-10-01'}]
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        with patch.object(engine, 'get_db_connection', return_value=conn), \
+                patch.object(engine, 'check_throttling', return_value=(True, '')), \
+                patch.object(engine, '_deliver_email') as deliver:
+            ok, msg = engine.send_lifecycle_email('a@b.com', 'weekly_digest', {}, 7)
+        self.assertFalse(ok)
+        self.assertEqual(msg, 'Unsubscribed')
+        deliver.assert_not_called()
+
+    def test_weekly_digest_skips_unsubscribed_and_pro(self):
+        cursor = MagicMock()
+        cursor.fetchall.return_value = []
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        with patch.object(engine, 'get_db_connection', return_value=conn), \
+                patch.object(engine, 'is_feature_enabled', return_value=True):
+            engine.process_weekly_digest(limit=5, skip_day_check=True)
+        sql = cursor.execute.call_args[0][0]
+        self.assertIn('u.unsubscribed_at IS NULL', sql)
+        self.assertIn("COALESCE(c.unlocks_tier, 'free') <> 'pro'", sql)
+        self.assertIn("INTERVAL '30 days'", sql)
+
 
 class TestReengagementOncePerDormancy(unittest.TestCase):
     TEMPLATE = {
