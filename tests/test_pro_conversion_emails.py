@@ -290,18 +290,50 @@ class TestTrialJourney(unittest.TestCase):
         self.assertIn("Cancel in Settings", mail["html"])
         self.assertIn("Manage subscription", mail["html"])
 
+    def test_ending_email_says_what_stops_on_cancel(self):
+        from services.pro_trial import trial_ending_email
+        mail = trial_ending_email("Ana", self.ENDS, {"sent": 4, "followups_due": 3, "lined_up": 6, "gmail": True})
+        self.assertIn("If you cancel, I stop: <strong>the 3 follow-ups already scheduled and the 6 pitches "
+                      "lined up</strong> won't go out, so the brands I already pitched", mail["html"])
+        quiet = trial_ending_email("Ana", self.ENDS, {"sent": 0, "lined_up": 1, "gmail": True})["html"]
+        self.assertIn("<strong>the 1 pitch lined up</strong> won't go out.", quiet)
+        none = trial_ending_email("Ana", self.ENDS, {"sent": 2, "gmail": True})["html"]
+        self.assertNotIn("If you cancel, I stop", none)
+
+    def test_first_sent_email_names_brands(self):
+        from services.pro_trial import trial_first_sent_email
+        nxt = datetime(2026, 10, 16, 15, 10, tzinfo=timezone.utc)
+        mail = trial_first_sent_email("Ana", self.ENDS, {"names": ["Glossier", "Tower 28"], "lined_up": 4,
+                                                         "next_at": nxt})
+        self.assertEqual(mail["subject"], "Your first pitches are out: Glossier and Tower 28")
+        self.assertIn("sent 2 pitches from your Gmail to <strong>Glossier</strong>, <strong>Tower 28</strong>",
+                      mail["html"])
+        self.assertIn("4 more pitches are lined up, the next one on Friday, Oct 16", mail["html"])
+        self.assertIn("Wednesday, Oct 21", mail["html"])
+        one = trial_first_sent_email("Ana", self.ENDS, {"names": ["Rhode"]})
+        self.assertEqual(one["subject"], "Your first pitch is out: Rhode")
+
+    def test_first_sent_waits_for_send_window_to_close(self):
+        from services.pro_trial import first_sent_ready_at
+        self.assertEqual(first_sent_ready_at(datetime(2026, 10, 15, 14, 14, tzinfo=timezone.utc)),
+                         datetime(2026, 10, 15, 17, 0, tzinfo=timezone.utc))
+        self.assertEqual(first_sent_ready_at(datetime(2026, 10, 15, 19, 0, tzinfo=timezone.utc)),
+                         datetime(2026, 10, 15, 20, 0, tzinfo=timezone.utc))
+
     def test_ending_email_without_sends_pushes_gmail(self):
         from services.pro_trial import trial_ending_email
         mail = trial_ending_email("Ana", self.ENDS, {"sent": 0, "gmail": False})
         self.assertIn("haven't sent anything", mail["subject"])
         self.assertIn("Connect Gmail", mail["html"])
 
-    def _journey(self, started_ago, gmail=False, nudged=False, reminded=False, recipient=True):
+    def _journey(self, started_ago, gmail=False, nudged=False, reminded=False, recipient=True,
+                 first_sent_ago=None, told_sent=False):
         from services import pro_trial
         now = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
         cur = MagicMock()
         cur.fetchall.return_value = [{"creator_id": 4, "started": now - started_ago, "gmail": gmail,
-                                      "nudged": nudged, "reminded": reminded}]
+                                      "nudged": nudged, "reminded": reminded, "told_sent": told_sent,
+                                      "first_sent": now - first_sent_ago if first_sent_ago else None}]
         conn = MagicMock()
         conn.cursor.return_value = cur
         who = {"user_id": 9, "email": "a@x.co", "first": "Ana", "is_pro": True} if recipient else None
@@ -314,7 +346,8 @@ class TestTrialJourney(unittest.TestCase):
                 patch.object(polly_alerts, "_log_email"), \
                 patch.object(pro_trial, "_billing_recipient", return_value={"user_id": 9, "email": "a@x.co",
                                                                                "first": "Ana"}) as billing, \
-                patch.object(pro_trial, "trial_facts", return_value={"sent": 2, "gmail": True}):
+                patch.object(pro_trial, "trial_facts", return_value={"sent": 2, "gmail": True}), \
+                patch.object(pro_trial, "first_sent_facts", return_value={"names": ["Glossier"]}):
             out = pro_trial.email_trial_journey(conn, send_fn=send)
         return [o["kind"] for o in out], billing
 
@@ -330,6 +363,18 @@ class TestTrialJourney(unittest.TestCase):
         self.assertEqual(self._journey(timedelta(days=5, hours=2), gmail=True)[0], ["trial_ending"])
         self.assertEqual(self._journey(timedelta(days=5, hours=2), reminded=True)[0], [])
         self.assertEqual(self._journey(timedelta(days=7, hours=1))[0], [])
+
+    def test_first_sent_once_after_window_and_not_after_recap(self):
+        from datetime import timedelta
+        day2 = timedelta(days=2)
+        self.assertEqual(self._journey(day2, gmail=True, first_sent_ago=timedelta(hours=20))[0],
+                         ["trial_first_sent"])
+        self.assertEqual(self._journey(day2, gmail=True, first_sent_ago=timedelta(minutes=10))[0], [])
+        self.assertEqual(self._journey(day2, gmail=True, first_sent_ago=timedelta(hours=20), told_sent=True)[0], [])
+        self.assertEqual(self._journey(timedelta(days=5, hours=2), gmail=True,
+                                       first_sent_ago=timedelta(hours=20))[0], ["trial_ending"])
+        self.assertEqual(self._journey(day2, gmail=True, first_sent_ago=timedelta(hours=20),
+                                       recipient=False)[0], [])
 
     def test_ending_reminder_reaches_unsubscribed(self):
         from datetime import timedelta

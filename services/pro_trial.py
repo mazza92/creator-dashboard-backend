@@ -3,7 +3,8 @@
 Trials convert when the creator sees Polly working before day 7, so the journey is:
 - day 0 (checkout webhook): welcome, connect Gmail so pitches start this week;
 - day 1+ (Polly cron): one nudge if Gmail still isn't connected;
-- day 5 (Polly cron): what Polly did this week + the charge date and how to cancel.
+- first send day, after the send window: which pitches went out from their Gmail;
+- day 5 (Polly cron): what Polly did this week, what stops if they cancel, the charge date and how to cancel.
 """
 
 from __future__ import annotations
@@ -79,6 +80,64 @@ def trial_gmail_email(first_name: str, ends_at: datetime, unsubscribe_url: str =
     return {"subject": subject, "html": render_email(first_name, subject, lines, buttons, unsubscribe_url)}
 
 
+def first_sent_ready_at(first_sent: datetime) -> datetime:
+    """After the day's send window closes, so one email covers that day's whole batch."""
+    from services.polly_autopilot import SEND_WINDOW_UTC
+
+    first_sent = _aware(first_sent)
+    close = first_sent.astimezone(timezone.utc).replace(hour=SEND_WINDOW_UTC[1], minute=0, second=0, microsecond=0)
+    return close if close > first_sent else first_sent + timedelta(hours=1)
+
+
+def first_sent_facts(conn, creator_id: int, since: datetime) -> Dict[str, Any]:
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute(
+        """
+        SELECT brand_name FROM polly_autopilot_queue
+        WHERE creator_id = %s AND status = 'sent' AND sent_at >= %s
+        ORDER BY sent_at
+        """,
+        (creator_id, since),
+    )
+    names = [r["brand_name"] or "a brand" for r in cur.fetchall()]
+    cur.execute(
+        """
+        SELECT COUNT(*) AS n, MIN(scheduled_for) AS next_at FROM polly_autopilot_queue
+        WHERE creator_id = %s AND status = 'approved'
+        """,
+        (creator_id,),
+    )
+    nxt = dict(cur.fetchone() or {})
+    return {"names": names, "lined_up": int(nxt.get("n") or 0), "next_at": nxt.get("next_at")}
+
+
+def trial_first_sent_email(first_name: str, ends_at: datetime, facts: Dict[str, Any],
+                           unsubscribe_url: str = "") -> Dict[str, str]:
+    from services.polly_alerts import render_email
+
+    names = facts.get("names") or ["a brand"]
+    shown = names[:3]
+    title = " and ".join(shown[:2]) if len(shown) <= 2 else f"{shown[0]}, {shown[1]} and more"
+    subject = f"Your first {'pitch is' if len(names) == 1 else 'pitches are'} out: {title}"
+    listed = ", ".join(f"<strong>{escape(n)}</strong>" for n in shown)
+    if len(names) > 3:
+        listed += f" and {_plural(len(names) - 3, 'other')}"
+    lines = [
+        f"I just sent {_plural(len(names), 'pitch')} from your Gmail to {listed}. "
+        "They're in your Sent folder, and any reply lands straight in your inbox.",
+        "If a brand is quiet, I follow up on day 4 in the same thread. That second touch is where a lot "
+        "of replies come from, and it's the step most creators skip.",
+    ]
+    if facts.get("lined_up") and facts.get("next_at"):
+        lines.append(f"{_plural(facts['lined_up'], 'more pitch')} {'is' if facts['lined_up'] == 1 else 'are'} "
+                     f"lined up, the next one on {escape(_date_label(_aware(facts['next_at'])))}.")
+    lines.append(f"Your free week ends on <strong>{escape(_date_label(ends_at))}</strong>. "
+                 "I'll send you a recap 2 days before.")
+    buttons = [{"label": "See what I sent", "href": _link("/creator/dashboard/for-you", "trial_first_sent",
+                                                          {"chip": "line_up"})}]
+    return {"subject": subject, "html": render_email(first_name, subject, lines, buttons, unsubscribe_url)}
+
+
 def trial_facts(conn, creator_id: int, since: datetime) -> Dict[str, Any]:
     from services.polly_autopilot import REPLIED_EVENTS
 
@@ -88,7 +147,8 @@ def trial_facts(conn, creator_id: int, since: datetime) -> Dict[str, Any]:
         SELECT
           COUNT(*) FILTER (WHERE status = 'sent' AND sent_at >= %s) AS sent,
           COUNT(*) FILTER (WHERE followup_sent_at >= %s) AS followups,
-          COUNT(*) FILTER (WHERE status IN ('approved', 'draft')) AS lined_up
+          COUNT(*) FILTER (WHERE status IN ('approved', 'draft')) AS lined_up,
+          COUNT(*) FILTER (WHERE status = 'sent' AND followup_status IN ('scheduled', 'headsup')) AS followups_due
         FROM polly_autopilot_queue WHERE creator_id = %s
         """,
         (since, since, creator_id),
@@ -113,6 +173,7 @@ def trial_facts(conn, creator_id: int, since: datetime) -> Dict[str, Any]:
         "sent": int(queue.get("sent") or 0),
         "followups": int(queue.get("followups") or 0),
         "lined_up": int(queue.get("lined_up") or 0),
+        "followups_due": int(queue.get("followups_due") or 0),
         "replies": int(events.get("replies") or 0),
         "kit_views": int(events.get("kit_views") or 0),
         "gmail": cur.fetchone() is not None,
@@ -175,9 +236,6 @@ def trial_ending_email(first_name: str, ends_at: datetime, facts: Dict[str, Any]
             "Here's your free week so far: " + ", ".join(done) + ".",
             "Each pitch gets a follow-up on day 4, so the ones I sent this week are still working.",
         ]
-        if facts.get("lined_up"):
-            lines.append(f"{_plural(facts['lined_up'], 'more pitch')} {'is' if facts['lined_up'] == 1 else 'are'} "
-                         "lined up for next week.")
         buttons = [{"label": "See what I sent", "href": _link("/creator/dashboard/for-you", "trial_ending",
                                                               {"chip": "line_up"})}]
     else:
@@ -188,6 +246,14 @@ def trial_ending_email(first_name: str, ends_at: datetime, facts: Dict[str, Any]
             "Connect Gmail now and I'll still get this week's brands out before your trial ends.",
         ]
         buttons = [{"label": "Connect Gmail", "href": connect_gmail_link("trial_ending")}]
+    stops = []
+    if facts.get("followups_due"):
+        stops.append(f"the {_plural(facts['followups_due'], 'follow-up')} already scheduled")
+    if facts.get("lined_up"):
+        stops.append(f"the {_plural(facts['lined_up'], 'pitch')} lined up")
+    if stops:
+        tail = ", so the brands I already pitched won't hear from you again" if facts.get("followups_due") else ""
+        lines.append(f"If you cancel, I stop: <strong>{' and '.join(stops)}</strong> won't go out{tail}.")
     lines.append(
         f"Your free week ends on <strong>{when}</strong>. Unless you cancel, Pro continues at $19/mo "
         "and I keep going. Not for you? Cancel in Settings before then and you won't be charged."
@@ -216,7 +282,11 @@ def email_trial_journey(conn, limit: int = 40, dry_run: bool = False, send_fn: O
                EXISTS (SELECT 1 FROM polly_email_log l WHERE l.creator_id = c.id AND l.ok
                        AND l.kind = 'trial_gmail' AND l.sent_at >= c.subscription_started_at) AS nudged,
                EXISTS (SELECT 1 FROM polly_email_log l WHERE l.creator_id = c.id AND l.ok
-                       AND l.kind = 'trial_ending' AND l.sent_at >= c.subscription_started_at) AS reminded
+                       AND l.kind = 'trial_ending' AND l.sent_at >= c.subscription_started_at) AS reminded,
+               EXISTS (SELECT 1 FROM polly_email_log l WHERE l.creator_id = c.id AND l.ok
+                       AND l.kind = 'trial_first_sent' AND l.sent_at >= c.subscription_started_at) AS told_sent,
+               (SELECT MIN(q.sent_at) FROM polly_autopilot_queue q WHERE q.creator_id = c.id
+                       AND q.status = 'sent' AND q.sent_at >= c.subscription_started_at) AS first_sent
         FROM creators c
         WHERE c.subscription_status = 'trialing' AND c.subscription_started_at IS NOT NULL
         ORDER BY c.subscription_started_at
@@ -232,8 +302,12 @@ def email_trial_journey(conn, limit: int = 40, dry_run: bool = False, send_fn: O
         if now >= ends_at:
             continue
         age = now - started
+        first_sent = row.get("first_sent")
         if age >= ENDING_NOTICE_AFTER and not row["reminded"]:
             kind = "trial_ending"
+        elif (first_sent and not row.get("told_sent") and not row["reminded"]
+              and now >= first_sent_ready_at(first_sent)):
+            kind = "trial_first_sent"
         elif age >= GMAIL_NUDGE_AFTER and not row["gmail"] and not row["nudged"] and not row["reminded"]:
             if _recently_emailed(conn, cid, ["trial_ending", "kit_view", "nudge", "polly_brief"], OTHER_ALERT_GAP):
                 continue
@@ -246,6 +320,8 @@ def email_trial_journey(conn, limit: int = 40, dry_run: bool = False, send_fn: O
         unsub = _unsubscribe_url(who["user_id"])
         if kind == "trial_ending":
             mail = trial_ending_email(who["first"], ends_at, trial_facts(conn, cid, started), unsub)
+        elif kind == "trial_first_sent":
+            mail = trial_first_sent_email(who["first"], ends_at, first_sent_facts(conn, cid, started), unsub)
         else:
             mail = trial_gmail_email(who["first"], ends_at, unsub)
         item = {"creator_id": cid, "kind": kind, "subject": mail["subject"], "to": who["email"]}
