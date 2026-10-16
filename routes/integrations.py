@@ -88,6 +88,31 @@ SEARCH_TOOL = {
     },
 }
 
+# Anthropic's directory rejects descriptions or results that tell Claude how to answer,
+# so the Claude connector describes the tool factually and drops presentation hints.
+CLAUDE_TOOL = {
+    **SEARCH_TOOL,
+    "description": (
+        "Searches Newcollab's directory of vetted UGC (user-generated content) creators by niche, with "
+        "optional platform and country filters. Returns up to 8 creators with platform, niches, follower "
+        "band, engagement and gifting preference, a handle and profile link for creators with a public "
+        "profile, and a link to start a gifted creator roster on Newcollab. Use when the user wants to find "
+        "UGC creators or micro-influencers for product seeding, PR packages, or TikTok or Instagram ads."
+    ),
+}
+
+
+def _claude_payload(payload):
+    out = json.loads(json.dumps(payload).replace("utm_source=chatgpt", "utm_source=claude"))
+    out.pop("how_to_present", None)
+    return out
+
+
+VARIANTS = {
+    "chatgpt": {"tool": SEARCH_TOOL, "instructions": INSTRUCTIONS, "shape": lambda p: p},
+    "claude": {"tool": CLAUDE_TOOL, "instructions": None, "shape": _claude_payload},
+}
+
 
 def _redis():
     return current_app.config.get("SESSION_REDIS")
@@ -130,13 +155,13 @@ def _rpc_error(msg_id, code, message):
     return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}}
 
 
-def _tool_call(params):
+def _tool_call(params, variant):
     name = (params or {}).get("name")
     args = (params or {}).get("arguments") or {}
-    if name != SEARCH_TOOL["name"]:
+    if name != variant["tool"]["name"]:
         return None, (-32602, f"Unknown tool: {name}")
     try:
-        payload = search_creators(args, redis_client=_redis())
+        payload = variant["shape"](search_creators(args, redis_client=_redis()))
     except ValueError as exc:
         return {"content": [{"type": "text", "text": str(exc)}], "isError": True}, None
     return {
@@ -146,7 +171,7 @@ def _tool_call(params):
     }, None
 
 
-def _handle_rpc(msg):
+def _handle_rpc(msg, variant):
     if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0" or not msg.get("method"):
         return _rpc_error(msg.get("id") if isinstance(msg, dict) else None, -32600, "Invalid request")
     method = msg["method"]
@@ -157,21 +182,23 @@ def _handle_rpc(msg):
     if method == "initialize":
         requested = params.get("protocolVersion")
         version = requested if requested in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0]
-        return _rpc_result(msg_id, {
+        result = {
             "protocolVersion": version,
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": SERVER_INFO,
-            "instructions": INSTRUCTIONS,
-        })
+        }
+        if variant["instructions"]:
+            result["instructions"] = variant["instructions"]
+        return _rpc_result(msg_id, result)
     if method == "ping":
         return _rpc_result(msg_id, {})
     if method == "tools/list":
-        return _rpc_result(msg_id, {"tools": [SEARCH_TOOL]})
+        return _rpc_result(msg_id, {"tools": [variant["tool"]]})
     if method == "tools/call":
         if _too_many():
             return _rpc_error(msg_id, -32000, f"Rate limit: {RATE_LIMIT_PER_MINUTE} requests per minute")
         try:
-            result, err = _tool_call(params)
+            result, err = _tool_call(params, variant)
         except Exception:
             traceback.print_exc()
             return _rpc_error(msg_id, -32603, "Search unavailable")
@@ -186,6 +213,15 @@ def _handle_rpc(msg):
 
 @integrations_bp.route("/mcp", methods=["POST", "GET", "DELETE", "OPTIONS"])
 def mcp_endpoint():
+    return _serve_mcp(VARIANTS["chatgpt"])
+
+
+@integrations_bp.route("/claude/mcp", methods=["POST", "GET", "DELETE", "OPTIONS"])
+def claude_mcp_endpoint():
+    return _serve_mcp(VARIANTS["claude"])
+
+
+def _serve_mcp(variant):
     if request.method == "OPTIONS":
         return Response(status=204)
     if request.method != "POST":
@@ -195,9 +231,9 @@ def mcp_endpoint():
     except Exception:
         return jsonify(_rpc_error(None, -32700, "Parse error")), 400
     if isinstance(body, list):
-        replies = [r for r in (_handle_rpc(m) for m in body) if r is not None]
+        replies = [r for r in (_handle_rpc(m, variant) for m in body) if r is not None]
         return (jsonify(replies), 200) if replies else Response(status=202)
-    reply = _handle_rpc(body)
+    reply = _handle_rpc(body, variant)
     if reply is None:
         return Response(status=202)
     return jsonify(reply), 200

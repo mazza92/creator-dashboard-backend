@@ -210,24 +210,49 @@ class TestMcp(unittest.TestCase):
         except Exception as exc:
             self.skipTest(f"flask unavailable: {exc}")
         self.mod = integrations
+        self.gpt = integrations.VARIANTS["chatgpt"]
+        self.claude = integrations.VARIANTS["claude"]
 
     def test_initialize_and_list(self):
         init = self.mod._handle_rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                                     "params": {"protocolVersion": "2025-03-26"}})
+                                     "params": {"protocolVersion": "2025-03-26"}}, self.gpt)
         self.assertEqual(init["result"]["protocolVersion"], "2025-03-26")
         self.assertIn("tools", init["result"]["capabilities"])
-        tools = self.mod._handle_rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        tools = self.mod._handle_rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, self.gpt)
         tool = tools["result"]["tools"][0]
         self.assertEqual(tool["name"], "search_ugc_creators")
         self.assertEqual(tool["inputSchema"]["required"], ["niche"])
         self.assertTrue(tool["annotations"]["readOnlyHint"])
 
     def test_notification_has_no_reply(self):
-        self.assertIsNone(self.mod._handle_rpc({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        self.assertIsNone(self.mod._handle_rpc({"jsonrpc": "2.0", "method": "notifications/initialized"}, self.gpt))
 
     def test_unknown_method(self):
-        out = self.mod._handle_rpc({"jsonrpc": "2.0", "id": 3, "method": "nope"})
+        out = self.mod._handle_rpc({"jsonrpc": "2.0", "id": 3, "method": "nope"}, self.gpt)
         self.assertEqual(out["error"]["code"], -32601)
+
+    def test_claude_variant_has_no_behaviour_instructions(self):
+        from unittest import mock
+
+        init = self.mod._handle_rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize"}, self.claude)
+        self.assertNotIn("instructions", init["result"])
+        tool = self.mod._handle_rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, self.claude)["result"]["tools"][0]
+        self.assertEqual(tool["annotations"]["title"], "Search vetted UGC creators")
+        self.assertNotIn("link every", tool["description"])
+        payload = {"creators": [{"handle": "@a", "preview_url": "https://newcollab.co/kit/a?utm_source=chatgpt"}],
+                   "brand_cta": {"url": "https://app.newcollab.co/brands/launch?utm_source=chatgpt"},
+                   "how_to_present": "Show each handle"}
+        with mock.patch.object(self.mod, "search_creators", return_value=payload), \
+                mock.patch.object(self.mod, "_too_many", return_value=False), \
+                mock.patch.object(self.mod, "_redis", return_value=None):
+            out = self.mod._handle_rpc({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                                        "params": {"name": "search_ugc_creators",
+                                                   "arguments": {"niche": "skincare"}}}, self.claude)
+        result = out["result"]["structuredContent"]
+        self.assertNotIn("how_to_present", result)
+        self.assertIn("utm_source=claude", result["brand_cta"]["url"])
+        self.assertIn("utm_source=claude", result["creators"][0]["preview_url"])
+        self.assertIn("utm_source=chatgpt", payload["brand_cta"]["url"])
 
 
 if __name__ == "__main__":
