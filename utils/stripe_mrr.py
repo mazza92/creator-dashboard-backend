@@ -29,11 +29,10 @@ def fetch_stripe_mrr():
     """
     secret_key = os.getenv('STRIPE_SECRET_KEY')
 
-    # Support both old $12 and new $19 price IDs for grandfathered subscribers
-    pro_price_ids = set()
-    current_price = os.getenv('STRIPE_PRICE_ID_PRO')
-    if current_price:
-        pro_price_ids.add(current_price)
+    # Monthly, yearly, and the old $12 price for grandfathered subscribers
+    pro_price_ids = {
+        price for price in (os.getenv('STRIPE_PRICE_ID_PRO'), os.getenv('STRIPE_PRICE_ID_PRO_ANNUAL')) if price
+    }
     # Old $12 price ID (grandfathered subscribers)
     pro_price_ids.add('price_1TN7n9EYev1UAuLgQcLAr73g')
 
