@@ -102,8 +102,12 @@ CLAUDE_TOOL = {
 }
 
 
+def _retag(payload, source):
+    return json.loads(json.dumps(payload).replace("utm_source=chatgpt", f"utm_source={source}"))
+
+
 def _claude_payload(payload):
-    out = json.loads(json.dumps(payload).replace("utm_source=chatgpt", "utm_source=claude"))
+    out = _retag(payload, "claude")
     out.pop("how_to_present", None)
     return out
 
@@ -111,6 +115,7 @@ def _claude_payload(payload):
 VARIANTS = {
     "chatgpt": {"tool": SEARCH_TOOL, "instructions": INSTRUCTIONS, "shape": lambda p: p},
     "claude": {"tool": CLAUDE_TOOL, "instructions": None, "shape": _claude_payload},
+    "gemini": {"tool": SEARCH_TOOL, "instructions": INSTRUCTIONS, "shape": lambda p: _retag(p, "gemini")},
 }
 
 
@@ -219,6 +224,11 @@ def mcp_endpoint():
 @integrations_bp.route("/claude/mcp", methods=["POST", "GET", "DELETE", "OPTIONS"])
 def claude_mcp_endpoint():
     return _serve_mcp(VARIANTS["claude"])
+
+
+@integrations_bp.route("/gemini/mcp", methods=["POST", "GET", "DELETE", "OPTIONS"])
+def gemini_mcp_endpoint():
+    return _serve_mcp(VARIANTS["gemini"])
 
 
 def _serve_mcp(variant):

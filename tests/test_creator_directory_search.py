@@ -254,6 +254,26 @@ class TestMcp(unittest.TestCase):
         self.assertIn("utm_source=claude", result["creators"][0]["preview_url"])
         self.assertIn("utm_source=chatgpt", payload["brand_cta"]["url"])
 
+    def test_gemini_variant_keeps_presentation_and_retags_links(self):
+        from unittest import mock
+
+        gemini = self.mod.VARIANTS["gemini"]
+        init = self.mod._handle_rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize"}, gemini)
+        self.assertIn("instructions", init["result"])
+        payload = {"creators": [{"handle": "@a", "preview_url": "https://newcollab.co/kit/a?utm_source=chatgpt"}],
+                   "brand_cta": {"url": "https://app.newcollab.co/brands/launch?utm_source=chatgpt"},
+                   "how_to_present": "Show each handle"}
+        with mock.patch.object(self.mod, "search_creators", return_value=payload), \
+                mock.patch.object(self.mod, "_too_many", return_value=False), \
+                mock.patch.object(self.mod, "_redis", return_value=None):
+            out = self.mod._handle_rpc({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                                        "params": {"name": "search_ugc_creators",
+                                                   "arguments": {"niche": "fitness"}}}, gemini)
+        result = out["result"]["structuredContent"]
+        self.assertIn("how_to_present", result)
+        self.assertIn("utm_source=gemini", result["brand_cta"]["url"])
+        self.assertIn("utm_source=gemini", result["creators"][0]["preview_url"])
+
 
 if __name__ == "__main__":
     unittest.main()
