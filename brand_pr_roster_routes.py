@@ -305,7 +305,8 @@ def _save_selected(cursor, campaign_id, ids):
 
 _BRAND_FACING_EVENTS = frozenset({
     "roster_view", "roster_profile_view", "roster_select", "roster_deselect",
-    "roster_skip", "roster_unskip", "roster_lock", "roster_shipped", "roster_csv",
+    "roster_skip", "roster_unskip", "roster_lock", "roster_shipped", "roster_creator_shipped",
+    "roster_csv",
 })
 _ROSTER_VIEW_DEDUPE_SECONDS = 120
 
@@ -1940,6 +1941,13 @@ def mark_shipped(token):
             conn.close()
             return jsonify({"success": False, "error": "Lock picks before marking shipped"}), 400
 
+        data = request.get_json(silent=True) or {}
+        only_id = data.get("application_id")
+        try:
+            only_id = int(only_id) if only_id not in (None, "") else None
+        except (TypeError, ValueError):
+            return jsonify({"success": False, "error": "Invalid application_id"}), 400
+
         cursor.execute(
             """
             UPDATE brand_pr_applications
@@ -1947,27 +1955,44 @@ def mark_shipped(token):
             WHERE brand_id = %s
               AND status = 'ships'
               AND (campaign_id = %s OR id = ANY(%s))
+              AND (%s::int IS NULL OR id = %s::int)
+            RETURNING id
+            """,
+            (campaign["brand_id"], campaign["id"], _selected_ids(campaign), only_id, only_id),
+        )
+        if only_id and not cursor.fetchall():
+            conn.rollback()
+            conn.close()
+            return jsonify({"success": False, "error": "That creator isn't waiting on a shipment"}), 400
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS n FROM brand_pr_applications
+            WHERE brand_id = %s AND status = 'ships' AND shipped_at IS NULL
+              AND (campaign_id = %s OR id = ANY(%s))
             """,
             (campaign["brand_id"], campaign["id"], _selected_ids(campaign)),
         )
-        cursor.execute(
-            """
-            UPDATE brand_pr_campaigns
-            SET status = 'shipped', shipped_at = COALESCE(shipped_at, NOW()), updated_at = NOW()
-            WHERE id = %s
-            """,
-            (campaign["id"],),
-        )
+        all_shipped = int(cursor.fetchone()["n"]) == 0
+        if all_shipped:
+            cursor.execute(
+                """
+                UPDATE brand_pr_campaigns
+                SET status = 'shipped', shipped_at = COALESCE(shipped_at, NOW()), updated_at = NOW()
+                WHERE id = %s
+                """,
+                (campaign["id"],),
+            )
         _record_roster_event(
             cursor,
-            "roster_shipped",
+            "roster_shipped" if all_shipped else "roster_creator_shipped",
             brand_id=campaign["brand_id"],
-            meta={"campaign_id": campaign["id"]},
+            meta={"campaign_id": campaign["id"], "application_id": only_id},
         )
-        try:
-            mark_free_campaign_consumed(cursor, campaign["brand_id"])
-        except Exception:
-            current_app.logger.exception("[roster] mark_free_campaign_consumed failed")
+        if all_shipped:
+            try:
+                mark_free_campaign_consumed(cursor, campaign["brand_id"])
+            except Exception:
+                current_app.logger.exception("[roster] mark_free_campaign_consumed failed")
         conn.commit()
         notify_creators_async(campaign["id"])
         campaign = _load_campaign(cursor, token)

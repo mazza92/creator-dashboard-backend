@@ -179,10 +179,10 @@ def test_deliver_marks_posted_and_auto_ships_locked_campaign(monkeypatch):
 
 def test_creator_notices_claim_before_send_and_release_on_failure():
     rows = [
-        _pick_row(id=1, picked_notified_at=None, shipped_notified_at=None, campaign_shipped_at=None, brand_id=9),
+        _pick_row(id=1, picked_notified_at=None, shipped_notified_at=None, creator_shipped_at=None, brand_id=9),
         _pick_row(id=2, picked_notified_at=datetime.now(timezone.utc), shipped_notified_at=None,
-                  campaign_shipped_at=datetime.now(timezone.utc), brand_id=9),
-        _pick_row(id=3, picked_notified_at=None, shipped_notified_at=None, campaign_shipped_at=None, brand_id=9),
+                  creator_shipped_at=datetime.now(timezone.utc), brand_id=9),
+        _pick_row(id=3, picked_notified_at=None, shipped_notified_at=None, creator_shipped_at=None, brand_id=9),
     ]
     cur = FakeCursor([rows, {"id": 1}, {"id": 2}, None])
     sent = []

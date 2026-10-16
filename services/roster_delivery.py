@@ -231,10 +231,11 @@ def build_ship_reminder_email(row: dict, reminder: int) -> dict:
         subject = f"Your {brand} creator is ready to ship" if picks == 1 else f"Your {who} for {brand} are ready to ship"
         body = [
             _p(f"Hi {escape(greeting_for_brand(row))},"),
-            _p(f"You picked {who} for {escape(brand)} on {escape(when)}. Their addresses are ready."),
+            _p(f"You locked your {escape(brand)} roster on {escape(when)} and {who} "
+               f"{'is' if picks == 1 else 'are'} still waiting on a box. Their addresses are ready."),
             _steps([
                 "Download the shipping CSV and import it into Shopify or ShipStation.",
-                "Click <b>I've shipped everyone</b> on the roster.",
+                "Mark each creator shipped as their box goes out (or all at once).",
                 "We brief each creator and collect their content in your inbox.",
             ]),
             _p("Each creator posts 1 organic video tagging you and sends 1 raw UGC video you can reuse in ads for 6 months."),
@@ -340,7 +341,7 @@ _CREATOR_NOTICE_SQL = """
     SELECT a.id, a.creator_id, a.brand_id, a.shipping_address,
            a.picked_notified_at, a.shipped_notified_at,
            camp.id AS campaign_id, camp.status AS campaign_status,
-           camp.shipped_at AS campaign_shipped_at, camp.sku_note,
+           a.shipped_at AS creator_shipped_at, camp.sku_note,
            b.brand_name, b.hero_product, b.instagram_handle, b.tiktok_handle,
            u.email, u.first_name
     FROM brand_pr_applications a
@@ -354,7 +355,7 @@ _CREATOR_NOTICE_SQL = """
       AND COALESCE(TRIM(u.email), '') <> ''
       AND (
         a.picked_notified_at IS NULL
-        OR (camp.shipped_at IS NOT NULL AND a.shipped_notified_at IS NULL)
+        OR (a.shipped_at IS NOT NULL AND a.shipped_notified_at IS NULL)
       )
 """
 
@@ -400,7 +401,7 @@ def send_creator_notices(
         ]
         return stats
     for row in rows:
-        shipped = row.get("campaign_shipped_at") is not None
+        shipped = row.get("creator_shipped_at") is not None
         if row["picked_notified_at"] is None:
             column, extra = "picked_notified_at", ("shipped_notified_at" if shipped else None)
             payload, kind = build_creator_picked_email(row, already_shipped=shipped), "picked"
@@ -460,7 +461,7 @@ def send_ship_reminders(cursor, conn, *, dry_run: bool = False, send_fn: Callabl
         SELECT camp.id AS campaign_id, camp.brand_id, camp.token, camp.locked_at,
                b.brand_name, b.contact_email, {_brand_first_name_sql(cursor)},
                (SELECT COUNT(*) FROM brand_pr_applications a
-                 WHERE a.campaign_id = camp.id AND a.status IN ('ships', 'posted')) AS pick_count,
+                 WHERE a.campaign_id = camp.id AND a.status = 'ships' AND a.shipped_at IS NULL) AS pick_count,
                (SELECT MAX(e.sent_at) FROM brand_emails e
                  WHERE e.campaign_id = camp.id AND e.trigger_number = %s AND e.status = 'sent') AS r1_at,
                (SELECT MAX(e.sent_at) FROM brand_emails e
