@@ -40,7 +40,15 @@ PLAN_PRICE_LABEL = "$299/mo"
 MAX_URL_LEN = 600
 MAX_NOTE_LEN = 500
 
+BRIEF_FIELDS = {
+    "message": 280,
+    "must_include": 500,
+    "avoid": 300,
+    "tags": 160,
+}
+
 _READY = False
+_BRIEF_READY = False
 _READY_LOCK = threading.Lock()
 
 
@@ -56,6 +64,54 @@ def ensure_delivery_columns(cursor, conn=None) -> bool:
             conn.commit()
         _READY = ok
         return ok
+
+
+def ensure_brief_column(cursor, conn=None) -> bool:
+    global _BRIEF_READY
+    if _BRIEF_READY:
+        return True
+    ok = ensure_columns(cursor, "brand_pr_campaigns", {"brief": "JSONB"})
+    if ok and conn is not None:
+        conn.commit()
+    _BRIEF_READY = ok
+    return ok
+
+
+def brief_select_sql(cursor, alias: str = "camp") -> str:
+    global _BRIEF_READY
+    if not _BRIEF_READY and public_column_exists(cursor, "brand_pr_campaigns", "brief"):
+        _BRIEF_READY = True
+    return f"{alias}.brief" if _BRIEF_READY else "NULL::jsonb AS brief"
+
+
+def clean_brief(raw: Any) -> tuple:
+    """Returns (brief, error). Empty fields are dropped; an all-empty brief clears it."""
+    if not isinstance(raw, dict):
+        return None, "Brief must be an object"
+    out = {}
+    for key, limit in BRIEF_FIELDS.items():
+        text = str(raw.get(key) or "").replace("\r", "").strip()
+        if len(text) > limit:
+            return None, f"Keep {key.replace('_', ' ')} under {limit} characters"
+        if text:
+            out[key] = text
+    ref = str(raw.get("reference_url") or "").strip()
+    if ref:
+        url = clean_content_url(ref)
+        if not url:
+            return None, "Reference link must be a full http(s) URL"
+        out["reference_url"] = url
+    if out:
+        out["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return out, None
+
+
+def brief_public(raw: Any) -> Optional[dict]:
+    data = parse_delivered(raw)
+    keys = list(BRIEF_FIELDS) + ["reference_url"]
+    if not any(data.get(k) for k in keys):
+        return None
+    return {k: data.get(k) or "" for k in keys + ["updated_at"]}
 
 
 def delivery_select_sql(cursor, alias: str = "a") -> str:
@@ -169,6 +225,73 @@ def _deliverables(row: dict) -> str:
     )
 
 
+def _brief_teaser(row: dict) -> str:
+    brief = brief_public(row.get("brief"))
+    if not brief or not brief.get("message"):
+        return ""
+    return (
+        '<p style="margin: 0 0 16px; padding: 12px 14px; background: #f5f5f7; border-radius: 10px; '
+        'font-size: 15px; line-height: 1.5; color: #1d1d1f;">'
+        f'<span style="color: #6e6e73;">Their brief in one line:</span><br>{escape(brief["message"])}</p>'
+    )
+
+
+def build_creator_brief_added_email(row: dict) -> dict:
+    brand = safe_brand_name(row.get("brand_name"))
+    subject = f"{brand} added a brief for your post"
+    inner = "".join([
+        _p(f"Hi {escape(_first_name(row.get('first_name')))},"),
+        _p(f"{escape(brand)} just shared what they'd love to see in your content."),
+        _brief_teaser(row),
+        _p("Take a minute to read it before you film. It's the easiest way to get picked again."),
+    ])
+    url = _link("/creator/dashboard/pr-brands", "roster_creator", "brief", {"picked": row["id"]})
+    return {
+        "subject": subject,
+        "html": _wrap(subject, f"{brand} shared their brief for your PR post.", inner, url, "See my brief"),
+        "url": url,
+    }
+
+
+def notify_brief_added_async(campaign_id: int) -> None:
+    """One email per picked creator when a brand adds a brief after locking."""
+
+    def run():
+        from pr_crm_routes import get_db_connection
+
+        try:
+            conn = get_db_connection()
+        except Exception:
+            traceback.print_exc()
+            return
+        try:
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute(
+                """
+                SELECT a.id, b.brand_name, camp.brief, u.email, u.first_name
+                FROM brand_pr_applications a
+                JOIN brand_pr_campaigns camp ON camp.id = a.campaign_id
+                JOIN pr_brands b ON b.id = a.brand_id
+                JOIN creators cr ON cr.id = a.creator_id
+                JOIN users u ON u.id = cr.user_id
+                WHERE camp.id = %s AND a.status = 'ships'
+                  AND COALESCE(TRIM(u.email), '') <> ''
+                """,
+                (campaign_id,),
+            )
+            for row in cursor.fetchall() or []:
+                payload = build_creator_brief_added_email(dict(row))
+                res = _default_send(row["email"], payload["subject"], payload["html"], "roster_creator_brief")
+                if not res.get("success"):
+                    print(f"[roster-delivery] brief email failed app={row['id']}: {res.get('error')}")
+        except Exception:
+            traceback.print_exc()
+        finally:
+            conn.close()
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 def build_creator_picked_email(row: dict, *, already_shipped: bool = False) -> dict:
     brand = safe_brand_name(row.get("brand_name"))
     product = _product(row)
@@ -186,6 +309,7 @@ def build_creator_picked_email(row: dict, *, already_shipped: bool = False) -> d
     inner = "".join([
         _p(f"Hi {escape(_first_name(row.get('first_name')))},"),
         _p(f"Good news: {escape(brand)} picked you from their creator roster. They're sending you {gift} for free."),
+        _brief_teaser(row),
         _p("<b>What happens next</b>"),
         _steps([
             ship_line,
@@ -341,7 +465,7 @@ _CREATOR_NOTICE_SQL = """
     SELECT a.id, a.creator_id, a.brand_id, a.shipping_address,
            a.picked_notified_at, a.shipped_notified_at,
            camp.id AS campaign_id, camp.status AS campaign_status,
-           a.shipped_at AS creator_shipped_at, camp.sku_note,
+           a.shipped_at AS creator_shipped_at, camp.sku_note, {brief},
            b.brand_name, b.hero_product, b.instagram_handle, b.tiktok_handle,
            u.email, u.first_name
     FROM brand_pr_applications a
@@ -385,7 +509,7 @@ def send_creator_notices(
     """Picked / shipped emails to creators. Each send is claimed first so cron and
     the inline hook never double-send."""
     send = send_fn or _default_send
-    sql = _CREATOR_NOTICE_SQL
+    sql = _CREATOR_NOTICE_SQL.format(brief=brief_select_sql(cursor))
     params: list = [CREATOR_NOTICE_WINDOW_DAYS]
     if campaign_id:
         sql += " AND camp.id = %s"

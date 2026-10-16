@@ -46,8 +46,12 @@ from services.pg_hotpath_schema import (
     public_table_exists,
 )
 from services.roster_delivery import (
+    brief_public,
+    clean_brief,
     delivered_public,
     delivery_select_sql,
+    ensure_brief_column,
+    notify_brief_added_async,
     notify_creators_async,
 )
 
@@ -306,7 +310,7 @@ def _save_selected(cursor, campaign_id, ids):
 _BRAND_FACING_EVENTS = frozenset({
     "roster_view", "roster_profile_view", "roster_select", "roster_deselect",
     "roster_skip", "roster_unskip", "roster_lock", "roster_shipped", "roster_creator_shipped",
-    "roster_csv",
+    "roster_csv", "roster_brief",
 })
 _ROSTER_VIEW_DEDUPE_SECONDS = 120
 
@@ -1333,6 +1337,7 @@ def _campaign_public(campaign, cards):
                 "deal_chips": chips,
                 "slot_limit": slot_limit,
                 "sku_note": campaign.get("sku_note") or "",
+                "brief": brief_public(campaign.get("brief")),
                 "status": campaign.get("status"),
                 "locked_at": campaign.get("locked_at").isoformat() if campaign.get("locked_at") else None,
                 "shipped_at": campaign.get("shipped_at").isoformat() if campaign.get("shipped_at") else None,
@@ -1922,6 +1927,47 @@ def shipping_csv(token):
             mimetype="text/csv",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@brand_pr_roster_bp.route("/r/<token>/brief", methods=["POST"])
+def save_roster_brief(token):
+    """Brand writes the creator brief from the roster. Picked creators see it on their PR page."""
+    try:
+        data = request.get_json(silent=True) or {}
+        brief, error = clean_brief(data.get("brief"))
+        if error:
+            return jsonify({"success": False, "error": error}), 400
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        _ensure_schema(cursor, conn)
+        campaign = _load_campaign(cursor, token)
+        if not campaign:
+            conn.close()
+            return jsonify({"success": False, "error": "Roster link not found or expired"}), 404
+        if not ensure_brief_column(cursor, conn):
+            conn.close()
+            return jsonify({"success": False, "error": "Try again in a minute."}), 503
+        had_brief = bool(brief_public(campaign.get("brief")))
+        cursor.execute(
+            "UPDATE brand_pr_campaigns SET brief = %s, updated_at = NOW() WHERE id = %s",
+            (Json(brief) if brief else None, campaign["id"]),
+        )
+        _record_roster_event(
+            cursor,
+            "roster_brief",
+            brand_id=campaign["brand_id"],
+            meta={"campaign_id": campaign["id"], "fields": sorted(k for k in (brief or {}) if k != "updated_at")},
+        )
+        conn.commit()
+        if brief and not had_brief and campaign.get("status") in ("locked", "shipped"):
+            notify_brief_added_async(campaign["id"])
+        campaign = _load_campaign(cursor, token)
+        payload = _build_roster_response(cursor, campaign)
+        conn.close()
+        return jsonify(payload), 200
     except Exception as e:
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500

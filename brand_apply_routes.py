@@ -489,7 +489,12 @@ def list_applications():
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
         _ensure_schema(cursor, conn)
-        from services.roster_delivery import delivered_public, delivery_select_sql
+        from services.roster_delivery import (
+            brief_public,
+            brief_select_sql,
+            delivered_public,
+            delivery_select_sql,
+        )
 
         cursor.execute(
             f"""
@@ -503,6 +508,7 @@ def list_applications():
                 a.shipped_at,
                 {delivery_select_sql(cursor)},
                 camp.sku_note,
+                {brief_select_sql(cursor)},
                 camp.status AS campaign_status,
                 b.slug, b.brand_name, b.logo_url, b.category, b.description,
                 b.hero_product, b.min_followers, b.micro_friendly, b.regions,
@@ -532,6 +538,7 @@ def list_applications():
                     "product": row.get("sku_note") or row.get("hero_product") or "",
                     "shipped": bool(row.get("shipped_at")) or row.get("campaign_status") == "shipped",
                     "delivered": delivered_public(row),
+                    "brief": brief_public(row.get("brief")),
                 }
             apps.append(card)
         return jsonify({"success": True, "applications": apps})

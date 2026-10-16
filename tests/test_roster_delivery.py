@@ -177,7 +177,44 @@ def test_deliver_marks_posted_and_auto_ships_locked_campaign(monkeypatch):
     assert consumed == [9]
 
 
-def test_creator_notices_claim_before_send_and_release_on_failure():
+def test_clean_brief_trims_drops_empty_and_validates():
+    brief, error = rd.clean_brief({
+        "message": "  Show how fast it foams  ",
+        "must_include": "",
+        "avoid": "Competitor brands",
+        "tags": "@bite #plasticfree",
+        "reference_url": "tiktok.com/@bite/video/1",
+        "junk": "ignored",
+    })
+    assert error is None
+    assert brief["message"] == "Show how fast it foams"
+    assert "must_include" not in brief and "junk" not in brief
+    assert brief["reference_url"] == "https://tiktok.com/@bite/video/1"
+    assert brief["updated_at"]
+
+    assert rd.clean_brief({"message": "x" * 281})[1]
+    assert rd.clean_brief({"reference_url": "javascript:alert(1)"})[1]
+    assert rd.clean_brief({"message": "  "}) == ({}, None)
+    assert rd.brief_public({}) is None
+    assert rd.brief_public({"avoid": "x"})["message"] == ""
+
+
+def test_picked_email_includes_brief_teaser_escaped():
+    out = rd.build_creator_picked_email(_pick_row(brief={"message": "Show the <foam>"}))
+    assert "Their brief in one line" in out["html"]
+    assert "Show the &lt;foam&gt;" in out["html"]
+    assert "Their brief in one line" not in rd.build_creator_picked_email(_pick_row())["html"]
+
+
+def test_brief_added_email_links_to_brief():
+    out = rd.build_creator_brief_added_email(_pick_row(brief={"message": "Morning routine"}))
+    assert out["subject"] == "ReGlow added a brief for your post"
+    assert "Morning routine" in out["html"]
+    assert "picked=501" in out["url"]
+
+
+def test_creator_notices_claim_before_send_and_release_on_failure(monkeypatch):
+    monkeypatch.setattr(rd, "_BRIEF_READY", True)
     rows = [
         _pick_row(id=1, picked_notified_at=None, shipped_notified_at=None, creator_shipped_at=None, brand_id=9),
         _pick_row(id=2, picked_notified_at=datetime.now(timezone.utc), shipped_notified_at=None,
