@@ -45,6 +45,11 @@ from services.pg_hotpath_schema import (
     public_index_exists,
     public_table_exists,
 )
+from services.roster_delivery import (
+    delivered_public,
+    delivery_select_sql,
+    notify_creators_async,
+)
 
 brand_pr_roster_bp = Blueprint("brand_pr_roster", __name__, url_prefix="/api/brand-pr")
 
@@ -300,7 +305,7 @@ def _save_selected(cursor, campaign_id, ids):
 
 _BRAND_FACING_EVENTS = frozenset({
     "roster_view", "roster_profile_view", "roster_select", "roster_deselect",
-    "roster_skip", "roster_unskip", "roster_lock", "roster_shipped",
+    "roster_skip", "roster_unskip", "roster_lock", "roster_shipped", "roster_csv",
 })
 _ROSTER_VIEW_DEDUPE_SECONDS = 120
 
@@ -1181,6 +1186,7 @@ def _fetch_applications(cursor, campaign, *, include_hidden=False):
             a.declined_at,
             a.shipped_at,
             a.campaign_id,
+            {delivery_select_sql(cursor)},
             c.username,
             c.image_profile,
             c.followers_count,
@@ -1296,6 +1302,8 @@ def _card_from_row(row, *, reveal_shipping, selected_ids, campaign_status):
             "country": addr.get("country") or "",
             "phone": addr.get("phone") or "",
         }
+    if is_selected and status == "posted":
+        card["delivered"] = delivered_public(row)
     return card
 
 
@@ -1357,7 +1365,13 @@ def _build_roster_response(cursor, campaign, *, include_hidden=False):
     current_app.logger.info("[roster] engagement %s/%s cards have a rate", with_rate, len(cards))
     payload = _campaign_public(campaign, cards)
     try:
-        payload["billing"] = billing_public_summary(cursor, campaign["brand_id"])
+        billing = billing_public_summary(cursor, campaign["brand_id"])
+        billing["delivered_count"] = sum(1 for c in cards if c.get("delivered"))
+        billing["next_applicants"] = sum(
+            1 for c in cards
+            if c.get("status") == "review" and c["application_id"] not in selected_ids
+        )
+        payload["billing"] = billing
     except Exception:
         current_app.logger.exception("[roster] billing summary failed")
         payload["billing"] = None
@@ -1772,6 +1786,7 @@ def lock_roster(token):
             conn.close()
             return jsonify({"success": False, "error": error}), 400
         conn.commit()
+        notify_creators_async(campaign["id"])
         campaign = _load_campaign(cursor, token)
         payload = _build_roster_response(cursor, campaign)
         conn.close()
@@ -1836,6 +1851,7 @@ def quick_pick_roster(token):
             conn.close()
             return jsonify({"success": False, "error": error}), 400
         conn.commit()
+        notify_creators_async(campaign["id"])
         campaign = _load_campaign(cursor, token)
         payload = _build_roster_response(cursor, campaign)
         conn.close()
@@ -1860,11 +1876,22 @@ def shipping_csv(token):
             return jsonify({"success": False, "error": "Lock picks before exporting shipping"}), 400
 
         payload = _build_roster_response(cursor, campaign)
-        conn.close()
         selected = [
             c for c in payload["creators"]
             if c.get("status") in ("ships", "posted") and c.get("shipping_address")
         ]
+        try:
+            _record_roster_event(
+                cursor,
+                "roster_csv",
+                brand_id=campaign["brand_id"],
+                meta={"campaign_id": campaign["id"], "rows": len(selected)},
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            current_app.logger.exception("[roster] csv event failed")
+        conn.close()
         buf = io.StringIO()
         writer = csv.writer(buf)
         writer.writerow([
@@ -1942,6 +1969,7 @@ def mark_shipped(token):
         except Exception:
             current_app.logger.exception("[roster] mark_free_campaign_consumed failed")
         conn.commit()
+        notify_creators_async(campaign["id"])
         campaign = _load_campaign(cursor, token)
         payload = _build_roster_response(cursor, campaign)
         conn.close()
@@ -1980,6 +2008,7 @@ def content_inbox(token):
                 "status": c["status"],
                 "ready": ready,
                 "posts": c.get("posts") or [],
+                "delivered": c.get("delivered"),
                 "message": (
                     "Ready to download"
                     if ready
@@ -2628,12 +2657,18 @@ def cron_roster_waiting_emails():
             brand_id=brand_id,
             skip_time_checks=skip_hour,
         )
+        delivery = None
+        if not test_email and not brand_id:
+            from services.roster_delivery import process_roster_delivery
+
+            delivery = process_roster_delivery(dry_run=dry_run)
         return jsonify({
             "success": True,
             "dry_run": dry_run,
             "minted_brand_ids": minted,
             "pro_placement": pro,
             "stats": stats,
+            "delivery": delivery,
         }), 200
     except Exception as e:
         traceback.print_exc()

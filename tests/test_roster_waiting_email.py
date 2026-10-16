@@ -434,6 +434,17 @@ class TestQuickPick(unittest.TestCase):
         self.assertIn("Review your roster", payload["html"])
         self.assertNotIn("Approve these", payload["html"])
 
+    def test_roster_url_is_never_visible_link_text(self):
+        import re
+
+        for trigger in (1, 3, 4):
+            for picks in (None, self.PICKS):
+                payload = build_email(trigger, "TALGH", "team", 9, "abc123",
+                                      base_url="https://app.newcollab.co", top_picks=picks)
+                visible = re.sub(r"<[^>]+>", " ", payload["html"])
+                self.assertNotIn("app.newcollab.co/r/", visible)
+                self.assertIn("Newcollab sends your gifted PR", payload["html"])
+
     def test_archive_email_shows_shortlist(self):
         payload = build_email(4, "TALGH", "team", 9, "abc123", base_url="https://app.newcollab.co", top_picks=self.PICKS)
         self.assertIn("Approve these 2 in one click", payload["html"])

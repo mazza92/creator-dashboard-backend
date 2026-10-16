@@ -23,6 +23,7 @@ from services.pg_hotpath_schema import public_column_exists, public_table_exists
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates")
 FRONTEND_FALLBACK = "https://app.newcollab.co"
+BRAND_FOOTER_NOTE = "Newcollab sends your gifted PR to creators who already want your product."
 
 SEND_HOUR_LOCAL = 10
 ACTIVITY_SKIP_DAYS = 3
@@ -378,6 +379,7 @@ def render_roster_waiting_html(
         action_url=action_url,
         action_text=action_text,
         unsubscribe_url=None,
+        footer_note=BRAND_FOOTER_NOTE,
     )
     return outer
 

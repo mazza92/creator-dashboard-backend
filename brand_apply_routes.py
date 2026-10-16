@@ -489,8 +489,10 @@ def list_applications():
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
         _ensure_schema(cursor, conn)
+        from services.roster_delivery import delivered_public, delivery_select_sql
+
         cursor.execute(
-            """
+            f"""
             SELECT
                 a.id AS application_id,
                 a.brand_id,
@@ -498,14 +500,19 @@ def list_applications():
                 a.source,
                 a.applied_at,
                 a.selected_posts,
+                a.shipped_at,
+                {delivery_select_sql(cursor)},
+                camp.sku_note,
+                camp.status AS campaign_status,
                 b.slug, b.brand_name, b.logo_url, b.category, b.description,
                 b.hero_product, b.min_followers, b.micro_friendly, b.regions,
                 b.platforms, b.collaboration_type, b.avg_product_value,
                 b.has_application_form, b.response_rate, b.price_point,
-                b.application_form_url,
+                b.application_form_url, b.instagram_handle, b.tiktok_handle,
                 (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact
             FROM brand_pr_applications a
             JOIN pr_brands b ON b.id = a.brand_id
+            LEFT JOIN brand_pr_campaigns camp ON camp.id = a.campaign_id
             WHERE a.creator_id = %s
             ORDER BY a.applied_at DESC
             """,
@@ -515,10 +522,17 @@ def list_applications():
         apps = []
         for row in rows:
             card = _brand_card(row)
+            card["id"] = row["brand_id"]
             card["application_id"] = row["application_id"]
             card["apply_status"] = row["status"] or "review"
             card["applied_at"] = row["applied_at"].isoformat() if row.get("applied_at") else None
             card["source"] = row.get("source")
+            if card["apply_status"] in ("ships", "posted"):
+                card["pick"] = {
+                    "product": row.get("sku_note") or row.get("hero_product") or "",
+                    "shipped": bool(row.get("shipped_at")) or row.get("campaign_status") == "shipped",
+                    "delivered": delivered_public(row),
+                }
             apps.append(card)
         return jsonify({"success": True, "applications": apps})
     except Exception as e:
@@ -529,6 +543,58 @@ def list_applications():
         print(f"[brand-apply] list error: {e}")
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@brand_apply_bp.route("/applications/<int:application_id>/deliver", methods=["POST"])
+def deliver_application_content(application_id):
+    """Picked creator submits their organic post + raw UGC links for the brand."""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    data = request.get_json(silent=True) or {}
+
+    from services.roster_delivery import (
+        deliver_content,
+        ensure_delivery_columns,
+        notify_brand_content_ready,
+    )
+
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        if not ensure_delivery_columns(cursor, conn):
+            return jsonify({"success": False, "error": "Try again in a minute."}), 503
+        result, error = deliver_content(
+            cursor,
+            creator_id=creator_id,
+            application_id=application_id,
+            organic_url=data.get("organic_url"),
+            ugc_url=data.get("ugc_url"),
+            note=data.get("note"),
+        )
+        if error:
+            conn.rollback()
+            status = 404 if error == "Application not found" else 400
+            return jsonify({"success": False, "error": error}), status
+        conn.commit()
+        if result["first"]:
+            try:
+                notify_brand_content_ready(cursor, conn, application_id)
+            except Exception:
+                conn.rollback()
+                traceback.print_exc()
+        return jsonify({"success": True, "status": "posted", "delivered": result["content"]})
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"[brand-apply] deliver error: {e}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": "Could not save your content"}), 500
     finally:
         cursor.close()
         conn.close()
