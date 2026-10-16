@@ -5259,12 +5259,19 @@ def get_spotlight_brands():
         return jsonify({'error': str(e)}), 500
 
 
+# Unauthenticated routes: never return account links (user_id, stripe_customer_id).
+PUBLIC_BRAND_COLUMNS = (
+    'id, name, description, category, website, created_at, spotlight, logo, '
+    'application_url, application_method, form_platform'
+)
+
+
 @app.route('/brands', methods=['GET'])
 def get_brands():
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute('SELECT * FROM brands')
+        cursor.execute(f'SELECT {PUBLIC_BRAND_COLUMNS} FROM brands')
         brands = cursor.fetchall()
         conn.close()
 
@@ -5277,13 +5284,12 @@ def get_brand(brand_id):
     try:
         conn = get_db_connection()  # Your DB connection function
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute('SELECT * FROM brands WHERE id = %s', (brand_id,))
+        cursor.execute(f'SELECT {PUBLIC_BRAND_COLUMNS} FROM brands WHERE id = %s', (brand_id,))
         brand = cursor.fetchone()
         conn.close()
         if not brand:
             app.logger.info(f"Brand with ID {brand_id} not found")
             return jsonify({'error': 'Brand not found'}), 404
-        app.logger.info(f"Fetched brand: {brand}")
         return jsonify(brand), 200
     except Exception as e:
         app.logger.error(f"Error fetching brand {brand_id}: {str(e)}")
