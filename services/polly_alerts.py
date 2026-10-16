@@ -957,10 +957,11 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
         from services.pro_manager import email_monday_boards, email_renewal_notes
         from services.pro_trial import email_trial_journey
         from services.pro_upsell import email_pro_week
+        from services.ugc_roundup import email_ugc_roundups
 
         for job in (email_trial_journey, email_autopilot_blocked, email_month_reports, email_unsent_briefs,
-                    email_renewal_notes, email_monday_boards, email_autopilot_reports, email_paywall_followups,
-                    email_pro_week, email_weekly_digests):
+                    email_renewal_notes, email_monday_boards, email_autopilot_reports, email_ugc_roundups,
+                    email_paywall_followups, email_pro_week, email_weekly_digests):
             try:
                 emails += job(conn, dry_run=dry_run, send_fn=send_fn, test_email=test_email)
             except Exception as err:

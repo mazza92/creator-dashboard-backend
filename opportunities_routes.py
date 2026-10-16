@@ -1440,6 +1440,7 @@ def admin_ingest():
 
         created = []
         skipped = []
+        filtered = []
         errors = []
 
         for raw in gigs[:100]:
@@ -1469,7 +1470,13 @@ def admin_ingest():
                 from services.opportunity_enricher import clean_scanner_gig
                 from services.gig_listing import ensure_listing_brief_column
                 from services.polly_gigs import brand_logo_src
+                from services.ugc_gig_filter import ugc_gig_verdict
 
+                is_ugc, ugc_reason = ugc_gig_verdict(
+                    title,
+                    deliverable,
+                    [raw.get('niche_required'), raw.get('category')],
+                )
                 cleaned = clean_scanner_gig(raw)
                 campaign_description = cleaned["campaign_description"]
                 buyer = cleaned["brand_name"] or buyer
@@ -1494,6 +1501,8 @@ def admin_ingest():
                     notes_bits.append(f"score={raw['legitimacy_score']}")
                 if raw.get('apply_email'):
                     notes_bits.append(f"email={raw['apply_email']}")
+                if not is_ugc:
+                    notes_bits.append(f"ugc_filter={ugc_reason}")
                 additional_notes = " | ".join(notes_bits)
 
                 niches = []
@@ -1553,7 +1562,10 @@ def admin_ingest():
                         published_at, closes_at, listing_brief
                     ) VALUES (
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        'live', NOW(), NOW() + INTERVAL '21 days', %s
+                        %s,
+                        CASE WHEN %s THEN NOW() END,
+                        CASE WHEN %s THEN NOW() + INTERVAL '21 days' ELSE NOW() END,
+                        %s
                     ) RETURNING id
                 ''', (
                     buyer[:255],
@@ -1572,10 +1584,17 @@ def admin_ingest():
                     additional_notes,
                     deadline,
                     int(raw.get('spots_total') or 10),
+                    'live' if is_ugc else 'rejected',
+                    is_ugc,
+                    is_ugc,
                     json.dumps(cleaned.get('listing_brief') or {}),
                 ))
                 row = cursor.fetchone()
-                created.append({'id': row['id'], 'title': title, 'fingerprint': fingerprint})
+                if is_ugc:
+                    created.append({'id': row['id'], 'title': title, 'fingerprint': fingerprint})
+                else:
+                    filtered.append({'id': row['id'], 'title': original_title, 'reason': ugc_reason})
+                    skipped.append({'id': row['id'], 'fingerprint': fingerprint, 'reason': f'not_ugc:{ugc_reason}'})
             except Exception as item_err:
                 errors.append({'title': raw.get('title'), 'error': str(item_err)})
 
@@ -1610,22 +1629,89 @@ def admin_ingest():
                 f'Backlog promoted: {went_live}.\n\n'
                 f'Close junk from Admin → Opportunities (Live).\n'
                 f'https://app.newcollab.co/admin/opportunities\n\n'
-                f'Skipped duplicates: {len(skipped)}'
+                f'Filtered as not UGC: {len(filtered)}\n'
+                f'Skipped duplicates: {len(skipped) - len(filtered)}'
             )
 
         return jsonify({
             'success': True,
             'created': created,
             'skipped': skipped,
+            'filtered': filtered,
             'errors': errors,
             'created_count': len(created),
             'skipped_count': len(skipped),
+            'filtered_count': len(filtered),
             'went_live_count': went_live,
         }), 201
 
     except Exception as e:
         print(f"Error in admin_ingest: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@opportunities_bp.route('/admin/ugc-cleanup', methods=['POST'])
+@admin_required
+def admin_ugc_cleanup():
+    """Reject live scanner gigs that are not UGC creator work. Dry run unless {"apply": true}."""
+    from services.ugc_gig_filter import ugc_gig_verdict
+
+    data = request.get_json(silent=True) or {}
+    apply = data.get('apply') is True
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cursor.execute(
+            """
+            SELECT id, product_name, campaign_description, creator_niches
+            FROM opportunities
+            WHERE status = 'live' AND additional_notes ILIKE %s
+            ORDER BY id DESC
+            """,
+            ('%[scanner:%',),
+        )
+        rows = cursor.fetchall() or []
+        rejected = []
+        for row in rows:
+            ok, reason = ugc_gig_verdict(row['product_name'], row['campaign_description'], row['creator_niches'])
+            if not ok:
+                rejected.append({'id': row['id'], 'title': row['product_name'], 'reason': reason})
+
+        by_reason = {}
+        for item in rejected:
+            by_reason[item['reason']] = by_reason.get(item['reason'], 0) + 1
+
+        if apply and rejected:
+            for item in rejected:
+                cursor.execute(
+                    """
+                    UPDATE opportunities
+                    SET status = 'rejected',
+                        additional_notes = COALESCE(additional_notes, '') || %s
+                    WHERE id = %s AND status = 'live'
+                    """,
+                    (f" | ugc_filter={item['reason']}", item['id']),
+                )
+            conn.commit()
+        else:
+            conn.rollback()
+
+        return jsonify({
+            'success': True,
+            'applied': apply,
+            'live_scanned': len(rows),
+            'rejected_count': len(rejected),
+            'kept_count': len(rows) - len(rejected),
+            'by_reason': by_reason,
+            'rejected': rejected[:300],
+        })
+    except Exception as e:
+        conn.rollback()
+        print(f"Error in admin_ugc_cleanup: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
 
 
 @opportunities_bp.route('/admin/enrich', methods=['POST'])
