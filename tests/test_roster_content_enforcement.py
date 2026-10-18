@@ -80,6 +80,23 @@ def test_card_shows_due_date_only_while_waiting_on_content():
     assert _content_due_fields({"shipped_at": shipped}, "posted") == {"content_due_at": None, "content_overdue": False}
 
 
+def test_paywall_hit_is_logged_before_402():
+    from flask import Flask
+    from brand_pr_roster_routes import _paywall_response
+
+    cur, conn = FakeCursor(), FakeConn()
+    conn.close = lambda: None
+    with Flask(__name__).test_request_context():
+        body, status = _paywall_response(cur, conn, {"id": 3, "brand_id": 9}, "pick_limit", 44)
+    assert status == 402
+    assert body.get_json()["reason"] == "pick_limit"
+    sql, params = cur.executed[0]
+    assert "INSERT INTO brand_pr_events" in sql
+    assert params[2] == "roster_paywall"
+    assert params[4].adapted == {"campaign_id": 3, "reason": "pick_limit", "application_id": 44}
+    assert conn.commits == 1
+
+
 class TestInstantPublish:
     def test_new_brand_with_own_site_goes_live(self, monkeypatch):
         import opportunities_routes as routes

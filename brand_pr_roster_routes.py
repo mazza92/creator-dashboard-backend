@@ -16,6 +16,7 @@ import secrets
 import threading
 import traceback
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 from functools import wraps
 from services.admin_auth import admin_token_valid
 
@@ -58,8 +59,10 @@ from services.roster_fit import (
 from services.roster_delivery import (
     brief_public,
     clean_brief,
+    clean_content_url,
     content_due_at,
     delivered_public,
+    parse_delivered,
     delivery_select_sql,
     ensure_brief_column,
     notify_brief_added_async,
@@ -321,7 +324,7 @@ def _save_selected(cursor, campaign_id, ids):
 _BRAND_FACING_EVENTS = frozenset({
     "roster_view", "roster_profile_view", "roster_select", "roster_deselect",
     "roster_skip", "roster_unskip", "roster_lock", "roster_shipped", "roster_creator_shipped",
-    "roster_csv", "roster_brief",
+    "roster_csv", "roster_brief", "roster_paywall",
 })
 _ROSTER_VIEW_DEDUPE_SECONDS = 120
 
@@ -1407,7 +1410,16 @@ def _roster_access(cursor, campaign):
     return billing, subscribed, pick_limit_for(subscribed)
 
 
-def _paywall_response(reason):
+def _paywall_response(cursor, conn, campaign, reason, app_id=None):
+    try:
+        _record_roster_event(
+            cursor, "roster_paywall", brand_id=campaign["brand_id"],
+            meta={"campaign_id": campaign["id"], "reason": reason, "application_id": app_id},
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    conn.close()
     message = (
         f"Your free campaign gifts {FREE_PICK_LIMIT} creators. Gifted UGC ($299/mo) lets you gift "
         f"{PAID_PICK_LIMIT} a month and see every applicant."
@@ -1488,6 +1500,56 @@ def get_roster_preview(token):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+PROOF_LIMIT = 4
+_PROOF_PLATFORMS = (("tiktok.com", "TikTok"), ("instagram.com", "Instagram"),
+                    ("youtube.com", "YouTube"), ("youtu.be", "YouTube"))
+
+
+def _delivered_proof(cursor, brand_id, limit=PROOF_LIMIT):
+    """Latest organic posts creators delivered for other brands. Raw UGC files stay private."""
+    if not public_column_exists(cursor, "brand_pr_applications", "delivered_at"):
+        return []
+    cursor.execute(
+        """
+        SELECT a.delivered_content, a.delivered_at, a.shipped_at, b.brand_name,
+               c.username, c.image_profile, c.followers_count, c.social_follower_count,
+               c.social_handle, c.social_platform, c.social_links, u.first_name
+        FROM brand_pr_applications a
+        JOIN pr_brands b ON b.id = a.brand_id
+        JOIN creators c ON c.id = a.creator_id
+        JOIN users u ON u.id = c.user_id
+        WHERE a.status = 'posted' AND a.delivered_at IS NOT NULL AND a.brand_id <> %s
+        ORDER BY a.delivered_at DESC
+        LIMIT 20
+        """,
+        (brand_id,),
+    )
+    out = []
+    for row in cursor.fetchall() or []:
+        url = clean_content_url(parse_delivered(row.get("delivered_content")).get("organic_url"))
+        if not url:
+            continue
+        host = urlparse(url).netloc.lower()
+        platform = next((label for key, label in _PROOF_PLATFORMS if key in host), "")
+        if not platform:
+            continue
+        shipped, delivered = row.get("shipped_at"), row.get("delivered_at")
+        days = (delivered - shipped).days if shipped and delivered else None
+        out.append({
+            "brand_name": row.get("brand_name") or "",
+            "name": _display_name(row),
+            "handle": _handle(row),
+            "avatar_url": row.get("image_profile") or "",
+            "followers_label": _fmt_followers(_followers(row)),
+            "post_url": url,
+            "platform": platform,
+            "days_to_post": max(days, 1) if days is not None else None,
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
 @brand_pr_roster_bp.route("/r/<token>", methods=["GET"])
 def get_roster(token):
     try:
@@ -1499,6 +1561,11 @@ def get_roster(token):
             conn.close()
             return jsonify({"success": False, "error": "Roster link not found or expired"}), 404
         payload = _build_roster_response(cursor, campaign)
+        try:
+            payload["proof"] = _delivered_proof(cursor, campaign["brand_id"])
+        except Exception:
+            conn.rollback()
+            payload["proof"] = []
         if not _recent_roster_view(cursor, campaign["id"]):
             _record_roster_event(
                 cursor,
@@ -1624,9 +1691,9 @@ def select_creator(token):
             conn.close()
             return jsonify(payload), 200
         if len(selected) >= slot_limit:
-            conn.close()
             if not subscribed:
-                return _paywall_response("pick_limit")
+                return _paywall_response(cursor, conn, campaign, "pick_limit", app_id)
+            conn.close()
             return jsonify({
                 "success": False,
                 "error": f"{slot_limit} already selected. Remove one to swap.",
@@ -1634,8 +1701,7 @@ def select_creator(token):
         if not subscribed:
             visible = {c["application_id"] for c in _build_roster_response(cursor, campaign)["creators"]}
             if app_id not in visible:
-                conn.close()
-                return _paywall_response("full_list")
+                return _paywall_response(cursor, conn, campaign, "full_list", app_id)
 
         selected.append(app_id)
         _save_selected(cursor, campaign["id"], selected)

@@ -8,12 +8,13 @@ Public routes are roster-token auth (same magic link as the brand PR portal).
 from __future__ import annotations
 
 import os
+import re
 import traceback
 from datetime import datetime, timezone
 
 import stripe
 from flask import Blueprint, jsonify, request
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import Json, RealDictCursor
 
 from pr_crm_routes import get_db_connection
 from services.brand_billing import (
@@ -113,6 +114,18 @@ def roster_create_checkout(token):
         brand_id = campaign["brand_id"]
         email = override_email or (campaign.get("contact_email") or "").strip() or None
         billing = get_or_create_brand_billing(cursor, brand_id, email=email)
+        from brand_pr_roster_routes import _is_internal_roster_request
+
+        source = re.sub(r"[^a-z_]", "", str(data.get("source") or "").lower())[:40] or "unknown"
+        internal = _is_internal_roster_request()
+        cursor.execute(
+            """
+            INSERT INTO brand_pr_events (brand_id, event, source, meta)
+            VALUES (%s, %s, 'brand_billing', %s)
+            """,
+            (brand_id, "internal_roster_checkout_started" if internal else "roster_checkout_started",
+             Json({"campaign_id": campaign["id"], "from": source})),
+        )
         conn.commit()
 
         frontend = _frontend_base()

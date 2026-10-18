@@ -40,6 +40,9 @@ CONTENT_REMINDER_WINDOW_DAYS = 60
 CONTENT_REMINDER_EVENT = "roster_content_reminder"
 SHIP_REMINDERS = ((2, 21, "ship_reminder_1"), (5, 22, "ship_reminder_2"))
 SHIP_REMINDER_MAX_AGE_DAYS = 30
+# Days since the brand's last pick on a roster they never locked.
+LOCK_REMINDERS = ((1, 11, "lock_reminder_1"), (3, 12, "lock_reminder_2"))
+LOCK_REMINDER_MAX_AGE_DAYS = 21
 CONTENT_READY_TRIGGER = 30
 CONTENT_READY_TYPE = "content_delivered"
 PLAN_PRICE_LABEL = "$299/mo"
@@ -625,11 +628,96 @@ def send_ship_reminders(cursor, conn, *, dry_run: bool = False, send_fn: Callabl
     return stats
 
 
-def pick_ship_reminder(row: dict) -> Optional[int]:
+def build_lock_reminder_email(row: dict, reminder: int) -> dict:
+    brand = safe_brand_name(row.get("brand_name"))
+    picks = int(row.get("pick_count") or 0)
+    who = "1 creator" if picks == 1 else f"{picks} creators"
+    hi = _p(f"Hi {escape(greeting_for_brand(row))},")
+    if reminder == 1:
+        subject = f"Your {brand} picks are saved. Lock them to get addresses"
+        body = [
+            hi,
+            _p(f"You picked {who} for {escape(brand)}. They're saved, but nobody hears back until you lock."),
+            _steps([
+                "Open your roster and tap Lock (you can lock with fewer than 5).",
+                "Shipping addresses unlock right away, ready for a CSV export.",
+                "We tell each creator they're in and send them your brief.",
+            ]),
+        ]
+    else:
+        subject = f"{who.capitalize()} {'is' if picks == 1 else 'are'} waiting to hear from {brand}"
+        body = [
+            hi,
+            _p(f"The {who} you picked for {escape(brand)} applied and are waiting for a yes. "
+               "Lock your roster and we'll let them know and collect their content for you."),
+            _p("Not sure about someone? Swap them before you lock, or reply and I'll help you choose."),
+        ]
+    url = _link(f"/r/{row['token']}", "roster_delivery", f"lock_reminder_{reminder}", {})
+    return {
+        "subject": subject,
+        "html": _wrap(subject, f"Your {brand} picks are one tap from shipping.", "".join(body), url,
+                      "Lock my picks", BRAND_FOOTER_NOTE),
+        "url": url,
+        "trigger_number": LOCK_REMINDERS[reminder - 1][1],
+        "email_type": LOCK_REMINDERS[reminder - 1][2],
+        "applicant_count": picks,
+    }
+
+
+def send_lock_reminders(cursor, conn, *, dry_run: bool = False, send_fn: Callable = None) -> dict:
+    """Brands that picked creators but never locked: nudge at day 1 and day 3 after their last pick."""
+    send = send_fn or _default_send
+    ensure_brand_emails_table(cursor, conn)
+    cursor.execute(
+        f"""
+        SELECT * FROM (
+            SELECT camp.id AS campaign_id, camp.brand_id, camp.token,
+                   b.brand_name, b.contact_email, {_brand_first_name_sql(cursor)},
+                   jsonb_array_length(COALESCE(camp.selected_application_ids, '[]'::jsonb)) AS pick_count,
+                   (SELECT MAX(e.created_at) FROM brand_pr_events e
+                     WHERE e.brand_id = camp.brand_id AND e.event = 'roster_select') AS last_pick_at,
+                   (SELECT MAX(e.sent_at) FROM brand_emails e
+                     WHERE e.campaign_id = camp.id AND e.trigger_number = %s AND e.status = 'sent') AS r1_at,
+                   (SELECT MAX(e.sent_at) FROM brand_emails e
+                     WHERE e.campaign_id = camp.id AND e.trigger_number = %s AND e.status = 'sent') AS r2_at
+            FROM brand_pr_campaigns camp
+            JOIN pr_brands b ON b.id = camp.brand_id
+            WHERE camp.status = 'active'
+              AND jsonb_array_length(COALESCE(camp.selected_application_ids, '[]'::jsonb)) > 0
+              AND COALESCE(TRIM(b.contact_email), '') <> ''
+        ) q
+        WHERE q.last_pick_at < NOW() - make_interval(days => %s)
+          AND q.last_pick_at > NOW() - make_interval(days => %s)
+        ORDER BY q.last_pick_at
+        """,
+        (LOCK_REMINDERS[0][1], LOCK_REMINDERS[1][1], LOCK_REMINDERS[0][0], LOCK_REMINDER_MAX_AGE_DAYS),
+    )
+    rows = [dict(r) for r in cursor.fetchall() or []]
+    stats = {"sent": 0, "failed": 0, "preview": []}
+    for row in rows:
+        last = row["last_pick_at"]
+        last = last if last.tzinfo else last.replace(tzinfo=timezone.utc)
+        row["age_days"] = (datetime.now(timezone.utc) - last).total_seconds() / 86400
+        reminder = pick_ship_reminder(row, LOCK_REMINDERS)
+        if not reminder:
+            continue
+        payload = build_lock_reminder_email(row, reminder)
+        if dry_run:
+            stats["preview"].append({"campaign_id": row["campaign_id"], "reminder": reminder})
+            continue
+        res = send(row["contact_email"], payload["subject"], payload["html"], payload["email_type"])
+        _log_brand_email(cursor, row, payload, res)
+        conn.commit()
+        stats["sent" if res.get("success") else "failed"] += 1
+    return stats
+
+
+def pick_ship_reminder(row: dict, schedule=SHIP_REMINDERS) -> Optional[int]:
+    """Same two-step cadence for ship and lock reminders: second one waits 2 days after the first."""
     age = float(row.get("age_days") or 0)
     if row.get("r1_at") is None:
-        return 1 if age >= SHIP_REMINDERS[0][0] else None
-    if row.get("r2_at") is None and age >= SHIP_REMINDERS[1][0]:
+        return 1 if age >= schedule[0][0] else None
+    if row.get("r2_at") is None and age >= schedule[1][0]:
         r1 = row["r1_at"]
         if r1.tzinfo is None:
             r1 = r1.replace(tzinfo=timezone.utc)
@@ -889,6 +977,7 @@ def process_roster_delivery(*, dry_run: bool = False, send_fn: Callable = None) 
             return {"skipped": "delivery columns not ready"}
         out["creators"] = send_creator_notices(cursor, conn, dry_run=dry_run, send_fn=send_fn)
         out["ship_reminders"] = send_ship_reminders(cursor, conn, dry_run=dry_run, send_fn=send_fn)
+        out["lock_reminders"] = send_lock_reminders(cursor, conn, dry_run=dry_run, send_fn=send_fn)
         out["content_reminders"] = send_content_reminders(cursor, conn, dry_run=dry_run, send_fn=send_fn)
         if dry_run:
             conn.rollback()
