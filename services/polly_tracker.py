@@ -33,6 +33,7 @@ TASK_TYPES = (
 )
 
 OPEN_STATUSES = ("pending", "in_progress")
+REPLY_CHECK_AFTER = timedelta(hours=24)
 CLOSED_STATUSES = ("completed", "dropped", "snoozed")
 
 LIFECYCLE_INTENTS = (
@@ -72,6 +73,7 @@ EVENT_ICONS = {
     "retainer_active": "⭐",
     "portfolio_viewed": "👀",
     "email_bounced": "📭",
+    "creator_replied": "✉️",
     "pitch_not_sent": "📝",
     "polly_nudge_sent": "💬",
     "milestone": "🎉",
@@ -102,6 +104,10 @@ NUDGE_COPY = {
     "reply_needed": (
         "Quick nudge — **{brand}** replied and speed matters here. Brands cool off fast. "
         "Want me to help you craft the reply?"
+    ),
+    "reply_interested": (
+        "**{brand}** said yes. Did you reply yet? Send your address and put a usage rate on the table "
+        "while they're keen. Interested brands go cold in a few days."
     ),
     "pr_shipped": (
         "Did your **{brand}** box arrive yet? Just tracking — if it's been a week+ "
@@ -139,6 +145,10 @@ NUDGE_CHIPS = {
     "reply_needed": [
         {"id": "help_reply", "label": "Help me reply", "action": "chat"},
         {"id": "snooze_24h", "label": "I got it, hang on", "action": "task_act"},
+    ],
+    "reply_interested": [
+        {"id": "paid_reply", "label": "Write my reply", "action": "paid_reply"},
+        {"id": "reply_sent", "label": "I already replied", "action": "task_act"},
     ],
     "pr_shipped": [
         {"id": "pr_arrived", "label": "Yes arrived", "action": "task_act"},
@@ -1000,6 +1010,12 @@ def apply_lifecycle_intent(
             priority=1, due_at=utc_now() + timedelta(days=8),
             metadata={"brand_name": name},
         )
+        if not _open_tasks(conn, creator_id, ["reply_needed"], brand_id):
+            create_task(
+                conn, creator_id, "reply_needed", brand_id=brand_id, priority=1,
+                due_at=utc_now() + REPLY_CHECK_AFTER,
+                metadata={"brand_name": name, "after": "interested"},
+            )
         add_event(
             conn, creator_id, "brand_replied_interested",
             f"Reply: interested · {name}",
@@ -1607,6 +1623,15 @@ def apply_task_chip(
             conn.commit()
         return {"ok": True, "route": "chat", "say": f"Got it — I'll ping you on **{name}** in a bit."}
 
+    if chip_id == "reply_sent":
+        close_tasks(conn, creator_id, ["reply_needed"], brand_id, outcome="success")
+        add_event(conn, creator_id, "creator_replied", f"Replied · {name}", brand_id=brand_id)
+        return {"ok": True, "route": "chat",
+                "say": f"Nice. I'll check whether your **{name}** box ships in about a week."}
+
+    if chip_id == "reply_help":
+        return {"ok": True, "route": "chat", "brand_id": brand_id, "brand_name": name}
+
     if chip_id in ("move_on",):
         close_tasks(conn, creator_id, ["follow_up_due", "pitch_sent", "reply_needed"], brand_id,
                     status="dropped", outcome="no_response")
@@ -1747,7 +1772,7 @@ def _nudge_key(task: Dict) -> str:
             return "follow_up_d14"
         return "follow_up_d4"
     if t == "reply_needed":
-        return "reply_needed"
+        return "reply_interested" if (task.get("metadata") or {}).get("after") == "interested" else "reply_needed"
     if t in ("pr_shipped", "pr_received"):
         return "pr_shipped"
     if t == "content_due":

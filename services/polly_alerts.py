@@ -28,6 +28,7 @@ NUDGE_SUBJECTS = {
     "follow_up_d10": "Last nudge for {brand}?",
     "follow_up_d14": "{brand} went quiet — here's the next move",
     "reply_needed": "{brand} replied — answer while they're warm",
+    "reply_interested": "{brand} said yes. Did you reply?",
     "pr_shipped": "Did your {brand} box arrive?",
     "content_due": "Time to film your {brand} content",
 }
@@ -334,13 +335,26 @@ def _one_tap(creator_id: Any, pairs, nudge: Dict[str, Any], brand: str, kind: st
 def nudge_email(first_name: str, nudge: Dict[str, Any], unsubscribe_url: str = "",
                 creator_id: Any = None, is_pro: bool = True) -> Dict[str, str]:
     import re
-    from services.checkin_links import CHECKIN_BUTTONS, CHECKIN_LINKS, PR_BUTTONS
+    from services.checkin_links import CHECKIN_BUTTONS, CHECKIN_LINKS, PR_BUTTONS, REPLY_BUTTONS
 
     key = nudge.get("key") or "follow_up_d4"
     brand = nudge.get("brand_name") or "that brand"
     subject = NUDGE_SUBJECTS.get(key, "Update on {brand}?").format(brand=brand)
     message = str(nudge.get("message") or "")
     message_html = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escape(message))
+    if creator_id and key == "reply_interested":
+        buttons = _one_tap(creator_id, REPLY_BUTTONS, nudge, brand, key)
+        if buttons:
+            lines = [message_html]
+            links = None
+            if not is_pro:
+                lines.append("On Pro I write the reply with your ad usage rate, so a gifted yes can turn into "
+                             "a paid deal.")
+                links = [{"label": "Get Pro ($19/mo)", "href": upgrade_link("interested_pro")}]
+            return {
+                "subject": subject,
+                "html": render_email(first_name, subject, lines, buttons, unsubscribe_url, links=links),
+            }
     if creator_id and key in ONE_TAP_KEYS + ("pr_shipped",):
         pr = key == "pr_shipped"
         buttons = _one_tap(creator_id, PR_BUTTONS if pr else CHECKIN_BUTTONS, nudge, brand, key)
@@ -966,6 +980,7 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
                 pass
         from services.autopilot_health import email_autopilot_blocked
         from services.autopilot_report import email_autopilot_reports
+        from services.founder_wins import email_founder_wins
         from services.new_brand_push import email_new_brand_pushes
         from services.pro_delivery_watch import email_founder_delivery
         from services.pro_manager import email_monday_boards, email_renewal_notes
@@ -973,7 +988,8 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
         from services.pro_upsell import email_pro_week
         from services.ugc_roundup import email_ugc_roundups
 
-        for job in (email_new_brand_pushes, email_trial_journey, email_autopilot_blocked, email_founder_delivery,
+        for job in (email_new_brand_pushes, email_founder_wins, email_trial_journey, email_autopilot_blocked,
+                    email_founder_delivery,
                     email_month_reports,
                     email_unsent_briefs, email_renewal_notes, email_monday_boards, email_autopilot_reports,
                     email_ugc_roundups, email_paywall_followups, email_pro_week, email_weekly_digests):

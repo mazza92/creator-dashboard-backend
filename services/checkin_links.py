@@ -27,6 +27,8 @@ ONE_TAP_NEXT = {
     "checkin_bounced": "line_up",
     "pr_arrived": "need_idea",
     "pr_not_yet": "",
+    "reply_help": "paid_reply",
+    "reply_sent": "",
 }
 
 CHECKIN_BUTTONS = (
@@ -42,6 +44,10 @@ CHECKIN_LINKS = (
 PR_BUTTONS = (
     ("pr_arrived", "Yes, it arrived"),
     ("pr_not_yet", "Not yet"),
+)
+REPLY_BUTTONS = (
+    ("reply_help", "Write my reply"),
+    ("reply_sent", "I already replied"),
 )
 
 
