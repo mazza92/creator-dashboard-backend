@@ -389,7 +389,7 @@ def ensure_scanner_feed_live(cursor) -> int:
         UPDATE opportunities
         SET status = 'live',
             published_at = COALESCE(published_at, NOW()),
-            closes_at = COALESCE(closes_at, NOW() + INTERVAL '21 days')
+            closes_at = COALESCE(closes_at, NOW() + INTERVAL '20 days')
         WHERE status = 'pending'
           AND additional_notes ILIKE %s
           AND (
@@ -538,6 +538,81 @@ def send_email_notification(to_email, subject, body):
 # PUBLIC: Brand submits opportunity
 # ============================================
 
+def can_publish_instantly(cursor, data) -> bool:
+    """New brands with their own site go live now. Anything that matches an existing
+    brand waits for review, so a stranger can't claim that brand's roster link."""
+    from services.opportunity_gifted_pr import _find_existing_brand, _website_host
+
+    if not _website_host(data.get('brand_website')):
+        return False
+    probe = {'brand_name': data.get('brand_name'), 'brand_website': data.get('brand_website')}
+    return _find_existing_brand(cursor, probe) is None
+
+
+def take_down_auto_published_brand(cursor, opp_id):
+    """Unpublish a brand this submission created and close its open roster."""
+    from services.opportunity_gifted_pr import ensure_opportunity_gifted_pr_columns
+
+    ensure_opportunity_gifted_pr_columns(cursor)
+    cursor.execute('''
+        UPDATE pr_brands
+        SET status = 'draft', accepting_pr = FALSE, open_pr_featured = FALSE, updated_at = NOW()
+        WHERE source_opportunity_id = %s
+        RETURNING id
+    ''', (opp_id,))
+    brand_ids = [r['id'] for r in cursor.fetchall() or []]
+    if brand_ids:
+        cursor.execute('''
+            UPDATE brand_pr_campaigns
+            SET status = 'closed', updated_at = NOW()
+            WHERE brand_id = ANY(%s) AND status = 'active'
+        ''', (brand_ids,))
+    return brand_ids
+
+
+def _kick_pro_placement():
+    import threading
+
+    def run():
+        try:
+            from services.pro_roster_placement import place_pro_creators
+            conn = get_db_connection()
+            try:
+                place_pro_creators(conn)
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"[brand_submit] pro placement skipped: {e}")
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _publish_instantly(cursor, conn, opp_id, data):
+    """Publish + mint the roster in-request. Falls back to manual review on any failure."""
+    try:
+        if not can_publish_instantly(cursor, data):
+            return None
+        cursor.execute('''
+            UPDATE opportunities
+            SET status = 'live', published_at = NOW(),
+                closes_at = COALESCE(application_deadline::timestamp, NOW() + INTERVAL '14 days')
+            WHERE id = %s
+            RETURNING *
+        ''', (opp_id,))
+        opp = cursor.fetchone()
+        gifted = push_opportunity_to_gifted_pr(cursor, opp) if opp else None
+        if not (gifted or {}).get('roster_url'):
+            conn.rollback()
+            return None
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[brand_submit] instant publish failed opp={opp_id}: {e}")
+        return None
+    _kick_pro_placement()
+    return gifted
+
+
 @opportunities_bp.route('/public/submit', methods=['POST'])
 def brand_submit():
     """Public endpoint for brands to submit opportunities"""
@@ -583,35 +658,59 @@ def brand_submit():
 
         result = cursor.fetchone()
         opp_id = result['id']
-
         conn.commit()
+
+        gifted = _publish_instantly(cursor, conn, opp_id, data)
         cursor.close()
         conn.close()
+        roster_url = (gifted or {}).get('roster_url')
 
-        # Notify admin
         notes = (data.get('additional_notes') or '').strip()
+        admin_line = (
+            f'Auto-published. Roster: {roster_url}\nReject if it looks fake: '
+            if roster_url else 'Review at: '
+        )
         send_brand_notice(
             'team@newcollab.co',
-            f'New opportunity to review: {data["brand_name"]}',
+            f'{"New brand live" if roster_url else "New opportunity to review"}: {data["brand_name"]}',
             f'{data["brand_name"]} ({data["brand_email"]}, {data["brand_website"]}) submitted '
             f'{data["product_name"]}.\n\n'
             + (f'{notes}\n\n' if notes else '')
-            + f'Review at: https://app.newcollab.co/admin/opportunities/{opp_id}'
+            + f'{admin_line}https://app.newcollab.co/admin/opportunities/{opp_id}'
         )
 
-        send_brand_notice(
-            data['brand_email'],
-            f'We got your gifted campaign for {data["product_name"]}',
-            f'Hi {data["brand_name"]},\n\n'
-            f'Thanks for starting a gifted campaign for {data["product_name"]} on Newcollab. '
-            f'We review every brand by hand and will email your private creator roster link within 24 hours.\n\n'
-            f'Creators in your niche apply to your product, you pick up to 5, then export a shipping CSV. '
-            f'No platform fee on your first campaign.\n\n'
-            f'Reply to this email if you have questions.\n\n'
-            f'Newcollab Team'
-        )
+        if roster_url:
+            send_brand_notice(
+                data['brand_email'],
+                f'Your creator roster for {data["product_name"]} is live',
+                f'Hi {data["brand_name"]},\n\n'
+                f'Your gifted campaign for {data["product_name"]} is live on Newcollab. '
+                f'Creators in your niche are applying now. Polly ranks them by fit and pre-selects your best 5.\n\n'
+                f'Your private roster (bookmark it, no login needed):\n{roster_url}\n\n'
+                f'Approve your picks, we reveal shipping addresses, and each creator posts organically and '
+                f'delivers a UGC video you can run as ads for 6 months. Your first 5 creators are free.\n\n'
+                f'Reply to this email if you have questions.\n\n'
+                f'Newcollab Team'
+            )
+        else:
+            send_brand_notice(
+                data['brand_email'],
+                f'We got your gifted campaign for {data["product_name"]}',
+                f'Hi {data["brand_name"]},\n\n'
+                f'Thanks for starting a gifted campaign for {data["product_name"]} on Newcollab. '
+                f'We\'re confirming your brand details and will email your private creator roster link shortly.\n\n'
+                f'Creators in your niche apply to your product, you pick up to 5, then export a shipping CSV. '
+                f'No platform fee on your first campaign.\n\n'
+                f'Reply to this email if you have questions.\n\n'
+                f'Newcollab Team'
+            )
 
-        return jsonify({'success': True, 'id': opp_id}), 201
+        return jsonify({
+            'success': True,
+            'id': opp_id,
+            'roster_url': roster_url,
+            'roster_token': (gifted or {}).get('roster_token'),
+        }), 201
 
     except Exception as e:
         print(f"Error in brand_submit: {str(e)}")
@@ -1334,6 +1433,7 @@ def admin_reject(opp_id):
             SET status = 'rejected'
             WHERE id = %s
         ''', (opp_id,))
+        take_down_auto_published_brand(cursor, opp_id)
 
         conn.commit()
         cursor.close()
@@ -1477,6 +1577,9 @@ def admin_ingest():
                     deliverable,
                     [raw.get('niche_required'), raw.get('category')],
                 )
+                from services.gig_freshness import gig_posted_too_old
+                if is_ugc and gig_posted_too_old(raw):
+                    is_ugc, ugc_reason = False, 'stale_20d'
                 cleaned = clean_scanner_gig(raw)
                 campaign_description = cleaned["campaign_description"]
                 buyer = cleaned["brand_name"] or buyer
@@ -1564,7 +1667,7 @@ def admin_ingest():
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s,
                         CASE WHEN %s THEN NOW() END,
-                        CASE WHEN %s THEN NOW() + INTERVAL '21 days' ELSE NOW() END,
+                        CASE WHEN %s THEN NOW() + INTERVAL '20 days' ELSE NOW() END,
                         %s
                     ) RETURNING id
                 ''', (

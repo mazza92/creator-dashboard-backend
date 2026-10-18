@@ -18,7 +18,7 @@ GMAIL_KIND = "autopilot_gmail"
 PAUSED_KIND = "autopilot_paused"
 # Gap before each reminder: the first counts from when sending stopped, the rest from the
 # previous reminder. The last gap repeats for Gmail; paused stops after PAUSED_MAX reminders.
-GMAIL_GAPS = (timedelta(days=1), timedelta(days=3), timedelta(days=7), timedelta(days=14))
+GMAIL_GAPS = (timedelta(hours=2), timedelta(days=2), timedelta(days=4), timedelta(days=7))
 PAUSED_GAPS = (timedelta(days=2), timedelta(days=7), timedelta(days=14))
 PAUSED_MAX = len(PAUSED_GAPS)
 OTHER_KINDS = ["trial_gmail", "trial_ending", "kit_view", "nudge", "polly_brief", "monday_board",

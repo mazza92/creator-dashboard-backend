@@ -700,8 +700,41 @@ def shortlist_from_rows(rows: list, limit: int = TOP_PICKS_LIMIT) -> list:
     return picks
 
 
+def _fit_top_picks(cursor, campaign_id: int, limit: int) -> list:
+    """Polly's shortlist, ranked exactly like the roster page so quick-pick ids stay pickable."""
+    from brand_pr_roster_routes import _build_roster_response, _load_campaign_by_id
+
+    campaign = _load_campaign_by_id(cursor, campaign_id)
+    if not campaign:
+        return []
+    picks = []
+    for card in _build_roster_response(cursor, campaign)["creators"]:
+        if not card.get("top_pick"):
+            continue
+        picks.append({
+            "application_id": int(card["application_id"]),
+            "name": safe_brand_name(card.get("name") or "Creator")[:40],
+            "handle": card.get("handle") or "",
+            "followers_label": card.get("followers_label") or "",
+            "niche": _niche_text(card.get("niche")),
+        })
+        if len(picks) >= limit:
+            break
+    return picks
+
+
 def load_top_picks(cursor, brand_id: int, campaign_id: int = None, limit: int = TOP_PICKS_LIMIT) -> list:
-    """Best waiting applicants for the one-click shortlist: Pro, then content, then reach."""
+    """Best-fit waiting applicants for the one-click shortlist; falls back to Pro, content, reach."""
+    if campaign_id:
+        try:
+            cursor.execute("SAVEPOINT fit_top_picks")
+            picks = _fit_top_picks(cursor, int(campaign_id), limit)
+            cursor.execute("RELEASE SAVEPOINT fit_top_picks")
+            if picks:
+                return picks
+        except Exception as exc:
+            cursor.execute("ROLLBACK TO SAVEPOINT fit_top_picks")
+            print(f"[roster-waiting] fit ranking failed campaign={campaign_id}: {exc}")
     cursor.execute(
         """
         SELECT

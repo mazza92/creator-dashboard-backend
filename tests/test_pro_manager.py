@@ -128,18 +128,9 @@ class RenewalTests(unittest.TestCase):
         self.assertIn("**Oro**", text)
         self.assertNotIn("Extra", text)
 
-    def test_idle_month_says_why_instead_of_zero_stats(self):
+    def test_idle_month_sends_no_renewal_note(self):
         renews = datetime(2026, 10, 13, tzinfo=timezone.utc)
-        lines = renewal_lines({"pitched": 0, "kit_views": 2}, renews, ["Glow Co"], gmail_connected=False)
-        text = "\n".join(lines)
-        self.assertIn("Gmail isn't connected", text)
-        self.assertIn("**2** times", text)
-        self.assertIn("**Glow Co**", text)
-        self.assertNotIn("0 brands", text)
-        self.assertNotIn("still live", text)
-        waiting = "\n".join(renewal_lines({"pitched": 0}, renews, [], gmail_connected=True))
-        self.assertIn("couldn't line up pitches", waiting)
-        self.assertIn("Monday board", waiting)
+        self.assertEqual(renewal_lines({"pitched": 0, "kit_views": 2}, renews, ["Glow Co"]), [])
 
     def test_replies_point_at_the_paid_ask(self):
         lines = renewal_lines({"pitched": 8, "replies": 1, "kit_views": 1},

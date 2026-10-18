@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import threading
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Any, Callable, Optional
 from urllib.parse import urlencode, urlparse
@@ -32,6 +32,12 @@ DELIVERY_COLUMNS = {
 }
 CREATOR_NOTICE_WINDOW_DAYS = 21
 CONTENT_DUE_DAYS = 10
+# Past this, the creator can't apply for more gifted PR until they deliver.
+CONTENT_OVERDUE_DAYS = CONTENT_DUE_DAYS + 4
+# (days after shipping, reminder number); the last one is the overdue notice.
+CONTENT_REMINDERS = ((5, 1), (CONTENT_DUE_DAYS, 2), (CONTENT_OVERDUE_DAYS, 3))
+CONTENT_REMINDER_WINDOW_DAYS = 60
+CONTENT_REMINDER_EVENT = "roster_content_reminder"
 SHIP_REMINDERS = ((2, 21, "ship_reminder_1"), (5, 22, "ship_reminder_2"))
 SHIP_REMINDER_MAX_AGE_DAYS = 30
 CONTENT_READY_TRIGGER = 30
@@ -736,6 +742,142 @@ def notify_brand_content_ready(cursor, conn, application_id: int, *, send_fn: Ca
     return {"sent": bool(res.get("success"))}
 
 
+def content_due_at(shipped_at: Any) -> Optional[datetime]:
+    if not hasattr(shipped_at, "tzinfo"):
+        return None
+    at = shipped_at if shipped_at.tzinfo else shipped_at.replace(tzinfo=timezone.utc)
+    return at + timedelta(days=CONTENT_DUE_DAYS)
+
+
+def content_reminder_due(age_days: float, last_sent: int) -> Optional[int]:
+    """Next reminder number to send, or None. Skips straight to the latest one that's due."""
+    due = [n for days, n in CONTENT_REMINDERS if age_days >= days]
+    if not due or due[-1] <= int(last_sent or 0):
+        return None
+    return due[-1]
+
+
+def overdue_delivery(cursor, creator_id: int) -> Optional[dict]:
+    """The creator's oldest picked-and-shipped PR with no content past the overdue line."""
+    if not public_column_exists(cursor, "brand_pr_applications", "delivered_at"):
+        return None
+    cursor.execute(
+        """
+        SELECT a.id AS application_id, b.brand_name
+        FROM brand_pr_applications a
+        JOIN pr_brands b ON b.id = a.brand_id
+        WHERE a.creator_id = %s AND a.status = 'ships' AND a.delivered_at IS NULL
+          AND a.shipped_at < NOW() - make_interval(days => %s)
+        ORDER BY a.shipped_at
+        LIMIT 1
+        """,
+        (creator_id, CONTENT_OVERDUE_DAYS),
+    )
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def build_content_reminder_email(row: dict, reminder: int) -> dict:
+    brand = safe_brand_name(row.get("brand_name"))
+    due = content_due_at(row.get("shipped_at"))
+    due_label = f"{due:%b} {due.day}" if due else f"{CONTENT_DUE_DAYS} days after delivery"
+    hi = _p(f"Hi {escape(_first_name(row.get('first_name')))},")
+    if reminder == 1:
+        subject = f"Your {brand} content is due {due_label}"
+        body = [
+            hi,
+            _p(f"{escape(brand)} shipped your PR box. Once it arrives, create {_deliverables(row)}"),
+            _brief_teaser(row),
+            _p(f"Submit both links on Newcollab by <b>{escape(due_label)}</b>. {escape(brand)} sees them straight away."),
+        ]
+    elif reminder == 2:
+        subject = f"{brand} is waiting on your post"
+        body = [
+            hi,
+            _p(f"Your {escape(brand)} content is due today. {escape(brand)} gifted you the product "
+               "and is checking their content inbox."),
+            _p(f"Still need to film? Create {_deliverables(row)} Then submit the links, even if it's a day late."),
+        ]
+    else:
+        subject = f"Your {brand} post is overdue, so new PR applications are paused"
+        body = [
+            hi,
+            _p(f"We haven't received your {escape(brand)} content yet, and it was due {escape(due_label)}."),
+            _p("Until you submit it, you can't apply for new gifted PR on Newcollab. "
+               "Brands pick creators who deliver, and late posts cost everyone future boxes."),
+            _p("Submit your links and applications reopen right away. Box never arrived? Reply to this email."),
+        ]
+    url = _link("/creator/dashboard/pr-brands", "roster_creator", f"content_due_{reminder}", {"picked": row["id"]})
+    return {"subject": subject, "html": _wrap(subject, subject, "".join(body), url, "Submit my content"), "url": url}
+
+
+def content_reminder_note(row: dict, reminder: int) -> str:
+    brand = safe_brand_name(row.get("brand_name"))
+    if reminder == 3:
+        return (f"⚠️ Your **{brand}** post is overdue, so new gifted PR applications are paused. "
+                "Submit your links in **PR brands** and they reopen right away.")
+    due = content_due_at(row.get("shipped_at"))
+    when = f"by **{due:%b} {due.day}**" if due else "soon"
+    return (f"📦 **{brand}** shipped your PR box. Your organic post and raw UGC video are due {when}. "
+            "Submit both links in **PR brands** when they're live.")
+
+
+def send_content_reminders(cursor, conn, *, dry_run: bool = False, send_fn: Callable = None,
+                           note_fn: Callable = None) -> dict:
+    """Day 5, due day, and overdue: email + Polly note to creators who haven't delivered."""
+    send = send_fn or _default_send
+    cursor.execute(
+        f"""
+        SELECT a.id, a.creator_id, a.brand_id, a.shipped_at, camp.sku_note, {brief_select_sql(cursor)},
+               b.brand_name, b.hero_product, b.instagram_handle, b.tiktok_handle,
+               u.email, u.first_name,
+               EXTRACT(EPOCH FROM (NOW() - a.shipped_at)) / 86400.0 AS age_days,
+               (SELECT MAX((e.meta->>'n')::int) FROM brand_pr_events e
+                 WHERE e.event = %s AND e.meta->>'application_id' = a.id::text) AS last_sent
+        FROM brand_pr_applications a
+        JOIN brand_pr_campaigns camp ON camp.id = a.campaign_id
+        JOIN pr_brands b ON b.id = a.brand_id
+        JOIN creators cr ON cr.id = a.creator_id
+        JOIN users u ON u.id = cr.user_id
+        WHERE a.status = 'ships' AND a.delivered_at IS NULL AND a.shipped_at IS NOT NULL
+          AND a.shipped_at > NOW() - make_interval(days => %s)
+          AND COALESCE(TRIM(u.email), '') <> ''
+        ORDER BY a.shipped_at
+        """,
+        (CONTENT_REMINDER_EVENT, CONTENT_REMINDER_WINDOW_DAYS),
+    )
+    rows = [dict(r) for r in cursor.fetchall() or []]
+    stats = {"sent": 0, "failed": 0, "preview": []}
+    for row in rows:
+        reminder = content_reminder_due(float(row.get("age_days") or 0), row.get("last_sent") or 0)
+        if not reminder:
+            continue
+        if dry_run:
+            stats["preview"].append({"application_id": row["id"], "reminder": reminder})
+            continue
+        cursor.execute(
+            """
+            INSERT INTO brand_pr_events (creator_id, brand_id, event, source, meta)
+            VALUES (%s, %s, %s, 'cron', %s)
+            """,
+            (row["creator_id"], row["brand_id"], CONTENT_REMINDER_EVENT,
+             Json({"application_id": row["id"], "n": reminder})),
+        )
+        conn.commit()
+        payload = build_content_reminder_email(row, reminder)
+        res = send(row["email"], payload["subject"], payload["html"], f"roster_content_due_{reminder}")
+        stats["sent" if res.get("success") else "failed"] += 1
+        try:
+            if note_fn is None:
+                from services.polly_autopilot import post_thread_note as note_fn
+            note_fn(conn, row["creator_id"], content_reminder_note(row, reminder), [])
+            conn.commit()
+        except Exception as err:
+            conn.rollback()
+            print(f"[roster-delivery] content note skipped app={row['id']}: {err}")
+    return stats
+
+
 def process_roster_delivery(*, dry_run: bool = False, send_fn: Callable = None) -> dict:
     from pr_crm_routes import get_db_connection
 
@@ -747,6 +889,7 @@ def process_roster_delivery(*, dry_run: bool = False, send_fn: Callable = None) 
             return {"skipped": "delivery columns not ready"}
         out["creators"] = send_creator_notices(cursor, conn, dry_run=dry_run, send_fn=send_fn)
         out["ship_reminders"] = send_ship_reminders(cursor, conn, dry_run=dry_run, send_fn=send_fn)
+        out["content_reminders"] = send_content_reminders(cursor, conn, dry_run=dry_run, send_fn=send_fn)
         if dry_run:
             conn.rollback()
         return out

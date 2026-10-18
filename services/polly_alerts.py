@@ -909,6 +909,18 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
     from services.resend_mail import resend_configured
 
     can_email = dry_run or bool(send_fn) or resend_configured()
+    recycled = 0
+    if not dry_run:
+        try:
+            from services.gig_freshness import pause_stale_paid_gigs
+
+            recycled = pause_stale_paid_gigs(conn)
+        except Exception as err:
+            print(f"[Polly alerts] gig recycle skipped: {err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
     delivered: List[Dict[str, Any]] = []
     nudged = 0
     autopilot: Dict[str, Any] = {}
@@ -954,14 +966,15 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
                 pass
         from services.autopilot_health import email_autopilot_blocked
         from services.autopilot_report import email_autopilot_reports
+        from services.pro_delivery_watch import email_founder_delivery
         from services.pro_manager import email_monday_boards, email_renewal_notes
         from services.pro_trial import email_trial_journey
         from services.pro_upsell import email_pro_week
         from services.ugc_roundup import email_ugc_roundups
 
-        for job in (email_trial_journey, email_autopilot_blocked, email_month_reports, email_unsent_briefs,
-                    email_renewal_notes, email_monday_boards, email_autopilot_reports, email_ugc_roundups,
-                    email_paywall_followups, email_pro_week, email_weekly_digests):
+        for job in (email_trial_journey, email_autopilot_blocked, email_founder_delivery, email_month_reports,
+                    email_unsent_briefs, email_renewal_notes, email_monday_boards, email_autopilot_reports,
+                    email_ugc_roundups, email_paywall_followups, email_pro_week, email_weekly_digests):
             try:
                 emails += job(conn, dry_run=dry_run, send_fn=send_fn, test_email=test_email)
             except Exception as err:
@@ -975,4 +988,5 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
         "autopilot": autopilot,
         "emails": emails,
         "email_enabled": can_email,
+        "recycled_gigs": recycled,
     }

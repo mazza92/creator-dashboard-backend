@@ -18,17 +18,18 @@ def _row(**kw):
 
 
 class TestDueKind(unittest.TestCase):
-    def test_gmail_missing_after_a_day(self):
+    def test_gmail_missing_on_day_one(self):
         self.assertEqual(ah.due_kind(_row(), NOW), ah.GMAIL_KIND)
-        self.assertIsNone(ah.due_kind(_row(pro_since=NOW - timedelta(hours=6)), NOW))
+        self.assertEqual(ah.due_kind(_row(pro_since=NOW - timedelta(hours=3)), NOW), ah.GMAIL_KIND)
+        self.assertIsNone(ah.due_kind(_row(pro_since=NOW - timedelta(hours=1)), NOW))
 
     def test_gmail_reminders_widen_then_repeat(self):
-        first = NOW - timedelta(days=2)
+        first = NOW - timedelta(days=1)
         self.assertIsNone(ah.due_kind(_row(gmail_warned=[first]), NOW))
-        self.assertEqual(ah.due_kind(_row(gmail_warned=[NOW - timedelta(days=3, hours=1)]), NOW), ah.GMAIL_KIND)
-        three = [NOW - timedelta(days=30), NOW - timedelta(days=27), NOW - timedelta(days=13)]
+        self.assertEqual(ah.due_kind(_row(gmail_warned=[NOW - timedelta(days=2, hours=1)]), NOW), ah.GMAIL_KIND)
+        three = [NOW - timedelta(days=30), NOW - timedelta(days=27), NOW - timedelta(days=5)]
         self.assertIsNone(ah.due_kind(_row(pro_since=NOW - timedelta(days=40), gmail_warned=three), NOW))
-        four = three[:2] + [NOW - timedelta(days=20), NOW - timedelta(days=15)]
+        four = three[:2] + [NOW - timedelta(days=20), NOW - timedelta(days=8)]
         self.assertEqual(ah.due_kind(_row(pro_since=NOW - timedelta(days=40), gmail_warned=four), NOW),
                          ah.GMAIL_KIND)
 

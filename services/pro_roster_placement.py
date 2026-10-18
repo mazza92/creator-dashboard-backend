@@ -16,6 +16,8 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from psycopg2.extras import Json
 
+from services.roster_delivery import CONTENT_OVERDUE_DAYS
+
 from services.audience_fit import (
     _LANE_COMPATIBLE,
     audience_mismatch,
@@ -352,12 +354,18 @@ def place_pro_creators(conn, dry_run: bool = False) -> Dict[str, Any]:
                     SELECT 1 FROM brand_pr_applications
                     WHERE creator_id = %s AND brand_id = %s
                 )
+                AND NOT EXISTS (
+                    SELECT 1 FROM brand_pr_applications late
+                    WHERE late.creator_id = %s AND late.status = 'ships' AND late.delivered_at IS NULL
+                      AND late.shipped_at < NOW() - make_interval(days => %s)
+                )
                 RETURNING id
                 """,
                 (
                     creator["creator_id"], roster["brand_id"], roster["campaign_id"],
                     Json(creator["posts"]), Json(creator["address"]), PRO_SOURCE,
                     creator["creator_id"], roster["brand_id"],
+                    creator["creator_id"], CONTENT_OVERDUE_DAYS,
                 ),
             )
             row = cursor.fetchone()

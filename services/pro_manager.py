@@ -355,15 +355,18 @@ def _date_label(dt: datetime) -> str:
     return f"{dt.strftime('%B')} {dt.day}"
 
 
-def renewal_lines(counts: Dict[str, int], renews_at: datetime, next_brands: List[str],
-                  gmail_connected: bool = True) -> List[str]:
-    """Markdown lines: what Pro did this period and what's already queued for the next."""
+def renewal_lines(counts: Dict[str, int], renews_at: datetime, next_brands: List[str]) -> List[str]:
+    """Markdown lines: what Pro did this period and what's already queued for the next.
+
+    Empty when nothing went out: an idle month is fixed earlier (day-1 Gmail step, founder alert),
+    not announced the week the card is charged.
+    """
     pitched = int(counts.get("pitched") or 0)
     followups = int(counts.get("followups") or 0)
     views = int(counts.get("kit_views") or 0)
     replies = int(counts.get("replies") or 0)
     if not pitched:
-        return _idle_renewal_lines(renews_at, views, next_brands, gmail_connected)
+        return []
     lines = [f"Your Pro month renews on **{_date_label(renews_at)}**. Here's what it did:"]
     sent = f"**{_plural(pitched, 'brand')}** pitched"
     if followups:
@@ -386,38 +389,16 @@ def renewal_lines(counts: Dict[str, int], renews_at: datetime, next_brands: List
     return lines
 
 
-def _idle_renewal_lines(renews_at: datetime, views: int, next_brands: List[str],
-                        gmail_connected: bool) -> List[str]:
-    """Nothing went out this period: say why plainly and make restarting one tap."""
-    why = (
-        "because Gmail isn't connected yet. It takes a minute, then I write and send the week's pitches for you."
-        if not gmail_connected
-        else "because I couldn't line up pitches yet. Open Autopilot and check your brands and location."
-    )
-    lines = [
-        f"Your Pro month renews on **{_date_label(renews_at)}**.",
-        f"I haven't pitched anyone for you this month, {why}",
-    ]
-    if views:
-        lines.append(f"Brands still opened your kit **{views}** time{'s' if views != 1 else ''}. They're looking.")
-    if next_brands:
-        listed = ", ".join(f"**{n}**" for n in next_brands[:NEXT_BRANDS])
-        lines.append(f"Ready to go as soon as you say so: {listed}.")
-    else:
-        lines.append("Open your Monday board and I'll pick this week's brands.")
-    return lines
-
-
 def renewal_note_message(lines: List[str]) -> Dict[str, Any]:
     return {"role": "assistant", "kind": "brief", "content": "\n\n".join(lines),
             "task_chips": [dict(OPEN_BOARD_CHIP)]}
 
 
 def renewal_email(first_name: str, lines: List[str], unsubscribe_url: str = "", open_href: str = "",
-                  manage_href: str = "", idle: bool = False) -> Dict[str, str]:
+                  manage_href: str = "") -> Dict[str, str]:
     from services.polly_alerts import render_email
 
-    subject = "Your brands are ready when you are" if idle else "What Pro did for you this month"
+    subject = "What Pro did for you this month"
     html_lines = [_md_html(line) for line in lines]
     buttons = [{"label": "Open my Monday board", "href": open_href}] if open_href else []
     links = [{"label": "Manage plan", "href": manage_href}] if manage_href else None
@@ -444,15 +425,6 @@ def next_brand_names(conn, creator_id: int, limit: int = NEXT_BRANDS) -> List[st
         if n.lower() not in {o.lower() for o in out}:
             out.append(n)
     return out[:limit]
-
-
-def _gmail_connected(conn, creator_id: int) -> bool:
-    from services.polly_gmail import gmail_configured, load_account
-
-    if not gmail_configured():
-        return True
-    account = load_account(conn, creator_id)
-    return bool(account and not account.get("revoked_at"))
 
 
 def _cancel_scheduled(conn, creator_id: int, since: datetime) -> bool:
@@ -523,14 +495,14 @@ def email_renewal_notes(conn, limit: int = 40, dry_run: bool = False, send_fn: O
         if not who:
             continue
         counts = window_counts(conn, cid, period_start, now)
-        lines = renewal_lines(counts, renews, next_brand_names(conn, cid),
-                              gmail_connected=_gmail_connected(conn, cid))
+        lines = renewal_lines(counts, renews, next_brand_names(conn, cid))
+        if not lines:
+            continue
         unsub = _unsubscribe_url(who["user_id"])
         mail = renewal_email(
             who["first"], lines, unsub,
             open_href=chip_link("open_board", kind="renewal_note"),
             manage_href=f"{frontend_url()}/creator/dashboard/settings",
-            idle=not counts["pitched"],
         )
         item = {"creator_id": cid, "kind": "renewal_note", "subject": mail["subject"], "to": who["email"],
                 "renews_at": renews.isoformat()}

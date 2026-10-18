@@ -828,6 +828,21 @@ def submit_apply(brand_id):
         if not cursor.fetchone():
             return jsonify({"success": False, "error": "Brand not found"}), 404
 
+        from services.roster_delivery import overdue_delivery
+
+        late = overdue_delivery(cursor, creator_id)
+        if late:
+            _record_event(cursor, creator_id, "apply_blocked_overdue", brand_id=brand_id,
+                          source=payload.get("source"), meta={"overdue_application_id": late["application_id"]})
+            conn.commit()
+            return jsonify({
+                "success": False,
+                "overdue_delivery": True,
+                "overdue_application_id": late["application_id"],
+                "error": f"Submit your {late.get('brand_name') or 'last'} content first. "
+                         "New gifted applications reopen as soon as you do.",
+            }), 403
+
         unlock = attempt_unlock(creator_id, brand_id, conn=conn)
         if unlock.get("status") == "paywall":
             _record_event(

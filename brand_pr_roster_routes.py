@@ -45,9 +45,20 @@ from services.pg_hotpath_schema import (
     public_index_exists,
     public_table_exists,
 )
+from services.roster_fit import (
+    FREE_PICK_LIMIT,
+    PAID_PICK_LIMIT,
+    brand_targets,
+    locked_teasers,
+    pick_limit_for,
+    rank_cards,
+    split_visible,
+    _as_list as _niche_list,
+)
 from services.roster_delivery import (
     brief_public,
     clean_brief,
+    content_due_at,
     delivered_public,
     delivery_select_sql,
     ensure_brief_column,
@@ -1251,6 +1262,16 @@ def _fetch_applications(cursor, campaign, *, include_hidden=False):
     return cursor.fetchall() or []
 
 
+def _content_due_fields(row, status):
+    due = content_due_at(row.get("shipped_at")) if status == "ships" else None
+    if not due:
+        return {"content_due_at": None, "content_overdue": False}
+    return {
+        "content_due_at": due.isoformat(),
+        "content_overdue": datetime.now(timezone.utc) > due,
+    }
+
+
 def _card_from_row(row, *, reveal_shipping, selected_ids, campaign_status):
     app_id = int(row["application_id"])
     status = row.get("status") or "review"
@@ -1289,6 +1310,7 @@ def _card_from_row(row, *, reveal_shipping, selected_ids, campaign_status):
         ),
         "applied_at": row.get("applied_at").isoformat() if row.get("applied_at") else None,
         "shipped_at": row.get("shipped_at").isoformat() if row.get("shipped_at") else None,
+        **_content_due_fields(row, status),
         "kit_slug": row.get("kit_slug") or "",
         "kit_url": public_kit_url(
             row.get("kit_slug") or row.get("username"),
@@ -1312,7 +1334,7 @@ def _card_from_row(row, *, reveal_shipping, selected_ids, campaign_status):
     return card
 
 
-def _campaign_public(campaign, cards):
+def _campaign_public(campaign, cards, slot_limit=None):
     chips = _parse_json_list(campaign.get("deal_chips"))
     if not chips:
         chips = list(DEFAULT_DEAL_CHIPS)
@@ -1324,7 +1346,7 @@ def _campaign_public(campaign, cards):
             for c in cards
             if c["status"] in ("ships", "posted")
         ]
-    slot_limit = pick_limit(campaign.get("slot_limit"))
+    slot_limit = slot_limit or pick_limit(campaign.get("slot_limit"))
     return convert_decimals(
         {
             "success": True,
@@ -1352,35 +1374,91 @@ def _campaign_public(campaign, cards):
     )
 
 
+def _fit_targets(cursor, campaign):
+    brief = {}
+    if public_column_exists(cursor, "pr_brands", "source_opportunity_id"):
+        cursor.execute(
+            """
+            SELECT o.creator_niches, o.shipping_regions, o.follower_ranges
+            FROM pr_brands b
+            JOIN opportunities o ON o.id = b.source_opportunity_id
+            WHERE b.id = %s
+            """,
+            (campaign["brand_id"],),
+        )
+        brief = cursor.fetchone() or {}
+    return brand_targets(
+        category=campaign.get("brand_category"),
+        regions=campaign.get("brand_regions"),
+        brief_niches=brief.get("creator_niches"),
+        brief_regions=brief.get("shipping_regions"),
+        follower_ranges=brief.get("follower_ranges"),
+    )
+
+
+def _roster_access(cursor, campaign):
+    """(billing summary or None, subscribed, pick limit) for this brand."""
+    try:
+        billing = billing_public_summary(cursor, campaign["brand_id"])
+    except Exception:
+        current_app.logger.exception("[roster] billing summary failed")
+        billing = None
+    subscribed = bool(billing and billing.get("subscribed"))
+    return billing, subscribed, pick_limit_for(subscribed)
+
+
+def _paywall_response(reason):
+    message = (
+        f"Your free campaign gifts {FREE_PICK_LIMIT} creators. Gifted UGC ($299/mo) lets you gift "
+        f"{PAID_PICK_LIMIT} a month and see every applicant."
+        if reason == "pick_limit"
+        else "This creator is in your full applicant list. Gifted UGC ($299/mo) unlocks everyone who applied."
+    )
+    return jsonify({"success": False, "paywall": True, "reason": reason, "error": message}), 402
+
+
 def _build_roster_response(cursor, campaign, *, include_hidden=False):
     rows = _fetch_applications(cursor, campaign, include_hidden=include_hidden)
     _persist_hydrated_thumbs(cursor, rows)
     _recover_thumbs_background(rows)
     reveal = campaign.get("status") in ("locked", "shipped")
     selected_ids = _selected_ids(campaign)
-    cards = [
-        _card_from_row(
-            row,
-            reveal_shipping=reveal,
-            selected_ids=selected_ids,
-            campaign_status=campaign.get("status"),
+    pairs = [
+        (
+            _niche_list(row.get("niche")),
+            _card_from_row(
+                row,
+                reveal_shipping=reveal,
+                selected_ids=selected_ids,
+                campaign_status=campaign.get("status"),
+            ),
         )
         for row in rows
     ]
+    billing, subscribed, slot_limit = _roster_access(cursor, campaign)
+    try:
+        targets = _fit_targets(cursor, campaign)
+    except Exception:
+        current_app.logger.exception("[roster] fit targets failed")
+        targets = brand_targets(campaign.get("brand_category"), campaign.get("brand_regions"))
+    cards = rank_cards(pairs, targets)
     with_rate = sum(1 for c in cards if c.get("engagement_label"))
     current_app.logger.info("[roster] engagement %s/%s cards have a rate", with_rate, len(cards))
-    payload = _campaign_public(campaign, cards)
-    try:
-        billing = billing_public_summary(cursor, campaign["brand_id"])
+    shown, hidden = split_visible(cards, subscribed or include_hidden)
+    payload = _campaign_public(campaign, shown, slot_limit=slot_limit)
+    payload["campaign"]["top_pick_ids"] = [c["application_id"] for c in shown if c.get("top_pick")]
+    payload["campaign"]["free_pick_limit"] = FREE_PICK_LIMIT
+    payload["campaign"]["paid_pick_limit"] = PAID_PICK_LIMIT
+    payload["campaign"]["target_regions"] = targets.get("regions_label") or []
+    payload["locked"] = locked_teasers(hidden)
+    if billing is not None:
+        billing = dict(billing)
         billing["delivered_count"] = sum(1 for c in cards if c.get("delivered"))
         billing["next_applicants"] = sum(
             1 for c in cards
             if c.get("status") == "review" and c["application_id"] not in selected_ids
         )
-        payload["billing"] = billing
-    except Exception:
-        current_app.logger.exception("[roster] billing summary failed")
-        payload["billing"] = None
+    payload["billing"] = billing
     return payload
 
 
@@ -1540,17 +1618,24 @@ def select_creator(token):
             return jsonify({"success": False, "error": "Creator is not available to pick"}), 400
 
         selected = _selected_ids(campaign)
-        slot_limit = pick_limit(campaign.get("slot_limit"))
+        _billing, subscribed, slot_limit = _roster_access(cursor, campaign)
         if app_id in selected:
             payload = _build_roster_response(cursor, campaign)
             conn.close()
             return jsonify(payload), 200
         if len(selected) >= slot_limit:
             conn.close()
+            if not subscribed:
+                return _paywall_response("pick_limit")
             return jsonify({
                 "success": False,
                 "error": f"{slot_limit} already selected. Remove one to swap.",
             }), 400
+        if not subscribed:
+            visible = {c["application_id"] for c in _build_roster_response(cursor, campaign)["creators"]}
+            if app_id not in visible:
+                conn.close()
+                return _paywall_response("full_list")
 
         selected.append(app_id)
         _save_selected(cursor, campaign["id"], selected)
@@ -1719,9 +1804,9 @@ def unskip_creator(token):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-def _lock_picks(cursor, campaign, selected, source="roster"):
+def _lock_picks(cursor, campaign, selected, source="roster", slot_limit=None):
     """Move 1..slot_limit review picks to ships and lock. Returns an error string or None."""
-    slot_limit = pick_limit(campaign.get("slot_limit"))
+    slot_limit = slot_limit or pick_limit(campaign.get("slot_limit"))
     if not selected:
         return "Pick at least 1 creator before locking"
     if len(selected) > slot_limit:
@@ -1786,7 +1871,8 @@ def lock_roster(token):
             conn.close()
             return jsonify(payload), 200
 
-        error = _lock_picks(cursor, campaign, _selected_ids(campaign))
+        _billing, _subscribed, slot_limit = _roster_access(cursor, campaign)
+        error = _lock_picks(cursor, campaign, _selected_ids(campaign), slot_limit=slot_limit)
         if error:
             conn.rollback()
             conn.close()
@@ -1840,7 +1926,9 @@ def quick_pick_roster(token):
             (requested, campaign["brand_id"], campaign["id"]),
         )
         available = {int(r["id"]) for r in cursor.fetchall() or []}
-        slot_limit = pick_limit(campaign.get("slot_limit"))
+        _billing, subscribed, slot_limit = _roster_access(cursor, campaign)
+        if not subscribed:
+            available &= {c["application_id"] for c in _build_roster_response(cursor, campaign)["creators"]}
         picks = [i for i in dict.fromkeys(requested) if i in available][:slot_limit]
         if not picks:
             conn.close()
@@ -1851,7 +1939,7 @@ def quick_pick_roster(token):
 
         _save_selected(cursor, campaign["id"], picks)
         campaign = dict(campaign, selected_application_ids=picks)
-        error = _lock_picks(cursor, campaign, picks, source="quick_pick")
+        error = _lock_picks(cursor, campaign, picks, source="quick_pick", slot_limit=slot_limit)
         if error:
             conn.rollback()
             conn.close()
@@ -2083,9 +2171,13 @@ def content_inbox(token):
                 "message": (
                     "Ready to download"
                     if ready
+                    else "Overdue, Polly is chasing them"
+                    if c.get("content_overdue")
                     else "Usually 5–10 days after delivery"
                 ),
                 "shipped_at": c.get("shipped_at"),
+                "content_due_at": c.get("content_due_at"),
+                "content_overdue": c.get("content_overdue"),
             })
         return jsonify({
             "success": True,
