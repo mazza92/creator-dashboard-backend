@@ -31,7 +31,9 @@ MAX_QUEUE = 150
 AUTO_CONFIDENCE = 0.7
 
 POSITIVE_INTENTS = ("interested", "question", "meeting")
-LOG_ONLY_INTENTS = ("bounce", "auto_reply", "booking", "not_interested", "affiliate", "unsubscribe")
+LOG_ONLY_INTENTS = ("bounce", "auto_reply", "booking", "not_interested", "affiliate", "unsubscribe", "later",
+                    "forwarded")
+FORWARDED_WAIT_DAYS = 5
 CLOSED_STAGES = ("won", "lost", "bad_contact", "do_not_contact")
 FREEMAIL = {
     "gmail.com", "googlemail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com",
@@ -213,7 +215,10 @@ QUESTION_LINES = {
 
 
 def fallback_reply(first: str, brand: str, link: str, questions: List[str], wants_call: bool) -> str:
-    extra = [QUESTION_LINES[q] for q in questions if q in QUESTION_LINES and q != "pricing"]
+    asked = [q for q in dict.fromkeys(questions) if q in QUESTION_LINES and q != "pricing"]
+    if "niche" in asked and "demographics" in asked:
+        asked.remove("demographics")
+    extra = [QUESTION_LINES[q] for q in asked[:2]]
     call = f"\n\nIf a quick call is easier, grab 15 min here: {BOOKING_URL}" if wants_call or extra else ""
     return (
         f"{_greet(first, 'Hi')}\n\nThanks for getting back to me. Here's how it works:\n\n"
@@ -235,6 +240,20 @@ _AUTO_PATTERNS = (
     "we have received your", "received your request", "received your message", "ticket", "how would you rate",
     "rate your", "rate the help", "take 10 seconds", "10 seconds to", "satisfaction survey", "did .* help",
     "this is an automated", "automated response", "auto-generated", "do not reply", "higher-than-usual volume",
+    "how did we do", "how was your experience", "rate your experience", "feedback survey",
+)
+_LATER = (
+    "not yet", "do not yet", "don't yet", "not at the moment", "not right now", "not currently looking",
+    "not the right time", "in the near future", "in the future", "plan to introduce", "planning to introduce",
+    "primarily focused", "currently focused", "maybe later", "later this year", "next year",
+    "next quarter", "circle back", "revisit", "keep your details", "keep your information", "keep you in mind",
+    "on file", "fully booked", "no budget",
+)
+_FORWARDED = (
+    "passed your message", "passed your email", "passed your request", "passed this along", "passed it along",
+    "passed along", "passed on your", "forwarded your", "forwarded this", "forwarded it", "shared your message",
+    "shared this with", "escalate", "appropriate team", "relevant team", "right team",
+    "someone will be in touch", "will be in touch if", "contact you if", "get back to you if",
 )
 _UNSUB = ("unsubscribe", "remove me", "stop emailing", "take me off", "do not contact", "don't contact")
 _NOT_INTERESTED = (
@@ -322,8 +341,12 @@ def classify_rules(subject: str, body: str, from_addr: str) -> Dict[str, Any]:
         return {**out, "intent": "affiliate", "confidence": 0.75}
     if _has_any(low, _NOT_INTERESTED):
         return {**out, "intent": "not_interested", "confidence": 0.75}
+    if _has_any(low, _LATER):
+        return {**out, "intent": "later", "confidence": 0.8}
     if _has_any(low, _FORM):
         return {**out, "intent": "redirect", "form_url": (_URL_RE.findall(text) or [""])[0], "confidence": 0.7}
+    if _has_any(low, _FORWARDED):
+        return {**out, "intent": "forwarded", "confidence": 0.8}
     if target:
         return {**out, "intent": "redirect", "redirect_email": target, "confidence": 0.65}
     if _has_any(low, _MEETING):
@@ -335,7 +358,7 @@ def classify_rules(subject: str, body: str, from_addr: str) -> Dict[str, Any]:
 
 _CLASSIFY_SYS = """You triage replies to a cold email from Newcollab (creator gifting + UGC platform) to a brand.
 Return JSON only:
-{"intent":"interested|question|meeting|redirect|affiliate|not_interested|unsubscribe|auto_reply|other",
+{"intent":"interested|question|meeting|redirect|affiliate|later|forwarded|not_interested|unsubscribe|auto_reply|other",
  "confidence":0.0-1.0, "summary":"<=20 words, what they said",
  "questions":["pricing","countries","niche","demographics","portfolio","vetting","usage_rights","process","analytics"],
  "redirect_email":"", "redirect_name":"", "form_url":"",
@@ -344,6 +367,9 @@ Rules:
 - interested: positive, wants details or next steps. question: positive but asks something specific. meeting: asks for a call/demo/deck chat.
 - redirect: tells us to email another person/address or fill a form. Put the exact address from the text in redirect_email.
 - affiliate: invites us to their affiliate program instead.
+- later: not now / not yet / focused elsewhere / maybe in the future. Polite postponement is later, not interested.
+- forwarded: support or a generic inbox says they passed it to another team who will reach out if interested.
+  Thanking us and passing it along is NOT interest.
 - other: anything unusual (they pitch us, complaint, legal, they want to negotiate, unclear). When unsure, use other.
 - Only list questions they actually asked. Only add flags that clearly apply."""
 
@@ -390,13 +416,15 @@ def _gemini_json(system: str, user: str, max_tokens: int = 500) -> Dict[str, Any
 
 def classify(subject: str, body: str, from_addr: str, llm: Optional[Callable] = None) -> Dict[str, Any]:
     rules = classify_rules(subject, body, from_addr)
-    if rules["intent"] in ("bounce", "booking", "auto_reply", "unsubscribe"):
+    rules["rules_intent"] = rules["intent"]
+    if rules["intent"] in ("bounce", "booking", "auto_reply", "unsubscribe", "later", "forwarded"):
         return {**rules, "source": "rules"}
     ask = llm or _gemini_json
     text = strip_quoted(body)[:3000]
     got = ask(_CLASSIFY_SYS, json.dumps({"subject": subject, "from": from_addr, "reply": text}), 400)
     intent = str((got or {}).get("intent") or "").strip().lower()
-    if intent not in POSITIVE_INTENTS + ("redirect", "affiliate", "not_interested", "unsubscribe", "auto_reply", "other"):
+    if intent not in POSITIVE_INTENTS + ("redirect", "affiliate", "later", "forwarded", "not_interested",
+                                         "unsubscribe", "auto_reply", "other"):
         return {**rules, "source": "rules"}
     try:
         confidence = max(0.0, min(1.0, float(got.get("confidence") or 0)))
@@ -409,7 +437,9 @@ def classify(subject: str, body: str, from_addr: str, llm: Optional[Callable] = 
         "intent": intent,
         "confidence": confidence,
         "summary": str(got.get("summary") or rules["summary"])[:200],
-        "questions": [q for q in (got.get("questions") or []) if isinstance(q, str)][:6] or rules["questions"],
+        "questions": [q for q in (got.get("questions") or []) if isinstance(q, str)
+                      and (q in rules["questions"] or q not in QUESTION_LINES)][:6] or rules["questions"],
+        "rules_intent": rules["intent"],
         "redirect_email": target or rules.get("redirect_email", ""),
         "redirect_name": str(got.get("redirect_name") or "")[:80],
         "form_url": str(got.get("form_url") or rules.get("form_url") or "")[:300],
@@ -488,6 +518,8 @@ def decide(cls: Dict[str, Any], row: Dict[str, Any]) -> str:
         return "auto" if cls.get("redirect_email") and cls.get("confidence", 0) >= 0.6 else "hold"
     if intent in POSITIVE_INTENTS:
         if cls.get("flags") or int(row.get("auto_reply_count") or 0) > 0:
+            return "hold"
+        if cls.get("rules_intent", intent) not in POSITIVE_INTENTS:
             return "hold"
         return "auto" if float(cls.get("confidence") or 0) >= AUTO_CONFIDENCE else "hold"
     return "hold"
@@ -916,7 +948,7 @@ def ingest_message(cursor, msg: Dict[str, Any], sender: Optional[Callable] = Non
         log_activity(cursor, brand_id, "reply_in", intent=intent, email=from_addr, subject=subject,
                      body=their_text, message_id=mid or None, in_reply_to=(refs or [None])[0],
                      meta={k: cls.get(k) for k in ("confidence", "questions", "flags", "source", "redirect_email", "form_url")})
-    human = intent not in ("bounce", "auto_reply", "booking")
+    human = intent not in ("bounce", "auto_reply", "booking", "forwarded")
     if human:
         reply_refs = " ".join(f"<{r}>" for r in (refs + ([mid] if mid else []))[-10:])
         cursor.execute(
@@ -974,6 +1006,20 @@ def ingest_message(cursor, msg: Dict[str, Any], sender: Optional[Callable] = Non
     elif intent == "affiliate":
         cursor.execute("UPDATE brand_outreach_tracking SET lost_reason = 'affiliate only' WHERE brand_id = %s", (brand_id,))
         _set_stage(cursor, row, "nurture", "affiliate program only")
+    elif intent == "later":
+        cursor.execute("UPDATE brand_outreach_tracking SET lost_reason = %s WHERE brand_id = %s",
+                       (("not now: " + (cls.get("summary") or ""))[:300], brand_id))
+        _set_stage(cursor, row, "nurture", "not right now")
+    elif intent == "forwarded":
+        cursor.execute(
+            """
+            UPDATE brand_outreach_tracking
+            SET intent = 'forwarded', last_response_at = NOW(),
+                next_action_at = GREATEST(COALESCE(next_action_at, NOW()), NOW() + (%s * INTERVAL '1 day'))
+            WHERE brand_id = %s AND next_action = 'followup'
+            """,
+            (FORWARDED_WAIT_DAYS, brand_id),
+        )
     elif intent == "redirect":
         _set_stage(cursor, row, "replied", "redirected")
         target = cls.get("redirect_email") or ""

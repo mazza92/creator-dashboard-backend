@@ -273,6 +273,51 @@ def test_redirect_mails_the_new_contact_and_restarts_the_sequence():
     assert cur.ran("SET contact_email = %s")
 
 
+PIPI = ("Hi Mazza,\n\nThank you for reaching out and for thinking of PiPi Tea. We appreciate you sharing your idea with us.\n\n"
+        "I have passed your message along to the appropriate team. If they are interested in exploring this further, "
+        "someone will be in touch with you directly.\n\nThank you again for your interest in PiPi Tea, and we wish you all the best.")
+SILA = ("Hi Mazza\nThank you for your message.\nAt the moment, we are primarily focused on our direct-to-consumer model "
+        "and do not yet manage wholesale, B2B accounts, or other collaborations.\nHowever, this is something we are actively "
+        "working on and plan to introduce in the near future.\nI will escalate your request to our Business Development team "
+        "so they can follow up with you as soon as possible if this becomes available.\n\nIf you need any further assistance, "
+        "please feel free to reach out.")
+
+
+def test_support_desk_and_not_now_replies_are_never_answered():
+    eager = lambda *_a, **_k: {"intent": "interested", "confidence": 0.95, "questions": ["niche", "demographics", "vetting"]}
+    assert bp.classify("Re: UGC ads for PiPi Tea", PIPI, "support@pipitea.com", llm=eager)["intent"] == "forwarded"
+    assert bp.classify("Re: 5 creators for SILA", SILA, "hello@livesila.com", llm=eager)["intent"] == "later"
+    survey = "How did we do?\nWould you be willing to rate your support experience today?"
+    assert bp.classify("How did we do?", survey, "support@pipitea.com", llm=eager)["intent"] == "auto_reply"
+
+    for body, intent in ((PIPI, "forwarded"), (SILA, "later")):
+        row = _row(pipeline="v2", stage="contacted", next_action="followup", thread_message_id="<first@newcollab.co>")
+        cur = _inbound_cursor(row)
+        sender = Sender()
+        msg = {"message_id": f"<{intent}@x.com>", "in_reply_to": "<first@newcollab.co>", "from_email": "tacy@mdaire.com",
+               "subject": "Re: PR + UGC swap for Kappel?", "body": body}
+        out = bp.ingest_message(cur, msg, sender=sender, llm=eager)
+        assert out["action"] == "log" and out["intent"] == intent and not sender.calls
+        stages = [p[4] for p in cur.ran("INSERT INTO brand_activity") if p[1] == "stage_change"]
+        if intent == "forwarded":
+            assert stages == [] and cur.ran("WHERE brand_id = %s AND next_action = 'followup'")
+            assert not cur.ran("SET reply_count")
+        else:
+            assert stages == ["nurture"]
+
+
+def test_llm_enthusiasm_alone_does_not_auto_send():
+    row = _row(stage="contacted", pipeline="v2")
+    assert bp.decide({"intent": "interested", "confidence": 0.95, "rules_intent": "other"}, row) == "hold"
+    assert bp.decide({"intent": "interested", "confidence": 0.95, "rules_intent": "interested"}, row) == "auto"
+
+
+def test_fallback_reply_answers_each_question_once():
+    text = bp.fallback_reply("", "SILA", "https://x/brief", ["niche", "demographics", "vetting", "niche"], False)
+    assert text.count("before approving") == 1
+    assert bp.QUESTION_LINES["vetting"] in text
+
+
 def test_duplicate_inbound_is_skipped():
     cur = FakeCursor([("kind = 'reply_in' AND message_id", [{"brand_id": 7}])])
     out = bp.ingest_message(cur, {"message_id": "<x@y.com>", "from_email": "a@y.com"}, sender=Sender(), llm=no_llm)
