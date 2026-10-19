@@ -2765,6 +2765,13 @@ def onboarding_step1():
             )
 
         creator_id = cursor.fetchone()['id']
+        cursor.execute("SAVEPOINT social_backfill")
+        try:
+            from services.profile_refresh import backfill_social_handle
+            backfill_social_handle(cursor, user_id)
+        except Exception as backfill_err:
+            cursor.execute("ROLLBACK TO SAVEPOINT social_backfill")
+            app.logger.warning(f"⚠️ Social handle backfill skipped for user {user_id}: {backfill_err}")
         conn.commit()
 
         # Update session with creator_id

@@ -214,14 +214,14 @@ def _lookup_creator_instagram_handle(creator_id=None, user_id=None):
         row = None
         if creator_id:
             cursor.execute(
-                'SELECT social_handle, username, social_platform FROM creators WHERE id = %s',
+                'SELECT social_handle, username, social_platform, user_id FROM creators WHERE id = %s',
                 (creator_id,),
             )
             row = cursor.fetchone()
         elif user_id:
             cursor.execute(
                 '''
-                SELECT social_handle, username, social_platform FROM creators
+                SELECT social_handle, username, social_platform, user_id FROM creators
                 WHERE user_id = %s
                 ORDER BY id DESC LIMIT 1
                 ''',
@@ -229,22 +229,28 @@ def _lookup_creator_instagram_handle(creator_id=None, user_id=None):
             )
             row = cursor.fetchone()
         cursor.close()
+        handle = ''
+        if row:
+            if isinstance(row, dict):
+                data = row
+            else:
+                data = {
+                    'social_handle': row[0],
+                    'username': row[1],
+                    'social_platform': row[2] if len(row) > 2 else None,
+                    'user_id': row[3] if len(row) > 3 else None,
+                }
+            handle = instagram_handle_from_creator_row(
+                data.get('social_handle'),
+                data.get('username'),
+                data.get('social_platform'),
+            )
+            user_id = user_id or data.get('user_id')
+        if not handle:
+            from services.profile_refresh import scraped_handle
+            handle = scraped_handle(conn, user_id, 'instagram')
         conn.close()
-        if not row:
-            return ''
-        if isinstance(row, dict):
-            data = row
-        else:
-            data = {
-                'social_handle': row[0],
-                'username': row[1],
-                'social_platform': row[2] if len(row) > 2 else None,
-            }
-        return instagram_handle_from_creator_row(
-            data.get('social_handle'),
-            data.get('username'),
-            data.get('social_platform'),
-        )
+        return handle
     except Exception as exc:
         _log(f"[ig-login] handle lookup failed: {exc}")
         return ''

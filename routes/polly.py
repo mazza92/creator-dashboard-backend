@@ -1693,6 +1693,7 @@ def _finish_turn(state, say, brain, timer, chip_id):
         assistant["locked_pitch"] = {
             "brand_name": state.paywall_payload.get("brand_name"),
             "lines": state.paywall_payload["preview"],
+            "kind": state.paywall_payload.get("kind") or "pitch",
         }
     if brands or state.gigs:
         _log_polly_event(state.creator_id, "matches_shown", {
@@ -1931,6 +1932,29 @@ def cron_alerts():
         import traceback
         traceback.print_exc()
         return jsonify({"success": False, "error": "alerts run failed"}), 500
+    finally:
+        conn.close()
+
+
+@polly_bp.route("/cron/refresh-profiles", methods=["GET", "POST"])
+def cron_refresh_profiles():
+    """Re-scrape a few active creators whose Instagram/TikTok data has gone stale."""
+    if not _cron_authorized():
+        return jsonify({"success": False, "error": "unauthorized"}), 401
+    from pr_crm_routes import get_db_connection
+    from services.profile_refresh import refresh_stale_profiles
+    dry_run = str(request.args.get("dry_run") or "").lower() in ("1", "true", "yes")
+    try:
+        limit = max(1, min(10, int(request.args.get("limit") or 4)))
+    except (TypeError, ValueError):
+        limit = 4
+    conn = get_db_connection()
+    try:
+        result = refresh_stale_profiles(conn, limit=limit, dry_run=dry_run)
+        return jsonify({"success": True, "dry_run": dry_run, **json_safe(result)})
+    except Exception as err:
+        print(f"[Polly] cron refresh-profiles error: {err}")
+        return jsonify({"success": False, "error": "refresh run failed"}), 500
     finally:
         conn.close()
 

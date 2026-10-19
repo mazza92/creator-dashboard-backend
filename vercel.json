@@ -25,6 +25,10 @@
     {
       "path": "/api/polly/cron/alerts",
       "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/polly/cron/refresh-profiles",
+      "schedule": "20 * * * *"
     }
   ]
 }

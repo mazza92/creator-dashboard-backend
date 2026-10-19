@@ -95,6 +95,12 @@ def mailto(email: str, subject: str, body: str) -> str:
     return f"mailto:{email}?subject={quote(subject)}&body={quote(body)}"
 
 
+def reply_preview(body: str, keep: int = 2) -> List[str]:
+    """Opening paragraphs shown in clear on the free plan. The usage-rate ask stays locked."""
+    parts = [p.strip() for p in (body or "").split("\n\n") if p.strip()]
+    return parts[:keep]
+
+
 def free_teaser(brand_name: str, followers: Optional[int] = None, posted: bool = False) -> str:
     """Free plan: the playbook in one line, with the written reply on Pro."""
     name = (brand_name or "").strip() or "them"
@@ -111,5 +117,6 @@ def free_teaser(brand_name: str, followers: Optional[int] = None, posted: bool =
         )
     return (
         f"{how} That's how a gifted yes turns into paid.\n\n"
-        "On Pro I write that reply for you, with your rate filled in, every time a brand says yes."
+        "I've started your reply below. On Pro I finish it with your rate filled in, ready to send, "
+        "every time a brand says yes."
     )

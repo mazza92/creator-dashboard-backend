@@ -777,7 +777,8 @@ def _reply_thread(state: TurnState, brand_id: Optional[int], name: str) -> Dict[
 
 def draft_brand_reply(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     from services.paid_ask import (
-        ADDRESS_LINE, USAGE_DAYS, ad_usage_ask, free_teaser, interested_reply, mailto, usage_rate,
+        ADDRESS_LINE, USAGE_DAYS, ad_usage_ask, free_teaser, interested_reply, mailto, reply_preview,
+        usage_rate,
     )
     from services.polly_gigs import creator_followers
 
@@ -790,11 +791,6 @@ def draft_brand_reply(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "error": "Which brand? Pass brand_name."}
     followers = creator_followers(state.scrape) or None
     rate = usage_rate(followers)
-    if not state.balance.get("is_unlimited"):
-        state.final_say = free_teaser(brand_name, followers, posted=posted)
-        state.add_chips(paywall_unlock_chips({"id": brand_id, "name": brand_name}))
-        state.paywall_moment = {"moment": "paid_reply", "brand_id": brand_id}
-        return {"ok": True, "status": "pro_only", "brand": brand_name, "usage_rate": rate}
     thread = _reply_thread(state, brand_id, brand_name)
     first = state.first or ""
     if posted:
@@ -807,6 +803,17 @@ def draft_brand_reply(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         address = creator.get("shipping_address")
         mail = interested_reply(brand_name, first, full, ship_to, followers,
                                 subject=thread["subject"], address=address if isinstance(address, dict) else None)
+    if not state.balance.get("is_unlimited"):
+        state.final_say = free_teaser(brand_name, followers, posted=posted)
+        state.paywall_payload = {
+            "brand_name": brand_name,
+            "brand_id": brand_id,
+            "kind": "reply",
+            "preview": reply_preview(mail["body"]),
+        }
+        state.add_chips(paywall_unlock_chips({"id": brand_id, "name": brand_name}))
+        state.paywall_moment = {"moment": "paid_reply", "brand_id": brand_id}
+        return {"ok": True, "status": "pro_only", "brand": brand_name, "usage_rate": rate}
     state.pitch = {
         "brand_id": brand_id,
         "brand_name": brand_name,

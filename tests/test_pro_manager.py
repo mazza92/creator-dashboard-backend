@@ -200,6 +200,19 @@ class DraftBrandReplyToolTests(_Patched):
         self.assertTrue(any(c["id"] == "unlock_pro" for c in state.task_chips))
         add.assert_not_called()
 
+    def test_free_sees_the_start_of_the_real_reply_with_the_rate_locked(self):
+        state = make_state(scrape={"follower_count": 5000}, conn=_conn(),
+                           creator={"id": 7, "first_name": "Ana", "last_name": "Ruiz", "country": "US"})
+        with patch.object(tools.tracker, "add_event"):
+            tools.run_tool(state, "draft_brand_reply", {"brand_name": "NordVPN"})
+        card = state.paywall_payload
+        self.assertEqual(card["kind"], "reply")
+        self.assertEqual(card["brand_name"], "NordVPN")
+        self.assertEqual(card["preview"][0], "Hi NordVPN team,")
+        self.assertTrue(card["preview"][1].startswith("Thank you, I'd love to!"))
+        self.assertFalse(any("$" in line for line in card["preview"]))
+        self.assertEqual(state.paywall_moment["moment"], "paid_reply")
+
     def test_pro_gets_a_reply_card_to_the_pitched_inbox(self):
         stored = [{"role": "assistant", "pitch": {"brand_id": 4, "brand_name": "NordVPN",
                                                    "email": "pr@nord.example", "subject": "NordVPN x Abdullahi",
