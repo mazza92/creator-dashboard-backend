@@ -306,6 +306,14 @@ def test_support_desk_and_not_now_replies_are_never_answered():
             assert stages == ["nurture"]
 
 
+def test_left_the_company_redirect_beats_llm_auto_reply():
+    body = ("Kate Baron has left the company. Please contact Davinia Taylor (davinia@willpowders.com) "
+            "or Matthew Leydon (matt@willpowders.com) for any enquires.")
+    llm = lambda *_a, **_k: {"intent": "auto_reply", "confidence": 0.9}
+    got = bp.classify("Automatic reply: PR + UGC swap for Willpowders?", body, "kate@willpowders.com", llm=llm)
+    assert got["intent"] == "redirect" and got["redirect_email"] == "davinia@willpowders.com"
+
+
 def test_llm_enthusiasm_alone_does_not_auto_send():
     row = _row(stage="contacted", pipeline="v2")
     assert bp.decide({"intent": "interested", "confidence": 0.95, "rules_intent": "other"}, row) == "hold"

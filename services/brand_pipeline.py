@@ -419,6 +419,8 @@ def classify(subject: str, body: str, from_addr: str, llm: Optional[Callable] = 
     rules["rules_intent"] = rules["intent"]
     if rules["intent"] in ("bounce", "booking", "auto_reply", "unsubscribe", "later", "forwarded"):
         return {**rules, "source": "rules"}
+    if rules["intent"] == "redirect" and rules.get("redirect_email") and rules["confidence"] >= 0.8:
+        return {**rules, "source": "rules"}
     ask = llm or _gemini_json
     text = strip_quoted(body)[:3000]
     got = ask(_CLASSIFY_SYS, json.dumps({"subject": subject, "from": from_addr, "reply": text}), 400)
