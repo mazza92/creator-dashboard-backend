@@ -38,11 +38,13 @@ def verify_unsubscribe_token(user_id, token):
     return hmac.compare_digest(expected, token)
 
 
-@public_bp.route('/unsubscribe', methods=['GET'])
+@public_bp.route('/unsubscribe', methods=['GET', 'POST'])
 def unsubscribe():
     """
     One-click unsubscribe handler.
     Called by the link in every email footer: /api/public/unsubscribe?uid=<id>&token=<tok>
+    Mail clients honouring List-Unsubscribe-Post (RFC 8058) POST to the same URL and
+    expect a 2xx, not a redirect.
     Sets users.unsubscribed_at = NOW() so no future emails are sent.
     """
     user_id = request.args.get('uid')
@@ -72,9 +74,12 @@ def unsubscribe():
         conn.close()
 
         if row:
-            print(f"[unsubscribe] {row['email']} (id={user_id}) unsubscribed")
+            print(f"[unsubscribe] user {user_id} unsubscribed via {request.method}")
         else:
             print(f"[unsubscribe] user {user_id} already unsubscribed or not found")
+
+        if request.method == 'POST':
+            return jsonify({'ok': True}), 200
 
         # Redirect to a confirmation page on the frontend
         from flask import redirect
