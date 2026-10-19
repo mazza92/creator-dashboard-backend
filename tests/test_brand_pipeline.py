@@ -324,6 +324,11 @@ def test_daily_limit_ramps_on_health():
     assert bp.daily_new_limit({"sent_7d": 30, "bounce_rate_7d": 0.0}) == 40
 
 
+def test_display_name_falls_back_to_domain_for_junk_names():
+    assert bp.display_name("Au", "https://au.willpowders.com") == "Willpowders"
+    assert bp.display_name("Kappel", "https://mdaire.com") == "Kappel"
+
+
 def test_brief_link_maps_category_to_niche():
     assert "niche=fitness&ref=r1" in bp.brief_link("activewear", "r1")
     assert "niche=lifestyle" in bp.brief_link(None, "r1")

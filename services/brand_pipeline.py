@@ -70,13 +70,14 @@ def domain_of(value: Optional[str]) -> str:
 
 def display_name(brand_name: Optional[str], website: Optional[str]) -> str:
     name = re.sub(r"\s+", " ", (brand_name or "")).strip()
-    if name and not re.match(r"^(brand|testbrand|company|unknown|none|null|n/?a)[\s_\-]*\d*$", name, re.I):
+    if len(name) >= 3 and not re.match(r"^(brand|testbrand|company|unknown|none|null|n/?a)[\s_\-]*\d*$", name, re.I):
         return name.replace("<", "").replace(">", "")
     host = domain_of(website)
     parts = [p for p in host.split(".") if p]
     if not parts:
         return ""
-    first = parts[1] if parts[0] in ("shop", "store", "my", "get", "try") and len(parts) > 2 else parts[0]
+    prefixes = ("shop", "store", "my", "get", "try", "offer", "au", "eu", "us", "uk", "ca", "en")
+    first = parts[1] if parts[0] in prefixes and len(parts) > 2 else parts[0]
     return " ".join(w.capitalize() for w in re.split(r"[-_]+", first) if w)
 
 
