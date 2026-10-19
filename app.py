@@ -81,6 +81,7 @@ from routes.admin_pr_hunter import admin_pr_hunter_bp
 from routes.admin_brands import admin_brands_bp
 from routes.admin_reports import admin_reports_bp
 from routes.admin_email import admin_email_bp
+from routes.brand_pipeline import brand_pipeline_bp
 from routes.admin_creators import admin_creators_bp
 from routes.ugc_supply import ugc_supply_bp
 from routes.resend_webhooks import resend_webhooks_bp
@@ -386,6 +387,7 @@ app.register_blueprint(admin_pr_hunter_bp)
 app.register_blueprint(admin_brands_bp)
 app.register_blueprint(admin_reports_bp)
 app.register_blueprint(admin_email_bp)
+app.register_blueprint(brand_pipeline_bp)
 app.register_blueprint(admin_creators_bp)
 app.register_blueprint(ugc_supply_bp)
 app.register_blueprint(content_hub_bp)

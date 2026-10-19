@@ -660,6 +660,14 @@ def brand_submit():
         opp_id = result['id']
         conn.commit()
 
+        try:
+            from services.brand_pipeline import record_brief
+            record_brief(cursor, opp_id, str(data.get('ref') or ''), data['brand_email'], data['brand_website'])
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"[brand_submit] pipeline close skipped opp={opp_id}: {e}")
+
         gifted = _publish_instantly(cursor, conn, opp_id, data)
         cursor.close()
         conn.close()

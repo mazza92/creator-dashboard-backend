@@ -2117,7 +2117,8 @@ def personalize_text(text, recipient):
     return text
 
 
-def send_email_gmail_with_meta(to_email, subject, html_content):
+def send_email_gmail_with_meta(to_email, subject, html_content, text_content=None,
+                               in_reply_to=None, references=None, from_name="Newcollab"):
     """Send email via Gmail SMTP and return transport metadata."""
     if not GMAIL_APP_PASSWORD:
         print(f"Warning: SMTP_PASSWORD not set. GMAIL_USER={GMAIL_USER}")
@@ -2131,10 +2132,15 @@ def send_email_gmail_with_meta(to_email, subject, html_content):
     try:
         msg = MIMEMultipart('alternative')
         msg['Subject'] = subject
-        msg['From'] = f"Newcollab <{GMAIL_USER}>"
+        msg['From'] = f"{from_name} <{GMAIL_USER}>"
         msg['To'] = to_email
         msg['Message-ID'] = make_msgid(domain=GMAIL_USER.split("@")[-1] if "@" in GMAIL_USER else None)
+        if in_reply_to:
+            msg['In-Reply-To'] = in_reply_to
+            msg['References'] = references or in_reply_to
 
+        if text_content:
+            msg.attach(MIMEText(text_content, 'plain', 'utf-8'))
         html_part = MIMEText(html_content, 'html')
         msg.attach(html_part)
 
