@@ -553,6 +553,27 @@ def _set_stage(cursor, row: Dict[str, Any], stage: str, reason: str = "") -> Non
     row["stage"] = stage
 
 
+def skip_brand(cursor, brand_id: int, reason: str = "", already_contacted: bool = False) -> None:
+    """Take a brand out of the new queue. Brands already emailed outside the pipeline become legacy,
+    so their replies are held for a human instead of auto-answered."""
+    ensure_tracking(cursor, brand_id)
+    row = load_row(cursor, brand_id)
+    if already_contacted:
+        cursor.execute(
+            """
+            UPDATE brand_outreach_tracking
+            SET pipeline = CASE WHEN last_contacted_at IS NULL THEN 'legacy' ELSE COALESCE(pipeline, 'legacy') END
+            WHERE brand_id = %s
+            """,
+            (brand_id,),
+        )
+        _set_stage(cursor, row, "contacted", reason or "already contacted outside the pipeline")
+        return
+    cursor.execute("UPDATE brand_outreach_tracking SET lost_reason = %s WHERE brand_id = %s",
+                   ((reason or "no contact")[:300], brand_id))
+    _set_stage(cursor, row, "bad_contact", reason or "no contact")
+
+
 def pick_variant(cursor, rng: Optional[random.Random] = None) -> str:
     rng = rng or random.Random()
     cursor.execute(

@@ -302,6 +302,17 @@ def test_first_brief_with_ref_marks_brand_won():
     assert [p[4] for p in cur.ran("INSERT INTO brand_activity") if p[1] == "stage_change"] == ["won"]
 
 
+def test_skip_already_contacted_brand_goes_legacy_not_bad_contact():
+    cur = FakeCursor([("bo.last_inbound_subject", [_row(stage="new")])])
+    bp.skip_brand(cur, 7, "thread already in Gmail", already_contacted=True)
+    assert cur.ran("THEN 'legacy'") and not cur.ran("SET lost_reason")
+    assert [p[4] for p in cur.ran("INSERT INTO brand_activity") if p[1] == "stage_change"] == ["contacted"]
+
+    cur = FakeCursor([("bo.last_inbound_subject", [_row(stage="new")])])
+    bp.skip_brand(cur, 7, "no verified contact")
+    assert [p[4] for p in cur.ran("INSERT INTO brand_activity") if p[1] == "stage_change"] == ["bad_contact"]
+
+
 def test_brief_from_unknown_brand_is_ignored():
     cur = FakeCursor([])
     assert bp.record_brief(cur, 1, "", "me@gmail.com", "") is None

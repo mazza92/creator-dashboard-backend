@@ -64,12 +64,8 @@ def skip_brand():
         return jsonify({"error": "brand_id is required"}), 400
 
     def go(c):
-        brand_id = int(data["brand_id"])
-        bp.ensure_tracking(c, brand_id)
-        row = bp.load_row(c, brand_id)
-        c.execute("UPDATE brand_outreach_tracking SET lost_reason = %s WHERE brand_id = %s",
-                  ((data.get("reason") or "no contact")[:300], brand_id))
-        bp._set_stage(c, row, "bad_contact", data.get("reason") or "no contact")
+        bp.skip_brand(c, int(data["brand_id"]), data.get("reason") or "",
+                      already_contacted=bool(data.get("already_contacted")))
         return {"ok": True}
 
     return jsonify(_run(go))
