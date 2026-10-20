@@ -1132,6 +1132,18 @@ Analyze and return JSON only.'''
                     user_id,
                 ),
             )
+            if followers > 0 and platform:
+                from services.public_kit import sync_social_links_followers
+
+                cur2.execute("SELECT social_links FROM creators WHERE user_id = %s", (user_id,))
+                row = cur2.fetchone()
+                raw_links = (row.get('social_links') if isinstance(row, dict) else row[0]) if row else None
+                synced = sync_social_links_followers(raw_links, platform, handle, followers)
+                if synced:
+                    cur2.execute(
+                        "UPDATE creators SET social_links = %s WHERE user_id = %s",
+                        (synced, user_id),
+                    )
 
             self.db_conn.commit()
             return True

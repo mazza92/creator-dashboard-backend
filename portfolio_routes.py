@@ -78,6 +78,7 @@ def get_creator_id_from_session():
 
 from media_proxy_routes import fetch_post_preview_bytes, to_proxied_media_url
 from services.public_kit import (
+    apply_live_followers,
     build_public_socials,
     display_name_typed_flag,
     parse_kit_niches,
@@ -1831,7 +1832,8 @@ def get_public_kit(slug):
             if user_id:
                 cursor.execute('''
                     SELECT recent_posts, recent_post_thumbnails, primary_platform,
-                           full_name, engagement_rate, post_count
+                           full_name, engagement_rate, post_count,
+                           handle, follower_count
                     FROM creator_profile_data
                     WHERE user_id = %s
                     LIMIT 1
@@ -1902,6 +1904,13 @@ def get_public_kit(slug):
             for item in social_profiles:
                 if item.get('platform') and item.get('url'):
                     socials[item['platform']] = item['url']
+        live = scrape_row or {}
+        apply_live_followers(
+            social_profiles,
+            live.get('primary_platform') or creator.get('social_platform'),
+            live.get('handle') or creator.get('social_handle'),
+            live.get('follower_count') or creator.get('social_follower_count'),
+        )
         follower_count = creator['follower_count'] or 0
         if not follower_count and theme_counts:
             follower_count = max(theme_counts)

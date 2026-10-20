@@ -151,6 +151,51 @@ def build_public_socials(social_links, social_handle=None, social_platform=None,
     return socials, profiles
 
 
+def _same_handle(a, b):
+    return (a or '').strip().lstrip('@').lower() == (b or '').strip().lstrip('@').lower()
+
+
+def apply_live_followers(profiles, platform, handle, followers):
+    """Overwrite the stored count on the scraped account's profile with the latest scrape."""
+    platform = _canon_platform(platform)
+    try:
+        followers = int(followers or 0)
+    except (TypeError, ValueError):
+        followers = 0
+    if not platform or followers <= 0:
+        return profiles
+    matches = [p for p in profiles or [] if isinstance(p, dict) and _canon_platform(p.get('platform')) == platform]
+    if handle:
+        by_handle = [p for p in matches if _same_handle(p.get('handle'), handle)]
+        matches = by_handle or (matches if len(matches) == 1 and not matches[0].get('handle') else [])
+    for p in matches:
+        p['followers'] = followers
+    return profiles
+
+
+def sync_social_links_followers(social_links, platform, handle, followers):
+    """Return social_links JSON with followersCount updated for the scraped account, or None if unchanged."""
+    platform = _canon_platform(platform)
+    try:
+        followers = int(followers or 0)
+    except (TypeError, ValueError):
+        followers = 0
+    links = _as_list(social_links)
+    if not platform or followers <= 0 or not links:
+        return None
+    changed = False
+    for link in links:
+        if not isinstance(link, dict) or _canon_platform(link.get('platform')) != platform:
+            continue
+        link_handle = link.get('handle') or link.get('username') or _handle_from_url(link.get('url') or '')
+        if handle and link_handle and not _same_handle(link_handle, handle):
+            continue
+        if link.get('followersCount') != followers:
+            link['followersCount'] = followers
+            changed = True
+    return json.dumps(links) if changed else None
+
+
 def serialize_public_recent_posts(raw_items, thumbnails=None, default_platform=None, limit=9):
     """Public-safe recent work from scrape/OAuth payloads. Never includes tokens."""
     out = []

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -8,7 +9,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from services.public_kit import (
+    apply_live_followers,
     build_public_socials,
+    sync_social_links_followers,
     display_name_typed_flag,
     parse_kit_niches,
     public_portfolio_name,
@@ -218,6 +221,47 @@ class TestPublicPortfolioName(unittest.TestCase):
             typed_portfolio_name({'display_name': 'Studio Maya'}, username='coolkidzz', first_name='Brytnii'),
             'Studio Maya',
         )
+
+
+class LiveFollowersTests(unittest.TestCase):
+    def test_stale_social_links_count_replaced_by_scrape(self):
+        _, profiles = build_public_socials(
+            '[{"platform": "instagram", "handle": "bhawnaa.choudhary", "followersCount": 6953}]',
+            social_handle='bhawnaa.choudhary',
+            social_platform='instagram',
+        )
+        apply_live_followers(profiles, 'instagram', 'bhawnaa.choudhary', 8888)
+        self.assertEqual(profiles[0]['followers'], 8888)
+
+    def test_other_platforms_and_accounts_untouched(self):
+        profiles = [
+            {'platform': 'instagram', 'handle': '@main', 'followers': 100},
+            {'platform': 'instagram', 'handle': '@side', 'followers': 50},
+            {'platform': 'tiktok', 'handle': '@main', 'followers': 900},
+        ]
+        apply_live_followers(profiles, 'ig', 'main', 200)
+        self.assertEqual([p['followers'] for p in profiles], [200, 50, 900])
+
+    def test_zero_scrape_keeps_stored_count(self):
+        profiles = [{'platform': 'instagram', 'handle': '@main', 'followers': 100}]
+        apply_live_followers(profiles, 'instagram', 'main', 0)
+        self.assertEqual(profiles[0]['followers'], 100)
+
+    def test_sync_social_links_json(self):
+        out = sync_social_links_followers(
+            '[{"platform": "instagram", "handle": "bhawnaa.choudhary", "followersCount": 6953},'
+            ' {"platform": "tiktok", "handle": "bhawnaa", "followersCount": 10}]',
+            'instagram', 'bhawnaa.choudhary', 8888,
+        )
+        links = json.loads(out)
+        self.assertEqual(links[0]['followersCount'], 8888)
+        self.assertEqual(links[1]['followersCount'], 10)
+
+    def test_sync_returns_none_when_unchanged(self):
+        raw = [{'platform': 'instagram', 'handle': 'a', 'followersCount': 5}]
+        self.assertIsNone(sync_social_links_followers(raw, 'instagram', 'a', 5))
+        self.assertIsNone(sync_social_links_followers(raw, 'instagram', 'other', 9))
+        self.assertIsNone(sync_social_links_followers(None, 'instagram', 'a', 9))
 
 
 if __name__ == '__main__':
