@@ -260,6 +260,7 @@ def _format_public_brand_list_item(b):
         'roster_slot_limit': int(b.get('roster_slot_limit') or 0),
         'roster_is_open': int(b.get('roster_is_open') or 0),
         'roster_spotlighted': int(b.get('roster_spotlighted') or 0),
+        'roster_inbound': int(b.get('roster_inbound') or 0),
         'roster_open': int(b.get('roster_is_open') or b.get('roster_fill_count') or b.get('roster_hunger') or b.get('roster_spotlighted') or 0) > 0,
         'reply_signal': reply_signal or None,
     }

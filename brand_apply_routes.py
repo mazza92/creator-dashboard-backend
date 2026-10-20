@@ -175,6 +175,49 @@ def _record_event(cursor, creator_id, event, brand_id=None, source=None, meta=No
     )
 
 
+def _shipping_from_payload(shipping):
+    """Return (address, error). Same rules for gifted applies and direct pitches."""
+    shipping = shipping if isinstance(shipping, dict) else {}
+    full_name = (shipping.get("full_name") or "").strip()
+    line1 = (shipping.get("address_line1") or "").strip()
+    zip_code = (shipping.get("zip") or shipping.get("postal_code") or "").strip()
+    city = (shipping.get("city") or "").strip()
+    state = (shipping.get("state") or shipping.get("region") or "").strip()
+    country = (shipping.get("country") or "").strip()
+    phone = (shipping.get("phone") or "").strip()
+    phone_digits = "".join(ch for ch in phone if ch.isdigit())
+
+    if len(full_name) < 2 or not line1 or not zip_code or not city or not state or not country:
+        return None, "Add a complete shipping address."
+    if len(phone_digits) < 8:
+        return None, "Add a phone number so the courier can reach you."
+
+    from social_verification_routes import country_value_is_restricted
+
+    if country_value_is_restricted(country):
+        return None, "We can only ship to countries Newcollab serves."
+    return {
+        "full_name": full_name[:120],
+        "address_line1": line1[:200],
+        "address_line2": (shipping.get("address_line2") or "").strip()[:200],
+        "city": city[:80],
+        "state": state[:80],
+        "zip": zip_code[:20],
+        "country": country[:80],
+        "phone": phone[:40],
+    }, None
+
+
+def _save_shipping(cursor, creator_id, addr):
+    cursor.execute("SELECT shipping_address FROM creators WHERE id = %s", (creator_id,))
+    existing = _parse_addr((cursor.fetchone() or {}).get("shipping_address"))
+    existing.update(addr)
+    cursor.execute(
+        "UPDATE creators SET shipping_address = %s WHERE id = %s",
+        (Json(existing), creator_id),
+    )
+
+
 def _parse_addr(raw):
     if not raw:
         return {}
@@ -737,6 +780,55 @@ def get_apply_pack_media(brand_id):
     )
 
 
+@brand_apply_bp.route("/brands/<int:brand_id>/pitch-prep", methods=["POST"])
+def pitch_prep(brand_id):
+    """Brands without a live roster: same 3 steps, then Polly writes a direct pitch. No credit spent here."""
+    from services.polly import clean_sample_posts
+
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+
+    payload = request.get_json() or {}
+    samples = clean_sample_posts(payload.get("selected_posts"))
+    if len(samples) != 3:
+        return jsonify({"success": False, "error": "Select 3 posts to continue."}), 400
+    addr, ship_error = _shipping_from_payload(payload.get("shipping"))
+    if ship_error:
+        return jsonify({"success": False, "error": ship_error}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        _ensure_schema(cursor, conn)
+        cursor.execute(
+            "SELECT id, brand_name FROM pr_brands WHERE id = %s AND COALESCE(status, 'published') = 'published'",
+            (brand_id,),
+        )
+        brand = cursor.fetchone()
+        if not brand:
+            return jsonify({"success": False, "error": "Brand not found"}), 404
+        if payload.get("save_shipping", True):
+            _save_shipping(cursor, creator_id, addr)
+        _record_event(cursor, creator_id, "pitch_prepped", brand_id=brand_id,
+                      source=payload.get("source"), meta={"posts": len(samples)})
+        conn.commit()
+        return jsonify({
+            "success": True,
+            "brand_id": brand["id"],
+            "brand_name": brand.get("brand_name") or "",
+            "sample_posts": samples,
+        })
+    except Exception as e:
+        conn.rollback()
+        print(f"[brand-apply] pitch-prep error: {e}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": "Could not save. Try again."}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @brand_apply_bp.route("/brands/<int:brand_id>/apply", methods=["POST"])
 def submit_apply(brand_id):
     creator_id = get_creator_id_from_session()
@@ -754,24 +846,9 @@ def submit_apply(brand_id):
     if not isinstance(posts, list) or len(posts) != 3:
         return jsonify({"success": False, "error": "Select 3 posts to continue."}), 400
 
-    full_name = (shipping.get("full_name") or "").strip()
-    line1 = (shipping.get("address_line1") or "").strip()
-    zip_code = (shipping.get("zip") or shipping.get("postal_code") or "").strip()
-    city = (shipping.get("city") or "").strip()
-    state = (shipping.get("state") or shipping.get("region") or "").strip()
-    country = (shipping.get("country") or "").strip()
-    phone = (shipping.get("phone") or "").strip()
-    phone_digits = "".join(ch for ch in phone if ch.isdigit())
-
-    if len(full_name) < 2 or not line1 or not zip_code or not city or not state or not country:
-        return jsonify({"success": False, "error": "Add a complete shipping address."}), 400
-    if len(phone_digits) < 8:
-        return jsonify({"success": False, "error": "Add a phone number so the courier can reach you."}), 400
-
-    from social_verification_routes import country_value_is_restricted
-
-    if country_value_is_restricted(country):
-        return jsonify({"success": False, "error": "We can only ship to countries Newcollab serves."}), 400
+    addr, ship_error = _shipping_from_payload(shipping)
+    if ship_error:
+        return jsonify({"success": False, "error": ship_error}), 400
 
     selected = []
     try:
@@ -794,17 +871,6 @@ def submit_apply(brand_id):
         selected.append(item)
     if len(selected) != 3:
         return jsonify({"success": False, "error": "Select 3 posts to continue."}), 400
-
-    addr = {
-        "full_name": full_name[:120],
-        "address_line1": line1[:200],
-        "address_line2": (shipping.get("address_line2") or "").strip()[:200],
-        "city": city[:80],
-        "state": state[:80],
-        "zip": zip_code[:20],
-        "country": country[:80],
-        "phone": phone[:40],
-    }
 
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -886,16 +952,7 @@ def submit_apply(brand_id):
             print(f"[brand-apply] roster mint skipped: {mint_err}")
 
         if save_shipping:
-            cursor.execute(
-                "SELECT shipping_address FROM creators WHERE id = %s",
-                (creator_id,),
-            )
-            existing = _parse_addr((cursor.fetchone() or {}).get("shipping_address"))
-            existing.update(addr)
-            cursor.execute(
-                "UPDATE creators SET shipping_address = %s WHERE id = %s",
-                (Json(existing), creator_id),
-            )
+            _save_shipping(cursor, creator_id, addr)
 
         _record_event(
             cursor,

@@ -89,7 +89,8 @@ LEFT JOIN (
         t.target,
         t.slot_limit,
         CASE WHEN t.spotlighted = 1 OR t.inbound = 1 OR t.fill_count > 0 THEN 1 ELSE 0 END AS is_open,
-        t.spotlighted
+        t.spotlighted,
+        t.inbound
     FROM targets t
     LEFT JOIN focused f ON f.brand_id = t.brand_id
     ORDER BY t.brand_id, t.spotlighted DESC
@@ -102,7 +103,8 @@ COALESCE(roster_demand.fill_count, 0) AS roster_fill_count,
 COALESCE(roster_demand.target, 0) AS roster_fill_target,
 COALESCE(roster_demand.slot_limit, 0) AS roster_slot_limit,
 COALESCE(roster_demand.is_open, 0) AS roster_is_open,
-COALESCE(roster_demand.spotlighted, 0) AS roster_spotlighted
+COALESCE(roster_demand.spotlighted, 0) AS roster_spotlighted,
+COALESCE(roster_demand.inbound, 0) AS roster_inbound
 """
 
 

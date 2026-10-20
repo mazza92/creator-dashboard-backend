@@ -16,8 +16,10 @@ from services.polly import (
     apply_handle_revision_to_pitch,
     apply_location_to_pitch,
     apply_paid_ask_to_pitch,
+    apply_work_samples_to_pitch,
     brand_names_agree,
     build_mailto,
+    clean_sample_posts,
     cold_brand_chips,
     drop_pending_draft,
     drop_pitched,
@@ -347,6 +349,8 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "status": "failed", "brand": brand_name, "error": "empty pitch"}
     directory_inbox = pitch.get("email") or None
     pitch, pitch_paid = _dress_pitch(state, pitch, shipping, loc_display, followup)
+    if not followup and args.get("sample_posts"):
+        pitch = apply_work_samples_to_pitch(pitch, clean_sample_posts(args.get("sample_posts")))
     if to_email:
         pitch = _with_inbox(pitch, to_email)
     pitch["brand_id"] = pitch.get("brand_id") or brand_id

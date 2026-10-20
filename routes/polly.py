@@ -1569,6 +1569,7 @@ def _run_chip(state, action, chip_id, data):
         call = ("draft_pitch", {
             "brand_id": brand_id, "brand_name": brand_name,
             "followup": bool(data.get("is_followup")), "confirm_cold": bool(data.get("confirm_cold")),
+            "sample_posts": data.get("sample_posts") or [],
         })
     elif action == "suggest_brands":
         call = ("suggest_brands", {"deal": data.get("deal")} if data.get("deal") else {})

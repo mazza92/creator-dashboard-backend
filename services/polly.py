@@ -1430,6 +1430,46 @@ def apply_paid_ask_to_pitch(
     return out
 
 
+def clean_sample_posts(posts: Any, limit: int = 3) -> List[str]:
+    out: List[str] = []
+    for p in posts if isinstance(posts, list) else []:
+        url = p if isinstance(p, str) else ((p.get("post_url") or p.get("url")) if isinstance(p, dict) else "")
+        url = str(url or "").strip()
+        if url.startswith(("https://", "http://")) and url not in out:
+            out.append(url[:500])
+        if len(out) >= limit:
+            break
+    return out
+
+
+def apply_work_samples_to_pitch(
+    pitch: Optional[Dict[str, Any]],
+    post_urls: Optional[List[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Put the posts the creator picked into the pitch, above the ask (or the sign-off)."""
+    if not pitch:
+        return pitch
+    body = str(pitch.get("body") or "")
+    urls = [u for u in (post_urls or []) if u and u not in body][:3]
+    if not urls:
+        return pitch
+    block = "A few recent posts:\n" + "\n".join(urls)
+    paras = body.rstrip().split("\n\n")
+    ask_idx = next((i for i, p in enumerate(paras) if re.search(r"(?i)\bno fee\b|^rate:", p)), None)
+    if ask_idx is not None:
+        paras.insert(ask_idx, block)
+    elif len(paras) >= 2:
+        paras.insert(len(paras) - 1, block)
+    else:
+        paras.append(block)
+    out = dict(pitch)
+    out["body"] = "\n\n".join(paras)
+    out["sample_posts"] = urls
+    if out.get("email"):
+        out["mailto"] = build_mailto(out.get("email"), out.get("subject") or "", out["body"])
+    return out
+
+
 def apply_gifted_ask_to_pitch(
     pitch: Optional[Dict[str, Any]],
     location_display: Optional[str] = None,

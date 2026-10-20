@@ -35,6 +35,9 @@ def _gemini_api_key() -> Optional[str]:
     return os.getenv('GEMINI_API_KEY')
 
 
+_RANK_TIMEOUT = (3, 6)
+
+
 def _gemini_model() -> str:
     return os.getenv('MENTOR_MATCH_MODEL') or os.getenv('GEMINI_MODEL') or 'gemini-2.5-flash'
 
@@ -201,11 +204,15 @@ def _call_gemini_rank(prompt: str) -> List[int]:
             'responseSchema': MATCH_SCHEMA,
         },
     }
-    response = requests.post(url, json=payload, timeout=45)
-    if response.status_code >= 400:
-        print(f'[MentorMatch] schema call HTTP {response.status_code}; retrying plain JSON')
+    if 'flash' in model:
+        payload['generationConfig']['thinkingConfig'] = {'thinkingBudget': 0}
+    # Tiebreak only (calculator score wins the final sort) and it sits on the first
+    # Polly screen, so a slow rank must never cost more than a few seconds.
+    response = requests.post(url, json=payload, timeout=_RANK_TIMEOUT)
+    if response.status_code == 400:
+        print('[MentorMatch] schema call HTTP 400; retrying plain JSON')
         payload['generationConfig'].pop('responseSchema', None)
-        response = requests.post(url, json=payload, timeout=45)
+        response = requests.post(url, json=payload, timeout=_RANK_TIMEOUT)
     response.raise_for_status()
     result = response.json()
     from services.gemini_usage import record_gemini_usage
@@ -492,12 +499,48 @@ def _backfill_calculator(
     )
 
 
+def _llm_reorder(
+    ranked: List[Dict],
+    by_id: Dict[int, Dict],
+    profile: Dict,
+    interest_niches: List[str],
+) -> List[Dict]:
+    """Gemini may reorder the already-scored 8. Thin/salvaged lists are ignored."""
+    try:
+        brand_lines = '\n'.join(_brand_card(b) for b in ranked)
+        prompt = f"""{_creator_summary(profile, interest_niches)}
+
+CANDIDATE BRAND IDS (already scored — return ALL of these IDs, best product fit first):
+{brand_lines}
+
+Return JSON with every ID from the list:
+{{"ranked_ids":[...ids...]}}
+"""
+        ranked_ids = _call_gemini_rank(prompt)
+        allowed = set(by_id.keys()) | {int(b['id']) for b in ranked if b.get('id') is not None}
+        valid = [i for i in ranked_ids if i in allowed]
+        if len(valid) < min(6, len(ranked)):
+            print(f'[MentorMatch] ignoring thin LLM reorder n={len(valid)}')
+            return ranked
+        reordered = _hydrate_from_ids(valid, {int(b['id']): b for b in ranked}, profile, interest_niches)
+        if len(reordered) < min(6, len(ranked)):
+            return ranked
+        for b in reordered:
+            b['match_source'] = 'mentor_llm'
+        print(f'[MentorMatch] LLM reordered {len(reordered)} scored brands')
+        return reordered
+    except Exception as e:
+        print(f'[MentorMatch] LLM reorder skipped: {e}')
+        return ranked
+
+
 def rank_matches_with_mentor(
     creator_profile: Dict,
     candidate_brands: List[Dict],
     niches: Optional[List[str]] = None,
     creator_id: Optional[int] = None,
     force_refresh: bool = False,
+    use_llm: bool = True,
 ) -> List[Dict]:
     """
     niches = user interest checkboxes (pitching intent).
@@ -541,31 +584,8 @@ def rank_matches_with_mentor(
     for b in ranked:
         b['match_source'] = 'calculator'
 
-    # Gemini may reorder the already-scored 8. Thin/salvaged lists are ignored.
-    try:
-        brand_lines = '\n'.join(_brand_card(b) for b in ranked)
-        prompt = f"""{_creator_summary(profile, interest_niches)}
-
-CANDIDATE BRAND IDS (already scored — return ALL of these IDs, best product fit first):
-{brand_lines}
-
-Return JSON with every ID from the list:
-{{"ranked_ids":[...ids...]}}
-"""
-        ranked_ids = _call_gemini_rank(prompt)
-        allowed = set(by_id.keys()) | {int(b['id']) for b in ranked if b.get('id') is not None}
-        valid = [i for i in ranked_ids if i in allowed]
-        if len(valid) >= min(6, len(ranked)):
-            reordered = _hydrate_from_ids(valid, {int(b['id']): b for b in ranked}, profile, interest_niches)
-            if len(reordered) >= min(6, len(ranked)):
-                ranked = reordered
-                for b in ranked:
-                    b['match_source'] = 'mentor_llm'
-                print(f'[MentorMatch] LLM reordered {len(ranked)} scored brands')
-        else:
-            print(f'[MentorMatch] ignoring thin LLM reorder n={len(valid)}')
-    except Exception as e:
-        print(f'[MentorMatch] LLM reorder skipped: {e}')
+    if use_llm:
+        ranked = _llm_reorder(ranked, by_id, profile, interest_niches)
 
     ranked.sort(key=lambda x: x.get('match_score') or 0, reverse=True)
     ranked = diversify_matches(

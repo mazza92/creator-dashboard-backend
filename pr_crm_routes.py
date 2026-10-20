@@ -9293,6 +9293,7 @@ def get_for_you():
                                     niches=list(interest_niches or []),
                                     creator_id=creator_id,
                                     force_refresh=True,
+                                    use_llm=False,
                                 )
                             if len(retry_ranked) > len(filtered_matched):
                                 filtered_matched = retry_ranked
