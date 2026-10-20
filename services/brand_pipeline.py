@@ -108,21 +108,16 @@ def new_ref() -> str:
 
 
 def text_to_html(text: str) -> str:
-    blocks = []
-    for part in (text or "").strip().split("\n\n"):
-        lines = []
-        for line in part.split("\n"):
-            safe = html.escape(line)
-            safe = _URL_RE.sub(lambda m: f'<a href="{m.group(0)}">{m.group(0)}</a>', safe)
-            lines.append(safe)
-        blocks.append(
-            '<p style="margin:0 0 16px;font-family:Arial,Helvetica,sans-serif;font-size:14px;'
-            f'line-height:1.6;color:#222;">{"<br/>".join(lines)}</p>'
-        )
-    return (
-        '<!DOCTYPE html><html><head><meta charset="utf-8"></head>'
-        '<body style="margin:0;padding:20px 24px;background:#fff;">' + "".join(blocks) + "</body></html>"
-    )
+    """Same markup Gmail's composer produces: unstyled divs, so it reads as a hand-typed email."""
+    rows = []
+    for line in (text or "").strip().split("\n"):
+        if not line.strip():
+            rows.append("<div><br></div>")
+            continue
+        safe = html.escape(line)
+        safe = _URL_RE.sub(lambda m: f'<a href="{m.group(0)}">{m.group(0)}</a>', safe)
+        rows.append(f"<div>{safe}</div>")
+    return '<div dir="ltr">' + "".join(rows) + "</div>"
 
 
 def _greet(first: str, word: str = "Hey") -> str:

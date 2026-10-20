@@ -382,6 +382,16 @@ def test_display_name_falls_back_to_domain_for_junk_names():
     assert bp.display_name("Kappel", "https://mdaire.com") == "Kappel"
 
 
+def test_html_body_matches_gmail_composer_markup():
+    out = bp.text_to_html("Hey,\n\nQuick idea for A&B:\n• one\nhttps://x.co/a\n\nMazza")
+    assert out == (
+        '<div dir="ltr"><div>Hey,</div><div><br></div><div>Quick idea for A&amp;B:</div>'
+        '<div>• one</div><div><a href="https://x.co/a">https://x.co/a</a></div>'
+        '<div><br></div><div>Mazza</div></div>'
+    )
+    assert "style=" not in out and "<body" not in out
+
+
 def test_brief_link_maps_category_to_niche():
     assert "niche=fitness&ref=r1" in bp.brief_link("activewear", "r1")
     assert "niche=lifestyle" in bp.brief_link(None, "r1")
