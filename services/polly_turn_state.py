@@ -63,6 +63,7 @@ class TurnState:
     gigs: List[Dict[str, Any]] = field(default_factory=list)
     gigs_has_more: bool = False
     pitch: Optional[Dict[str, Any]] = None
+    pitch_batch: List[Dict[str, Any]] = field(default_factory=list)
     pitch_update: Optional[Dict[str, Any]] = None
     board: Optional[Dict[str, Any]] = None
     paywall: bool = False

@@ -155,10 +155,6 @@ def classify(stat: Optional[Dict[str, int]]) -> Optional[str]:
     return None
 
 
-def _plural(n: int, word: str) -> str:
-    return f"{n} {word}{'' if n == 1 else 's'}"
-
-
 def signal_for(stat: Optional[Dict[str, int]]) -> Optional[Dict[str, Any]]:
     tier = classify(stat)
     if not tier:
@@ -166,16 +162,21 @@ def signal_for(stat: Optional[Dict[str, int]]) -> Optional[Dict[str, Any]]:
     pitched = int(stat.get("pitched") or 0)
     replied = int(stat.get("replied") or 0)
     selected = int(stat.get("selected") or 0)
+    # A count of one reads as proof but is an anecdote: only quote counts from 2 up.
     if tier == "replies":
-        if selected:
-            detail = f"Picked {_plural(selected, 'Newcollab creator')} for gifted PR"
+        if selected >= 2:
+            detail = f"Picked {selected} Newcollab creators for gifted PR"
+        elif selected:
+            detail = "Picked a Newcollab creator for gifted PR"
+        elif replied >= 2:
+            detail = f"Answered {replied} Newcollab creators who pitched them"
         else:
-            detail = f"{_plural(replied, 'creator')} heard back after pitching"
+            detail = "Has answered Newcollab creators who pitched them"
         label = "Replies to creators"
     else:
         heard = "none" if not replied else str(replied)
         detail = f"{pitched} creators pitched on Newcollab, {heard} heard back"
-        label = "Rarely replies"
+        label = "Long shot"
     return {
         "tier": tier,
         "label": label,

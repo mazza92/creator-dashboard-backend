@@ -119,6 +119,7 @@ def seed_from_survey(
     notes: Optional[Dict] = None,
     survey: Optional[Dict] = None,
     scrape: Optional[Dict] = None,
+    creator: Optional[Dict] = None,
 ) -> Dict[str, Any]:
     """Fill discovery from the onboarding survey and close it. Polly never re-asks."""
     out = dict(notes or {})
@@ -137,15 +138,38 @@ def seed_from_survey(
     challenge = challenge or str(survey.get("pain_other") or "").strip()[:200]
     if challenge and not _filled(out, "biggest_challenge"):
         out["biggest_challenge"] = challenge
+    picked = onboarding_niches(creator)
     niche = str((scrape or {}).get("primary_niche") or "").strip()
-    if niche and not is_weak_niche(niche) and not _filled(out, "niche"):
-        out["niche"] = niche
+    if not _filled(out, "niche"):
+        if picked:
+            out["niche"] = picked[:4]
+        elif niche and not is_weak_niche(niche):
+            out["niche"] = niche
     if segment or intents or pains:
         out["survey"] = {"segment": segment, "intent": intents[:3], "pain": pains[:3]}
     if not discovery_complete(out):
         out["discovery_completed_at"] = utc_now()
         out["discovery_source"] = "survey" if out.get("survey") else "skipped"
     out["survey_seeded_at"] = utc_now()
+    return out
+
+
+def heal_seeded_niche(
+    notes: Optional[Dict] = None,
+    scrape: Optional[Dict] = None,
+    creator: Optional[Dict] = None,
+) -> Dict[str, Any]:
+    """Older seeds copied the scrape niche over the signup pick. Undo that, never a niche typed in chat."""
+    out = dict(notes or {})
+    if out.get("discovery_source") not in ("survey", "skipped"):
+        return out
+    seeded = out.get("niche")
+    scraped = str((scrape or {}).get("primary_niche") or "").strip().lower()
+    if not isinstance(seeded, str) or not scraped or seeded.strip().lower() != scraped:
+        return out
+    picked = onboarding_niches(creator)
+    if picked and scraped not in picked:
+        out["niche"] = picked[:4]
     return out
 
 

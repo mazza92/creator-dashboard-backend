@@ -129,9 +129,11 @@ NEWCOLLAB KIT (not a generic portfolio):
   Canva PDFs, or a random landing page unless they bring that up themselves.
 - You are given a live snapshot of their kit. You have already opened it. Review
   those facts — do not ask if they "have a portfolio link".
-- If unpublished: tell them to tap **My portfolio**, fill the gaps, hit publish.
-  Never paste the editor path. Keep lining up brands in the same turn — publishing
-  is high-leverage, not a hard stop on mentoring.
+- If unpublished: suggest tapping **My portfolio** to fill the gaps and publish,
+  as a side step alongside pitching. Never paste the editor path. An unpublished
+  kit never blocks or delays a pitch: never say "publish first", "then I'll draft",
+  or "brands won't be able to see your work". Brands on screen get pitched now.
+  Mention the kit in one short line after the brands or the pitch, never before.
 - If published: critique the actual name, about, posts, rates, then offer the exact
   live URL (https://newcollab.co/kit/SLUG) for TikTok/IG bio. Not newcollab.co
   homepage. Not a Linktree.
@@ -147,6 +149,11 @@ NEWCOLLAB KIT (not a generic portfolio):
 BAD: "Here are brands from our pool that fit your profile."
 GOOD: "I've got **three** worth pitching this week. Beauty Pie is my top pick —
 they're paying attention to lifestyle micros right now. Want me to draft a pitch?"
+
+BAD: "Your kit isn't published yet. Tap My portfolio and publish, then I'll draft these pitches."
+GOOD: "I've got **three** fitness brands looking for creators this week. Tap **Write all 3
+pitches** and I'll write them now. While they're out, publish your kit from **My portfolio**
+so brands who click through see your best posts."
 
 BAD: "Clear stats, darling!"
 GOOD: "Lead the kit with a real number — views or engagement — in the first three posts."
@@ -410,9 +417,12 @@ def persona_first_matches(
     brands: Optional[List[Dict[str, Any]]] = None,
     niche: str = "",
     live: bool = False,
+    batch: bool = False,
 ) -> str:
     """Message one: use what the survey already told us, then hand over matches. No questions."""
     survey = survey or {}
+    rows = [b for b in (brands or []) if b.get("name")]
+    answering = sum(1 for b in rows[:3] if ((b.get("reply_signal") or {}).get("tier") == "replies"))
     hello = f"Hey {first_name} 👋" if (first_name or "").strip() else "Hey 👋"
     bits = []
     stage = _SURVEY_STAGE.get(str(survey.get("segment") or ""))
@@ -421,7 +431,10 @@ def persona_first_matches(
     goal = next((_SURVEY_GOAL[i] for i in (survey.get("intent") or []) if i in _SURVEY_GOAL), "")
     if goal:
         bits.append(goal)
-    pain = next((_SURVEY_PAIN[p] for p in (survey.get("pain") or []) if p in _SURVEY_PAIN), "")
+    pain_key = next((p for p in (survey.get("pain") or []) if p in _SURVEY_PAIN), "")
+    pain = _SURVEY_PAIN.get(pain_key, "")
+    if pain_key == "no_replies" and not answering:
+        pain = "brands never reply. So I picked brands that work with creators your size."
     if pain:
         bits.append(f"and {pain}")
     if bits:
@@ -431,7 +444,6 @@ def persona_first_matches(
         opening = f"{hello} You told me {told}"
     else:
         opening = f"{hello} I'm Polly. I pulled brands for you so you can start today."
-    rows = [b for b in (brands or []) if b.get("name")]
     where = f" in {niche}" if niche and niche != "your" else ""
     if not rows:
         return (
@@ -443,9 +455,18 @@ def persona_first_matches(
     verb = "are" if n > 1 else "is"
     if live:
         line = f"{these} {verb} picking creators{where} this week."
+    elif answering and answering == n:
+        line = f"{these} {verb} a fit{where} and answer Newcollab creators who pitch them."
+    elif answering:
+        line = f"All {n} fit you{where}, and {answering} of them answer Newcollab creators who pitch them."
     else:
         line = f"{these} {verb} a strong fit{where} and work with creators your size."
-    return f"{opening}\n\n{line} Tap **Contact** on one and I'll write the pitch."
+    if batch and n > 1:
+        ask = (f"Tap **Write all {n} pitches** and I'll write them now. "
+               "Then send them from your Gmail in one tap.")
+    else:
+        ask = "Tap **Contact** on one and I'll write the pitch."
+    return f"{opening}\n\n{line} {ask}"
 
 
 def persona_kit_after_cards(
@@ -517,19 +538,56 @@ def persona_portfolio_review(profile_context: str = "", kit: Optional[Dict[str, 
     return persona_kit_review(kit)
 
 
+# (follower ceiling, per-video low/high, 3-pack low/high). None = no ceiling.
+_RATE_BANDS = (
+    (2000, (50, 100), (150, 250)),
+    (10000, (80, 150), (200, 400)),
+    (25000, (150, 250), (400, 600)),
+    (None, (250, 500), (600, 1000)),
+)
+
+
+def rate_band(followers: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """Suggested rates from a real follower count. None when we can't see one."""
+    try:
+        followers = int(followers or 0)
+    except (TypeError, ValueError):
+        followers = 0
+    if followers <= 0:
+        return None
+    for ceiling, video, pack in _RATE_BANDS:
+        if ceiling is None or followers < ceiling:
+            mid = int(round((video[0] + video[1]) / 2 / 5.0) * 5)
+            return {
+                "video": video,
+                "pack": pack,
+                "video_rate": mid,
+                "photo_rate": int(round(mid * 0.6 / 5.0) * 5),
+                "whitelisting": 100 if ceiling == 10000 else None,
+            }
+    return None
+
+
+def rate_line(followers: Optional[int] = None) -> str:
+    band = rate_band(followers)
+    if not band:
+        return ""
+    lo, hi = band["video"]
+    plo, phi = band["pack"]
+    line = f"${lo}–${hi} a video, ${plo}–${phi} for a 3-pack"
+    if band["whitelisting"]:
+        line += f", +${band['whitelisting']} if they want whitelisting"
+    return line
+
+
 def persona_rate_card(followers: Optional[int] = None) -> str:
-    if followers and followers < 2000:
-        band = "I'd set you around $50–$100 a video, $150–$250 for a 3-pack."
-    elif followers and followers < 10000:
-        band = "I'd set you around $80–$150 a video, $200–$400 for a 3-pack, +$100 if they want whitelisting."
-    elif followers and followers < 25000:
-        band = "I'd set you around $150–$250 a video, $400–$600 for a 3-pack."
-    elif followers:
-        band = "I'd set you in the $250–$500 a video range and package a 3-pack above that."
+    line = rate_line(followers)
+    if line:
+        band = f"I'd set you around {line}."
     else:
         band = "Until I can see a real follower count from your scrape I won't invent one — but don't go below $50 a video even as a first collab."
     return (
-        f"Ok listen, rates.{band} Don't undercharge. If they push back, you can drop 20% once "
+        f"Ok listen, rates. {band} Don't undercharge. If they push back, you can drop 20% once "
         "for the first collab, never lower. Want me to put that on your kit, or line up brands first?"
     )
 
@@ -948,7 +1006,7 @@ def persona_profile_audit(
     moves = []
     if kit.get("found"):
         if not kit.get("published"):
-            moves.append("Publish **My Kit** — brands have nothing to open until it's live.")
+            moves.append("Publish **My Kit** alongside your pitches, so brands who click through see your posts.")
         gaps = [g for g in (kit.get("gaps") or []) if g][:2]
         for gap in gaps:
             if gap not in moves and len(moves) < 3:

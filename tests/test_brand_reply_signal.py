@@ -45,16 +45,20 @@ class SignalForTests(unittest.TestCase):
     def test_replies_detail_prefers_selection(self):
         sig = rs.signal_for({"pitched": 3, "replied": 1, "selected": 1})
         self.assertEqual(sig["label"], "Replies to creators")
-        self.assertEqual(sig["detail"], "Picked 1 Newcollab creator for gifted PR")
+        self.assertEqual(sig["detail"], "Picked a Newcollab creator for gifted PR")
 
     def test_replies_detail_from_replies(self):
         sig = rs.signal_for({"pitched": 10, "replied": 4, "selected": 0})
-        self.assertEqual(sig["detail"], "4 creators heard back after pitching")
+        self.assertEqual(sig["detail"], "Answered 4 Newcollab creators who pitched them")
+
+    def test_single_reply_has_no_count(self):
+        sig = rs.signal_for({"pitched": 5, "replied": 1, "selected": 0})
+        self.assertEqual(sig["detail"], "Has answered Newcollab creators who pitched them")
 
     def test_cold_detail(self):
         sig = rs.signal_for({"pitched": 159, "replied": 0, "selected": 0})
         self.assertEqual(sig["tier"], "cold")
-        self.assertEqual(sig["label"], "Rarely replies")
+        self.assertEqual(sig["label"], "Long shot")
         self.assertEqual(sig["detail"], "159 creators pitched on Newcollab, none heard back")
 
     def test_no_signal(self):

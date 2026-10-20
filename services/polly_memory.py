@@ -90,6 +90,9 @@ def _clean_message(msg: Any) -> Optional[Dict[str, Any]]:
     locked = msg.get("locked_pitch")
     if isinstance(locked, dict) and locked.get("lines"):
         out["locked_pitch"] = locked
+    batch = msg.get("pitch_batch")
+    if isinstance(batch, dict) and isinstance(batch.get("items"), list) and batch["items"]:
+        out["pitch_batch"] = {"items": batch["items"][:3], "status": batch.get("status") or "draft"}
     kind = msg.get("kind")
     if kind in ("nudge", "brief", "alert", "autopilot", "board"):
         out["kind"] = kind
@@ -192,3 +195,14 @@ def save_thread(
     conn.commit()
     payload["notes"] = notes if isinstance(notes, dict) else {}
     return payload
+
+
+def save_notes(conn, creator_id: int, notes: Dict[str, Any]) -> None:
+    """Notes only: the client owns the message list and saves it separately."""
+    cursor = conn.cursor()
+    ensure_polly_thread_table(cursor, conn)
+    cursor.execute(
+        "UPDATE polly_threads SET notes = %s, updated_at = NOW() WHERE creator_id = %s",
+        (Json(notes if isinstance(notes, dict) else {}), creator_id),
+    )
+    conn.commit()

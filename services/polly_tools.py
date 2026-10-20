@@ -313,6 +313,8 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
 
     if followup:
         status, pkg = R._invoke_generate_followup(brand_id, row.get("slug"))
+    elif args.get("_prefetched"):
+        status, pkg = args["_prefetched"]
     else:
         status, pkg = R._invoke_generate_pr_package(
             brand_id, row.get("slug"),
@@ -384,6 +386,142 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         "explain": "The full pitch is unlocked and on the card. Never call it locked; "
                    "free_pitches_left only limits the next pitch.",
     }
+
+
+BATCH_MAX = 3
+
+
+def batch_item(pitch: Dict[str, Any]) -> Dict[str, Any]:
+    body = str(pitch.get("body") or "")
+    return {
+        "brand_id": _int(pitch.get("brand_id")),
+        "brand_name": pitch.get("brand_name"),
+        "brand_logo": pitch.get("brand_logo"),
+        "email": pitch.get("email") or None,
+        "subject": pitch.get("subject") or "",
+        "body": body,
+        "mailto": pitch.get("mailto") or None,
+        "needs_location": bool(pitch.get("needs_location")) or pitch_has_placeholder(body),
+    }
+
+
+def _stored_batch_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: item.get(k) for k in ("brand_id", "brand_name", "brand_logo", "email", "subject", "body")}
+
+
+def batch_waits_on_location(notes: Dict[str, Any]) -> bool:
+    if (notes or {}).get("pending_batch"):
+        return True
+    items = ((notes or {}).get("pitch_batch") or {}).get("items") or []
+    return any(pitch_has_placeholder(str(i.get("body") or "")) and not i.get("sent_at") for i in items)
+
+
+def _fill_batch_location(state: TurnState, city: str, country: str, display: str) -> bool:
+    """City arrived after a batch was written with the placeholder: fix every pitch in it."""
+    stored = state.notes.get("pitch_batch") or {}
+    items = stored.get("items") or []
+    if not any(pitch_has_placeholder(str(i.get("body") or "")) for i in items):
+        return False
+    filled = []
+    for item in items:
+        if item.get("sent_at") or not pitch_has_placeholder(str(item.get("body") or "")):
+            filled.append(item)
+            continue
+        fixed = apply_location_to_pitch(item, city, country, display)
+        filled.append({**item, "body": fixed.get("body") or item.get("body")})
+    state.notes["pitch_batch"] = {**stored, "items": filled}
+    shown = [batch_item({**i, "mailto": build_mailto(i.get("email"), i.get("subject") or "", i.get("body") or "")
+                         if i.get("email") else None}) for i in filled if not i.get("sent_at")]
+    state.pitch_batch = shown
+    sendable = sum(1 for i in shown if i["email"] and not i["needs_location"])
+    say = f"Got it, {display}. "
+    if sendable:
+        say += (f"{'All ' + str(sendable) + ' pitches now say' if sendable > 1 else 'Your pitch now says'} "
+                f"where to ship. Tap **Send {'all ' + str(sendable) if sendable > 1 else 'it'} from my Gmail** below.")
+    else:
+        say += "Your pitches now say where to ship."
+    state.final_say = say
+    return True
+
+
+def draft_pitch_batch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
+    """First-session wow: write every pitch on screen at once, ready to send together."""
+    R = _routes()
+    rows: List[Dict[str, Any]] = []
+    seen = set()
+    for raw in args.get("brand_ids") or []:
+        bid = _int(raw)
+        if not bid or bid in seen:
+            continue
+        seen.add(bid)
+        row = find_brand(state, brand_id=bid)
+        if row and not state.is_pitched(row):
+            rows.append(row)
+    rows = rows[:BATCH_MAX]
+    if not rows:
+        return {"ok": False, "status": "no_brands",
+                "explain": "Those brands are already pitched or gone. Offer new matches."}
+
+    shipping, _loc = _pitch_location(state)
+    if shipping.get("needs_location"):
+        state.notes["pending_batch"] = {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "brand_ids": [int(r["id"]) for r in rows],
+        }
+        state.notes["location_asked_at"] = datetime.now(timezone.utc).isoformat()
+        state.final_say = (
+            f"Quick one before I write {'them' if len(rows) > 1 else 'it'}: which city and country "
+            "do you live in? Brands need it to ship your package, and every pitch says it.\n\n"
+            "Type it like **Paris, France**."
+        )
+        return {"ok": True, "status": "needs_location_first", "count": len(rows)}
+
+    prefetched = R._invoke_generate_pr_packages(
+        [{"id": int(r["id"]), "slug": r.get("slug")} for r in rows],
+        city=shipping.get("city") or "", country=shipping.get("country") or "",
+    )
+    pitches: List[Dict[str, Any]] = []
+    locked: List[str] = []
+    for row in rows:
+        state.pitch = None
+        draft_pitch(state, {
+            "brand_id": row["id"], "brand_name": row.get("name"), "confirm_cold": True,
+            "_prefetched": prefetched.get(int(row["id"])),
+        })
+        if state.pitch:
+            pitches.append(state.pitch)
+        elif state.paywall:
+            locked.append(row.get("name") or "")
+    state.pitch = None
+    state.brands = []
+    state.task_chips = []
+    state.balance = R._unlock_balance(state.creator_id)
+    if not pitches:
+        return {"ok": False, "status": "locked_out_of_free_pitches" if locked else "failed"}
+
+    state.paywall = False
+    state.paywall_payload = None
+    state.paywall_moment = None
+    items = [batch_item(p) for p in pitches]
+    state.pitch_batch = items
+    state.notes["pitch_batch"] = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "items": [_stored_batch_item(i) for i in items],
+    }
+    n = len(items)
+    names = ", ".join(f"**{i['brand_name']}**" for i in items)
+    say = (f"Done. I wrote {n} pitch{'es' if n > 1 else ''}: {names}. "
+           "Each one is written for that brand and goes to their PR inbox.")
+    sendable = sum(1 for i in items if i["email"] and not i["needs_location"])
+    if sendable:
+        say += (f"\n\nRead them below, then tap **Send {'all ' + str(sendable) if sendable > 1 else 'it'} "
+                "from my Gmail**. They go out from your own address, and I'll log them and check in on day 4.")
+    if any(i["needs_location"] for i in items):
+        say += "\n\nTell me your city and country first, so each pitch says where to ship."
+    if locked:
+        say += f"\n\nYou're out of free pitches for {', '.join(name for name in locked if name)} this month."
+    state.final_say = say
+    return {"ok": True, "status": "drafted", "count": n, "brands": [{"name": i["brand_name"]} for i in items]}
 
 
 def _dress_pitch(state: TurnState, pitch: Dict[str, Any], shipping: Dict[str, Any],
@@ -713,7 +851,15 @@ def save_profile_facts(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]
         R._persist_shipping_location(state.creator_id, city, country)
         saved.append("location")
         card = last_thread_pitch(state.messages)
-        if card and pitch_has_placeholder(card.get("body") or ""):
+        pending = state.notes.pop("pending_batch", None)
+        if pending and pending.get("brand_ids"):
+            res = draft_pitch_batch(state, {"brand_ids": pending["brand_ids"]})
+            if state.final_say and res.get("status") == "drafted":
+                state.final_say = f"Got it, {display}. " + state.final_say.removeprefix("Done. ")
+            draft_updated = bool(res.get("ok"))
+        elif _fill_batch_location(state, city, country, display):
+            draft_updated = True
+        elif card and pitch_has_placeholder(card.get("body") or ""):
             updated = apply_location_to_pitch(card, city, country)
             state.pitch_update = updated
             state.pitch = updated
@@ -1022,11 +1168,14 @@ TOOLS: List[Dict[str, Any]] = [
 _BY_NAME: Dict[str, Callable[[TurnState, Dict[str, Any]], Dict[str, Any]]] = {
     t["name"]: t["handler"] for t in TOOLS
 }
+# Button-only tools: run from a tapped chip, never offered to the model.
+_BY_NAME["draft_pitch_batch"] = draft_pitch_batch
 
 INTENT_FOR_TOOL = {
     "suggest_brands": "suggest_brands",
     "search_directory": "chat",
     "draft_pitch": "generate_pitch",
+    "draft_pitch_batch": "generate_pitch",
     "find_paid_gigs": "suggest_gigs",
 }
 

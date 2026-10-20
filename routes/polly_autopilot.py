@@ -190,11 +190,12 @@ def status():
 
 @autopilot_bp.route("/gmail/connect", methods=["GET"])
 def gmail_connect():
+    """Open to free creators too: they send their first pitches from Gmail in one tap."""
     if not gmail_configured():
         return jsonify({"success": False, "error": "gmail_unavailable"}), 503
-    creator_id, conn, creator, err = _guard(require_gmail=False)
-    if err:
-        return err
+    creator_id, conn, _creator = _auth()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
     try:
         return jsonify({"success": True, "url": auth_url(creator_id)})
     finally:
@@ -211,7 +212,8 @@ def gmail_callback():
     conn = get_db_connection()
     try:
         save_account(conn, creator_id, exchange_code(request.args["code"]))
-        set_enabled(conn, creator_id, True)
+        if _is_pro(creator_id, conn):
+            set_enabled(conn, creator_id, True)
         return redirect(_frontend(f"{POLLY_PATH}?autopilot=gmail_connected"))
     except GmailError as gerr:
         print(f"[Polly autopilot] gmail connect failed creator={creator_id}: {gerr}")

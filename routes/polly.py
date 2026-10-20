@@ -43,6 +43,7 @@ from services.polly import (
     mark_pitched,
     unmark_pitched,
     out_of_free_unlocks,
+    parse_location_reply,
     paywall_unlock_chips,
     public_profile_summary,
     sanitize_brand_card,
@@ -50,7 +51,7 @@ from services.polly import (
 )
 from services.polly_brain import BrainUnavailable, compose_reply, run_turn
 from services.polly_fallback import run_fallback, template_reply
-from services.polly_tools import run_tool
+from services.polly_tools import batch_waits_on_location, run_tool
 from services.polly_turn_state import TurnState
 from services.polly_kit import kit_actions, kit_context, load_kit_snapshot, strip_kit_editor_paths
 from services.polly_pain import diagnose_pain, stamp_pain
@@ -66,6 +67,7 @@ from services.polly_discovery import (
     explain_newcollab,
     load_onboarding_survey,
     opener as discovery_opener,
+    heal_seeded_niche,
     seed_from_survey,
     skip_discovery,
     is_weak_niche,
@@ -359,11 +361,15 @@ def _copy_session():
     return {key: session.get(key) for key in list(session.keys())}
 
 
+_VAGUE_SCRAPE_NICHES = frozenset({"lifestyle", "home"})
+
+
 def _match_scrape(scrape, notes, creator=None):
     """Scrape with the niches to match on: stated in chat, else a concrete scrape niche, else signup picks."""
     overlay = dict(scrape or {})
     stated = stated_niches(notes)
-    if not stated and is_weak_niche(overlay.get("primary_niche") or "other"):
+    scraped = str(overlay.get("primary_niche") or "other").strip().lower()
+    if not stated and (is_weak_niche(scraped) or scraped in _VAGUE_SCRAPE_NICHES):
         stated = onboarding_niches(creator)
         if stated:
             overlay["secondary_niches"] = []
@@ -725,6 +731,29 @@ def _invoke_generate_pr_package(brand_id, slug=None, city="", country=""):
         f"success={data.get('success')} error={data.get('error')} paywall={data.get('paywall')}"
     )
     return status, data
+
+
+def _invoke_generate_pr_packages(jobs, city="", country=""):
+    """Several packages at once ({brand_id: (status, data)}). Credits stay safe: each
+    call takes the creator row lock in attempt_unlock."""
+    from concurrent.futures import ThreadPoolExecutor
+    from flask import copy_current_request_context
+
+    def task(job):
+        @copy_current_request_context
+        def run():
+            return _invoke_generate_pr_package(job["id"], job.get("slug"), city=city, country=country)
+        return run
+
+    out = {}
+    with ThreadPoolExecutor(max_workers=max(1, min(3, len(jobs)))) as pool:
+        futures = {job["id"]: pool.submit(task(job)) for job in jobs}
+    for brand_id, future in futures.items():
+        try:
+            out[brand_id] = future.result()
+        except Exception as err:
+            print(f"[Polly] batch package failed brand={brand_id}: {err}")
+    return out
 
 
 def _manual_pitch(creator_id, brand_name, city="", country=""):
@@ -1160,7 +1189,8 @@ def bootstrap():
         notes = thread.get("notes") or {}
         seeded = not notes.get("survey_seeded_at")
         if seeded:
-            notes = seed_from_survey(notes, load_onboarding_survey(conn, creator_id), scrape)
+            notes = seed_from_survey(notes, load_onboarding_survey(conn, creator_id), scrape, creator)
+        notes = heal_seeded_niche(notes, scrape, creator)
         notes = assign_track(notes, scrape)
         try:
             backfill_from_notes(conn, creator_id, notes)
@@ -1441,7 +1471,8 @@ def chat():
             conn.rollback()
             early_fu = {}
         if not notes.get("survey_seeded_at"):
-            notes = seed_from_survey(notes, load_onboarding_survey(conn, creator_id), scrape)
+            notes = seed_from_survey(notes, load_onboarding_survey(conn, creator_id), scrape, creator)
+        notes = heal_seeded_niche(notes, scrape, creator)
         chip_id = str(data.get("starter") or data.get("chip_id") or "").strip()
         notes = bump_setup_continues(notes, user_text, chip_id, explicit_action)
         if data.get("skip_discovery"):
@@ -1541,6 +1572,92 @@ _CHIP_COACH_TOPICS = {
 }
 
 
+def _kit_rates(conn, creator_id):
+    """(follower count, kit already has rates)."""
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT social_follower_count, rates_reel, rates_tiktok, rates_photo FROM creators WHERE id = %s",
+        (creator_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return 0, False
+    has = any(v not in (None, 0) for v in row[1:])
+    return int(row[0] or 0), has
+
+
+def _apply_suggested_rates(state):
+    from services.polly_persona import rate_band
+
+    conn = state.db()
+    followers, has = _kit_rates(conn, state.creator_id)
+    try:
+        followers = int((state.scrape or {}).get("follower_count") or 0) or followers
+    except (TypeError, ValueError):
+        pass
+    if has:
+        return "Your kit already has rates, so I left them as they are. Change them any time in **My Kit**."
+    band = rate_band(followers)
+    if not band:
+        return ("I can't see your follower count yet, so I won't guess a rate. "
+                "Add it in **My Kit** when you're ready, and don't go below $50 a video.")
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE creators SET rates_tiktok = %s, rates_reel = %s, rates_photo = %s
+        WHERE id = %s AND COALESCE(rates_tiktok, 0) = 0 AND COALESCE(rates_reel, 0) = 0
+          AND COALESCE(rates_photo, 0) = 0
+        """,
+        (band["video_rate"], band["video_rate"], band["photo_rate"], state.creator_id),
+    )
+    conn.commit()
+    state.notes["rates_set_at"] = utc_iso_now()
+    return (f"Done. Your kit now shows **${band['video_rate']}** per TikTok or Reel and "
+            f"**${band['photo_rate']}** per photo. That's what brands see when they open it. "
+            "Change them any time in **My Kit**.")
+
+
+def _batch_chip(brands, balance):
+    """'Write all 3 pitches' under a brand list, capped to the pitches the credits cover."""
+    shown = [b.get("id") for b in (brands or [])[:3] if b.get("id")]
+    ids = shown
+    balance = balance or {}
+    if not balance.get("is_unlimited"):
+        try:
+            ids = shown[:max(int(balance.get("remaining") or 0), 0)]
+        except (TypeError, ValueError):
+            return None
+    if len(ids) < 2:
+        return None
+    if len(ids) < len(shown):
+        label = f"Write {len(ids)} pitches"
+    else:
+        label = "Write both pitches" if len(ids) == 2 else f"Write all {len(ids)} pitches"
+    return {"id": "pitch_all", "label": label, "action": "pitch_batch", "brand_ids": ids}
+
+
+_PITCH_ALL_RE = re.compile(
+    r"\b(pitch|write|draft|contact|email)\b.{0,24}\b(all|them|these|those|both|three|3)\b"
+    r"|\b(all|both)\s+(3|three|of them)\b",
+    re.I,
+)
+
+
+def _last_shown_brand_ids(messages):
+    for msg in reversed(messages or []):
+        if (msg or {}).get("role") != "assistant":
+            continue
+        ids = []
+        for b in msg.get("brands") or []:
+            try:
+                ids.append(int((b or {}).get("id")))
+            except (TypeError, ValueError):
+                continue
+        if ids:
+            return ids
+    return []
+
+
 def _run_chip(state, action, chip_id, data):
     """A tapped button already says which tool to run. Run it before the brain writes the reply."""
     prior = []
@@ -1565,12 +1682,28 @@ def _run_chip(state, action, chip_id, data):
         route = chip_res.get("route") or "chat"
         action = route if route != "task_act" else "chat"
     call = None
-    if action == "generate_pitch" and (brand_id or brand_name):
+    typed_location = None
+    if action in (None, "", "chat") and not chip_id and batch_waits_on_location(state.notes):
+        typed_location = parse_location_reply(state.user_text or "")
+    typed_batch = []
+    typed = state.user_text or ""
+    if action in (None, "", "chat") and not chip_id and "?" not in typed and _PITCH_ALL_RE.search(typed):
+        typed_batch = _last_shown_brand_ids(state.messages)
+    if typed_location and typed_location.get("city") and typed_location.get("country"):
+        call = ("save_profile_facts", {"city": typed_location["city"], "country": typed_location["country"]})
+    elif len(typed_batch) >= 2:
+        call = ("draft_pitch_batch", {"brand_ids": typed_batch[:3]})
+    elif action == "generate_pitch" and (brand_id or brand_name):
         call = ("draft_pitch", {
             "brand_id": brand_id, "brand_name": brand_name,
             "followup": bool(data.get("is_followup")), "confirm_cold": bool(data.get("confirm_cold")),
             "sample_posts": data.get("sample_posts") or [],
         })
+    elif action == "save_rates":
+        state.final_say = _apply_suggested_rates(state)
+        return prior
+    elif action == "pitch_batch":
+        call = ("draft_pitch_batch", {"brand_ids": list(data.get("brand_ids") or [])[:3]})
     elif action == "suggest_brands":
         call = ("suggest_brands", {"deal": data.get("deal")} if data.get("deal") else {})
     elif action == "suggest_gigs":
@@ -1595,8 +1728,11 @@ def _run_chip(state, action, chip_id, data):
         niche = str(_match_scrape(state.scrape, state.notes, state.creator).get("primary_niche") or "")
         if is_weak_niche(niche):
             niche = ""
+        batch = _batch_chip(state.brands, state.balance)
+        if batch:
+            state.task_chips.insert(0, batch)
         say = persona_first_matches(state.first, state.notes.get("survey"), state.brands,
-                                    niche=niche.strip().lower(), live=live)
+                                    niche=niche.strip().lower(), live=live, batch=bool(batch))
         shipping = resolve_pitch_location(state.creator, state.scrape, state.notes)
         if shipping.get("needs_location") and not state.notes.get("location_asked_at"):
             say = with_location_ask(say)
@@ -1628,6 +1764,10 @@ def _finish_turn(state, say, brain, timer, chip_id):
         _hydrate_brand_cards(drop_pitched(brands or state.suggested, notes)), notes,
     )
     task_chips = drop_early_followups(list(state.task_chips), state.early_fu)
+    if brands and not state.pitch_batch and not any(c.get("action") == "pitch_batch" for c in task_chips):
+        batch = _batch_chip(brands, state.balance)
+        if batch:
+            task_chips.insert(0, batch)
     balance = state.balance
     intent = state.intent
     payload = {
@@ -1676,6 +1816,8 @@ def _finish_turn(state, say, brain, timer, chip_id):
         payload["paywall_payload"] = state.paywall_payload
     if state.error:
         payload["error"] = state.error
+    if state.pitch_batch:
+        payload["pitch_batch"] = {"items": json_safe(state.pitch_batch), "status": "draft"}
     assistant = {
         "role": "assistant",
         "content": say,
@@ -1686,6 +1828,8 @@ def _finish_turn(state, say, brain, timer, chip_id):
         "kit_actions": json_safe(kit_cta) or [],
         "task_chips": json_safe(task_chips) or [],
     }
+    if state.pitch_batch:
+        assistant["pitch_batch"] = payload["pitch_batch"]
     if state.board:
         payload["board"] = json_safe(state.board)
         assistant["kind"] = "board"
@@ -1809,6 +1953,106 @@ def thread():
     except Exception as err:
         print(f"[Polly] thread error: {err}")
         return jsonify({"success": False, "error": "Could not save chat"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@polly_bp.route("/pitch-batch/send", methods=["POST"])
+def pitch_batch_send():
+    """Send the drafted batch from the creator's Gmail. Only the server-stored drafts go out,
+    each to its brand's inbox, so the client can't redirect mail."""
+    from services.polly import pitch_has_placeholder
+    from services.polly_gmail import GmailError, gmail_configured, load_account, send_email
+    from services.polly_memory import save_notes
+    from services.polly_persona import rate_line
+    from services.polly_tracker import record_pitch_sent
+
+    creator_id, conn, creator = _creator_auth()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    try:
+        if not gmail_configured():
+            return jsonify({"success": False, "error": "gmail_unavailable"}), 503
+        account = load_account(conn, creator_id)
+        if not account or account.get("revoked_at"):
+            return jsonify({"success": False, "error": "gmail_not_connected"}), 409
+        notes = load_thread(conn, creator_id).get("notes") or {}
+        batch = notes.get("pitch_batch") if isinstance(notes.get("pitch_batch"), dict) else {}
+        items = [i for i in (batch.get("items") or []) if isinstance(i, dict)]
+        if not items:
+            return jsonify({"success": False, "error": "no_batch"}), 404
+        creator = creator or {}
+        from_name = " ".join(p for p in (creator.get("first_name"), creator.get("last_name")) if p).strip()
+        results, revoked = [], False
+        for item in items:
+            name = item.get("brand_name") or "the brand"
+            ref = {"id": item.get("brand_id"), "name": name}
+            status = "sent"
+            if item.get("sent_at"):
+                status = "already_sent"
+            elif not item.get("email"):
+                status = "no_inbox"
+            elif pitch_has_placeholder(item.get("body") or ""):
+                status = "needs_location"
+            elif revoked:
+                status = "failed"
+            else:
+                try:
+                    send_email(conn, creator_id, item["email"], item.get("subject") or "",
+                               item.get("body") or "", from_name=from_name)
+                    item["sent_at"] = utc_iso_now()
+                    notes = mark_pitched(notes, ref)
+                    try:
+                        record_pitch_sent(conn, creator_id, ref, drafted=False)
+                    except Exception as err:
+                        print(f"[Polly] batch tracker skipped: {err}")
+                        conn.rollback()
+                except GmailError as err:
+                    print(f"[Polly] batch send failed creator={creator_id} brand={name}: {err}")
+                    revoked = bool(err.revoked)
+                    status = "failed"
+            results.append({"brand_id": item.get("brand_id"), "brand_name": name, "status": status})
+        notes["pitch_batch"] = {**batch, "items": items}
+        save_notes(conn, creator_id, notes)
+
+        sent = [r["brand_name"] for r in results if r["status"] == "sent"]
+        lines = []
+        if sent:
+            names = ", ".join(f"**{n}**" for n in sent)
+            lines.append(f"✉️ Sent {len(sent)} pitch{'es' if len(sent) > 1 else ''} from {account.get('email')}: "
+                         f"{names}. They're on your Timeline, and I'll check in on day 4.")
+        if revoked:
+            lines.append("Gmail stopped letting me send. Reconnect it and tap send again.")
+        elif any(r["status"] == "failed" for r in results):
+            lines.append("One didn't go through. Tap send again and I'll retry it.")
+        if any(r["status"] == "needs_location" for r in results):
+            lines.append("Tell me your city and country so I can finish the rest.")
+        followers, has_rates = _kit_rates(conn, creator_id)
+        chips = []
+        rates = rate_line(followers)
+        if sent and rates:
+            lines.append(f"While you wait: when a brand asks your rate, say {rates}. Don't go lower on a first collab.")
+            if not has_rates:
+                chips.append({"id": "save_rates", "label": "Put these rates on my kit", "action": "save_rates"})
+        try:
+            from services.polly_usage import log_usage
+            log_usage(conn, creator_id, "pitch_batch_send", ok=bool(sent),
+                      meta={"sent": len(sent), "total": len(results)})
+        except Exception:
+            pass
+        return jsonify({
+            "success": bool(sent) or not revoked,
+            "results": results,
+            "sent": len(sent),
+            "gmail_email": account.get("email"),
+            "needs_reconnect": revoked,
+            "message": "\n\n".join(lines),
+            "task_chips": chips,
+        })
+    except Exception as err:
+        print(f"[Polly] batch send error: {err}")
+        return jsonify({"success": False, "error": "Could not send. Try again."}), 500
     finally:
         if conn:
             conn.close()

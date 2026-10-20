@@ -178,7 +178,7 @@ def load_kit_snapshot(conn, creator_id: int, scrape: Optional[Dict] = None) -> D
         gaps = []
         published = bool(creator.get("kit_published"))
         if not published:
-            gaps.append("Kit is not published — brands cannot open it yet.")
+            gaps.append("Kit isn't published yet. Your pitches still go out; publish so brands who click through see your posts.")
         if not display_name:
             gaps.append("Display name on the kit is empty.")
         if len(about) < MIN_ABOUT_CHARS:

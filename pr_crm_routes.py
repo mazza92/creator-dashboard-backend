@@ -550,6 +550,15 @@ def _build_for_you_category_pool(scrape_profile, interest_niches):
     return list(soft)
 
 
+def _roster_category_pool(scrape_profile, interest_niches):
+    """Live rosters jump the queue, so they must fit the niche the creator picked, not a scrape lane."""
+    if _has_concrete_interests(interest_niches):
+        pool = _build_for_you_category_pool(None, interest_niches)
+    else:
+        pool = _build_for_you_category_pool(scrape_profile, interest_niches)
+    return {str(c).lower() for c in (pool or [])}
+
+
 def _creator_is_eyewear_focused(niches, profile=None) -> bool:
     blob = ' '.join(str(n) for n in (niches or []))
     if profile:
@@ -9324,6 +9333,7 @@ def get_for_you():
                 str(c).lower()
                 for c in (_build_for_you_category_pool(prep, interest_niches) or [])
             }
+            roster_cats = _roster_category_pool(prep, interest_niches)
             filtered_matched = [
                 b for b in (filtered_matched or [])
                 if not _for_you_should_skip_brand(b, interest_niches, prep)
@@ -9344,7 +9354,7 @@ def get_for_you():
                     continue
                 if _for_you_should_skip_brand(raw, interest_niches, prep):
                     continue
-                if allowed_cats and str(raw.get('category') or '').lower() not in allowed_cats:
+                if roster_cats and str(raw.get('category') or '').lower() not in roster_cats:
                     continue
                 open_pool.append(scored_by_id.get(raw.get('id')) or raw)
             open_lists = pick_open_lists(open_pool, limit=8, min_fit=0)
@@ -9367,10 +9377,7 @@ def get_for_you():
             recruit_prep = _prepare_for_you_profile(
                 scrape_profile, interest_niches, followers or 0
             )
-            recruit_cats = {
-                str(c).lower()
-                for c in (_build_for_you_category_pool(recruit_prep, interest_niches) or [])
-            }
+            recruit_cats = _roster_category_pool(recruit_prep, interest_niches)
             kept_recruiting = []
             for b in recruiting:
                 cat = str(b.get("category") or "").lower()
