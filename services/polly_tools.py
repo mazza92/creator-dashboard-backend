@@ -380,6 +380,9 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         "parked_previous_draft": prior_name,
         "coach_tip": "" if followup else (pitch_coach_line(pkg, brand_name) or ""),
         "pitch_card_shown": True,
+        "pitch_unlocked": True,
+        "explain": "The full pitch is unlocked and on the card. Never call it locked; "
+                   "free_pitches_left only limits the next pitch.",
     }
 
 
