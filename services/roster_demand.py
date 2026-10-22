@@ -39,8 +39,10 @@ LEFT JOIN (
         SELECT DISTINCT c.brand_id
         FROM brand_pr_campaigns c
         JOIN pr_brands b ON b.id = c.brand_id
+        JOIN opportunities o ON o.id = b.source_opportunity_id
         WHERE c.status = 'active'
-          AND b.source_opportunity_id IS NOT NULL
+          AND o.status = 'live'
+          AND (o.closes_at IS NULL OR o.closes_at > NOW())
     ),
     spotlight_ids AS (
         SELECT DISTINCT brand_id
@@ -55,18 +57,39 @@ LEFT JOIN (
         UNION
         SELECT brand_id FROM spotlight_ids
     ),
+    brand_seen AS (
+        SELECT e.brand_id, MAX(e.created_at) AS viewed_at
+        FROM brand_pr_events e
+        WHERE e.event = 'roster_view' AND e.meta ? 'ua'
+          AND e.brand_id IN (SELECT brand_id FROM keys)
+        GROUP BY e.brand_id
+    ),
+    brand_mailed AS (
+        SELECT m.brand_id, MAX(m.sent_at) AS emailed_at
+        FROM brand_emails m
+        WHERE m.status = 'sent'
+          AND m.brand_id IN (SELECT brand_id FROM keys)
+        GROUP BY m.brand_id
+    ),
     targets AS (
         SELECT
             k.brand_id,
             COALESCE(co.fill_count, 0) AS fill_count,
             LEAST(COALESCE(c.slot_limit, 5), 5) AS slot_limit,
             GREATEST(5 * 3, 5 + 8) AS target,
-            CASE WHEN i.brand_id IS NOT NULL THEN 1 ELSE 0 END AS inbound,
-            CASE WHEN s.brand_id IS NOT NULL THEN 1 ELSE 0 END AS spotlighted
+            -- A full list stops being live; creators can still pitch the brand directly.
+            CASE WHEN i.brand_id IS NOT NULL AND COALESCE(co.fill_count, 0) < GREATEST(5 * 3, 5 + 8)
+                 THEN 1 ELSE 0 END AS inbound,
+            CASE WHEN s.brand_id IS NOT NULL AND COALESCE(co.fill_count, 0) < GREATEST(5 * 3, 5 + 8)
+                 THEN 1 ELSE 0 END AS spotlighted,
+            bs.viewed_at,
+            bm.emailed_at
         FROM keys k
         LEFT JOIN counts co ON co.brand_id = k.brand_id
         LEFT JOIN inbound_ids i ON i.brand_id = k.brand_id
         LEFT JOIN spotlight_ids s ON s.brand_id = k.brand_id
+        LEFT JOIN brand_seen bs ON bs.brand_id = k.brand_id
+        LEFT JOIN brand_mailed bm ON bm.brand_id = k.brand_id
         LEFT JOIN brand_pr_campaigns c
           ON c.brand_id = k.brand_id AND c.status = 'active'
     ),
@@ -88,9 +111,11 @@ LEFT JOIN (
         t.fill_count,
         t.target,
         t.slot_limit,
-        CASE WHEN t.spotlighted = 1 OR t.inbound = 1 OR t.fill_count > 0 THEN 1 ELSE 0 END AS is_open,
+        CASE WHEN t.spotlighted = 1 OR t.inbound = 1 THEN 1 ELSE 0 END AS is_open,
         t.spotlighted,
-        t.inbound
+        t.inbound,
+        t.viewed_at,
+        t.emailed_at
     FROM targets t
     LEFT JOIN focused f ON f.brand_id = t.brand_id
     ORDER BY t.brand_id, t.spotlighted DESC
@@ -104,7 +129,9 @@ COALESCE(roster_demand.target, 0) AS roster_fill_target,
 COALESCE(roster_demand.slot_limit, 0) AS roster_slot_limit,
 COALESCE(roster_demand.is_open, 0) AS roster_is_open,
 COALESCE(roster_demand.spotlighted, 0) AS roster_spotlighted,
-COALESCE(roster_demand.inbound, 0) AS roster_inbound
+COALESCE(roster_demand.inbound, 0) AS roster_inbound,
+roster_demand.viewed_at AS roster_brand_viewed_at,
+roster_demand.emailed_at AS roster_brand_emailed_at
 """
 
 
@@ -195,10 +222,10 @@ def mark_focus(campaigns):
 
 
 def pick_open_lists(ranked, limit=4, min_fit=0):
-    """In-niche brands with a live gift list, closest-to-full first.
+    """In-niche brands with an open gift list, closest-to-full first.
 
-    Used for the For You campaign desk. Does not invent off-niche cards.
-    Hunger can stay 0 here — fill_count is enough to show the list.
+    Used for the For You campaign desk. Applications alone don't make a list
+    open; the listing must still be live and under the 15-creator cap.
     """
     rows = []
     seen = set()
@@ -206,9 +233,7 @@ def pick_open_lists(ranked, limit=4, min_fit=0):
         b = dict(raw or {})
         if int(b.get("match_score") or 0) < int(min_fit or 0):
             continue
-        fill = int(b.get("roster_fill_count") or b.get("roster_hunger") or 0)
-        is_open = int(b.get("roster_is_open") or b.get("roster_open") or 0)
-        if fill <= 0 and not is_open:
+        if not int(b.get("roster_is_open") or b.get("roster_open") or 0):
             continue
         bid = b.get("id")
         if bid in seen:
@@ -264,6 +289,7 @@ def fetch_spotlighted_brand_rows(cursor, exclude_ids=None, limit=8):
         ) c ON c.brand_id = b.id
         WHERE b.slug IS NOT NULL
           AND COALESCE(b.status, 'published') = 'published'
+          AND COALESCE(roster_demand.spotlighted, 0) = 1
           AND b.id != ALL(%s)
         ORDER BY c.spotlighted_at DESC NULLS LAST, b.id
         LIMIT %s

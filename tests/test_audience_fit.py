@@ -105,7 +105,17 @@ class AudienceFitTests(unittest.TestCase):
             "category": "skincare",
             "source": "recruiting",
         }, {"primary_niche": "skincare"})
-        self.assertIn("open pr roster", why.lower())
+        self.assertIn("open gift list", why.lower())
+        self.assertNotIn("recruiting", why.lower())
+
+    def test_applications_alone_are_not_an_open_list(self):
+        why = match_why({
+            "name": "Elf",
+            "category": "makeup",
+            "roster_fill_count": 179,
+            "roster_is_open": 0,
+        }, {"primary_niche": "makeup"})
+        self.assertNotIn("open gift list", why.lower())
 
     def test_for_you_skip_uses_audience_fit(self):
         from pr_crm_routes import _for_you_should_skip_brand

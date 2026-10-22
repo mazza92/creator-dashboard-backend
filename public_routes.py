@@ -203,6 +203,10 @@ def _estimate_package_value(category, brand_name=None):
     return base_value
 
 
+def _iso(value):
+    return value.isoformat() if hasattr(value, 'isoformat') else (value or None)
+
+
 def _format_public_brand_list_item(b):
     """Format brand for directory cards with synthetic stats when DB values are empty."""
     response_rate, avg_days = resolve_brand_stats(
@@ -261,7 +265,9 @@ def _format_public_brand_list_item(b):
         'roster_is_open': int(b.get('roster_is_open') or 0),
         'roster_spotlighted': int(b.get('roster_spotlighted') or 0),
         'roster_inbound': int(b.get('roster_inbound') or 0),
-        'roster_open': int(b.get('roster_is_open') or b.get('roster_fill_count') or b.get('roster_hunger') or b.get('roster_spotlighted') or 0) > 0,
+        'roster_open': int(b.get('roster_is_open') or b.get('roster_spotlighted') or 0) > 0,
+        'roster_brand_viewed_at': _iso(b.get('roster_brand_viewed_at')),
+        'roster_brand_emailed_at': _iso(b.get('roster_brand_emailed_at')),
         'reply_signal': reply_signal or None,
     }
 
@@ -528,9 +534,8 @@ def get_public_brands():
             query += " AND COALESCE(b.micro_friendly, FALSE) = TRUE"
 
         if recruiting:
-            # Live gift lists currently taking applicants — admin-pushed
-            # (spotlighted) plus organic open/inbound rosters. Matches the
-            # Directory "Actively recruiting" filter to the live desk.
+            # Open gift lists still taking applicants: listing not closed and
+            # list under 15 creators. Matches the Directory filter to the desk.
             query += """
                 AND (
                     COALESCE(roster_demand.spotlighted, 0) = 1
@@ -644,17 +649,18 @@ def get_public_brands():
                     )
                     OR EXISTS (
                         SELECT 1 FROM brand_pr_campaigns c
-                        JOIN pr_brands pb ON pb.id = c.brand_id
+                        JOIN opportunities o ON o.id = pr_brands.source_opportunity_id
                         WHERE c.brand_id = pr_brands.id
                           AND c.status = 'active'
-                          AND pb.source_opportunity_id IS NOT NULL
-                    )
-                    OR EXISTS (
-                        SELECT 1 FROM brand_pr_applications a
-                        WHERE a.brand_id = pr_brands.id
-                          AND a.status IN ('review', 'ships', 'posted')
+                          AND o.status = 'live'
+                          AND (o.closes_at IS NULL OR o.closes_at > NOW())
                     )
                 )
+                AND (
+                    SELECT COUNT(*) FROM brand_pr_applications a
+                    WHERE a.brand_id = pr_brands.id
+                      AND a.status IN ('review', 'ships', 'posted')
+                ) < 15
             """
 
         # Region filter for count

@@ -412,8 +412,6 @@ def _is_live_campaign(brand: Optional[Dict]) -> bool:
             return True
         if int(brand.get("roster_is_open") or brand.get("roster_open") or 0):
             return True
-        if int(brand.get("roster_fill_count") or 0) > 0:
-            return True
     except (TypeError, ValueError):
         return False
     return False
@@ -429,10 +427,10 @@ def match_why(brand: Optional[Dict], profile: Optional[Dict] = None, niches: Opt
     hero = (brand.get("hero_product") or brand.get("product_sku_name") or "").strip()
     if _is_live_campaign(brand):
         if hero:
-            return f"Open PR roster now — they're filling spots for {hero}."
+            return f"Open gift list for {hero}. We send it to the brand, they pick who gets a box."
         if cat:
-            return f"Open PR roster now — actively recruiting {cat} creators."
-        return "Open PR roster now — higher chance they actually reply."
+            return f"Open gift list for {cat} creators. We send it to the brand, they pick who gets a box."
+        return "Open gift list. We send it to the brand, they pick who gets a box."
     if hero and niche:
         return f"{hero} is a clean fit for your {niche} content."
     if hero:

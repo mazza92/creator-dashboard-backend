@@ -9348,9 +9348,7 @@ def get_for_you():
             open_pool = []
             for row in (matched or []):
                 raw = dict(row)
-                fill = int(raw.get('roster_fill_count') or raw.get('roster_hunger') or 0)
-                is_open = int(raw.get('roster_is_open') or 0)
-                if fill <= 0 and not is_open:
+                if not int(raw.get('roster_is_open') or 0):
                     continue
                 if _for_you_should_skip_brand(raw, interest_niches, prep):
                     continue

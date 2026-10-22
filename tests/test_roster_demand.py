@@ -104,14 +104,22 @@ class TestFocusAndMint(unittest.TestCase):
         self.assertIn('spotlighted', sql)
         self.assertIn('DISTINCT ON (t.brand_id)', sql)
 
-    def test_pick_open_lists_uses_fill_not_just_hunger(self):
+    def test_pick_open_lists_ignores_applications_without_open_list(self):
         rows = [
             {"id": 1, "roster_fill_count": 1, "roster_hunger": 0, "match_score": 70},
-            {"id": 2, "roster_fill_count": 6, "roster_hunger": 6, "match_score": 68},
-            {"id": 3, "roster_fill_count": 0, "roster_hunger": 0, "match_score": 90},
+            {"id": 2, "roster_fill_count": 6, "roster_hunger": 6, "roster_is_open": 1, "match_score": 68},
+            {"id": 3, "roster_fill_count": 179, "roster_hunger": 0, "match_score": 90},
         ]
         out = pick_open_lists(rows, limit=4)
-        self.assertEqual([b["id"] for b in out], [2, 1])
+        self.assertEqual([b["id"] for b in out], [2])
+
+    def test_demand_sql_drops_closed_and_full_lists(self):
+        sql = ' '.join(ROSTER_DEMAND_JOIN.split())
+        self.assertIn("o.closes_at IS NULL OR o.closes_at > NOW()", sql)
+        self.assertIn("COALESCE(co.fill_count, 0) < GREATEST(5 * 3, 5 + 8)", sql)
+        self.assertIn("WHEN t.spotlighted = 1 OR t.inbound = 1 THEN 1 ELSE 0 END AS is_open", sql)
+        self.assertIn("emailed_at", sql)
+        self.assertIn("viewed_at", sql)
 
     def test_pick_open_lists_includes_inbound_zero_fill(self):
         rows = [
