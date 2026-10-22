@@ -23,6 +23,8 @@ from services.polly_manager import (
 from services.polly import (
     credits_out_offer_due,
     credits_out_offer_message,
+    followup_offer_due,
+    followup_offer_message,
     coaching_moves,
     pitch_coaching_context,
     begin_polly_turn,
@@ -41,6 +43,7 @@ from services.polly import (
     is_casual_ack,
     resolve_pitch_location,
     mark_pitched,
+    matched_waiting,
     unmark_pitched,
     out_of_free_unlocks,
     parse_location_reply,
@@ -1065,6 +1068,7 @@ def _deliver_credits_out_offer(conn, creator_id, first, balance, tracker):
             conn.rollback()
         message = credits_out_offer_message(
             first, balance, tracker, notes, kit_views=views_n, sent=sent_n, trial=trial,
+            waiting=matched_waiting(thread),
         )
         notes["credits_out_offer_month"] = month
         messages = list(thread.get("messages") or [])
@@ -1074,6 +1078,65 @@ def _deliver_credits_out_offer(conn, creator_id, first, balance, tracker):
         return True
     except Exception as err:
         print(f"[Polly] credits-out offer skipped: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def _stale_pitches(conn, creator_id):
+    """Pitches with no reply after 7 days (last 60 days), newest first."""
+    from psycopg2.extras import RealDictCursor
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute(
+        """
+        SELECT p.brand_id, b.brand_name AS name
+        FROM creator_pipeline p
+        JOIN pr_brands b ON b.id = p.brand_id
+        WHERE p.creator_id = %s AND p.stage IN ('pitched', 'waiting')
+          AND p.pitched_at < NOW() - INTERVAL '7 days'
+          AND p.pitched_at > NOW() - INTERVAL '60 days'
+        ORDER BY p.pitched_at DESC
+        """,
+        (creator_id,),
+    )
+    rows = [r for r in cur.fetchall() if r.get("name")]
+    names = []
+    for r in rows:
+        if r["name"] not in names:
+            names.append(r["name"])
+    top = {"id": rows[0]["brand_id"], "name": rows[0]["name"]} if rows else None
+    return {"names": names[:2], "count": len(names), "top": top}
+
+
+def _deliver_followup_offer(conn, creator_id, first, balance):
+    """Every two weeks, offer Pro follow-ups to a free creator whose pitches went quiet."""
+    try:
+        thread = load_thread(conn, creator_id)
+        notes = dict(thread.get("notes") or {})
+        stale = _stale_pitches(conn, creator_id)
+        if not followup_offer_due(notes, balance, stale):
+            return False
+        trial = False
+        try:
+            from services.quota_trial_test import trial_eligible
+            trial = trial_eligible(conn.cursor(), creator_id)
+        except Exception as err:
+            print(f"[Polly] trial check skipped: {err}")
+            conn.rollback()
+        message = followup_offer_message(first, stale, trial=trial)
+        notes["followup_offer_at"] = utc_iso_now()
+        messages = list(thread.get("messages") or [])
+        messages.append(message)
+        save_thread(conn, creator_id, messages, thread.get("suggested_brands") or [], notes=notes)
+        _log_polly_event(creator_id, "paywall_shown", {
+            "moment": "followup_offer", "trial": trial, "stale": stale.get("count"),
+        })
+        return True
+    except Exception as err:
+        print(f"[Polly] follow-up offer skipped: {err}")
         try:
             conn.rollback()
         except Exception:
@@ -1314,7 +1377,10 @@ def bootstrap():
         except Exception as err:
             print(f"[Polly] login checkin skipped: {err}")
         offered = False
-        if not checked_in and _deliver_credits_out_offer(conn, creator_id, first, balance, tracker):
+        if not checked_in and (
+            _deliver_credits_out_offer(conn, creator_id, first, balance, tracker)
+            or _deliver_followup_offer(conn, creator_id, first, balance)
+        ):
             offered = True
             thread = load_thread(conn, creator_id)
             brief = None
@@ -1374,6 +1440,23 @@ def bootstrap():
             "nudge": nudge,
             "auto_action": auto_action,
         }), extra=f"empty={int(empty_thread)} auto={int(bool(auto_action))}")
+    finally:
+        if conn:
+            conn.close()
+
+
+@polly_bp.route("/paywall-brands", methods=["GET"])
+def paywall_brands():
+    """Matched brands still waiting, so the upgrade modal can name them."""
+    creator_id, conn, _creator = _creator_auth()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    try:
+        waiting = matched_waiting(load_thread(conn, creator_id), limit=3)
+        return jsonify({"success": True, **json_safe(waiting)})
+    except Exception as err:
+        print(f"[Polly] paywall-brands failed: {err}")
+        return jsonify({"success": True, "names": [], "count": 0})
     finally:
         if conn:
             conn.close()

@@ -752,22 +752,60 @@ def persona_paywall_say(
     )
 
 
+def persona_matched_waiting(waiting: Optional[Dict]) -> str:
+    """'I already have **A** and **B**, plus 6 more, matched to you and waiting.'"""
+    names = [str(n).strip() for n in (waiting or {}).get("names") or [] if str(n).strip()]
+    if not names:
+        return ""
+    count = max(int((waiting or {}).get("count") or 0), len(names))
+    shown = " and ".join(f"**{n}**" for n in names)
+    more = count - len(names)
+    tail = f", plus {more} more," if more > 0 else ""
+    return f"I already have {shown}{tail} matched to you and waiting."
+
+
+def persona_followup_offer(first_name: Optional[str] = None, stale: Optional[Dict] = None,
+                           trial: bool = False) -> str:
+    """Free creator with pitches unanswered for a week: Pro follows up for them."""
+    stale = stale or {}
+    names = [str(n).strip() for n in stale.get("names") or [] if str(n).strip()]
+    count = max(int(stale.get("count") or 0), len(names))
+    name = (first_name or "").strip()
+    head = f"{name}, " if name else ""
+    shown = " and ".join(f"**{n}**" for n in names[:2])
+    more = count - len(names[:2])
+    tail = f", plus {more} more" if more > 0 else ""
+    brands = "brand" if count == 1 else "brands"
+    verb = "hasn't" if count == 1 else "haven't"
+    parts = [
+        f"{head}**{count} {brands}** you pitched {verb} replied in over a week: {shown}{tail}.",
+        "A short follow-up puts you back at the top of their inbox. On Pro I send them for you on "
+        "day 4 and day 10, from your Gmail, so no pitch goes quiet.",
+        PRO_TRIAL_LINE if trial else PRO_VALUE_LINE,
+    ]
+    if names:
+        parts.append(f"Or I can draft the {names[0]} follow-up now. Follow-ups never use a credit.")
+    return "\n\n".join(parts)
+
+
 def persona_credits_out_offer(
     first_name: Optional[str] = None,
     reset_label: str = "",
     kit_views: int = 0,
     sent: int = 0,
     trial: bool = False,
+    waiting: Optional[Dict] = None,
 ) -> str:
     """Once a month, when the 3 free pitches are gone: offer autopilot before they ask."""
     name = (first_name or "").strip()
     head = f"{name}, you've" if name else "You've"
     back = f" They come back on **{reset_label}**." if reset_label else ""
     proof = persona_pro_proof(kit_views, sent)
-    parts = [
-        f"{head} used your **3 free pitches** this month.{back}",
-        "Want me to keep pitching until then? " + (PRO_TRIAL_LINE if trial else PRO_VALUE_LINE),
-    ]
+    parts = [f"{head} used your **3 free pitches** this month.{back}"]
+    matched = persona_matched_waiting(waiting)
+    if matched:
+        parts.append(matched)
+    parts.append("Want me to keep pitching until then? " + (PRO_TRIAL_LINE if trial else PRO_VALUE_LINE))
     if proof:
         parts.append(proof)
     return "\n\n".join(parts)

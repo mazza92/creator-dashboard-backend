@@ -8,6 +8,9 @@ from urllib.parse import parse_qs, urlparse
 from services.polly import (
     credits_out_offer_due,
     credits_out_offer_message,
+    followup_offer_due,
+    followup_offer_message,
+    matched_waiting,
     reset_label,
 )
 from services.polly_alerts import chip_link, email_nudges, kit_view_email, nudge_email
@@ -139,6 +142,44 @@ class ProConversionTests(unittest.TestCase):
         self.assertEqual(actions[0], "unlock_pro")
         self.assertEqual(len(actions), 2)
         self.assertTrue(msg["task_chips"][1]["label"].startswith("Not now"))
+
+    def test_credits_out_offer_names_matched_brands(self):
+        msg = credits_out_offer_message(
+            "Ana", {"remaining": 0}, None, {},
+            waiting={"names": ["Glow Co", "Byoma"], "count": 8},
+        )
+        self.assertIn("I already have **Glow Co** and **Byoma**, plus 6 more, matched to you", msg["content"])
+        self.assertNotIn("matched to you", credits_out_offer_message("Ana", {"remaining": 0}, None, {})["content"])
+
+    def test_matched_waiting_skips_pitched(self):
+        thread = {
+            "suggested_brands": [{"id": 1, "name": "Glow Co"}, {"id": 2, "name": "Byoma"}, {"id": 3, "name": "Sol"}],
+            "notes": {"pitched_brand_names": ["byoma"]},
+        }
+        self.assertEqual(matched_waiting(thread), {"names": ["Glow Co", "Sol"], "count": 2})
+        self.assertEqual(matched_waiting(None), {"names": [], "count": 0})
+
+    def test_followup_offer_free_only_every_two_weeks(self):
+        stale = {"names": ["Glow Co"], "count": 1, "top": {"id": 9, "name": "Glow Co"}}
+        free = {"remaining": 2}
+        self.assertTrue(followup_offer_due({}, free, stale))
+        self.assertFalse(followup_offer_due({}, {"remaining": 0, "is_unlimited": True}, stale))
+        self.assertFalse(followup_offer_due({}, free, {"names": [], "count": 0}))
+        self.assertFalse(followup_offer_due({"followup_offer_at": _iso(timedelta(days=3))}, free, stale))
+        self.assertTrue(followup_offer_due({"followup_offer_at": _iso(timedelta(days=15))}, free, stale))
+
+    def test_followup_offer_names_brands_and_free_draft(self):
+        stale = {"names": ["Glow Co", "Byoma"], "count": 4, "top": {"id": 9, "name": "Glow Co"}}
+        msg = followup_offer_message("Ana", stale)
+        self.assertIn("**4 brands** you pitched haven't replied in over a week: **Glow Co** and **Byoma**, plus 2 more", msg["content"])
+        self.assertIn("day 4 and day 10", msg["content"])
+        self.assertIn("$19/mo", msg["content"])
+        self.assertEqual(msg["task_chips"][0]["action"], "unlock_pro")
+        draft = msg["task_chips"][1]
+        self.assertEqual((draft["action"], draft["brand_id"], draft["is_followup"]), ("generate_pitch", 9, True))
+        one = followup_offer_message("", {"names": ["Sol"], "count": 1, "top": {"id": 2, "name": "Sol"}}, trial=True)
+        self.assertIn("**1 brand** you pitched hasn't replied", one["content"])
+        self.assertIn("free for 7 days", one["content"])
 
     def test_scrub_removes_nonexistent_buttons(self):
         out = scrub_polly_voice("Here you go.\n\nTap Save Draft to keep it in your Drafts tab.")

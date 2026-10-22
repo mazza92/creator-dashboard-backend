@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -2078,6 +2078,59 @@ def credits_out_offer_due(notes: Optional[Dict], balance: Optional[Dict], month:
     return out_of_free_unlocks(balance) and notes.get("credits_out_offer_month") != month
 
 
+FOLLOWUP_OFFER_GAP = timedelta(days=14)
+
+
+def followup_offer_due(notes: Optional[Dict], balance: Optional[Dict], stale: Optional[Dict],
+                       now: Optional[datetime] = None) -> bool:
+    """Free creator with unanswered pitches 7+ days old, offered at most every two weeks."""
+    if not isinstance(balance, dict) or balance.get("is_unlimited"):
+        return False
+    if not (stale or {}).get("names"):
+        return False
+    last = (notes or {}).get("followup_offer_at") if isinstance(notes, dict) else None
+    if not last:
+        return True
+    try:
+        last_at = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if last_at.tzinfo is None:
+        last_at = last_at.replace(tzinfo=timezone.utc)
+    return (now or datetime.now(timezone.utc)) - last_at >= FOLLOWUP_OFFER_GAP
+
+
+def followup_offer_message(
+    first_name: Optional[str] = None,
+    stale: Optional[Dict] = None,
+    trial: bool = False,
+) -> Dict[str, Any]:
+    from services.polly_persona import persona_followup_offer
+
+    stale = stale or {}
+    chips: List[Dict[str, Any]] = [{
+        "id": "unlock_pro",
+        "label": "Start my free week" if trial else "Follow up for me · $19/mo",
+        "action": "unlock_pro",
+    }]
+    top = stale.get("top") or {}
+    if top.get("name"):
+        chips.append({
+            "id": "draft_followup",
+            "label": f"Not now · draft {top['name']} follow-up",
+            "action": "generate_pitch",
+            "brand_id": top.get("id"),
+            "brand_name": top.get("name"),
+            "is_followup": True,
+        })
+    return {
+        "role": "assistant",
+        "kind": "brief",
+        "content": persona_followup_offer(first_name, stale, trial=trial),
+        "task_chips": chips,
+    }
+
+
 def credits_out_offer_message(
     first_name: Optional[str] = None,
     balance: Optional[Dict] = None,
@@ -2086,6 +2139,7 @@ def credits_out_offer_message(
     kit_views: int = 0,
     sent: int = 0,
     trial: bool = False,
+    waiting: Optional[Dict] = None,
 ) -> Dict[str, Any]:
     from services.polly_persona import persona_credits_out_offer
 
@@ -2113,7 +2167,9 @@ def credits_out_offer_message(
     return {
         "role": "assistant",
         "kind": "brief",
-        "content": persona_credits_out_offer(first_name, reset_label(balance), kit_views, sent, trial=trial),
+        "content": persona_credits_out_offer(
+            first_name, reset_label(balance), kit_views, sent, trial=trial, waiting=waiting,
+        ),
         "task_chips": chips,
     }
 
@@ -2235,6 +2291,18 @@ def drop_pitched(
             continue
         kept.append(brand)
     return kept
+
+
+def matched_waiting(thread: Optional[Dict], limit: int = 2) -> Dict[str, Any]:
+    """Brands Polly matched that the creator hasn't pitched yet: first names + total."""
+    thread = thread or {}
+    queue = drop_pitched(thread.get("suggested_brands") or [], thread.get("notes") or {})
+    names = []
+    for brand in queue:
+        name = str(brand.get("name") or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return {"names": names[:limit], "count": len(names)}
 
 
 def drop_shown(
