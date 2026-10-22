@@ -32,6 +32,7 @@ _TIKTOK_ID_RE = re.compile(r"(?:video|player/v1)/(\d{8,})")
 _IG_CODE_RE = re.compile(r"instagram\.com/(?:p|reel|tv)/([A-Za-z0-9_-]+)")
 _SCHEMA_READY = False
 _SCHEMA_LOCK = threading.Lock()
+STALE_APPLICATION_DAYS = 14
 _APPLY_TABLES = ("brand_pr_applications", "brand_pr_events")
 _APPLY_COLUMNS = (
     ("pr_brands", "pr_example_posts"),
@@ -145,6 +146,7 @@ _CLIENT_EVENTS = frozenset({
     "apply_opened",
     "apply_paywall",
     "apply_related_click",
+    "stale_pitch_direct",
 })
 _SOURCES = frozenset({
     "foryou",
@@ -157,6 +159,7 @@ _SOURCES = frozenset({
     "done_last_credit",
     "submit_402",
     "ugc_jobs",
+    "stale_application",
 })
 
 
@@ -243,15 +246,15 @@ def _ig_code(url):
     return m.group(1) if m else None
 
 
-def _proxy_thumb(url):
-    if not url:
-        return ""
+def _proxy_thumb(url, post_url=None):
     try:
-        from media_proxy_routes import to_proxied_media_url
+        from media_proxy_routes import post_preview_url, to_proxied_media_url
 
-        return to_proxied_media_url(url) or url
+        if not url:
+            return post_preview_url(post_url)
+        return to_proxied_media_url(url, post_url=post_url) or url
     except Exception:
-        return url
+        return url or ""
 
 
 def _normalize_examples(raw, default_handle=None):
@@ -306,7 +309,7 @@ def _normalize_examples(raw, default_handle=None):
                 "id": example_id,
                 "platform": platform,
                 "url": url,
-                "thumbnail_url": _proxy_thumb(thumb),
+                "thumbnail_url": _proxy_thumb(thumb, url),
                 "title": title,
                 "handle": handle or "",
             }
@@ -547,6 +550,8 @@ def list_applications():
                 a.status,
                 a.source,
                 a.applied_at,
+                (COALESCE(a.status, 'review') = 'review'
+                 AND a.applied_at < NOW() - make_interval(days => %s)) AS stale,
                 a.selected_posts,
                 a.shipped_at,
                 {delivery_select_sql(cursor)},
@@ -565,7 +570,7 @@ def list_applications():
             WHERE a.creator_id = %s
             ORDER BY a.applied_at DESC
             """,
-            (creator_id,),
+            (STALE_APPLICATION_DAYS, creator_id),
         )
         rows = cursor.fetchall() or []
         apps = []
@@ -574,6 +579,7 @@ def list_applications():
             card["id"] = row["brand_id"]
             card["application_id"] = row["application_id"]
             card["apply_status"] = row["status"] or "review"
+            card["stale"] = bool(row.get("stale"))
             card["applied_at"] = row["applied_at"].isoformat() if row.get("applied_at") else None
             card["source"] = row.get("source")
             if card["apply_status"] in ("ships", "posted"):

@@ -11,6 +11,7 @@ import os
 import re
 import json
 import hashlib
+import time
 from html import unescape
 from io import BytesIO
 from typing import Iterable, List, Optional, Tuple
@@ -204,6 +205,14 @@ def to_proxied_media_url(
     if is_public_post_url(post_url):
         path += f"&post={quote(str(post_url).strip(), safe='')}"
     return f"{base}{path}" if base else path
+
+
+def post_preview_url(post_url: Optional[str], api_base: Optional[str] = None) -> str:
+    """Proxied still for a public post that has no stored thumbnail."""
+    if not is_public_post_url(post_url):
+        return ""
+    base = (api_base if api_base is not None else get_public_api_base()).rstrip("/")
+    return f"{base}/api/media-proxy?post={quote(str(post_url).strip(), safe='')}"
 
 
 def _as_int(value) -> int:
@@ -412,11 +421,28 @@ def _og_image_from_html(html: str) -> str:
     return unescape(og.group(1)).strip() if og else ""
 
 
+_FRESH_THUMB_TTL = 6 * 3600
+_FRESH_THUMB_MAX = 2000
+_fresh_thumb_cache: dict = {}
+
+
 def fresh_thumb_from_post_url(post_url: Optional[str]) -> str:
     """Mint a live still from the public post page when signed CDN thumbs have expired."""
     url = str(post_url or "").strip()
     if not url.startswith("http"):
         return ""
+    hit = _fresh_thumb_cache.get(url)
+    if hit and time.time() - hit[1] < _FRESH_THUMB_TTL:
+        return hit[0]
+    thumb = _mint_fresh_thumb(url)
+    if thumb:
+        if len(_fresh_thumb_cache) >= _FRESH_THUMB_MAX:
+            _fresh_thumb_cache.clear()
+        _fresh_thumb_cache[url] = (thumb, time.time())
+    return thumb
+
+
+def _mint_fresh_thumb(url: str) -> str:
     try:
         if "tiktok.com" in url:
             resp = requests.get(
@@ -557,18 +583,18 @@ def proxy_media():
     GET /api/media-proxy?url=<encoded https URL>
     """
     url = (request.args.get("url") or "").strip()
-    if not url:
+    post_url = (request.args.get("post") or "").strip()
+    if not url and not is_public_post_url(post_url):
         abort(400, description="url is required")
     # Support accidental double-encoding
     if "%" in url and "://" not in url:
         url = unquote(url)
 
-    if not is_social_cdn_url(url):
+    if url and not is_social_cdn_url(url):
         abort(403, description="Domain not allowed")
 
     try:
-        fetched = _fetch_cdn_bytes(url, timeout=12)
-        post_url = (request.args.get("post") or "").strip()
+        fetched = _fetch_cdn_bytes(url, timeout=12) if url else None
         if not fetched and is_public_post_url(post_url):
             fetched = fetch_post_preview_bytes(post_url)
         if not fetched:
