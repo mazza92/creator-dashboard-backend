@@ -1393,7 +1393,7 @@ def more_gigs():
         notes = dict(stored.get("notes") or {})
         history = data.get("messages") if isinstance(data.get("messages"), list) else (stored.get("messages") or [])
         from services.polly_gigs import page_polly_gigs, mark_shown_gigs
-        gigs, has_more = page_polly_gigs(
+        gigs, has_more, locked = page_polly_gigs(
             creator_id,
             scrape=scrape,
             notes=notes,
@@ -1415,6 +1415,7 @@ def more_gigs():
             "success": True,
             "gigs": json_safe(gigs),
             "gigs_has_more": bool(has_more),
+            "gigs_locked": int(locked or 0),
         })
     except Exception as err:
         print(f"[Polly] gigs/more failed: {err}")
@@ -1777,6 +1778,7 @@ def _finish_turn(state, say, brain, timer, chip_id):
         "brands": json_safe(brands),
         "gigs": json_safe(state.gigs),
         "gigs_has_more": bool(state.gigs_has_more),
+        "gigs_locked": int(getattr(state, "gigs_locked", 0) or 0),
         "suggested_brands": json_safe(queue),
         "pitch": json_safe(pitch),
         "pitch_update": json_safe(state.pitch_update),

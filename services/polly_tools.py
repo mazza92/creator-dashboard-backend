@@ -759,13 +759,14 @@ def find_paid_gigs(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     if not args.get("more"):
         state.notes["shown_gig_ids"] = []
     try:
-        gigs, has_more = page_polly_gigs(state.creator_id, scrape=state.scrape, notes=state.notes,
-                                         history=state.messages)
+        gigs, has_more, locked = page_polly_gigs(state.creator_id, scrape=state.scrape, notes=state.notes,
+                                                 history=state.messages)
     except Exception as err:
         print(f"[Polly] gigs failed: {err}")
-        gigs, has_more = [], False
+        gigs, has_more, locked = [], False, 0
     state.gigs = gigs or []
     state.gigs_has_more = bool(has_more)
+    state.gigs_locked = int(locked or 0)
     state.brands = []
     state.notes["wanted_gigs"] = True
     if state.gigs:
@@ -779,6 +780,7 @@ def find_paid_gigs(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
             for g in state.gigs[:6]
         ],
         "more_available": state.gigs_has_more,
+        "locked_for_pro": state.gigs_locked,
         "rates_on_kit": bool(((state.kit or {}).get("rates") or {})),
     }
 
@@ -1109,7 +1111,9 @@ TOOLS: List[Dict[str, Any]] = [
     {
         "name": "find_paid_gigs",
         "description": "Show live paid UGC briefs they can apply to (pulled from AspireIQ, LinkedIn and "
-                       "other boards). Use for paid UGC / gigs / who pays. Not for gifted PR.",
+                       "other boards). Use for paid UGC / gigs / who pays. Not for gifted PR. "
+                       "If locked_for_pro > 0, say that many more are on the Paid UGC tab with Pro; "
+                       "never describe gigs that weren't returned.",
         "parameters": _obj({"more": {**_BOOL, "description": "Next page of gigs already shown"}}),
         "handler": find_paid_gigs,
     },

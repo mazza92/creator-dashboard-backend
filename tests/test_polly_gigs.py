@@ -493,3 +493,40 @@ class PollyGigsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PollyGigPaywallTests(unittest.TestCase):
+    def _cards(self, n):
+        return [
+            {"id": i, "name": f"Brand {'abcdefghij'[i - 1] * 3}", "brand_name": f"Brand {'abcdefghij'[i - 1] * 3}",
+             "product_name": f"Skincare video brief {'abcdefghij'[i - 1] * 4}", "is_sourced": True,
+             "pay_label": "$200", "pr_value_usd": 200, "published_at": f"2026-10-{10 + i:02d}"}
+            for i in range(1, n + 1)
+        ]
+
+    def _page(self, board):
+        from unittest import mock
+        from services import polly_gigs
+        cards = self._cards(10)
+        with mock.patch("opportunities_routes.fetch_live_opportunity_cards",
+                        return_value={"matched": cards, "others": []}), \
+             mock.patch("opportunities_routes._paid_board", return_value=board), \
+             mock.patch.object(polly_gigs, "polish_gig_cards", side_effect=lambda c: c):
+            return polly_gigs.page_polly_gigs(42, page_size=6)
+
+    def test_free_creator_only_gets_board_preview(self):
+        gigs, has_more, locked = self._page(({}, self._cards(10), {2, 5, 7}))
+        self.assertEqual(sorted(g["id"] for g in gigs), [2, 5, 7])
+        self.assertFalse(has_more)
+        self.assertEqual(locked, 7)
+
+    def test_pro_creator_pages_everything(self):
+        gigs, has_more, locked = self._page(({}, self._cards(10), None))
+        self.assertEqual(len(gigs), 6)
+        self.assertTrue(has_more)
+        self.assertEqual(locked, 0)
+
+    def test_board_failure_shows_nothing_rather_than_everything(self):
+        gigs, has_more, locked = self._page(None)
+        self.assertEqual(gigs, [])
+        self.assertFalse(has_more)

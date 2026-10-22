@@ -518,6 +518,7 @@ def list_polly_gigs(
     limit: int = GIG_PAGE_SIZE,
     exclude_ids: Optional[List[int]] = None,
     history: Optional[List[Dict]] = None,
+    only_ids: Optional[set] = None,
 ) -> List[Dict[str, Any]]:
     """Top live paid UGC briefs for Polly. Piggyback sources first, no gifted PR mix."""
     if not creator_id:
@@ -562,6 +563,8 @@ def list_polly_gigs(
             kid = None
         if key in seen or kid in skip or key in skip:
             continue
+        if only_ids is not None and key not in only_ids and kid not in only_ids:
+            continue
         seen.add(key)
         card = gig_card_from_opp(opp)
         fp = gig_dedupe_key(card)
@@ -591,17 +594,42 @@ def page_polly_gigs(
     history: Optional[List[Dict]] = None,
     page_size: int = GIG_PAGE_SIZE,
 ) -> tuple:
-    """One board page plus whether another drop is waiting."""
+    """(page, has_more, locked). Free creators only get the Paid UGC free preview."""
+    from services.paid_gigs_board import FREE_PREVIEW
+
+    size = max(1, int(page_size or GIG_PAGE_SIZE))
+    preview, locked = free_gig_preview(creator_id)
     batch = list_polly_gigs(
         creator_id,
         scrape=scrape,
         notes=notes,
-        limit=max(1, int(page_size or GIG_PAGE_SIZE)) + 1,
+        limit=size + 1,
         exclude_ids=exclude_ids,
         history=history,
+        only_ids=preview,
     )
-    size = max(1, int(page_size or GIG_PAGE_SIZE))
-    return batch[:size], len(batch) > size
+    if preview is not None:
+        return batch[:FREE_PREVIEW], False, locked
+    return batch[:size], len(batch) > size, 0
+
+
+def free_gig_preview(creator_id) -> tuple:
+    """(ids a free creator may open, locked count). (None, 0) for Pro.
+
+    Same preview as the Paid UGC page, so Polly can't be used to see the full board.
+    """
+    try:
+        from opportunities_routes import _paid_board
+        board = _paid_board(creator_id)
+    except Exception as err:
+        print(f"[Polly] gig preview failed: {err}")
+        return set(), 0
+    if not board:
+        return set(), 0
+    _creator, ranked, preview = board
+    if preview is None:
+        return None, 0
+    return set(preview), max(len(ranked) - len(preview), 0)
 
 
 _MORE_GIGS_RE = re.compile(

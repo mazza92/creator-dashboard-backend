@@ -62,6 +62,7 @@ class TurnState:
     brands: List[Dict[str, Any]] = field(default_factory=list)
     gigs: List[Dict[str, Any]] = field(default_factory=list)
     gigs_has_more: bool = False
+    gigs_locked: int = 0
     pitch: Optional[Dict[str, Any]] = None
     pitch_batch: List[Dict[str, Any]] = field(default_factory=list)
     pitch_update: Optional[Dict[str, Any]] = None
