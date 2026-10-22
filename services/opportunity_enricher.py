@@ -60,7 +60,9 @@ def exact_pay_label(raw: Dict[str, Any]) -> Optional[str]:
 
 def _exact_pr_value(raw: Dict[str, Any]) -> Optional[int]:
     """Per-deliverable amount. CPM-only gigs have no fixed amount, so none is invented."""
-    for key in ("compensation_min_usd", "compensation_max_usd"):
+    if re.search(r"\bCPM\b", str(raw.get("compensation_display") or ""), re.I):
+        return None
+    for key in ("compensation_max_usd", "compensation_min_usd"):
         try:
             amount = float(raw.get(key) or 0)
         except (TypeError, ValueError):

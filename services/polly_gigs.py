@@ -43,7 +43,7 @@ def is_paid_listing(card: Optional[Dict[str, Any]] = None) -> bool:
         return False
     if card.get("pr_value_usd"):
         return True
-    if re.search(r"\$|\bpaid\b", pay, re.I):
+    if re.search(r"[$£€₹]|\bpaid\b", pay, re.I):
         return True
     if card.get("is_sourced"):
         return True

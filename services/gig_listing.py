@@ -215,7 +215,7 @@ def _parse_money(num: str, suffix: Optional[str]) -> Optional[str]:
 
 
 def pay_has_amount(label: Optional[str]) -> bool:
-    return bool(re.search(r"\$\s*\d", str(label or "")))
+    return bool(re.search(r"[$£€₹]\s*\d", str(label or "")))
 
 
 def prefer_amount_pay(*labels: Optional[str]) -> Optional[str]:

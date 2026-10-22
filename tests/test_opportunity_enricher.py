@@ -162,6 +162,31 @@ class OpportunityEnricherTests(unittest.TestCase):
         self.assertEqual(cleaned["pay_label"], "$1 CPM")
         self.assertIsNone(cleaned["pr_value_usd"])
 
+    def test_exact_foreign_currency_pay_keeps_its_currency(self):
+        cleaned = clean_scanner_gig({
+            "title": "UGC videos for skincare brand",
+            "buyer_name": "Glow Co",
+            "apply_url": "https://www.freelancer.com/projects/video/ugc-videos",
+            "source_platform": "freelancer",
+            "deliverable_summary": "Need 3 UGC videos. Budget around $318 - $953.",
+            "compensation_display": "£250–£750",
+            "compensation_min_usd": 317.5,
+            "compensation_max_usd": 952.5,
+            "compensation_type": "paid_exact",
+        })
+        self.assertEqual(cleaned["pay_label"], "£250–£750")
+        self.assertEqual(cleaned["pr_value_usd"], 952)
+        card = gig_card_from_opp({
+            "id": 2,
+            "brand_name": cleaned["brand_name"],
+            "product_name": cleaned["product_name"],
+            "campaign_description": cleaned["campaign_description"],
+            "pr_value_usd": cleaned["pr_value_usd"],
+            "listing_brief": cleaned["listing_brief"],
+            "is_sourced": True,
+        })
+        self.assertEqual(card["pay_label"], "£250–£750")
+
     def test_company_size_is_not_pay(self):
         from services.gig_listing import format_pay_label
         self.assertEqual(format_pay_label(None, "Term life, up to $5 million. paid"), "Paid")
