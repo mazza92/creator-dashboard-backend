@@ -306,6 +306,34 @@ def update_template(template_id):
         return jsonify({'error': str(e)}), 500
 
 
+@admin_email_bp.route('/paid-ugc-radar', methods=['GET'])
+@admin_required
+def paid_ugc_radar_template():
+    """This week's Paid UGC radar in Polly's email layout, for a free_tier campaign.
+
+    Rendered once with campaign placeholders so personalize_text fills name and unsubscribe per recipient.
+    """
+    from services.paid_ugc_roundup import live_board_cards, roundup_context, roundup_email
+
+    conn = get_db_connection()
+    try:
+        conn.set_session(readonly=True)
+        ctx = roundup_context(live_board_cards(conn.cursor(cursor_factory=RealDictCursor)))
+        mail = roundup_email('{{first_name}}', ctx, is_pro=False, unsubscribe_url='{{unsubscribe_url}}')
+        return jsonify({
+            'subject': mail['subject'],
+            'html': mail['html'],
+            'segment_id': 'free_tier',
+            'stats': {k: ctx.get(k) for k in ('total', 'new_this_week', 'top_pay')},
+        })
+    except Exception as e:
+        _safe_print(f"[paid_ugc_radar] render failed: {e}")
+        return jsonify({'error': 'Could not build the Paid UGC radar'}), 500
+    finally:
+        conn.rollback()
+        conn.close()
+
+
 @admin_email_bp.route('/brand-outreach/templates/cleanup', methods=['POST'])
 @admin_required
 def cleanup_brand_outreach_templates():
