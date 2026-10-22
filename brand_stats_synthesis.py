@@ -1,9 +1,19 @@
 """
-Deterministic synthetic brand stats by vertical when real data is missing.
-Same slug always gets the same values until backfilled with real pipeline data.
+Brand reply stats.
+
+pr_brands.response_rate holds the reply rate from real creator pitches (set
+only when a brand has MIN_PITCHES or more). In-app surfaces use the real
+values only and hide missing stats.
+
+Public SEO brand pages keep their stats cards: they use public_brand_stats /
+public_pitch_social_proof, which fill gaps with deterministic per-slug values
+by vertical.
 """
 import hashlib
 import re
+
+MIN_PITCHES = 5
+REPLIED_STAGES = ("replied", "responded", "won", "received", "success")
 
 # (min_rate%, max_rate%, min_days, max_days) per category
 CATEGORY_STATS = {
@@ -31,6 +41,22 @@ CATEGORY_STATS = {
 }
 
 DEFAULT_STATS = CATEGORY_STATS['lifestyle']
+
+
+def real_reply_rate(pitched, replied, min_pitches=MIN_PITCHES):
+    """Percent of real pitches that got a reply, or None below the sample size."""
+    pitched = int(pitched or 0)
+    if pitched < min_pitches:
+        return None
+    return round(100 * int(replied or 0) / pitched)
+
+
+def resolve_brand_stats(slug, category, response_rate=None, avg_response_days=None):
+    return (response_rate or None), (avg_response_days or None)
+
+
+def resolve_pitch_social_proof(slug, pitch_count, response_count, response_rate):
+    return int(pitch_count or 0), int(response_count or 0)
 
 
 def normalize_category(category):
@@ -65,29 +91,17 @@ def generate_synthetic_stats(slug, category=None):
     return rate, days
 
 
-def needs_synthetic_response_rate(value):
-    return value is None or value == 0
-
-
-def needs_synthetic_avg_days(value):
-    return value is None or value == 0
-
-
-def resolve_brand_stats(slug, category, response_rate=None, avg_response_days=None):
-    """
-    Fill missing stats only; keep real non-zero values from DB/pipeline.
-    """
-    if needs_synthetic_response_rate(response_rate) or needs_synthetic_avg_days(avg_response_days):
+def public_brand_stats(slug, category, response_rate=None, avg_response_days=None):
+    """Public brand pages only: fill missing stats, keep real non-zero values."""
+    if not response_rate or not avg_response_days:
         synth_rate, synth_days = generate_synthetic_stats(slug, category)
-        if needs_synthetic_response_rate(response_rate):
-            response_rate = synth_rate
-        if needs_synthetic_avg_days(avg_response_days):
-            avg_response_days = synth_days
+        response_rate = response_rate or synth_rate
+        avg_response_days = avg_response_days or synth_days
     return response_rate, avg_response_days
 
 
-def resolve_pitch_social_proof(slug, pitch_count, response_count, response_rate):
-    """Light synthetic pitch counts when no pipeline activity yet."""
+def public_pitch_social_proof(slug, pitch_count, response_count, response_rate):
+    """Public brand pages only: light pitch counts when no pipeline activity yet."""
     pitch_count = pitch_count or 0
     response_count = response_count or 0
     if pitch_count > 0:

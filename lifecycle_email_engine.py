@@ -1526,7 +1526,7 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
                 cursor.execute("""
                     SELECT p.brand_name AS name,
                            EXTRACT(DAY FROM NOW() - p.pitched_at)::int AS days_ago,
-                           COALESCE(b.response_rate, 10) AS response_rate
+                           b.response_rate
                     FROM creator_pipeline p
                     LEFT JOIN pr_brands b ON p.brand_name = b.brand_name
                     WHERE p.creator_id = %s
@@ -1537,7 +1537,7 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
                 """, (creator_id,))
                 pending = cursor.fetchall()
                 context['pending_brands'] = [
-                    {'name': p['name'], 'days_ago': p['days_ago'] or 7, 'response_rate': p['response_rate'] or 10}
+                    {'name': p['name'], 'days_ago': p['days_ago'] or 7, 'response_rate': p['response_rate']}
                     for p in pending
                 ] if pending else []
             except Exception as e:

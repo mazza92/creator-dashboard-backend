@@ -154,10 +154,7 @@ Extract the following as JSON:
   "seo_title": "SEO-optimized title for brand page, max 60 chars. Format: '[Brand] PR Contact & Gifting | Free Products for Influencers'",
   "seo_description": "SEO meta description, max 155 chars. Include: brand name, what they gift, who should apply.",
 
-  "success_stories": "Write 1-2 brief fictional but realistic success stories of influencers getting PR from this brand. Format: 'Sarah (@sarahbeauty, 12K followers) received [product] and created [content type]. Her post got [engagement].' Max 200 words total.",
-
-  "response_rate": "estimated % of PR applications this brand responds to (10-90). Larger brands: 15-30%. Smaller brands: 40-70%. Return as integer.",
-  "avg_response_time_days": "estimated days to respond (1-30). Larger brands: 7-14 days. Smaller brands: 3-7 days. Return as integer."
+  "success_stories": "Write 1-2 brief fictional but realistic success stories of influencers getting PR from this brand. Format: 'Sarah (@sarahbeauty, 12K followers) received [product] and created [content type]. Her post got [engagement].' Max 200 words total."
 }}
 
 CATEGORY RULES - VERY IMPORTANT:
@@ -629,25 +626,6 @@ def bulk_enrich_brands(
                 if not brand.get('success_stories') and enriched.get('success_stories'):
                     updates.append("success_stories = %s")
                     values.append(enriched['success_stories'][:2000])
-
-                # Response metrics
-                if not brand.get('response_rate') and enriched.get('response_rate'):
-                    try:
-                        rate = int(enriched['response_rate'])
-                        if 5 <= rate <= 95:
-                            updates.append("response_rate = %s")
-                            values.append(rate)
-                    except (ValueError, TypeError):
-                        pass
-
-                if not brand.get('avg_response_time_days') and enriched.get('avg_response_time_days'):
-                    try:
-                        days = int(enriched['avg_response_time_days'])
-                        if 1 <= days <= 60:
-                            updates.append("avg_response_time_days = %s")
-                            values.append(days)
-                    except (ValueError, TypeError):
-                        pass
 
                 # Always update category if AI provides one (to fix incorrectly categorized brands)
                 if enriched.get('category'):

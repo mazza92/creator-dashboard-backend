@@ -12,7 +12,12 @@ import os
 import psycopg2
 import requests
 
-from brand_stats_synthesis import resolve_brand_stats, resolve_pitch_social_proof
+from brand_stats_synthesis import (
+    public_brand_stats,
+    public_pitch_social_proof,
+    resolve_brand_stats,
+    resolve_pitch_social_proof,
+)
 from brand_categories import normalize_category, aggregate_category_counts, category_label
 from services.public_brand_guard import scraper_rate_limit
 from services.brand_seo import is_indexable, public_seo_fields
@@ -208,7 +213,7 @@ def _iso(value):
 
 
 def _format_public_brand_list_item(b):
-    """Format brand for directory cards with synthetic stats when DB values are empty."""
+    """Format brand for directory cards (real stats only)."""
     response_rate, avg_days = resolve_brand_stats(
         b['slug'], b['category'], b['response_rate'], b['avg_response_time_days']
     )
@@ -819,10 +824,10 @@ def get_public_brand(slug):
         if not brand:
             return jsonify({'error': 'Brand not found'}), 404
 
-        response_rate, avg_days = resolve_brand_stats(
+        response_rate, avg_days = public_brand_stats(
             brand['slug'], brand['category'], brand['response_rate'], brand['avg_response_time_days']
         )
-        pitch_count, response_count = resolve_pitch_social_proof(
+        pitch_count, response_count = public_pitch_social_proof(
             brand['slug'], brand['pitch_count'], brand['response_count'], response_rate
         )
         if reply_signal and reply_signal.get('tier') == 'cold':

@@ -7851,8 +7851,7 @@ def update_pipeline_item(pipeline_id):
             params
         )
 
-        # If stage -> 'received', update brand response_rate
-        if updates.get('stage') == 'received':
+        if updates.get('stage'):
             _update_brand_response_rate(cursor, conn, pipeline_id)
 
         conn.commit()
@@ -8592,23 +8591,24 @@ def get_pipeline_stats():
 
 def _update_brand_response_rate(cursor, conn, pipeline_id):
     """Recalculate brand response rate from real outcomes."""
+    from brand_stats_synthesis import MIN_PITCHES, REPLIED_STAGES
+
     try:
         cursor.execute("""
             UPDATE pr_brands b SET
                 response_rate = (
-                    SELECT ROUND(
-                        COUNT(*) FILTER (WHERE stage IN ('replied', 'won', 'received', 'success')) * 100.0
-                        / NULLIF(COUNT(*) FILTER (WHERE send_confirmed = TRUE OR pitched_at IS NOT NULL), 0)
-                    )
+                    SELECT CASE WHEN COUNT(*) >= %(min_pitches)s THEN ROUND(
+                        COUNT(*) FILTER (WHERE stage = ANY(%(replied)s)) * 100.0 / COUNT(*)
+                    ) END
                     FROM creator_pipeline
-                    WHERE brand_id = b.id AND (send_confirmed = TRUE OR pitched_at IS NOT NULL)
+                    WHERE brand_id = b.id AND pitched_at IS NOT NULL
                 ),
                 responses_received = (
-                    SELECT COUNT(*) FILTER (WHERE stage IN ('replied', 'won', 'received', 'success'))
+                    SELECT COUNT(*) FILTER (WHERE stage = ANY(%(replied)s))
                     FROM creator_pipeline WHERE brand_id = b.id
                 )
-            WHERE b.id = (SELECT brand_id FROM creator_pipeline WHERE id = %s)
-        """, (pipeline_id,))
+            WHERE b.id = (SELECT brand_id FROM creator_pipeline WHERE id = %(pipeline_id)s)
+        """, {'min_pitches': MIN_PITCHES, 'replied': list(REPLIED_STAGES), 'pipeline_id': pipeline_id})
         conn.commit()
     except Exception as e:
         print(f"Error updating brand response rate: {str(e)}")

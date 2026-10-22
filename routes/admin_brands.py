@@ -1239,10 +1239,7 @@ Extract the following as JSON:
   "seo_title": "SEO-optimized title for brand page, max 60 chars. Format: '[Brand] PR Contact & Gifting | Free Products for Influencers'",
   "seo_description": "SEO meta description, max 155 chars. Include: brand name, what they gift, who should apply.",
 
-  "success_stories": "Write 1-2 brief fictional but realistic success stories of influencers getting PR from this brand. Format: 'Sarah (@sarahbeauty, 12K followers) received [product] and created [content type]. Her post got [engagement].' Max 200 words total.",
-
-  "response_rate": "estimated % of PR applications this brand responds to (10-90). Larger brands: 15-30%. Smaller brands: 40-70%. Return as integer.",
-  "avg_response_time_days": "estimated days to respond (1-30). Larger brands: 7-14 days. Smaller brands: 3-7 days. Return as integer."
+  "success_stories": "Write 1-2 brief fictional but realistic success stories of influencers getting PR from this brand. Format: 'Sarah (@sarahbeauty, 12K followers) received [product] and created [content type]. Her post got [engagement].' Max 200 words total."
 }}
 
 Return ONLY valid JSON, no explanation.
@@ -1413,29 +1410,6 @@ JSON:"""
         if success_stories:
             success_stories = success_stories[:2000]
 
-        # Response metrics - validate as integers in reasonable ranges
-        response_rate = None
-        if data.get('response_rate'):
-            try:
-                response_rate = int(data['response_rate'])
-                if response_rate < 5:
-                    response_rate = 10
-                elif response_rate > 95:
-                    response_rate = 90
-            except (ValueError, TypeError):
-                response_rate = 30  # Default
-
-        avg_response_time_days = None
-        if data.get('avg_response_time_days'):
-            try:
-                avg_response_time_days = int(data['avg_response_time_days'])
-                if avg_response_time_days < 1:
-                    avg_response_time_days = 3
-                elif avg_response_time_days > 60:
-                    avg_response_time_days = 14
-            except (ValueError, TypeError):
-                avg_response_time_days = 7  # Default
-
         # Step 4: Update database with all fields
         cursor.execute('''
             UPDATE pr_brands
@@ -1452,8 +1426,6 @@ JSON:"""
                 seo_title = COALESCE(%s, seo_title),
                 seo_description = COALESCE(%s, seo_description),
                 success_stories = COALESCE(%s, success_stories),
-                response_rate = COALESCE(%s, response_rate),
-                avg_response_time_days = COALESCE(%s, avg_response_time_days),
                 cover_image_url = COALESCE(%s, cover_image_url),
                 enriched_at = CURRENT_TIMESTAMP
             WHERE id = %s
@@ -1471,8 +1443,6 @@ JSON:"""
             seo_title,
             seo_description,
             success_stories,
-            response_rate,
-            avg_response_time_days,
             og_image_url,
             brand_id
         ))
@@ -1496,8 +1466,6 @@ JSON:"""
                 'seo_title': seo_title,
                 'seo_description': seo_description,
                 'success_stories': success_stories,
-                'response_rate': response_rate,
-                'avg_response_time_days': avg_response_time_days,
                 'cover_image_url': og_image_url
             }
         }), 200

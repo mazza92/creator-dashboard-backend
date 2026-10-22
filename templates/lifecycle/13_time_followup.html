@@ -10,7 +10,7 @@
 {% for brand in pending_brands %}
     <div class="brand-item">
         <span class="brand-name">{{ brand.name }}</span>
-        <span class="brand-meta"> &bull; pitched {{ brand.days_ago }} days ago ({{ brand.response_rate }}% response rate)</span>
+        <span class="brand-meta"> &bull; pitched {{ brand.days_ago }} days ago{% if brand.response_rate %} ({{ brand.response_rate }}% response rate){% endif %}</span>
     </div>
 {% endfor %}
 </div>
@@ -30,7 +30,7 @@
 {% for brand in pending_brands %}
     <div class="brand-item">
         <span class="brand-name">{{ brand.name }}</span>
-        <span class="brand-meta"> &bull; pitched {{ brand.days_ago }} days ago ({{ brand.response_rate }}% response rate)</span>
+        <span class="brand-meta"> &bull; pitched {{ brand.days_ago }} days ago{% if brand.response_rate %} ({{ brand.response_rate }}% response rate){% endif %}</span>
     </div>
 {% endfor %}
 </div>
