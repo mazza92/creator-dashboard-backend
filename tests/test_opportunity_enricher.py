@@ -121,6 +121,52 @@ class OpportunityEnricherTests(unittest.TestCase):
         })
         self.assertEqual(cleaned["pay_label"], "$20–$45/hr")
 
+    def test_exact_platform_pay_beats_description_amounts(self):
+        cleaned = clean_scanner_gig({
+            "title": "Eleos US - Life Insurance",
+            "buyer_name": "Eleos",
+            "apply_url": "https://app.sideshift.app/jobs/6BG5emLu1XHsQ9dc88Us",
+            "source_platform": "sideshift",
+            "deliverable_summary": (
+                "Eleos Life sells life insurance online in the US.\n"
+                "- Term life, up to $5 million\n- Whole life, up to $75,000 that never expires"
+            ),
+            "compensation_display": "$20/post",
+            "compensation_min_usd": 20,
+            "compensation_max_usd": 20,
+            "compensation_type": "paid_exact",
+        })
+        self.assertEqual(cleaned["pay_label"], "$20/post")
+        self.assertEqual(cleaned["pr_value_usd"], 20)
+        self.assertEqual(cleaned["listing_brief"]["pay"], "$20/post")
+        card = gig_card_from_opp({
+            "id": 1,
+            "brand_name": cleaned["brand_name"],
+            "product_name": cleaned["product_name"],
+            "campaign_description": cleaned["campaign_description"],
+            "pr_value_usd": cleaned["pr_value_usd"],
+            "listing_brief": cleaned["listing_brief"],
+            "is_sourced": True,
+        })
+        self.assertEqual(card["pay_label"], "$20/post")
+
+    def test_exact_cpm_only_pay_invents_no_amount(self):
+        cleaned = clean_scanner_gig({
+            "title": "Triips creator campaign",
+            "buyer_name": "Triips.com",
+            "apply_url": "https://app.sideshift.app/jobs/abc",
+            "deliverable_summary": "Travel app. Book trips worth $8,000-$12,000.",
+            "compensation_display": "$1 CPM",
+            "compensation_type": "paid_exact",
+        })
+        self.assertEqual(cleaned["pay_label"], "$1 CPM")
+        self.assertIsNone(cleaned["pr_value_usd"])
+
+    def test_company_size_is_not_pay(self):
+        from services.gig_listing import format_pay_label
+        self.assertEqual(format_pay_label(None, "Term life, up to $5 million. paid"), "Paid")
+        self.assertEqual(format_pay_label(None, "YC startup, $30M valuation. Pay: $150 per video"), "$150")
+
     def test_duration_is_not_pay(self):
         from services.gig_listing import format_pay_label
         self.assertEqual(

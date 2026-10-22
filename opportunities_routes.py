@@ -1032,7 +1032,13 @@ def apply_opportunity(opp_id):
         if existing:
             cursor.close()
             conn.close()
-            return jsonify({'success': False, 'error': 'You have already applied'}), 409
+            return jsonify({
+                'success': False,
+                'error': 'You have already applied',
+                'apply_mode': apply_mode,
+                'external_apply_url': external_apply_url,
+                'apply_email': apply_email,
+            }), 409
 
         # Check pitch/application limits (same pool as pitches) — free = 3/month
         cursor.execute('''
@@ -1156,6 +1162,205 @@ def apply_opportunity(opp_id):
     except Exception as e:
         print(f"Error in apply_opportunity: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ============================================
+# CREATOR: Paid UGC board
+# ============================================
+
+_GIG_COLUMNS = '''
+    o.id, o.brand_name, o.brand_category, o.brand_logo_url, o.brand_website, o.brand_email,
+    o.product_name, o.campaign_description,
+    o.pr_value_usd, o.creator_count_range, o.shipping_regions, o.follower_ranges,
+    o.content_types, o.creator_niches, o.additional_notes,
+    o.spots_total, o.spots_filled, o.closes_at, o.status,
+    o.created_at, o.published_at, o.listing_brief
+'''
+
+
+def _board_creator(creator_id):
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cursor.execute('''
+            SELECT c.subscription_tier, c.followers_count, c.username, c.niche, c.kit_slug,
+                   u.first_name
+            FROM creators c
+            LEFT JOIN users u ON u.id = c.user_id
+            WHERE c.id = %s
+        ''', (creator_id,))
+        return cursor.fetchone()
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def _paid_board(creator_id):
+    """(creator, ranked cards, free preview ids). None when the creator is missing."""
+    from services.paid_gigs_board import board_cards, preview_ids, rank_cards
+
+    creator = _board_creator(creator_id)
+    data = fetch_live_opportunity_cards(creator_id) if creator else None
+    if not creator or not data:
+        return None
+    rows = list(data.get('matched') or []) + list(data.get('others') or [])
+    ranked = rank_cards(board_cards(rows, int(creator.get('followers_count') or 0)))
+    is_pro = (creator.get('subscription_tier') or '') == 'pro'
+    return creator, ranked, preview_ids(ranked, is_pro)
+
+
+def _gig_is_open(card, preview):
+    return preview is None or card.get('id') in preview or bool(card.get('already_applied'))
+
+
+@opportunities_bp.route('/paid-gigs', methods=['GET'])
+def paid_gigs_board():
+    from services.gig_listing import polish_gig_cards
+    from services.paid_gigs_board import VIEWS, board_stats, filter_view, page_of, public_card
+
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    try:
+        board = _paid_board(creator_id)
+        if not board:
+            return jsonify({'success': False, 'error': 'Creator not found'}), 404
+        creator, ranked, preview = board
+        view = request.args.get('view', 'all')
+        if view not in VIEWS:
+            view = 'all'
+        offset = request.args.get('offset', 0, type=int)
+        limit = request.args.get('limit', 24, type=int)
+        in_view = filter_view(ranked, view)
+        page = page_of(in_view, offset, limit)
+        open_cards = [c for c in page if _gig_is_open(c, preview)]
+        try:
+            polish_gig_cards(open_cards)
+        except Exception as polish_err:
+            print(f"[paid_gigs] polish skipped: {polish_err}")
+        gigs = [public_card(c, locked=not _gig_is_open(c, preview)) for c in page]
+        return jsonify({
+            'success': True,
+            'gigs': gigs,
+            'view': view,
+            'offset': offset,
+            'has_more': offset + len(page) < len(in_view),
+            'is_pro': preview is None,
+            'stats': board_stats(ranked),
+            'counts': {v: len(filter_view(ranked, v)) for v in VIEWS},
+            'applied_count': sum(1 for c in ranked if c.get('already_applied')),
+        })
+    except Exception as e:
+        print(f"Error in paid_gigs_board: {e}")
+        return jsonify({'success': False, 'error': 'Could not load paid gigs'}), 500
+
+
+@opportunities_bp.route('/<int:opp_id>/application-draft', methods=['POST'])
+def paid_gig_application_draft(opp_id):
+    from services.gig_listing import polish_gig_cards
+    from services.paid_gigs_board import draft_application, public_card
+    from services.polly_kit import public_kit_url
+
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    try:
+        board = _paid_board(creator_id)
+        if not board:
+            return jsonify({'success': False, 'error': 'Creator not found'}), 404
+        creator, ranked, preview = board
+        card = next((c for c in ranked if c.get('id') == opp_id), None)
+        if not card:
+            return jsonify({'success': False, 'error': 'This gig is no longer live'}), 404
+        if not _gig_is_open(card, preview):
+            return jsonify({'success': False, 'error': 'pro_required'}), 402
+        try:
+            polish_gig_cards([card])
+        except Exception as polish_err:
+            print(f"[paid_gigs] polish skipped: {polish_err}")
+        draft = draft_application(creator, card, public_kit_url(creator.get('kit_slug')))
+        return jsonify({'success': True, 'gig': public_card(card), 'draft': draft})
+    except Exception as e:
+        print(f"Error in paid_gig_application_draft: {e}")
+        return jsonify({'success': False, 'error': 'Could not write the application'}), 500
+
+
+@opportunities_bp.route('/paid-gigs/applied', methods=['GET'])
+def paid_gigs_applied():
+    from services.polly_gigs import gig_card_from_opp
+
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cursor.execute(f'''
+            SELECT {_GIG_COLUMNS}, oa.applied_at, oa.status AS application_status
+            FROM opportunity_applications oa
+            JOIN opportunities o ON o.id = oa.opportunity_id
+            WHERE oa.creator_id = %s
+              AND o.pr_brand_id IS NULL
+            ORDER BY oa.applied_at DESC
+            LIMIT 100
+        ''', (creator_id,))
+        rows = cursor.fetchall() or []
+    except Exception as e:
+        conn.rollback()
+        print(f"Error in paid_gigs_applied: {e}")
+        return jsonify({'success': False, 'error': 'Could not load applications'}), 500
+    finally:
+        cursor.close()
+        conn.close()
+    items = []
+    for row in rows:
+        card = gig_card_from_opp(_opportunity_card(row, set(), set())[0])
+        items.append({
+            'id': row['id'],
+            'brand_name': card.get('brand_name'),
+            'headline': card.get('headline'),
+            'pay_label': card.get('pay_label'),
+            'logo': card.get('logo'),
+            'category': card.get('category'),
+            'source_label': card.get('source_label'),
+            'applied_at': row['applied_at'].isoformat() if row.get('applied_at') else None,
+            'status': row.get('application_status') or 'pending',
+            'live': row.get('status') == 'live',
+        })
+    return jsonify({'success': True, 'applications': items})
+
+
+@opportunities_bp.route('/<int:opp_id>/application-status', methods=['POST'])
+def paid_gig_application_status(opp_id):
+    """Creator confirms they finished applying on the outside platform."""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    status = str((request.get_json(silent=True) or {}).get('status') or '').strip().lower()
+    if status not in ('submitted', 'pending'):
+        return jsonify({'success': False, 'error': 'status must be submitted or pending'}), 400
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            UPDATE opportunity_applications
+            SET status = %s
+            WHERE opportunity_id = %s AND creator_id = %s
+              AND status IN ('pending', 'submitted')
+            RETURNING id
+        ''', (status, opp_id, creator_id))
+        row = cursor.fetchone()
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"Error in paid_gig_application_status: {e}")
+        return jsonify({'success': False, 'error': 'Could not save'}), 500
+    finally:
+        cursor.close()
+        conn.close()
+    if not row:
+        return jsonify({'success': False, 'error': 'No application found'}), 404
+    return jsonify({'success': True, 'status': status})
 
 
 # ============================================

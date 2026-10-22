@@ -30,15 +30,44 @@ def _pay_bits(raw: Dict[str, Any]) -> str:
         bits.append(display)
     lo = raw.get("compensation_min_usd")
     hi = raw.get("compensation_max_usd")
-    if lo and hi:
+    if lo and hi and lo == hi:
+        bits.append(f"${lo}")
+    elif lo and hi:
         bits.append(f"${lo}–${hi}")
     elif lo:
         bits.append(f"${lo}+")
     elif hi:
         bits.append(f"${hi}")
     if raw.get("compensation_type"):
-        bits.append(str(raw["compensation_type"]))
+        bits.append("paid" if is_exact_pay(raw) else str(raw["compensation_type"]))
     return " · ".join(bits)
+
+
+EXACT_PAY_TYPE = "paid_exact"
+
+
+def is_exact_pay(raw: Dict[str, Any]) -> bool:
+    """The scraper read pay from the platform's own fields, not from description text."""
+    return str(raw.get("compensation_type") or "").strip().lower() == EXACT_PAY_TYPE
+
+
+def exact_pay_label(raw: Dict[str, Any]) -> Optional[str]:
+    if not is_exact_pay(raw):
+        return None
+    display = re.sub(r"\s+", " ", str(raw.get("compensation_display") or "")).strip()
+    return display[:60] if pay_has_amount(display) else None
+
+
+def _exact_pr_value(raw: Dict[str, Any]) -> Optional[int]:
+    """Per-deliverable amount. CPM-only gigs have no fixed amount, so none is invented."""
+    for key in ("compensation_min_usd", "compensation_max_usd"):
+        try:
+            amount = float(raw.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        if amount >= 1:
+            return int(round(amount))
+    return None
 
 
 def _pr_value_from_pay(pay_label: Optional[str], existing=None):
@@ -180,6 +209,10 @@ def clean_scanner_gig(raw: Dict[str, Any]) -> Dict[str, Any]:
         description = f"{deliverable}. {summary}".strip()
     website = public_brand_site(raw.get("brand_website") or raw.get("website"))
     pay_label = prefer_amount_pay(card.get("pay_label"), pay_label)
+    exact = exact_pay_label(raw)
+    if exact:
+        gifted = False
+        pay_label = exact
     if gifted:
         pay_label = "Gifted product"
     card["pay_label"] = pay_label
@@ -188,9 +221,11 @@ def clean_scanner_gig(raw: Dict[str, Any]) -> Dict[str, Any]:
         "product_name": (card.get("headline") or title)[:255],
         "campaign_description": description or title,
         "brand_website": website,
-        "pr_value_usd": None if gifted else _pr_value_from_pay(
-            pay_label,
-            raw.get("pr_value_usd") or raw.get("compensation_max_usd") or raw.get("compensation_min_usd"),
+        "pr_value_usd": None if gifted else (
+            _exact_pr_value(raw) if exact else _pr_value_from_pay(
+                pay_label,
+                raw.get("pr_value_usd") or raw.get("compensation_max_usd") or raw.get("compensation_min_usd"),
+            )
         ),
         "pay_label": pay_label,
         "gifted": gifted,

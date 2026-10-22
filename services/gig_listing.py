@@ -248,9 +248,19 @@ def _pay_from_match(match: re.Match) -> tuple[Optional[str], Optional[str]]:
     return None, None
 
 
+_NOT_PAY_TAIL_RE = re.compile(r"(?i)^\s*(?:million|billion|mil\b|mn\b|bn\b|[mb]\b|\+?\s*(?:valuation|in funding|raised|arr\b))")
+
+
+def _is_not_pay(match: re.Match) -> bool:
+    """Company size or product value ('$5 million', '$30M valuation'), not a creator fee."""
+    return bool(_NOT_PAY_TAIL_RE.match(match.string[match.end():match.end() + 16]))
+
+
 def _best_pay_from_matches(matches) -> Optional[str]:
     best = None
     for match in matches:
+        if _is_not_pay(match):
+            continue
         low, high = _pay_from_match(match)
         if low and high and low != high:
             label = f"{low}–{high}"
