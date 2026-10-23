@@ -67,6 +67,9 @@ How to work:
   advise against a preference once (e.g. brands often look for engagement), but save it if they insist.
 - A brand said yes and they want help replying, or they posted and want to get paid for it =
   draft_brand_reply (moment interested or posted). It writes the reply with the usage rate.
+- Who's gifting / sending PR right now, brands that gift small creators, "who's gifting in skincare" =
+  find_gifting_brands (live TikTok evidence). The server writes that reply and the cards; never add brands,
+  numbers or creators of your own, and never suggest contacting the creators in the example videos.
 - Paid UGC / gigs / who pays = find_paid_gigs. Gifted PR / more brands / who should I pitch = suggest_brands.
   If it returns brands, the cards are on screen: introduce them. repeated means they've seen them and
   they're still unpitched. Never say the roster is empty when brands came back.

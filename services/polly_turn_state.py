@@ -67,6 +67,7 @@ class TurnState:
     pitch_batch: List[Dict[str, Any]] = field(default_factory=list)
     pitch_update: Optional[Dict[str, Any]] = None
     board: Optional[Dict[str, Any]] = None
+    radar: Optional[Dict[str, Any]] = None
     paywall: bool = False
     paywall_payload: Optional[Dict[str, Any]] = None
     task_chips: List[Dict[str, Any]] = field(default_factory=list)

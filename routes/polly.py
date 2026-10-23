@@ -1211,6 +1211,66 @@ def _deliver_monday_board(conn, creator_id, first, kit, balance):
         return False
 
 
+@polly_bp.route("/radar/<int:run_id>", methods=["GET"])
+def radar_poll(run_id):
+    """Gifting Radar card polls this until the TikTok search is ingested, then gets the brands."""
+    creator_id, conn, creator = _creator_auth()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    try:
+        from services import gifting_radar
+        from services.polly_tools import radar_ctx
+        from services.polly_turn_state import TurnState
+
+        thread = load_thread(conn, creator_id)
+        notes = thread.get("notes") or {}
+        scrape = _load_scrape(conn, (creator or {}).get("user_id") or session.get("user_id")) or {}
+        state = TurnState(
+            creator_id=creator_id, creator=creator or {}, first="", scrape=scrape, kit={}, profile_context="",
+            coach_moves=[], balance=_unlock_balance(creator_id, conn=conn), notes=notes, messages=[],
+            stored_messages=[], suggested=[], tracker_ctx={}, early_fu={}, career=None, user_text="", chip={},
+            conn=conn,
+        )
+        ctx = radar_ctx(state)
+        last = notes.get("radar_last") if isinstance(notes.get("radar_last"), dict) else {}
+        if last.get("run_id") == run_id:
+            ctx["offset"] = int(last.get("offset") or 0)
+            ctx["signal_type"] = last.get("signal_type") or "any"
+        out = gifting_radar.poll(conn, run_id, ctx)
+        if out.get("status") == "not_found":
+            return jsonify({"success": False, "error": "not_found"}), 404
+        return jsonify({"success": True, "radar": json_safe(out)})
+    except Exception as err:
+        print(f"[Polly] radar poll failed: {err}")
+        return jsonify({"success": False, "error": "Could not load the radar"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@polly_bp.route("/radar/contact", methods=["POST"])
+def radar_contact():
+    """'Ask Polly to find their contact': queue a discovered brand for the team to enrich."""
+    creator_id, conn, _creator = _creator_auth()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    try:
+        from services.gifting_radar import request_contact
+
+        data = request.get_json(silent=True) or {}
+        brand = int(data.get("discovered_brand_id") or 0)
+        ok = bool(brand) and request_contact(conn, brand)
+        if ok:
+            _log_polly_event(creator_id, "radar_contact_requested", {"discovered_brand_id": brand})
+        return jsonify({"success": ok})
+    except Exception as err:
+        print(f"[Polly] radar contact failed: {err}")
+        return jsonify({"success": False}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
 @polly_bp.route("/board", methods=["GET"])
 def board():
     """Live Monday board (Pro). The card in the thread refreshes from here."""
@@ -1782,6 +1842,13 @@ def _run_chip(state, action, chip_id, data):
             "brand_id": brand_id, "brand_name": brand_name,
             "followup": bool(data.get("is_followup")), "confirm_cold": bool(data.get("confirm_cold")),
             "sample_posts": data.get("sample_posts") or [],
+            **({"radar": data["radar"]} if isinstance(data.get("radar"), dict) else {}),
+        })
+    elif action == "gifting_radar":
+        call = ("find_gifting_brands", {
+            "more": chip_id == "radar_more",
+            **({"signal_type": data["signal_type"]} if data.get("signal_type") else {}),
+            **({"niche": data["niche"]} if data.get("niche") else {}),
         })
     elif action == "save_rates":
         state.final_say = _apply_suggested_rates(state)
@@ -1919,6 +1986,9 @@ def _finish_turn(state, say, brain, timer, chip_id):
         payload["board"] = json_safe(state.board)
         assistant["kind"] = "board"
         assistant["board"] = payload["board"]
+    if state.radar:
+        payload["radar"] = json_safe(state.radar)
+        assistant["radar"] = payload["radar"]
     if state.paywall_payload and state.paywall_payload.get("preview"):
         assistant["locked_pitch"] = {
             "brand_name": state.paywall_payload.get("brand_name"),

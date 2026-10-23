@@ -699,6 +699,15 @@ def paid_first(notes: Optional[Dict] = None) -> bool:
     return (notes.get("polly_track") or "") == "established" and not gifted_only(notes)
 
 
+RADAR_CHIP = {
+    "id": "gifting_radar",
+    "label": "🔎 Find brands gifting creators like me",
+    "hint": "Live from TikTok · beta",
+    "action": "gifting_radar",
+    "skip_discovery": True,
+}
+
+
 def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) -> List[Dict[str, Any]]:
     from services.polly_prefs import gifted_only
 
@@ -787,7 +796,8 @@ def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) 
             saw_paid = notes.get("saw_gigs") or notes.get("wanted_gigs")
             if not saw_paid and not gifted_only(notes):
                 chips.append(paid_chip)
-        return chips[:5]
+        chips.insert(4, dict(RADAR_CHIP))
+        return chips[:6]
     line_up = {
         "id": "line_up",
         "label": "Pitch 3 gifted brands for me today",
@@ -808,6 +818,7 @@ def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) 
         chips.append(rates if gifted_only(notes) else paid_chip)
     if notes.get("saw_gigs") or notes.get("wanted_gigs"):
         chips.insert(1, directory_chip)
+    chips.insert(2, dict(RADAR_CHIP))
     if top_brand:
         pitched = {str(n).strip().lower() for n in (notes.get("pitched_brand_names") or []) if n}
         if top_brand.strip().lower() in pitched:

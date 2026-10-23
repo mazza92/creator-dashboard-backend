@@ -6,6 +6,7 @@ contradicts what the tools did.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Optional
 
 from services.polly import (
@@ -42,6 +43,12 @@ _COACH_TOPIC = {
     "coach_week": "week",
     "explain_newcollab": "how_it_works",
 }
+
+
+_RADAR_ASK = re.compile(
+    r"(?i)\b(who'?s|who is|which brands? (are|is)|brands? (that|who)|anyone)\b.{0,30}\b(gifting|sending (out )?pr|"
+    r"send(ing)? pr|gift(s)? (small )?creators)\b|\bgifting radar\b|\bactively gifting\b"
+)
 
 
 def _last(state: TurnState) -> Optional[Dict[str, Any]]:
@@ -163,6 +170,13 @@ def template_reply(state: TurnState) -> str:
             lead = f"Here are {len(state.brands)} {res.get('searched')} brands from the directory, cards below."
             return f"{lead} {say}" if say else lead
         return "I couldn't search the directory just now. Try again in a moment."
+    if name == "find_gifting_brands":
+        if status == "needs_niche":
+            return "Which niche should I search TikTok for? Skincare, makeup, haircare, fashion, fitness, food..."
+        if status == "excluded_category":
+            return (f"You asked me to skip **{res.get('niche')}** brands. Want them back on? "
+                    "Say yes and I'll search.")
+        return "I couldn't search TikTok just now. Try again in a moment."
     if name == "get_content_stats":
         niche = res.get("niche") or {}
         lines = [res.get("summary") or ""]
@@ -243,6 +257,9 @@ def run_fallback(state: TurnState) -> str:
         if answer:
             return answer
 
+    if not prefs and _RADAR_ASK.search(text):
+        run_tool(state, "find_gifting_brands", {})
+        return template_reply(state)
     from services.brand_browse import browse_ask
     wanted = None if prefs else browse_ask(text)
     if wanted:

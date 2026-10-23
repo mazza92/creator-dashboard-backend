@@ -321,6 +321,24 @@ def _with_inbox(pitch: Dict[str, Any], email: str) -> Dict[str, Any]:
     return out
 
 
+def _with_radar_line(pitch: Dict[str, Any], brand_name: str, hint: Dict[str, Any]) -> Dict[str, Any]:
+    """Gifting Radar hand-off: one line saying we've seen them gifting creators in this niche."""
+    from services.gifting_radar import evidence_pitch_line
+
+    body = str(pitch.get("body") or "")
+    niche = str(hint.get("niche") or "").strip()
+    if not body or not niche:
+        return pitch
+    line = evidence_pitch_line(brand_name, niche, hint.get("evidence") or {})
+    parts = body.split("\n\n")
+    at = 2 if len(parts) > 3 else min(1, len(parts))
+    out = dict(pitch)
+    out["body"] = "\n\n".join(parts[:at] + [line] + parts[at:])
+    if out.get("email"):
+        out["mailto"] = build_mailto(out["email"], out.get("subject") or "", out["body"])
+    return out
+
+
 def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     R = _routes()
     followup = bool(args.get("followup"))
@@ -434,6 +452,9 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     pitch, pitch_paid = _dress_pitch(state, pitch, shipping, loc_display, followup)
     if not followup and args.get("sample_posts"):
         pitch = apply_work_samples_to_pitch(pitch, clean_sample_posts(args.get("sample_posts")))
+    radar_hint = args.get("radar") if isinstance(args.get("radar"), dict) else None
+    if radar_hint and not followup:
+        pitch = _with_radar_line(pitch, brand_name, radar_hint)
     if to_email:
         pitch = _with_inbox(pitch, to_email)
     pitch["brand_id"] = pitch.get("brand_id") or brand_id
@@ -1274,6 +1295,78 @@ _STR = {"type": "string"}
 _INT = {"type": "integer"}
 _BOOL = {"type": "boolean"}
 
+def radar_ctx(state: TurnState, niche: str = "") -> Dict[str, Any]:
+    scrape, notes = state.scrape or {}, state.notes or {}
+    override = notes.get("stats_override") if isinstance(notes.get("stats_override"), dict) else {}
+    try:
+        followers = int(override.get("followers") or scrape.get("follower_count") or 0)
+    except (TypeError, ValueError):
+        followers = 0
+    return {
+        "creator_id": state.creator_id,
+        "niche": niche or scrape.get("primary_niche") or (state.creator or {}).get("niche") or "",
+        "followers": followers,
+        "country": creator_country(state.creator, notes, scrape),
+        "is_pro": bool((state.balance or {}).get("is_unlimited")),
+        "exclude_brand_ids": list(notes.get("pitched_brand_ids") or []),
+        "avoid_categories": list(get_prefs(notes).get("avoid_categories") or []),
+    }
+
+
+_RADAR_NOTES = {
+    "daily_limit": "I've used today's searches. Here's what I found earlier, and I'll have fresh results tomorrow.",
+    "budget": "I've used today's searches. Here's what I found earlier, and I'll have fresh results tomorrow.",
+    "source_down": "TikTok search isn't answering right now, so here's what I found earlier.",
+}
+
+
+def find_gifting_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
+    from services import gifting_radar as radar
+
+    last = state.notes.get("radar_last") if isinstance(state.notes.get("radar_last"), dict) else {}
+    more = bool(args.get("more"))
+    niche = str(args.get("niche") or (last.get("niche") if more else "") or "").strip()
+    ctx = radar_ctx(state, niche)
+    kind = str(args.get("signal_type") or (last.get("signal_type") if more else "") or "any").lower()
+    ctx["signal_type"] = kind if kind in ("gifted", "paid", "affiliate") else "any"
+    ctx["offset"] = int(last.get("offset") or 0) + radar.PAGE if more and last else 0
+    try:
+        out = radar.search(state.db(), ctx)
+    except Exception as err:
+        print(f"[Polly] radar failed: {err}")
+        state.db().rollback()
+        return {"ok": False, "error": "radar unavailable"}
+    status = out.get("status")
+    if status == "needs_niche":
+        return {"ok": True, "status": "needs_niche",
+                "explain": "Ask which niche to search (skincare, makeup, haircare, fashion, fitness, food...)."}
+    if status == "excluded_category":
+        return {"ok": True, "status": "excluded_category", "niche": out.get("niche"),
+                "explain": "They told you to skip this category. Ask if they want it back on."}
+    state.radar = out
+    state.notes["radar_last"] = {"run_id": out.get("run_id"), "niche": out.get("niche"),
+                                 "offset": out.get("offset") or 0, "signal_type": ctx["signal_type"]}
+    state.brands = []
+    if status == "searching":
+        state.final_say = (f"On it 🔎 {out['line']} This takes about a minute; the brands will appear "
+                           "right here with real example posts.")
+        return {"ok": True, "status": "searching", "niche": out.get("niche")}
+    lead = _RADAR_NOTES.get(out.get("note") or "", "")
+    if status == "found":
+        say = f"Here's who's gifting **{out['niche']}** creators your size right now 👇"
+        say += " Tap **Pitch** on one and I'll write it, mentioning what they've been doing."
+    elif status == "weak":
+        say = out["intro"]
+    else:
+        say = out["intro"] + " The **Directory** still has brands to pitch in the meantime."
+    state.final_say = f"{lead}\n\n{say}".strip() if lead else say
+    return {
+        "ok": True, "status": status, "niche": out.get("niche"), "served_from": out.get("served_from"),
+        "brands": [{"name": b["name"], "evidence": b["evidence"], "contact": b["contact"]} for b in out["brands"]],
+        "cards_shown": bool(out["brands"]),
+    }
+
+
 def get_content_stats(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     from services.polly_content import content_stats, niche_summary, stats_brief
     stats = content_stats(state.scrape)
@@ -1467,6 +1560,20 @@ TOOLS: List[Dict[str, Any]] = [
         "handler": draft_brand_reply,
     },
     {
+        "name": "find_gifting_brands",
+        "description": "Gifting Radar (beta): search recent public TikTok posts for brands that are gifting or "
+                       "paying creators like this one (size, niche), with real example videos. Use for 'which "
+                       "brands are sending PR right now', 'who gifts small creators', 'who's gifting in "
+                       "skincare'. The brand cards and example videos render on screen; the server writes "
+                       "the reply.",
+        "parameters": _obj({
+            "niche": {**_STR, "description": "Only if they named one; defaults to their niche"},
+            "signal_type": {**_STR, "enum": ["gifted", "paid", "affiliate", "any"]},
+            "more": {**_BOOL, "description": "true for 'show more brands' after a radar result"},
+        }),
+        "handler": find_gifting_brands,
+    },
+    {
         "name": "get_content_stats",
         "description": "What their recent posts show: typical and best views, weakest post, engagement per "
                        "view, trend, posting cadence, top hooks and hashtags, plus niche, themes and kit "
@@ -1514,6 +1621,7 @@ INTENT_FOR_TOOL = {
     "draft_pitch": "generate_pitch",
     "draft_pitch_batch": "generate_pitch",
     "find_paid_gigs": "suggest_gigs",
+    "find_gifting_brands": "find_gifting_brands",
 }
 
 
