@@ -369,7 +369,8 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     prior_name = (prior or {}).get("name") if prior and not brand_names_agree(prior.get("name"), brand_name) else None
 
     if manual:
-        return _draft_manual(state, brand_name, to_email, prior_name)
+        return _draft_manual(state, brand_name, to_email, prior_name,
+                             radar_hint=args.get("radar") if isinstance(args.get("radar"), dict) else None)
 
     if followup:
         try:
@@ -688,7 +689,7 @@ def _pitch_location(state: TurnState):
 
 
 def _draft_manual(state: TurnState, brand_name: str, to_email: str,
-                  prior_name: Optional[str]) -> Dict[str, Any]:
+                  prior_name: Optional[str], radar_hint: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Pitch a brand that isn't in the directory, to the inbox the creator gave."""
     R = _routes()
     shipping, loc_display = _pitch_location(state)
@@ -704,6 +705,8 @@ def _draft_manual(state: TurnState, brand_name: str, to_email: str,
         "body": base.get("body") or "",
     }
     pitch, pitch_paid = _dress_pitch(state, pitch, shipping, loc_display)
+    if radar_hint:
+        pitch = _with_radar_line(pitch, brand_name, radar_hint)
     pitch = _with_inbox(pitch, to_email)
     pitch["off_directory"] = True
     state.notes = mark_draft_pending(state.notes, {"id": None, "name": brand_name})
@@ -1310,7 +1313,22 @@ def radar_ctx(state: TurnState, niche: str = "") -> Dict[str, Any]:
         "is_pro": bool((state.balance or {}).get("is_unlimited")),
         "exclude_brand_ids": list(notes.get("pitched_brand_ids") or []),
         "avoid_categories": list(get_prefs(notes).get("avoid_categories") or []),
+        "profile": radar_profile(state),
     }
+
+
+def radar_profile(state: TurnState) -> Dict[str, str]:
+    """What the creator posts about, so the radar's queries target their sub-niches."""
+    scrape, creator = state.scrape or {}, state.creator or {}
+    themes = scrape.get("content_themes") or []
+    if isinstance(themes, str):
+        themes = [themes]
+    parts = [str(t) for t in themes[:6] if t]
+    for extra in (scrape.get("primary_niche"), creator.get("niche"), scrape.get("secondary_niches")):
+        if extra:
+            parts.append(", ".join(map(str, extra)) if isinstance(extra, list) else str(extra))
+    return {"themes": "; ".join(dict.fromkeys(parts))[:300],
+            "country": str(creator_country(state.creator, state.notes or {}, scrape) or "")}
 
 
 _RADAR_NOTES = {
@@ -1331,6 +1349,15 @@ def find_gifting_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any
     ctx["signal_type"] = kind if kind in ("gifted", "paid", "affiliate") else "any"
     ctx["offset"] = int(last.get("offset") or 0) + radar.PAGE if more and last else 0
     try:
+        if not ctx["is_pro"] and radar.free_radar_used(state.db(), state.creator_id):
+            from services.polly_persona import persona_radar_paywall_say
+            from services.radar_extract import radar_niche
+            shown = radar_niche(ctx["niche"]) or last.get("niche") or ""
+            state.final_say = persona_radar_paywall_say(shown)
+            state.add_chips(paywall_unlock_chips(None))
+            state.paywall_moment = {"moment": "radar"}
+            return {"ok": True, "status": "pro_only",
+                    "explain": "Their one free radar search is used. The paywall is shown; don't search."}
         out = radar.search(state.db(), ctx)
     except Exception as err:
         print(f"[Polly] radar failed: {err}")
@@ -1348,13 +1375,16 @@ def find_gifting_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any
                                  "offset": out.get("offset") or 0, "signal_type": ctx["signal_type"]}
     state.brands = []
     if status == "searching":
-        state.final_say = (f"On it 🔎 {out['line']} This takes about a minute; the brands will appear "
-                           "right here with real example posts.")
+        state.final_say = (f"I'm checking recent TikTok posts for brands gifting **{out['niche']}** creators "
+                           "your size. It takes about a minute, and the brands will show up below with real "
+                           "example posts.")
         return {"ok": True, "status": "searching", "niche": out.get("niche")}
     lead = _RADAR_NOTES.get(out.get("note") or "", "")
     if status == "found":
-        say = f"Here's who's gifting **{out['niche']}** creators your size right now 👇"
-        say += " Tap **Pitch** on one and I'll write it, mentioning what they've been doing."
+        tap = ("**Pitch** or **Find contact & pitch brand**"
+               if any(b.get("contact") == "find_contact" for b in out["brands"]) else "**Pitch**")
+        say = (f"These brands are gifting **{out['niche']}** creators your size right now. Tap {tap} "
+               "and I'll write it, mentioning what they've been doing.")
     elif status == "weak":
         say = out["intro"]
     else:

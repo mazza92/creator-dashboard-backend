@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 import services.polly as polly
-from services.polly_persona import polly_system_prompt, scrub_polly_voice
+from services.polly_persona import LIST_MARK_RE, polly_system_prompt, scrub_polly_voice, tidy_lists
 from services.polly_tools import INTENT_FOR_TOOL, function_declarations, run_tool
 from services.polly_turn_state import TurnState
 
@@ -107,7 +107,8 @@ How to work:
 
 Writing the reply (after tools):
 - Polly's voice: professional-friendly startup manager, short paragraphs, **bold** the one thing to do.
-  1-3 emojis max. No pet names. No greeting restart mid-conversation.
+  Clean and readable: plain sentences, no emoji inside a sentence (one at most per reply, at a sentence
+  end). No pet names. No greeting restart mid-conversation.
 - Cards, the pitch and buttons are already on screen. Don't paste the email, subject or a list of the cards;
   1-2 sentences pointing at them is enough after a pitch or cards.
 - Name only brands from tool results or TURN STATE. Quote an inbox only if a tool returned it.
@@ -434,10 +435,13 @@ def salvage_reply(state: TurnState, reply: str) -> str:
         if not line.strip():
             kept_lines.append("")
             continue
-        good = [s for s in _SENTENCE_SPLIT_RE.split(line) if s.strip() and not reply_problems(state, s)]
+        mark = LIST_MARK_RE.match(line)
+        marker = mark.group(0) if mark else ""
+        body = line[len(marker):]
+        good = [s for s in _SENTENCE_SPLIT_RE.split(body) if s.strip() and not reply_problems(state, s)]
         if good:
-            kept_lines.append(" ".join(good))
-    out = re.sub(r"\n{3,}", "\n\n", "\n".join(kept_lines)).strip()
+            kept_lines.append(marker + " ".join(good))
+    out = tidy_lists(re.sub(r"\n{3,}", "\n\n", "\n".join(kept_lines)).strip())
     return out if len(out.split()) >= 4 else ""
 
 

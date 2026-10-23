@@ -94,6 +94,9 @@ def _clean_message(msg: Any) -> Optional[Dict[str, Any]]:
     batch = msg.get("pitch_batch")
     if isinstance(batch, dict) and isinstance(batch.get("items"), list) and batch["items"]:
         out["pitch_batch"] = {"items": batch["items"][:3], "status": batch.get("status") or "draft"}
+    radar = msg.get("radar")
+    if isinstance(radar, dict) and radar.get("status"):
+        out["radar"] = {**radar, "brands": (radar.get("brands") or [])[:12]}
     kind = msg.get("kind")
     if kind in ("nudge", "brief", "alert", "autopilot", "board"):
         out["kind"] = kind

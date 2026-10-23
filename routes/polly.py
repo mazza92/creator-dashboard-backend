@@ -72,6 +72,7 @@ from services.polly_discovery import (
     opener as discovery_opener,
     heal_seeded_niche,
     seed_from_survey,
+    with_radar_chip,
     skip_discovery,
     is_weak_niche,
     onboarding_niches,
@@ -1250,19 +1251,40 @@ def radar_poll(run_id):
 
 @polly_bp.route("/radar/contact", methods=["POST"])
 def radar_contact():
-    """'Ask Polly to find their contact': queue a discovered brand for the team to enrich."""
-    creator_id, conn, _creator = _creator_auth()
+    """'Find contact & pitch brand': an email to pitch, or the brand's TikTok and a DM to paste."""
+    creator_id, conn, creator = _creator_auth()
     if not creator_id:
         return jsonify({"success": False, "error": "Not authenticated"}), 401
     try:
-        from services.gifting_radar import request_contact
+        from services.polly_content import content_stats
+        from services.polly_kit import load_kit_snapshot
+        from services.radar_contact import dm_text, find_contact
 
         data = request.get_json(silent=True) or {}
         brand = int(data.get("discovered_brand_id") or 0)
-        ok = bool(brand) and request_contact(conn, brand)
-        if ok:
-            _log_polly_event(creator_id, "radar_contact_requested", {"discovered_brand_id": brand})
-        return jsonify({"success": ok})
+        found = find_contact(conn, brand) if brand else None
+        if not found:
+            return jsonify({"success": False, "error": "not_found"}), 404
+        _log_polly_event(creator_id, "radar_contact_requested",
+                         {"discovered_brand_id": brand, "source": found.get("source")})
+        if found.get("email"):
+            return jsonify({"success": True, "kind": "email", "email": found["email"], "brand_name": found["name"]})
+        handle = str(found.get("tiktok_handle") or "").lstrip("@")
+        if not handle:
+            return jsonify({"success": True, "kind": "none", "brand_name": found["name"]})
+        scrape = _load_scrape(conn, (creator or {}).get("user_id") or session.get("user_id")) or {}
+        kit = load_kit_snapshot(conn, creator_id, scrape)
+        stats = content_stats(scrape)
+        try:
+            followers = int(scrape.get("follower_count") or 0)
+        except (TypeError, ValueError):
+            followers = 0
+        niche = str(data.get("niche") or scrape.get("primary_niche") or (creator or {}).get("niche") or "")
+        dm = dm_text(found["name"], niche, first_name=(creator or {}).get("first_name") or "",
+                     followers=followers, median_views=int(stats.get("median_views") or 0),
+                     kit_url=kit.get("url") if kit.get("published") else "")
+        return jsonify({"success": True, "kind": "dm", "brand_name": found["name"], "handle": handle,
+                        "profile_url": f"https://www.tiktok.com/@{handle}", "dm": dm})
     except Exception as err:
         print(f"[Polly] radar contact failed: {err}")
         return jsonify({"success": False}), 500
@@ -1468,7 +1490,7 @@ def bootstrap():
             print(f"[Polly] early follow-up lookup skipped: {err}")
             conn.rollback()
             early_fu = {}
-        starters = drop_early_followups(starters, early_fu)
+        starters = with_radar_chip(drop_early_followups(starters, early_fu))
         if brief and brief.get("chips"):
             brief = dict(brief, chips=drop_early_followups(brief["chips"], early_fu))
         timer.mark("opener")
@@ -1843,6 +1865,7 @@ def _run_chip(state, action, chip_id, data):
             "followup": bool(data.get("is_followup")), "confirm_cold": bool(data.get("confirm_cold")),
             "sample_posts": data.get("sample_posts") or [],
             **({"radar": data["radar"]} if isinstance(data.get("radar"), dict) else {}),
+            **({"to_email": data["to_email"]} if data.get("to_email") else {}),
         })
     elif action == "gifting_radar":
         call = ("find_gifting_brands", {
@@ -1955,7 +1978,7 @@ def _finish_turn(state, say, brain, timer, chip_id):
             "used": balance.get("used"),
         },
     }
-    payload["starters"] = drop_early_followups(payload["starters"], state.early_fu)
+    payload["starters"] = with_radar_chip(drop_early_followups(payload["starters"], state.early_fu))
     career = state.career
     if career and state.sent_now:
         totals = dict(career.get("totals") or {})

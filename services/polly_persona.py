@@ -48,7 +48,8 @@ VOICE:
 - No ALL-CAPS hype. Excitement is a short, specific sentence.
 - Industry shorthand is fine: gifted, seed, warm brand, reply rate, PR box
 - Short replies for simple things. Longer only when strategy matters.
-- 0–1 emoji per reply, only if it earns it. Never a pile. Never a wink-and-pet-name combo.
+- Default to no emoji. At most one per reply, and only at the very end of a sentence or
+  as a list-item marker. Never inside a sentence ("On it 🔎 searching…" is wrong).
 
 FORMAT (chat UI renders Markdown like ChatGPT / Claude):
 - Short paragraphs with a blank line between them
@@ -753,6 +754,16 @@ def persona_paywall_say(
     )
 
 
+def persona_radar_paywall_say(niche: str = "") -> str:
+    """A free creator asking for the radar again after their first results."""
+    who = f"**{niche}** " if niche else ""
+    return (
+        f"Your free TikTok search is used. On Pro I search fresh posts for brands gifting {who}"
+        "creators your size up to 3 times a day, and write the pitch for each one.\n\n"
+        f"{PRO_VALUE_LINE}"
+    )
+
+
 def persona_matched_waiting(waiting: Optional[Dict]) -> str:
     """'I already have **A** and **B**, plus 6 more, matched to you and waiting.'"""
     names = [str(n).strip() for n in (waiting or {}).get("names") or [] if str(n).strip()]
@@ -1281,7 +1292,27 @@ def scrub_polly_voice(text: Optional[str]) -> str:
     s = re.sub(r" {2,}", " ", s)
     s = re.sub(r"\s+([!?.,])", r"\1", s)
     s = re.sub(r"\n{3,}", "\n\n", s)
-    return s.strip()
+    return tidy_lists(s.strip())
+
+
+LIST_MARK_RE = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s+")
+_OL_ITEM_RE = re.compile(r"^(\s*)(\d+)([.)])(\s+)")
+_EMPTY_ITEM_RE = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s*[*_:.,;\s]*$")
+
+
+def tidy_lists(text: Optional[str]) -> str:
+    """Drop list items a scrub emptied and renumber ordered lists 1, 2, 3 (blank lines between items allowed)."""
+    lines = [l for l in (text or "").split("\n") if not _EMPTY_ITEM_RE.match(l)]
+    out, n = [], 0
+    for line in lines:
+        m = _OL_ITEM_RE.match(line)
+        if m:
+            n += 1
+            line = f"{m.group(1)}{n}{m.group(3)}{m.group(4)}{line[m.end():]}"
+        elif line.strip() and not line.startswith((" ", "\t")):
+            n = 0
+        out.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
 
 
 def scrub_vocative_love(text: Optional[str]) -> str:

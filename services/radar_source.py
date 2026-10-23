@@ -16,7 +16,7 @@ ACTOR = os.getenv("RADAR_APIFY_ACTOR", "clockworks~tiktok-scraper")
 _API = "https://api.apify.com/v2"
 # Pay-per-event pricing seen on the actor (Oct 2026): $0.005 per start + $0.003 per result.
 EST_START_USD = 0.005
-EST_RESULT_USD = 0.003
+EST_RESULT_USD = 0.0037
 
 
 class SourceUnavailable(RuntimeError):

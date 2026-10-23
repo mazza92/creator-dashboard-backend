@@ -701,11 +701,17 @@ def paid_first(notes: Optional[Dict] = None) -> bool:
 
 RADAR_CHIP = {
     "id": "gifting_radar",
-    "label": "🔎 Find brands gifting creators like me",
-    "hint": "Live from TikTok · beta",
+    "label": "🔎 Find brands gifting on TikTok",
+    "hint": "Real posts from the last 60 days · beta",
     "action": "gifting_radar",
     "skip_discovery": True,
 }
+
+
+def with_radar_chip(chips: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Every chip row leads with the radar (beta we want used), exactly once."""
+    chips = [c for c in (chips or []) if (c or {}).get("action") != "gifting_radar"]
+    return [dict(RADAR_CHIP)] + chips
 
 
 def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -796,8 +802,7 @@ def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) 
             saw_paid = notes.get("saw_gigs") or notes.get("wanted_gigs")
             if not saw_paid and not gifted_only(notes):
                 chips.append(paid_chip)
-        chips.insert(4, dict(RADAR_CHIP))
-        return chips[:6]
+        return [dict(RADAR_CHIP)] + chips[:5]
     line_up = {
         "id": "line_up",
         "label": "Pitch 3 gifted brands for me today",
@@ -818,7 +823,6 @@ def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) 
         chips.append(rates if gifted_only(notes) else paid_chip)
     if notes.get("saw_gigs") or notes.get("wanted_gigs"):
         chips.insert(1, directory_chip)
-    chips.insert(2, dict(RADAR_CHIP))
     if top_brand:
         pitched = {str(n).strip().lower() for n in (notes.get("pitched_brand_names") or []) if n}
         if top_brand.strip().lower() in pitched:
@@ -830,7 +834,7 @@ def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) 
             "action": "generate_pitch",
             "brand_name": top_brand,
         })
-    return chips[:5]
+    return [dict(RADAR_CHIP)] + chips[:4]
 
 
 def advance(

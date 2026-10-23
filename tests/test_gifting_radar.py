@@ -119,11 +119,110 @@ def test_radar_niche_and_video_niches():
     assert "skincare" in video_niches(normalize(_item(text="new serum PR #skincare")))
 
 
-def test_query_plan_shares_hashtags_and_caps_size():
-    plan = radar.query_plan("skincare")
-    assert [p["key"] for p in plan if p["type"] == "hashtag"] == ["hashtag:prpackage", "hashtag:gifted"]
-    assert len(plan) * radar.PER_QUERY <= 400
-    assert all("skincare" in p["query"] for p in plan if p["type"] == "search")
+def test_query_plan_shares_hashtags_then_niche_queries():
+    plan = radar.query_plan("tech")
+    tags = [p["query"] for p in plan if p["type"] == "hashtag"]
+    assert tags[:2] == ["prpackage", "gifted"] and "techpr" in tags
+    searches = [p["query"] for p in plan if p["type"] == "search"]
+    assert len(searches) >= 10 and "keyboard pr unboxing" in searches and "gifted tech" not in searches
+    assert radar.ROUND_SIZE * radar.PER_QUERY <= 250
+    assert len(radar.query_plan("travel")) >= 6
+
+
+class _NoCacheConn:
+    def cursor(self, *a, **k):
+        return self
+
+    def execute(self, *a, **k):
+        pass
+
+    def fetchall(self):
+        return []
+
+
+def test_ai_queries_are_narrow_and_carry_gifting_intent():
+    from services.radar_queries import ai_queries
+    asked = []
+
+    def fake(prompt, _):
+        asked.append(prompt)
+        return {"queries": ["Mechanical Keyboard PR package", "#desksetup gifted", "iphone case review",
+                            "keyboard pr unboxing", "x", "mechanical keyboard pr package"]}
+
+    got = ai_queries("tech", {"themes": "desk setups; keyboards", "country": "US"},
+                     avoid=["keyboard pr unboxing"], write=fake)
+    assert got == ["mechanical keyboard pr package", "desksetup gifted", "iphone case review pr"]
+    assert "desk setups; keyboards" in asked[0] and "keyboard pr unboxing" in asked[0]
+    assert ai_queries("tech", write=lambda *a: 1 / 0) == []
+
+
+def test_next_round_leads_with_written_queries_then_bank():
+    plan = radar.next_round(_NoCacheConn(), "tech", {"themes": "keyboards"},
+                            write=lambda *a: {"queries": [f"niche thing {i} pr" for i in range(16)]})
+    searches = [p["query"] for p in plan if p["type"] == "search"]
+    assert len(plan) == radar.ROUND_SIZE and searches[0] == "niche thing 0 pr"
+    deeper = radar.next_round(_NoCacheConn(), "tech", avoid=[p["query"] for p in plan],
+                              size=radar.DEEPER_SIZE, write=lambda *a: {})
+    assert deeper and not {p["query"] for p in deeper} & {p["query"] for p in plan}
+    assert all(p["type"] == "search" for p in deeper)
+
+
+def test_radar_paywall_copy():
+    from services.polly_persona import persona_radar_paywall_say
+    say = persona_radar_paywall_say("tech")
+    assert "free TikTok search is used" in say and "**tech**" in say and "$19/mo" in say
+
+
+def test_post_niches_trust_the_post_over_the_query():
+    from services.radar_extract import post_niches
+    beauty = normalize(_item(text="PR haul from @Aveeno #skincare #prhaul"))
+    beauty["query"] = "small creator tech pr"
+    assert post_niches(beauty, "tech") == ["skincare"]
+    tech = normalize(_item(text="PR unboxing @Nothing earbuds #techtok", hashtags=[{"name": "techtok"}]))
+    tech["query"] = "tech pr unboxing"
+    assert post_niches(tech, "tech") == ["tech"]
+    vague = normalize(_item(text="my first PR package!", hashtags=[]))
+    vague["query"] = "tech pr package"
+    assert post_niches(vague, "tech") == ["tech"]
+    assert video_niches(normalize(_item(text="new carpet and the team", hashtags=[]))) == []
+
+
+def test_nicheless_roundup_files_by_what_the_brand_sells():
+    seen = []
+
+    def fake(system, names):
+        seen.append(names)
+        return {"brands": {"Anua": "skincare", "Glowmode": "other", "Made Up": "pizza"}}
+
+    got = radar.brand_niches({"Aveeno": "skincare", "Anua": "", "Glowmode": "", "Made Up": "",
+                              "Belkin": "tech"}, classify=fake)
+    assert got == {"Aveeno": "skincare", "Belkin": "tech", "Anua": "skincare", "Glowmode": "other"}
+    assert "Aveeno" not in seen[0]
+    assert radar.brand_niches({"X": ""}, classify=lambda *a: 1 / 0) == {}
+
+    roundup = normalize(_item(text="Lets open some PR packages + how I got them @Aveeno", hashtags=[]))
+    roundup["query"] = "tech pr unboxing"
+    assert radar.signal_niches(roundup, "tech", "skincare") == ["skincare"]
+    assert radar.signal_niches(roundup, "tech", "other") == ["general"]
+    assert radar.signal_niches(roundup, "tech", "") == ["tech"]
+    on_topic = normalize(_item(text="PR unboxing @Nothing earbuds #techtok", hashtags=[{"name": "techtok"}]))
+    on_topic["query"] = "tech pr unboxing"
+    assert radar.signal_niches(on_topic, "tech", "skincare") == ["tech"]
+
+
+def test_thread_keeps_radar_results():
+    from services.polly_memory import sanitize_thread
+    radar_msg = {"role": "assistant", "content": "These brands are gifting tech creators",
+                 "radar": {"status": "found", "run_id": 7, "brands": [{"name": str(i)} for i in range(20)]}}
+    kept = sanitize_thread([radar_msg])["messages"][0]
+    assert kept["radar"]["run_id"] == 7 and len(kept["radar"]["brands"]) == 12
+    assert "radar" not in sanitize_thread([{**radar_msg, "radar": {"brands": []}}])["messages"][0]
+
+
+def test_replying_to_mention_is_not_a_brand():
+    v = normalize(_item(text="Replying to @sierra my first PR from @Dell #prunboxing",
+                        mentions=["@sierra", "@Dell"], detailedMentions=[{"name": "sierra"}, {"name": "dell"}]))
+    assert [c["key"] for c in candidates(v)] == ["dell"]
 
 
 def test_score_prefers_creators_your_size():
@@ -138,7 +237,9 @@ def test_evidence_line():
     row = {"creators_30d": 6, "creators_60d": 9, "median_followers": 3400, "max_followers": 9000}
     assert radar.evidence_line(row) == "6 creators under 10K · last 30 days · median 3.4K followers"
     row = {"creators_30d": 1, "creators_60d": 3, "median_followers": 12000, "max_followers": 22000}
-    assert radar.evidence_line(row) == "3 creators under 25K · last 60 days · median 12K followers"
+    assert radar.evidence_line(row) == "3 creators under 25K · last 90 days · median 12K followers"
+    row = {"creators_30d": 1, "creators_60d": 1, "median_followers": 4400, "max_followers": 4400}
+    assert radar.evidence_line(row) == "1 creator with 4.4K followers · last 90 days"
 
 
 def test_pick_examples_one_per_creator_closest_size():
@@ -202,6 +303,101 @@ def test_radar_chip_in_starters():
     from services.polly_discovery import starters_for
     chips = starters_for({"discovery_completed_at": "2026-10-01T00:00:00Z"})
     assert any(c["id"] == "gifting_radar" for c in chips)
+
+
+def test_contact_helpers_pick_brand_inbox():
+    from services.radar_contact import best_email, domain_of, email_rank
+    assert domain_of("https://www.scentbird.com/pages/contact") == "scentbird.com"
+    assert domain_of("shop.brand.co.uk") == "brand.co.uk"
+    assert email_rank("influencers@x.com") < email_rank("pr@x.com") < email_rank("hello@x.com")
+    assert email_rank("noreply@x.com") == 999
+    raw = ["logo@2x.png", "hello@scentbird.com", "partners@scentbird.com", "dev@sentry.io",
+           "privacy@scentbird.com", "jane@gmail.com"]
+    assert best_email(raw, "scentbird.com") == "partners@scentbird.com"
+    assert best_email(["privacy@scentbird.com"], "scentbird.com") == ""
+    from services.radar_contact import hunter_rank
+    assert hunter_rank({"value": "sergei@x.com", "department": "marketing"}) == 50
+    assert hunter_rank({"value": "sergei@x.com", "position": "CTO"}) == 300
+
+
+def test_find_contact_order_website_then_hunter(monkeypatch):
+    from services import radar_contact as rc
+
+    class Cur:
+        def __init__(self):
+            self.updates = []
+
+        def execute(self, sql, params=None):
+            self.updates.append(params)
+
+    class Conn:
+        def __init__(self):
+            self.cur = Cur()
+
+        def cursor(self, **kw):
+            return self.cur
+
+        def commit(self):
+            pass
+
+    row = {"id": 5, "name": "Scentbird", "tiktok_handle": "scentbird", "contact_email": None,
+           "contact_source": None, "contact_checked_at": None, "website": None}
+    monkeypatch.setattr(rc, "_load", lambda conn, bid: dict(row))
+    calls = []
+    monkeypatch.setattr(rc, "hunter_lookup",
+                        lambda **kw: calls.append(kw) or ("scentbird.com", "sam@scentbird.com", 50))
+    monkeypatch.setattr(rc, "website_email", lambda d: "partners@scentbird.com")
+    out = rc.find_contact(Conn(), 5, now=NOW)
+    assert out["email"] == "partners@scentbird.com" and out["source"] == "website"
+    assert calls == [{"company": "Scentbird"}]
+
+    monkeypatch.setattr(rc, "website_email", lambda d: "support@scentbird.com")
+    out = rc.find_contact(Conn(), 5, now=NOW)
+    assert out["email"] == "sam@scentbird.com" and out["source"] == "hunter"
+
+    monkeypatch.setattr(rc, "website_email", lambda d: "")
+    out = rc.find_contact(Conn(), 5, now=NOW)
+    assert out["email"] == "sam@scentbird.com" and out["source"] == "hunter"
+
+    monkeypatch.setattr(rc, "hunter_lookup", lambda **kw: ("", "", 999))
+    out = rc.find_contact(Conn(), 5, now=NOW)
+    assert out["email"] == "" and out["source"] == "tiktok_dm"
+
+
+def test_dm_text_is_short_and_clean():
+    from services.radar_contact import dm_text
+    dm = dm_text("Scentbird", "fashion", first_name="Maya", followers=3200, median_views=1500,
+                 kit_url="https://newcollab.co/kit/maya")
+    assert dm.startswith("Hi Scentbird team!") and "3.2K followers" in dm and "1.5K views" in dm
+    assert dm.endswith("https://newcollab.co/kit/maya") and len(dm.split()) < 90
+    assert "I'm a fashion creator" in dm_text("Scentbird", "fashion")
+
+
+def test_with_radar_chip_adds_once():
+    from services.polly_discovery import starters_for, with_radar_chip
+    pending = starters_for({"pending_pitch": {"id": 1, "name": "Tower 28"}})
+    assert not any(c["id"] == "gifting_radar" for c in pending)
+    chips = with_radar_chip(pending)
+    assert [c["id"] for c in chips].count("gifting_radar") == 1 and chips[0]["id"] == "gifting_radar"
+    assert with_radar_chip(chips) == chips
+    assert with_radar_chip([])[0]["id"] == "gifting_radar"
+
+
+def test_tidy_lists_drops_emptied_items_and_renumbers():
+    from services.polly_persona import scrub_polly_voice, tidy_lists
+    text = "Try these:\n\n1. **Hooks:** grab them fast.\n2.\n3. **Hashtags:** keep #ugc.\n\nThoughts?"
+    assert tidy_lists(text) == "Try these:\n\n1. **Hooks:** grab them fast.\n2. **Hashtags:** keep #ugc.\n\nThoughts?"
+    assert tidy_lists("1. a\n\n1. b\n\n1. c") == "1. a\n\n2. b\n\n3. c"
+    assert tidy_lists("1. a\nDone.\n1. b") == "1. a\nDone.\n1. b"
+    scrubbed = scrub_polly_voice("Steps:\n1. Write the hook.\n2. Check your pitches tab later.\n3. Post it.")
+    assert scrubbed == "Steps:\n1. Write the hook.\n2. Post it."
+
+
+def test_salvage_keeps_list_markers_with_their_text(monkeypatch):
+    from services import polly_brain
+    monkeypatch.setattr(polly_brain, "reply_problems", lambda state, s: ["bad"] if "BAD" in s else [])
+    out = polly_brain.salvage_reply(None, "Ideas for you:\n1. Hook in 3 seconds.\n2. BAD claim here.\n3. Keep hashtags tight.")
+    assert out == "Ideas for you:\n1. Hook in 3 seconds.\n2. Keep hashtags tight."
 
 
 def test_fallback_routes_radar_asks():

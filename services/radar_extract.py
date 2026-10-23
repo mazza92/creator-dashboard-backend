@@ -6,8 +6,9 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
-MAX_CREATOR_FOLLOWERS = 25_000
-WINDOW = timedelta(days=60)
+MAX_CREATOR_FOLLOWERS = 50_000
+WINDOW_DAYS = 90
+WINDOW = timedelta(days=WINDOW_DAYS)
 
 # Shops, marketplaces, apps and agencies: tagged a lot, but not the brand doing the gifting.
 RETAILERS = {
@@ -86,7 +87,7 @@ def _blocked(key: str, creator: str = "") -> bool:
 
 
 def keep_video(video: Dict[str, Any], now: Optional[datetime] = None) -> bool:
-    """Small creator, posted in the last 60 days, English (or unknown language)."""
+    """Small creator, posted inside WINDOW, English (or unknown language)."""
     now = now or datetime.now(timezone.utc)
     creator = video.get("creator") or {}
     followers = int(creator.get("followers") or 0)
@@ -118,12 +119,14 @@ def candidates(video: Dict[str, Any]) -> List[Dict[str, str]]:
     """Brand candidates in one post: @mentions first, then branded hashtags (#olaypartner -> olay)."""
     creator = (video.get("creator") or {}).get("handle") or ""
     names = list(video.get("mention_names") or [])
+    replied = {brand_key(m) for m in re.findall(r"(?i)replying to @([\w.\- ]{2,40}?)(?=[\s,.!?:]|$)",
+                                                video.get("caption") or "")}
     out: Dict[str, Dict[str, str]] = {}
     for i, handle in enumerate(video.get("mentions") or []):
         key = brand_key(handle)
-        if _blocked(key, creator):
-            continue
         name = names[i] if i < len(names) else handle
+        if _blocked(key, creator) or key in replied or brand_key(name) in replied:
+            continue
         out.setdefault(key, {"key": key, "handle": handle, "name": str(name).strip() or handle, "via": "mention"})
     for tag in video.get("hashtags") or []:
         m = _TAG_SUFFIX.match(tag)
@@ -166,7 +169,9 @@ NICHE_WORDS: Dict[str, List[str]] = {
     "home": ["home decor", "homedecor", "cleaning", "kitchen", "candle", "bedding", "organization"],
     "pet": ["dog", "cat", "puppy", "pet"],
     "baby": ["baby", "toddler", "mom life", "momlife", "postpartum", "kids"],
-    "tech": ["tech", "gadget", "phone case", "headphones", "earbuds", "desk setup", "gaming setup"],
+    "tech": ["tech", "techtok", "techgirl", "gadget", "gadgets", "phone case", "headphones", "earbuds", "desk setup",
+             "desksetup", "gaming setup", "pcbuild", "pc build", "keyboard", "laptop", "iphone", "android",
+             "monitor", "smart home", "charger", "speaker", "camera", "tablet", "smartwatch"],
 }
 NICHE_ALIASES = {"beauty": "makeup", "cosmetics": "makeup", "hair": "haircare", "skin": "skincare",
                  "k-beauty": "skincare", "kbeauty": "skincare", "perfume": "fragrance", "gym": "fitness",
@@ -187,6 +192,29 @@ def radar_niche(raw: Any) -> str:
     return ""
 
 
+_NICHE_RES = {n: re.compile(r"\b(?:" + "|".join(re.escape(w) for w in words) + r")s?\b")
+              for n, words in NICHE_WORDS.items()}
+
+
 def video_niches(video: Dict[str, Any]) -> List[str]:
-    text = " ".join([(video.get("caption") or "").lower()] + list(video.get("hashtags") or []))
-    return [n for n, words in NICHE_WORDS.items() if any(w in text for w in words)]
+    """Niches a post is about: whole words in the caption, or hashtags that start with a niche word
+    (#techtok, #skincareroutine), so 'carpet' isn't pet and 'team' isn't tea."""
+    caption = (video.get("caption") or "").lower()
+    tags = [str(h).lower() for h in video.get("hashtags") or []]
+    out = []
+    for n, words in NICHE_WORDS.items():
+        joined = [w.replace(" ", "") for w in words]
+        if _NICHE_RES[n].search(caption) or any(t.startswith(w) for t in tags for w in joined):
+            out.append(n)
+    return out
+
+
+def post_niches(video: Dict[str, Any], query_niche: str) -> List[str]:
+    """Niches to file a post's brands under. A search for one niche often returns posts about another
+    (a 'tech pr' search finding a skincare haul), so the post's own words win when they disagree."""
+    own = video_niches(video)
+    if not video.get("query"):
+        return own or ["general"]
+    if own and query_niche not in own:
+        return own
+    return list(dict.fromkeys([query_niche] + own))

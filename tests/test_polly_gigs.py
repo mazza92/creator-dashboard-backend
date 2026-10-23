@@ -470,7 +470,7 @@ class PollyGigsTests(unittest.TestCase):
         self.assertIn("already seen", empty_more.lower())
 
     def test_starters_after_gigs_offer_directory_fallback(self):
-        chips = starters_for({"saw_gigs": True})
+        chips = starters_for({"saw_gigs": True})[1:]
         ids = [c["id"] for c in chips]
         self.assertEqual(ids[0], "line_up")
         self.assertEqual(chips[0]["action"], "suggest_brands")
@@ -479,7 +479,7 @@ class PollyGigsTests(unittest.TestCase):
         self.assertNotIn("more_gigs", ids)
         self.assertNotIn("paid_ugc", ids)
         wanted = [c["id"] for c in starters_for({"wanted_gigs": True})]
-        self.assertEqual(wanted[0], "line_up")
+        self.assertEqual(wanted[:2], ["gifting_radar", "line_up"])
         self.assertNotIn("more_gigs", wanted)
         returning = [c["id"] for c in starters_for({"saw_gigs": True, "discovery_completed_at": "2026-01-01"})]
         self.assertIn("directory_pitch", returning)

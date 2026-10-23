@@ -90,12 +90,12 @@ class PreferenceTests(unittest.TestCase):
 class GiftedFirstStarterTests(unittest.TestCase):
     def test_gifted_only_hides_paid_chip(self):
         ids = [c["id"] for c in starters_for({"prefs": {"gifted_only": True}})]
-        self.assertEqual(ids[:2], ["line_up", "gifted_lists"])
+        self.assertEqual(ids[:3], ["gifting_radar", "line_up", "gifted_lists"])
         self.assertNotIn("paid_ugc", ids)
 
     def test_established_creator_keeps_paid_first(self):
         chips = starters_for({"polly_track": "established", "discovery_skipped_at": _iso()})
-        self.assertEqual(chips[0]["id"], "paid_ugc")
+        self.assertEqual([c["id"] for c in chips[:2]], ["gifting_radar", "paid_ugc"])
 
 
 class ProConversionTests(unittest.TestCase):

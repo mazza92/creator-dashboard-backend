@@ -24,7 +24,10 @@ class DiscoveryTests(unittest.TestCase):
     def test_first_session_starters(self):
         from services.polly_discovery import opener
         chips = starters_for({})
+        self.assertEqual(chips[0]["action"], "gifting_radar")
+        chips = chips[1:]
         ids = [c["id"] for c in chips]
+        self.assertNotIn("gifting_radar", ids)
         self.assertEqual(ids[0], "line_up")
         self.assertEqual(chips[0]["action"], "suggest_brands")
         self.assertEqual(chips[0]["label"], "Pitch 3 gifted brands for me today")
