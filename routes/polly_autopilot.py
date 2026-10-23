@@ -387,6 +387,8 @@ def _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=F
         pitch = apply_gifted_ask_to_pitch(pitch, location_display=loc_display or None)
     if loc_display:
         pitch = apply_location_to_pitch(pitch, shipping.get("city") or "", shipping.get("country") or "", loc_display)
+    from services.polly_pitch_edit import apply_pitch_prefs
+    pitch = apply_pitch_prefs(pitch, notes)
     body = pitch.get("body") or ""
     if not body or pitch_has_placeholder(body):
         return None, "needs_location"

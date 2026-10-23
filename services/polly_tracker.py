@@ -978,6 +978,35 @@ def record_portfolio_viewed(
     return {"recorded": True, "alerted": alerted, "brand_id": bid, "brand_name": name}
 
 
+NEEDS_CONTACT_INTENTS = (
+    "brand_replied_interested",
+    "brand_replied_rejected",
+    "brand_replied_question",
+    "pr_shipped",
+    "still_quiet",
+)
+
+
+def contact_logged(conn, creator_id: int, brand_id: Optional[int], name: Optional[str] = None) -> bool:
+    """True when the brand's latest contact event is a send or a gifted-list application."""
+    if not brand_id and not (name or "").strip():
+        return False
+    cur = _cursor(conn)
+    cur.execute(
+        """
+        SELECT event_type FROM polly_timeline_events
+        WHERE creator_id = %s
+          AND event_type IN ('pitch_sent', 'pitch_not_sent', 'campaign_applied')
+          AND (brand_id = %s OR (%s::int IS NULL AND LOWER(event_data->>'brand_name') = LOWER(%s)))
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT 1
+        """,
+        (creator_id, brand_id, brand_id, (name or "").strip()),
+    )
+    row = cur.fetchone()
+    return bool(row) and row["event_type"] != "pitch_not_sent"
+
+
 def apply_lifecycle_intent(
     conn,
     creator_id: int,
@@ -995,6 +1024,19 @@ def apply_lifecycle_intent(
     action = "none"
     say_hint = ""
     chips: List[Dict] = []
+
+    if intent in NEEDS_CONTACT_INTENTS and not contact_logged(conn, creator_id, brand_id, name):
+        return {
+            "intent": intent,
+            "action": "needs_sent_first",
+            "say_hint": f"Did your **{name}** pitch go out from your email first? "
+                        "Once I log the send, I'll log their reply.",
+            "chips": [{"id": "sent_first", "label": f"Yes, I sent {name}", "action": "chat",
+                       "brand_id": brand_id, "brand_name": name}],
+            "brand_id": brand_id,
+            "brand_name": name,
+            "unmark_pitched": False,
+        }
 
     if intent == "pitch_sent":
         record_pitch_sent(conn, creator_id, brand_row, drafted=False)
@@ -1844,18 +1886,31 @@ def mark_nudged(conn, task_id: int) -> None:
     conn.commit()
 
 
-def deliver_nudge(conn, creator_id: int, nudge: Dict) -> None:
-    from services.polly_memory import load_thread, save_thread
+def nudge_idempotency_key(nudge: Dict, now: Optional[datetime] = None) -> str:
+    brand = nudge.get("brand_id") or str(nudge.get("brand_name") or "").strip().lower()
+    return f"nudge:{brand}:{nudge.get('key') or ''}:{(now or utc_now()).date().isoformat()}"
+
+
+def deliver_nudge(conn, creator_id: int, nudge: Dict) -> bool:
+    """Post the nudge in chat. False when it's a repeat (same copy just posted, or same key today)."""
+    from services.polly_memory import (
+        load_thread, note_sent_within, record_note_sent, repeats_recent_note, save_thread,
+    )
 
     mark_nudged(conn, nudge["task_id"])
+    thread = load_thread(conn, creator_id)
+    messages = list(thread.get("messages") or [])
+    key = nudge_idempotency_key(nudge)
+    if repeats_recent_note(messages, nudge["message"]) or note_sent_within(conn, creator_id, key, timedelta(days=1)):
+        print(f"[Polly tracker] nudge skipped as repeat creator={creator_id} key={key}")
+        return False
     add_event(
         conn, creator_id, "polly_nudge_sent",
         f"Polly nudge · {nudge.get('brand_name')}",
         brand_id=nudge.get("brand_id"),
         task_id=nudge.get("task_id"),
+        event_data={"key": nudge.get("key")},
     )
-    thread = load_thread(conn, creator_id)
-    messages = list(thread.get("messages") or [])
     messages.append({
         "role": "assistant",
         "content": nudge["message"],
@@ -1863,6 +1918,8 @@ def deliver_nudge(conn, creator_id: int, nudge: Dict) -> None:
         "kind": "nudge",
     })
     save_thread(conn, creator_id, messages, thread.get("suggested_brands") or [], notes=thread.get("notes"))
+    record_note_sent(conn, creator_id, key)
+    return True
 
 
 def process_due_nudges(
@@ -1895,7 +1952,8 @@ def process_due_nudges(
         if not nudges:
             continue
         try:
-            deliver_nudge(conn, cid, nudges[0])
+            if not deliver_nudge(conn, cid, nudges[0]):
+                continue
             sent += 1
             if delivered is not None:
                 delivered.append({"creator_id": cid, "nudge": nudges[0]})
@@ -1962,8 +2020,7 @@ def maybe_deliver_login_checkin(
             early=early,
         ),
     }
-    deliver_nudge(conn, creator_id, payload)
-    return payload
+    return payload if deliver_nudge(conn, creator_id, payload) else None
 
 
 def morning_brief(context: Optional[Dict], first_name: Optional[str] = None) -> Optional[Dict[str, Any]]:

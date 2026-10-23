@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from psycopg2.extras import Json, RealDictCursor
@@ -195,6 +196,61 @@ def save_thread(
     conn.commit()
     payload["notes"] = notes if isinstance(notes, dict) else {}
     return payload
+
+
+NOTE_REPEAT_LOOKBACK = 12
+_NOTE_LOG_READY = False
+
+
+def _norm_note(text: Any) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip().lower()
+
+
+def repeats_recent_note(messages: Optional[List], content: str, lookback: int = NOTE_REPEAT_LOOKBACK) -> bool:
+    """Polly already said exactly this in the last few messages."""
+    want = _norm_note(content)
+    if not want:
+        return False
+    recent = [m for m in (messages or [])[-lookback:] if isinstance(m, dict) and m.get("role") == "assistant"]
+    return any(_norm_note(m.get("content")) == want for m in recent)
+
+
+def _note_log_cursor(conn):
+    global _NOTE_LOG_READY
+    cur = conn.cursor()
+    if not _NOTE_LOG_READY:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS polly_note_log (
+                id SERIAL PRIMARY KEY,
+                creator_id INTEGER NOT NULL,
+                note_key TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_polly_note_log_key "
+            "ON polly_note_log (creator_id, note_key, created_at DESC)"
+        )
+        conn.commit()
+        _NOTE_LOG_READY = True
+    return cur
+
+
+def note_sent_within(conn, creator_id: int, key: str, within: timedelta) -> bool:
+    cur = _note_log_cursor(conn)
+    cur.execute(
+        "SELECT 1 FROM polly_note_log WHERE creator_id = %s AND note_key = %s AND created_at > %s LIMIT 1",
+        (creator_id, key, datetime.now(timezone.utc) - within),
+    )
+    return cur.fetchone() is not None
+
+
+def record_note_sent(conn, creator_id: int, key: str) -> None:
+    cur = _note_log_cursor(conn)
+    cur.execute("INSERT INTO polly_note_log (creator_id, note_key) VALUES (%s, %s)", (creator_id, key))
+    conn.commit()
 
 
 def save_notes(conn, creator_id: int, notes: Dict[str, Any]) -> None:

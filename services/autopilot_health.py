@@ -21,6 +21,8 @@ PAUSED_KIND = "autopilot_paused"
 GMAIL_GAPS = (timedelta(hours=2), timedelta(days=2), timedelta(days=4), timedelta(days=7))
 PAUSED_GAPS = (timedelta(days=2), timedelta(days=7), timedelta(days=14))
 PAUSED_MAX = len(PAUSED_GAPS)
+# Emails follow the gaps above; the chat warning shows at most once a week.
+CHAT_NOTE_GAP = timedelta(days=7)
 OTHER_KINDS = ["trial_gmail", "trial_ending", "kit_view", "nudge", "polly_brief", "monday_board",
                "renewal_note", "autopilot_week", "paywall_followup"]
 
@@ -182,7 +184,12 @@ def email_autopilot_blocked(conn, limit: int = 40, dry_run: bool = False, send_f
     ensure_autopilot_tables(conn)
     ensure_gmail_table(conn)
     send = send_fn or _default_send
-    note = note_fn or post_thread_note
+
+    def note(c, cid, text, chips, kind):
+        if note_fn:
+            return note_fn(c, cid, text, chips)
+        return post_thread_note(c, cid, text, chips, dedupe_key=kind, within=CHAT_NOTE_GAP)
+
     gmail_available = gmail_configured()
     now = _now()
     out = []
@@ -205,7 +212,7 @@ def email_autopilot_blocked(conn, limit: int = 40, dry_run: bool = False, send_f
             continue
         msg = chat_note(kind, facts)
         try:
-            note(conn, cid, msg["text"], msg["chips"])
+            note(conn, cid, msg["text"], msg["chips"], kind)
         except Exception as err:
             print(f"[Autopilot health] chat note skipped for {cid}: {err}")
             try:

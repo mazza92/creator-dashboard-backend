@@ -513,18 +513,33 @@ def _close_day4_task(conn, creator_id: int, brand_id: int) -> None:
 
 
 def post_thread_note(conn, creator_id: int, text: str, chips: Optional[List[Dict]] = None,
-                     pitched: Optional[Dict[str, Any]] = None) -> None:
-    """Append a Polly note; ``pitched`` also marks that brand as pitched so chat stops suggesting it."""
+                     pitched: Optional[Dict[str, Any]] = None, dedupe_key: str = "",
+                     within: Optional[timedelta] = None) -> bool:
+    """Append a Polly note; ``pitched`` also marks that brand as pitched so chat stops suggesting it.
+
+    Skips the note (False) when Polly just said the same thing, or ``dedupe_key`` went out inside ``within``.
+    """
     from services.polly import mark_pitched
-    from services.polly_memory import load_thread, save_thread
+    from services.polly_memory import (
+        load_thread, note_sent_within, record_note_sent, repeats_recent_note, save_thread,
+    )
 
     thread = load_thread(conn, creator_id)
     messages = list(thread.get("messages") or [])
-    messages.append({"role": "assistant", "kind": "autopilot", "content": text, "task_chips": chips or []})
     notes = thread.get("notes") or {}
     if pitched:
         notes = mark_pitched(notes, pitched)
+    repeat = repeats_recent_note(messages, text) or bool(
+        dedupe_key and within and note_sent_within(conn, creator_id, dedupe_key, within)
+    )
+    if not repeat:
+        messages.append({"role": "assistant", "kind": "autopilot", "content": text, "task_chips": chips or []})
+    if repeat and not pitched:
+        return False
     save_thread(conn, creator_id, messages, thread.get("suggested_brands") or [], notes=notes)
+    if dedupe_key and not repeat:
+        record_note_sent(conn, creator_id, dedupe_key)
+    return not repeat
 
 
 def _default_headsup_email(conn, creator_id: int, brand_id: int, brand_name: str) -> None:

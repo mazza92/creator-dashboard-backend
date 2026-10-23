@@ -51,6 +51,7 @@ from services.polly_persona import (
     persona_paywall_say,
     persona_unlocks_after_send,
 )
+from services.polly_pitch_edit import apply_pitch_prefs, revise_pitch
 from services.polly_prefs import filter_brands_by_prefs, gifted_only, merge_prefs
 from services.polly_turn_state import TurnState, brand_card
 
@@ -541,6 +542,7 @@ def _dress_pitch(state: TurnState, pitch: Dict[str, Any], shipping: Dict[str, An
         if loc_display:
             pitch = apply_location_to_pitch(pitch, shipping.get("city") or "",
                                             shipping.get("country") or "", loc_display)
+    pitch = apply_pitch_prefs(pitch, state.notes)
     needs_loc = pitch_has_placeholder(pitch.get("body") or "")
     pitch["needs_location"] = needs_loc
     if loc_display and not needs_loc:
@@ -687,8 +689,22 @@ def log_pitch_sent(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     elif leftover and not state.brands:
         state.show_brands(leftover[:3])
         next_cards = [b.get("name") for b in state.brands if b.get("name")]
+    pending = state.notes.get("pending_brand_update")
+    then_logged = None
+    if isinstance(pending, dict) and (
+        (pending.get("brand_id") and _int(pending.get("brand_id")) == _int(target.get("id")))
+        or brand_names_agree(pending.get("brand_name"), name)
+    ):
+        state.notes.pop("pending_brand_update", None)
+        update = log_brand_update(state, {"event": pending.get("event"), "brand_name": name,
+                                          "brand_id": target.get("id")})
+        if update.get("ok"):
+            then_logged = pending.get("event")
+            state.brands = []
+            next_cards = []
     return {
         "ok": True,
+        "then_logged": then_logged,
         "status": "already_logged" if already else "logged",
         "brand": name,
         "follow_up_check": "day 4",
@@ -739,6 +755,20 @@ def log_brand_update(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as err:
         print(f"[Polly] lifecycle apply skipped: {err}")
         return {"ok": False, "error": "could not update the tracker"}
+    if result.get("action") == "needs_sent_first":
+        state.notes["pending_brand_update"] = {"event": event, "brand_id": (brand or {}).get("id"),
+                                               "brand_name": (brand or {}).get("name")}
+        state.add_chips(result.get("chips") or [])
+        return {
+            "ok": False,
+            "status": "needs_sent_first",
+            "brand": (brand or {}).get("name"),
+            "explain": "No send is logged for this brand, so its status can't change yet. Ask: "
+                       "\"Did that pitch go out from your email first?\" If they say yes, call "
+                       "log_pitch_sent for this brand; the reply is logged right after. Never say the "
+                       "brand replied, is interested or shipped until then.",
+        }
+    state.notes.pop("pending_brand_update", None)
     if intent == "pitch_not_sent" and brand:
         state.notes = unmark_pitched(state.notes, brand)
     state.add_chips(result.get("chips") or [])
@@ -872,6 +902,8 @@ def save_profile_facts(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]
     prefs: Dict[str, Any] = {}
     if args.get("gifted_only") is not None:
         prefs["gifted_only"] = bool(args.get("gifted_only"))
+    if args.get("show_engagement_rate") is not None:
+        prefs["show_engagement_rate"] = bool(args.get("show_engagement_rate"))
     for key in ("avoid_categories", "avoid_retailers"):
         vals = [str(v).strip().lower() for v in (args.get(key) or []) if str(v).strip()]
         if vals:
@@ -903,6 +935,35 @@ def fix_draft_handle(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     state.pitch = updated
     state.add_chips(pitch_confirm_chips({"id": updated.get("brand_id"), "name": updated.get("brand_name")}))
     return {"ok": True, "status": "draft_updated", "brand": updated.get("brand_name")}
+
+
+def edit_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
+    instruction = str(args.get("instruction") or state.user_text or "").strip()
+    card = last_thread_pitch(state.messages)
+    if not card:
+        return {"ok": False, "status": "no_draft_on_screen",
+                "explain": "There's no pitch card in this chat to edit. Offer to draft one."}
+    brand = card.get("brand_name") or card.get("name")
+    named = str(args.get("brand_name") or "").strip()
+    if named and brand and not brand_names_agree(named, brand):
+        return {"ok": False, "status": "other_brand_on_screen", "brand": brand,
+                "explain": f"The pitch on screen is for {brand}. Offer to draft {named} first."}
+    if not instruction:
+        return {"ok": False, "error": "instruction required"}
+    result = revise_pitch(card, instruction)
+    saved_pref = bool(result.get("pref"))
+    if saved_pref:
+        state.notes = merge_prefs(state.notes, result["pref"])
+    if not result.get("changed"):
+        return {"ok": False, "status": "not_changed", "brand": brand,
+                "why_not": result.get("why_not") or "", "saved_for_future_pitches": saved_pref,
+                "explain": "The pitch did NOT change. Say so plainly and give why_not. Never say it was updated."}
+    updated = apply_pitch_prefs(result["pitch"], state.notes)
+    state.pitch_update = updated
+    state.pitch = updated
+    state.add_chips(pitch_confirm_chips({"id": updated.get("brand_id"), "name": updated.get("brand_name")}))
+    return {"ok": True, "status": "pitch_updated", "brand": brand, "version": updated.get("version"),
+            "saved_for_future_pitches": saved_pref, "card_shows": "Updated just now"}
 
 
 def _reply_thread(state: TurnState, brand_id: Optional[int], name: str) -> Dict[str, str]:
@@ -1133,6 +1194,7 @@ TOOLS: List[Dict[str, Any]] = [
         "parameters": _obj({
             "city": _STR, "country": _STR,
             "gifted_only": _BOOL,
+            "show_engagement_rate": {**_BOOL, "description": "false when they don't want engagement in pitches"},
             "avoid_categories": {"type": "array", "items": _STR},
             "avoid_retailers": {"type": "array", "items": _STR},
             "goal_30d": _STR, "stage": _STR, "niche": _STR,
@@ -1145,6 +1207,20 @@ TOOLS: List[Dict[str, Any]] = [
         "description": "Correct the creator's social handle inside the pitch draft on screen.",
         "parameters": _obj({"correct_handle": _STR, "wrong_handle": _STR}, ["correct_handle"]),
         "handler": fix_draft_handle,
+    },
+    {
+        "name": "edit_pitch",
+        "description": "Change the pitch on screen the way the creator asks: remove engagement numbers, "
+                       "update a follower count they give, shorter, more professional, different "
+                       "deliverables, etc. The only way a pitch changes. Only after it returns "
+                       "status=pitch_updated may you say the pitch changed; if not_changed, say it didn't "
+                       "and why. saved_for_future_pitches=true means the rule also applies to every "
+                       "future pitch, so tell them that.",
+        "parameters": _obj({
+            "instruction": {**_STR, "description": "What to change, in the creator's words"},
+            "brand_name": {**_STR, "description": "Only if they named the brand whose pitch to edit"},
+        }, ["instruction"]),
+        "handler": edit_pitch,
     },
     {
         "name": "draft_brand_reply",

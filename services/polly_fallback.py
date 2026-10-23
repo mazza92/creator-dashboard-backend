@@ -12,6 +12,7 @@ from services.polly import (
     classify_intent_heuristic,
     directory_brand_ask,
     is_done_turn,
+    last_thread_pitch,
     parse_handle_revision,
     parse_location_reply,
 )
@@ -27,6 +28,8 @@ from services.polly_persona import (
     persona_pitch_intro,
     persona_unknown_brand,
 )
+from services.polly_faq import faq_answer
+from services.polly_pitch_edit import wants_no_engagement
 from services.polly_prefs import parse_preferences
 from services.polly_tools import _EVENTS, run_tool
 from services.polly_turn_state import TurnState
@@ -45,13 +48,28 @@ def _last(state: TurnState) -> Optional[Dict[str, Any]]:
     return state.tool_log[-1] if state.tool_log else None
 
 
+CANNED_MENU = "I'm here. Want me to line up brands, draft a pitch, or look at your kit?"
+
+
+def no_tool_reply(user_text: Optional[str]) -> str:
+    """Nothing ran this turn: answer the question if it's a known one, never a menu for a real message."""
+    answer = faq_answer(user_text or "")
+    if answer:
+        return answer
+    words = (user_text or "").split()
+    if len(words) <= 1:
+        return CANNED_MENU
+    return ("I don't want to guess on this one and get it wrong. "
+            "Tell me which brand it's about, or what you were trying to do, and I'll sort it.")
+
+
 def template_reply(state: TurnState) -> str:
     """A reply built only from what the tools returned this turn."""
     if state.final_say:
         return state.final_say
     entry = _last(state)
     if not entry:
-        return "I'm here. Want me to line up brands, draft a pitch, or look at your kit?"
+        return no_tool_reply(state.user_text)
     name = entry.get("name")
     res: Dict[str, Any] = entry.get("result") or {}
     status = res.get("status")
@@ -99,6 +117,11 @@ def template_reply(state: TurnState) -> str:
             return persona_hold_pitch_send(brand)
         return "Which brand did you send it to? I'll log it on your Timeline."
     if name == "log_brand_update":
+        if status == "needs_sent_first":
+            return (f"Did your **{brand or 'that'}** pitch go out from your email first? "
+                    "Once I log the send, I'll log their reply.")
+        if not res.get("ok"):
+            return "Which brand is that about? I'll update your Timeline."
         return res.get("what_changed") or "Updated your Timeline."
     if name == "find_paid_gigs":
         return persona_gigs_intro(state.gigs, more=bool((entry.get("args") or {}).get("more")))
@@ -112,6 +135,14 @@ def template_reply(state: TurnState) -> str:
         args = entry.get("args") or {}
         return persona_handle_fixed(state.pitch.get("brand_name"), args.get("correct_handle") or "",
                                     args.get("wrong_handle") or "")
+    if name == "edit_pitch":
+        future = " I'll do the same in every pitch from now on." if res.get("saved_for_future_pitches") else ""
+        if status == "pitch_updated":
+            return f"Done, the **{brand or 'pitch'}** card above is updated.{future}"
+        if status == "no_draft_on_screen":
+            return "There's no pitch on screen to change yet. Which brand should I write one for?"
+        why = res.get("why_not") or "I couldn't make that change."
+        return f"The pitch hasn't changed: {why[:1].lower() + why[1:]}{future}"
     if name == "offer_pro":
         return persona_paywall_retry(res.get("button_shown_for"))
     return "Done. What's next?"
@@ -137,9 +168,16 @@ def run_fallback(state: TurnState) -> str:
     if handle:
         run_tool(state, "fix_draft_handle", {"correct_handle": handle.get("keep"), "wrong_handle": handle.get("drop")})
         return template_reply(state)
+    if last_thread_pitch(state.messages) and wants_no_engagement(text):
+        run_tool(state, "edit_pitch", {"instruction": text})
+        return template_reply(state)
     prefs = parse_preferences(text)
     if prefs:
         run_tool(state, "save_profile_facts", prefs)
+    else:
+        answer = faq_answer(text)
+        if answer:
+            return answer
 
     decision = classify_intent_heuristic(text, state.suggested, history=state.messages)
     intent = decision.get("intent")

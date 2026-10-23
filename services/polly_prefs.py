@@ -109,6 +109,9 @@ def parse_preferences(text: str) -> Dict[str, Any]:
     shops = [key for key, rx in _RETAILER_RE.items() if rx.search(raw)]
     if shops:
         patch["avoid_retailers"] = shops
+    from services.polly_pitch_edit import wants_no_engagement
+    if wants_no_engagement(raw):
+        patch["show_engagement_rate"] = False
     return patch
 
 
@@ -124,6 +127,8 @@ def merge_prefs(notes: Optional[Dict], patch: Optional[Dict]) -> Dict[str, Any]:
     prefs = get_prefs(out)
     if "gifted_only" in patch:
         prefs["gifted_only"] = bool(patch["gifted_only"])
+    if "show_engagement_rate" in patch:
+        prefs["show_engagement_rate"] = bool(patch["show_engagement_rate"])
     for key in ("avoid_categories", "avoid_retailers"):
         if patch.get(key):
             prefs[key] = list(dict.fromkeys(list(prefs.get(key) or []) + list(patch[key])))
@@ -148,6 +153,8 @@ def prefs_context(notes: Optional[Dict] = None) -> str:
         bits.append("never suggest: " + ", ".join(prefs["avoid_categories"]))
     if prefs.get("avoid_retailers"):
         bits.append("skip brands sold at: " + ", ".join(prefs["avoid_retailers"]))
+    if prefs.get("show_engagement_rate") is False:
+        bits.append("never mention their engagement rate in pitches")
     if not bits:
         return ""
     return "Stated preferences (hard rules): " + "; ".join(bits)

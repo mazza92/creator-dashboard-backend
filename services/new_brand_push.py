@@ -8,6 +8,7 @@ Polly to pick a strong 5.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Any, Callable, Dict, List, Optional
@@ -62,7 +63,18 @@ def load_fresh_rosters(conn) -> List[Dict[str, Any]]:
     return [
         dict(r) for r in cur.fetchall() or []
         if int(r["fill_count"] or 0) < target and int(r["pushed"] or 0) < PUSH_PER_BRAND
+        and not looks_like_test_brand(r)
     ]
+
+
+_TEST_NAME_RE = re.compile(r"(?i)^\s*(test|testing|dummy|sample|demo|asdf|qa)\b|\b(test|dummy|sample) (product|brand)\b")
+
+
+def looks_like_test_brand(row: Dict[str, Any]) -> bool:
+    """Test rosters (e.g. "Testing" gifting "Test product") must never reach creators."""
+    if row.get("is_test"):
+        return True
+    return any(_TEST_NAME_RE.search(str(row.get(k) or "")) for k in ("brand_name", "hero_product", "slug"))
 
 
 def load_candidates(conn, brand_id: int) -> List[Dict[str, Any]]:

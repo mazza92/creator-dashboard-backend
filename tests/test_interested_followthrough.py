@@ -20,6 +20,7 @@ def test_interested_creates_24h_reply_check_once(monkeypatch):
     monkeypatch.setattr(pt, "add_event", lambda *a, **k: 1)
     monkeypatch.setattr(pt, "create_task", lambda conn, cid, kind, **k: created.append((kind, k)) or len(created))
     monkeypatch.setattr(pt, "_open_tasks", lambda *a, **k: [])
+    monkeypatch.setattr(pt, "contact_logged", lambda *a, **k: True)
     pt.apply_lifecycle_intent(None, 7, {"intent": "brand_replied_interested", "brand_id": 3, "brand": "Glow"})
     kinds = [k for k, _ in created]
     assert kinds == ["pr_shipped", "reply_needed"]

@@ -41,13 +41,22 @@ How to work:
   search_directory, not draft_pitch.
 - "I sent it" / "done" / "sent" = log_pitch_sent (no brand unless they named one). If it refuses, explain why
   in one line and ask the question it suggests.
+- "I don't think it sent" / "did you send these?" is a question, not a send: Newcollab never sends on the free
+  plan. Tell them to check their Sent folder, and how to send from the card if it isn't there. If they confirm
+  it never went out for a brand already on Timeline, log_brand_update pitch_not_sent for that brand.
 - Replies (yes, no, "said no thanks", a question), PR shipped, posted, paid, bounced, still quiet =
   log_brand_update, before you answer, for any brand they name.
+- Brand statuses (sent, replied, interested, shipping) come only from tracker_tasks and tool results. Never
+  state or assume a status from the conversation. If log_brand_update returns needs_sent_first, ask whether
+  the pitch went out from their email first; don't say the brand replied or is interested.
 - A bounce means that one address failed. Don't guess why or claim the brand's other inboxes are dead.
   If they have another address (pr@, social@, a founder), draft_pitch with to_email.
 - Brand not in the directory: say so in one line, then offer to write it if they paste the brand's
   PR email, or point at the similar cards. Once they give an email, draft_pitch with to_email.
 - They give an address for a brand ("use social@amika.com") = draft_pitch with to_email.
+- They want the pitch on screen changed (remove engagement, new follower count, tone, deliverables, "it's the
+  same, nothing changed") = edit_pitch. You can't change a pitch any other way. Never say a pitch was updated,
+  changed or rewritten unless edit_pitch returned pitch_updated this turn.
 - A brand said yes and they want help replying, or they posted and want to get paid for it =
   draft_brand_reply (moment interested or posted). It writes the reply with the usage rate.
 - Paid UGC / gigs / who pays = find_paid_gigs. Gifted PR / more brands / who should I pitch = suggest_brands.
@@ -58,6 +67,8 @@ How to work:
 - They tell you their city/country, preferences, goal, niche or challenge = save_profile_facts.
   Only a real place counts as a city; a button label or status ("They replied") is not a location.
 - Out of free pitches, Pro, credits reset, can't afford = offer_pro. No calendar dates for resets.
+- Questions about how Newcollab works (gifted lists, statuses, replies, credits, Pro, cancelling): answer
+  directly from HOW NEWCOLLAB WORKS below. Never answer a real question with a menu of options.
 - Small talk, thanks, opinions: no tool, just answer.
 - You may call more than one tool when the request needs it.
 
@@ -85,7 +96,8 @@ def _system_prompt(state: TurnState, discovery_hint: str) -> str:
         notes_context(state.notes),
         session_context_text(state.tracker_ctx),
     ) if bit)
-    extra = ORCHESTRATOR_RULES + f"\nManager memory: {discovery_hint or 'none yet.'}"
+    from services.polly_faq import FAQ_PROMPT
+    extra = ORCHESTRATOR_RULES + "\n" + FAQ_PROMPT + f"\nManager memory: {discovery_hint or 'none yet.'}"
     return polly_system_prompt(context, extra=extra)
 
 
@@ -302,17 +314,23 @@ def run_turn(
 
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _SEND_CLAIM_RE = re.compile(
-    r"(?i)\b(i('ve| have) logged|logged (it|your|the)|on your timeline|pitch is out|marked (it )?as sent|"
-    r"added (it )?to your timeline)\b"
+    r"(?i)\b(i('ve| have) logged|logged (it|your|the)|(it'?s|it is|now|pitch is|they'?re|that'?s) on your timeline|"
+    r"pitch is out|marked (it )?as sent|added (it )?to your timeline)\b"
 )
 _DRAFT_CLAIM_RE = re.compile(r"(?i)\b(i('ve| have) (drafted|written)|here'?s (your|the) (pitch|draft)|draft is ready)\b")
+_EDIT_CLAIM_RE = re.compile(
+    r"(?i)\b(updated|changed|rewr(o|i)te|rewritten|edited|removed|took out|taken out|tweaked|revised|"
+    r"new version|fresh version|drafted a new)\b"
+)
+_PITCH_WORD_RE = re.compile(r"(?i)\b(pitch|draft|email|card|version|subject|engagement)\b")
 _CREDIT_LINE_RE = re.compile(
     r"(?i)[^.!?\n]*\b(\d+|no|zero|one|two|three)\s+(free\s+)?(pitch(es)?|unlocks?|credits?)\s+(left|remaining)\b[^.!?\n]*[.!?]?"
 )
 _UI_WORDS = frozenset({
     "polly", "directory", "timeline", "my kit", "my portfolio", "i sent it", "open email", "copy email",
     "copy pitch", "pro", "polly pro", "autopilot", "gmail", "tiktok", "instagram", "youtube", "ugc",
-    "gifted", "paid", "day 4", "more brands",
+    "gifted", "paid", "day 4", "more brands", "account settings", "settings", "cancel subscription",
+    "selected · shipping", "applied · in review", "they passed", "posted content", "sent folder",
 })
 
 
@@ -341,6 +359,13 @@ def reply_problems(state: TurnState, reply: str) -> List[str]:
         problems.append("The reply says a pitch was logged or sent, but log_pitch_sent did not log one this turn.")
     if _DRAFT_CLAIM_RE.search(text) and not state.pitch:
         problems.append("The reply says a pitch was drafted, but no pitch card exists this turn.")
+    tracker_turn = state.tools_ran("log_brand_update") or state.tools_ran("log_pitch_sent")
+    if not state.pitch and not state.pitch_update and not tracker_turn and any(
+        _EDIT_CLAIM_RE.search(s) and _PITCH_WORD_RE.search(s) and not re.search(r"(?i)\b(didn'?t|not|couldn'?t|can'?t)\b", s)
+        for s in _SENTENCE_SPLIT_RE.split(text)
+    ):
+        problems.append("The reply says the pitch was changed, but edit_pitch did not change it this turn. "
+                        "Say it hasn't changed yet, or call edit_pitch.")
     known = state.known_brand_names()
     typed = (state.user_text or "").lower()
     for name in _bold_names(text):
@@ -354,6 +379,23 @@ def reply_problems(state: TurnState, reply: str) -> List[str]:
         if email.lower() not in allowed_emails:
             problems.append(f"{email} was not returned by a tool. Don't quote inboxes you weren't given.")
     return problems
+
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=\S)")
+
+
+def salvage_reply(state: TurnState, reply: str) -> str:
+    """The reply minus every sentence that breaks a rule, so a real answer survives one bad line."""
+    kept_lines = []
+    for line in (reply or "").split("\n"):
+        if not line.strip():
+            kept_lines.append("")
+            continue
+        good = [s for s in _SENTENCE_SPLIT_RE.split(line) if s.strip() and not reply_problems(state, s)]
+        if good:
+            kept_lines.append(" ".join(good))
+    out = re.sub(r"\n{3,}", "\n\n", "\n".join(kept_lines)).strip()
+    return out if len(out.split()) >= 4 else ""
 
 
 def _strip_server_lines(text: str) -> str:
@@ -388,6 +430,11 @@ def check_reply(state: TurnState, reply: str, gemini: Optional[_Gemini] = None,
             reply, problems = fixed, []
         elif sink:
             sink({"type": "reset"})
+        if problems:
+            kept = salvage_reply(state, fixed or reply)
+            if kept:
+                print(f"[Polly] guardrail salvage: dropped lines for {problems}")
+                reply, problems = kept, []
     if problems:
         print(f"[Polly] guardrail template: {problems}")
         from services.polly_fallback import template_reply
