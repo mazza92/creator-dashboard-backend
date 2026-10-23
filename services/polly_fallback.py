@@ -100,8 +100,13 @@ def template_reply(state: TurnState) -> str:
         return persona_unknown_brand(str(res.get("searched_for") or "that brand"), state.brands)
     if name == "suggest_brands":
         if state.brands:
-            return persona_brand_intro(state.brands, state.profile_context,
-                                       deal_intent=state.notes.get("deal_intent"))
+            intro = persona_brand_intro(state.brands, state.profile_context,
+                                        deal_intent=state.notes.get("deal_intent"))
+            say = (res.get("shipping") or {}).get("say")
+            return f"{intro}\n\n{say}" if say else intro
+        if status == "none_ship_here":
+            return (f"None of the brands I'd match right now ship to **{res.get('ships_to')}**. "
+                    "Want paid UGC briefs instead? Those don't need shipping.")
         return ("That's every match I have for you right now. Pitch one of the brands above, "
                 "or check back tomorrow and I'll have new ones.")
     if name == "log_pitch_sent":
@@ -146,6 +151,34 @@ def template_reply(state: TurnState) -> str:
             return "There's no pitch on screen to change yet. Which brand should I write one for?"
         why = res.get("why_not") or "I couldn't make that change."
         return f"The pitch hasn't changed: {why[:1].lower() + why[1:]}{future}"
+    if name == "browse_brands":
+        if status == "excluded_category":
+            return (f"You asked me to skip **{res.get('category')}** brands. "
+                    "Want them back on? Say yes and I'll search.")
+        if status == "none_found":
+            return (f"I don't have {res.get('searched') or 'those'} brands in the directory right now. "
+                    "Want the closest matches in your niche instead?")
+        if status == "found" and state.brands:
+            say = (res.get("shipping") or {}).get("say")
+            lead = f"Here are {len(state.brands)} {res.get('searched')} brands from the directory, cards below."
+            return f"{lead} {say}" if say else lead
+        return "I couldn't search the directory just now. Try again in a moment."
+    if name == "get_content_stats":
+        niche = res.get("niche") or {}
+        lines = [res.get("summary") or ""]
+        if niche.get("primary_niche"):
+            line = f"Your niche reads as **{niche['primary_niche']}**"
+            if niche.get("kit_headline"):
+                line += f", and your kit headline is \"{niche['kit_headline']}\""
+            lines.append(line + ".")
+        return " ".join(bit for bit in lines if bit) or "I can't see your recent posts yet."
+    if name == "content_assist":
+        if status == "written":
+            from services.polly_content import render
+            return render(res)
+        if status == "no_post":
+            return "I can't see that post. Paste the caption or the link and I'll review it."
+        return "I couldn't write that just now. Try again in a moment."
     if name == "get_pitch_status":
         return status_reply(res)
     if name == "offer_pro":
@@ -209,6 +242,17 @@ def run_fallback(state: TurnState) -> str:
         answer = faq_answer(text)
         if answer:
             return answer
+
+    from services.brand_browse import browse_ask
+    wanted = None if prefs else browse_ask(text)
+    if wanted:
+        run_tool(state, "browse_brands", {"query": wanted})
+        return template_reply(state)
+    from services.polly_content import content_ask
+    ask = None if prefs else content_ask(text)
+    if ask:
+        run_tool(state, *ask)
+        return template_reply(state)
 
     decision = classify_intent_heuristic(text, state.suggested, history=state.messages)
     intent = decision.get("intent")

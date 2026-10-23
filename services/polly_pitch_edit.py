@@ -184,7 +184,8 @@ def pitch_pref_inputs(conn, notes: Optional[Dict], brand_id: Any = None, *, crea
                        key=lambda v: _first_number(v) or 0, reverse=True)
         if views:
             facts["top_post_views"] = [_first_number(v) for v in views[:3]]
-        avg = _first_number(scrape.get("avg_views"), scrape.get("average_views"))
+        from services.creator_stats import avg_views
+        avg = _first_number(scrape.get("avg_views"), avg_views(scrape))
         if avg:
             facts["avg_views"] = avg
         eng = scrape.get("engagement_rate") or creator.get("engagement_rate")

@@ -48,6 +48,15 @@ CASES = [
     ("what should I charge for a UGC video?", [], {}, "get_coaching_facts", None),
     ("how is my media kit looking?", [], {}, "get_coaching_facts", None),
     ("write a follow up to BALLBOYZ", [], {}, "draft_pitch", "ballboyz"),
+    ("find me K-beauty brands", [], {}, "browse_brands", "beauty"),
+    ("any fragrance brands?", [], {}, "browse_brands", "fragrance"),
+    ("I'm ok with nails brands now", [], {"prefs": {"avoid_categories": ["nails"]}}, "save_profile_facts", None),
+    ("I have 4k followers now", [], {}, "save_profile_facts", None),
+    ("why are my views down?", [], {}, "get_content_stats", None),
+    ("what's my niche?", [], {}, "get_content_stats", None),
+    ("make me a content plan for this week", [], {}, "content_assist", "weekly_plan"),
+    ("give me hooks for my new serum video", [], {}, "content_assist", "hooks"),
+    ("can you review my last post", [], {}, "content_assist", "review"),
 ]
 
 
@@ -86,7 +95,8 @@ class PollyLiveEval(unittest.TestCase):
                     pass
             got_tool = picked.get("name")
             args = picked.get("args") or {}
-            got_brand = str(args.get("brand_name") or args.get("name") or "").lower()
+            got_brand = str(args.get("brand_name") or args.get("name") or args.get("query")
+                            or args.get("task") or "").lower()
             got_brand += " " + BRAND_IDS.get(str(args.get("brand_id")), "")
             ok = got_tool == want_tool and (want_brand is None or want_brand in got_brand)
             print(f"{'OK ' if ok else 'MISS'} {text!r}: {got_tool} {args}")

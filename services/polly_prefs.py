@@ -51,6 +51,12 @@ CATEGORY_WORDS = {
     "fragrance": ("fragrance", "perfume"),
     "baby": ("baby", "baby brands", "parenting"),
     "home": ("homeware", "home decor"),
+    "skincare": ("skincare", "skin care"),
+    "wellness": ("wellness",),
+    "activewear": ("activewear", "athleisure"),
+    "travel": ("travel", "luggage"),
+    "gaming": ("gaming", "video games"),
+    "automotive": ("automotive", "car brands", "cars"),
 }
 
 RETAILER_WORDS = {
@@ -161,6 +167,16 @@ def parse_pitch_preferences(text: str) -> Dict[str, Any]:
     return clean_pitch_prefs(patch)
 
 
+def _allow_re(words) -> "re.Pattern[str]":
+    alt = _alt(words)
+    return re.compile(
+        rf"(?i)\b(?:(?:i'?m|im|i am)\s+(?:ok|okay|fine|open)\s+(?:with\s+)?|show\s+me\s+|turn\s+on\s+|"
+        rf"(?:bring|put)\s+back\s+|you\s+can\s+(?:suggest|show)\s+)(?:\w+\s+){{0,2}}(?:{alt})\b"
+        rf"(?:[^.!?\n]{{0,20}}\b(?:again|now|back)\b)?"
+        rf"|\b(?:{alt})\b[^.!?\n]{{0,15}}\b(?:is|are)\s+(?:ok|okay|fine)\s+(?:now|again)\b"
+    )
+
+
 def parse_preferences(text: str) -> Dict[str, Any]:
     """Preference patch from one creator message. Empty dict when nothing stated."""
     raw = (text or "").strip()
@@ -185,6 +201,13 @@ def parse_preferences(text: str) -> Dict[str, Any]:
     shops = [key for key, rx in _RETAILER_RE.items() if rx.search(raw)]
     if shops:
         patch["avoid_retailers"] = shops
+    back = [key for key, words in CATEGORY_WORDS.items()
+            if key not in cats and _allow_re(words).search(raw)]
+    if back:
+        patch["allow_categories"] = back
+        patch["avoid_categories"] = [c for c in patch.get("avoid_categories") or [] if c not in back]
+        if not patch["avoid_categories"]:
+            patch.pop("avoid_categories")
     from services.polly_pitch_edit import wants_no_engagement
     if wants_no_engagement(raw):
         patch["show_engagement_rate"] = False
@@ -212,15 +235,22 @@ def merge_prefs(notes: Optional[Dict], patch: Optional[Dict]) -> Dict[str, Any]:
     for key in ("avoid_categories", "avoid_retailers"):
         if patch.get(key):
             prefs[key] = list(dict.fromkeys(list(prefs.get(key) or []) + list(patch[key])))
+    if patch.get("allow_categories"):
+        allowed = {str(c).strip().lower() for c in patch["allow_categories"]}
+        prefs["avoid_categories"] = [c for c in prefs.get("avoid_categories") or [] if c not in allowed]
     offer = patch.get("offer_type")
     if offer == "paid_only":
         prefs["gifted_only"] = False
         out["deal_intent"] = "paid"
+        out["deal_intents"] = ["paid"]
     elif offer in OFFER_TYPES:
         out["deal_intent"] = "gifted"
     out["prefs"] = prefs
+    if patch.get("gifted_only") is False and "offer_type" not in patch:
+        out = add_deal_intent(out, "paid")
     if prefs.get("gifted_only"):
         out["deal_intent"] = "gifted"
+        out["deal_intents"] = ["gifted"]
         if str(out.get("goal_30d") or "").strip().lower() == "paid ugc":
             out.pop("goal_30d", None)
     return out
@@ -260,6 +290,32 @@ def pitch_prefs_line(prefs: Optional[Dict[str, Any]]) -> str:
 
 def needs_rewrite(prefs: Optional[Dict[str, Any]]) -> bool:
     return any((prefs or {}).get(k) not in (None, "", []) for k in REWRITE_KEYS)
+
+
+def deal_intents(notes: Optional[Dict] = None) -> List[str]:
+    """Every kind of deal they want, e.g. ["gifted", "paid"]. deal_intent stays the current focus."""
+    notes = notes or {}
+    raw = notes.get("deal_intents")
+    out = [d for d in (raw if isinstance(raw, list) else []) if d in ("gifted", "paid")]
+    single = notes.get("deal_intent")
+    if single in ("gifted", "paid") and single not in out:
+        out.append(single)
+    return out
+
+
+def add_deal_intent(notes: Optional[Dict], intent: str) -> Dict[str, Any]:
+    out = dict(notes or {})
+    if intent not in ("gifted", "paid"):
+        return out
+    if intent == "paid" and get_prefs(out).get("gifted_only"):
+        return out
+    current = deal_intents(out)
+    if get_prefs(out).get("offer_type") == "paid_only" and intent == "gifted":
+        return out
+    if intent not in current:
+        current.append(intent)
+    out["deal_intents"] = current
+    return out
 
 
 def gifted_only(notes: Optional[Dict] = None) -> bool:

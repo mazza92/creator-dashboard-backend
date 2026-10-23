@@ -420,6 +420,33 @@ def gig_fits_creator(opp: Optional[Dict[str, Any]], followers: int = 0) -> bool:
     return need <= followers
 
 
+def _brief_text(opp: Dict[str, Any]) -> str:
+    return " ".join(str(opp.get(k) or "") for k in ("campaign_description", "blurb", "raw_listing",
+                                                    "listing_brief", "headline"))
+
+
+def gig_fit_note(opp: Optional[Dict[str, Any]], followers: int = 0, country: Optional[str] = None) -> Dict[str, Any]:
+    """{"rank": 0 best, "note": short label}. Ranks and labels; never hides a brief."""
+    from services.brand_shipping import ships_to_country
+
+    opp = opp or {}
+    rank, notes = 0, []
+    if followers < SMALL_CREATOR_FOLLOWERS:
+        try:
+            pay = float(opp.get("pr_value_usd") or 0)
+        except (TypeError, ValueError):
+            pay = 0.0
+        if _AGENCY_BRIEF.search(_brief_text(opp)) or pay > SMALL_CREATOR_MAX_PAY_USD:
+            rank += 2
+            notes.append("Agency-scale brief")
+    regions = opp.get("shipping_regions")
+    if country and isinstance(regions, list) and regions:
+        if ships_to_country(regions, country) is False:
+            rank += 1
+            notes.append(f"For {' / '.join(str(r) for r in regions[:2])} creators")
+    return {"rank": rank, "note": " · ".join(notes)}
+
+
 def _scanner_fallback_cards(creator_id) -> List[Dict[str, Any]]:
     """Live piggyback gigs only — skips Directory gifted-PR rows."""
     from opportunities_routes import (
@@ -542,9 +569,17 @@ def list_polly_gigs(
         except Exception as err:
             print(f"[Polly] gigs scanner fallback failed: {err}")
     followers = creator_followers(scrape)
+    try:
+        followers = int(((notes or {}).get("stats_override") or {}).get("followers") or 0) or followers
+    except (TypeError, ValueError):
+        pass
+    from services.brand_shipping import creator_country
+    country = creator_country(None, notes, scrape)
     paid = [c for c in ranked if is_paid_listing(c) and gig_fits_creator(c, followers)]
+    fit = {id(c): gig_fit_note(c, followers, country) for c in paid}
     open_first = newest_published([c for c in paid if not c.get("already_applied")])
     pool = open_first or newest_published(paid)
+    pool = sorted(pool, key=lambda c: fit[id(c)]["rank"])
     skip = set(exclude_ids or [])
     skip |= set(shown_gig_ids(notes))
     skip |= set(gig_ids_from_history(history))
@@ -567,6 +602,8 @@ def list_polly_gigs(
             continue
         seen.add(key)
         card = gig_card_from_opp(opp)
+        if fit.get(id(opp), {}).get("note"):
+            card["fit_note"] = fit[id(opp)]["note"]
         fp = gig_dedupe_key(card)
         if fp in seen_fp:
             continue

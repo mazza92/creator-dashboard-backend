@@ -54,6 +54,7 @@ from services.polly_persona import (
 from services.polly_pitch_edit import apply_pitch_prefs, pitch_pref_inputs, revise_pitch
 from services.polly_prefs import (
     PITCH_PREF_KEYS,
+    add_deal_intent,
     clean_pitch_prefs,
     filter_brands_by_prefs,
     get_prefs,
@@ -61,6 +62,7 @@ from services.polly_prefs import (
     merge_prefs,
     pitch_prefs_line,
 )
+from services.brand_shipping import apply_shipping, creator_country, load_regions
 from services.polly_turn_state import TurnState, brand_card
 
 
@@ -159,10 +161,26 @@ def _oldest_shown_first(rows: List[Dict[str, Any]], notes: Dict[str, Any]) -> Li
     return sorted(rows or [], key=lambda b: _shown_rank(b, notes))
 
 
+def shipping_summary(rows: List[Dict[str, Any]], ship: Dict[str, Any]) -> Dict[str, Any]:
+    where = ship["ships_to"]
+    ok = sum(1 for r in rows if r.get("ships_to_you"))
+    if ok == len(rows):
+        say = f"These {ok} ship to {where}."
+    elif ok:
+        say = f"{ok} of these ship to {where}; the rest say Shipping not confirmed."
+    else:
+        say = f"None of these have confirmed shipping to {where} yet, so ask in your pitch."
+    if ship.get("dropped"):
+        say += f" I left out {ship['dropped']} that don't ship to {where}."
+    return {"ships_to": where, "confirmed": ok, "not_confirmed": len(rows) - ok,
+            "hidden_wont_ship": ship.get("dropped") or 0, "say": say}
+
+
 def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     deal = str(args.get("deal") or "").strip().lower()
     if deal in ("gifted", "paid") and not (deal == "paid" and gifted_only(state.notes)):
         state.notes["deal_intent"] = deal
+        state.notes = add_deal_intent(state.notes, deal)
     R = _routes()
     try:
         status, rows, err = R._suggest_payload(
@@ -203,12 +221,20 @@ def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         widened = bool(picked)
     hydrated = R._hydrate_brand_cards(picked)
     rows = filter_brands_by_prefs(hydrated, state.notes) or hydrated
-    rows = sorted(rows, key=lambda b: (
+    country = creator_country(state.creator, state.notes, state.scrape)
+    ship = apply_shipping(rows, country, load_regions(state.db(), [b.get("id") for b in rows]))
+    rows = sorted(ship["brands"], key=lambda b: (
+        0 if b.get("ships_to_you") else 1,
         0 if (b or {}).get("source") in ("recruiting", "open_lists") else 1,
         _shown_rank(b, state.notes),
     ))
     cap = 3 if (state.chip or {}).get("id") == "first_matches" else 6
     rows = rows[:cap]
+    if not rows and ship["dropped"]:
+        return {"ok": True, "brands": [], "status": "none_ship_here", "ships_to": ship["ships_to"],
+                "explain": f"None of the brands I'd match right now ship to {ship['ships_to']}. Say so "
+                           "plainly and offer paid UGC briefs that don't need shipping, or ask for "
+                           "another niche."}
     if not rows:
         if err:
             state.error = err
@@ -225,12 +251,57 @@ def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         "cards_shown": True,
         "live_rosters": sum(1 for r in rows if r.get("source") in ("recruiting", "open_lists")),
     }
+    if ship["ships_to"]:
+        out["shipping"] = shipping_summary(rows, ship)
     if repeated:
         out["repeated"] = True
         out["note"] = "These brands were shown before and are still unpitched. The cards are on screen."
     if widened:
         out["widened"] = True
         out["note"] = "The niche pool was used up, so these are the next directory brands. The cards are on screen."
+    return out
+
+
+def browse_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
+    from services.brand_browse import browse_brands as search
+    from services.polly_prefs import CATEGORY_WORDS
+
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return {"ok": False, "error": "query required"}
+    avoid = set(get_prefs(state.notes).get("avoid_categories") or [])
+    q = query.lower()
+    blocked = sorted(k for k in avoid if any(
+        re.search(rf"\b{re.escape(w)}\b", q) for w in (k, *CATEGORY_WORDS.get(k, ()))))
+    if blocked:
+        return {"ok": True, "status": "excluded_category", "category": blocked[0],
+                "explain": f"They told you to never suggest {blocked[0]}. Ask if they want it back on; if "
+                           "yes, call save_profile_facts with allow_categories, then browse again."}
+    exclude = list(state.notes.get("pitched_brand_ids") or [])
+    try:
+        found = search(state.db(), query, exclude_ids=exclude, limit=12)
+    except Exception as err:
+        print(f"[Polly] browse failed: {err}")
+        state.db().rollback()
+        return {"ok": False, "error": "directory search failed"}
+    rows = drop_pending_draft(drop_pitched(found["brands"], state.notes), state.notes)
+    rows = filter_brands_by_prefs(_routes()._hydrate_brand_cards(rows), state.notes)
+    country = creator_country(state.creator, state.notes, state.scrape)
+    ship = apply_shipping(rows, country, load_regions(state.db(), [b.get("id") for b in rows]))
+    rows = sorted(ship["brands"], key=lambda b: 0 if b.get("ships_to_you") else 1)[:6]
+    label = found["plan"]["label"]
+    if not rows:
+        return {"ok": True, "status": "none_found", "searched": label,
+                "hidden_wont_ship": ship["dropped"],
+                "explain": f"No {label} brands in the directory right now"
+                           + (f" that ship to {ship['ships_to']}" if ship["dropped"] else "")
+                           + ". Say so; never invent brands. Offer the closest category instead."}
+    state.brands = rows
+    state.notes = mark_shown_brands(state.notes, rows)
+    out = {"ok": True, "status": "found", "searched": label, "brands": [brand_card(r) for r in rows],
+           "cards_shown": True}
+    if ship["ships_to"]:
+        out["shipping"] = shipping_summary(rows, ship)
     return out
 
 
@@ -301,6 +372,7 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
                     "follow_up_ready_on": unlocks_at.date().isoformat()}
 
     shipping, loc_display = _pitch_location(state)
+    stats = _pitch_stats(state)
 
     cold = {}
     if not followup and not args.get("confirm_cold") and not (state.chip or {}).get("confirm_cold"):
@@ -366,6 +438,8 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         pitch = _with_inbox(pitch, to_email)
     pitch["brand_id"] = pitch.get("brand_id") or brand_id
     pitch["brand_name"] = pitch.get("brand_name") or brand_name
+    if stats.get("line") and not followup:
+        pitch["stats_line"] = stats["line"]
     if followup:
         pitch["is_followup"] = True
     else:
@@ -390,6 +464,7 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         "paid_ask": bool(pitch_paid and not followup),
         "parked_previous_draft": prior_name,
         "coach_tip": "" if followup else (pitch_coach_line(pkg, brand_name) or ""),
+        "stats_freshness": stats.get("line") or None,
         "pitch_card_shown": True,
         "pitch_unlocked": True,
         "explain": "The full pitch is unlocked and on the card. Never call it locked; "
@@ -562,6 +637,23 @@ def _dress_pitch(state: TurnState, pitch: Dict[str, Any], shipping: Dict[str, An
     if loc_display and not needs_loc:
         pitch["location_display"] = loc_display
     return pitch, pitch_paid
+
+
+def _pitch_stats(state: TurnState) -> Dict[str, Any]:
+    """Freshness of the numbers going into this pitch; starts a background sync when stale."""
+    try:
+        from services.creator_stats import pitch_stats
+        out = pitch_stats(state.db(), state.creator_id, (state.creator or {}).get("user_id"),
+                          state.scrape, state.notes)
+        state.notes = out["notes"]
+        return out
+    except Exception as err:
+        print(f"[Polly] stats check skipped: {err}")
+        try:
+            state.db().rollback()
+        except Exception:
+            pass
+        return {}
 
 
 def _pitch_location(state: TurnState):
@@ -849,6 +941,8 @@ def find_paid_gigs(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     state.gigs_locked = int(locked or 0)
     state.brands = []
     state.notes["wanted_gigs"] = True
+    if not gifted_only(state.notes):
+        state.notes = add_deal_intent(state.notes, "paid")
     if state.gigs:
         state.notes["saw_gigs"] = True
         state.notes = mark_shown_gigs(state.notes, state.gigs)
@@ -856,9 +950,12 @@ def find_paid_gigs(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         "ok": True,
         "gigs": [
             {"brand": g.get("brand_name"), "product": g.get("product_name"),
-             "source": g.get("source_label"), "pay": g.get("pay_label"), "where": g.get("location")}
+             "source": g.get("source_label"), "pay": g.get("pay_label"), "where": g.get("location"),
+             **({"fit_note": g["fit_note"]} if g.get("fit_note") else {})}
             for g in state.gigs[:6]
         ],
+        "explain": "Briefs with a fit_note are a stretch for them (agency-scale or another region); "
+                   "they rank last. Say so honestly if they ask which to apply to.",
         "more_available": state.gigs_has_more,
         "locked_for_pro": state.gigs_locked,
         "rates_on_kit": bool(((state.kit or {}).get("rates") or {})),
@@ -952,10 +1049,19 @@ def save_profile_facts(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]
     prefs: Dict[str, Any] = {}
     if args.get("gifted_only") is not None:
         prefs["gifted_only"] = bool(args.get("gifted_only"))
+    followers = _int(args.get("followers"))
+    if followers:
+        try:
+            from services.creator_stats import save_override
+            state.notes = save_override(state.db(), state.creator_id, state.notes, followers)
+            saved.append("followers")
+        except Exception as err:
+            print(f"[Polly] follower override skipped: {err}")
+            state.db().rollback()
     pitch_raw = {k: args[k] for k in PITCH_PREF_KEYS if args.get(k) not in (None, "", [])}
     pitch_raw.update({k: None for k in (args.get("clear_pitch_prefs") or []) if k in PITCH_PREF_KEYS})
     prefs.update(clean_pitch_prefs(pitch_raw))
-    for key in ("avoid_categories", "avoid_retailers"):
+    for key in ("avoid_categories", "avoid_retailers", "allow_categories"):
         vals = [str(v).strip().lower() for v in (args.get(key) or []) if str(v).strip()]
         if vals:
             prefs[key] = vals
@@ -1168,6 +1274,31 @@ _STR = {"type": "string"}
 _INT = {"type": "integer"}
 _BOOL = {"type": "boolean"}
 
+def get_content_stats(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
+    from services.polly_content import content_stats, niche_summary, stats_brief
+    stats = content_stats(state.scrape)
+    fresh = _pitch_stats(state)
+    snap = fresh.get("snap") or {}
+    out = {
+        "ok": True,
+        "stats": stats,
+        "summary": stats_brief(stats),
+        "niche": niche_summary(state.scrape, state.creator, state.kit),
+        "followers": snap.get("followers") or None,
+        "stats_freshness": fresh.get("line") or None,
+    }
+    if not stats.get("enough"):
+        out["explain"] = ("Too few posts synced to read patterns. Give general advice, say so, and don't quote "
+                          "numbers beyond what's here.")
+    return out
+
+
+def content_assist(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
+    from services.polly_content import run_task
+    task = str(args.get("task") or "").strip().lower()
+    return run_task(task, state.scrape, state.creator, state.kit, args)
+
+
 TOOLS: List[Dict[str, Any]] = [
     {
         "name": "search_directory",
@@ -1186,6 +1317,15 @@ TOOLS: List[Dict[str, Any]] = [
         "parameters": _obj({"deal": {**_STR, "enum": ["gifted", "paid"],
                                      "description": "Only if they asked for gifted or paid specifically"}}),
         "handler": suggest_brands,
+    },
+    {
+        "name": "browse_brands",
+        "description": "Search the whole directory for a category, sub-niche or keyword they ask for "
+                       "('find me K-beauty brands', 'matcha', 'automotive', 'sustainable fashion', "
+                       "'teacher brands'), even outside their saved niche. Shows cards. Only name brands "
+                       "it returns.",
+        "parameters": _obj({"query": {**_STR, "description": "What they asked for, e.g. K-beauty"}}, ["query"]),
+        "handler": browse_brands,
     },
     {
         "name": "draft_pitch",
@@ -1280,7 +1420,12 @@ TOOLS: List[Dict[str, Any]] = [
                                                        "{{product}}, {{first_name}}, {{handle}}, {{city}}, {{kit_url}}"},
             "clear_pitch_prefs": {"type": "array", "items": _STR,
                                   "description": "Pitch preference names to reset to default"},
+            "followers": {**_INT, "description": "Their current follower count when they correct it "
+                                                 "('I have 4k now' = 4000). Used in every pitch until a "
+                                                 "sync shows more."},
             "avoid_categories": {"type": "array", "items": _STR},
+            "allow_categories": {"type": "array", "items": _STR,
+                                 "description": "Categories they excluded before and now want back"},
             "avoid_retailers": {"type": "array", "items": _STR},
             "goal_30d": _STR, "stage": _STR, "niche": _STR,
             "biggest_challenge": _STR, "dream_brands": _STR,
@@ -1322,6 +1467,32 @@ TOOLS: List[Dict[str, Any]] = [
         "handler": draft_brand_reply,
     },
     {
+        "name": "get_content_stats",
+        "description": "What their recent posts show: typical and best views, weakest post, engagement per "
+                       "view, trend, posting cadence, top hooks and hashtags, plus niche, themes and kit "
+                       "headline. Use for growth questions ('why are my views down?', 'how often should I "
+                       "post?', 'what's working?', 'what's my niche?'). Quote only these numbers.",
+        "parameters": _obj({}),
+        "handler": get_content_stats,
+    },
+    {
+        "name": "content_assist",
+        "description": "Write content with them, grounded in their real posts: weekly_plan (this week's "
+                       "posts), hooks, script (short video), caption, review (feedback on a post: latest, "
+                       "best, worst, a link, or a pasted caption), ideas. Also for a product they were "
+                       "gifted ('how do I film the Glow Recipe serum?').",
+        "parameters": _obj({
+            "task": {**_STR, "enum": ["weekly_plan", "hooks", "script", "caption", "review", "ideas"]},
+            "topic": {**_STR, "description": "What it's about, in their words"},
+            "product": {**_STR, "description": "Product to feature, if any"},
+            "brand": {**_STR, "description": "Brand the content is for, if any"},
+            "post": {**_STR, "description": "For review: latest, best, worst, a post URL, or a 1-based index"},
+            "draft": {**_STR, "description": "Caption or script they pasted"},
+            "goal": {**_STR, "description": "e.g. more views, more followers, land brand deals"},
+        }, ["task"]),
+        "handler": content_assist,
+    },
+    {
         "name": "offer_pro",
         "description": "Show the Pro upgrade button ($19/mo) when they ask about Pro, more "
                        "pitches, or credits resetting. Returns the free path too, for when they can't afford it.",
@@ -1338,6 +1509,7 @@ _BY_NAME["draft_pitch_batch"] = draft_pitch_batch
 
 INTENT_FOR_TOOL = {
     "suggest_brands": "suggest_brands",
+    "browse_brands": "suggest_brands",
     "search_directory": "chat",
     "draft_pitch": "generate_pitch",
     "draft_pitch_batch": "generate_pitch",

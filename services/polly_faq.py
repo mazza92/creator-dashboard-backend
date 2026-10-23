@@ -82,6 +82,20 @@ _FAQ: List[Tuple[str, str, str]] = [
         "**My Kit** from there. Keep it published and up to date.",
     ),
     (
+        "what_polly_does",
+        r"what (else )?can (you|polly) (do|help)|what do you (do|help with)|can you help (me )?(with )?(my )?(content|grow|posts?)",
+        "Two things. **Brand deals:** I find brands that fit you, write your pitches, track replies on "
+        "**Timeline** and help you answer. **Content:** I read your recent posts, tell you what's "
+        "working, and write your weekly content plan, hooks, scripts and captions, or review a post.",
+    ),
+    (
+        "shipping",
+        r"(ship|deliver|send) (to|in) (my country|me|australia|canada|the uk|europe)|do (they|these brands?) ship",
+        "I only suggest gifting brands that ship to your country. Cards say **Ships to you** when the "
+        "brand confirms it, or **Shipping not confirmed** when they haven't said, so it's worth asking "
+        "in your pitch. Paid UGC briefs don't need shipping.",
+    ),
+    (
         "credits",
         r"how many credits|what (is|are) (a )?credits?|credits? (reset|renew|come back)|when do (my )?credits",
         "Free accounts get 3 credits a month. A credit is used when I draft a pitch to a new brand or "

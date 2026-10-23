@@ -88,6 +88,19 @@ def _replied_chip(brand_id: Any, name: str, task_id: Any = None) -> Dict[str, An
     return chip
 
 
+PAID_LADDER_AFTER = 3
+
+
+def paid_ladder_target(tracker: Optional[Dict] = None, notes: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
+    """After 3 posted gifted collabs: the brand to ask for paid usage (latest post not yet asked)."""
+    from services.polly_prefs import gifted_only
+
+    posted = (tracker or {}).get("posted_brands") or []
+    if len(posted) < PAID_LADDER_AFTER or gifted_only(notes) or any(p.get("paid_asked") for p in posted):
+        return None
+    return next((p for p in posted if p.get("brand_name")), None)
+
+
 def state_opener(
     first_name: Optional[str] = None,
     kit: Optional[Dict] = None,
@@ -117,6 +130,26 @@ def state_opener(
             "starters": [
                 {"id": "need_idea", "label": f"Plan my {name} content", "action": "chat"},
                 dict(GIFTED_LISTS_CHIP),
+                {"id": "portfolio", "label": "Review my kit", "action": "coach_portfolio"},
+            ],
+        }
+
+    ladder = paid_ladder_target(tracker, notes)
+    if ladder:
+        name = ladder.get("brand_name")
+        n = len(tracker.get("posted_brands") or [])
+        return {
+            "state": "paid_ladder",
+            "greeting": (
+                f"{hello} — you've posted for **{n}** brands now. That's proof brands can put in front "
+                f"of their own customers.\n\n"
+                f"Time for the next rung: ask **{name}** to pay to run your video as an ad. "
+                "I'll write it with your usage rate."
+            ),
+            "starters": [
+                {"id": "paid_ask", "label": f"Write my paid ask to {name}", "action": "chat",
+                 "brand_id": ladder.get("brand_id"), "brand_name": name},
+                {"id": "paid_ugc", "label": "Show paid UGC I can apply to now", "action": "suggest_gigs"},
                 {"id": "portfolio", "label": "Review my kit", "action": "coach_portfolio"},
             ],
         }

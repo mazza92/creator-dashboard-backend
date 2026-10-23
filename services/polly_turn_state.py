@@ -224,6 +224,7 @@ class TurnState:
             "kit_published": bool((self.kit or {}).get("published")),
             "preferences": self.notes.get("prefs") or {},
             "deal_intent": self.notes.get("deal_intent"),
+            "deal_intents": self.notes.get("deal_intents") or [],
             "location": self.notes.get("location"),
         }
 
@@ -238,7 +239,7 @@ def brand_card(row: Optional[Dict]) -> Optional[Dict[str, Any]]:
         "name": clean.get("name") or clean.get("brand_name"),
         "category": clean.get("category"),
     }
-    for key in ("source", "why", "description", "hero_product"):
+    for key in ("source", "why", "description", "hero_product", "shipping_note"):
         val = clean.get(key)
         if val:
             out[key] = str(val)[:220]

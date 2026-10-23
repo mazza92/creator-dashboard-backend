@@ -70,8 +70,30 @@ How to work:
 - Paid UGC / gigs / who pays = find_paid_gigs. Gifted PR / more brands / who should I pitch = suggest_brands.
   If it returns brands, the cards are on screen: introduce them. repeated means they've seen them and
   they're still unpitched. Never say the roster is empty when brands came back.
+- If a result has shipping.say, say that line (e.g. "These 6 ship to Australia."). Never claim a brand ships
+  to them unless the card says Ships to you. none_ship_here: say none ship there yet and offer paid UGC.
+- A specific category or sub-niche ("find me K-beauty brands", "any fragrance brands?", "matcha brands",
+  "teacher-friendly brands") = browse_brands with their words as query. It searches the whole directory,
+  not just their niche. excluded_category: they told you to skip it; ask if they want it back on.
+- "Show me fitness again" / "I'm ok with nails now" = save_profile_facts allow_categories.
+- Paid gigs can carry fit_note ("Agency-scale brief", "For US creators"). Mention it honestly; don't
+  hide the gig and don't promise they'll be picked.
+- New follower count ("I have 4k now", "I'm at 12,300 on TikTok") = save_profile_facts followers. If a
+  pitch is on screen, also edit_pitch so the card uses it. Never invent a count.
+- They moved or ship somewhere else = save_profile_facts city + country. Matching uses it from then on.
 - Coaching (kit, bio, replies, rates, this week, how the app works) = get_coaching_facts first, then coach
   from those facts. Don't invent follower counts or kit details.
+- You're also their content manager, not only outreach. Growth questions ("why are my views down?", "how
+  often should I post?", "what's working?", "what's my niche?") = get_content_stats, then answer from its
+  numbers: name their best post's hook, their typical views, their cadence. "What's my niche" = the niche
+  plus their kit headline. If enough=false, say you can only see a few posts and keep it general.
+  likes_comments_synced=false means likes weren't readable, not zero: never say a post got no likes.
+- Making content (content plan for the week, what to post, hooks, a script, captions, ideas, "how do I film
+  the product they sent me", "review my last post") = content_assist with the right task. Then write the
+  content out in the reply: this is the one time you paste a full list (plan, hooks, script beats,
+  captions). Keep their numbers exactly as returned. End with one next step, e.g. pitching a brand that
+  fits the plan.
+- Never promise views, followers or virality. Say what tends to work and why, from their own posts.
 - They tell you their city/country, preferences, goal, niche or challenge = save_profile_facts.
   Only a real place counts as a city; a button label or status ("They replied") is not a location.
 - Out of free pitches, Pro, credits reset, can't afford = offer_pro. No calendar dates for resets.
@@ -342,6 +364,14 @@ _UI_WORDS = frozenset({
 })
 
 
+_CONTENT_WORDS = frozenset({
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "this week", "next week",
+    "hook", "hooks", "script", "caption", "captions", "cta", "focus", "next post", "change next time",
+    "what worked", "what to fix", "try next", "verdict", "ideas", "content plan", "your plan", "beats",
+    "grwm", "pov", "tutorial", "voiceover", "b-roll", "talking head", "trend", "review", "why",
+})
+
+
 def _bold_names(text: str) -> List[str]:
     out = []
     for match in re.finditer(r"\*\*([^*]{2,40})\*\*", text or ""):
@@ -349,7 +379,7 @@ def _bold_names(text: str) -> List[str]:
         words = val.split()
         if not words or len(words) > 4 or not val[:1].isupper():
             continue
-        if val.lower() in _UI_WORDS or re.search(r"\d", val):
+        if val.lower() in _UI_WORDS or val.lower() in _CONTENT_WORDS or re.search(r"\d", val):
             continue
         if not polly.candidate_looks_like_brand_name(val):
             continue
@@ -365,10 +395,12 @@ def reply_problems(state: TurnState, reply: str) -> List[str]:
     logged = state.tools_ran("log_pitch_sent", "logged") or state.tools_ran("log_pitch_sent", "already_logged")
     if _SEND_CLAIM_RE.search(text) and not logged and not state.tools_ran("log_brand_update"):
         problems.append("The reply says a pitch was logged or sent, but log_pitch_sent did not log one this turn.")
-    if _DRAFT_CLAIM_RE.search(text) and not state.pitch:
+    content_turn = state.tools_ran("content_assist")
+    if _DRAFT_CLAIM_RE.search(text) and not state.pitch and not (
+            content_turn and not re.search(r"(?i)\b(pitch|draft)\b", text)):
         problems.append("The reply says a pitch was drafted, but no pitch card exists this turn.")
     tracker_turn = state.tools_ran("log_brand_update") or state.tools_ran("log_pitch_sent")
-    if not state.pitch and not state.pitch_update and not tracker_turn and any(
+    if not state.pitch and not state.pitch_update and not tracker_turn and not content_turn and any(
         _EDIT_CLAIM_RE.search(s) and _PITCH_WORD_RE.search(s) and not re.search(r"(?i)\b(didn'?t|not|couldn'?t|can'?t)\b", s)
         for s in _SENTENCE_SPLIT_RE.split(text)
     ):

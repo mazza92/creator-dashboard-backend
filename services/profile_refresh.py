@@ -107,22 +107,34 @@ def refresh_stale_profiles(conn, limit: int = 4, dry_run: bool = False) -> Dict[
         out["items"] = [{"user_id": r["user_id"], "platform": r["platform"]} for r in rows]
         return out
     for row in rows:
-        uid, handle, platform = row["user_id"], row["handle"], row["platform"]
-        item: Dict[str, Any] = {"user_id": uid, "platform": platform}
-        try:
-            scraper = CreatorProfileScraper(conn)
-            if platform == "instagram":
-                raw = scraper.scrape_instagram_profile(handle, user_id=uid, allow_html_fallback=True)
-            else:
-                raw = scraper.scrape_tiktok_profile(handle, user_id=uid, allow_html_fallback=True)
-            if raw.get("isPrivate") or raw.get("privateAccount") or raw.get("private"):
-                raise ValueError("private")
-            profile = scraper.process_scrape(raw, platform)
-            if not _usable(profile):
-                raise ValueError("thin scrape")
-            vision = None
+        item = refresh_profile(conn, row["user_id"], row["handle"], row["platform"],
+                               before=int(row.get("follower_count") or 0))
+        out["refreshed" if item.get("ok") else "deferred"] += 1
+        out["items"].append(item)
+    return out
+
+
+def refresh_profile(conn, uid: int, handle: str, platform: str, before: int = 0,
+                    vision: bool = True) -> Dict[str, Any]:
+    """Re-scrape one creator. A blocked or thin scrape keeps the last good data."""
+    from services.creator_profile_scraper import CreatorProfileScraper
+
+    item: Dict[str, Any] = {"user_id": uid, "platform": platform}
+    try:
+        scraper = CreatorProfileScraper(conn)
+        if platform == "instagram":
+            raw = scraper.scrape_instagram_profile(handle, user_id=uid, allow_html_fallback=True)
+        else:
+            raw = scraper.scrape_tiktok_profile(handle, user_id=uid, allow_html_fallback=True)
+        if raw.get("isPrivate") or raw.get("privateAccount") or raw.get("private"):
+            raise ValueError("private")
+        profile = scraper.process_scrape(raw, platform)
+        if not _usable(profile):
+            raise ValueError("thin scrape")
+        analysis = None
+        if vision:
             try:
-                vision = scraper.run_vision_analysis(
+                analysis = scraper.run_vision_analysis(
                     thumbnail_urls=profile.get("recent_post_thumbnails", []),
                     bio=profile.get("raw_bio", ""),
                     captions=profile.get("recent_captions", []),
@@ -131,17 +143,13 @@ def refresh_stale_profiles(conn, limit: int = 4, dry_run: bool = False) -> Dict[
                 )
             except Exception as err:
                 print(f"[profile-refresh] vision skipped user={uid}: {err}")
-            scraper.save_creator_profile(uid, profile, vision)
-            out["refreshed"] += 1
-            item.update(ok=True, followers=int(profile.get("follower_count") or 0),
-                        before=int(row.get("follower_count") or 0))
-        except Exception as err:
-            try:
-                conn.rollback()
-                _defer(conn, uid)
-            except Exception:
-                conn.rollback()
-            out["deferred"] += 1
-            item.update(ok=False, error=str(err)[:120])
-        out["items"].append(item)
-    return out
+        scraper.save_creator_profile(uid, profile, analysis)
+        item.update(ok=True, followers=int(profile.get("follower_count") or 0), before=before)
+    except Exception as err:
+        try:
+            conn.rollback()
+            _defer(conn, uid)
+        except Exception:
+            conn.rollback()
+        item.update(ok=False, error=str(err)[:120])
+    return item

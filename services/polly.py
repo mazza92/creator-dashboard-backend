@@ -268,6 +268,8 @@ _BRAND_CARD_KEYS = (
     "source",
     "why",
     "reply_signal",
+    "ships_to_you",
+    "shipping_note",
 )
 
 
@@ -582,6 +584,10 @@ def sanitize_brand_card(row: Any, source: str = "matched") -> Optional[Dict[str,
         "source": source,
         "why": desc or None,
     }
+    if brand.get("ships_to_you"):
+        card["ships_to_you"] = True
+    elif brand.get("shipping_note"):
+        card["shipping_note"] = str(brand["shipping_note"])[:60]
     signal = brand.get("reply_signal")
     if isinstance(signal, dict) and signal.get("tier"):
         card["reply_signal"] = {

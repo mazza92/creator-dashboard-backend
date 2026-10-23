@@ -377,6 +377,11 @@ def _pick_brands(conn, creator_id, creator, notes, scrape):
     )
     brands = filter_brands_by_prefs(drop_pitched(brands, notes, extra_ids=exclude), notes)
     brands = [b for b in brands if _fit(b) >= MIN_FIT]
+    from services.brand_shipping import apply_shipping, creator_country, load_regions
+    country = creator_country(creator, notes, scrape)
+    if country:
+        ship = apply_shipping(brands, country, load_regions(conn, [b.get("id") for b in brands]))
+        brands = ship["brands"]
     emailable = _brands_with_email(conn, [int(b["id"]) for b in brands if b.get("id")])
     matched = [b for b in brands if b.get("id") and int(b["id"]) in emailable]
     return matched, None if matched else "no_matches"

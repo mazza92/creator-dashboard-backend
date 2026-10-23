@@ -854,6 +854,8 @@ def persona_pref_ack(patch: Optional[Dict[str, Any]] = None) -> str:
         bits.append("no " + ", ".join(patch["avoid_categories"]) + " brands")
     if patch.get("avoid_retailers"):
         bits.append("skipping brands sold at " + ", ".join(patch["avoid_retailers"]))
+    if patch.get("allow_categories"):
+        bits.append(", ".join(patch["allow_categories"]) + " brands are back on")
     if patch.get("show_engagement_rate") is False:
         bits.append("no engagement rate in your pitches from now on")
     if patch.get("lead_metric"):

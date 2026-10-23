@@ -1261,9 +1261,31 @@ def load_creator_context(conn, creator_id: int) -> Dict[str, Any]:
         (creator_id,),
     )
     recent = [dict(r) for r in cur.fetchall()]
+    cur.execute(
+        """
+        SELECT e.brand_id, MAX(b.brand_name) AS brand_name, MAX(e.occurred_at) AS posted_at,
+               BOOL_OR(e2.id IS NOT NULL) AS paid_asked
+        FROM polly_timeline_events e
+        LEFT JOIN pr_brands b ON b.id = e.brand_id
+        LEFT JOIN polly_timeline_events e2
+               ON e2.creator_id = e.creator_id AND e2.brand_id = e.brand_id
+              AND e2.event_type IN ('paid_pitch_sent', 'payment_received')
+        WHERE e.creator_id = %s AND e.event_type = 'content_posted' AND e.brand_id IS NOT NULL
+        GROUP BY e.brand_id
+        ORDER BY MAX(e.occurred_at) DESC
+        LIMIT 20
+        """,
+        (creator_id,),
+    )
+    posted = [
+        {"brand_id": r["brand_id"], "brand_name": r["brand_name"], "paid_asked": bool(r["paid_asked"]),
+         "posted_at": r["posted_at"].isoformat() if r.get("posted_at") else None}
+        for r in cur.fetchall()
+    ]
     from services.polly_pain import checkin_due as _checkin_due
     pulse = _checkin_due({"active_tasks": active, "due_soon": due_soon})
     return {
+        "posted_brands": posted,
         "active_tasks": _public_tasks(active),
         "due_soon": _public_tasks(due_soon),
         "checkin_due": pulse,
