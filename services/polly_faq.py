@@ -13,9 +13,9 @@ _FAQ: List[Tuple[str, str, str]] = [
     (
         "gifted_list",
         r"gifted list|applicant pool|in review|(am i|was i|i was|i'?m) (selected|picked|chosen)|did they (pick|choose|select) me",
-        "Being on a brand's gifted list means you applied and you're in their applicant pool. "
-        "They haven't picked yet. If they choose you, the status changes to **Selected · shipping** "
-        "and you get an email. If they pick other creators, it shows **They passed**.",
+        "**Applied** means you're in that brand's applicant pool for their open PR campaign. "
+        "They haven't chosen yet. If they choose you, the status changes to **Picked** "
+        "and you get an email. If they pick other creators, it shows **Not this time**.",
     ),
     (
         "brand_contact",
@@ -92,10 +92,12 @@ _FAQ: List[Tuple[str, str, str]] = [
 _COMPILED = [(key, re.compile(rf"(?i)\b(?:{rx})"), answer) for key, rx, answer in _FAQ]
 
 _STATUS_LINES = (
-    "Timeline statuses: Applied · in review = applied, brand hasn't picked. Selected · shipping = "
-    "brand chose them, box is coming. Posted content = content is up. They passed = the brand picked "
-    "other creators this round. A pitch is only Sent after they tap I sent it (or Autopilot sends it); "
-    "it can only show a reply after it was sent."
+    "Timeline pitch statuses: Drafted (written, not sent) → Sent (waiting on the brand; follow-ups "
+    "day 4 and 10) → Replied (interested / question / passed) → Shipping → Content due → Posted, or "
+    "Dropped after 14 days with no reply. Open PR campaign statuses: Applied (in the applicant pool, "
+    "brand hasn't chosen) → Picked → Done, or Not this time. A pitch is only Sent after they tap I "
+    "sent it (or Autopilot sends it); it can only show a reply after it was sent. Brand cards also "
+    "show how many creators pitched that brand in the last 30 days and when it last replied to anyone."
 )
 
 FAQ_PROMPT = (

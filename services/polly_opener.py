@@ -110,7 +110,7 @@ def state_opener(
         return {
             "state": "selected",
             "greeting": (
-                f"{hello} — **{name}** picked you for their gifted list. Your box is on the way. 🎉\n\n"
+                f"{hello} — **{name}** picked you from their applicant pool. Your box is on the way. 🎉\n\n"
                 "When it lands, film within a week. Posted content from a gifted box is "
                 "exactly what gets you your first paid ask."
             ),
@@ -192,16 +192,16 @@ def state_opener(
         n = len(apps)
         lead = apps[0].get("brand_name") or "a brand"
         where = (
-            f"you're on **{lead}**'s gifted list"
+            f"you're in **{lead}**'s applicant pool"
             if n == 1
-            else f"you're on **{n}** gifted lists, including **{lead}**"
+            else f"you're in **{n}** applicant pools, including **{lead}**'s"
         )
         return {
             "state": "applications",
             "greeting": (
-                f"{hello} — {where}. That means applied, still in review: "
-                "the brand picks who gets a box, and they haven't picked yet.\n\n"
-                "Best move while you wait: pitch one brand directly so you're not relying on a single list."
+                f"{hello} — {where}. The brand chooses who gets PR, "
+                "and most pick within 2 to 3 weeks.\n\n"
+                "Best move while you wait: pitch one brand directly so you're not relying on a single roster."
             ),
             "starters": [
                 {

@@ -85,6 +85,82 @@ def _list_next_re(prev_words, next_words) -> "re.Pattern[str]":
     )
 
 
+LEAD_METRICS = ("followers", "views", "engagement", "none")
+OFFER_TYPES = ("gifted_post", "gifted_ugc", "gifted_ugc_photos", "paid_only")
+TONES = ("friendly", "professional")
+PLATFORMS = ("tiktok", "instagram", "youtube", "pinterest", "facebook", "twitch", "x")
+PITCH_PREF_KEYS = ("show_engagement_rate", "lead_metric", "platforms", "offer_type", "deliverables",
+                   "usage_rights_months", "tone", "custom_template")
+REWRITE_KEYS = ("lead_metric", "platforms", "offer_type", "deliverables", "usage_rights_months", "tone")
+_PLATFORM_ALIASES = {"ig": "instagram", "insta": "instagram", "yt": "youtube", "tik tok": "tiktok",
+                     "twitter": "x", "fb": "facebook", "shorts": "youtube", "reels": "instagram"}
+
+
+def _platform(value: Any) -> str:
+    key = str(value or "").strip().lower()
+    key = _PLATFORM_ALIASES.get(key, key)
+    return key if key in PLATFORMS else ""
+
+
+def clean_pitch_prefs(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Valid pitch-preference fields only. None or "" means 'clear this one'."""
+    out: Dict[str, Any] = {}
+    for key, val in (raw or {}).items():
+        if key not in PITCH_PREF_KEYS:
+            continue
+        if val is None or val == "" or val == []:
+            out[key] = None
+        elif key == "show_engagement_rate":
+            out[key] = bool(val)
+        elif key == "lead_metric" and str(val).lower() in LEAD_METRICS:
+            out[key] = str(val).lower()
+        elif key == "offer_type" and str(val).lower() in OFFER_TYPES:
+            out[key] = str(val).lower()
+        elif key == "tone" and str(val).lower() in TONES:
+            out[key] = str(val).lower()
+        elif key == "platforms":
+            items = val if isinstance(val, (list, tuple)) else re.split(r"[,/]| and ", str(val))
+            names = list(dict.fromkeys(p for p in (_platform(i) for i in items) if p))
+            if names:
+                out[key] = names
+        elif key == "usage_rights_months":
+            try:
+                months = int(float(val))
+            except (TypeError, ValueError):
+                continue
+            if 0 <= months <= 24:
+                out[key] = months
+        elif key == "deliverables":
+            out[key] = re.sub(r"\s+", " ", str(val)).strip()[:200]
+        elif key == "custom_template":
+            text = str(val).strip()[:3000]
+            if len(text) >= 40:
+                out[key] = text
+    return out
+
+
+_LEAD_RE = re.compile(r"(?i)\blead(?:s|ing)?\s+with\s+(?:my\s+)?(followers|views|engagement)\b")
+_TONE_RE = re.compile(r"(?i)\b(?:more|sound|keep (?:it|them))\s+(professional|formal|friendly|casual|warm)\b")
+_USAGE_RE = re.compile(r"(?i)\b(\d{1,2})[- ]?(?:month|mo)s?\b[^.!?\n]{0,25}\busage\b"
+                       r"|\busage(?:\s+rights)?\b[^.!?\n]{0,20}?\b(\d{1,2})[- ]?(?:month|mo)s?\b")
+
+
+def parse_pitch_preferences(text: str) -> Dict[str, Any]:
+    """The few pitch preferences safe to read without the model (fallback path)."""
+    raw = text or ""
+    patch: Dict[str, Any] = {}
+    m = _LEAD_RE.search(raw)
+    if m:
+        patch["lead_metric"] = m.group(1).lower()
+    m = _TONE_RE.search(raw)
+    if m:
+        patch["tone"] = "professional" if m.group(1).lower() in ("professional", "formal") else "friendly"
+    m = _USAGE_RE.search(raw)
+    if m:
+        patch["usage_rights_months"] = int(m.group(1) or m.group(2))
+    return clean_pitch_prefs(patch)
+
+
 def parse_preferences(text: str) -> Dict[str, Any]:
     """Preference patch from one creator message. Empty dict when nothing stated."""
     raw = (text or "").strip()
@@ -112,6 +188,7 @@ def parse_preferences(text: str) -> Dict[str, Any]:
     from services.polly_pitch_edit import wants_no_engagement
     if wants_no_engagement(raw):
         patch["show_engagement_rate"] = False
+    patch.update(parse_pitch_preferences(raw))
     return patch
 
 
@@ -127,17 +204,62 @@ def merge_prefs(notes: Optional[Dict], patch: Optional[Dict]) -> Dict[str, Any]:
     prefs = get_prefs(out)
     if "gifted_only" in patch:
         prefs["gifted_only"] = bool(patch["gifted_only"])
-    if "show_engagement_rate" in patch:
-        prefs["show_engagement_rate"] = bool(patch["show_engagement_rate"])
+    for key, val in clean_pitch_prefs(patch).items():
+        if val is None:
+            prefs.pop(key, None)
+        else:
+            prefs[key] = val
     for key in ("avoid_categories", "avoid_retailers"):
         if patch.get(key):
             prefs[key] = list(dict.fromkeys(list(prefs.get(key) or []) + list(patch[key])))
+    offer = patch.get("offer_type")
+    if offer == "paid_only":
+        prefs["gifted_only"] = False
+        out["deal_intent"] = "paid"
+    elif offer in OFFER_TYPES:
+        out["deal_intent"] = "gifted"
     out["prefs"] = prefs
     if prefs.get("gifted_only"):
         out["deal_intent"] = "gifted"
         if str(out.get("goal_30d") or "").strip().lower() == "paid ugc":
             out.pop("goal_30d", None)
     return out
+
+
+_OFFER_LABEL = {"gifted_post": "gifted post", "gifted_ugc": "gifted + UGC",
+                "gifted_ugc_photos": "gifted + UGC + photos", "paid_only": "paid only"}
+_PLATFORM_LABEL = {"tiktok": "TikTok", "instagram": "Instagram", "youtube": "YouTube", "x": "X"}
+
+
+def pitch_prefs_line(prefs: Optional[Dict[str, Any]]) -> str:
+    """'Leads with views · no engagement · 1 TikTok + 2 UGC' for the pitch card."""
+    prefs = prefs or {}
+    if prefs.get("custom_template"):
+        return "Your template"
+    bits = []
+    lead = prefs.get("lead_metric")
+    if lead and lead != "none":
+        bits.append(f"Leads with {lead}")
+    elif lead == "none":
+        bits.append("No stats")
+    if prefs.get("show_engagement_rate") is False and lead != "engagement":
+        bits.append("no engagement")
+    if prefs.get("platforms"):
+        bits.append(" + ".join(_PLATFORM_LABEL.get(p, p.title()) for p in prefs["platforms"]))
+    if prefs.get("deliverables"):
+        bits.append(prefs["deliverables"])
+    elif prefs.get("offer_type"):
+        bits.append(_OFFER_LABEL[prefs["offer_type"]])
+    if prefs.get("usage_rights_months") is not None:
+        n = prefs["usage_rights_months"]
+        bits.append("no usage rights" if n == 0 else f"{n}-month usage")
+    if prefs.get("tone"):
+        bits.append(prefs["tone"])
+    return " · ".join(bits)
+
+
+def needs_rewrite(prefs: Optional[Dict[str, Any]]) -> bool:
+    return any((prefs or {}).get(k) not in (None, "", []) for k in REWRITE_KEYS)
 
 
 def gifted_only(notes: Optional[Dict] = None) -> bool:
@@ -155,6 +277,11 @@ def prefs_context(notes: Optional[Dict] = None) -> str:
         bits.append("skip brands sold at: " + ", ".join(prefs["avoid_retailers"]))
     if prefs.get("show_engagement_rate") is False:
         bits.append("never mention their engagement rate in pitches")
+    if prefs.get("offer_type") == "paid_only":
+        bits.append("paid only — suggest paid briefs and paid pitches, no gifted asks")
+    line = pitch_prefs_line(prefs)
+    if line:
+        bits.append(f"pitch preferences already applied to every pitch: {line}")
     if not bits:
         return ""
     return "Stated preferences (hard rules): " + "; ".join(bits)

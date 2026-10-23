@@ -220,8 +220,9 @@ class StateOpenerTests(unittest.TestCase):
     def test_review_is_not_selected(self):
         out = state_opener("Ana", applications=[{"brand_id": 1, "brand_name": "Sol", "status": "review"}])
         self.assertEqual(out["state"], "applications")
-        self.assertIn("still in review", out["greeting"])
+        self.assertIn("applicant pool", out["greeting"])
         self.assertNotIn("picked you", out["greeting"])
+        self.assertNotIn("gifted list", out["greeting"])
 
     def test_kit_not_live(self):
         self.assertEqual(state_opener("Ana", kit={"published": False})["state"], "kit_not_live")

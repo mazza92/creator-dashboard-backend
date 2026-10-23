@@ -51,8 +51,16 @@ from services.polly_persona import (
     persona_paywall_say,
     persona_unlocks_after_send,
 )
-from services.polly_pitch_edit import apply_pitch_prefs, revise_pitch
-from services.polly_prefs import filter_brands_by_prefs, gifted_only, merge_prefs
+from services.polly_pitch_edit import apply_pitch_prefs, pitch_pref_inputs, revise_pitch
+from services.polly_prefs import (
+    PITCH_PREF_KEYS,
+    clean_pitch_prefs,
+    filter_brands_by_prefs,
+    get_prefs,
+    gifted_only,
+    merge_prefs,
+    pitch_prefs_line,
+)
 from services.polly_turn_state import TurnState, brand_card
 
 
@@ -542,7 +550,13 @@ def _dress_pitch(state: TurnState, pitch: Dict[str, Any], shipping: Dict[str, An
         if loc_display:
             pitch = apply_location_to_pitch(pitch, shipping.get("city") or "",
                                             shipping.get("country") or "", loc_display)
-    pitch = apply_pitch_prefs(pitch, state.notes)
+    inputs = pitch_pref_inputs(state.db(), state.notes, pitch.get("brand_id"), creator=state.creator,
+                               scrape=state.scrape, kit=state.kit, location=loc_display)
+    if state.first:
+        inputs["slots"].setdefault("first_name", state.first)
+        inputs["slots"]["first_name"] = inputs["slots"]["first_name"] or state.first
+    pitch = apply_pitch_prefs(pitch, state.notes, slots=inputs["slots"], facts=inputs["facts"],
+                              rewrite=not followup)
     needs_loc = pitch_has_placeholder(pitch.get("body") or "")
     pitch["needs_location"] = needs_loc
     if loc_display and not needs_loc:
@@ -729,6 +743,42 @@ _EVENTS = {
 }
 
 
+def _status_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    tr = row.get("tracker") or {}
+    return {
+        "brand": row.get("name"),
+        "status": tr.get("label") or row.get("stage_label"),
+        "who_acts_next": tr.get("who_next"),
+        "what_it_means": tr.get("copy"),
+        "brand_signals": tr.get("signals") or [],
+        "last_event": row.get("last_event"),
+        "last_event_at": row.get("last_event_at"),
+        "next_due_at": row.get("due_at"),
+    }
+
+
+def get_pitch_status(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
+    name = str(args.get("brand_name") or "").strip()
+    try:
+        rows = tracker.list_relationships(state.db(), state.creator_id)
+    except Exception as err:
+        print(f"[Polly] pitch status skipped: {err}")
+        return {"ok": False, "error": "could not read the tracker"}
+    if name or args.get("brand_id"):
+        row = find_brand(state, brand_id=args.get("brand_id"), brand_name=name)
+        bid = (row or {}).get("id")
+        key = name.lower()
+        hit = [r for r in rows if (bid and r.get("brand_id") == bid)
+               or (key and key in str(r.get("name") or "").lower())]
+        if not hit:
+            return {"ok": True, "status": "not_tracked", "brand": (row or {}).get("name") or name,
+                    "explain": "Nothing is logged for this brand: no pitch sent and no application. "
+                               "Say so plainly; offer to draft a pitch."}
+        return {"ok": True, "status": "found", "brand": hit[0].get("name"), "relationship": _status_row(hit[0])}
+    return {"ok": True, "status": "overview", "count": len(rows),
+            "relationships": [_status_row(r) for r in rows[:10]]}
+
+
 def log_brand_update(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     event = str(args.get("event") or "").strip().lower()
     intent = _EVENTS.get(event)
@@ -902,8 +952,9 @@ def save_profile_facts(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]
     prefs: Dict[str, Any] = {}
     if args.get("gifted_only") is not None:
         prefs["gifted_only"] = bool(args.get("gifted_only"))
-    if args.get("show_engagement_rate") is not None:
-        prefs["show_engagement_rate"] = bool(args.get("show_engagement_rate"))
+    pitch_raw = {k: args[k] for k in PITCH_PREF_KEYS if args.get(k) not in (None, "", [])}
+    pitch_raw.update({k: None for k in (args.get("clear_pitch_prefs") or []) if k in PITCH_PREF_KEYS})
+    prefs.update(clean_pitch_prefs(pitch_raw))
     for key in ("avoid_categories", "avoid_retailers"):
         vals = [str(v).strip().lower() for v in (args.get(key) or []) if str(v).strip()]
         if vals:
@@ -911,12 +962,20 @@ def save_profile_facts(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]
     if prefs:
         state.notes = merge_prefs(state.notes, prefs)
         saved.append("preferences")
+    pitch_saved = sorted(k for k in prefs if k in PITCH_PREF_KEYS)
     patch = {k: args.get(k) for k in ("goal_30d", "stage", "niche", "biggest_challenge", "dream_brands")
              if args.get(k)}
     if patch:
         state.notes = merge_notes_patch(state.notes, patch)
         saved.extend(sorted(patch))
     out = {"ok": True, "saved": saved, "draft_city_filled": draft_updated}
+    if pitch_saved:
+        out["pitch_prefs_saved"] = pitch_saved
+        out["pitch_prefs_now"] = pitch_prefs_line(get_prefs(state.notes)) or "default pitch"
+        out["explain"] = ("Confirm in one line, e.g. \"Saved. I won't include engagement in future pitches.\" "
+                          "These apply to every new pitch, including Autopilot. The card already on screen "
+                          "only changes if you call edit_pitch. You may advise against a preference once, "
+                          "but never refuse it.")
     if rejected_location:
         out["location_not_saved"] = "That isn't a city and country. Ask where they ship from."
     return out
@@ -958,7 +1017,7 @@ def edit_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "status": "not_changed", "brand": brand,
                 "why_not": result.get("why_not") or "", "saved_for_future_pitches": saved_pref,
                 "explain": "The pitch did NOT change. Say so plainly and give why_not. Never say it was updated."}
-    updated = apply_pitch_prefs(result["pitch"], state.notes)
+    updated = apply_pitch_prefs(result["pitch"], state.notes, rewrite=False)
     state.pitch_update = updated
     state.pitch = updated
     state.add_chips(pitch_confirm_chips({"id": updated.get("brand_id"), "name": updated.get("brand_name")}))
@@ -1170,6 +1229,18 @@ TOOLS: List[Dict[str, Any]] = [
         "handler": log_brand_update,
     },
     {
+        "name": "get_pitch_status",
+        "description": "Read where things stand with a brand (or all brands): status (Drafted, Sent, "
+                       "Replied, Shipping, Content due, Posted, Dropped; Applied / Picked / Not this time "
+                       "for open PR campaigns), who acts next, and brand signals (how many creators "
+                       "pitched it in the last 30 days, when it last replied to anyone, whether it opened "
+                       "their kit). Use for 'did X reply', 'what's happening with X', 'where are my "
+                       "pitches', 'should I follow up'. Only state what it returns.",
+        "parameters": _obj({"brand_name": {**_STR, "description": "Omit for an overview of all brands"},
+                            "brand_id": _INT}),
+        "handler": get_pitch_status,
+    },
+    {
         "name": "find_paid_gigs",
         "description": "Show live paid UGC briefs they can apply to (pulled from AspireIQ, LinkedIn and "
                        "other boards). Use for paid UGC / gigs / who pays. Not for gifted PR. "
@@ -1190,11 +1261,25 @@ TOOLS: List[Dict[str, Any]] = [
         "name": "save_profile_facts",
         "description": "Save facts the creator just told you: shipping city + country (also fills the "
                        "draft's [CITY, COUNTRY]), gifted-only or open to paid, categories or retailers to "
-                       "avoid, goal, stage, niche, biggest challenge, dream brands.",
+                       "avoid, goal, stage, niche, biggest challenge, dream brands, and standing pitch "
+                       "preferences for every future pitch (what to lead with, which platforms, offer, "
+                       "deliverables, usage rights, tone, their own template).",
         "parameters": _obj({
             "city": _STR, "country": _STR,
             "gifted_only": _BOOL,
             "show_engagement_rate": {**_BOOL, "description": "false when they don't want engagement in pitches"},
+            "lead_metric": {**_STR, "enum": ["followers", "views", "engagement", "none"]},
+            "platforms": {"type": "array", "items": {**_STR, "enum": ["tiktok", "instagram", "youtube",
+                                                                       "pinterest", "facebook", "twitch", "x"]},
+                          "description": "Only the platforms they want mentioned in pitches"},
+            "offer_type": {**_STR, "enum": ["gifted_post", "gifted_ugc", "gifted_ugc_photos", "paid_only"]},
+            "deliverables": {**_STR, "description": "Exactly as they say it, e.g. 1 organic TikTok + 2 UGC videos"},
+            "usage_rights_months": {**_INT, "description": "Months of usage rights to offer; 0 = none"},
+            "tone": {**_STR, "enum": ["friendly", "professional"]},
+            "custom_template": {**_STR, "description": "Their own pitch text, verbatim. Slots: {{brand}}, "
+                                                       "{{product}}, {{first_name}}, {{handle}}, {{city}}, {{kit_url}}"},
+            "clear_pitch_prefs": {"type": "array", "items": _STR,
+                                  "description": "Pitch preference names to reset to default"},
             "avoid_categories": {"type": "array", "items": _STR},
             "avoid_retailers": {"type": "array", "items": _STR},
             "goal_30d": _STR, "stage": _STR, "niche": _STR,

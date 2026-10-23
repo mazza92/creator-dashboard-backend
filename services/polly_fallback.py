@@ -130,6 +130,9 @@ def template_reply(state: TurnState) -> str:
     if name == "save_profile_facts":
         if res.get("draft_city_filled") and state.pitch:
             return persona_location_filled(state.pitch.get("brand_name"), state.notes.get("location"))
+        if res.get("pitch_prefs_saved"):
+            return (f"Saved. Every new pitch, Autopilot included, now follows this: "
+                    f"{res.get('pitch_prefs_now')}.")
         return "Got it, saved. What do you want to land first?"
     if name == "fix_draft_handle" and state.pitch:
         args = entry.get("args") or {}
@@ -143,9 +146,37 @@ def template_reply(state: TurnState) -> str:
             return "There's no pitch on screen to change yet. Which brand should I write one for?"
         why = res.get("why_not") or "I couldn't make that change."
         return f"The pitch hasn't changed: {why[:1].lower() + why[1:]}{future}"
+    if name == "get_pitch_status":
+        return status_reply(res)
     if name == "offer_pro":
         return persona_paywall_retry(res.get("button_shown_for"))
     return "Done. What's next?"
+
+
+def _status_line(rel: dict) -> str:
+    line = f"**{rel.get('brand')}**: {rel.get('status') or 'Sent'}"
+    if rel.get("who_acts_next") and rel["who_acts_next"] != "Nobody":
+        line += f" · next: {rel['who_acts_next'].lower()}"
+    return line
+
+
+def status_reply(res: dict) -> str:
+    status = res.get("status")
+    if status == "not_tracked":
+        return (f"Nothing's logged for **{res.get('brand') or 'that brand'}** yet: no pitch sent and no "
+                "application. Want me to write one?")
+    if status == "found":
+        rel = res.get("relationship") or {}
+        parts = [_status_line(rel) + "."]
+        if rel.get("what_it_means"):
+            parts.append(rel["what_it_means"])
+        if rel.get("brand_signals"):
+            parts.append(rel["brand_signals"][0] + ".")
+        return " ".join(parts)
+    rels = res.get("relationships") or []
+    if not rels:
+        return "Nothing on your Timeline yet. Want me to line up three brands to pitch?"
+    return "Here's where things stand:\n\n" + "\n".join(f"- {_status_line(r)}" for r in rels[:6])
 
 
 def run_fallback(state: TurnState) -> str:

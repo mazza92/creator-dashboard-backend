@@ -826,7 +826,7 @@ def record_campaign_applied(
         f"Applied for gifted PR · {name}",
         brand_id=brand_id, task_id=task_id,
         event_data={"brand_name": name, "source": "apply"},
-        polly_notes="You're on their gifted list. They pick who gets the box.",
+        polly_notes=f"You're in {name}'s applicant pool. They choose who gets PR.",
     )
     return {"ok": True, "brand_id": brand_id, "task_id": task_id}
 
@@ -1382,14 +1382,71 @@ def list_relationships(conn, creator_id: int, status: Optional[str] = None) -> L
             "source": "apply" if any(t.get("type") == "campaign_applied" for t in brand_tasks) else "pitch",
         })
     rows = merge_application_relationships(rows, _creator_applications(conn, creator_id))
+    try:
+        attach_pitch_status(conn, creator_id, rows, tasks)
+    except Exception as err:
+        print(f"[Polly tracker] pitch status skipped: {err}")
+        conn.rollback()
     order = {"active": 0, "won": 1, "pitched": 2, "dropped": 3}
     rows.sort(key=lambda r: r.get("last_event_at") or "", reverse=True)
     rows.sort(key=lambda r: order.get(r["status"], 9))
     if status == "applied":
         rows = [r for r in rows if r.get("source") in ("apply", "both")]
+    elif status == "your_move":
+        rows = [r for r in rows if (r.get("tracker") or {}).get("who_next") == "You"]
     elif status and status != "all":
         rows = [r for r in rows if r["status"] == status]
     return rows
+
+
+def _events_by_brand(conn, creator_id: int, brand_ids: List[int]) -> Dict[int, List[Dict[str, Any]]]:
+    if not brand_ids:
+        return {}
+    cur = _cursor(conn)
+    cur.execute(
+        """
+        SELECT brand_id, event_type, occurred_at FROM polly_timeline_events
+        WHERE creator_id = %s AND brand_id = ANY(%s)
+        ORDER BY occurred_at ASC, id ASC
+        """,
+        (creator_id, brand_ids),
+    )
+    out: Dict[int, List[Dict[str, Any]]] = {}
+    for row in cur.fetchall():
+        out.setdefault(int(row["brand_id"]), []).append(dict(row))
+    return out
+
+
+def _row_stage(row: Dict[str, Any], events: List[Dict[str, Any]], open_tasks: List[Dict]) -> Optional[str]:
+    from services.pitch_status import apply_stage, pitch_stage
+    pitched = pitch_stage(events, open_tasks)
+    if row.get("source") in ("apply", "both") and row.get("apply_status"):
+        applied = apply_stage(row.get("apply_status"))
+        if not pitched or applied in ("picked", "completed"):
+            return applied
+    return pitched
+
+
+def attach_pitch_status(conn, creator_id: int, rows: List[Dict[str, Any]], tasks: List[Dict]) -> None:
+    """Add one status, who acts next, its copy and the brand's signals to each relationship row."""
+    from services.pitch_status import load_brand_signals, relationship_status
+    ids = [int(r["brand_id"]) for r in rows if r.get("brand_id")]
+    events = _events_by_brand(conn, creator_id, ids)
+    signals = load_brand_signals(conn, creator_id, ids)
+    for row in rows:
+        bid = row.get("brand_id")
+        if not bid:
+            continue
+        open_t = [t for t in tasks if t.get("brand_id") == bid and t.get("status") in OPEN_STATUSES]
+        stage = _row_stage(row, events.get(int(bid)) or [], open_t)
+        if not stage:
+            continue
+        due = next((t.get("due_at") for t in open_t if t.get("type") == "content_due"), None)
+        tracker = relationship_status(stage, row.get("name") or "", signals.get(int(bid)), due)
+        row["tracker"] = tracker
+        row["stage_label"] = tracker["label"]
+        if stage in ("dropped", "replied_rejected", "not_picked"):
+            row["status"] = "dropped"
 
 
 def _stage_label(task: Dict, latest: Dict) -> str:
@@ -1407,9 +1464,9 @@ def _stage_label(task: Dict, latest: Dict) -> str:
     if t == "pr_shipped" or t == "pr_received":
         return "PR in transit" if t == "pr_shipped" else "PR arrived"
     if t == "campaign_applied" and st in OPEN_STATUSES:
-        return "Applied · in review"
+        return "Applied"
     if (latest or {}).get("event_type") == "campaign_applied":
-        return "Applied · in review"
+        return "Applied"
     if t == "paid_pitch_sent" and st in OPEN_STATUSES:
         return "Paid pitch window"
     if t == "retainer_active":
@@ -1430,11 +1487,11 @@ def _iso(value: Any) -> Optional[str]:
 
 
 APPLY_STAGE = {
-    "review": ("active", "Applied · in review"),
-    "ships": ("won", "Selected · shipping"),
-    "posted": ("won", "Posted content"),
-    "declined": ("dropped", "They passed"),
-    "skipped": ("dropped", "They passed"),
+    "review": ("active", "Applied"),
+    "ships": ("won", "Picked 🎉"),
+    "posted": ("won", "Done"),
+    "declined": ("dropped", "Not this time"),
+    "skipped": ("dropped", "Not this time"),
 }
 
 
@@ -1528,7 +1585,7 @@ def application_timeline_events(
             "event_type": "campaign_applied",
             "event_label": f"Applied for gifted PR · {name}",
             "event_icon": EVENT_ICONS.get("campaign_applied", "🎁"),
-            "polly_notes": "You're on their gifted list. They pick who gets the box.",
+            "polly_notes": f"You're in {name}'s applicant pool. They choose who gets PR.",
             "occurred_at": _iso(app.get("applied_at")),
             "event_data": {"source": "apply", "apply_status": status},
             "source": "apply",
@@ -1537,7 +1594,7 @@ def application_timeline_events(
         out.append({
             "id": f"app-{app_id}-ships",
             "event_type": "pr_shipped",
-            "event_label": f"Selected · shipping · {name}",
+            "event_label": f"Picked · shipping · {name}",
             "event_icon": EVENT_ICONS.get("pr_shipped", "📦"),
             "polly_notes": "They picked you. Box is on the way.",
             "occurred_at": _iso(app.get("updated_at") or app.get("applied_at")),
@@ -1558,7 +1615,7 @@ def application_timeline_events(
         out.append({
             "id": f"app-{app_id}-passed",
             "event_type": "brand_replied_rejected",
-            "event_label": f"They passed · {name}",
+            "event_label": f"Not this time · {name}",
             "event_icon": EVENT_ICONS.get("brand_replied_rejected", "🔴"),
             "polly_notes": "Not this round. Next in-niche brand is the move.",
             "occurred_at": _iso(app.get("updated_at") or app.get("applied_at")),
@@ -1618,6 +1675,20 @@ def brand_timeline(conn, creator_id: int, brand_id: int) -> Dict[str, Any]:
                 brand=brand["name"]
             ) if top.get("type") == "follow_up_due" else None,
         }
+    tracker = None
+    try:
+        from services.pitch_status import load_brand_signals, relationship_status
+        row = {"source": "apply" if apps else "pitch",
+               "apply_status": (apps[0].get("status") if apps else None)}
+        logged = [e for e in events if isinstance(e.get("id"), int)]
+        stage = _row_stage(row, logged, open_t)
+        if stage:
+            due = next((t.get("due_at") for t in open_t if t.get("type") == "content_due"), None)
+            sig = load_brand_signals(conn, creator_id, [brand_id]).get(int(brand_id))
+            tracker = relationship_status(stage, brand["name"], sig, due)
+    except Exception as err:
+        print(f"[Polly tracker] brand pitch status skipped: {err}")
+        conn.rollback()
     return {
         "brand": dict(brand),
         "status": _rel_status(
@@ -1628,6 +1699,7 @@ def brand_timeline(conn, creator_id: int, brand_id: int) -> Dict[str, Any]:
         "events": events,
         "open_tasks": _public_tasks(open_t),
         "next_action": next_action,
+        "tracker": tracker,
     }
 
 

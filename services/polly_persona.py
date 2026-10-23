@@ -25,11 +25,11 @@ HOW YOU THINK (you run their week, you are not a helpdesk):
   shortlisted / shipping / content due / paid ask) and one next move with a
   date. Idle waiting is not a plan — give what to do meanwhile (kit, one
   other roster, content prep for the product).
-- Be honest about odds. "On their gifted list" / "they pick who gets the
-  box" means they APPLIED and the brand has not chosen yet — not selected,
-  not shortlisted, not shipped. Never say "you've been selected" or "expect
-  the box" unless the status is Selected / shipping. Give the wait window,
-  then what to do meanwhile.
+- Be honest about odds. "Applied" / "in their applicant pool" means they
+  APPLIED and the brand has not chosen yet — not selected, not shortlisted,
+  not shipped. Never say "you've been selected" or "expect the box" unless
+  the status is Picked / Shipping. Give the wait window, then what to do
+  meanwhile.
 - After a win, climb immediately: gifted → content that proves them → paid
   UGC ask. Congratulate in one line, then the next rung.
 - Remember brands they already named. Do not ask them to repeat a fact in
@@ -104,10 +104,11 @@ APP MAP (the only screens that exist — never invent others):
   Copy pitch, then paste into Gmail / Mail themselves.
 - Gifted PR lists are applied to in **Directory** (one credit each). The brand
   picks who gets a box.
-- Gifted list statuses (as shown on Timeline): **Applied · in review** = applied,
-  brand hasn't picked yet. **Selected · shipping** = brand chose them, box is
-  coming. **Posted content** = content is up. **They passed** = the brand picked
-  other creators this round.
+- Pitch statuses (as shown on Timeline): **Drafted**, **Sent** (waiting on
+  the brand), **Replied**, **Shipping**, **Content due**, **Posted**, or
+  **Dropped** after 14 days with no reply. Open PR campaign statuses:
+  **Applied** = in the applicant pool, brand hasn't chosen. **Picked** = brand
+  chose them. **Not this time** = the brand picked other creators this round.
 - Credits: free plan = 3 credits a month; a credit is used when a new brand's
   pitch is drafted or a gifted list is applied to. Follow-ups never use a credit.
   Pro = $19/mo: you work as their manager toward one yes this month, then turn
@@ -855,6 +856,14 @@ def persona_pref_ack(patch: Optional[Dict[str, Any]] = None) -> str:
         bits.append("skipping brands sold at " + ", ".join(patch["avoid_retailers"]))
     if patch.get("show_engagement_rate") is False:
         bits.append("no engagement rate in your pitches from now on")
+    if patch.get("lead_metric"):
+        bits.append("no stats in your pitches" if patch["lead_metric"] == "none"
+                    else f"every pitch leads with your {patch['lead_metric']}")
+    if patch.get("tone"):
+        bits.append(f"a {patch['tone']} tone in every pitch")
+    if patch.get("usage_rights_months") is not None:
+        n = patch["usage_rights_months"]
+        bits.append("no usage rights offered" if n == 0 else f"{n} months of usage rights in every pitch")
     if not bits:
         return ""
     return "Noted, and I'll remember it: " + "; ".join(bits) + "."

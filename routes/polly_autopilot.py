@@ -116,6 +116,36 @@ def _save_targeting(conn, creator_id, body):
         _sync_for_you_niches(conn, creator_id, niches)
 
 
+def _save_pitch_prefs(conn, creator_id, body):
+    from services.polly_memory import load_thread, save_thread
+    from services.polly_prefs import PITCH_PREF_KEYS, merge_prefs
+
+    raw = body.get("pitch_prefs")
+    if not isinstance(raw, dict):
+        return
+    patch = {k: raw[k] for k in PITCH_PREF_KEYS if k in raw}
+    if not patch:
+        return
+    thread = load_thread(conn, creator_id)
+    notes = merge_prefs(dict(thread.get("notes") or {}), patch)
+    save_thread(conn, creator_id, thread.get("messages") or [], thread.get("suggested_brands") or [], notes=notes)
+
+
+def _pitch_prefs(conn, creator_id):
+    from services.polly_memory import load_thread
+    from services.polly_prefs import PITCH_PREF_KEYS, get_prefs, pitch_prefs_line
+
+    try:
+        prefs = get_prefs(load_thread(conn, creator_id).get("notes") or {})
+    except Exception as err:
+        print(f"[Polly autopilot] pitch prefs load skipped: {err}")
+        conn.rollback()
+        return None
+    out = {k: prefs.get(k) for k in PITCH_PREF_KEYS}
+    out["summary"] = pitch_prefs_line(prefs)
+    return out
+
+
 def _sync_for_you_niches(conn, creator_id, niches):
     """For You matches on creators.creator_niches, so Autopilot targeting and For You stay one pool."""
     from routes.polly import _FOR_YOU_CACHE, _FOR_YOU_LOCK
@@ -155,6 +185,7 @@ def _status_payload(conn, creator_id, is_pro):
         "target_options": list(TARGET_OPTIONS),
         "max_followups": len(FOLLOWUP_GAPS),
         "targeting": _targeting(conn, creator_id) if is_pro else None,
+        "pitch_prefs": _pitch_prefs(conn, creator_id) if is_pro else None,
         "month": counts,
         "next_batch": batch_size(counts, target),
         "items": list_items(conn, creator_id),
@@ -259,6 +290,7 @@ def update_settings():
             set_enabled(conn, creator_id, bool(body.get("enabled")))
         save_settings(conn, creator_id, body)
         _save_targeting(conn, creator_id, body)
+        _save_pitch_prefs(conn, creator_id, body)
         return jsonify(_status_payload(conn, creator_id, True))
     finally:
         conn.close()
@@ -387,8 +419,14 @@ def _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=F
         pitch = apply_gifted_ask_to_pitch(pitch, location_display=loc_display or None)
     if loc_display:
         pitch = apply_location_to_pitch(pitch, shipping.get("city") or "", shipping.get("country") or "", loc_display)
-    from services.polly_pitch_edit import apply_pitch_prefs
-    pitch = apply_pitch_prefs(pitch, notes)
+    from services.polly_pitch_edit import apply_pitch_prefs, pitch_pref_inputs
+    kit = None
+    if (notes.get("prefs") or {}).get("lead_metric") or (notes.get("prefs") or {}).get("custom_template"):
+        from services.polly_kit import load_kit_snapshot
+        kit = load_kit_snapshot(conn, creator_id)
+    inputs = pitch_pref_inputs(conn, notes, brand_id, creator=creator, scrape=scrape, kit=kit,
+                               location=loc_display)
+    pitch = apply_pitch_prefs(pitch, notes, slots=inputs["slots"], facts=inputs["facts"])
     body = pitch.get("body") or ""
     if not body or pitch_has_placeholder(body):
         return None, "needs_location"

@@ -691,9 +691,11 @@ GIFTED_LISTS_CHIP = {
 
 def paid_first(notes: Optional[Dict] = None) -> bool:
     """Paid UGC leads only for established creators who haven't asked for gifted only."""
-    from services.polly_prefs import gifted_only
+    from services.polly_prefs import get_prefs, gifted_only
 
     notes = notes or {}
+    if get_prefs(notes).get("offer_type") == "paid_only":
+        return True
     return (notes.get("polly_track") or "") == "established" and not gifted_only(notes)
 
 

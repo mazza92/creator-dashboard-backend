@@ -64,7 +64,7 @@ class ApplicationTimelineTests(unittest.TestCase):
         })
         self.assertEqual(rel["source"], "apply")
         self.assertEqual(rel["status"], "active")
-        self.assertEqual(rel["stage_label"], "Applied · in review")
+        self.assertEqual(rel["stage_label"], "Applied")
         self.assertIn("Nuria Beauty", rel["last_event"])
 
     def test_merge_adds_application_only_brands(self):
@@ -106,7 +106,7 @@ class ApplicationTimelineTests(unittest.TestCase):
         }])
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0]["status"], "won")
-        self.assertEqual(merged[0]["stage_label"], "Selected · shipping")
+        self.assertEqual(merged[0]["stage_label"], "Picked 🎉")
 
     def test_synthetic_events_skip_existing_apply(self):
         extra = application_timeline_events(
