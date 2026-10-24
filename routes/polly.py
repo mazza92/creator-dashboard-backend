@@ -1279,7 +1279,8 @@ def radar_contact():
             followers = int(scrape.get("follower_count") or 0)
         except (TypeError, ValueError):
             followers = 0
-        niche = str(data.get("niche") or scrape.get("primary_niche") or (creator or {}).get("niche") or "")
+        from services.polly_tools import recorded_radar_niche
+        niche = str(data.get("niche") or recorded_radar_niche(creator) or "")
         dm = dm_text(found["name"], niche, first_name=(creator or {}).get("first_name") or "",
                      followers=followers, median_views=int(stats.get("median_views") or 0),
                      kit_url=kit.get("url") if kit.get("published") else "")

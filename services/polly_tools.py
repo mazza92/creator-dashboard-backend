@@ -1298,6 +1298,30 @@ _STR = {"type": "string"}
 _INT = {"type": "integer"}
 _BOOL = {"type": "boolean"}
 
+def recorded_radar_niche(creator: Optional[Dict[str, Any]]) -> str:
+    """The creator's niche as recorded at onboarding / Settings, in their order, as a radar key.
+    Never the profile scrape: a 'lifestyle' scrape would search home for a fitness creator."""
+    from services.polly_discovery import onboarding_niches
+    from services.radar_extract import radar_niche
+
+    for picked in onboarding_niches(creator):
+        key = radar_niche(picked)
+        if key:
+            return key
+    return ""
+
+
+def typed_radar_niches(text: Any) -> List[str]:
+    """Every radar niche named in what the creator typed ('skincare and makeup' -> both)."""
+    from services.radar_extract import NICHE_ALIASES, radar_niche, video_niches
+
+    low = str(text or "").lower()
+    found = video_niches({"caption": low})
+    found += [key for alias, key in NICHE_ALIASES.items() if re.search(rf"\b{re.escape(alias)}\b", low)]
+    found.append(radar_niche(low))
+    return [n for n in dict.fromkeys(found) if n]
+
+
 def radar_ctx(state: TurnState, niche: str = "") -> Dict[str, Any]:
     scrape, notes = state.scrape or {}, state.notes or {}
     override = notes.get("stats_override") if isinstance(notes.get("stats_override"), dict) else {}
@@ -1307,7 +1331,7 @@ def radar_ctx(state: TurnState, niche: str = "") -> Dict[str, Any]:
         followers = 0
     return {
         "creator_id": state.creator_id,
-        "niche": niche or scrape.get("primary_niche") or (state.creator or {}).get("niche") or "",
+        "niche": niche or recorded_radar_niche(state.creator),
         "followers": followers,
         "country": creator_country(state.creator, notes, scrape),
         "is_pro": bool((state.balance or {}).get("is_unlimited")),
@@ -1323,10 +1347,12 @@ def radar_profile(state: TurnState) -> Dict[str, str]:
     themes = scrape.get("content_themes") or []
     if isinstance(themes, str):
         themes = [themes]
+    from services.polly_discovery import onboarding_niches
+
     parts = [str(t) for t in themes[:6] if t]
-    for extra in (scrape.get("primary_niche"), creator.get("niche"), scrape.get("secondary_niches")):
-        if extra:
-            parts.append(", ".join(map(str, extra)) if isinstance(extra, list) else str(extra))
+    picked = onboarding_niches(creator)
+    if picked:
+        parts.insert(0, ", ".join(picked))
     return {"themes": "; ".join(dict.fromkeys(parts))[:300],
             "country": str(creator_country(state.creator, state.notes or {}, scrape) or "")}
 
@@ -1342,8 +1368,14 @@ def find_gifting_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any
     from services import gifting_radar as radar
 
     last = state.notes.get("radar_last") if isinstance(state.notes.get("radar_last"), dict) else {}
+    from services.radar_extract import radar_niche
+
     more = bool(args.get("more"))
-    niche = str(args.get("niche") or (last.get("niche") if more else "") or "").strip()
+    asked = radar_niche(args.get("niche"))
+    # A niche other than their recorded one only when they typed it this turn, never the model's guess.
+    if asked and asked not in typed_radar_niches(state.user_text):
+        asked = ""
+    niche = str(asked or (last.get("niche") if more else "") or "").strip()
     ctx = radar_ctx(state, niche)
     kind = str(args.get("signal_type") or (last.get("signal_type") if more else "") or "any").lower()
     ctx["signal_type"] = kind if kind in ("gifted", "paid", "affiliate") else "any"

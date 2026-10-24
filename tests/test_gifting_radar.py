@@ -406,3 +406,37 @@ def test_fallback_routes_radar_asks():
     assert _RADAR_ASK.search("who's gifting in skincare?")
     assert _RADAR_ASK.search("find brands that gift small creators")
     assert not _RADAR_ASK.search("pitch Glow Recipe")
+
+
+def _radar_state(creator, scrape=None, user_text=""):
+    from types import SimpleNamespace
+    return SimpleNamespace(creator_id=1, creator=creator, scrape=scrape or {}, notes={}, balance={},
+                           user_text=user_text)
+
+
+def test_radar_niche_comes_from_the_recorded_niche_never_the_scrape():
+    from services.polly_tools import radar_ctx, radar_profile, recorded_radar_niche
+    scrape = {"primary_niche": "lifestyle", "secondary_niches": ["home decor"], "content_themes": ["gym days"]}
+    state = _radar_state({"niche": '["fitness"]', "creator_niches": ["fitness"]}, scrape)
+    assert radar_ctx(state)["niche"] == "fitness"
+    assert "lifestyle" not in radar_profile(state)["themes"] and "home decor" not in radar_profile(state)["themes"]
+    assert recorded_radar_niche({"creator_niches": ["gaming", "tech"]}) == "tech"
+    assert recorded_radar_niche({"creator_niches": [], "niche": "beauty"}) == "makeup"
+    assert recorded_radar_niche({"creator_niches": ["travel", "skincare"]}) == "skincare"
+    assert radar_ctx(_radar_state({"creator_niches": []}, scrape))["niche"] == ""
+
+
+def test_radar_niche_arg_only_when_the_creator_typed_it(monkeypatch):
+    from services import polly_tools
+    seen = {}
+    monkeypatch.setattr(radar, "free_radar_used", lambda *a: False)
+    monkeypatch.setattr(radar, "search", lambda conn, ctx: seen.update(ctx) or {"status": "needs_niche"})
+    creator = {"creator_niches": ["fitness"]}
+    for typed, arg, want in (("find brands gifting on tiktok", "home", "fitness"),
+                             ("who is gifting in skincare and makeup?", "makeup", "makeup"),
+                             ("show me beauty brands", "makeup", "makeup")):
+        state = _radar_state(creator, user_text=typed)
+        state.db = lambda: None
+        state.notes = {}
+        polly_tools.find_gifting_brands(state, {"niche": arg})
+        assert seen["niche"] == want, typed
