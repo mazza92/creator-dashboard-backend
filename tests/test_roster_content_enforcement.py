@@ -98,18 +98,9 @@ def test_paywall_hit_is_logged_before_402():
 
 
 class TestInstantPublish:
-    def test_new_brand_with_own_site_goes_live(self, monkeypatch):
+    def test_inbound_submissions_stay_pending(self):
         import opportunities_routes as routes
-        from services import opportunity_gifted_pr as gp
 
-        monkeypatch.setattr(gp, "_find_existing_brand", lambda cursor, opp: None)
-        assert routes.can_publish_instantly(None, {"brand_name": "Newbrand", "brand_website": "newbrand.co"})
-
-    def test_existing_brand_or_marketplace_link_waits_for_review(self, monkeypatch):
-        import opportunities_routes as routes
-        from services import opportunity_gifted_pr as gp
-
-        monkeypatch.setattr(gp, "_find_existing_brand", lambda cursor, opp: {"id": 1, "slug": "glossier"})
+        assert not routes.can_publish_instantly(None, {"brand_name": "Newbrand", "brand_website": "newbrand.co"})
         assert not routes.can_publish_instantly(None, {"brand_name": "Glossier", "brand_website": "glossier.com"})
-        monkeypatch.setattr(gp, "_find_existing_brand", lambda cursor, opp: None)
         assert not routes.can_publish_instantly(None, {"brand_name": "X", "brand_website": "amazon.com/dp/1"})

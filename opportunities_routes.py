@@ -539,14 +539,11 @@ def send_email_notification(to_email, subject, body):
 # ============================================
 
 def can_publish_instantly(cursor, data) -> bool:
-    """New brands with their own site go live now. Anything that matches an existing
-    brand waits for review, so a stranger can't claim that brand's roster link."""
-    from services.opportunity_gifted_pr import _find_existing_brand, _website_host
+    """Inbound submissions never go live on their own.
 
-    if not _website_host(data.get('brand_website')):
-        return False
-    probe = {'brand_name': data.get('brand_name'), 'brand_website': data.get('brand_website')}
-    return _find_existing_brand(cursor, probe) is None
+    Auto-publish minted a roster and placed Pro creators on it, which emailed them about
+    brands that were often scams. They stay pending until an admin publishes them."""
+    return False
 
 
 def take_down_auto_published_brand(cursor, opp_id):
@@ -668,7 +665,8 @@ def brand_submit():
             conn.rollback()
             print(f"[brand_submit] pipeline close skipped opp={opp_id}: {e}")
 
-        gifted = _publish_instantly(cursor, conn, opp_id, data)
+        # Pending until an admin publishes. See can_publish_instantly.
+        gifted = None
         cursor.close()
         conn.close()
         roster_url = (gifted or {}).get('roster_url')
