@@ -60,6 +60,7 @@ from services.polly_kit import kit_actions, kit_context, load_kit_snapshot, stri
 from services.polly_pain import diagnose_pain, stamp_pain
 from services.polly_memory import load_thread, save_thread
 from services.polly_prefs import filter_brands_by_prefs, gifted_only
+from services.creator_niches import with_recorded_niches
 from services.polly_discovery import (
     assign_track,
     bump_setup_continues,
@@ -1336,7 +1337,7 @@ def bootstrap():
         seeded = not notes.get("survey_seeded_at")
         if seeded:
             notes = seed_from_survey(notes, load_onboarding_survey(conn, creator_id), scrape, creator)
-        notes = heal_seeded_niche(notes, scrape, creator)
+        notes = with_recorded_niches(heal_seeded_niche(notes, scrape, creator), creator)
         notes = assign_track(notes, scrape)
         try:
             backfill_from_notes(conn, creator_id, notes)
@@ -1639,7 +1640,7 @@ def chat():
             early_fu = {}
         if not notes.get("survey_seeded_at"):
             notes = seed_from_survey(notes, load_onboarding_survey(conn, creator_id), scrape, creator)
-        notes = heal_seeded_niche(notes, scrape, creator)
+        notes = with_recorded_niches(heal_seeded_niche(notes, scrape, creator), creator)
         chip_id = str(data.get("starter") or data.get("chip_id") or "").strip()
         notes = bump_setup_continues(notes, user_text, chip_id, explicit_action)
         if data.get("skip_discovery"):

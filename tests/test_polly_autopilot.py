@@ -221,29 +221,38 @@ class PoolTests(unittest.TestCase):
 
 
 class TargetingTests(unittest.TestCase):
-    def _save(self, notes, body):
+    def _save(self, notes, body, recorded=("skincare",)):
         saved = {}
-        with mock.patch("services.polly_memory.load_thread", return_value={"notes": notes}), \
-                mock.patch("services.polly_memory.save_thread",
-                           side_effect=lambda c, cid, m, s, notes: saved.update(notes)), \
-                mock.patch.object(rpa, "_sync_for_you_niches") as sync:
+        with mock.patch("services.polly_memory.load_thread", return_value={"notes": notes}),                 mock.patch("services.polly_memory.save_thread",
+                           side_effect=lambda c, cid, m, s, notes: saved.update(notes)),                 mock.patch.object(rpa, "_recorded", return_value=list(recorded)),                 mock.patch.object(rpa, "_sync_for_you_niches") as sync:
             rpa._save_targeting(object(), 7, body)
         return saved, sync
 
-    def test_targeting_a_blocked_category_unblocks_it(self):
+    def test_targeting_uses_settings_ids_and_unblocks(self):
         saved, sync = self._save({"prefs": {"avoid_categories": ["makeup", "nails"]}}, {"niches": ["makeup", "skincare"]})
-        self.assertEqual(saved["niche"], ["makeup", "skincare"])
+        self.assertEqual(saved["niche"], ["beauty", "skincare"])
         self.assertEqual(saved["prefs"]["avoid_categories"], ["nails"])
-        sync.assert_called_once_with(mock.ANY, 7, ["makeup", "skincare"])
+        sync.assert_called_once_with(mock.ANY, 7, ["beauty", "skincare"])
 
     def test_blocking_a_targeted_category_untargets_it(self):
-        saved, sync = self._save({"niche": ["makeup", "skincare"]}, {"avoid_categories": ["makeup"]})
+        saved, sync = self._save({}, {"avoid_categories": ["makeup"]}, recorded=("beauty", "skincare"))
         self.assertEqual(saved["niche"], ["skincare"])
         sync.assert_called_once_with(mock.ANY, 7, ["skincare"])
 
-    def test_unrelated_block_leaves_for_you_niches_alone(self):
+    def test_unrelated_block_leaves_niches_alone(self):
         _saved, sync = self._save({"niche": ["skincare"]}, {"avoid_categories": ["nails"]})
         sync.assert_not_called()
+
+    def test_last_niche_cannot_be_cleared(self):
+        saved, sync = self._save({}, {"niches": []}, recorded=("fitness",))
+        self.assertEqual(saved["niche"], ["fitness"])
+        sync.assert_not_called()
+
+    def test_options_match_account_settings(self):
+        from services.creator_niches import NICHE_IDS
+        self.assertEqual(tuple(rpa._niche_options()), NICHE_IDS)
+        self.assertIn("beauty", NICHE_IDS)
+        self.assertNotIn("makeup", NICHE_IDS)
 
 
 class AutoFillTests(unittest.TestCase):
@@ -313,3 +322,10 @@ class AutoFillTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TargetingCapTests(TargetingTests):
+    def test_more_than_three_targets_is_refused(self):
+        saved, sync = self._save({}, {"niches": ["beauty", "skincare", "fashion", "travel"]}, recorded=("beauty",))
+        self.assertEqual(saved["niche"], ["beauty"])
+        sync.assert_not_called()

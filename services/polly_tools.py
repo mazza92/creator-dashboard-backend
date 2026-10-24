@@ -7,6 +7,7 @@ Credits, paywall and send-logging rules are enforced here, not by the model.
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
@@ -1098,6 +1099,13 @@ def save_profile_facts(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]
     if patch:
         state.notes = merge_notes_patch(state.notes, patch)
         saved.extend(sorted(patch))
+    if patch.get("niche"):
+        # A niche they tell Polly is a Settings change: write the record so every tool agrees.
+        from services.creator_niches import save_creator_niches
+        recorded = save_creator_niches(state.db(), state.creator_id, stated_niches(state.notes))
+        if recorded:
+            state.notes["niche"] = recorded
+            state.creator = {**(state.creator or {}), "creator_niches": recorded, "niche": json.dumps(recorded)}
     out = {"ok": True, "saved": saved, "draft_city_filled": draft_updated}
     if pitch_saved:
         out["pitch_prefs_saved"] = pitch_saved

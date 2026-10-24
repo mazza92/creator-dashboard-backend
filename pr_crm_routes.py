@@ -9598,26 +9598,25 @@ def update_creator_profile():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Build dynamic update query
-        set_parts = []
-        values = []
-        for key, value in updates.items():
-            # PostgreSQL TEXT[] arrays - psycopg2 handles list adaptation natively
-            if key == 'creator_niches' and isinstance(value, list):
-                set_parts.append(f"{key} = %s")
-                values.append(value)
-                # Keep niche column in sync for consistency across the app
-                set_parts.append("niche = %s")
-                values.append(json.dumps(value))
-            else:
-                set_parts.append(f"{key} = %s")
-                values.append(value)
+        # Niches go through the one writer: both columns plus Polly's copy, Settings ids only
+        if 'creator_niches' in updates:
+            from services.creator_niches import MAX_NICHES, clean_niches, save_creator_niches
+            raw = updates.pop('creator_niches')
+            if isinstance(raw, list) and len(clean_niches(raw)) > MAX_NICHES:
+                cursor.close()
+                conn.close()
+                return jsonify({'success': False, 'error': f'Pick up to {MAX_NICHES} niches'}), 400
+            if not isinstance(raw, list) or not save_creator_niches(conn, creator_id, raw, commit=False):
+                cursor.close()
+                conn.close()
+                return jsonify({'success': False, 'error': 'Select at least one niche'}), 400
 
-        values.append(creator_id)
+        set_parts = [f"{key} = %s" for key in updates]
+        values = list(updates.values()) + [creator_id]
 
         cursor.execute(f"""
             UPDATE creators
-            SET {', '.join(set_parts)}
+            SET {', '.join(set_parts) or 'id = id'}
             WHERE id = %s
             RETURNING creator_niches, creator_followers
         """, values)

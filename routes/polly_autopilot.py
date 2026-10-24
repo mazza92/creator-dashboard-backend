@@ -65,31 +65,38 @@ def _is_pro(creator_id, conn) -> bool:
     return bool(_unlock_balance(creator_id, conn=conn).get("is_unlimited"))
 
 
-NICHE_OPTIONS = ("skincare", "makeup", "haircare", "fashion", "fitness", "food", "wellness", "lifestyle", "tech")
+def _niche_options():
+    from services.creator_niches import NICHE_IDS
+    return NICHE_IDS
+
+
+def _recorded(conn, creator_id):
+    from services.creator_niches import recorded_niches
+
+    cur = conn.cursor()
+    cur.execute("SELECT niche, creator_niches FROM creators WHERE id = %s", (creator_id,))
+    row = cur.fetchone()
+    if row and not isinstance(row, dict):
+        row = {"niche": row[0], "creator_niches": row[1]}
+    return recorded_niches(row)
 
 
 def _targeting(conn, creator_id):
-    from services.polly_discovery import stated_niches
+    """Brands to target = the creator's recorded niches (the same ones Account Settings edits)."""
     from services.polly_memory import load_thread
     from services.polly_prefs import CATEGORY_WORDS, get_prefs
 
     notes = load_thread(conn, creator_id).get("notes") or {}
-    niches = [n for n in stated_niches(notes) if n in NICHE_OPTIONS]
-    if not niches:
-        cur = conn.cursor()
-        cur.execute("SELECT creator_niches FROM creators WHERE id = %s", (creator_id,))
-        row = cur.fetchone()
-        niches = [n for n in dict.fromkeys(str(x).strip().lower() for x in (row[0] if row and row[0] else []))
-                  if n in NICHE_OPTIONS]
     return {
-        "niches": niches,
+        "niches": _recorded(conn, creator_id),
         "avoid_categories": list(get_prefs(notes).get("avoid_categories") or []),
-        "niche_options": list(NICHE_OPTIONS),
+        "niche_options": list(_niche_options()),
         "avoid_options": list(CATEGORY_WORDS),
     }
 
 
 def _save_targeting(conn, creator_id, body):
+    from services.creator_niches import MAX_NICHES, clean_niches
     from services.polly_memory import load_thread, save_thread
     from services.polly_prefs import CATEGORY_WORDS, get_prefs
 
@@ -98,21 +105,25 @@ def _save_targeting(conn, creator_id, body):
     thread = load_thread(conn, creator_id)
     notes = dict(thread.get("notes") or {})
     prefs = get_prefs(notes)
-    niches = list(notes.get("niche") or []) if isinstance(notes.get("niche"), list) else []
+    niches = _recorded(conn, creator_id)
     before = list(niches)
     avoid = list(prefs.get("avoid_categories") or [])
     # The list just edited wins when a category is in both.
     if isinstance(body.get("niches"), list):
-        niches = [n for n in dict.fromkeys(str(x).strip().lower() for x in body["niches"]) if n in NICHE_OPTIONS]
-        avoid = [c for c in avoid if c not in niches]
+        niches = clean_niches(body["niches"])
+        avoid = [c for c in avoid if not set(clean_niches([c])) & set(niches)]
     if isinstance(body.get("avoid_categories"), list):
         avoid = [c for c in dict.fromkeys(str(x) for x in body["avoid_categories"]) if c in CATEGORY_WORDS]
-        niches = [n for n in niches if n not in avoid]
+        blocked = set(clean_niches(avoid))
+        niches = [n for n in niches if n not in blocked]
+    # The record always keeps 1 to MAX_NICHES niches, like Account Settings; trimming a longer one happens there.
+    if not niches or (len(niches) > MAX_NICHES and isinstance(body.get("niches"), list)):
+        niches = before
     notes["niche"] = niches
     prefs["avoid_categories"] = avoid
     notes["prefs"] = prefs
     save_thread(conn, creator_id, thread.get("messages") or [], thread.get("suggested_brands") or [], notes=notes)
-    if isinstance(body.get("niches"), list) or niches != before:
+    if niches and niches != before:
         _sync_for_you_niches(conn, creator_id, niches)
 
 
@@ -147,16 +158,10 @@ def _pitch_prefs(conn, creator_id):
 
 
 def _sync_for_you_niches(conn, creator_id, niches):
-    """For You matches on creators.creator_niches, so Autopilot targeting and For You stay one pool."""
-    from routes.polly import _FOR_YOU_CACHE, _FOR_YOU_LOCK
-    from services.mentor_matchmaker import invalidate_mentor_matches
+    """Targeting edits write the creator record, so Settings, For You, Polly and the radar agree."""
+    from services.creator_niches import save_creator_niches
 
-    cur = conn.cursor()
-    cur.execute("UPDATE creators SET creator_niches = %s WHERE id = %s", (list(niches), creator_id))
-    conn.commit()
-    with _FOR_YOU_LOCK:
-        _FOR_YOU_CACHE.pop(int(creator_id), None)
-    invalidate_mentor_matches(creator_id)
+    save_creator_niches(conn, creator_id, niches)
 
 
 def _status_payload(conn, creator_id, is_pro):
@@ -358,8 +363,10 @@ def _pick_brands(conn, creator_id, creator, notes, scrape):
     from routes.polly import _match_scrape, _pipeline_pitched_ids
     from services.polly import drop_pitched, flatten_for_you
     from services.polly_discovery import required_categories_for_match, stated_niches
+    from services.creator_niches import with_recorded_niches
     from services.polly_prefs import filter_brands_by_prefs
 
+    notes = with_recorded_niches(notes, creator)
     queued = queued_brand_ids(conn, creator_id)
     status, data = _for_you_pool(queued)
     if status != 200 or not (data or {}).get("success"):

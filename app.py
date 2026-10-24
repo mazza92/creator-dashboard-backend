@@ -3052,10 +3052,13 @@ def onboarding_step3():
             return jsonify({'error': 'Not authenticated'}), 401
 
         data = request.get_json() or {}
-        niches = data.get('niches', [])
+        from services.creator_niches import MAX_NICHES, clean_niches, save_creator_niches
+        niches = clean_niches(data.get('niches', []))
 
         if not niches:
             return jsonify({'error': 'Select at least one niche'}), 400
+        if len(niches) > MAX_NICHES:
+            return jsonify({'error': f'Pick up to {MAX_NICHES} niches'}), 400
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -3088,6 +3091,7 @@ def onboarding_step3():
             return jsonify({'error': 'Creator profile not found. Complete step 1 first.'}), 400
 
         creator_id = result['id']
+        save_creator_niches(conn, creator_id, niches, commit=False)
         sync_niche_to_pr_wishlist(creator_id, json.dumps(niches), conn)
         conn.commit()
 
