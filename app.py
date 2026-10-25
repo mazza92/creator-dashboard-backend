@@ -2856,6 +2856,9 @@ def onboarding_scrape():
             skip_minimums=True,
             oauth_profile=oauth_profile,
             access_token=access_token,
+            # No recent posts no longer blocks signup: they join the waitlist with a nudge to post,
+            # and inactive accounts are filtered at approval.
+            allow_inactive=True,
         )
 
         # Close connection after scrape completes
@@ -2894,15 +2897,10 @@ def onboarding_scrape():
 
         partial_scrape = bool(profile.get('partial_scrape'))
 
-        # Check for stale data (posts older than 1 year indicates private/inactive account)
-        # Skip when Instagram IP-walled us and we only recovered a partial profile.
-        if latest_post_days_ago > 365 and not partial_scrape:
-            app.logger.warning(f"⚠️ Stale profile data for @{handle} - latest post is {latest_post_days_ago} days old")
-            return jsonify(onboarding_scrape_user_error(
-                Exception(f"Incomplete {platform} profile for @{handle} (missing latest_post)"),
-                handle,
-                platform,
-            )), 400
+        from services.profile_quality import fails_recency
+        inactive = bool(fails_recency(latest_post_days_ago) and not partial_scrape)
+        if inactive:
+            app.logger.info(f"⏸️ @{handle} has no post in {latest_post_days_ago} days: waitlist with posting nudge")
 
         # Build summary for frontend
         # Format follower count for display
@@ -2931,6 +2929,7 @@ def onboarding_scrape():
             'aesthetic_descriptors': aesthetic_descriptors,
             'latest_post_days_ago': latest_post_days_ago,
             'partial_scrape': partial_scrape,
+            'inactive': inactive,
         }
 
         if partial_scrape:

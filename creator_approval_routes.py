@@ -64,6 +64,22 @@ def get_approval_status():
             result = cursor.fetchone()
             queue_position = result['position'] if result else 1
 
+        # Polly's nudge for creators who joined without a recent post: posting moves them up at review.
+        post_nudge = None
+        try:
+            from services.profile_quality import fails_recency, MAX_LAST_POST_DAYS
+            cursor.execute("SELECT latest_post_days_ago FROM creator_profile_data WHERE user_id = %s", (user_id,))
+            activity = cursor.fetchone()
+            days = (activity or {}).get('latest_post_days_ago')
+            if creator['approval_status'] == 'pending' and activity and fails_recency(days):
+                post_nudge = {
+                    "latest_post_days_ago": days if days is not None and days < 999 else None,
+                    "max_days": MAX_LAST_POST_DAYS,
+                }
+        except Exception as err:
+            print(f"Post nudge skipped: {err}")
+            conn.rollback()
+
         cursor.close()
         conn.close()
 
@@ -73,6 +89,7 @@ def get_approval_status():
             estimated_days = max(1, queue_position // 20)
 
         return jsonify({
+            "post_nudge": post_nudge,
             "status": creator['approval_status'],
             "queue_position": queue_position,
             "estimated_wait_days": estimated_days,

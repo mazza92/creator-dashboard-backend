@@ -88,6 +88,14 @@ class TestAssertQuality(unittest.TestCase):
             assert_onboarding_quality(_ok_profile(latest_post_days_ago=80), "old")
         self.assertEqual(ctx.exception.code, "inactive")
 
+    def test_onboarding_lets_inactive_through_for_the_waitlist(self):
+        assert_onboarding_quality(_ok_profile(latest_post_days_ago=150), "old", allow_inactive=True)
+        assert_onboarding_quality(_ok_profile(latest_post_days_ago=None), "nodate", allow_inactive=True)
+        with self.assertRaises(ProfileQualityError) as ctx:
+            assert_onboarding_quality(_ok_profile(postsCount=3, recent_posts=[], latest_post_days_ago=150), "few",
+                                      allow_inactive=True)
+        self.assertEqual(ctx.exception.code, "below_post_min")
+
     def test_unknown_recency_rejects(self):
         with self.assertRaises(ProfileQualityError) as ctx:
             assert_onboarding_quality(_ok_profile(latest_post_days_ago=999), "undated")

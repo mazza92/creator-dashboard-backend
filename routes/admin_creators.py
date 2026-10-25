@@ -177,6 +177,12 @@ def _review_flags(row):
     if not bio:
         flags.append('missing_bio')
 
+    days = row.get('latest_post_days_ago')
+    if days is not None:
+        from services.profile_quality import fails_recency
+        if fails_recency(days):
+            flags.append('no_recent_posts')
+
     platform, handle = _primary_social(row)
     if not handle:
         flags.append('missing_handle')
@@ -1142,7 +1148,9 @@ REVIEW_QUEUE_SELECT = """
                 COALESCE(c.approval_status, 'pending') AS approval_status,
                 c.waitlist_joined_at,
                 u.created_at AS signup_date,
-                c.created_at AS creator_created_at
+                c.created_at AS creator_created_at,
+                (SELECT cpd.latest_post_days_ago FROM creator_profile_data cpd
+                  WHERE cpd.user_id = u.id) AS latest_post_days_ago
             FROM creators c
             JOIN users u ON c.user_id = u.id
 """

@@ -316,8 +316,10 @@ def _gemini_visual_review(images):
     return interpret_visual_review(parsed)
 
 
-def assert_onboarding_quality(profile: dict, handle: str, *, check_visual: bool = False) -> None:
-    """Raise ProfileQualityError when the account should not continue onboarding."""
+def assert_onboarding_quality(profile: dict, handle: str, *, check_visual: bool = False,
+                              allow_inactive: bool = False) -> None:
+    """Raise ProfileQualityError when the account should not continue onboarding.
+    allow_inactive lets a no-recent-posts account through; it is flagged for review instead."""
     followers = raw_follower_count(profile)
     posts = visible_post_count(profile)
     days_ago = latest_post_age_days(profile)
@@ -332,7 +334,7 @@ def assert_onboarding_quality(profile: dict, handle: str, *, check_visual: bool 
             message=f"Account @{handle} has fewer than {MIN_POSTS} posts",
         )
 
-    if fails_recency(days_ago):
+    if fails_recency(days_ago) and not allow_inactive:
         raise ProfileQualityError(
             "inactive",
             handle,

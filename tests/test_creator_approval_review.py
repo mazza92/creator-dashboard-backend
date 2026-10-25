@@ -99,3 +99,11 @@ class TestCreatorApprovalReview(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class NoRecentPostsFlagTests(unittest.TestCase):
+    def test_flags_creators_who_joined_without_a_recent_post(self):
+        base = {"bio": "hi", "creator_niches": ["beauty"], "social_handle": "a", "social_platform": "instagram"}
+        self.assertIn("no_recent_posts", _review_flags({**base, "latest_post_days_ago": 150}))
+        self.assertNotIn("no_recent_posts", _review_flags({**base, "latest_post_days_ago": 4}))
+        self.assertNotIn("no_recent_posts", _review_flags(base))

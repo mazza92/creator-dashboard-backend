@@ -1205,7 +1205,8 @@ def scrape_and_enrich_creator(user_id, handle: str, platform: str,
                               db_conn=None, skip_minimums: bool = False,
                               skip_follower_floor: bool = False,
                               oauth_profile: Optional[Dict[str, Any]] = None,
-                              access_token: Optional[str] = None) -> Tuple[Dict, Optional[Dict]]:
+                              access_token: Optional[str] = None,
+                              allow_inactive: bool = False) -> Tuple[Dict, Optional[Dict]]:
     """
     Full pipeline: scrape profile, process, run text analysis, save.
 
@@ -1260,7 +1261,7 @@ def scrape_and_enrich_creator(user_id, handle: str, platform: str,
     # Brand-ready bar: 12 posts, recent activity.
     # Visual Gemini is not a reject. IG thumbs are too thin to judge UGC on.
     if not skip_follower_floor:
-        assert_onboarding_quality(profile_data, handle, check_visual=False)
+        assert_onboarding_quality(profile_data, handle, check_visual=False, allow_inactive=allow_inactive)
 
     # Step 3: Run vision analysis
     vision_data = None
