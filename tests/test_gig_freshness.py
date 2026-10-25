@@ -33,3 +33,13 @@ def test_missing_or_unknown_date_is_kept():
 def test_gig_uses_the_source_posted_date():
     assert gig_posted_too_old({"posted_at": (NOW - timedelta(days=21)).isoformat()}, NOW) is True
     assert gig_posted_too_old({"title": "UGC creator"}, NOW) is False
+
+
+def test_parse_gig_deadline_keeps_real_dates_and_drops_text():
+    from datetime import date, datetime, timezone
+    from services.gig_freshness import parse_gig_deadline
+    now = datetime(2026, 10, 25, tzinfo=timezone.utc)
+    assert parse_gig_deadline("2026-11-15", now) == date(2026, 11, 15)
+    assert parse_gig_deadline("Nov 30, 2026", now) == date(2026, 11, 30)
+    for junk in ("ASAP", "Rolling", "Ongoing until filled", "", None, "2025-01-01", "2099-01-01"):
+        assert parse_gig_deadline(junk, now) is None, junk

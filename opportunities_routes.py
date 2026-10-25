@@ -1755,6 +1755,8 @@ def admin_ingest():
         errors = []
 
         for raw in gigs[:100]:
+            # One bad gig must not abort the batch: each runs in its own savepoint.
+            cursor.execute("SAVEPOINT ingest_gig")
             try:
                 title = (raw.get('title') or '').strip()
                 buyer = (raw.get('buyer_name') or raw.get('brand_name') or 'Unknown brand').strip()
@@ -1860,7 +1862,8 @@ def admin_ingest():
                 if not shipping:
                     shipping = ['US']
 
-                deadline = raw.get('deadline') or raw.get('application_deadline') or None
+                from services.gig_freshness import parse_gig_deadline
+                deadline = parse_gig_deadline(raw.get('deadline') or raw.get('application_deadline'))
 
                 # Placeholder email — scanner listings are not brand-submitted
                 brand_email = (raw.get('brand_email') or raw.get('apply_email') or 'sourced@newcollab.co').strip()
@@ -1910,7 +1913,10 @@ def admin_ingest():
                     filtered.append({'id': row['id'], 'title': original_title, 'reason': ugc_reason})
                     skipped.append({'id': row['id'], 'fingerprint': fingerprint, 'reason': f'not_ugc:{ugc_reason}'})
             except Exception as item_err:
+                cursor.execute("ROLLBACK TO SAVEPOINT ingest_gig")
                 errors.append({'title': raw.get('title'), 'error': str(item_err)})
+            finally:
+                cursor.execute("RELEASE SAVEPOINT ingest_gig")
 
         went_live = 0
         try:

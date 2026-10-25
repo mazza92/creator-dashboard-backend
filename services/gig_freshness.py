@@ -105,3 +105,29 @@ def pause_stale_paid_gigs(conn, days: int = FRESH_DAYS) -> int:
     conn.commit()
     cursor.close()
     return len(rows)
+
+
+def parse_gig_deadline(value: Any, now: Optional[datetime] = None):
+    """Scanner deadline -> date, or None for text like 'ASAP', 'Rolling', 'Ongoing' or a past date.
+    Postgres rejects the whole row on a bad date, so anything unclear is dropped, not guessed."""
+    from datetime import date
+
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        parsed = value.date()
+    elif isinstance(value, date):
+        parsed = value
+    else:
+        text = str(value).strip()
+        if not re.search(r"\d", text):
+            return None
+        try:
+            from dateutil import parser as date_parser
+            parsed = date_parser.parse(text, fuzzy=False).date()
+        except (ValueError, OverflowError, TypeError):
+            return None
+    today = (now or datetime.now(timezone.utc)).date()
+    if parsed < today or parsed.year > today.year + 2:
+        return None
+    return parsed
