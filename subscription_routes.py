@@ -653,6 +653,32 @@ def confirm_checkout():
         except Exception as capi_err:
             print(f"[META CAPI] Failed to send purchase event: {capi_err}")
 
+        # Send TikTok Events API CompletePayment (server-side).
+        # Only with marketing consent, mirroring the browser pixel. Same event_id
+        # as the pixel on the success page, so TikTok counts the sale once.
+        try:
+            body = request.json or {}
+            if body.get('marketing_consent'):
+                from services.tiktok_events import send_event as send_tiktok_event
+                forwarded = (request.headers.get('X-Forwarded-For') or '').split(',')[0].strip()
+                send_tiktok_event(
+                    event='CompletePayment',
+                    event_id=session_id,
+                    email=user_email,
+                    external_id=str(creator_id),
+                    value=152 if interval == 'yearly' else 19,
+                    currency='USD',
+                    content_id=f"subscription_{tier}_{interval}",
+                    content_name=f"NewCollab {tier.title()}" + (" Annual" if interval == 'yearly' else ""),
+                    ttclid=body.get('ttclid'),
+                    ttp=body.get('ttp'),
+                    client_ip=forwarded or request.remote_addr,
+                    client_user_agent=request.headers.get('User-Agent'),
+                    page_url=body.get('page_url'),
+                )
+        except Exception as tt_err:
+            print(f"[TIKTOK EVENTS] Failed to send purchase event: {tt_err}")
+
         return jsonify({
             'success': True,
             'tier': tier,
