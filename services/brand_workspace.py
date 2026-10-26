@@ -478,18 +478,34 @@ def notify_team_signup(email: str, brand_name: str, website: str, source: str) -
                 "<p>Approve it in Admin → Opportunities → Brand accounts.</p>"), "brand_account_signup")
 
 
-def send_decision(info: Dict[str, Any], approve: bool) -> None:
+def decision_email(info: Dict[str, Any], approve: bool) -> Dict[str, str]:
+    """Approval / rejection email on the same branded template as the campaign and roster emails."""
     from html import escape
-    hi = f"Hi {escape(info.get('first_name') or '')}," if info.get("first_name") else "Hi,"
+
+    from services.brand_campaign_emails import _hi, _link
+    from services.roster_delivery import _p, _steps, _wrap as branded
+    from services.roster_waiting_email import BRAND_FOOTER_NOTE, safe_brand_name
+
+    brand = safe_brand_name(info.get("name"))
+    hi = _p(_hi(info.get("first_name"), brand))
     if approve:
-        _send(info.get("email"), "You're in: your Newcollab brand workspace is ready",
-              _wrap(f"<p>{hi}</p><p>Your workspace for <b>{escape(info.get('name') or 'your brand')}</b> is approved. "
-                    "Scan any brand to see the TikTok creators behind it, save the creators you like, and run your "
-                    "first gifted campaign free.</p><p>" + _button(WORKSPACE_URL, "Open my workspace") + "</p>"
-                    "<p style=\"font-size:13px;color:#6b6f78\">Reply to this email if you want us to set up the "
-                    "campaign with you.</p>"), "brand_account_approved")
+        subject = "Your Newcollab workspace is ready"
+        body = hi + _p(f"<b>{escape(brand)}</b> is approved. Your workspace is open:") + _steps([
+            "<b>Scan your competitors</b> to see the TikTok creators posting for them and the hooks they reuse.",
+            "<b>Run your first gifted campaign free</b> and pick the creators you want.",
+            "<b>Manage your roster</b> and collect ad-ready videos in one place.",
+        ])
+        html = branded(subject, "Scan competitors and run your first campaign free.", body,
+                       _link("/brand/workspace", "account_approved"), "Open my workspace", BRAND_FOOTER_NOTE)
     else:
-        _send(info.get("email"), "Your Newcollab brand account",
-              _wrap(f"<p>{hi}</p><p>Thanks for signing up {escape(info.get('name') or '')}. We can't open a workspace "
-                    "for this brand right now. Reply to this email and we'll take another look.</p>"),
-              "brand_account_rejected")
+        subject = "Your Newcollab brand account"
+        body = hi + _p(f"Thanks for signing up {escape(brand)}. We can't open a workspace for this brand right now. "
+                       "Reply to this email and we'll take another look.")
+        html = branded(subject, "About your Newcollab account.", body, "https://newcollab.co", "Visit Newcollab",
+                       BRAND_FOOTER_NOTE)
+    return {"subject": subject, "html": html}
+
+
+def send_decision(info: Dict[str, Any], approve: bool) -> None:
+    mail = decision_email(info, approve)
+    _send(info.get("email"), mail["subject"], mail["html"], "brand_account_approved" if approve else "brand_account_rejected")

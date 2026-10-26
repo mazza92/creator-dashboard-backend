@@ -507,6 +507,24 @@ def send_brand_notice(to_email, subject, body):
     return bool(result.get('success'))
 
 
+def send_campaign_email(to_email, kind, **fields):
+    """Branded brand email for a gifted campaign ('received' or 'live'). Workspace brands get workspace links."""
+    from services import brand_campaign_emails as bce
+
+    account = {'exists': False, 'first_name': None}
+    try:
+        conn = get_db_connection()
+        try:
+            account = bce.workspace_account(conn.cursor(cursor_factory=RealDictCursor), to_email)
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[brand campaign email] account lookup skipped: {e}")
+    build = bce.received_email if kind == 'received' else bce.live_email
+    mail = build(first_name=account['first_name'], has_workspace=account['exists'], **fields)
+    return bce.send(to_email, mail, f'campaign_{kind}')
+
+
 def send_email_notification(to_email, subject, body):
     """Send email via SendGrid"""
     try:
@@ -699,17 +717,8 @@ def brand_submit():
                 f'Newcollab Team'
             )
         else:
-            send_brand_notice(
-                data['brand_email'],
-                f'We got your gifted campaign for {data["product_name"]}',
-                f'Hi {data["brand_name"]},\n\n'
-                f'Thanks for starting a gifted campaign for {data["product_name"]} on Newcollab. '
-                f'We\'re confirming your brand details and will email your private creator roster link shortly.\n\n'
-                f'Creators in your niche apply to your product, you pick up to 5, then export a shipping CSV. '
-                f'No platform fee on your first campaign.\n\n'
-                f'Reply to this email if you have questions.\n\n'
-                f'Newcollab Team'
-            )
+            send_campaign_email(data['brand_email'], 'received', brand_name=data['brand_name'],
+                                product_name=data['product_name'])
 
         return jsonify({
             'success': True,
@@ -1560,18 +1569,8 @@ def admin_publish(opp_id):
         conn.close()
 
         if gifted:
-            roster_line = (
-                f'\nCreators apply in-app. Your roster:\n{gifted.get("roster_url")}\n'
-                if gifted.get('roster_url') else '\n'
-            )
-            send_brand_notice(
-                opp['brand_email'],
-                f'Your Newcollab gift list is live',
-                f'Your gifted PR list for {opp["product_name"]} is live on Newcollab.\n'
-                f'{roster_line}'
-                f'Creators will start applying within the next 24 hours.\n\n'
-                f'Best,\nNewcollab Team'
-            )
+            send_campaign_email(opp['brand_email'], 'live', brand_name=opp['brand_name'],
+                                product_name=opp['product_name'], roster_url=gifted.get('roster_url'))
             return jsonify({'success': True, 'gifted_pr': gifted})
 
         send_brand_notice(

@@ -57,7 +57,14 @@ def test_push_waits_for_send_hours(monkeypatch):
     assert nbp.email_new_brand_pushes(object(), now=late) == []
 
 
+def test_push_is_off_by_default(monkeypatch):
+    monkeypatch.delenv("NEW_BRAND_PUSH_ENABLED", raising=False)
+    noon = datetime(2026, 10, 26, 15, tzinfo=timezone.utc)
+    assert nbp.email_new_brand_pushes(object(), send_fn=lambda *a: {"success": True}, now=noon) == []
+
+
 def test_push_sends_within_budget_and_logs(monkeypatch):
+    monkeypatch.setenv("NEW_BRAND_PUSH_ENABLED", "1")
     import services.polly_alerts as pa
 
     monkeypatch.setattr(nbp, "load_fresh_rosters", lambda conn: [ROSTER])

@@ -8,6 +8,7 @@ Polly to pick a strong 5.
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -29,6 +30,11 @@ PUSH_PER_BRAND = 60
 CREATOR_GAP = timedelta(days=3)
 SEND_HOURS_UTC = range(12, 23)  # 8am New York to 11pm London
 CANDIDATE_POOL = 3000
+
+
+def push_enabled() -> bool:
+    """Off unless NEW_BRAND_PUSH_ENABLED is set: creators aren't emailed when a new brand's roster goes live."""
+    return (os.getenv("NEW_BRAND_PUSH_ENABLED") or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _cursor(conn):
@@ -213,7 +219,7 @@ def email_new_brand_pushes(conn, limit: int = 40, dry_run: bool = False, send_fn
     """Cron job: up to ``limit`` emails per run across fresh rosters, oldest roster first."""
     from services.polly_alerts import _default_send, _log_email, _recipient, _unsubscribe_url, ensure_alert_tables
 
-    if (now or utc_now()).hour not in SEND_HOURS_UTC:
+    if not push_enabled() or (now or utc_now()).hour not in SEND_HOURS_UTC:
         return []
     ensure_alert_tables(conn)
     send = send_fn or _default_send
