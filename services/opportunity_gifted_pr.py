@@ -424,6 +424,15 @@ def push_opportunity_to_gifted_pr(cursor, opp) -> dict | None:
         "UPDATE opportunities SET pr_brand_id = %s WHERE id = %s",
         (brand["id"], opp["id"]),
     )
+    if campaign and campaign.get("id"):
+        # Brand workspace shows this submission's own roster, not whatever the brand ran last.
+        cursor.execute("SAVEPOINT roster_link")
+        try:
+            cursor.execute("UPDATE opportunities SET roster_campaign_id = %s WHERE id = %s",
+                           (campaign["id"], opp["id"]))
+            cursor.execute("RELEASE SAVEPOINT roster_link")
+        except Exception:
+            cursor.execute("ROLLBACK TO SAVEPOINT roster_link")
 
     token = (campaign or {}).get("token")
     slug = brand.get("slug")

@@ -59,6 +59,17 @@ def start_run(hashtags: List[str], queries: List[str], per_query: int) -> str:
     return str(resp.json()["data"]["id"])
 
 
+def start_posts_run(post_urls: List[str]) -> str:
+    """Re-fetch specific videos (fresh cover links). Returns the Apify run id."""
+    body = {**run_input([], [], 1), "postURLs": list(post_urls)}
+    body.pop("searchQueries", None)
+    body.pop("hashtags", None)
+    resp = requests.post(f"{_API}/acts/{ACTOR}/runs", headers=_headers(), json=body, timeout=30)
+    if resp.status_code >= 300:
+        raise SourceUnavailable(f"apify start failed: HTTP {resp.status_code}")
+    return str(resp.json()["data"]["id"])
+
+
 def run_state(run_id: str) -> Dict[str, Any]:
     """{status, cost_usd, dataset_id, finished}."""
     resp = requests.get(f"{_API}/actor-runs/{run_id}", headers=_headers(), timeout=20)
