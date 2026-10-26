@@ -44,6 +44,8 @@ Lightreel stops at research. We go from research to content: the scan shows the 
    - The Brand Scan input in the hero, like Lightreel's landing page.
    - Main CTA: **Try your first campaign free**.
 
+> **Update (live):** the email unlock is removed from the page. Public scans return the full report (top 20 creators) and end on one CTA, **Try your first campaign free**, so nothing sits between the brand and the campaign signup. The `/unlock` endpoint stays in the API but the page no longer calls it.
+
 ### v2 (not now)
 - **Alerts** (paid retention): "Email me when [competitor] gets a new creator video." It runs weekly off the same cache.
 - Instagram source.

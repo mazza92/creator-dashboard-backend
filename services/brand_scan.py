@@ -37,7 +37,7 @@ PER_QUERY = 20
 TAG_SUFFIXES = ("partner", "partners", "ambassador", "creator", "ugc", "pr", "gifted")
 SMALL_FOLLOWERS = 50_000
 FREE = {"top_videos": 6, "hooks": 3, "creators": 5, "matches": 3}
-FULL = {"top_videos": 24, "hooks": 8, "creators": 60, "matches": 6}
+FULL = {"top_videos": 24, "hooks": 8, "creators": 20, "matches": 6}
 DAILY_CAP_USD = float(os.getenv("BRAND_SCAN_DAILY_CAP_USD") or "10")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[a-z]{2,}$", re.I)
 
@@ -352,7 +352,8 @@ def query_plan(target: Dict[str, Any]) -> List[Dict[str, Any]]:
     return plan
 
 
-def _respond(conn, target, videos, *, scan_id, redis_client=None, locked=True, note=""):
+def _respond(conn, target, videos, *, scan_id, redis_client=None, locked=False, note=""):
+    """Public scans return the full report: no email gate between the brand and the first-campaign CTA."""
     niche = guess_niche(target, videos)
     matches = creator_matches(niche, conn=conn, redis_client=redis_client)
     return build_report(target, videos, matches=matches, locked=locked, scan_id=scan_id, note=note)
