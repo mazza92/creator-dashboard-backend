@@ -53,6 +53,10 @@ def viewer(conn):
     cur = conn.cursor()
     cur.execute("SELECT email, first_name FROM users WHERE id = %s", (user_id,))
     row = cur.fetchone() or ("", "")
+    if brand.get("approval_status") == "pending" and ws.campaign_published(conn, brand, row[0]):
+        # Their campaign was published from the Opportunities tab before publishing also approved accounts.
+        ws.approve_for_opportunity(conn, brand.get("opportunity_id") or 0, row[0])
+        brand = ws.brand_for_user(conn, user_id) or brand
     pr_brand_id = ws.resolve_pr_brand(conn, brand, row[0])
     bill = ws.billing(conn, pr_brand_id)
     return {"brand": brand, "approved": ws.is_approved(brand.get("approval_status")), "pr_brand_id": pr_brand_id,

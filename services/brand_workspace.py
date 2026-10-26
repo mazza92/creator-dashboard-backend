@@ -453,6 +453,31 @@ def decide(conn, brand_id: int, approve: bool, reason: str = "") -> Optional[Dic
     return {"email": user.get("email"), "first_name": user.get("first_name"), "name": row["name"]}
 
 
+def campaign_published(conn, brand: Dict[str, Any], email: str) -> bool:
+    """True when an admin already published this brand's campaign (status live, or a roster exists)."""
+    cur = conn.cursor()
+    cur.execute("""SELECT 1 FROM opportunities
+                   WHERE (id = %s OR LOWER(brand_email) = LOWER(%s))
+                     AND (status = 'live' OR pr_brand_id IS NOT NULL)
+                   LIMIT 1""", (brand.get("opportunity_id") or 0, email or ""))
+    return cur.fetchone() is not None
+
+
+def approve_for_opportunity(conn, opportunity_id: int, email: str) -> int:
+    """Publishing a brand's campaign means the admin vetted the brand: approve its pending workspace
+    account (linked by the campaign, or by the campaign's email). Returns how many rows were approved."""
+    ensure_schema(conn)
+    cur = conn.cursor()
+    cur.execute("""UPDATE brands SET approval_status = 'approved', approved_at = NOW()
+                   WHERE approval_status = 'pending'
+                     AND (opportunity_id = %s
+                          OR user_id IN (SELECT id FROM users WHERE LOWER(email) = LOWER(%s)))""",
+                (opportunity_id, email or ""))
+    n = cur.rowcount
+    conn.commit()
+    return n
+
+
 # ----- emails -------------------------------------------------------------------------------
 
 WORKSPACE_URL = "https://app.newcollab.co/brand/workspace"
