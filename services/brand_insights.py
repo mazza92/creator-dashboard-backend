@@ -171,6 +171,16 @@ def query_plan(niche: str) -> List[Dict[str, Any]]:
 
 
 def _respond(kind, conn, niche, *, brand_name, redis_client, scan_id=None, note=""):
+    try:
+        if kind == "gifting_brands":
+            rows = radar._stats_rows(conn, niche)
+            ex = radar._examples(conn, [int(r["id"]) for r in rows[:12]], niche)
+            scan.persist_covers(conn, sorted((v for vs in ex.values() for v in vs), key=lambda v: -int(v.get("views") or 0)))
+        else:
+            scan.persist_covers(conn, niche_videos(conn, niche))
+    except Exception as err:
+        conn.rollback()
+        print(f"[brand-insight] cover persist skipped: {type(err).__name__}: {err}")
     matches = scan.creator_matches(niche, conn=conn, redis_client=redis_client) if kind == "niche_creators" else None
     return build(kind, conn, niche, brand_name=brand_name, matches=matches, scan_id=scan_id, note=note)
 

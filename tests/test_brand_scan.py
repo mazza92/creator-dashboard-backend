@@ -152,3 +152,37 @@ def test_respond_defaults_to_locked_and_caps(monkeypatch):
 def test_signup_url_goes_to_for_brands():
     url = scan.signup_url("skincare")
     assert url.startswith("https://app.newcollab.co/for-brands?") and "ref=brand_scan" in url and "niche=skincare" in url
+
+
+class _Cur:
+    def __init__(self, log): self.log = log
+    def execute(self, sql, args): self.log.append(args)
+
+
+class _Conn:
+    def __init__(self): self.log = []
+    def cursor(self): return _Cur(self.log)
+    def commit(self): pass
+    def rollback(self): pass
+
+
+def test_persist_covers_stores_fresh_and_skips_expired():
+    import time
+    fresh = f"https://p16-sign.tiktokcdn-us.com/a.image?x-expires={int(time.time()) + 3600}&x-signature=s"
+    old = f"https://p16-sign.tiktokcdn-us.com/b.image?x-expires={int(time.time()) - 60}&x-signature=s"
+    hosted = "https://x.supabase.co/storage/v1/object/public/creators/radar/3.jpg"
+    vids = [{"tiktok_id": "1", "cover_url": fresh}, {"tiktok_id": "2", "cover_url": old},
+            {"tiktok_id": "3", "cover_url": hosted}, {"tiktok_id": "4", "cover_url": None}]
+    conn = _Conn()
+    n = scan.persist_covers(conn, vids, rehost=lambda v: f"https://x.supabase.co/storage/v1/object/public/creators/radar/{v['tiktok_id']}.jpg")
+    assert n == 1
+    assert vids[0]["cover_url"].endswith("/radar/1.jpg") and vids[1]["cover_url"] == old
+    assert conn.log == [("https://x.supabase.co/storage/v1/object/public/creators/radar/1.jpg", "1")]
+
+
+def test_persist_covers_survives_rehost_failures():
+    import time
+    fresh = f"https://p16-sign.tiktokcdn-us.com/a.image?x-expires={int(time.time()) + 3600}"
+    vids = [{"tiktok_id": "1", "cover_url": fresh}]
+    def boom(v): raise RuntimeError("storage down")
+    assert scan.persist_covers(_Conn(), vids, rehost=boom) == 0 and vids[0]["cover_url"] == fresh
