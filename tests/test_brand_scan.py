@@ -108,3 +108,30 @@ def test_resolve_uses_directory_row():
 def test_clean_email():
     assert scan.clean_email(" Founder@Brand.CO ") == "founder@brand.co"
     assert scan.clean_email("nope") == ""
+
+
+def test_report_email_has_numbers_links_and_cta():
+    vids = [_v(i, f"c{i % 4}", "when i say my skin is basically clear #gifted", views=1000 + i) for i in range(6)]
+    matches = {"niche": "skincare", "total": 40, "creators": [],
+               "cta_url": "https://app.newcollab.co/brands/launch?niche=skincare&utm_campaign=brand_scan"}
+    rep = scan.build_report(TARGET, vids, matches=matches, locked=False, now=NOW, thumb=_thumb)
+    msg = scan.report_email(rep)
+    assert msg["subject"] == "Your Brand Scan: Glow Recipe's TikTok creators"
+    html = msg["html"]
+    assert "<b>Glow Recipe</b>" in html and "**" not in html
+    assert "https://www.tiktok.com/@c1/video/1" in html
+    assert "utm_campaign=brand_scan&amp;utm_medium=email" in html
+    assert "40 vetted skincare creators" in html
+    assert "brands/scan?b=Glow+Recipe&amp;ref=email" in html
+    assert "<img" not in html
+
+
+def test_report_email_escapes_captions():
+    vids = [_v(1, "a", "<script>x</script> glow recipe haul"), _v(2, "b", "glow recipe haul again")]
+    rep = scan.build_report(TARGET, vids, matches=None, locked=False, now=NOW, thumb=_thumb)
+    assert "<script>" not in scan.report_email(rep)["html"]
+
+
+def test_report_email_subject_possessive():
+    rep = scan.build_report({**TARGET, "name": "Dewy Labs"}, [], matches=None, locked=False, now=NOW, thumb=_thumb)
+    assert scan.report_email(rep)["subject"] == "Your Brand Scan: Dewy Labs' TikTok creators"

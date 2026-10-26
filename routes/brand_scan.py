@@ -133,16 +133,19 @@ def scan_unlock():
 
     def go(conn):
         report = brand_scan.full_report(conn, brand, redis_client=_redis())
-        if report.get("status") != "invalid":
-            brand_scan.save_lead(conn, email, brand, website, ref, _ip())
-        return report
+        if report.get("status") == "invalid":
+            return report, False
+        first = not brand_scan.recently_sent(conn, email, brand)
+        brand_scan.save_lead(conn, email, brand, website, ref, _ip())
+        return report, first
 
     try:
-        out = _run(go)
+        out, first = _run(go)
     except Exception as err:
         print(f"[brand-scan] unlock failed: {err}")
         return jsonify({"success": False, "error": "Could not unlock the report."}), 500
-    if out.get("status") != "invalid":
+    if first:
+        brand_scan.send_report(email, out)
         brand_scan.notify_lead(email, brand, website, ref, out)
     return _reply(out)
 

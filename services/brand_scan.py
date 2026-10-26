@@ -486,6 +486,96 @@ def save_lead(conn, email: str, brand: str, website: str = "", ref: str = "", ip
     return lead_id
 
 
+def recently_sent(conn, email: str, brand: str, within: timedelta = timedelta(hours=24)) -> bool:
+    """One report email per address and brand per day, however often they unlock it."""
+    ensure_leads_table(conn)
+    cur = conn.cursor()
+    cur.execute("""SELECT 1 FROM brand_scan_leads WHERE lower(email) = %s AND lower(scanned_brand) = lower(%s)
+                     AND created_at > NOW() - %s LIMIT 1""", (email, str(brand)[:80], within))
+    return cur.fetchone() is not None
+
+
+SCAN_PAGE = "https://newcollab.co/brands/scan"
+
+
+def _md_html(text: str) -> str:
+    from html import escape
+
+    parts = escape(str(text or "")).split("**")
+    return "".join(f"<b>{p}</b>" if i % 2 else p for i, p in enumerate(parts))
+
+
+def report_email(report: Dict[str, Any]) -> Dict[str, str]:
+    """Subject + HTML for the full report sent after an unlock. Links only, no images, so it lands in the inbox."""
+    from html import escape
+    from urllib.parse import urlencode
+
+    brand = (report.get("brand") or {}).get("name") or "this brand"
+    st = report.get("stats") or {}
+    scan_link = f"{SCAN_PAGE}?{urlencode({'b': brand, 'ref': 'email'})}"
+    matches = report.get("matches") or {}
+    cta = matches.get("cta_url") or "https://newcollab.co/brands/pr-packages"
+    cta = cta + ("&" if "?" in cta else "?") + "utm_medium=email"
+    p = 'style="margin:0 0 14px;font-size:15px;line-height:1.6;color:#2b2d33"'
+    h = 'style="margin:26px 0 10px;font-size:15px;color:#111214"'
+    li = 'style="margin:0 0 8px;font-size:14px;line-height:1.5;color:#2b2d33"'
+    rows = [f"<p {p}>{_md_html(report.get('summary'))}</p>"]
+    if st.get("videos"):
+        rows.append(f"<p {p}><b>{st.get('creators', 0)}</b> creators · <b>{st.get('videos', 0)}</b> videos · "
+                    f"<b>{escape(str(st.get('views_label') or ''))}</b> views · median "
+                    f"<b>{escape(str(st.get('median_followers_label') or ''))}</b> followers</p>")
+    videos = report.get("top_videos") or []
+    if videos:
+        rows.append(f"<h3 {h}>Top videos</h3><ul style=\"padding-left:18px;margin:0\">")
+        for v in videos[:5]:
+            rows.append(f"<li {li}><a href=\"{escape(v['url'])}\" style=\"color:#e8395f\">{escape(v.get('hook') or 'Video')}</a>"
+                        f" · {escape(v.get('creator') or '')} · {escape(v.get('views_label') or '')} views</li>")
+        rows.append("</ul>")
+    hooks = report.get("hooks") or []
+    if hooks:
+        rows.append(f"<h3 {h}>Hooks that repeat</h3><ul style=\"padding-left:18px;margin:0\">")
+        for hk in hooks[:3]:
+            rows.append(f"<li {li}>“{escape(hk['hook'])}”: {hk['videos']} videos from {hk['creators']} creators, "
+                        f"{escape(hk.get('views_label') or '')} views</li>")
+        rows.append("</ul>")
+    creators = report.get("creators") or []
+    if creators:
+        names = ", ".join(escape(c["handle"]) for c in creators[:8])
+        more = len(creators) - 8
+        rows.append(f"<h3 {h}>Creators posting</h3><p {p}>{names}{f' and {more} more' if more > 0 else ''}.</p>")
+    total = int(matches.get("total") or 0)
+    niche = f"{matches.get('niche')} " if matches.get("niche") else ""
+    bridge = (f"{total} vetted {niche}creators on Newcollab fit this profile and are open to gifting your brand."
+              if total else f"Get vetted {niche}creators making content like this for your brand.")
+    rows.append(
+        f"<div style=\"margin:28px 0 8px;padding:20px;border-radius:14px;background:#fef2f4\">"
+        f"<p style=\"margin:0 0 6px;font-size:16px;font-weight:700;color:#111214\">{escape(bridge)}</p>"
+        f"<p style=\"margin:0 0 16px;font-size:14px;color:#3f424a\">Pick creators, ship your product, get 5 to 10 "
+        f"ad-ready videos back with 6-month ad rights. Your first campaign is free.</p>"
+        f"<a href=\"{escape(cta)}\" style=\"display:inline-block;background:#e8395f;color:#fff;text-decoration:none;"
+        f"font-weight:600;font-size:15px;padding:12px 18px;border-radius:10px\">Try your first campaign free</a></div>")
+    rows.append(f"<p style=\"margin:18px 0 0;font-size:13px;color:#6b6f78\">See the full interactive report: "
+                f"<a href=\"{escape(scan_link)}\" style=\"color:#6b6f78\">{escape(scan_link)}</a><br>"
+                "Reply to this email if you want us to set up the campaign with you.</p>")
+    html = ("<div style=\"max-width:600px;margin:0 auto;padding:24px;font-family:-apple-system,Segoe UI,Roboto,"
+            "Helvetica,Arial,sans-serif\">" + "".join(rows) + "</div>")
+    owner = f"{brand}'" if brand.lower().endswith("s") else f"{brand}'s"
+    return {"subject": f"Your Brand Scan: {owner} TikTok creators", "html": html}
+
+
+def send_report(email: str, report: Dict[str, Any]) -> bool:
+    from services.resend_mail import send_resend_email
+
+    msg = report_email(report)
+    try:
+        out = send_resend_email(email, msg["subject"], msg["html"], tags=[{"name": "type", "value": "brand_scan_report"}],
+                                reply_to=(os.getenv("BRAND_SCAN_NOTIFY_EMAIL") or "team@newcollab.co").strip())
+        return bool((out or {}).get("success"))
+    except Exception as err:
+        print(f"[brand-scan] report email skipped: {err}")
+        return False
+
+
 def notify_lead(email: str, brand: str, website: str = "", ref: str = "", report: Optional[Dict] = None) -> None:
     from html import escape
 
