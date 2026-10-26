@@ -1568,6 +1568,22 @@ def admin_publish(opp_id):
         cursor.close()
         conn.close()
 
+        if is_brand_submission(opp):
+            # Publishing the campaign vets the brand, so its workspace account (if any) is approved too.
+            try:
+                from pr_crm_routes import get_db_connection as workspace_connection
+                from services.brand_workspace import approve_for_opportunity
+
+                wconn = workspace_connection()
+                try:
+                    approved = approve_for_opportunity(wconn, opp_id, opp.get('brand_email'))
+                    if approved:
+                        print(f"[admin_publish] approved {approved} brand workspace account(s) for opp={opp_id}")
+                finally:
+                    wconn.close()
+            except Exception as e:
+                print(f"[admin_publish] brand account approval skipped opp={opp_id}: {e}")
+
         if gifted:
             send_campaign_email(opp['brand_email'], 'live', brand_name=opp['brand_name'],
                                 product_name=opp['product_name'], roster_url=gifted.get('roster_url'))
