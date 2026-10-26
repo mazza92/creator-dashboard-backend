@@ -94,15 +94,96 @@ def _reply(out):
     return jsonify({"success": True, "scan": out})
 
 
+FREE_SCAN_TTL = 30 * 86400
+
+
+def _free_key(ip: str) -> str:
+    return f"brand_scan:free:{ip}"
+
+
+def _free_scan_ok(ip: str, brand_key: str) -> bool:
+    """Visitors (and brands awaiting approval) get one free brand scan. Re-opening that same brand is fine.
+    Fails open without Redis; the global daily $ cap still holds."""
+    r = _redis()
+    if r is None or not ip:
+        return True
+    try:
+        used = r.get(_free_key(ip))
+    except Exception:
+        return True
+    if not used:
+        return True
+    used = used.decode() if isinstance(used, bytes) else str(used)
+    return used == brand_key
+
+
+def _mark_free_scan(ip: str, brand_key: str) -> None:
+    r = _redis()
+    if r is None or not ip:
+        return
+    try:
+        r.set(_free_key(ip), brand_key, ex=FREE_SCAN_TTL, nx=True)
+    except Exception:
+        pass
+
+
+def _viewer(conn):
+    from routes.brand_workspace import viewer
+
+    try:
+        return viewer(conn)
+    except Exception as err:
+        conn.rollback()
+        print(f"[brand-scan] viewer lookup skipped: {type(err).__name__}: {err}")
+        return None
+
+
+GATE_COPY = {
+    "signup": "You've used your free Brand Scan. Try your first campaign free to keep scanning and see every creator.",
+    "pending": "Your brand account is being reviewed. You'll get unlimited creator lists once it's approved.",
+    "daily_limit": "You've scanned 3 brands today. Subscribe for unlimited scans, or come back tomorrow.",
+}
+
+
+def _gate(kind: str, target: dict, **extra):
+    from services.brand_scan import signup_url
+
+    return {"status": "gated", "gate": kind, "message": GATE_COPY[kind],
+            "brand": {"key": target["key"], "name": target["name"]}, "cta_url": signup_url(), **extra}
+
+
 @brand_scan_bp.route("/api/public/brand-scan", methods=["POST"])
 def scan():
     if _limited():
         return jsonify({"success": False, "error": "Too many scans, try again in a minute."}), 429
     body = _body()
     ip = _ip()
+
+    def go(conn):
+        from services import brand_workspace as ws
+
+        target = brand_scan.resolve(conn, body.get("brand"))
+        if not target:
+            return {"status": "invalid"}
+        me = _viewer(conn)
+        approved = bool(me and me["approved"])
+        if approved:
+            allow = ws.scan_allowance(conn, me["brand"]["id"], target["key"], me["subscribed"])
+            if not allow["allowed"]:
+                return _gate("daily_limit", target, limit=allow["limit"], used=allow["used"])
+        elif not _free_scan_ok(ip, target["key"]):
+            return _gate("pending" if me else "signup", target)
+        out = brand_scan.start(conn, body.get("brand"), can_start=_can_start(ip), redis_client=_redis(),
+                               ref=str(body.get("ref") or ""), locked=not approved)
+        if out.get("status") in ("ready", "empty", "searching"):
+            if approved:
+                ws.record_scan(conn, me["brand"]["id"], target["key"], target["name"], out.get("scan_id"))
+            else:
+                _mark_free_scan(ip, target["key"])
+        return out
+
     try:
-        out = _run(lambda c: brand_scan.start(c, body.get("brand"), can_start=_can_start(ip),
-                                              redis_client=_redis(), ref=str(body.get("ref") or "")))
+        out = _run(go)
     except Exception as err:
         print(f"[brand-scan] scan failed: {type(err).__name__}: {err!r}")
         return jsonify({"success": False, "error": "Could not run the scan."}), 500
@@ -113,43 +194,15 @@ def scan():
 
 @brand_scan_bp.route("/api/public/brand-scan/<int:scan_id>", methods=["GET"])
 def scan_poll(scan_id):
+    def go(conn):
+        me = _viewer(conn)
+        return brand_scan.poll(conn, scan_id, redis_client=_redis(), locked=not (me and me["approved"]))
+
     try:
-        out = _run(lambda c: brand_scan.poll(c, scan_id, redis_client=_redis()))
+        out = _run(go)
     except Exception as err:
         print(f"[brand-scan] poll failed: {type(err).__name__}: {err!r}")
         return jsonify({"success": False, "error": "Could not load the scan."}), 500
-    return _reply(out)
-
-
-@brand_scan_bp.route("/api/public/brand-scan/unlock", methods=["POST"])
-def scan_unlock():
-    if _limited():
-        return jsonify({"success": False, "error": "Too many requests, try again in a minute."}), 429
-    body = _body()
-    email = brand_scan.clean_email(body.get("email"))
-    brand = str(body.get("brand") or "").strip()
-    if not email:
-        return jsonify({"success": False, "error": "Enter a valid work email."}), 400
-    if not brand:
-        return jsonify({"success": False, "error": "Missing brand."}), 400
-    website, ref = str(body.get("website") or ""), str(body.get("ref") or "")
-
-    def go(conn):
-        report = brand_scan.full_report(conn, brand, redis_client=_redis())
-        if report.get("status") == "invalid":
-            return report, False
-        first = not brand_scan.recently_sent(conn, email, brand)
-        brand_scan.save_lead(conn, email, brand, website, ref, _ip())
-        return report, first
-
-    try:
-        out, first = _run(go)
-    except Exception as err:
-        print(f"[brand-scan] unlock failed: {type(err).__name__}: {err!r}")
-        return jsonify({"success": False, "error": "Could not unlock the report."}), 500
-    if first:
-        brand_scan.send_report(email, out)
-        brand_scan.notify_lead(email, brand, website, ref, out)
     return _reply(out)
 
 

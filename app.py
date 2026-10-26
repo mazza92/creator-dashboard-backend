@@ -83,6 +83,7 @@ from routes.admin_reports import admin_reports_bp
 from routes.admin_email import admin_email_bp
 from routes.brand_pipeline import brand_pipeline_bp
 from routes.brand_scan import brand_scan_bp
+from routes.brand_workspace import brand_workspace_bp, init_brand_workspace
 from routes.admin_creators import admin_creators_bp
 from routes.ugc_supply import ugc_supply_bp
 from routes.resend_webhooks import resend_webhooks_bp
@@ -357,6 +358,8 @@ app.register_blueprint(polly_bp)
 app.register_blueprint(autopilot_bp)
 app.register_blueprint(integrations_bp)
 app.register_blueprint(brand_scan_bp)
+app.register_blueprint(brand_workspace_bp)
+init_brand_workspace(_establish_auth_session, _auth_json_response)
 app.register_blueprint(wellknown_bp)
 app.register_blueprint(brand_apply_bp)
 app.register_blueprint(brand_pr_roster_bp)
@@ -1114,7 +1117,12 @@ def google_signup():
             cursor.execute("UPDATE users SET last_login = NOW() WHERE id = %s", (user_id,))
             conn.commit()
 
-            _establish_auth_session(user_id, role, creator_id=creator_id)
+            brand_id = None
+            if role == 'brand':
+                cursor.execute("SELECT id FROM brands WHERE user_id = %s ORDER BY id LIMIT 1", (user_id,))
+                brand_row = cursor.fetchone()
+                brand_id = brand_row['id'] if brand_row else None
+            _establish_auth_session(user_id, role, creator_id=creator_id, brand_id=brand_id)
 
             # Determine redirect URL based on role and onboarding status
             if role == 'creator':
@@ -1125,7 +1133,7 @@ def google_signup():
                 else:
                     redirect_url = '/creator/dashboard/for-you'
             else:
-                redirect_url = '/brand/dashboard/overview'
+                redirect_url = '/brand/workspace'
 
             app.logger.info(f"Logged in existing user: {user_id}, role: {role}, creator_id: {creator_id}, onboarding: {onboarding_complete}")
             app.logger.debug(f"Session before response: {sorted(session.keys())}")
@@ -1633,7 +1641,7 @@ def login():
             else:
                 redirect_url = '/creator/dashboard/for-you'
         else:
-            redirect_url = '/brand/dashboard/overview'
+            redirect_url = '/brand/workspace'
 
         login_response = {
             'message': 'Login successful',
