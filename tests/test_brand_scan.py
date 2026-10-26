@@ -135,3 +135,14 @@ def test_report_email_escapes_captions():
 def test_report_email_subject_possessive():
     rep = scan.build_report({**TARGET, "name": "Dewy Labs"}, [], matches=None, locked=False, now=NOW, thumb=_thumb)
     assert scan.report_email(rep)["subject"] == "Your Brand Scan: Dewy Labs' TikTok creators"
+
+
+def test_public_scan_returns_full_report(monkeypatch):
+    monkeypatch.setattr(scan, "creator_matches", lambda niche, conn=None, redis_client=None: {
+        "niche": niche, "total": 3, "creators": [], "cta_url": "https://x/launch"})
+    monkeypatch.setattr(scan.radar, "_thumb", _thumb)
+    vids = [_v(i, f"c{i}", f"glow recipe review number {i}", views=i * 100) for i in range(1, 31)]
+    rep = scan._respond(None, TARGET, vids, scan_id=1)
+    assert rep["locked"] is False
+    assert len(rep["top_videos"]) == scan.FULL["top_videos"]
+    assert len(rep["creators"]) == scan.FULL["creators"] == 20
