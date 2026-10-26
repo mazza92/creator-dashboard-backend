@@ -101,7 +101,8 @@ def is_approved(status: Optional[str]) -> bool:
 
 def find_user(conn, email: str) -> Optional[Dict[str, Any]]:
     cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT id, role, password FROM users WHERE LOWER(email) = LOWER(%s) LIMIT 1", (email,))
+    cur.execute("""SELECT id, role, password FROM users WHERE LOWER(email) = LOWER(%s)
+                   ORDER BY (role = 'brand') DESC, id LIMIT 1""", (email,))
     row = cur.fetchone()
     return dict(row) if row else None
 
@@ -111,7 +112,10 @@ def brand_for_user(conn, user_id: int) -> Optional[Dict[str, Any]]:
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("""SELECT id, name, website, app_url, category, logo, approval_status, pr_brand_id, opportunity_id,
                           signup_niche, profile_completed_at, free_scan_brand
-                   FROM brands WHERE user_id = %s ORDER BY id LIMIT 1""", (user_id,))
+                   FROM brands WHERE user_id = %s
+                   ORDER BY (approval_status IS NULL OR approval_status = 'approved') DESC,
+                            (approval_status = 'pending') DESC, id DESC
+                   LIMIT 1""", (user_id,))
     row = cur.fetchone()
     return dict(row) if row else None
 
@@ -439,6 +443,12 @@ def decide(conn, brand_id: int, approve: bool, reason: str = "") -> Optional[Dic
         return None
     cur.execute("SELECT email, first_name FROM users WHERE id = %s", (row["user_id"],))
     user = cur.fetchone() or {}
+    if approve and user.get("email"):
+        # The same email can hold more than one pending brand row (signed up twice, or with different capitals).
+        # Approve them all, so whichever one the person logs into is approved.
+        cur.execute("""UPDATE brands SET approval_status = 'approved', approved_at = NOW()
+                       WHERE approval_status = 'pending'
+                         AND user_id IN (SELECT id FROM users WHERE LOWER(email) = LOWER(%s))""", (user["email"],))
     conn.commit()
     return {"email": user.get("email"), "first_name": user.get("first_name"), "name": row["name"]}
 
