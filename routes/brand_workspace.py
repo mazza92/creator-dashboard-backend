@@ -394,7 +394,7 @@ def me():
             return err
         brand = me["brand"]
         today = ws.scans_today(conn, brand["id"])
-        roster = ws.live_roster(conn, me["pr_brand_id"])
+        roster = ws.live_roster(conn, brand, me["email"])
         opp = None
         if brand.get("opportunity_id"):
             cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -555,11 +555,16 @@ def admin_list():
 @brand_workspace_bp.route("/api/admin/brand-accounts/<int:brand_id>/<action>", methods=["POST"])
 @admin_required
 def admin_decide(brand_id, action):
-    if action not in ("approve", "reject"):
+    if action not in ("approve", "reject", "pro", "free"):
         return jsonify({"success": False, "error": "Unknown action"}), 404
     body = _body()
     conn = _conn()
     try:
+        if action in ("pro", "free"):
+            problem = ws.set_plan(conn, brand_id, action == "pro")
+            if problem:
+                return jsonify({"success": False, "error": problem}), 400
+            return jsonify({"success": True})
         info = ws.decide(conn, brand_id, action == "approve", str(body.get("reason") or ""))
         if not info:
             return jsonify({"success": False, "error": "Brand account not found"}), 404

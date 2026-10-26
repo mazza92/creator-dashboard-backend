@@ -194,16 +194,19 @@ def query_plan(niche: str) -> List[Dict[str, Any]]:
 
 
 def _respond(kind, conn, niche, *, brand_name, redis_client, scan_id=None, note=""):
+    from services.cover_refresh import refresh
+
     try:
         if kind == "gifting_brands":
             rows = radar._stats_rows(conn, niche)
             ex = radar._examples(conn, [int(r["id"]) for r in rows[:12]], niche)
-            scan.persist_covers(conn, sorted((v for vs in ex.values() for v in vs), key=lambda v: -int(v.get("views") or 0)))
+            refresh(conn, sorted((v for vs in ex.values() for v in vs), key=lambda v: -int(v.get("views") or 0)),
+                    redis_client)
         else:
-            scan.persist_covers(conn, niche_videos(conn, niche))
+            refresh(conn, niche_videos(conn, niche), redis_client)
     except Exception as err:
         conn.rollback()
-        print(f"[brand-insight] cover persist skipped: {type(err).__name__}: {err}")
+        print(f"[brand-insight] cover refresh skipped: {type(err).__name__}: {err}")
     matches = scan.creator_matches(niche, conn=conn, redis_client=redis_client) if kind == "niche_creators" else None
     return build(kind, conn, niche, brand_name=brand_name, matches=matches, scan_id=scan_id, note=note)
 
@@ -368,11 +371,9 @@ def deep_respond(kind, conn, niche, question, keys, queries, *, brand_name, redi
                  run=None, write=None):
     niche_rows = niche_videos(conn, niche)[:60] if kind != "ask" else []
     data = agent.pool(conn, keys, niche_rows)
-    try:
-        scan.persist_covers(conn, data["videos"], limit=48, budget_s=12.0)
-    except Exception as err:
-        conn.rollback()
-        print(f"[brand-insight] cover persist skipped: {type(err).__name__}: {err}")
+    from services.cover_refresh import refresh
+
+    refresh(conn, data["videos"], redis_client, shown=48)
     params = (run or {}).get("params") or {}
     answer = params.get("answer") if params.get("answer_at") else None
     if not answer:

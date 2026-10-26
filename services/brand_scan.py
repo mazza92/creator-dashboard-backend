@@ -448,7 +448,9 @@ def query_plan(target: Dict[str, Any]) -> List[Dict[str, Any]]:
 def _respond(conn, target, videos, *, scan_id, redis_client=None, locked=True, note=""):
     """locked: the viewer isn't an approved brand, so the competitor's creators list stops at FREE["creators"]."""
     videos = sorted(videos, key=lambda v: -int(v.get("views") or 0))
-    persist_covers(conn, videos)
+    from services.cover_refresh import refresh
+
+    refresh(conn, videos, redis_client)
     niche = guess_niche(target, videos)
     matches = creator_matches(niche, conn=conn, redis_client=redis_client)
     return build_report(target, videos, matches=matches, locked=locked, scan_id=scan_id, note=note)

@@ -73,6 +73,18 @@ def ensure_schema(conn) -> None:
     for table in ("brand_workspace_scans", "brand_saved_creators"):
         cur.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
     conn.commit()
+    # Which roster a campaign submission minted. Checked first: ALTER on opportunities locks a hot table.
+    cur.execute("""SELECT 1 FROM information_schema.columns
+                   WHERE table_name = 'opportunities' AND column_name = 'roster_campaign_id'""")
+    if not cur.fetchone():
+        try:
+            cur.execute("SET LOCAL lock_timeout = '2s'")
+            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS roster_campaign_id INTEGER")
+            conn.commit()
+        except Exception as err:
+            conn.rollback()
+            print(f"[brand-workspace] roster_campaign_id column skipped: {err}")
+            return
     _schema_ready = True
 
 
@@ -269,15 +281,21 @@ def ensure_pr_brand(conn, brand: Dict[str, Any], email: str) -> int:
     return pr_id
 
 
-def live_roster(conn, pr_brand_id: Optional[int]) -> Optional[Dict[str, Any]]:
-    if not pr_brand_id:
-        return None
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("""SELECT id, token, status, title, locked_at, shipped_at, created_at
-                   FROM brand_pr_campaigns WHERE brand_id = %s
-                   ORDER BY (status IN ('active', 'locked')) DESC, id DESC LIMIT 1""", (pr_brand_id,))
-    row = cur.fetchone()
-    return dict(row) if row else None
+def live_roster(conn, brand: Dict[str, Any], email: str) -> Optional[Dict[str, Any]]:
+    """The roster of this account's own campaigns (in progress first), never another account's on the same
+    directory brand."""
+    items = [c for c in campaigns(conn, brand, email) if c.get("roster_token")]
+    items.sort(key=lambda c: c["status"] not in ("active", "locked"))
+    if not items:
+        # Brands that ran a roster before the workspace existed: only when the directory brand is theirs by
+        # contact email, and only an in-progress roster.
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""SELECT c.token, c.status, c.title FROM brand_pr_campaigns c JOIN pr_brands b ON b.id = c.brand_id
+                       WHERE LOWER(b.contact_email) = LOWER(%s) AND c.status IN ('active', 'locked')
+                       ORDER BY c.id DESC LIMIT 1""", (email or "",))
+        row = cur.fetchone()
+        return dict(row) if row and email else None
+    return {"token": items[0]["roster_token"], "status": items[0]["status"], "title": items[0].get("product_name")}
 
 
 def billing(conn, pr_brand_id: Optional[int]) -> Dict[str, Any]:
@@ -298,14 +316,21 @@ def billing(conn, pr_brand_id: Optional[int]) -> Dict[str, Any]:
 
 def campaigns(conn, brand: Dict[str, Any], email: str) -> List[Dict[str, Any]]:
     """The brand's campaign submissions (newest first) with their live roster when published."""
+    ensure_schema(conn)
     cur = conn.cursor(cursor_factory=RealDictCursor)
+    # The roster this submission minted. Older submissions (before roster_campaign_id) fall back to an
+    # in-progress roster of the same brand created after the submission, never an earlier, finished one.
     cur.execute("""
         SELECT o.id, o.product_name, o.status, o.created_at, o.pr_brand_id, o.campaign_description,
                o.creator_count_range, o.pr_value_usd,
                c.token AS roster_token, c.status AS roster_status, c.locked_at, c.shipped_at
         FROM opportunities o
         LEFT JOIN LATERAL (SELECT token, status, locked_at, shipped_at FROM brand_pr_campaigns
-                           WHERE brand_id = o.pr_brand_id ORDER BY id DESC LIMIT 1) c ON TRUE
+                           WHERE (o.roster_campaign_id IS NOT NULL AND id = o.roster_campaign_id)
+                              OR (o.roster_campaign_id IS NULL AND brand_id = o.pr_brand_id
+                                  AND status IN ('active', 'locked')
+                                  AND created_at >= o.created_at - INTERVAL '1 day')
+                           ORDER BY id DESC LIMIT 1) c ON TRUE
         WHERE o.id = %s OR LOWER(o.brand_email) = LOWER(%s)
         ORDER BY o.created_at DESC NULLS LAST, o.id DESC
         LIMIT 20""", (brand.get("opportunity_id") or 0, email))
@@ -432,7 +457,7 @@ def list_accounts(conn, status: str = PENDING, limit: int = 100) -> List[Dict[st
         SELECT b.id, b.name, b.website, b.app_url, b.category, b.approval_status, b.signup_source, b.signup_niche,
                b.signup_method, b.free_scan_brand, b.profile_completed_at,
                b.opportunity_id, b.pr_brand_id, b.workspace_created_at, b.approved_at, b.rejection_reason,
-               u.email, u.first_name, u.last_name, u.last_login,
+               u.id AS user_id, u.email, u.first_name, u.last_name, u.last_login,
                o.product_name, o.status AS opportunity_status, o.campaign_description, o.pr_value_usd,
                o.creator_count_range, o.shipping_regions, o.follower_ranges, o.content_types,
                o.application_deadline, o.additional_notes,
@@ -450,7 +475,43 @@ def list_accounts(conn, status: str = PENDING, limit: int = 100) -> List[Dict[st
         for k in ("workspace_created_at", "approved_at", "profile_completed_at", "last_login", "application_deadline"):
             r[k] = r[k].isoformat() if r.get(k) else None
         rows.append(r)
+    plans = _billing_status(conn, [r["pr_brand_id"] for r in rows if r.get("pr_brand_id")])
+    for r in rows:
+        r["plan"] = "pro" if plans.get(r.get("pr_brand_id")) == "active" else "free"
     return rows
+
+
+def _billing_status(conn, pr_ids: List[int]) -> Dict[int, str]:
+    if not pr_ids:
+        return {}
+    cur = conn.cursor()
+    cur.execute("SELECT to_regclass('brand_billing')")
+    if not cur.fetchone()[0]:
+        return {}
+    cur.execute("SELECT brand_id, status FROM brand_billing WHERE brand_id = ANY(%s)", (pr_ids,))
+    return {int(b): s for b, s in cur.fetchall()}
+
+
+def set_plan(conn, brand_id: int, pro: bool) -> Optional[str]:
+    """Admin comp: put a brand account on Pro (or back to free) without Stripe. Returns an error or None."""
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT b.*, u.email FROM brands b JOIN users u ON u.id = b.user_id WHERE b.id = %s", (brand_id,))
+    row = cur.fetchone()
+    if not row:
+        return "Brand account not found"
+    brand = dict(row)
+    from services.brand_billing import get_or_create_brand_billing
+
+    pr_id = ensure_pr_brand(conn, brand, brand.get("email") or "")
+    bill = get_or_create_brand_billing(conn.cursor(cursor_factory=RealDictCursor), pr_id, email=brand.get("email"))
+    if not pro and bill.get("stripe_subscription_id") and bill.get("status") == "active":
+        conn.rollback()
+        return "This brand pays through Stripe. Cancel it in Stripe instead."
+    cur = conn.cursor()
+    cur.execute("UPDATE brand_billing SET status = %s, updated_at = NOW() WHERE brand_id = %s",
+                ("active" if pro else "none", pr_id))
+    conn.commit()
+    return None
 
 
 def decide(conn, brand_id: int, approve: bool, reason: str = "") -> Optional[Dict[str, Any]]:
