@@ -492,7 +492,11 @@ def insight():
             return err
         brand = me["brand"]
         niche = bi.niche_for(body.get("niche") or brand.get("category") or brand.get("signup_niche"))
-        target = {"key": bi.insight_key(kind, niche), "name": bi.TITLES.get(kind, "Insight").format(niche=niche)}
+        question = bi.question_for(kind, niche, brand.get("name") or "", str(body.get("question") or ""))
+        if kind == "ask" and len(question) < 6:
+            return jsonify({"success": False, "error": "Ask a question about creators or content."}), 400
+        target = {"key": bi.insight_key(kind, niche, question),
+                  "name": question[:80] if kind == "ask" else bi.TITLES.get(kind, "Insight").format(niche=niche)}
         if not me["approved"]:
             return jsonify({"success": True, "scan": _gate("pending", target)})
         if kind not in bi.KINDS or not niche:
@@ -501,7 +505,7 @@ def insight():
         if not allow["allowed"]:
             return jsonify({"success": True, "scan": _gate("daily_limit", target, limit=allow["limit"], used=allow["used"])})
         out = bi.start(conn, kind, niche, brand_name=brand.get("name") or "", redis_client=_redis(),
-                       can_start=_can_start(_ip()))
+                       can_start=me["subscribed"] or _can_start(_ip()), question=question)
         if out.get("status") in ("ready", "empty", "searching"):
             ws.record_scan(conn, brand["id"], target["key"], target["name"], out.get("scan_id"))
         if out.get("started"):

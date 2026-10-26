@@ -323,11 +323,12 @@ def _cover_expires(url: str) -> Optional[int]:
         return None
 
 
-def persist_covers(conn, videos: List[Dict[str, Any]], limit: int = PERSIST_COVERS, rehost=None) -> int:
+def persist_covers(conn, videos: List[Dict[str, Any]], limit: int = PERSIST_COVERS, rehost=None,
+                   budget_s: float = 20.0) -> int:
     """Copy still-valid TikTok covers of the videos a report shows into our storage and remember them, so the
     report keeps its thumbnails after TikTok's signed links expire. Returns how many were stored."""
     import time
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, wait
 
     if rehost is None:
         from media_proxy_routes import _already_hosted, is_social_cdn_url, rehost_social_image
@@ -356,8 +357,14 @@ def persist_covers(conn, videos: List[Dict[str, Any]], limit: int = PERSIST_COVE
             break
     if not todo:
         return 0
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        hosted = list(pool.map(lambda v: _safe(rehost, v), todo))
+    # Time-boxed: whatever isn't stored in time is picked up by the next report (or the browser fallback).
+    pool = ThreadPoolExecutor(max_workers=12)
+    futures = [pool.submit(_safe, rehost, v) for v in todo]
+    wait(futures, timeout=budget_s)
+    hosted = [f.result() if f.done() else None for f in futures]
+    for f in futures:
+        f.cancel()
+    pool.shutdown(wait=False)
     stored = [(h, v["tiktok_id"]) for h, v in zip(hosted, todo) if h]
     if not stored:
         return 0

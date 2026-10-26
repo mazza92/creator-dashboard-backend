@@ -278,7 +278,9 @@ def ingest(conn, items: List[Dict[str, Any]], niche: str, plan: List[Dict[str, A
                                        creator_followers, creator_region, fetched_at)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
             ON CONFLICT (tiktok_id) DO UPDATE SET views = EXCLUDED.views, likes = EXCLUDED.likes,
-              cover_url = EXCLUDED.cover_url, creator_followers = EXCLUDED.creator_followers, fetched_at = NOW()
+              cover_url = CASE WHEN tiktok_videos.cover_url LIKE '%%/storage/v1/object/public/%%'
+                               THEN tiktok_videos.cover_url ELSE EXCLUDED.cover_url END,
+              creator_followers = EXCLUDED.creator_followers, fetched_at = NOW()
         """, (v["tiktok_id"], v["url"], v["caption"], v["hashtags"], v["mentions"], v["views"], v["likes"],
               v["created_at"], v["cover_url"], v["is_ad"], v["is_sponsored"], v["language"], c["handle"],
               c["followers"], c["region"]))
@@ -312,7 +314,25 @@ def ingest(conn, items: List[Dict[str, Any]], niche: str, plan: List[Dict[str, A
         """, (p["key"], p["type"], p["query"], ids, len(ids), share, now + p["ttl"]))
     relink(conn, directory, commit=False)
     conn.commit()
-    return {"fetched": len(videos), "kept": kept, "signals": signals}
+    stored = _store_covers(conn, videos)
+    return {"fetched": len(videos), "kept": kept, "signals": signals, "covers": stored}
+
+
+INGEST_COVERS = 150
+
+
+def _store_covers(conn, videos: List[Dict[str, Any]]) -> int:
+    """TikTok cover links expire within days, so copy the small-creator ones while they're minutes old."""
+    small = [v for v in videos if int(v["creator"].get("followers") or 0) <= MAX_CREATOR_FOLLOWERS * 2]
+    small.sort(key=lambda v: -int(v.get("views") or 0))
+    try:
+        from services.brand_scan import persist_covers
+
+        return persist_covers(conn, small, limit=INGEST_COVERS, budget_s=25.0)
+    except Exception as err:
+        conn.rollback()
+        print(f"[radar] cover store skipped: {type(err).__name__}: {err}")
+        return 0
 
 
 # ----- ranking + cards -------------------------------------------------------------------

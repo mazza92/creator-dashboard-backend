@@ -12,6 +12,7 @@ benefits from it too and nothing is paid twice.
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -19,12 +20,23 @@ from typing import Any, Dict, List, Optional
 from psycopg2.extras import RealDictCursor
 
 from services import brand_scan as scan
+from services import insight_agent as agent
 from services import gifting_radar as radar
 from services import radar_source as source
 from services.radar_extract import MAX_CREATOR_FOLLOWERS, brand_key, radar_niche
 from services.radar_queries import SHARED_HASHTAGS, niche_queries
 
-KINDS = ("gifting_brands", "niche_hooks", "niche_creators")
+KINDS = ("gifting_brands", "niche_hooks", "niche_creators", "ask")
+# Kinds answered by the insight agent: planned searches across the niche, then a written answer.
+DEEP = ("niche_hooks", "niche_creators", "ask")
+DEEP_PER_QUERY = 20
+ANSWER_FRESH = timedelta(hours=24)
+QUESTIONS = {
+    "niche_hooks": "Which hooks, opening lines and video formats are working best for {niche} creators on TikTok "
+                   "right now, and why?",
+    "niche_creators": "Find small {niche} creators on TikTok (under 100K followers) who would be a great fit for a "
+                      "gifted product campaign from {brand}, and say what each one is good at.",
+}
 WINDOW = timedelta(days=60)
 FRESH_FOR = timedelta(hours=72)
 MIN_VIDEOS = 25
@@ -34,6 +46,7 @@ TITLES = {
     "gifting_brands": "Brands seeding creators in {niche}",
     "niche_hooks": "Hooks creators reuse in {niche}",
     "niche_creators": "Creators posting gifted {niche} content",
+    "ask": "{niche}",
 }
 
 
@@ -51,8 +64,18 @@ def niche_for(category: Any) -> str:
     return CATEGORY_NICHE.get(text) or radar_niche(text) or ""
 
 
-def insight_key(kind: str, niche: str) -> str:
+def insight_key(kind: str, niche: str, question: str = "") -> str:
+    if kind == "ask":
+        import hashlib
+
+        return f"insight:ask:{niche}:{hashlib.sha1(question.strip().lower().encode()).hexdigest()[:10]}"
     return f"insight:{kind}:{niche}"
+
+
+def question_for(kind: str, niche: str, brand: str = "", question: str = "") -> str:
+    if kind == "ask":
+        return " ".join(str(question or "").split())[:300]
+    return QUESTIONS.get(kind, "").format(niche=niche.replace("_", " "), brand=brand or "our brand")
 
 
 # ----- data ----------------------------------------------------------------------------------
@@ -198,9 +221,12 @@ def searching(run_id: int, niche: str, kind: str, items: int = 0, ingesting: boo
 
 
 def start(conn, kind: str, niche: str, *, brand_name: str = "", redis_client=None,
-          can_start: bool = True) -> Dict[str, Any]:
+          can_start: bool = True, question: str = "") -> Dict[str, Any]:
     if kind not in KINDS or not niche:
         return {"status": "invalid"}
+    if kind in DEEP:
+        return deep_start(conn, kind, niche, brand_name=brand_name, question=question, redis_client=redis_client,
+                          can_start=can_start)
     radar.finalize_stale(conn)
     count = len(niche_videos(conn, niche))
     fresh_at = radar.last_topup(conn, niche)
@@ -235,6 +261,8 @@ def poll(conn, run_id: int, kind: str, *, brand_name: str = "", redis_client=Non
     # Insight runs, or a creator-side radar run of the same niche that was already in flight. Never brand scans.
     if not run or not run.get("niche") or str(run["niche"]).startswith("scan:"):
         return {"status": "not_found"}
+    if (run.get("params") or {}).get("deep"):
+        return deep_poll(conn, run, kind, brand_name=brand_name, redis_client=redis_client)
     niche = run["niche"]
     kind = kind if kind in KINDS else (run.get("params") or {}).get("insight") or "gifting_brands"
     note = ""
@@ -257,3 +285,199 @@ def poll(conn, run_id: int, kind: str, *, brand_name: str = "", redis_client=Non
     elif run["status"] == "failed":
         note = "source_down"
     return _respond(kind, conn, niche, brand_name=brand_name, redis_client=redis_client, scan_id=run_id, note=note)
+
+
+# ----- deep answers (insight agent) -----------------------------------------------------------------
+
+def _fallback_searches(kind: str, niche: str) -> List[str]:
+    bank = niche_queries(niche)["searches"]
+    label = niche.replace("_", " ")
+    generic = [f"{label} review", f"{label} haul", f"{label} routine", f"{label} must haves", f"best {label} products",
+               f"{label} tips", f"{label} unboxing", f"honest {label} review"]
+    return list(dict.fromkeys(generic + list(bank)))
+
+
+def _plan_entries(queries: List[str]) -> List[Dict[str, Any]]:
+    return [{"key": f"search:{q}", "type": "search", "query": q, "ttl": radar.QUERY_TTL} for q in queries]
+
+
+def _recent_run(conn, niche: str, question: str) -> Optional[Dict[str, Any]]:
+    """The last deep run for this exact question, so its plan (and answer) can be reused."""
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("""SELECT id, status, params, created_at FROM discovery_runs
+                   WHERE niche = %s AND params->>'question' = %s AND created_at > %s
+                   ORDER BY id DESC LIMIT 1""", (niche, question, _now() - radar.QUERY_TTL))
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def _creator_card(c: Dict[str, Any], videos: List[Dict[str, Any]], now: datetime, thumb=None) -> Dict[str, Any]:
+    mine = sorted((v for v in videos if v.get("creator_handle") == c["handle"]), key=lambda v: -int(v.get("views") or 0))
+    return {"handle": f"@{c['handle']}", "url": f"https://www.tiktok.com/@{c['handle']}",
+            "followers": int(c.get("followers") or 0), "followers_label": scan._k(c.get("followers")),
+            "region": c.get("region") or "", "bio": (c.get("bio") or "")[:220],
+            "videos": len(mine), "best_views_label": scan._k(mine[0]["views"] if mine else 0),
+            "examples": [scan.video_card(v, "", now, thumb) for v in mine[:3]]}
+
+
+def deep_build(kind: str, conn, niche: str, question: str, data: Dict[str, Any], answer: Optional[Dict[str, Any]], *,
+               queries: List[str], now: Optional[datetime] = None, thumb=None, matches=None,
+               scan_id: Optional[int] = None, note: str = "") -> Dict[str, Any]:
+    now = now or _now()
+    label = niche.replace("_", " ")
+    videos = data.get("videos") or []
+    creators = data.get("creators") or {}
+    by_id = {str(v["tiktok_id"]): v for v in videos}
+    out: Dict[str, Any] = {"status": "ready" if videos else "empty", "kind": kind, "scan_id": scan_id, "niche": niche,
+                           "insight": True, "deep": True, "question": question,
+                           "title": (answer or {}).get("headline") or TITLES[kind].format(niche=label),
+                           "queries": queries,
+                           "stats": {"videos": len(videos), "creators": len(creators), "searches": len(queries)}}
+    if answer:
+        sections = []
+        for s in answer["sections"]:
+            items = []
+            for it in s["items"]:
+                item = {**it, "videos": [scan.video_card(by_id[x], "", now, thumb) for x in it["videos"] if x in by_id]}
+                if it.get("handle") and it["handle"] in creators:
+                    item["creator"] = _creator_card(creators[it["handle"]], videos, now, thumb)
+                items.append(item)
+            sections.append({**s, "items": items})
+        out.update({"summary": answer["summary"], "sections": sections, "shortlist": answer.get("shortlist") or "",
+                    "followups": answer.get("followups") or []})
+    elif videos:
+        groups = scan.group_hooks(videos)[:8]
+        out["hooks"] = [{"hook": scan.short_hook(g["videos"][0].get("caption")), "videos": len(g["videos"]),
+                         "creators": g["creators"], "views": g["views"], "views_label": scan._k(g["views"]),
+                         "examples": [scan.video_card(v, "", now, thumb) for v in g["videos"][:3]]} for g in groups]
+        out["summary"] = (f"We read **{len(videos)} recent {label} posts** from **{len(creators)} creators** across "
+                          f"{len(queries)} searches. Here are the most viewed, plus openings several creators reuse.")
+    else:
+        out["summary"] = f"We couldn't find recent {label} posts for this yet. Try again in a minute."
+    out["top_videos"] = [scan.video_card(v, "", now, thumb) for v in videos[:12]]
+    if kind == "niche_creators":
+        out["creators"] = scan.creator_rows(videos, "")[:30]
+    if kind == "niche_creators" or (answer and any(s["kind"] == "creators" for s in answer["sections"])):
+        out["matches"] = matches
+    if note:
+        out["note"] = note
+    return out
+
+
+def deep_respond(kind, conn, niche, question, keys, queries, *, brand_name, redis_client, scan_id=None, note="",
+                 run=None, write=None):
+    niche_rows = niche_videos(conn, niche)[:60] if kind != "ask" else []
+    data = agent.pool(conn, keys, niche_rows)
+    try:
+        scan.persist_covers(conn, data["videos"], limit=48, budget_s=12.0)
+    except Exception as err:
+        conn.rollback()
+        print(f"[brand-insight] cover persist skipped: {type(err).__name__}: {err}")
+    params = (run or {}).get("params") or {}
+    answer = params.get("answer") if params.get("answer_at") else None
+    if not answer:
+        answer = agent.synthesize(question, niche, brand_name, data, write=write)
+        if answer and scan_id:
+            cur = conn.cursor()
+            cur.execute("UPDATE discovery_runs SET params = params || %s::jsonb WHERE id = %s",
+                        (json.dumps({"answer": answer, "answer_at": _now().isoformat()}), scan_id))
+            conn.commit()
+    wants_matches = kind == "niche_creators" or (answer and any(s["kind"] == "creators" for s in answer["sections"]))
+    matches = scan.creator_matches(niche, conn=conn, redis_client=redis_client) if wants_matches else None
+    return deep_build(kind, conn, niche, question, data, answer, queries=queries, matches=matches, scan_id=scan_id,
+                      note=note)
+
+
+def deep_searching(run_id: int, niche: str, kind: str, queries: List[str], label: str = "", items: int = 0,
+                   ingesting: bool = False, writing: bool = False) -> Dict[str, Any]:
+    n = len(queries)
+    if writing:
+        step, line = 3, "Reading the videos and writing your answer…"
+    elif ingesting:
+        step, line = 2, "Checking creators and their recent posts…"
+    elif items:
+        step, line = 1, f"Searched TikTok with {n} queries. Found {items} posts so far…"
+    else:
+        step, line = 1, f"Searching TikTok with {n} queries" + (f" ({label})" if label else "") + "…"
+    return {"status": "searching", "scan_id": run_id, "kind": kind, "niche": niche, "step": step, "line": line,
+            "items": items, "insight": True, "deep": True, "queries": queries}
+
+
+def deep_start(conn, kind: str, niche: str, *, brand_name: str = "", question: str = "", redis_client=None,
+               can_start: bool = True, write=None) -> Dict[str, Any]:
+    question = question_for(kind, niche, brand_name, question)
+    if not question:
+        return {"status": "invalid"}
+    radar.finalize_stale(conn)
+    recent = _recent_run(conn, niche, question)
+    if recent and recent["status"] in ("running", "ingesting"):
+        p = recent["params"] or {}
+        return deep_searching(recent["id"], niche, kind, p.get("queries_text") or [], p.get("label") or "")
+    if recent and (recent["params"] or {}).get("keys"):
+        p = recent["params"]
+        queries, label = p.get("queries_text") or [], p.get("label") or ""
+    else:
+        planned = agent.plan(question, niche, brand_name, write=write, fallback=_fallback_searches(kind, niche))
+        queries, label = planned["queries"], planned["label"]
+    plan = _plan_entries(queries)
+    keys = [p["key"] for p in plan]
+    stale = radar.stale_queries(conn, plan)
+    fresh_answer = (recent and (recent["params"] or {}).get("answer_at")
+                    and _now() - datetime.fromisoformat(recent["params"]["answer_at"]) < ANSWER_FRESH)
+    est = source.estimate_cost(len(stale) * DEEP_PER_QUERY)
+    if not stale or fresh_answer or not can_start or radar.spend_today(conn) + est > scan.DAILY_CAP_USD:
+        note = "" if (not stale or fresh_answer) else "limit"
+        if not recent:  # answered from stored videos: still record the run so its answer is kept and reused
+            recent = {"id": radar._record(conn, {"niche": niche, "creator_id": None}, status="done",
+                                          served_from="database",
+                                          params={"kind": "brand_insight", "insight": kind, "deep": True,
+                                                  "question": question, "keys": keys, "queries_text": queries,
+                                                  "label": label, "brand": brand_name[:80]}),
+                      "params": {}}
+        return deep_respond(kind, conn, niche, question, keys, queries, brand_name=brand_name,
+                            redis_client=redis_client, scan_id=recent["id"], note=note, run=recent, write=write)
+    try:
+        apify_id = source.start_run([], [p["query"] for p in stale], DEEP_PER_QUERY)
+    except Exception as err:
+        print(f"[brand-insight] deep start failed: {type(err).__name__}: {err}")
+        return deep_respond(kind, conn, niche, question, keys, queries, brand_name=brand_name,
+                            redis_client=redis_client, note="source_down", write=write)
+    run_id = radar._record(conn, {"niche": niche, "creator_id": None}, status="running", served_from="full_apify",
+                           run_ids=[apify_id], queries=[{k: p[k] for k in ("key", "type", "query")} for p in stale],
+                           params={"kind": "brand_insight", "insight": kind, "deep": True, "question": question,
+                                   "keys": keys, "queries_text": queries, "label": label, "est_cost": est,
+                                   "per_query": DEEP_PER_QUERY, "round": 1, "brand": brand_name[:80]})
+    print(f"[brand-insight] deep run {run_id} niche={niche} kind={kind} searches={len(stale)}/{len(queries)} est=${est}")
+    return {**deep_searching(run_id, niche, kind, queries, label), "started": True}
+
+
+def deep_poll(conn, run: Dict[str, Any], kind: str, *, brand_name: str = "", redis_client=None,
+              write=None) -> Dict[str, Any]:
+    p = run.get("params") or {}
+    niche, question = run["niche"], p.get("question") or ""
+    queries, keys, label = p.get("queries_text") or [], p.get("keys") or [], p.get("label") or ""
+    kind = p.get("insight") or kind
+    note = ""
+    if run["status"] in ("running", "ingesting"):
+        age = _now() - radar._round_started(run)
+        if run["status"] == "ingesting":
+            if age < radar.RUN_TIMEOUT + timedelta(minutes=2):
+                return deep_searching(run["id"], niche, kind, queries, label, ingesting=True)
+        else:
+            try:
+                step = radar._finish(conn, run)
+            except Exception as err:
+                conn.rollback()
+                print(f"[brand-insight] deep poll failed run={run['id']}: {type(err).__name__}: {err}")
+                return deep_searching(run["id"], niche, kind, queries, label)
+            if not step.get("done"):
+                return deep_searching(run["id"], niche, kind, queries, label, items=step.get("items") or 0,
+                                      ingesting=bool(step.get("ingesting")))
+            if not step.get("failed"):
+                # Ingest used this request; the answer gets its own (next poll).
+                return deep_searching(run["id"], niche, kind, queries, label, writing=True)
+            note = "source_down"
+    elif run["status"] == "failed":
+        note = "source_down"
+    return deep_respond(kind, conn, niche, question, keys, queries, brand_name=brand_name, redis_client=redis_client,
+                        scan_id=run["id"], note=note, run=run, write=write)
