@@ -264,3 +264,44 @@ Email 2 (day 3): the scan link. Email 3 (day 7): "Your first campaign is free".
 2. Deploy the frontend, and run 5 scans by hand on niche leaders to warm the cache (skincare, haircare, supplements, drinks, pet).
 3. Turn on the Hermes warm step for 50 prospects and compare reply rates against the current template.
 4. Review metrics weekly. Build v2 Alerts once 10 or more brands have unlocked a report.
+
+
+---
+
+## 9. Update: brand workspace and gated scans (live)
+
+**Why:** a no-login roster wasn't converting brands. Brands now get a real logged-in workspace, and Brand Scan is the bait that leads into it.
+
+**Free vs signed-in**
+- **Visitors** (and brands still awaiting approval) get **one free brand scan**, counted per IP for 30 days, with Redis. Re-opening that same brand is fine.
+  - Top videos and hooks show in full.
+  - The competitor's **creators list stops at 6**, with the rest blurred behind "Try your first campaign free".
+  - A second brand returns a signup gate.
+- **Approved brands** see the full creators list (up to 60).
+  - 3 new brands a day; re-scanning a brand already scanned today is free.
+  - Unlimited once subscribed ($299).
+
+**Signup**
+- "Try your first campaign free" goes to `/for-brands` (`ref=brand_scan`).
+- The form gains a 5th step, "Create your brand workspace": Google, or email + password.
+- Submitting:
+  1. creates a `users` row (role brand) and a `brands` row with `approval_status = 'pending'`;
+  2. posts the campaign through the existing `/api/opportunities/public/submit`;
+  3. links the two;
+  4. lands on `/brand/workspace`.
+- The team gets an email for each new account.
+- `/brands/launch` (used by MCP visitors) is unchanged.
+
+**Approval:** Admin, then Opportunities, then the **Brand accounts** tab. Approve or reject; both send an email. A NULL `approval_status` (a brand account created before this change) counts as approved.
+
+**Workspace (`/brand/workspace`, Lightreel-style)**
+- Sidebar: New scan, Brand Scan, Roster, Saved creators, Plan & billing, recent scans, account and log out.
+- **Brand Scan:** the chat view with a prompt library and a usage meter. You can bookmark Newcollab creator matches.
+- **Roster:** the existing token roster (`BrandPRRoster`) embedded. It's found through `brands.pr_brand_id`, which is resolved from the campaign submission, then the contact email, then the website.
+- **Plan & billing:** the existing Stripe checkout and portal, through the roster token.
+
+**Backend**
+- New files: `services/brand_workspace.py` and `routes/brand_workspace.py`, mounted at `/api/brand-workspace/*` and `/api/admin/brand-accounts`.
+- Schema is created idempotently: new columns on `brands`, plus the tables `brand_workspace_scans` and `brand_saved_creators`.
+- Brand logins (password and Google) now redirect to `/brand/workspace`.
+- The email-unlock endpoint was removed: it returned the full creators list to anyone.

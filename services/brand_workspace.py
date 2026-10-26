@@ -1,0 +1,385 @@
+"""Brand workspace: logged-in brand accounts on top of the existing users/brands tables.
+
+A brand signs up from /for-brands (email + password or Google), lands in /brand/workspace and waits for
+admin approval, like creators do. Approved brands get Brand Scan limits, scan history, saved creators,
+and their live gifted roster (the existing brand_pr_campaigns token roster) inside the workspace.
+
+brands rows predate approval: a NULL approval_status is a legacy account and counts as approved.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+from psycopg2.extras import RealDictCursor
+
+FREE_SCANS_PER_DAY = 3
+APPROVED = ("approved",)
+PENDING, REJECTED = "pending", "rejected"
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[a-z]{2,}$", re.I)
+_schema_ready = False
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def ensure_schema(conn) -> None:
+    """Idempotent, once per process. ADD COLUMN IF NOT EXISTS never rewrites the brands table."""
+    global _schema_ready
+    if _schema_ready:
+        return
+    cur = conn.cursor()
+    cur.execute("""
+        ALTER TABLE brands
+          ADD COLUMN IF NOT EXISTS approval_status TEXT,
+          ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ,
+          ADD COLUMN IF NOT EXISTS rejected_at TIMESTAMPTZ,
+          ADD COLUMN IF NOT EXISTS rejection_reason TEXT,
+          ADD COLUMN IF NOT EXISTS pr_brand_id INTEGER,
+          ADD COLUMN IF NOT EXISTS opportunity_id INTEGER,
+          ADD COLUMN IF NOT EXISTS signup_source TEXT,
+          ADD COLUMN IF NOT EXISTS signup_niche TEXT,
+          ADD COLUMN IF NOT EXISTS workspace_created_at TIMESTAMPTZ
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS brand_workspace_scans (
+          id SERIAL PRIMARY KEY,
+          brand_id INTEGER NOT NULL,
+          scanned_key TEXT NOT NULL,
+          scanned_name TEXT NOT NULL,
+          scan_id INTEGER,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""")
+    cur.execute("CREATE INDEX IF NOT EXISTS brand_workspace_scans_brand_idx "
+                "ON brand_workspace_scans (brand_id, created_at DESC)")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS brand_saved_creators (
+          brand_id INTEGER NOT NULL,
+          creator_ref TEXT NOT NULL,
+          card JSONB NOT NULL DEFAULT '{}'::jsonb,
+          from_scan TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (brand_id, creator_ref)
+        )""")
+    for table in ("brand_workspace_scans", "brand_saved_creators"):
+        cur.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+    conn.commit()
+    _schema_ready = True
+
+
+# ----- accounts ---------------------------------------------------------------------------
+
+def clean_email(raw: Any) -> str:
+    email = str(raw or "").strip().lower()[:254]
+    return email if EMAIL_RE.match(email) else ""
+
+
+def clean_text(raw: Any, limit: int = 200) -> str:
+    return " ".join(str(raw or "").split())[:limit]
+
+
+def clean_website(raw: Any) -> str:
+    site = clean_text(raw, 300)
+    if site and not re.match(r"^https?://", site, re.I):
+        site = "https://" + site
+    return site
+
+
+def is_approved(status: Optional[str]) -> bool:
+    """NULL is a legacy brand account (created before approval existed): treat as approved."""
+    return status is None or status in APPROVED
+
+
+def find_user(conn, email: str) -> Optional[Dict[str, Any]]:
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT id, role, password FROM users WHERE LOWER(email) = LOWER(%s) LIMIT 1", (email,))
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def brand_for_user(conn, user_id: int) -> Optional[Dict[str, Any]]:
+    ensure_schema(conn)
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("""SELECT id, name, website, category, logo, approval_status, pr_brand_id, opportunity_id,
+                          signup_niche
+                   FROM brands WHERE user_id = %s ORDER BY id LIMIT 1""", (user_id,))
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def create_brand_account(conn, *, email: str, password_hash: Optional[str], first_name: str, last_name: str,
+                         brand_name: str, website: str, category: str = "", niche: str = "",
+                         source: str = "for-brands", country: str = "") -> Dict[str, int]:
+    """users row (role brand) + brands row (pending). Caller checks the email is free first."""
+    ensure_schema(conn)
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO users (first_name, last_name, email, phone, country, password, role, is_verified,
+                                      last_login)
+                   VALUES (%s, %s, %s, '', %s, %s, 'brand', TRUE, NOW()) RETURNING id""",
+                (first_name, last_name, email, country or "", password_hash))
+    user_id = int(cur.fetchone()[0])
+    cur.execute("""INSERT INTO brands (name, description, category, website, user_id, approval_status,
+                                       signup_source, signup_niche, workspace_created_at)
+                   VALUES (%s, '', %s, %s, %s, 'pending', %s, %s, NOW()) RETURNING id""",
+                (brand_name, category or None, website or None, user_id, source[:40], niche[:40] or None))
+    brand_id = int(cur.fetchone()[0])
+    conn.commit()
+    return {"user_id": user_id, "brand_id": brand_id}
+
+
+def link_opportunity(conn, brand_id: int, opportunity_id: int, email: str) -> bool:
+    """Attach the /for-brands campaign submission, only when it was sent from this account's email."""
+    ensure_schema(conn)
+    cur = conn.cursor()
+    cur.execute("""UPDATE brands SET opportunity_id = %s
+                   WHERE id = %s AND EXISTS (SELECT 1 FROM opportunities o WHERE o.id = %s
+                                             AND LOWER(o.brand_email) = LOWER(%s))""",
+                (opportunity_id, brand_id, opportunity_id, email))
+    ok = cur.rowcount > 0
+    conn.commit()
+    return ok
+
+
+def _host(url: Any) -> str:
+    host = str(url or "").lower().split("//")[-1].split("/")[0]
+    return host[4:] if host.startswith("www.") else host
+
+
+def resolve_pr_brand(conn, brand: Dict[str, Any], email: str) -> Optional[int]:
+    """The directory/roster brand (pr_brands) behind this account: stored link, the campaign submission's
+    published brand, the contact email, then the website host. Stores what it finds."""
+    if brand.get("pr_brand_id"):
+        return int(brand["pr_brand_id"])
+    cur = conn.cursor()
+    found = None
+    if brand.get("opportunity_id"):
+        cur.execute("SELECT pr_brand_id FROM opportunities WHERE id = %s", (brand["opportunity_id"],))
+        row = cur.fetchone()
+        found = row[0] if row and row[0] else None
+    if not found and email:
+        cur.execute("SELECT id FROM pr_brands WHERE LOWER(contact_email) = LOWER(%s) ORDER BY id LIMIT 1", (email,))
+        row = cur.fetchone()
+        found = row[0] if row else None
+    host = _host(brand.get("website"))
+    if not found and host and "." in host:
+        cur.execute("""SELECT id FROM pr_brands WHERE LOWER(website) LIKE %s ORDER BY id LIMIT 1""",
+                    (f"%{host}%",))
+        row = cur.fetchone()
+        found = row[0] if row else None
+    if found:
+        cur.execute("UPDATE brands SET pr_brand_id = %s WHERE id = %s", (found, brand["id"]))
+        conn.commit()
+        return int(found)
+    return None
+
+
+def live_roster(conn, pr_brand_id: Optional[int]) -> Optional[Dict[str, Any]]:
+    if not pr_brand_id:
+        return None
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("""SELECT id, token, status, title, locked_at, shipped_at, created_at
+                   FROM brand_pr_campaigns WHERE brand_id = %s
+                   ORDER BY (status IN ('active', 'locked')) DESC, id DESC LIMIT 1""", (pr_brand_id,))
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def billing(conn, pr_brand_id: Optional[int]) -> Dict[str, Any]:
+    if not pr_brand_id:
+        return {"subscribed": False, "status": "none"}
+    try:
+        from services.brand_billing import billing_public_summary
+        summary = billing_public_summary(conn.cursor(cursor_factory=RealDictCursor), pr_brand_id)
+        conn.commit()
+        return summary or {"subscribed": False, "status": "none"}
+    except Exception as err:
+        print(f"[brand-workspace] billing lookup skipped: {type(err).__name__}: {err}")
+        conn.rollback()
+        return {"subscribed": False, "status": "none"}
+
+
+# ----- scan allowance ------------------------------------------------------------------------
+
+def scans_today(conn, brand_id: int) -> List[str]:
+    ensure_schema(conn)
+    cur = conn.cursor()
+    cur.execute("""SELECT DISTINCT scanned_key FROM brand_workspace_scans
+                   WHERE brand_id = %s AND created_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'""",
+                (brand_id,))
+    return [r[0] for r in cur.fetchall()]
+
+
+def scan_allowance(conn, brand_id: int, key: str, subscribed: bool) -> Dict[str, Any]:
+    """Approved brands: 3 different brands a day, unlimited once subscribed. Re-scanning a brand already
+    scanned today is always free (it's served from the cache)."""
+    today = scans_today(conn, brand_id)
+    if subscribed:
+        return {"allowed": True, "used": len(today), "limit": None}
+    allowed = key in today or len(today) < FREE_SCANS_PER_DAY
+    return {"allowed": allowed, "used": len(today), "limit": FREE_SCANS_PER_DAY}
+
+
+def record_scan(conn, brand_id: int, key: str, name: str, scan_id: Optional[int]) -> None:
+    ensure_schema(conn)
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO brand_workspace_scans (brand_id, scanned_key, scanned_name, scan_id)
+                   VALUES (%s, %s, %s, %s)""", (brand_id, key, name[:80], scan_id))
+    conn.commit()
+
+
+def scan_history(conn, brand_id: int, limit: int = 30) -> List[Dict[str, Any]]:
+    ensure_schema(conn)
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("""SELECT DISTINCT ON (scanned_key) scanned_key AS key, scanned_name AS name, scan_id, created_at
+                   FROM brand_workspace_scans WHERE brand_id = %s
+                   ORDER BY scanned_key, created_at DESC""", (brand_id,))
+    rows = sorted((dict(r) for r in cur.fetchall()), key=lambda r: r["created_at"], reverse=True)[:limit]
+    for r in rows:
+        r["created_at"] = r["created_at"].isoformat()
+    return rows
+
+
+# ----- saved creators --------------------------------------------------------------------------
+
+def creator_ref(card: Dict[str, Any]) -> str:
+    return clean_text(card.get("handle") or card.get("preview_url") or "", 200).lower()
+
+
+def save_creator(conn, brand_id: int, card: Dict[str, Any], from_scan: str = "") -> bool:
+    ensure_schema(conn)
+    ref = creator_ref(card)
+    if not ref:
+        return False
+    keep = {k: card.get(k) for k in ("handle", "preview_url", "avatar_url", "followers", "niches", "country",
+                                     "platform", "thumbnails", "avg_views", "engagement_rate")
+            if card.get(k) is not None}
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO brand_saved_creators (brand_id, creator_ref, card, from_scan) VALUES (%s, %s, %s, %s)
+                   ON CONFLICT (brand_id, creator_ref) DO UPDATE SET card = EXCLUDED.card""",
+                (brand_id, ref, json.dumps(keep), clean_text(from_scan, 80) or None))
+    conn.commit()
+    return True
+
+
+def unsave_creator(conn, brand_id: int, ref: str) -> None:
+    ensure_schema(conn)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM brand_saved_creators WHERE brand_id = %s AND creator_ref = %s",
+                (brand_id, clean_text(ref, 200).lower()))
+    conn.commit()
+
+
+def saved_creators(conn, brand_id: int) -> List[Dict[str, Any]]:
+    ensure_schema(conn)
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("""SELECT creator_ref, card, from_scan, created_at FROM brand_saved_creators
+                   WHERE brand_id = %s ORDER BY created_at DESC""", (brand_id,))
+    out = []
+    for r in cur.fetchall():
+        card = r["card"] if isinstance(r["card"], dict) else json.loads(r["card"] or "{}")
+        out.append({**card, "ref": r["creator_ref"], "from_scan": r["from_scan"],
+                    "saved_at": r["created_at"].isoformat()})
+    return out
+
+
+# ----- admin --------------------------------------------------------------------------------
+
+def list_accounts(conn, status: str = PENDING, limit: int = 100) -> List[Dict[str, Any]]:
+    ensure_schema(conn)
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    where = "b.approval_status = %s" if status in (PENDING, REJECTED, "approved") else "b.approval_status IS NOT NULL"
+    args = (status,) if status in (PENDING, REJECTED, "approved") else ()
+    cur.execute(f"""
+        SELECT b.id, b.name, b.website, b.category, b.approval_status, b.signup_source, b.signup_niche,
+               b.opportunity_id, b.pr_brand_id, b.workspace_created_at, b.approved_at, b.rejection_reason,
+               u.email, u.first_name, u.last_name,
+               o.product_name, o.status AS opportunity_status
+        FROM brands b JOIN users u ON u.id = b.user_id
+        LEFT JOIN opportunities o ON o.id = b.opportunity_id
+        WHERE {where}
+        ORDER BY COALESCE(b.workspace_created_at, b.approved_at) DESC NULLS LAST, b.id DESC
+        LIMIT %s""", args + (limit,))
+    rows = []
+    for r in cur.fetchall():
+        r = dict(r)
+        for k in ("workspace_created_at", "approved_at"):
+            r[k] = r[k].isoformat() if r.get(k) else None
+        rows.append(r)
+    return rows
+
+
+def decide(conn, brand_id: int, approve: bool, reason: str = "") -> Optional[Dict[str, Any]]:
+    """Approve or reject. Returns {email, name, first_name} for the decision email, or None if not found."""
+    ensure_schema(conn)
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    if approve:
+        cur.execute("""UPDATE brands SET approval_status = 'approved', approved_at = NOW(), rejected_at = NULL,
+                         rejection_reason = NULL WHERE id = %s RETURNING user_id, name""", (brand_id,))
+    else:
+        cur.execute("""UPDATE brands SET approval_status = 'rejected', rejected_at = NOW(), rejection_reason = %s
+                       WHERE id = %s RETURNING user_id, name""", (clean_text(reason, 500) or None, brand_id))
+    row = cur.fetchone()
+    if not row:
+        conn.rollback()
+        return None
+    cur.execute("SELECT email, first_name FROM users WHERE id = %s", (row["user_id"],))
+    user = cur.fetchone() or {}
+    conn.commit()
+    return {"email": user.get("email"), "first_name": user.get("first_name"), "name": row["name"]}
+
+
+# ----- emails -------------------------------------------------------------------------------
+
+WORKSPACE_URL = "https://app.newcollab.co/brand/workspace"
+
+
+def _send(to: str, subject: str, html: str, kind: str) -> None:
+    if not to:
+        return
+    from services.resend_mail import send_resend_email
+    try:
+        send_resend_email(to, subject, html, tags=[{"name": "type", "value": kind}],
+                          reply_to=(os.getenv("BRAND_SCAN_NOTIFY_EMAIL") or "team@newcollab.co").strip())
+    except Exception as err:
+        print(f"[brand-workspace] {kind} email skipped: {type(err).__name__}: {err}")
+
+
+def _wrap(body: str) -> str:
+    return ("<div style=\"max-width:560px;margin:0 auto;padding:24px;font-family:-apple-system,Segoe UI,Roboto,"
+            "Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:#2b2d33\">" + body + "</div>")
+
+
+def _button(href: str, label: str) -> str:
+    return (f"<a href=\"{href}\" style=\"display:inline-block;background:#e8395f;color:#fff;text-decoration:none;"
+            f"font-weight:600;padding:12px 18px;border-radius:10px\">{label}</a>")
+
+
+def notify_team_signup(email: str, brand_name: str, website: str, source: str) -> None:
+    from html import escape
+    to = (os.getenv("BRAND_SCAN_NOTIFY_EMAIL") or "team@newcollab.co").strip()
+    _send(to, f"New brand account to approve: {brand_name}",
+          _wrap(f"<p><b>{escape(brand_name)}</b> ({escape(email)}) created a brand workspace account.</p>"
+                f"<p>Website: {escape(website or '-')}<br>Source: {escape(source or '-')}</p>"
+                "<p>Approve it in Admin → Opportunities → Brand accounts.</p>"), "brand_account_signup")
+
+
+def send_decision(info: Dict[str, Any], approve: bool) -> None:
+    from html import escape
+    hi = f"Hi {escape(info.get('first_name') or '')}," if info.get("first_name") else "Hi,"
+    if approve:
+        _send(info.get("email"), "You're in: your Newcollab brand workspace is ready",
+              _wrap(f"<p>{hi}</p><p>Your workspace for <b>{escape(info.get('name') or 'your brand')}</b> is approved. "
+                    "Scan any brand to see the TikTok creators behind it, save the creators you like, and run your "
+                    "first gifted campaign free.</p><p>" + _button(WORKSPACE_URL, "Open my workspace") + "</p>"
+                    "<p style=\"font-size:13px;color:#6b6f78\">Reply to this email if you want us to set up the "
+                    "campaign with you.</p>"), "brand_account_approved")
+    else:
+        _send(info.get("email"), "Your Newcollab brand account",
+              _wrap(f"<p>{hi}</p><p>Thanks for signing up {escape(info.get('name') or '')}. We can't open a workspace "
+                    "for this brand right now. Reply to this email and we'll take another look.</p>"),
+              "brand_account_rejected")

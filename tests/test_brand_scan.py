@@ -65,19 +65,18 @@ def test_stats_and_mix():
     assert st["mix"]["gifted"] == 0.33 and st["mix"]["paid"] == 0.33 and st["mix"]["organic"] == 0.33
 
 
-def test_build_report_locks_rows():
+def test_build_report_gates_only_the_creators_list():
     vids = [_v(i, f"c{i}", f"glow recipe review number {i}", views=i * 100) for i in range(1, 11)]
     matches = {"niche": "skincare", "total": 40, "creators": [{"handle": f"@m{i}"} for i in range(6)],
-               "cta_url": "https://newcollab.co/brands/launch?niche=skincare"}
+               "cta_url": "https://app.newcollab.co/for-brands?ref=brand_scan"}
     locked = scan.build_report(TARGET, vids, matches=matches, locked=True, now=NOW, thumb=_thumb)
     assert locked["status"] == "ready" and locked["locked"] is True
-    assert len(locked["top_videos"]) == scan.FREE["top_videos"]
-    assert locked["top_videos"][0]["views"] == 1000
-    assert len(locked["creators"]) == scan.FREE["creators"]
-    assert len(locked["matches"]["creators"]) == scan.FREE["matches"]
-    assert locked["unlock"]["videos"] == 4 and locked["unlock"]["creators"] == 5
+    assert len(locked["top_videos"]) == 10 and locked["top_videos"][0]["views"] == 1000
+    assert len(locked["creators"]) == scan.FREE["creators"] == 6
+    assert locked["unlock"] == {"creators": 4}
+    assert len(locked["matches"]["creators"]) == 6
     full = scan.build_report(TARGET, vids, matches=matches, locked=False, now=NOW, thumb=_thumb)
-    assert len(full["top_videos"]) == 10 and len(full["creators"]) == 10
+    assert len(full["creators"]) == 10 and full["unlock"] == {"creators": 0}
     assert "**Glow Recipe** has **10 creators**" in full["summary"]
 
 
@@ -137,12 +136,19 @@ def test_report_email_subject_possessive():
     assert scan.report_email(rep)["subject"] == "Your Brand Scan: Dewy Labs' TikTok creators"
 
 
-def test_public_scan_returns_full_report(monkeypatch):
+def test_respond_defaults_to_locked_and_caps(monkeypatch):
     monkeypatch.setattr(scan, "creator_matches", lambda niche, conn=None, redis_client=None: {
-        "niche": niche, "total": 3, "creators": [], "cta_url": "https://x/launch"})
+        "niche": niche, "total": 3, "creators": [], "cta_url": "https://x/for-brands"})
     monkeypatch.setattr(scan.radar, "_thumb", _thumb)
-    vids = [_v(i, f"c{i}", f"glow recipe review number {i}", views=i * 100) for i in range(1, 31)]
+    vids = [_v(i, f"c{i}", f"glow recipe review number {i}", views=i * 100) for i in range(1, 81)]
     rep = scan._respond(None, TARGET, vids, scan_id=1)
-    assert rep["locked"] is False
-    assert len(rep["top_videos"]) == scan.FULL["top_videos"]
-    assert len(rep["creators"]) == scan.FULL["creators"] == 20
+    assert rep["locked"] is True and len(rep["creators"]) == 6
+    assert rep["unlock"]["creators"] == scan.FULL["creators"] - 6
+    full = scan._respond(None, TARGET, vids, scan_id=1, locked=False)
+    assert len(full["creators"]) == scan.FULL["creators"] == 60
+    assert len(full["top_videos"]) == scan.FULL["top_videos"]
+
+
+def test_signup_url_goes_to_for_brands():
+    url = scan.signup_url("skincare")
+    assert url.startswith("https://app.newcollab.co/for-brands?") and "ref=brand_scan" in url and "niche=skincare" in url

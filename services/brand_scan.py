@@ -36,8 +36,8 @@ PLENTY = 24
 PER_QUERY = 20
 TAG_SUFFIXES = ("partner", "partners", "ambassador", "creator", "ugc", "pr", "gifted")
 SMALL_FOLLOWERS = 50_000
-FREE = {"top_videos": 6, "hooks": 3, "creators": 5, "matches": 3}
-FULL = {"top_videos": 24, "hooks": 8, "creators": 20, "matches": 6}
+FREE = {"top_videos": 24, "hooks": 8, "creators": 6, "matches": 6}  # only the creators list is gated
+FULL = {"top_videos": 24, "hooks": 8, "creators": 60, "matches": 6}
 DAILY_CAP_USD = float(os.getenv("BRAND_SCAN_DAILY_CAP_USD") or "10")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[a-z]{2,}$", re.I)
 
@@ -298,11 +298,7 @@ def build_report(target: Dict[str, Any], videos: List[Dict[str, Any]], *, matche
         "creators": creators[:caps["creators"]],
         "matches": None,
         "locked": locked,
-        "unlock": {
-            "videos": max(0, len(videos) - FREE["top_videos"]),
-            "hooks": max(0, len(hooks) - FREE["hooks"]),
-            "creators": max(0, len(creators) - FREE["creators"]),
-        },
+        "unlock": {"creators": max(0, min(len(creators), FULL["creators"]) - FREE["creators"]) if locked else 0},
     }
     if matches:
         report["matches"] = {**matches, "creators": (matches.get("creators") or [])[:caps["matches"]]}
@@ -313,8 +309,20 @@ def build_report(target: Dict[str, Any], videos: List[Dict[str, Any]], *, matche
 
 # ----- creator matches -------------------------------------------------------------------
 
+def signup_url(niche: str = "") -> str:
+    """'Try your first campaign free': the brand signup (/for-brands), which lands in the brand workspace."""
+    from urllib.parse import urlencode
+
+    from services.creator_directory_search import frontend_base
+
+    query = {"ref": "brand_scan", "utm_source": "brand_scan", "utm_medium": "tool", "utm_campaign": "brand_scan"}
+    if niche:
+        query["niche"] = niche
+    return f"{frontend_base()}/for-brands?{urlencode(query)}"
+
+
 def creator_matches(niche: str, conn=None, redis_client=None) -> Dict[str, Any]:
-    from services.creator_directory_search import launch_url, search_creators
+    from services.creator_directory_search import search_creators
 
     query = niche or "lifestyle"
     try:
@@ -329,7 +337,7 @@ def creator_matches(niche: str, conn=None, redis_client=None) -> Dict[str, Any]:
         "niche": niche,
         "total": int(found.get("total_creators_found") or 0),
         "creators": found.get("creators") or [],
-        "cta_url": launch_url(query, "tiktok", None, campaign="brand_scan"),
+        "cta_url": signup_url(niche),
     }
 
 
@@ -352,8 +360,8 @@ def query_plan(target: Dict[str, Any]) -> List[Dict[str, Any]]:
     return plan
 
 
-def _respond(conn, target, videos, *, scan_id, redis_client=None, locked=False, note=""):
-    """Public scans return the full report: no email gate between the brand and the first-campaign CTA."""
+def _respond(conn, target, videos, *, scan_id, redis_client=None, locked=True, note=""):
+    """locked: the viewer isn't an approved brand, so the competitor's creators list stops at FREE["creators"]."""
     niche = guess_niche(target, videos)
     matches = creator_matches(niche, conn=conn, redis_client=redis_client)
     return build_report(target, videos, matches=matches, locked=locked, scan_id=scan_id, note=note)
@@ -371,7 +379,8 @@ def searching(scan_id: int, target: Dict[str, Any], items: int = 0, ingesting: b
             "step": step, "line": line, "items": items}
 
 
-def start(conn, raw: Any, *, can_start: bool = True, redis_client=None, ref: str = "") -> Dict[str, Any]:
+def start(conn, raw: Any, *, can_start: bool = True, redis_client=None, ref: str = "",
+          locked: bool = True) -> Dict[str, Any]:
     """Report from the store, or kick off one Apify run and return {"status": "searching"}.
 
     The returned "started" flag tells the caller an Apify run was paid for (for per-IP limits)."""
@@ -389,7 +398,7 @@ def start(conn, raw: Any, *, can_start: bool = True, redis_client=None, ref: str
     def from_db(note=""):
         run_id = radar._record(conn, ctx, status="done", served_from="database", params=params,
                                brands=len(videos))
-        return _respond(conn, target, videos, scan_id=run_id, redis_client=redis_client, note=note)
+        return _respond(conn, target, videos, scan_id=run_id, redis_client=redis_client, note=note, locked=locked)
 
     if (len(videos) >= READY_MIN and fresh) or len(videos) >= PLENTY:
         return from_db()
@@ -415,7 +424,7 @@ def start(conn, raw: Any, *, can_start: bool = True, redis_client=None, ref: str
     return {**searching(run_id, target), "started": True}
 
 
-def poll(conn, scan_id: int, *, redis_client=None) -> Dict[str, Any]:
+def poll(conn, scan_id: int, *, redis_client=None, locked: bool = True) -> Dict[str, Any]:
     run = radar._load_run(conn, scan_id)
     if not run or (run.get("params") or {}).get("kind") != "brand_scan":
         return {"status": "not_found"}
@@ -443,7 +452,7 @@ def poll(conn, scan_id: int, *, redis_client=None) -> Dict[str, Any]:
     elif run["status"] == "failed":
         note = "source_down"
     return _respond(conn, target, matched_videos(conn, target), scan_id=scan_id, redis_client=redis_client,
-                    note=note)
+                    note=note, locked=locked)
 
 
 def full_report(conn, raw: Any, *, redis_client=None) -> Dict[str, Any]:
