@@ -82,6 +82,7 @@ from routes.admin_brands import admin_brands_bp
 from routes.admin_reports import admin_reports_bp
 from routes.admin_email import admin_email_bp
 from routes.brand_pipeline import brand_pipeline_bp
+from routes.brand_scan import brand_scan_bp
 from routes.admin_creators import admin_creators_bp
 from routes.ugc_supply import ugc_supply_bp
 from routes.resend_webhooks import resend_webhooks_bp
@@ -355,6 +356,7 @@ app.register_blueprint(pr_crm)
 app.register_blueprint(polly_bp)
 app.register_blueprint(autopilot_bp)
 app.register_blueprint(integrations_bp)
+app.register_blueprint(brand_scan_bp)
 app.register_blueprint(wellknown_bp)
 app.register_blueprint(brand_apply_bp)
 app.register_blueprint(brand_pr_roster_bp)
