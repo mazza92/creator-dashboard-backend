@@ -44,7 +44,11 @@ def ensure_schema(conn) -> None:
           ADD COLUMN IF NOT EXISTS opportunity_id INTEGER,
           ADD COLUMN IF NOT EXISTS signup_source TEXT,
           ADD COLUMN IF NOT EXISTS signup_niche TEXT,
-          ADD COLUMN IF NOT EXISTS workspace_created_at TIMESTAMPTZ
+          ADD COLUMN IF NOT EXISTS workspace_created_at TIMESTAMPTZ,
+          ADD COLUMN IF NOT EXISTS app_url TEXT,
+          ADD COLUMN IF NOT EXISTS profile_completed_at TIMESTAMPTZ,
+          ADD COLUMN IF NOT EXISTS signup_method TEXT,
+          ADD COLUMN IF NOT EXISTS free_scan_brand TEXT
     """)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS brand_workspace_scans (
@@ -105,18 +109,32 @@ def find_user(conn, email: str) -> Optional[Dict[str, Any]]:
 def brand_for_user(conn, user_id: int) -> Optional[Dict[str, Any]]:
     ensure_schema(conn)
     cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("""SELECT id, name, website, category, logo, approval_status, pr_brand_id, opportunity_id,
-                          signup_niche
+    cur.execute("""SELECT id, name, website, app_url, category, logo, approval_status, pr_brand_id, opportunity_id,
+                          signup_niche, profile_completed_at, free_scan_brand
                    FROM brands WHERE user_id = %s ORDER BY id LIMIT 1""", (user_id,))
     row = cur.fetchone()
     return dict(row) if row else None
 
 
-def create_brand_account(conn, *, email: str, password_hash: Optional[str], first_name: str, last_name: str,
-                         brand_name: str, website: str, category: str = "", niche: str = "",
-                         source: str = "for-brands", country: str = "") -> Dict[str, int]:
-    """users row (role brand) + brands row (pending). Caller checks the email is free first."""
+def provisional_name(email: str) -> str:
+    """'ana@glow-co.com' -> 'Glow Co' until the brand fills in step 2. Free-mail domains give ''."""
+    domain = email.split("@")[-1].split(".")[0] if "@" in email else ""
+    if domain in FREE_MAIL:
+        return ""
+    return " ".join(w.capitalize() for w in re.split(r"[-_]+", domain) if w)
+
+
+FREE_MAIL = {"gmail", "googlemail", "yahoo", "hotmail", "outlook", "live", "icloud", "me", "aol", "proton",
+             "protonmail", "gmx", "mail", "yandex"}
+
+
+def create_brand_account(conn, *, email: str, password_hash: Optional[str], first_name: str = "", last_name: str = "",
+                         brand_name: str = "", website: str = "", category: str = "", niche: str = "",
+                         source: str = "for-brands", country: str = "", method: str = "email") -> Dict[str, int]:
+    """users row (role brand) + brands row (pending). Caller checks the email is free first. The brand
+    details can come later (signup step 2): brands.name is NOT NULL, so it starts from the email domain."""
     ensure_schema(conn)
+    brand_name = brand_name or provisional_name(email) or "New brand"
     cur = conn.cursor()
     cur.execute("""INSERT INTO users (first_name, last_name, email, phone, country, password, role, is_verified,
                                       last_login)
@@ -124,12 +142,57 @@ def create_brand_account(conn, *, email: str, password_hash: Optional[str], firs
                 (first_name, last_name, email, country or "", password_hash))
     user_id = int(cur.fetchone()[0])
     cur.execute("""INSERT INTO brands (name, description, category, website, user_id, approval_status,
-                                       signup_source, signup_niche, workspace_created_at)
-                   VALUES (%s, '', %s, %s, %s, 'pending', %s, %s, NOW()) RETURNING id""",
-                (brand_name, category or None, website or None, user_id, source[:40], niche[:40] or None))
+                                       signup_source, signup_niche, signup_method, workspace_created_at)
+                   VALUES (%s, '', %s, %s, %s, 'pending', %s, %s, %s, NOW()) RETURNING id""",
+                (brand_name, category or None, website or None, user_id, source[:40], niche[:40] or None,
+                 method[:20]))
     brand_id = int(cur.fetchone()[0])
     conn.commit()
     return {"user_id": user_id, "brand_id": brand_id}
+
+
+def update_profile(conn, brand_id: int, *, name: str, website: str = "", app_url: str = "",
+                   category: str = "") -> None:
+    """Signup step 2: brand name, website or app store link, and the category we match creator niches on."""
+    ensure_schema(conn)
+    cur = conn.cursor()
+    cur.execute("""UPDATE brands SET name = %s, website = COALESCE(%s, website), app_url = %s,
+                     category = COALESCE(%s, category), signup_niche = COALESCE(%s, signup_niche),
+                     profile_completed_at = NOW()
+                   WHERE id = %s""",
+                (name, website or None, app_url or None, category or None, category or None, brand_id))
+    conn.commit()
+
+
+def clean_app_url(raw: Any) -> str:
+    """App Store / Google Play links only."""
+    url = clean_website(raw)
+    return url if re.search(r"(apps\.apple\.com|play\.google\.com)", url, re.I) else ""
+
+
+def import_free_scan(conn, brand_id: int, target: Optional[Dict[str, Any]], scan_id: Optional[int] = None) -> bool:
+    """The scan a visitor ran on the landing page becomes the first scan in their workspace."""
+    if not target:
+        return False
+    ensure_schema(conn)
+    record_scan(conn, brand_id, target["key"], target["name"], scan_id)
+    cur = conn.cursor()
+    cur.execute("UPDATE brands SET free_scan_brand = %s WHERE id = %s", (target["name"][:80], brand_id))
+    conn.commit()
+    return True
+
+
+def scanned_keys(conn, brand_id: int) -> List[str]:
+    ensure_schema(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT DISTINCT scanned_key FROM brand_workspace_scans WHERE brand_id = %s", (brand_id,))
+    return [r[0] for r in cur.fetchall()]
+
+
+def pending_scan_allowed(conn, brand_id: int, key: str) -> bool:
+    """Brands awaiting approval get one competitor scan: the one they ran (or carried over), any number of times."""
+    keys = [k for k in scanned_keys(conn, brand_id) if not k.startswith("insight:")]
+    return not keys or key in keys
 
 
 def link_opportunity(conn, brand_id: int, opportunity_id: int, email: str) -> bool:
@@ -201,6 +264,47 @@ def billing(conn, pr_brand_id: Optional[int]) -> Dict[str, Any]:
         print(f"[brand-workspace] billing lookup skipped: {type(err).__name__}: {err}")
         conn.rollback()
         return {"subscribed": False, "status": "none"}
+
+
+# ----- campaigns ------------------------------------------------------------------------------
+
+def campaigns(conn, brand: Dict[str, Any], email: str) -> List[Dict[str, Any]]:
+    """The brand's campaign submissions (newest first) with their live roster when published."""
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("""
+        SELECT o.id, o.product_name, o.status, o.created_at, o.pr_brand_id, o.campaign_description,
+               o.creator_count_range, o.pr_value_usd,
+               c.token AS roster_token, c.status AS roster_status, c.locked_at, c.shipped_at
+        FROM opportunities o
+        LEFT JOIN LATERAL (SELECT token, status, locked_at, shipped_at FROM brand_pr_campaigns
+                           WHERE brand_id = o.pr_brand_id ORDER BY id DESC LIMIT 1) c ON TRUE
+        WHERE o.id = %s OR LOWER(o.brand_email) = LOWER(%s)
+        ORDER BY o.created_at DESC NULLS LAST, o.id DESC
+        LIMIT 20""", (brand.get("opportunity_id") or 0, email))
+    out = []
+    for r in cur.fetchall():
+        r = dict(r)
+        state = r["roster_status"] if r.get("roster_token") else ("in_review" if r["status"] == "pending" else r["status"])
+        out.append({"id": r["id"], "product_name": r["product_name"], "status": state,
+                    "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+                    "roster_token": r.get("roster_token"), "creator_count_range": r.get("creator_count_range"),
+                    "pr_value_usd": r.get("pr_value_usd"), "description": r.get("campaign_description")})
+    return out
+
+
+LIVE = ("active", "locked")
+
+
+def campaign_gate(approved: bool, subscribed: bool, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Can this brand start another campaign? The first one is free; any more needs the $299 plan."""
+    if not approved:
+        return {"can_create": False, "reason": "pending"}
+    if subscribed:
+        return {"can_create": True, "reason": None}
+    if not items:
+        return {"can_create": True, "reason": "first_free"}
+    has_roster = any(c.get("roster_token") for c in items)
+    return {"can_create": False, "reason": "paywall" if has_roster else "first_in_review"}
 
 
 # ----- scan allowance ------------------------------------------------------------------------
@@ -295,10 +399,16 @@ def list_accounts(conn, status: str = PENDING, limit: int = 100) -> List[Dict[st
     where = "b.approval_status = %s" if status in (PENDING, REJECTED, "approved") else "b.approval_status IS NOT NULL"
     args = (status,) if status in (PENDING, REJECTED, "approved") else ()
     cur.execute(f"""
-        SELECT b.id, b.name, b.website, b.category, b.approval_status, b.signup_source, b.signup_niche,
+        SELECT b.id, b.name, b.website, b.app_url, b.category, b.approval_status, b.signup_source, b.signup_niche,
+               b.signup_method, b.free_scan_brand, b.profile_completed_at,
                b.opportunity_id, b.pr_brand_id, b.workspace_created_at, b.approved_at, b.rejection_reason,
-               u.email, u.first_name, u.last_name,
-               o.product_name, o.status AS opportunity_status
+               u.email, u.first_name, u.last_name, u.last_login,
+               o.product_name, o.status AS opportunity_status, o.campaign_description, o.pr_value_usd,
+               o.creator_count_range, o.shipping_regions, o.follower_ranges, o.content_types,
+               o.application_deadline, o.additional_notes,
+               (SELECT COUNT(*) FROM brand_workspace_scans w WHERE w.brand_id = b.id) AS scans_total,
+               (SELECT ARRAY_AGG(DISTINCT w.scanned_name) FROM brand_workspace_scans w WHERE w.brand_id = b.id
+                  AND w.scanned_key NOT LIKE 'insight:%%') AS scanned_brands
         FROM brands b JOIN users u ON u.id = b.user_id
         LEFT JOIN opportunities o ON o.id = b.opportunity_id
         WHERE {where}
@@ -307,7 +417,7 @@ def list_accounts(conn, status: str = PENDING, limit: int = 100) -> List[Dict[st
     rows = []
     for r in cur.fetchall():
         r = dict(r)
-        for k in ("workspace_created_at", "approved_at"):
+        for k in ("workspace_created_at", "approved_at", "profile_completed_at", "last_login", "application_deadline"):
             r[k] = r[k].isoformat() if r.get(k) else None
         rows.append(r)
     return rows
