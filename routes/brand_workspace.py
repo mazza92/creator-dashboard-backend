@@ -92,8 +92,6 @@ def signup():
         return jsonify({"success": False, "error": "Enter a valid work email."}), 400
     if len(password) < 8:
         return jsonify({"success": False, "error": "Use a password of at least 8 characters."}), 400
-    if not f["brand_name"]:
-        return jsonify({"success": False, "error": "Enter your brand name."}), 400
     conn = _conn()
     try:
         existing = ws.find_user(conn, email)
@@ -104,9 +102,10 @@ def signup():
             return jsonify({"success": False, "code": "CREATOR_ACCOUNT",
                             "error": "This email is a creator account. Use your brand's work email."}), 409
         hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode()
-        ids = ws.create_brand_account(conn, email=email, password_hash=hashed, **f)
-        ws.notify_team_signup(email, f["brand_name"], f["website"], f["source"])
-        return _signed_in(conn, ids["user_id"], ids["brand_id"], 201, approval_status="pending")
+        ids = ws.create_brand_account(conn, email=email, password_hash=hashed, method="email", **f)
+        carried = _carry_free_scan(conn, ids["brand_id"], body)
+        return _signed_in(conn, ids["user_id"], ids["brand_id"], 201, approval_status="pending",
+                          needs_profile=True, free_scan=carried)
     except Exception as err:
         conn.rollback()
         print(f"[brand-workspace] signup failed: {type(err).__name__}: {err!r}")
@@ -148,23 +147,120 @@ def google():
             brand = ws.brand_for_user(conn, existing["id"])
             if not brand:
                 return jsonify({"success": False, "error": "No brand found for this account."}), 409
-            return _signed_in(conn, existing["id"], brand["id"], approval_status=brand.get("approval_status"))
+            return _signed_in(conn, existing["id"], brand["id"], approval_status=brand.get("approval_status"),
+                              needs_profile=not brand.get("profile_completed_at"))
         f = _signup_fields(body)
-        if not f["brand_name"]:
-            return jsonify({"success": False, "code": "NEEDS_BRAND",
-                            "error": "Tell us your brand name to finish signing up."}), 400
         name = str(info.get("name") or "").split()
         f["first_name"] = f["first_name"] or (name[0] if name else "")
         f["last_name"] = f["last_name"] or " ".join(name[1:])
         # users.password is NOT NULL: Google-only accounts get the same unusable placeholder as /google-signup.
         placeholder = f"GOOGLE_AUTH_{uuid.uuid4().hex}"
-        ids = ws.create_brand_account(conn, email=email, password_hash=placeholder, **f)
-        ws.notify_team_signup(email, f["brand_name"], f["website"], f["source"] + " (google)")
-        return _signed_in(conn, ids["user_id"], ids["brand_id"], 201, approval_status="pending")
+        ids = ws.create_brand_account(conn, email=email, password_hash=placeholder, method="google", **f)
+        carried = _carry_free_scan(conn, ids["brand_id"], body)
+        return _signed_in(conn, ids["user_id"], ids["brand_id"], 201, approval_status="pending",
+                          needs_profile=True, free_scan=carried)
     except Exception as err:
         conn.rollback()
         print(f"[brand-workspace] google signup failed: {type(err).__name__}: {err!r}")
         return jsonify({"success": False, "error": "Could not sign you in. Try again."}), 500
+    finally:
+        conn.close()
+
+
+def _carry_free_scan(conn, brand_id: int, body) -> str:
+    """Import the landing-page free scan: the brand named in the signup body (from the shared cookie), else
+    the one this IP scanned. Returns the scanned brand's name, or ''."""
+    from routes.brand_scan import free_scan_for_ip
+    from services import brand_scan
+
+    try:
+        target, scan_id = None, None
+        named = ws.clean_text(body.get("free_scan"), 80)
+        if named:
+            target = brand_scan.resolve(conn, named)
+        if not target:
+            used = free_scan_for_ip()
+            if used:
+                target = brand_scan.resolve(conn, used.get("name") or used.get("key"))
+                scan_id = used.get("scan_id")
+        return target["name"] if ws.import_free_scan(conn, brand_id, target, scan_id) else ""
+    except Exception as err:
+        conn.rollback()
+        print(f"[brand-workspace] free scan carry-over skipped: {type(err).__name__}: {err}")
+        return ""
+
+
+@brand_workspace_bp.route("/api/brand-workspace/profile", methods=["POST"])
+def profile():
+    """Signup step 2: tell us about your brand. Sends the team the new-account email once it's complete."""
+    body = _body()
+    name = ws.clean_text(body.get("brand_name"), 120)
+    website = ws.clean_website(body.get("website")) if body.get("website") else ""
+    app_url = ws.clean_app_url(body.get("app_url")) if body.get("app_url") else ""
+    category = ws.clean_text(body.get("category"), 60)
+    if not name:
+        return jsonify({"success": False, "error": "Enter your brand name."}), 400
+    if not website and not app_url:
+        return jsonify({"success": False, "error": "Add your website or an App Store / Google Play link."}), 400
+    if not category:
+        return jsonify({"success": False, "error": "Pick your category."}), 400
+    conn = _conn()
+    try:
+        me, err = _require_brand(conn)
+        if err:
+            return err
+        first_time = not me["brand"].get("profile_completed_at")
+        ws.update_profile(conn, me["brand"]["id"], name=name, website=website, app_url=app_url, category=category)
+        if first_time:
+            ws.notify_team_signup(me["email"], name, website or app_url, me["brand"].get("signup_source") or "")
+        return jsonify({"success": True})
+    finally:
+        conn.close()
+
+
+@brand_workspace_bp.route("/api/brand-workspace/campaigns", methods=["GET", "POST"])
+def campaigns():
+    """GET: the brand's campaigns + whether it can start another. POST: submit one (first free, then Pro)."""
+    conn = _conn()
+    try:
+        me, err = _require_brand(conn)
+        if err:
+            return err
+        items = ws.campaigns(conn, me["brand"], me["email"])
+        gate = ws.campaign_gate(me["approved"], me["subscribed"], items)
+        if request.method == "GET":
+            return jsonify({"success": True, "campaigns": items, **gate})
+        # Signup step 3 creates the first campaign while the account is still pending review.
+        first_at_signup = not items and not me["approved"]
+        if not gate["can_create"] and not first_at_signup:
+            return jsonify({"success": False, "code": "PAYWALL" if gate["reason"] == "paywall" else gate["reason"],
+                            "error": "Your free campaign is used. Subscribe to run more campaigns.", **gate}), 402
+        brand = me["brand"]
+        try:
+            payload = request.get_json()  # the exact cached object brand_submit() reads below
+        except Exception:
+            payload = None
+        if not isinstance(payload, dict):
+            return jsonify({"success": False, "error": "Send the campaign as JSON."}), 400
+        payload.update({
+            "brand_name": brand.get("name"),
+            "brand_email": me["email"],
+            "brand_website": brand.get("website") or brand.get("app_url") or "",
+            "brand_category": payload.get("brand_category") or brand.get("category"),
+            "ref": payload.get("ref") or brand.get("signup_source") or "workspace",
+        })
+        if not payload["brand_website"]:
+            return jsonify({"success": False, "error": "Add your website first."}), 400
+        from opportunities_routes import brand_submit
+
+        resp = brand_submit()  # same validation, insert, pipeline close-out and emails as /for-brands always had
+        resp, status = (resp if isinstance(resp, tuple) else (resp, resp.status_code))
+        data = resp.get_json() or {}
+        if status >= 300 or not data.get("id"):
+            return resp, status
+        if not brand.get("opportunity_id"):
+            ws.link_opportunity(conn, brand["id"], int(data["id"]), me["email"])
+        return jsonify({"success": True, "id": data["id"], "campaigns": ws.campaigns(conn, ws.brand_for_user(conn, me["user_id"]), me["email"])}), 201
     finally:
         conn.close()
 
@@ -206,12 +302,17 @@ def me():
             opp = dict(row) if row else None
         return jsonify({"success": True, "workspace": {
             "brand": {"id": brand["id"], "name": brand.get("name"), "website": brand.get("website"),
+                      "app_url": brand.get("app_url"), "category": brand.get("category"),
                       "logo": brand.get("logo"), "niche": brand.get("signup_niche") or brand.get("category")},
+            "profile_complete": bool(brand.get("profile_completed_at")),
+            "free_scan": brand.get("free_scan_brand"),
             "user": {"email": me["email"], "first_name": me["first_name"]},
             "approval_status": brand.get("approval_status") or "approved",
             "approved": me["approved"],
             "scans": {"used_today": len(today), "limit": None if me["subscribed"] else ws.FREE_SCANS_PER_DAY,
-                      "subscribed": me["subscribed"]},
+                      "subscribed": me["subscribed"],
+                      "pending_left": 0 if (not me["approved"] and [k for k in ws.scanned_keys(conn, brand["id"])
+                                                                   if not k.startswith("insight:")]) else 1},
             "roster": {"token": roster["token"], "status": roster["status"], "title": roster.get("title")}
             if roster else None,
             "campaign": opp,
@@ -259,6 +360,76 @@ def saved_remove():
             return err
         ws.unsave_creator(conn, me["brand"]["id"], str(_body().get("ref") or ""))
         return jsonify({"success": True, "creators": ws.saved_creators(conn, me["brand"]["id"])})
+    finally:
+        conn.close()
+
+
+# ----- prompt library insights ------------------------------------------------------------------
+
+def _insight_reply(out):
+    out = dict(out or {})
+    out.pop("started", None)
+    if out.get("status") == "invalid":
+        return jsonify({"success": False, "error": "Pick your brand category first (Plan & settings)."}), 400
+    if out.get("status") == "not_found":
+        return jsonify({"success": False, "error": "Not found."}), 404
+    return jsonify({"success": True, "scan": out})
+
+
+@brand_workspace_bp.route("/api/brand-workspace/insight", methods=["POST"])
+def insight():
+    """Prompt library: niche insights (gifting brands, hooks, creators) for the brand's category."""
+    from routes.brand_scan import _can_start, _count_start, _gate, _ip, _redis
+    from services import brand_insights as bi
+
+    body = _body()
+    kind = str(body.get("kind") or "")
+    conn = _conn()
+    try:
+        me, err = _require_brand(conn)
+        if err:
+            return err
+        brand = me["brand"]
+        niche = bi.niche_for(body.get("niche") or brand.get("category") or brand.get("signup_niche"))
+        target = {"key": bi.insight_key(kind, niche), "name": bi.TITLES.get(kind, "Insight").format(niche=niche)}
+        if not me["approved"]:
+            return jsonify({"success": True, "scan": _gate("pending", target)})
+        if kind not in bi.KINDS or not niche:
+            return _insight_reply({"status": "invalid"})
+        allow = ws.scan_allowance(conn, brand["id"], target["key"], me["subscribed"])
+        if not allow["allowed"]:
+            return jsonify({"success": True, "scan": _gate("daily_limit", target, limit=allow["limit"], used=allow["used"])})
+        out = bi.start(conn, kind, niche, brand_name=brand.get("name") or "", redis_client=_redis(),
+                       can_start=_can_start(_ip()))
+        if out.get("status") in ("ready", "empty", "searching"):
+            ws.record_scan(conn, brand["id"], target["key"], target["name"], out.get("scan_id"))
+        if out.get("started"):
+            _count_start(_ip())
+        return _insight_reply(out)
+    except Exception as err:
+        conn.rollback()
+        print(f"[brand-insight] failed: {type(err).__name__}: {err!r}")
+        return jsonify({"success": False, "error": "Could not run this prompt. Try again."}), 500
+    finally:
+        conn.close()
+
+
+@brand_workspace_bp.route("/api/brand-workspace/insight/<int:run_id>", methods=["GET"])
+def insight_poll(run_id):
+    from routes.brand_scan import _redis
+    from services import brand_insights as bi
+
+    conn = _conn()
+    try:
+        me, err = _require_brand(conn)
+        if err:
+            return err
+        return _insight_reply(bi.poll(conn, run_id, str(request.args.get("kind") or ""),
+                                      brand_name=me["brand"].get("name") or "", redis_client=_redis()))
+    except Exception as err:
+        conn.rollback()
+        print(f"[brand-insight] poll failed: {type(err).__name__}: {err!r}")
+        return jsonify({"success": False, "error": "Could not load this prompt."}), 500
     finally:
         conn.close()
 

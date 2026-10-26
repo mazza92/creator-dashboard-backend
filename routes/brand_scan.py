@@ -101,28 +101,51 @@ def _free_key(ip: str) -> str:
     return f"brand_scan:free:{ip}"
 
 
+def _read_free(ip: str):
+    """{key, name, scan_id} of this IP's free scan, or None. Older entries stored only the key."""
+    import json
+
+    r = _redis()
+    if r is None or not ip:
+        return None
+    try:
+        raw = r.get(_free_key(ip))
+    except Exception:
+        return None
+    if not raw:
+        return None
+    raw = raw.decode() if isinstance(raw, bytes) else str(raw)
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {"key": raw}
+    except ValueError:
+        return {"key": raw}
+
+
+def free_scan_for_ip():
+    """For signup: the free scan this request's IP ran on the landing page."""
+    return _read_free(_ip())
+
+
 def _free_scan_ok(ip: str, brand_key: str) -> bool:
-    """Visitors (and brands awaiting approval) get one free brand scan. Re-opening that same brand is fine.
-    Fails open without Redis; the global daily $ cap still holds."""
+    """Visitors get one free brand scan. Re-opening that same brand is fine. Fails open without Redis;
+    the global daily $ cap still holds."""
     r = _redis()
     if r is None or not ip:
         return True
-    try:
-        used = r.get(_free_key(ip))
-    except Exception:
-        return True
-    if not used:
-        return True
-    used = used.decode() if isinstance(used, bytes) else str(used)
-    return used == brand_key
+    used = _read_free(ip)
+    return not used or used.get("key") == brand_key
 
 
-def _mark_free_scan(ip: str, brand_key: str) -> None:
+def _mark_free_scan(ip: str, target: dict, scan_id) -> None:
+    import json
+
     r = _redis()
     if r is None or not ip:
         return
     try:
-        r.set(_free_key(ip), brand_key, ex=FREE_SCAN_TTL, nx=True)
+        r.set(_free_key(ip), json.dumps({"key": target["key"], "name": target["name"], "scan_id": scan_id}),
+              ex=FREE_SCAN_TTL, nx=True)
     except Exception:
         pass
 
@@ -140,7 +163,7 @@ def _viewer(conn):
 
 GATE_COPY = {
     "signup": "You've used your free Brand Scan. Try your first campaign free to keep scanning and see every creator.",
-    "pending": "Your brand account is being reviewed. You'll get unlimited creator lists once it's approved.",
+    "pending": "Your brand account is being reviewed (usually within 24h). You can scan more brands once it's approved.",
     "daily_limit": "You've scanned 3 brands today. Subscribe for unlimited scans, or come back tomorrow.",
 }
 
@@ -171,15 +194,19 @@ def scan():
             allow = ws.scan_allowance(conn, me["brand"]["id"], target["key"], me["subscribed"])
             if not allow["allowed"]:
                 return _gate("daily_limit", target, limit=allow["limit"], used=allow["used"])
+        elif me:
+            # Signed up, awaiting approval: one competitor scan (their landing-page one carries over), unlocked.
+            if not ws.pending_scan_allowed(conn, me["brand"]["id"], target["key"]):
+                return _gate("pending", target)
         elif not _free_scan_ok(ip, target["key"]):
-            return _gate("pending" if me else "signup", target)
+            return _gate("signup", target)
         out = brand_scan.start(conn, body.get("brand"), can_start=_can_start(ip), redis_client=_redis(),
-                               ref=str(body.get("ref") or ""), locked=not approved)
+                               ref=str(body.get("ref") or ""), locked=not me)
         if out.get("status") in ("ready", "empty", "searching"):
-            if approved:
+            if me:
                 ws.record_scan(conn, me["brand"]["id"], target["key"], target["name"], out.get("scan_id"))
             else:
-                _mark_free_scan(ip, target["key"])
+                _mark_free_scan(ip, target, out.get("scan_id"))
         return out
 
     try:
@@ -196,7 +223,7 @@ def scan():
 def scan_poll(scan_id):
     def go(conn):
         me = _viewer(conn)
-        return brand_scan.poll(conn, scan_id, redis_client=_redis(), locked=not (me and me["approved"]))
+        return brand_scan.poll(conn, scan_id, redis_client=_redis(), locked=not me)
 
     try:
         out = _run(go)
