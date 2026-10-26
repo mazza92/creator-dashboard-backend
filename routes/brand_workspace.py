@@ -6,6 +6,8 @@ init_brand_workspace() so this module never imports app (no circular import).
 """
 from __future__ import annotations
 
+import uuid
+
 import bcrypt
 from flask import Blueprint, jsonify, request, session
 from psycopg2.extras import RealDictCursor
@@ -154,7 +156,9 @@ def google():
         name = str(info.get("name") or "").split()
         f["first_name"] = f["first_name"] or (name[0] if name else "")
         f["last_name"] = f["last_name"] or " ".join(name[1:])
-        ids = ws.create_brand_account(conn, email=email, password_hash=None, **f)
+        # users.password is NOT NULL: Google-only accounts get the same unusable placeholder as /google-signup.
+        placeholder = f"GOOGLE_AUTH_{uuid.uuid4().hex}"
+        ids = ws.create_brand_account(conn, email=email, password_hash=placeholder, **f)
         ws.notify_team_signup(email, f["brand_name"], f["website"], f["source"] + " (google)")
         return _signed_in(conn, ids["user_id"], ids["brand_id"], 201, approval_status="pending")
     except Exception as err:
