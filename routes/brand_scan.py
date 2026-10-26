@@ -5,7 +5,7 @@ import time
 
 from flask import Blueprint, current_app, jsonify, request
 
-from routes.admin_email import admin_required, get_db_connection
+from routes.admin_email import admin_required
 from services import brand_scan
 
 brand_scan_bp = Blueprint("brand_scan", __name__)
@@ -56,6 +56,9 @@ def _count_start(ip: str) -> None:
 
 
 def _run(fn):
+    # Plain tuple rows, the same connection Polly's radar uses (admin_email's returns dict rows).
+    from pr_crm_routes import get_db_connection
+
     conn = get_db_connection()
     try:
         return fn(conn)
@@ -101,7 +104,7 @@ def scan():
         out = _run(lambda c: brand_scan.start(c, body.get("brand"), can_start=_can_start(ip),
                                               redis_client=_redis(), ref=str(body.get("ref") or "")))
     except Exception as err:
-        print(f"[brand-scan] scan failed: {err}")
+        print(f"[brand-scan] scan failed: {type(err).__name__}: {err!r}")
         return jsonify({"success": False, "error": "Could not run the scan."}), 500
     if out.get("started"):
         _count_start(ip)
@@ -113,7 +116,7 @@ def scan_poll(scan_id):
     try:
         out = _run(lambda c: brand_scan.poll(c, scan_id, redis_client=_redis()))
     except Exception as err:
-        print(f"[brand-scan] poll failed: {err}")
+        print(f"[brand-scan] poll failed: {type(err).__name__}: {err!r}")
         return jsonify({"success": False, "error": "Could not load the scan."}), 500
     return _reply(out)
 
@@ -142,7 +145,7 @@ def scan_unlock():
     try:
         out, first = _run(go)
     except Exception as err:
-        print(f"[brand-scan] unlock failed: {err}")
+        print(f"[brand-scan] unlock failed: {type(err).__name__}: {err!r}")
         return jsonify({"success": False, "error": "Could not unlock the report."}), 500
     if first:
         brand_scan.send_report(email, out)

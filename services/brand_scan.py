@@ -109,17 +109,17 @@ def is_match(video: Dict[str, Any], target: Dict[str, Any]) -> bool:
 
 def matched_videos(conn, target: Dict[str, Any], now: Optional[datetime] = None) -> List[Dict[str, Any]]:
     now = now or _now()
-    like = f"%{target['name']}%" if len(target["name"]) >= 4 else "\x00"
+    like = f"%{target['name']}%" if len(target["name"]) >= 4 else None
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("""
         SELECT tiktok_id, url, caption, hashtags, mentions, views, likes, created_at, cover_url,
                is_ad, is_sponsored, creator_handle, creator_followers
         FROM tiktok_videos
         WHERE created_at > %s
-          AND (mentions && %s OR hashtags && %s OR caption ILIKE %s)
+          AND (mentions && %s OR hashtags && %s OR (%s::text IS NOT NULL AND caption ILIKE %s))
         ORDER BY views DESC NULLS LAST
         LIMIT 500
-    """, (now - WINDOW, target["handles"], hashtags_for(target), like))
+    """, (now - WINDOW, target["handles"], hashtags_for(target), like, like))
     return [dict(r) for r in cur.fetchall() if is_match(dict(r), target)]
 
 
@@ -321,7 +321,9 @@ def creator_matches(niche: str, conn=None, redis_client=None) -> Dict[str, Any]:
         found = search_creators({"niche": query, "platform": "tiktok", "limit": FULL["matches"]},
                                 redis_client=redis_client, conn=conn, landing=True)
     except Exception as err:
-        print(f"[brand-scan] creator matches skipped: {err}")
+        print(f"[brand-scan] creator matches skipped: {type(err).__name__}: {err}")
+        if conn is not None:
+            conn.rollback()  # keep the connection usable for the lead insert that follows
         found = {}
     return {
         "niche": niche,
@@ -402,8 +404,8 @@ def start(conn, raw: Any, *, can_start: bool = True, redis_client=None, ref: str
     try:
         apify_id = source.start_run([p["query"] for p in plan if p["type"] == "hashtag"],
                                     [p["query"] for p in plan if p["type"] == "search"], PER_QUERY)
-    except source.SourceUnavailable as err:
-        print(f"[brand-scan] start failed: {err}")
+    except Exception as err:  # SourceUnavailable, or a network error/timeout talking to Apify
+        print(f"[brand-scan] start failed: {type(err).__name__}: {err}")
         return from_db(note="source_down")
     run_id = radar._record(conn, ctx, status="running", served_from="partial_topup" if videos else "full_apify",
                            run_ids=[apify_id], queries=[{k: p[k] for k in ("key", "type", "query")} for p in plan],
@@ -428,8 +430,9 @@ def poll(conn, scan_id: int, *, redis_client=None) -> Dict[str, Any]:
         else:
             try:
                 step = radar._finish(conn, run)
-            except source.SourceUnavailable as err:
-                print(f"[brand-scan] poll failed run={scan_id}: {err}")
+            except Exception as err:  # Apify unreachable: keep polling, the stale-run finalizer catches up
+                conn.rollback()
+                print(f"[brand-scan] poll failed run={scan_id}: {type(err).__name__}: {err}")
                 return searching(scan_id, target)
             if not step.get("done"):
                 return searching(scan_id, target, items=step.get("items") or 0,
