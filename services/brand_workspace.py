@@ -245,6 +245,30 @@ def resolve_pr_brand(conn, brand: Dict[str, Any], email: str) -> Optional[int]:
     return None
 
 
+def ensure_pr_brand(conn, brand: Dict[str, Any], email: str) -> int:
+    """The pr_brands row billing hangs off. A brand that hasn't had a campaign published yet gets a private draft
+    row (not listed, not accepting applications) so it can subscribe right away. Its campaigns point at that row,
+    so publishing one later fills in this same row instead of creating a second one."""
+    found = resolve_pr_brand(conn, brand, email)
+    if found:
+        return found
+    cur = conn.cursor()
+    name = brand.get("name") or provisional_name(email) or "Brand"
+    # No slug: it stays out of the sitemap and public pages until publishing gives it one.
+    cur.execute("""INSERT INTO pr_brands (brand_name, website, contact_email, category, status, accepting_pr,
+                                          open_pr_featured, notes, created_at)
+                   VALUES (%s, %s, %s, %s, 'draft', FALSE, FALSE, 'Brand workspace account (billing)', NOW())
+                   RETURNING id""",
+                (name, brand.get("website") or brand.get("app_url"), email or None, brand.get("category")))
+    pr_id = int(cur.fetchone()[0])
+    cur.execute("UPDATE brands SET pr_brand_id = %s WHERE id = %s", (pr_id, brand["id"]))
+    cur.execute("""UPDATE opportunities SET pr_brand_id = %s
+                   WHERE pr_brand_id IS NULL AND (id = %s OR LOWER(brand_email) = LOWER(%s))""",
+                (pr_id, brand.get("opportunity_id") or 0, email or ""))
+    conn.commit()
+    return pr_id
+
+
 def live_roster(conn, pr_brand_id: Optional[int]) -> Optional[Dict[str, Any]]:
     if not pr_brand_id:
         return None
@@ -288,6 +312,8 @@ def campaigns(conn, brand: Dict[str, Any], email: str) -> List[Dict[str, Any]]:
     out = []
     for r in cur.fetchall():
         r = dict(r)
+        if r["status"] == "pending":  # a campaign in review can share pr_brand_id with an earlier live one
+            r["roster_token"] = r["roster_status"] = None
         state = r["roster_status"] if r.get("roster_token") else ("in_review" if r["status"] == "pending" else r["status"])
         out.append({"id": r["id"], "product_name": r["product_name"], "status": state,
                     "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
@@ -458,7 +484,7 @@ def campaign_published(conn, brand: Dict[str, Any], email: str) -> bool:
     cur = conn.cursor()
     cur.execute("""SELECT 1 FROM opportunities
                    WHERE (id = %s OR LOWER(brand_email) = LOWER(%s))
-                     AND (status = 'live' OR pr_brand_id IS NOT NULL)
+                     AND status = 'live'
                    LIMIT 1""", (brand.get("opportunity_id") or 0, email or ""))
     return cur.fetchone() is not None
 

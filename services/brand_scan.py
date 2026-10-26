@@ -307,6 +307,84 @@ def build_report(target: Dict[str, Any], videos: List[Dict[str, Any]], *, matche
     return report
 
 
+# ----- covers --------------------------------------------------------------------------------
+
+PERSIST_COVERS = 36
+
+
+def _cover_expires(url: str) -> Optional[int]:
+    """TikTok signed covers carry x-expires (unix seconds). None when the URL doesn't say."""
+    from urllib.parse import parse_qs, urlparse
+
+    try:
+        raw = parse_qs(urlparse(url).query).get("x-expires", [""])[0]
+        return int(raw) if raw else None
+    except (TypeError, ValueError):
+        return None
+
+
+def persist_covers(conn, videos: List[Dict[str, Any]], limit: int = PERSIST_COVERS, rehost=None) -> int:
+    """Copy still-valid TikTok covers of the videos a report shows into our storage and remember them, so the
+    report keeps its thumbnails after TikTok's signed links expire. Returns how many were stored."""
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    if rehost is None:
+        from media_proxy_routes import _already_hosted, is_social_cdn_url, rehost_social_image
+
+        def rehost(v):
+            return rehost_social_image(v["cover_url"], dest_prefix="radar", dest_filename=f"radar/{v['tiktok_id']}.jpg")
+    else:
+        def _already_hosted(url):
+            return "/storage/v1/object/public/" in url
+
+        def is_social_cdn_url(url):
+            return "tiktokcdn" in url
+
+    now = time.time()
+    todo, seen = [], set()
+    for v in videos:
+        cover = str(v.get("cover_url") or "")
+        if not cover or v.get("tiktok_id") in seen or _already_hosted(cover) or not is_social_cdn_url(cover):
+            continue
+        expires = _cover_expires(cover)
+        if expires is not None and expires < now + 60:
+            continue  # already expired: the browser recovers these from TikTok directly
+        seen.add(v.get("tiktok_id"))
+        todo.append(v)
+        if len(todo) >= limit:
+            break
+    if not todo:
+        return 0
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        hosted = list(pool.map(lambda v: _safe(rehost, v), todo))
+    stored = [(h, v["tiktok_id"]) for h, v in zip(hosted, todo) if h]
+    if not stored:
+        return 0
+    try:
+        cur = conn.cursor()
+        for h, vid in stored:
+            cur.execute("UPDATE tiktok_videos SET cover_url = %s WHERE tiktok_id = %s", (h, vid))
+        conn.commit()
+    except Exception as err:
+        conn.rollback()
+        print(f"[brand-scan] cover save skipped: {type(err).__name__}: {err}")
+        return 0
+    by_id = dict((vid, h) for h, vid in stored)
+    for v in videos:
+        if v.get("tiktok_id") in by_id:
+            v["cover_url"] = by_id[v["tiktok_id"]]
+    return len(stored)
+
+
+def _safe(fn, v):
+    try:
+        return fn(v)
+    except Exception as err:
+        print(f"[brand-scan] cover rehost failed {v.get('tiktok_id')}: {err}")
+        return None
+
+
 # ----- creator matches -------------------------------------------------------------------
 
 def signup_url(niche: str = "") -> str:
@@ -362,6 +440,8 @@ def query_plan(target: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def _respond(conn, target, videos, *, scan_id, redis_client=None, locked=True, note=""):
     """locked: the viewer isn't an approved brand, so the competitor's creators list stops at FREE["creators"]."""
+    videos = sorted(videos, key=lambda v: -int(v.get("views") or 0))
+    persist_covers(conn, videos)
     niche = guess_niche(target, videos)
     matches = creator_matches(niche, conn=conn, redis_client=redis_client)
     return build_report(target, videos, matches=matches, locked=locked, scan_id=scan_id, note=note)

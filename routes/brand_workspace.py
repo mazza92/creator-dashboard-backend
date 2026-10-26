@@ -264,6 +264,11 @@ def campaigns():
             return resp, status
         if not brand.get("opportunity_id"):
             ws.link_opportunity(conn, brand["id"], int(data["id"]), me["email"])
+        if me["pr_brand_id"]:  # a subscribed brand's billing row: publishing reuses it instead of making another
+            cur = conn.cursor()
+            cur.execute("UPDATE opportunities SET pr_brand_id = %s WHERE id = %s AND pr_brand_id IS NULL",
+                        (me["pr_brand_id"], int(data["id"])))
+            conn.commit()
         return jsonify({"success": True, "id": data["id"], "campaigns": ws.campaigns(conn, ws.brand_for_user(conn, me["user_id"]), me["email"])}), 201
     finally:
         conn.close()
@@ -282,6 +287,98 @@ def link_opportunity():
             return jsonify({"success": False, "error": "opportunity_id is required"}), 400
         ok = ws.link_opportunity(conn, me["brand"]["id"], opp_id, me["email"])
         return jsonify({"success": ok})
+    finally:
+        conn.close()
+
+
+# ----- billing ---------------------------------------------------------------------------------
+
+def _stripe():
+    import os
+
+    import stripe
+
+    stripe.api_key = stripe.api_key or os.getenv("STRIPE_SECRET_KEY")
+    return stripe
+
+
+def _billing_url(state: str) -> str:
+    from services.creator_directory_search import frontend_base
+
+    return f"{frontend_base()}/brand/workspace/billing?billing={state}"
+
+
+@brand_workspace_bp.route("/api/brand-workspace/billing/checkout", methods=["POST"])
+def billing_checkout():
+    """Subscribe from the workspace at any time: before, during or after the first campaign."""
+    import os
+
+    from services.brand_billing import PLAN_GIFTED_UGC_299, PRODUCT_META, get_or_create_brand_billing
+
+    conn = _conn()
+    try:
+        me, err = _require_brand(conn)
+        if err:
+            return err
+        if me["subscribed"]:
+            return jsonify({"success": False, "code": "already_subscribed", "error": "You're already on Pro."}), 409
+        stripe = _stripe()
+        price_id = os.getenv("STRIPE_PRICE_ID_BRAND_GIFTED_MONTHLY")
+        if not price_id or not stripe.api_key:
+            return jsonify({"success": False, "code": "price_not_configured",
+                            "error": "Billing isn't set up yet. Email us and we'll sort it."}), 500
+        pr_brand_id = ws.ensure_pr_brand(conn, me["brand"], me["email"])
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        bill = get_or_create_brand_billing(cur, pr_brand_id, email=me["email"])
+        cur.execute("""INSERT INTO brand_pr_events (brand_id, event, source, meta)
+                       VALUES (%s, 'workspace_checkout_started', 'brand_workspace', '{}'::jsonb)""", (pr_brand_id,))
+        conn.commit()
+        meta = {"product": PRODUCT_META, "plan": PLAN_GIFTED_UGC_299, "brand_id": str(pr_brand_id)}
+        kwargs = {
+            "payment_method_types": ["card"],
+            "line_items": [{"price": price_id, "quantity": 1}],
+            "mode": "subscription",
+            "success_url": _billing_url("success") + "&session_id={CHECKOUT_SESSION_ID}",
+            "cancel_url": _billing_url("cancel"),
+            "allow_promotion_codes": True,
+            "metadata": {**meta, "brand_name": me["brand"].get("name") or "", "workspace_brand_id": str(me["brand"]["id"])},
+            "subscription_data": {"metadata": meta},
+        }
+        if bill.get("stripe_customer_id"):
+            kwargs["customer"] = bill["stripe_customer_id"]
+        elif me["email"]:
+            kwargs["customer_email"] = me["email"]
+        checkout = stripe.checkout.Session.create(**kwargs)
+        return jsonify({"success": True, "checkout_url": checkout.url, "session_id": checkout.id})
+    except Exception as e:  # stripe errors included: show the brand a clean message, log the detail
+        print(f"[brand-workspace] checkout failed: {type(e).__name__}: {e}")
+        conn.rollback()
+        return jsonify({"success": False, "error": "Couldn't open checkout. Try again in a minute."}), 500
+    finally:
+        conn.close()
+
+
+@brand_workspace_bp.route("/api/brand-workspace/billing/portal", methods=["POST"])
+def billing_portal():
+    from services.brand_billing import get_or_create_brand_billing
+
+    conn = _conn()
+    try:
+        me, err = _require_brand(conn)
+        if err:
+            return err
+        bill = (get_or_create_brand_billing(conn.cursor(cursor_factory=RealDictCursor), me["pr_brand_id"])
+                if me["pr_brand_id"] else {})
+        conn.commit()
+        if not bill.get("stripe_customer_id"):
+            return jsonify({"success": False, "code": "no_customer", "error": "Subscribe first."}), 404
+        portal = _stripe().billing_portal.Session.create(customer=bill["stripe_customer_id"],
+                                                         return_url=_billing_url("portal"))
+        return jsonify({"success": True, "portal_url": portal.url})
+    except Exception as e:
+        print(f"[brand-workspace] portal failed: {type(e).__name__}: {e}")
+        conn.rollback()
+        return jsonify({"success": False, "error": "Couldn't open billing. Try again in a minute."}), 500
     finally:
         conn.close()
 
