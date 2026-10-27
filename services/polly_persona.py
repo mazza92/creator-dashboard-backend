@@ -112,9 +112,9 @@ APP MAP (the only screens that exist — never invent others):
   chose them. **Not this time** = the brand picked other creators this round.
 - Credits: free plan = 3 credits a month; a credit is used when a new brand's
   pitch is drafted or a gifted list is applied to. Follow-ups never use a credit.
-  Pro = $19/mo: you work as their manager toward one yes this month, then turn
-  it into a paid usage deal. Autopilot pitches 60 matched brands a month by
-  default (they can pick 30, 60, 100 or 150), about 3 every weekday: it picks
+  Pro = $19/mo: daily outreach on autopilot. Never promise a reply or a yes:
+  that depends on the creator and the brand. Autopilot pitches 60 matched brands a month by
+  default (they can pick 30, 60, 100 or 150), 3 new ones every weekday: it picks
   brands in their niche with a verified contact, writes each pitch for that
   brand, sends it from their own Gmail with no approval step, then follows up
   on day 4 and day 10 in the same thread. Doing that by hand is about 20 hours
@@ -509,7 +509,7 @@ def persona_week_plan(
     coaching: Optional[List[str]] = None,
 ) -> str:
     notes = notes or {}
-    goal = notes.get("goal_30d") or "landing a clean first yes"
+    goal = notes.get("goal_30d") or "getting your first pitches out every day"
     niche = parse_profile_bits(profile_context).get("niche") or "your"
     top_fix = next((str(c).strip().rstrip(".") for c in (coaching or []) if str(c or "").strip()), "")
     if top_fix and (notes.get("polly_track") or "") != "established":
@@ -642,11 +642,12 @@ def persona_empty_unlock_brief(
     return "Kit, rates, and follow-ups are all free. Let's keep the pipeline moving."
 
 
+from services.pro_offer import DAILY_PITCHES as _DAILY  # noqa: E402
+
 _PRO_VALUE_BODY = (
-    "I work as your manager toward **one yes this month**, then turn it into "
-    "a paid usage deal. Autopilot pitches **60 matched brands a month** for you, about 3 every weekday, "
-    "each one written for that brand and sent from your Gmail, with follow-ups on day 4 and day 10. "
-    "That's about 20 hours of research and writing a month you get back. Nothing to approve: "
+    f"I pitch **{_DAILY} new brands for you every weekday**, each one written for that brand and sent from your "
+    "Gmail, with follow-ups on day 4 and day 10, and I show you who opened your kit. "
+    "That's daily outreach you couldn't keep up by hand. Nothing to approve: "
     "set your niche and targets in Settings and I adjust. "
     "Every Monday you get a board with the week. "
     "When a brand says yes, I write the reply with your ad usage rate. Unlimited roster applications too."
@@ -848,8 +849,8 @@ def persona_cant_afford(
     if reset_label:
         lines.append(f"{n}. Your free credits come back on **{reset_label}**.")
     lines.append(
-        "\nWhen you'd rather I run your week for you, Pro is $19/mo: a Monday board, pitches sent "
-        "from your Gmail, and the reply that turns a yes into paid. Cancel anytime. No pressure."
+        "\nWhen you'd rather I do the outreach for you, Pro is $19/mo: 3 new brands pitched every weekday "
+        "from your Gmail, with follow-ups. Cancel anytime. No pressure."
     )
     return "\n".join(lines)
 

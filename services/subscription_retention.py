@@ -213,8 +213,8 @@ def activation_email_html(name):
     url = discover_url()
     return f"""
     <p style="margin:0 0 16px;">Hey {who},</p>
-    <p style="margin:0 0 16px;">Pro is on. The goal this month: <strong>one yes</strong>, then Polly turns it into a paid usage deal.</p>
-    <p style="margin:0 0 16px;">Open Polly for your first <strong>Monday board</strong>. Connect Gmail and publish your kit, then OK this week's pitches in Autopilot. She sends them from your Gmail and follows up. When a brand says yes, she writes the reply with your ad usage rate.</p>
+    <p style="margin:0 0 16px;">Pro is on. From now on Polly pitches <strong>3 new brands for you every weekday</strong>, from your Gmail, with follow-ups on day 4 and day 10.</p>
+    <p style="margin:0 0 16px;">To start today: open Polly, <strong>connect Gmail</strong> and publish your kit. She sends the first pitches as soon as Gmail is connected. When a brand replies, she writes your answer, with your ad usage rate.</p>
     <p style="margin:0 0 16px;">Roster applications are unlimited too.</p>
     <p style="margin:0 0 16px;">Brands usually take <strong>2–4 weeks</strong> to reply — silence in week one is normal, not a sign it failed.</p>
     <p style="margin:0 0 16px;"><a href="{url}">Open my Monday board</a></p>
@@ -409,8 +409,8 @@ def talent_manager_creator_email_html(name):
     url = discover_url()
     return f"""
     <p style="margin:0 0 16px;">Hey {who},</p>
-    <p style="margin:0 0 16px;">A Newcollab talent manager is on your account. This week we will review your kit, pick brands that gift your size, and push those applications until you get a yes or a clear no.</p>
-    <p style="margin:0 0 16px;">Keep Pro on. First collabs usually take 2–4 weeks — we will not leave you in silence.</p>
+    <p style="margin:0 0 16px;">A person on the Newcollab team is reviewing your account this week: your kit, your pitch facts and the brands Polly pitches, so they're brands that gift creators your size.</p>
+    <p style="margin:0 0 16px;">Polly keeps pitching every weekday in the meantime. Brands usually take 2 to 4 weeks to reply.</p>
     <p style="margin:0;"><a href="{url}">Open your brand matches</a></p>
     """
 
@@ -420,7 +420,7 @@ def price_hold_creator_email_html(name):
     return f"""
     <p style="margin:0 0 16px;">Hey {who},</p>
     <p style="margin:0 0 16px;">Your next <strong>3 months of Pro are $12</strong> instead of $19. After that it returns to $19 unless you change it in Settings.</p>
-    <p style="margin:0;">Same Monday board, same pitches from your Gmail, same paid usage reply when a brand says yes. Use the extra time to land the first collab.</p>
+    <p style="margin:0;">Same daily pitches from your Gmail, same follow-ups, same reply draft when a brand answers.</p>
     """
 
 
