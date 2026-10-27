@@ -277,7 +277,7 @@ def brand_billing_webhook():
             )
             conn.commit()
             try:
-                from services.outreach_v3 import mark_paid
+                from services.outreach_attribution import mark_paid
 
                 mark_paid(cursor, brand_id)
                 conn.commit()

@@ -78,7 +78,7 @@ def send():
     if not data.get("brand_id"):
         return jsonify({"error": "brand_id is required"}), 400
     out = _run(lambda c: bp.send_step(c, int(data["brand_id"]), data.get("kind") or "initial",
-                                      dry_run=bool(data.get("dry_run"))))
+                                      dry_run=bool(data.get("dry_run")), test=bool(data.get("test"))))
     return jsonify(out), (200 if out.get("ok") else 409)
 
 
@@ -107,6 +107,8 @@ def report():
     hours = request.args.get("hours", 24, type=int)
     rep = _run(lambda c: bp.report(c, hours))
     rep["daily_new_limit"] = bp.daily_new_limit(rep)
+    rep["live"] = bp.outreach_live()
+    rep["test_email"] = bp.TEST_EMAIL
     return jsonify({"success": True, **rep})
 
 
