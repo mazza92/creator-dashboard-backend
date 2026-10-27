@@ -169,13 +169,13 @@ def create_brand_account(conn, *, email: str, password_hash: Optional[str], firs
 
 
 def outreach_mark(conn, ref: str, event: str, meta: Optional[Dict[str, Any]] = None) -> None:
-    """Credit a cold email (pipeline v3 ref code) with a funnel step. Never raises into the caller."""
+    """Credit a cold email (its ref code) with a funnel step. Never raises into the caller."""
     if not ref:
         return
     try:
-        from services import outreach_v3
+        from services import outreach_attribution
 
-        outreach_v3.mark(conn.cursor(cursor_factory=RealDictCursor), ref, event, meta)
+        outreach_attribution.mark(conn.cursor(cursor_factory=RealDictCursor), ref, event, meta)
         conn.commit()
     except Exception as err:
         conn.rollback()

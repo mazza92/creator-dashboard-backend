@@ -21,7 +21,17 @@ FROM_NAME = "Mazza from Newcollab"
 SIGNATURE = "Mazza\nFounder, Newcollab"
 
 PIPELINE = "v2"
-VARIANTS = ("swap", "ads", "ambassador")
+# Scan-led copy: the email holds no numbers or names we'd have to verify; the free Brand Scan shows the real
+# data when they open it. Fresh variant names, so the A/B test starts clean.
+VARIANTS = ("scan_self", "scan_rivals", "free_campaign")
+SITE_URL = (os.getenv("PUBLIC_SITE_URL") or "https://newcollab.co").rstrip("/")
+PRO_PRICE = "$299/mo"
+TEST_EMAIL = os.getenv("BRAND_OUTREACH_TEST_EMAIL") or "team@newcollab.co"
+
+
+def outreach_live() -> bool:
+    """Cold sends reach brands only once BRAND_OUTREACH_LIVE=1. Until then every send is a test to TEST_EMAIL."""
+    return os.getenv("BRAND_OUTREACH_LIVE") == "1"
 MIN_TEST_PER_VARIANT = 80
 FOLLOWUP_GAP_DAYS = {1: 3, 2: 4, 3: 7}
 LAST_STEP = 3
@@ -97,10 +107,19 @@ def niche_for(category: Optional[str]) -> str:
 
 
 def brief_link(category: Optional[str], ref: str) -> str:
+    """Brand signup (workspace + first free campaign). oref credits the email through signup and campaign."""
     return (
-        f"{APP_URL}/brands/launch?niche={niche_for(category)}&ref={ref}"
+        f"{APP_URL}/for-brands?niche={niche_for(category)}&ref=cold_email&oref={ref}"
         "&utm_source=cold_email&utm_medium=email&utm_campaign=brand_pipeline"
     )
+
+
+def scan_link(ref: str, brand: str = "") -> str:
+    """The free Brand Scan. With a brand it opens straight on that brand's report."""
+    from urllib.parse import quote
+
+    b = f"b={quote(brand)}&" if brand else ""
+    return f"{SITE_URL}/brands/scan?{b}ref=cold_email&oref={ref}&utm_source=cold_email&utm_campaign=brand_pipeline"
 
 
 def new_ref() -> str:
@@ -127,63 +146,61 @@ def _greet(first: str, word: str = "Hey") -> str:
 # --------------------------------------------------------------------------- templates
 
 
-def initial_email(variant: str, brand: str, first: str) -> Tuple[str, str]:
+def initial_email(variant: str, brand: str, first: str, ref: str = "") -> Tuple[str, str]:
     greet = _greet(first)
-    if variant == "ads":
+    if variant == "scan_rivals":
         return (
-            f"UGC ads for {brand}, product + shipping only",
+            f"{brand}{'' if brand.lower().endswith('s') else chr(39) + 's'} competitors on TikTok",
             f"{greet}\n\n"
-            f"Quick idea for {brand}: 5 creators make UGC you can run as ads, and all it costs is product + shipping.\n\n"
-            "• You pick the creators from real profiles\n"
-            "• Each one posts organically and sends you the raw content\n"
-            "• No agency, no platform fee\n\n"
-            f"Want me to line up 5 who fit {brand}?\n\n{SIGNATURE}",
+            "Do you know which TikTok creators are posting for your competitors?\n\n"
+            "Type any brand here and you'll see the creators, the hooks they reuse and their best videos. "
+            f"Free, no signup:\n{scan_link(ref)}\n\n"
+            f"If you like what you see, your first gifted campaign with creators like them is free.\n\n{SIGNATURE}",
         )
-    if variant == "ambassador":
+    if variant == "free_campaign":
         return (
-            f"5 creators for {brand}, no fee",
+            f"Free gifted campaign for {brand}",
             f"{greet}\n\n"
-            f"Start {brand} with a gifting test: 5 vetted micro-creators, product + shipping only.\n\n"
-            "The ones who perform become long-term ambassadors. Every post and UGC file lands in one place, ready for ads.\n\n"
-            f"Open to a test this month?\n\n{SIGNATURE}",
+            f"Want to test creator content for {brand} for the cost of product?\n\n"
+            "Your first gifted campaign on Newcollab is free. You pick small creators from real profiles, ship your "
+            "product, and they post and send you videos you can run as ads.\n\n"
+            f"See the creators already posting about {brand} first:\n{scan_link(ref, brand)}\n\n{SIGNATURE}",
         )
     return (
-        f"PR + UGC swap for {brand}?",
+        f"Who's posting about {brand} on TikTok?",
         f"{greet}\n\n"
-        "We work with 1,800+ small creators looking for their first brand PR. "
-        "Mostly beauty, skincare, and fashion, all under 10K followers.\n\n"
-        "Would you want to test with 5 vetted creators? You approve them from fit profiles "
-        "(niche, engagement, past content). You send PR. In return:\n\n"
-        "• 5 organic posts on their accounts\n"
-        "• 5 UGC pieces (photo or video) yours to reuse or run as ads\n"
-        "• No platform fee. Just product + shipping.\n\n"
-        f"Worth a look?\n\n{SIGNATURE}",
+        "Quick one: we built a free tool that shows which TikTok creators post about a brand, the hooks they reuse "
+        "and their top videos.\n\n"
+        f"Here's what it finds for {brand}:\n{scan_link(ref, brand)}\n\n"
+        f"You can run it on your competitors too.\n\n{SIGNATURE}",
     )
 
 
-def followup_email(step: int, brand: str, first: str, link: str) -> str:
+def followup_email(step: int, brand: str, first: str, link: str, ref: str = "") -> str:
     greet = _greet(first)
     if step == 1:
         return (
-            f"{greet}\n\nBumping this in case it got buried. I can send 5 creator profiles that fit {brand} "
-            "so you can judge before committing.\n\n"
+            f"{greet}\n\nBumping this in case it got buried. The scan for {brand} takes a few seconds:\n"
+            f"{scan_link(ref, brand)}\n\n"
             "If you're not the right person, who handles creators or UGC?\n\nMazza"
         )
     if step == 2:
         return (
-            f"{greet}\n\nEasiest way to see it: pick your creators here, it takes 2 minutes.\n{link}\n\n"
-            "Product + shipping only. The UGC is yours to run as ads.\n\nMazza"
+            f"{greet}\n\nEasiest next step: your first gifted campaign is free. You pick the creators, ship "
+            "product, and get videos back to run as ads.\n"
+            f"{link}\n\n"
+            f"If you want more campaigns after that, Pro is {PRO_PRICE}.\n\nMazza"
         )
     return (
         f"{greet}\n\nLast note from me. If creator content isn't a priority for {brand} right now, no worries.\n\n"
-        f"If it ever is, the creators are here:\n{link}\n\nMazza"
+        f"The free scan stays open whenever it is:\n{scan_link(ref, brand)}\n\nMazza"
     )
 
 
 def nudge_email(brand: str, first: str, link: str) -> str:
     return (
-        f"{_greet(first, 'Hi')}\n\nDid you get a chance to look at the creators? Once you post the brief, "
-        f"Polly pre-selects the 5 best fits for {brand} automatically.\n{link}\n\n"
+        f"{_greet(first, 'Hi')}\n\nDid you get a chance to look? Once you sign up, your first gifted campaign is "
+        f"free and Polly pre-selects the creators who fit {brand} best.\n{link}\n\n"
         f"Or grab 15 min with me: {BOOKING_URL}\n\nMazza"
     )
 
@@ -192,14 +209,14 @@ def redirect_email(brand: str, first: str, referrer: str, link: str) -> str:
     who = referrer or "Your team"
     return (
         f"{_greet(first, 'Hi')}\n\n{who} pointed me your way for creator partnerships at {brand}.\n\n"
-        f"Short version: 5 vetted micro-creators make UGC for {brand}, organic posts plus content you can run as ads. "
-        "No fee, just product + shipping. You approve every creator first.\n\n"
-        f"Creators who fit {brand}:\n{link}\n\nWorth a look?\n\n{SIGNATURE}"
+        "Short version: small creators post about your product and send you videos you can run as ads. "
+        "Your first gifted campaign is free, you only ship product, and you approve every creator first.\n\n"
+        f"Start here:\n{link}\n\nWorth a look?\n\n{SIGNATURE}"
     )
 
 
 QUESTION_LINES = {
-    "pricing": "Cost for the test: no platform fee, just product + shipping.",
+    "pricing": f"Your first gifted campaign is free, you only pay product + shipping. After that, Pro is {PRO_PRICE}.",
     "countries": "In the brief you choose where you ship, and you only see creators in those countries.",
     "niche": "You see each creator's niche, engagement and past content before approving anyone, so you only pick real fits.",
     "demographics": "Each profile shows the creator's niche and audience, so you can check the fit before approving.",
@@ -217,10 +234,10 @@ def fallback_reply(first: str, brand: str, link: str, questions: List[str], want
     call = f"\n\nIf a quick call is easier, grab 15 min here: {BOOKING_URL}" if wants_call or extra else ""
     return (
         f"{_greet(first, 'Hi')}\n\nThanks for getting back to me. Here's how it works:\n\n"
-        f"1. Post a quick brief (2 min): {link}\n"
+        f"1. Sign up and post your first campaign (2 min): {link}\n"
         f"2. You see matched creators for {brand} with their profiles, engagement and past content. You approve who you want.\n"
         "3. You ship product. Each creator posts organically and sends you UGC you can reuse or run as ads.\n\n"
-        "Your first 5 creators: no platform fee, just product + shipping."
+        f"Your first campaign is free, just product + shipping. After that, Pro is {PRO_PRICE}."
         + ("\n\n" + " ".join(extra) if extra else "")
         + call
         + f"\n\n{SIGNATURE}"
@@ -731,8 +748,11 @@ def _deliver(cursor, row, to, subject, text, sender, in_reply_to=None, reference
 
 
 def send_step(cursor, brand_id: int, kind: str = "initial", dry_run: bool = False,
-              sender: Optional[Callable] = None, rng: Optional[random.Random] = None) -> Dict[str, Any]:
-    """kind: initial | followup | nudge."""
+              sender: Optional[Callable] = None, rng: Optional[random.Random] = None,
+              test: bool = False) -> Dict[str, Any]:
+    """kind: initial | followup | nudge. test (or outreach not live): the exact email goes to TEST_EMAIL with
+    the real recipient in the subject, and no pipeline state changes."""
+    test = test or not outreach_live()
     row = load_row(cursor, brand_id)
     if not row:
         return {"ok": False, "error": "brand not found"}
@@ -753,7 +773,7 @@ def send_step(cursor, brand_id: int, kind: str = "initial", dry_run: bool = Fals
         if row.get("last_contacted_at") or stage not in ("new",):
             return {"ok": False, "error": f"already in pipeline (stage={stage})"}
         variant = pick_variant(cursor, rng)
-        subject, text = initial_email(variant, brand, first)
+        subject, text = initial_email(variant, brand, first, ref)
         step = 0
     elif kind == "followup":
         if row.get("pipeline") != PIPELINE or stage != "contacted" or row.get("next_action") != "followup":
@@ -763,7 +783,7 @@ def send_step(cursor, brand_id: int, kind: str = "initial", dry_run: bool = Fals
             return {"ok": False, "error": "sequence finished"}
         variant = row.get("variant")
         subject = "Re: " + (row.get("thread_subject") or initial_email(variant or "swap", brand, first)[0])
-        text = followup_email(step, brand, first, link)
+        text = followup_email(step, brand, first, link, ref)
         in_reply_to = row.get("thread_message_id")
     elif kind == "nudge":
         if stage != "interested" or row.get("next_action") != "nudge":
@@ -780,6 +800,13 @@ def send_step(cursor, brand_id: int, kind: str = "initial", dry_run: bool = Fals
                "variant": variant, "subject": subject, "text": text}
     if dry_run:
         return {**preview, "dry_run": True}
+    if test:
+        mid = _deliver(cursor, row, TEST_EMAIL, f"[TEST to {to}] {subject}", text, sender)
+        if not mid:
+            return {"ok": False, "brand_id": brand_id, "error": "test send failed"}
+        log_activity(cursor, brand_id, "test_sent", variant=variant, email=TEST_EMAIL, subject=subject, body=text,
+                     message_id=mid, meta={"kind": kind, "step": step, "would_send_to": to})
+        return {**preview, "test": True, "to": TEST_EMAIL, "would_send_to": to, "message_id": mid}
 
     mid = _deliver(cursor, row, to, subject, text, sender, in_reply_to=in_reply_to, references=in_reply_to)
     if not mid:
@@ -1244,9 +1271,12 @@ def report(cursor, hours: int = 24) -> Dict[str, Any]:
         (hours,),
     )
     wins = [dict(r) for r in cursor.fetchall()]
+    from services.outreach_attribution import funnel as after_email
+
     return {
         "hours": hours,
         "funnel": funnel,
+        "after_email": after_email(cursor, hours),
         "window": window,
         "variants": variants,
         "sent_7d": sent7,

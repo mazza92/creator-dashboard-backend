@@ -1,6 +1,13 @@
 import random
 
+import pytest
+
 from services import brand_pipeline as bp
+
+
+@pytest.fixture(autouse=True)
+def _live(monkeypatch):
+    monkeypatch.setenv("BRAND_OUTREACH_LIVE", "1")
 
 
 def _norm(sql):
@@ -141,14 +148,15 @@ def test_initial_send_logs_variant_ref_and_schedules_day3():
     cur = FakeCursor([("bo.last_inbound_subject", [_row()]), ("AS positive", [])])
     sender = Sender()
     out = bp.send_step(cur, 7, "initial", sender=sender)
-    assert out["ok"] and out["variant"] == "swap"
+    assert out["ok"] and out["variant"] == "scan_self"
     call = sender.calls[0]
     assert call["to"] == "tacy@mdaire.com"
-    assert call["subject"] == "PR + UGC swap for Kappel?"
+    assert call["subject"] == "Who's posting about Kappel on TikTok?"
+    assert "/brands/scan?b=Kappel&ref=cold_email&oref=abc123" in call["text_content"]
     assert call["text_content"].startswith("Hey Tacy,")
     assert call["from_name"] == bp.FROM_NAME
     upd = cur.ran("SET outreach_count = COALESCE(outreach_count, 0) + 1, last_contacted_at = NOW(), last_subject = %s, pipeline")
-    assert upd and upd[0][2] == "swap" and upd[0][3] == "abc123" and upd[0][6] == 3
+    assert upd and upd[0][2] == "scan_self" and upd[0][3] == "abc123" and upd[0][6] == 3
     kinds = [p[1] for p in cur.ran("INSERT INTO brand_activity")]
     assert kinds == ["stage_change", "sent"]
     assert cur.ran("INSERT INTO brand_outreach_log")
@@ -184,17 +192,17 @@ def test_last_followup_moves_brand_to_nurture():
 
 
 def test_pick_variant_balances_then_exploits_the_winner():
-    few = FakeCursor([("AS positive", [{"variant": "swap", "sent": 90, "positive": 3},
-                                       {"variant": "ads", "sent": 10, "positive": 0}])])
-    assert bp.pick_variant(few) == "ambassador"
-    full = [{"variant": "swap", "sent": 100, "positive": 2}, {"variant": "ads", "sent": 100, "positive": 9},
-            {"variant": "ambassador", "sent": 100, "positive": 3}]
+    few = FakeCursor([("AS positive", [{"variant": "scan_self", "sent": 90, "positive": 3},
+                                       {"variant": "scan_rivals", "sent": 10, "positive": 0}])])
+    assert bp.pick_variant(few) == "free_campaign"
+    full = [{"variant": "scan_self", "sent": 100, "positive": 2}, {"variant": "scan_rivals", "sent": 100, "positive": 9},
+            {"variant": "free_campaign", "sent": 100, "positive": 3}]
 
     class Always:
         def random(self):
             return 0.1
 
-    assert bp.pick_variant(FakeCursor([("AS positive", full)]), rng=Always()) == "ads"
+    assert bp.pick_variant(FakeCursor([("AS positive", full)]), rng=Always()) == "scan_rivals"
 
 
 def test_queue_new_skips_domains_already_contacted_or_customers():
@@ -393,5 +401,40 @@ def test_html_body_matches_gmail_composer_markup():
 
 
 def test_brief_link_maps_category_to_niche():
-    assert "niche=fitness&ref=r1" in bp.brief_link("activewear", "r1")
+    assert "/for-brands?niche=fitness&ref=cold_email&oref=r1" in bp.brief_link("activewear", "r1")
     assert "niche=lifestyle" in bp.brief_link(None, "r1")
+
+
+def test_cold_copy_has_no_unverified_numbers_or_em_dashes():
+    import re
+
+    texts = [bp.initial_email(v, "Kappel", "Tacy", "r1") for v in bp.VARIANTS]
+    bodies = [t for _, t in texts] + [bp.followup_email(n, "Kappel", "Tacy", bp.brief_link("skincare", "r1"), "r1") for n in (1, 2, 3)]
+    bodies += [bp.nudge_email("Kappel", "Tacy", "L"), bp.redirect_email("Kappel", "Tacy", "", "L")]
+    for subject, _ in texts:
+        assert "\u2014" not in subject
+    for body in bodies:
+        assert "\u2014" not in body
+        prose = re.sub(r"https?://\S+", "", body)
+        assert set(re.findall(r"\d[\d,.]*", prose)) <= {"299", "15"}, prose
+    assert all("oref=r1" in b for b in bodies[:6])
+    assert "$299/mo" in bodies[4]
+
+
+def test_not_live_sends_the_exact_email_to_the_team_inbox_only(monkeypatch):
+    monkeypatch.delenv("BRAND_OUTREACH_LIVE", raising=False)
+    cur = FakeCursor([("bo.last_inbound_subject", [_row()]), ("AS positive", [])])
+    sender = Sender()
+    out = bp.send_step(cur, 7, "initial", sender=sender)
+    call = sender.calls[0]
+    assert out["ok"] and out["test"] and call["to"] == "team@newcollab.co"
+    assert call["subject"] == "[TEST to tacy@mdaire.com] Who's posting about Kappel on TikTok?"
+    assert not cur.ran("SET outreach_count = COALESCE(outreach_count, 0) + 1, last_contacted_at = NOW()")
+    assert [p[1] for p in cur.ran("INSERT INTO brand_activity")] == ["test_sent"]
+
+
+def test_explicit_test_send_while_live():
+    cur = FakeCursor([("bo.last_inbound_subject", [_row()]), ("AS positive", [])])
+    sender = Sender()
+    out = bp.send_step(cur, 7, "initial", sender=sender, test=True)
+    assert out["test"] and sender.calls[0]["to"] == "team@newcollab.co" and out["would_send_to"] == "tacy@mdaire.com"
