@@ -281,7 +281,7 @@ def get_retention_portal_configuration_id(stripe_module=None):
 def offer_for_reason(reason, current_amount_cents=None, interval=None):
     """Which save offer to show for a cancel reason. None = no offer, just confirm cancel."""
     if reason == "no_replies":
-        return "talent_manager"
+        return "outreach_review"
     if reason == "too_expensive":
         if interval and interval not in ("month", "monthly"):
             return None
@@ -328,6 +328,8 @@ def ensure_cancel_retention_schema(conn):
                 )
                 """
             )
+            # 30-day numbers at the moment of the event, so cancels split into never sent vs sent, no replies.
+            cursor.execute("ALTER TABLE creator_retention_events ADD COLUMN IF NOT EXISTS context JSONB")
             cursor.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_creator_retention_events_creator
@@ -340,13 +342,15 @@ def ensure_cancel_retention_schema(conn):
             cursor.close()
 
 
-def log_retention_event(cursor, creator_id, reason, offer, outcome):
+def log_retention_event(cursor, creator_id, reason, offer, outcome, context=None):
+    from psycopg2.extras import Json
+
     cursor.execute(
         """
-        INSERT INTO creator_retention_events (creator_id, reason, offer, outcome)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO creator_retention_events (creator_id, reason, offer, outcome, context)
+        VALUES (%s, %s, %s, %s, %s)
         """,
-        (creator_id, reason, offer, outcome),
+        (creator_id, reason, offer, outcome, Json(context) if context else None),
     )
 
 
@@ -424,12 +428,24 @@ def price_hold_creator_email_html(name):
     """
 
 
-def talent_manager_team_email_html(creator):
-    username = creator.get("username") or "unknown"
-    email = creator.get("email") or "n/a"
+def talent_manager_team_email_html(creator, context=None):
+    username = escape(creator.get("username") or "unknown")
+    email = escape(creator.get("email") or "n/a")
     cid = creator.get("id") or "?"
+    ctx = context or {}
+    numbers = ""
+    if ctx:
+        numbers = (
+            f"<p>Last 30 days: {ctx.get('pitches_sent_30d', 0)} pitches, {ctx.get('followups_30d', 0)} follow-ups, "
+            f"{ctx.get('kit_opens_30d', 0)} kit opens, {ctx.get('replies_30d', 0)} replies. "
+            f"Sent on {ctx.get('weekdays_sent', 0)} of {ctx.get('weekdays_expected', 0)} weekdays. "
+            f"Gmail {'connected' if ctx.get('gmail_connected') else 'NOT connected'}, "
+            f"pitch facts {'confirmed' if ctx.get('facts_confirmed') else 'not confirmed'}. "
+            f"Situation: <strong>{escape(str(ctx.get('situation') or '?'))}</strong>.</p>"
+        )
     return f"""
-    <p>Retention save: talent manager requested.</p>
+    <p>Retention save: outreach review requested.</p>
     <p><strong>@{username}</strong> ({email}) · creator #{cid}</p>
-    <p>They were about to cancel because brands have not replied. Review their kit this week, pick 5 brands that gift their size, and follow the applications until a yes or a clear no.</p>
+    {numbers}
+    <p>Review this week: their kit, their pitch facts, and the brand list Polly pitches. Swap in brands that gift creators their size, and check why any weekdays went unsent. Reply to them when done.</p>
     """

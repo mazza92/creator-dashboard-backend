@@ -73,8 +73,8 @@ class SubscriptionRetentionTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0][1], (7,))
 
-    def test_offer_for_no_replies_is_talent_manager(self):
-        self.assertEqual(offer_for_reason("no_replies"), "talent_manager")
+    def test_offer_for_no_replies_is_outreach_review(self):
+        self.assertEqual(offer_for_reason("no_replies"), "outreach_review")
 
     def test_offer_for_too_expensive_is_price_hold_on_19(self):
         self.assertEqual(offer_for_reason("too_expensive", 1900, "month"), "price_hold")
@@ -152,3 +152,52 @@ class SubscriptionRetentionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CancelPlanTests(unittest.TestCase):
+    BASE = {"gmail_connected": True, "pitches_sent_30d": 36, "followups_30d": 10, "kit_opens_30d": 0,
+            "replies_30d": 0, "weekdays_sent": 12, "weekdays_expected": 14, "autopilot_enabled": True}
+
+    def plan(self, reason, **over):
+        from services.retention_context import plan
+        return plan(reason, {**self.BASE, **over}, price_hold_ok=True, pause_ok=True)
+
+    def test_gmail_missing_beats_any_reason(self):
+        out = self.plan("too_expensive", gmail_connected=False)
+        self.assertEqual(out["offers"], ["connect_gmail", "pause"])
+        self.assertIn("Gmail isn't connected", out["headline"])
+
+    def test_missed_weekdays_get_a_person_not_a_credit(self):
+        out = self.plan("no_replies", weekdays_sent=4)
+        self.assertEqual(out["situation"], "missed_days")
+        self.assertIn("4 of 14 weekdays", out["headline"])
+        self.assertEqual(out["offers"], ["outreach_review", "pause"])
+
+    def test_fair_test_without_opens(self):
+        out = self.plan("no_replies")
+        self.assertEqual(out["situation"], "no_opens")
+        self.assertEqual(out["headline"], "Polly sent 36 pitches. No kit opens yet.")
+
+    def test_early_is_not_called_a_failure(self):
+        self.assertEqual(self.plan("no_replies", pitches_sent_30d=9)["situation"], "early")
+
+    def test_unused_turns_autopilot_back_on(self):
+        out = self.plan("unused", autopilot_enabled=False, next_brands=["Rhode", "Ilia"])
+        self.assertEqual(out["offers"][0], "autopilot_on")
+        self.assertIn("Rhode and Ilia", out["body"])
+
+    def test_no_credit_or_free_days_ever(self):
+        for reason in ("no_replies", "too_expensive", "unused", "other"):
+            for over in ({}, {"gmail_connected": False}, {"weekdays_sent": 1}):
+                out = self.plan(reason, **over)
+                self.assertTrue(set(out["offers"]) <= {"connect_gmail", "outreach_review", "price_hold",
+                                                        "autopilot_on", "pause"})
+                self.assertNotIn("free", (out["headline"] + out["body"]).lower())
+
+    def test_pause_runs_from_period_end_to_the_next_bill(self):
+        from datetime import datetime, timezone
+        from services.retention_context import pause_window
+
+        w = pause_window(datetime(2026, 1, 31, 9, tzinfo=timezone.utc))
+        self.assertEqual(w["resumes_at"], datetime(2026, 2, 28, 9, tzinfo=timezone.utc))
+        self.assertLess(w["stripe_resumes_at"], w["resumes_at"])
