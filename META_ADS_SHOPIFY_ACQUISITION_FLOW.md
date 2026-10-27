@@ -111,7 +111,7 @@ LIMIT 40;
 
 **Important:** `/api/admin/email/brands-for-outreach` only returns `status=published`.
 For this flow, **do not** use `get_brands_for_outreach()` alone.
-Select Meta Ads drafts via SQL (python + `DATABASE_URL`) or `run_meta_ads_outreach_send.py`, then send with `send_outreach_email` and the locked PR + UGC swap body.
+Select Meta Ads drafts via SQL (python + `DATABASE_URL`) or `run_meta_ads_outreach_send.py`, then send with `run_meta_ads_outreach_send.py` (backend writes the email).
 The send endpoint accepts drafts as long as `contact_email` is set. Do not use `/brand-outreach/render`. Do not use `send_bulk_b2b_inventory_outreach`.
 
 ---
@@ -278,8 +278,11 @@ python scripts/crawl_meta_ads.py --daily --quota 50 --save-to-db \
 echo "[2/3] hunter enrich/verify"
 python scripts/hunter_draft_enricher.py --meta-ads-outreach --verify --replace --limit 80
 
-echo "[3/3] outreach send (locked PR + UGC swap template)"
+echo "[3/3] outreach send (backend copy)"
 python /home/hermes/.hermes/profiles/brand-acquisition/skills/run_meta_ads_outreach_send.py --limit 50
+
+echo "[4/4] follow-ups due (backend copy)"
+python /home/hermes/.hermes/profiles/brand-acquisition/skills/run_followups.py
 
 echo "===== DONE $STAMP ====="
 ```
@@ -302,7 +305,7 @@ Make executable: `chmod +x .../run_meta_ads_acquisition.sh`
 2. Confirm scrape log shows inserts / or today’s `META_ADS_OUTREACH` count > 0  
 3. Run Hunter `--meta-ads-outreach --verify --replace`  
 4. Fetch ready IDs (email + not contacted)  
-5. Send ≤ 50 via `run_meta_ads_outreach_send.py` (locked PR + UGC swap only)  
+5. Send ≤ 50 via `run_meta_ads_outreach_send.py` (backend copy, test mode until live)  
 6. Report to Mahery: scraped N / hunter enriched M / sent K / errors. Do not edit backend code.  
 
 ---
@@ -350,4 +353,4 @@ Brand-acquisition Hermes already has:
 
 ## One-liner for Hermes memory
 
-> Twice daily: run `scripts/run_meta_ads_acquisition.sh` only. That is scrape → Hunter → `run_meta_ads_outreach_send.py` (locked PR + UGC swap, max 50). Do not call `/brand-outreach/render`. Do not send B2B excess-inventory. Do not edit backend code mid-job.
+> Twice daily: run `scripts/run_meta_ads_acquisition.sh` only. That is scrape → Hunter → `run_meta_ads_outreach_send.py` (backend copy, max 50). Do not call `/brand-outreach/render`. Do not send B2B excess-inventory. Do not edit backend code mid-job.
