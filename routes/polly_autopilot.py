@@ -255,13 +255,6 @@ def gmail_callback():
         if _is_pro(creator_id, conn):
             set_enabled(conn, creator_id, True)
             prioritize_fill(conn, creator_id)  # the next cron run writes and sends the first pitches
-            try:
-                from services.pro_gmail_clock import on_gmail_connected
-
-                on_gmail_connected(conn, creator_id)
-            except Exception as err:
-                conn.rollback()
-                print(f"[Polly autopilot] gmail clock skipped creator={creator_id}: {err}")
         return redirect(_frontend(f"{POLLY_PATH}?autopilot=gmail_connected"))
     except GmailError as gerr:
         print(f"[Polly autopilot] gmail connect failed creator={creator_id}: {gerr}")
