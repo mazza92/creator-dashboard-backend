@@ -595,58 +595,125 @@ def post_thread_note(conn, creator_id: int, text: str, chips: Optional[List[Dict
     return not repeat
 
 
-def _default_headsup_email(conn, creator_id: int, brand_id: int, brand_name: str) -> None:
+def _default_headsup_email(conn, creator_id: int, brands: List[Dict[str, Any]]) -> None:
+    """One email a day naming tomorrow's follow-ups, so a brand that already replied can be held."""
     from services.polly_alerts import (
-        _default_send, _log_email, _recipient, _unsubscribe_url, chip_link, render_email,
+        _default_send, _log_email, _recently_emailed, _recipient, _unsubscribe_url, chip_link, render_email,
     )
     from html import escape
 
+    if not brands or _recently_emailed(conn, creator_id, ["autopilot_headsup"], timedelta(hours=20)):
+        return
     who = _recipient(conn, creator_id)
     if not who:
         return
     unsub = _unsubscribe_url(who["user_id"])
-    subject = f"Tomorrow I follow up with {brand_name}"
+    names = [b["brand_name"] for b in brands]
+    subject = f"Tomorrow I follow up with {_join(names)}"
     lines = [
-        f"Your pitch to <strong>{escape(brand_name)}</strong> went out 3 days ago. "
-        "Tomorrow I'll send a short follow-up in the same Gmail thread.",
-        "If they already replied, tap below and I'll hold it.",
+        "These pitches went out 3 days ago: "
+        + ", ".join(f"<strong>{escape(n)}</strong>" for n in names)
+        + ". Tomorrow I send a short follow-up in the same Gmail thread.",
+        "If one already replied, tap it and I'll hold that follow-up.",
     ]
-    buttons = [{"label": f"{brand_name} replied", "href": chip_link(
-        "checkin_replied", brand_id=brand_id, brand_name=brand_name, kind="autopilot_headsup")}]
+    buttons = [{"label": f"{b['brand_name']} replied", "href": chip_link(
+        "checkin_replied", brand_id=b["brand_id"], brand_name=b["brand_name"], kind="autopilot_headsup")}
+        for b in brands[:3]]
     result = _default_send(who["email"], subject, render_email(who["first"], subject, lines, buttons, unsub),
                            unsub, "autopilot_headsup")
-    _log_email(conn, creator_id, "autopilot_headsup", brand_id, None, subject, result)
+    _log_email(conn, creator_id, "autopilot_headsup", None, None, subject, result)
 
 
-def drafts_note(brand_names: List[str]) -> str:
-    names = ", ".join(f"**{n}**" for n in brand_names)
-    count = len(brand_names)
-    return (f"✍️ Autopilot update: I lined up {count} new pitch{'es' if count != 1 else ''}: {names}. "
-            "They go out from your Gmail on your send days, and I'll follow up if they're quiet. "
-            "Nothing for you to do. Tweak brands or target any time in **Autopilot** settings.")
+def _join(names: List[str]) -> str:
+    names = [n for n in names if n]
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
 
 
-def _default_drafts_email(conn, creator_id: int, brand_names: List[str]) -> None:
-    from services.polly_alerts import POLLY_PATH, _default_send, _log_email, _recipient, _unsubscribe_url, frontend_url, render_email
-    from html import escape
+# ---------------------------------------------------------------------------
+# The daily line: one Polly message per day with everything Autopilot did
+# ---------------------------------------------------------------------------
 
-    who = _recipient(conn, creator_id)
-    if not who or not brand_names:
-        return
-    unsub = _unsubscribe_url(who["user_id"])
-    count = len(brand_names)
-    subject = f"Autopilot lined up {count} more pitch{'es' if count != 1 else ''}"
-    lines = [
-        "I picked this week's brands and wrote your pitches: "
-        + ", ".join(f"<strong>{escape(n)}</strong>" for n in brand_names) + ".",
-        "They go out from your Gmail on your send days, and I follow up in the same thread if a brand is quiet. "
-        "Nothing for you to do.",
-    ]
-    href = f"{frontend_url()}{POLLY_PATH}?autopilot=review&utm_source=email&utm_medium=polly_alert&utm_campaign=autopilot_drafts"
-    buttons = [{"label": "See the schedule", "href": href}]
-    result = _default_send(who["email"], subject, render_email(who["first"], subject, lines, buttons, unsub),
-                           unsub, "autopilot_drafts")
-    _log_email(conn, creator_id, "autopilot_drafts", None, None, subject, result)
+def day_key(now: Optional[datetime] = None) -> str:
+    return (now or utc_now()).strftime("%Y-%m-%d")
+
+
+def load_day_facts(conn, creator_id: int, now: Optional[datetime] = None) -> Dict[str, Any]:
+    now = now or utc_now()
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    rows = _due(conn, """
+        SELECT brand_id, brand_name, status, sent_at, followup_sent_at, followup_status, scheduled_for
+        FROM polly_autopilot_queue
+        WHERE creator_id = %s AND (sent_at >= %s OR followup_sent_at >= %s
+                                   OR followup_status = 'headsup' OR status = 'approved')
+        ORDER BY COALESCE(sent_at, scheduled_for)
+    """, (creator_id, start, start))
+    named = lambda r: {"brand_id": r.get("brand_id"), "brand_name": r.get("brand_name") or "a brand"}
+    return {
+        "sent": [named(r) for r in rows if r.get("sent_at") and r["sent_at"] >= start],
+        "followups": [named(r) for r in rows if r.get("followup_sent_at") and r["followup_sent_at"] >= start],
+        "tomorrow": [named(r) for r in rows if r.get("followup_status") == "headsup"],
+        "next": [named(r) for r in rows if r.get("status") == "approved"],
+    }
+
+
+def _bold(rows: List[Dict[str, Any]], limit: int = 5) -> str:
+    names = [f"**{r['brand_name']}**" for r in rows[:limit]]
+    more = len(rows) - limit
+    return _join(names + ([f"{more} more"] if more > 0 else []))
+
+
+def daily_line(facts: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The day's Autopilot work as one message, or None when there's nothing to say."""
+    sent, follows = facts.get("sent") or [], facts.get("followups") or []
+    tomorrow, nxt = facts.get("tomorrow") or [], facts.get("next") or []
+    parts = []
+    if sent or follows:
+        today = []
+        if sent:
+            today.append(f"{len(sent)} pitch{'es' if len(sent) != 1 else ''} sent from your Gmail ({_bold(sent)})")
+        if follows:
+            today.append(f"🔁 {len(follows)} follow-up{'s' if len(follows) != 1 else ''} ({_bold(follows)})")
+        parts.append("✉️ **Today:** " + " · ".join(today) + ".")
+    if tomorrow:
+        parts.append(f"Tomorrow I follow up with {_bold(tomorrow)}. If one already replied, tap it and I'll hold it.")
+    if nxt and (sent or follows or tomorrow):
+        parts.append(f"Next up: {_bold(nxt, 3)}.")
+    elif nxt:
+        parts.append(f"✉️ **Lined up:** {_bold(nxt, 3)}. They go out from your Gmail, a few each weekday.")
+    if not parts:
+        return None
+    chips = [{"id": "checkin_replied", "label": f"{b['brand_name']} replied", "action": "task_act",
+              "brand_id": b["brand_id"], "brand_name": b["brand_name"]} for b in tomorrow[:3]]
+    return {"text": "\n\n".join(parts), "chips": chips}
+
+
+def post_daily_line(conn, creator_id: int, now: Optional[datetime] = None,
+                    pitched: Optional[List[Dict[str, Any]]] = None) -> bool:
+    """Write today's line, replacing the one already posted today so Polly sends one message a day."""
+    from services.polly import mark_pitched
+    from services.polly_memory import load_thread, save_thread
+
+    now = now or utc_now()
+    line = daily_line(load_day_facts(conn, creator_id, now))
+    thread = load_thread(conn, creator_id)
+    notes = thread.get("notes") or {}
+    for brand in pitched or []:
+        notes = mark_pitched(notes, brand)
+    messages = list(thread.get("messages") or [])
+    key = day_key(now)
+    old = next((m for m in messages if isinstance(m, dict) and m.get("daily") == key), None)
+    if line and old and old.get("content") == line["text"] and not pitched:
+        return False
+    if not line and not pitched:
+        return False
+    if line:
+        messages = [m for m in messages if m is not old]
+        messages.append({"role": "assistant", "kind": "autopilot", "daily": key,
+                         "content": line["text"], "task_chips": line["chips"]})
+    save_thread(conn, creator_id, messages, thread.get("suggested_brands") or [], notes=notes)
+    return bool(line)
 
 
 def _due(conn, sql: str, params: tuple) -> List[Dict[str, Any]]:
@@ -729,8 +796,12 @@ def run_autopilot(
     send_fn: Optional[Callable] = None,
     headsup_fn: Optional[Callable] = None,
     note_fn: Optional[Callable] = None,
+    daily_fn: Optional[Callable] = None,
 ) -> Dict[str, int]:
-    """Cron: send due pitches, warn a day before follow-ups, then send the follow-ups."""
+    """Cron: send due pitches, warn a day before follow-ups, then send the follow-ups.
+
+    Each creator gets one Polly message a day (the daily line), rewritten as the day's sends go out.
+    """
     from services.polly_gmail import GmailError, ensure_gmail_table, send_email
     from services.polly_tracker import add_event, record_pitch_sent
 
@@ -740,6 +811,8 @@ def run_autopilot(
     send = send_fn or send_email
     headsup = headsup_fn or _default_headsup_email
     note = note_fn or post_thread_note
+    daily = daily_fn or post_daily_line
+    touched: Dict[int, List[Dict[str, Any]]] = {}
     out = {"approved": auto_approve_due(conn, now), "pitches": 0, "headsups": 0, "followups": 0,
            "skipped": 0, "failed": 0}
 
@@ -775,9 +848,7 @@ def run_autopilot(
         record_pitch_sent(conn, cid, {"id": bid, "name": name}, drafted=False)
         if follows:
             _hold_day4_nudge(conn, cid, bid, now + NUDGE_HOLD)
-        tail = ", and I'll follow up on day 4 if they're quiet." if follows else "."
-        note(conn, cid, f"✉️ Sent your **{name}** pitch from your Gmail. It's on your Timeline{tail}",
-             [], pitched={"id": bid, "name": name})
+        touched.setdefault(cid, []).append({"id": bid, "name": name})
         out["pitches"] += 1
 
     warn = _due(conn, f"""
@@ -785,23 +856,23 @@ def run_autopilot(
         WHERE q.followup_status = 'scheduled' AND q.followup_due_at - %s <= %s AND COALESCE(a.enabled, TRUE)
         LIMIT %s
     """, (HEADSUP_BEFORE, now, limit))
+    warned: Dict[int, List[Dict[str, Any]]] = {}
     for item in warn:
         cid, bid, name = item["creator_id"], item["brand_id"], item.get("brand_name") or "the brand"
         if _brand_closed(conn, cid, bid, item.get("sent_at")):
             _set(conn, item["id"], followup_status="cancelled")
             continue
-        note(conn, cid, f"Tomorrow I follow up with **{name}** in the same Gmail thread. "
-                        "If they already replied, tell me and I'll hold it.",
-             [{"id": "checkin_replied", "label": f"{name} replied", "action": "task_act",
-               "brand_id": bid, "brand_name": name}])
+        _set(conn, item["id"], followup_status="headsup", headsup_at=now,
+             followup_due_at=max(item["followup_due_at"], now + HEADSUP_MIN_NOTICE))
+        warned.setdefault(cid, []).append({"brand_id": bid, "brand_name": name})
+        touched.setdefault(cid, [])
+        out["headsups"] += 1
+    for cid, brands in warned.items():
         try:
-            headsup(conn, cid, bid, name)
+            headsup(conn, cid, brands)
         except Exception as err:
             print(f"[Polly autopilot] heads-up email skipped: {err}")
             conn.rollback()
-        _set(conn, item["id"], followup_status="headsup", headsup_at=now,
-             followup_due_at=max(item["followup_due_at"], now + HEADSUP_MIN_NOTICE))
-        out["headsups"] += 1
 
     follow = _due(conn, f"""
         SELECT q.*, a.followups FROM polly_autopilot_queue q {_ACTIVE_JOIN}
@@ -834,8 +905,14 @@ def run_autopilot(
             _close_day4_task(conn, cid, bid)
         add_event(conn, cid, "pitch_sent", f"Follow-up sent · {name}", brand_id=bid,
                   polly_notes="Sent by Polly Autopilot in the same Gmail thread.")
-        note(conn, cid, f"🔁 Followed up with **{name}** in the same Gmail thread.", [])
+        touched.setdefault(cid, [])
         out["followups"] += 1
+    for cid, pitched in touched.items():
+        try:
+            daily(conn, cid, now, pitched=pitched)
+        except Exception as err:
+            print(f"[Polly autopilot] daily line skipped creator={cid}: {err}")
+            conn.rollback()
     return out
 
 

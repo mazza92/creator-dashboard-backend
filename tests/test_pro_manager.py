@@ -88,7 +88,8 @@ class BoardTests(unittest.TestCase):
         self.assertEqual(board["week_label"], "Oct 5")
         text = board_summary(board, "Ana")
         self.assertIn("Ana", text)
-        self.assertIn("Every weekday I send new pitches", text)
+        self.assertIn("Your weekly report", text)
+        self.assertIn("I keep sending and following up every weekday", text)
         self.assertNotIn("one yes", text)
 
     def test_board_message_survives_thread_save(self):
@@ -245,8 +246,34 @@ class DraftBrandReplyToolTests(_Patched):
             res = tools.run_tool(state, "get_coaching_facts", {"topic": "week"})
         self.assertTrue(res["board_card_shown"])
         self.assertIs(state.board, board)
-        self.assertIn("Monday board", state.final_say)
+        self.assertIn("weekly report", state.final_say)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WeeklyReportLineTests(unittest.TestCase):
+    def test_pro_report_uses_only_real_counts(self):
+        from services.pro_manager import report_lines
+
+        last = {"pitched": 15, "followups": 6, "pitched_names": ["A", "B"], "kit_names": ["A"], "reply_names": []}
+        lines = report_lines(last, {"lined_up": 15, "per_day": 3}, pro=True)
+        self.assertTrue(lines[0].startswith("✉️ **Last week:** 15 pitches sent (**A**, **B** and 13 more) · 🔁 6 follow-ups"))
+        self.assertIn("👀 **Kit opened by:** **A**", lines[1])
+        self.assertEqual(lines[2], "📅 **This week:** 15 brands lined up, 3 a day from your Gmail.")
+        self.assertFalse(any("yes" in line.lower() for line in lines))
+
+    def test_quiet_week_says_so_and_points_at_gmail(self):
+        from services.pro_manager import report_lines
+
+        lines = report_lines({}, {"gmail_missing": True, "per_day": 3}, pro=True)
+        self.assertEqual(lines[0], "✉️ **Last week:** no pitches went out.")
+        self.assertIn("until Gmail is connected", lines[1])
+
+    def test_free_report_gives_the_manual_step(self):
+        from services.pro_manager import report_lines
+
+        lines = report_lines({"pitched": 2}, {"followups_due": ["Glow"], "ready": 4}, pro=False)
+        self.assertIn("🔁 **Follow-ups due:** **Glow**", lines[1])
+        self.assertIn("4 brands matched and ready. Send them yourself, or let Pro send them", lines[2])

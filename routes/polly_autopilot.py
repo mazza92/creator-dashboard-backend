@@ -13,18 +13,17 @@ from services.polly_autopilot import (
     TARGET_MAX,
     TARGET_MIN,
     TARGET_OPTIONS,
-    _default_drafts_email,
     add_draft,
     approve,
     batch_size,
     claim_unannounced_drafts,
     daily_sends,
-    drafts_note,
     fill_candidates,
     list_items,
     mark_filled,
     month_counts,
     per_week,
+    post_daily_line,
     post_thread_note,
     prioritize_fill,
     queued_brand_ids,
@@ -556,14 +555,14 @@ def _fill_creator(conn, row, creator, budget):
     return names, None, attempts, failed
 
 
-def auto_fill(conn, now=None, budget=AUTO_DRAFTS_PER_RUN, note_fn=None, email_fn=None):
+def auto_fill(conn, now=None, budget=AUTO_DRAFTS_PER_RUN, note_fn=None, daily_fn=None):
     """Cron: keep each enabled creator a week of scheduled pitches ahead, so the monthly target is
     reached without anyone coming back to plan or approve."""
     from flask import current_app, session
 
     now = now or utc_now()
     note = note_fn or post_thread_note
-    email = email_fn or _default_drafts_email
+    daily = daily_fn or post_daily_line
     out = {"drafted": 0, "creators": 0, "blocked": 0}
     for row in fill_candidates(conn, now):
         if budget <= 0:
@@ -587,14 +586,8 @@ def auto_fill(conn, now=None, budget=AUTO_DRAFTS_PER_RUN, note_fn=None, email_fn
         if not (blocked or failed or len(names) >= row["need"]):
             continue
         mark_filled(conn, creator_id, now + FILL_BLOCKED_WAIT if blocked and not names else now, blocked)
-        fresh = claim_unannounced_drafts(conn, creator_id, now)
-        if fresh:
-            note(conn, creator_id, drafts_note(fresh), [])
-            try:
-                email(conn, creator_id, fresh)
-            except Exception as err:
-                print(f"[Polly autopilot] drafts email skipped: {err}")
-                conn.rollback()
+        if claim_unannounced_drafts(conn, creator_id, now):
+            daily(conn, creator_id, now)  # new pitches show in today's line, not a message of their own
     return out
 
 

@@ -1,9 +1,10 @@
-"""Pro-only manager surfaces: the Monday board and the note before each renewal.
+"""Manager surfaces: the Monday weekly report and the note before each renewal.
 
-Free creators get the month plan and while-you-were-away briefs. Pro gets a weekly board
-that lists exactly what's left this week (setup, paid briefs, replies that turn a yes into
-paid usage), and a note a few days before each renewal that shows what
-Pro did that month.
+Sending is daily (one line in Polly per day); reporting is weekly. Every Monday the report leads
+with last week's real counts from the send log (pitches, follow-ups, who opened the kit, who
+replied) and what's lined up this week. Pro gets it with the week's checklist, in Polly and by
+email. Free creators get the same numbers in Polly with the manual next step. A few days before
+each renewal, Pro gets a note with the month's totals.
 """
 
 from __future__ import annotations
@@ -29,7 +30,8 @@ NEXT_BRANDS = 5
 REPLY_DONE = ("paid_ask_drafted", "pr_shipped", "pr_received", "content_posted", "brand_replied_rejected")
 POSTED_DONE = ("ad_usage_asked", "paid_pitch_sent", "milestone")
 
-OPEN_BOARD_CHIP = {"id": "open_board", "label": "Open my Monday board", "action": "board"}
+OPEN_BOARD_CHIP = {"id": "open_board", "label": "Open my weekly report", "action": "board"}
+REPLY_EVENTS = ("brand_replied_interested", "brand_replied_question")
 
 
 def utc_now() -> datetime:
@@ -144,8 +146,86 @@ def stalled(conn, creator_id: int, now: Optional[datetime] = None) -> bool:
     return recent["replies"] == 0
 
 
+def brand_names(conn, creator_id: int, event_types, since: datetime, until: datetime,
+                first_pitch_only: bool = False, limit: int = 5) -> List[str]:
+    """Distinct brand names with one of ``event_types`` in the window, most recent first."""
+    cur = _cursor(conn)
+    cur.execute(
+        f"""
+        SELECT name FROM (
+            SELECT DISTINCT ON (COALESCE(e.brand_id::text, e.event_label))
+                   COALESCE(b.brand_name, NULLIF(split_part(e.event_label, ' · ', 2), '')) AS name,
+                   e.occurred_at
+            FROM polly_timeline_events e
+            LEFT JOIN pr_brands b ON b.id = e.brand_id
+            WHERE e.creator_id = %s AND e.event_type = ANY(%s) AND e.occurred_at >= %s AND e.occurred_at < %s
+              {"AND e.event_label NOT LIKE 'Follow-up%%'" if first_pitch_only else ""}
+            ORDER BY COALESCE(e.brand_id::text, e.event_label), e.occurred_at DESC
+        ) x WHERE name IS NOT NULL ORDER BY occurred_at DESC LIMIT %s
+        """,
+        (creator_id, list(event_types), since, until, int(limit)),
+    )
+    return [r["name"] for r in cur.fetchall()]
+
+
+def last_week_facts(conn, creator_id: int, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Monday to Sunday before this week, from the timeline (every send is logged there)."""
+    end = week_start(now)
+    start = end - timedelta(days=7)
+    counts = window_counts(conn, creator_id, start, end)
+    return {
+        **counts,
+        "pitched_names": brand_names(conn, creator_id, ("pitch_sent",), start, end, first_pitch_only=True),
+        "kit_names": brand_names(conn, creator_id, ("portfolio_viewed",), start, end),
+        "reply_names": brand_names(conn, creator_id, REPLY_EVENTS, start, end),
+    }
+
+
+def _named(names: List[str], total: int) -> str:
+    shown = ", ".join(f"**{n}**" for n in names[:5])
+    more = total - min(len(names), 5)
+    return shown + (f" and {more} more" if more > 0 and shown else "")
+
+
+def report_lines(last: Dict[str, Any], ahead: Dict[str, Any], pro: bool) -> List[str]:
+    """Markdown lines for the weekly report. Only real counts; nothing promised about replies."""
+    lines: List[str] = []
+    pitched, followups = int(last.get("pitched") or 0), int(last.get("followups") or 0)
+    sent = (f"✉️ **Last week:** {_plural(pitched, 'pitch', 'pitches')} sent" if pitched or followups
+            else "✉️ **Last week:** no pitches went out")
+    if pitched and last.get("pitched_names"):
+        sent += f" ({_named(last['pitched_names'], pitched)})"
+    if followups:
+        sent += f" · 🔁 {_plural(followups, 'follow-up')}"
+    lines.append(sent + ".")
+    if last.get("kit_names"):
+        lines.append(f"👀 **Kit opened by:** {_named(last['kit_names'], len(last['kit_names']))}.")
+    if last.get("reply_names"):
+        lines.append(f"💬 **Replies:** {_named(last['reply_names'], len(last['reply_names']))}. "
+                     + ("Your answer is on the list below." if pro else "Ask me and I'll write your answer."))
+    if pro:
+        lined, per_day = int(ahead.get("lined_up") or 0), int(ahead.get("per_day") or 0)
+        if ahead.get("gmail_missing"):
+            lines.append("📅 **This week:** nothing can go out until Gmail is connected. It's the first task below.")
+        elif lined:
+            lines.append(f"📅 **This week:** {_plural(lined, 'brand')} lined up"
+                         + (f", {per_day} a day from your Gmail." if per_day else "."))
+        else:
+            lines.append("📅 **This week:** I'm picking your next brands now"
+                         + (f", {per_day} go out each weekday." if per_day else "."))
+    else:
+        due = ahead.get("followups_due") or []
+        if due:
+            lines.append(f"🔁 **Follow-ups due:** {_named(due, len(due))}. Ask me and I'll write them.")
+        ready = int(ahead.get("ready") or 0)
+        if ready:
+            lines.append(f"📅 **This week:** {_plural(ready, 'brand')} matched and ready. "
+                         "Send them yourself, or let Pro send them from your Gmail every weekday.")
+    return lines
+
+
 # ---------------------------------------------------------------------------
-# Monday board
+# Monday board (Pro's weekly report + checklist)
 # ---------------------------------------------------------------------------
 
 def _task(task_id: str, label: str, detail: str, done: bool, chip: Optional[Dict[str, Any]] = None,
@@ -213,12 +293,18 @@ def board_from_facts(facts: Dict[str, Any], now: Optional[datetime] = None) -> D
 
     left = [t for t in tasks if not t["done"]]
     week = facts.get("week") or {}
+    ahead = {
+        "lined_up": int(ap.get("scheduled") or 0) + int(ap.get("drafts") or 0),
+        "per_day": int(ap.get("per_day") or 0),
+        "gmail_missing": facts.get("gmail_available", True) and not facts.get("gmail_connected"),
+    }
     start = week_start(now)
     return {
         "week_of": week_key(now),
         "week_label": f"{start.strftime('%b')} {start.day}",
         "tasks": tasks,
         "left": len(left),
+        "report": report_lines(facts.get("last_week") or {}, ahead, pro=True),
         "stats": {
             "pitched": int(week.get("pitched") or 0),
             "followups": int(week.get("followups") or 0),
@@ -232,7 +318,9 @@ def board_from_facts(facts: Dict[str, Any], now: Optional[datetime] = None) -> D
 
 def load_board_facts(conn, creator_id: int, kit: Optional[Dict[str, Any]] = None,
                      now: Optional[datetime] = None) -> Dict[str, Any]:
-    from services.polly_autopilot import batch_size, effective_target, list_items, month_counts, settings
+    from services.polly_autopilot import (
+        batch_size, daily_sends, effective_target, list_items, month_counts, settings,
+    )
     from services.polly_gmail import gmail_configured, load_account
 
     now = now or utc_now()
@@ -262,6 +350,7 @@ def load_board_facts(conn, creator_id: int, kit: Optional[Dict[str, Any]] = None
             "next_batch": batch_size(counts, target),
             "month_sent": counts.get("sent", 0),
             "monthly_target": target,
+            "per_day": daily_sends(conn, creator_id, prefs, now),
         },
         "paid_applied_week": paid_applications(conn, creator_id, start),
         "replies_open": brands_waiting(conn, creator_id, "brand_replied_interested", REPLY_DONE,
@@ -270,6 +359,7 @@ def load_board_facts(conn, creator_id: int, kit: Optional[Dict[str, Any]] = None
                                       now - POSTED_LOOKBACK),
         "stalled": stalled(conn, creator_id, now),
         "week": window_counts(conn, creator_id, start, now + timedelta(minutes=1)),
+        "last_week": last_week_facts(conn, creator_id, now),
     }
 
 
@@ -279,16 +369,16 @@ def load_board(conn, creator_id: int, kit: Optional[Dict[str, Any]] = None,
 
 
 def board_summary(board: Dict[str, Any], first: str = "") -> str:
-    """The chat text above the board card."""
+    """The chat text above the board card: last week's numbers, then what's left this week."""
     left = int(board.get("left") or 0)
     name = (first or "").strip()
-    head = f"Your Monday board{', ' + name if name else ''}, week of {board.get('week_label')}."
+    head = f"Your weekly report{', ' + name if name else ''}, week of {board.get('week_label')}."
+    report = "\n\n".join(board.get("report") or [])
     if not left:
-        body = "Everything on it is done. I'll keep following up, and next week's board lands Monday."
+        body = "Nothing for you to do this week. I keep sending and following up every weekday."
     else:
-        body = f"{_plural(left, 'thing')} left this week. Work top to bottom, setup first."
-    goal = "Every weekday I send new pitches from your Gmail and follow up. You focus on content."
-    return "\n\n".join([head, body, goal])
+        body = f"{_plural(left, 'thing')} for you this week, top to bottom:"
+    return "\n\n".join(p for p in [head, report, body] if p)
 
 
 def board_message(board: Dict[str, Any], first: str = "") -> Dict[str, Any]:
@@ -304,22 +394,13 @@ def board_email(first_name: str, board: Dict[str, Any], unsubscribe_url: str = "
     from services.polly_alerts import render_email
 
     left = [t for t in board.get("tasks") or [] if not t.get("done")]
-    subject = (
-        f"Your Monday board: {_plural(len(left), 'thing')} this week" if left
-        else "Your Monday board is clear"
-    )
-    lines = []
+    subject = "Your weekly outreach report"
+    lines = [_md_html(line) for line in board.get("report") or []]
     if left:
         items = "".join(f"<li style=\"margin:0 0 6px 0;\">{escape(t['label'])}</li>" for t in left[:6])
-        lines.append(f"Here's this week, top to bottom:<ul style=\"margin:8px 0 0 18px;padding:0;\">{items}</ul>")
-    stats = board.get("stats") or {}
-    if stats.get("month_target"):
-        lines.append(
-            f"This month so far: <strong>{stats.get('month_sent', 0)}</strong> of "
-            f"{stats['month_target']} brands pitched from your Gmail."
-        )
-    lines.append("Every weekday I send new pitches from your Gmail and follow up, so your outreach never stops.")
-    buttons = [{"label": "Open my board", "href": open_href}] if open_href else []
+        lines.append(f"For you this week:<ul style=\"margin:8px 0 0 18px;padding:0;\">{items}</ul>")
+    lines.append("Every weekday I send new pitches from your Gmail and follow up in the same thread.")
+    buttons = [{"label": "Open my weekly report", "href": open_href}] if open_href else []
     return {"subject": subject, "html": render_email(first_name, subject, lines, buttons, unsubscribe_url)}
 
 
@@ -400,7 +481,7 @@ def renewal_email(first_name: str, lines: List[str], unsubscribe_url: str = "", 
 
     subject = "What Pro did for you this month"
     html_lines = [_md_html(line) for line in lines]
-    buttons = [{"label": "Open my Monday board", "href": open_href}] if open_href else []
+    buttons = [{"label": "Open my weekly report", "href": open_href}] if open_href else []
     links = [{"label": "Manage plan", "href": manage_href}] if manage_href else None
     return {"subject": subject, "html": render_email(first_name, subject, html_lines, buttons,
                                                      unsubscribe_url, links=links)}
@@ -572,3 +653,56 @@ def email_monday_boards(conn, limit: int = 40, dry_run: bool = False, send_fn: O
         item["ok"] = bool(result.get("success"))
         out.append(item)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Free creators: the same Monday numbers, with the manual next step
+# ---------------------------------------------------------------------------
+
+FREE_REPORT_CHIPS = [
+    {"id": "line_up", "label": "Show my matched brands", "action": "suggest_brands", "deal": "gifted",
+     "skip_discovery": True},
+    {"id": "unlock_pro", "label": "Let Pro send them", "action": "unlock_pro"},
+]
+
+
+def followups_due(conn, creator_id: int, now: Optional[datetime] = None) -> List[str]:
+    """Brands whose day-4 follow-up is due and not done (free creators send these themselves)."""
+    cur = _cursor(conn)
+    try:
+        cur.execute(
+            """
+            SELECT DISTINCT COALESCE(b.brand_name, t.metadata->>'brand_name') AS name
+            FROM polly_tasks t LEFT JOIN pr_brands b ON b.id = t.brand_id
+            WHERE t.creator_id = %s AND t.type = 'follow_up_due' AND t.status IN ('pending', 'in_progress')
+              AND t.due_at <= %s
+            """,
+            (creator_id, now or utc_now()),
+        )
+        return [r["name"] for r in cur.fetchall() if r.get("name")][:5]
+    except Exception:
+        conn.rollback()
+        return []
+
+
+def free_report_message(conn, creator_id: int, thread: Dict[str, Any], first: str = "",
+                        now: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
+    """None when there's nothing to report (no sends last week, nothing due, no matched brands)."""
+    from services.polly import matched_waiting
+
+    last = last_week_facts(conn, creator_id, now)
+    ahead = {"followups_due": followups_due(conn, creator_id, now),
+             "ready": matched_waiting(thread, limit=3)["count"]}
+    if not (last.get("pitched") or last.get("kit_names") or last.get("reply_names")
+            or ahead["followups_due"] or ahead["ready"]):
+        return None
+    name = (first or "").strip()
+    head = f"Your weekly report{', ' + name if name else ''}, week of {week_label(now)}."
+    lines = report_lines(last, ahead, pro=False)
+    return {"role": "assistant", "kind": "brief", "content": "\n\n".join([head] + lines),
+            "task_chips": [dict(c) for c in FREE_REPORT_CHIPS]}
+
+
+def week_label(now: Optional[datetime] = None) -> str:
+    start = week_start(now)
+    return f"{start.strftime('%b')} {start.day}"

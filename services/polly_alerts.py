@@ -918,8 +918,11 @@ def email_weekly_digests(conn, dry_run: bool = False, send_fn: Optional[Callable
 
 
 def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "", send_fn: Optional[Callable] = None) -> Dict[str, Any]:
-    """Cron entry: post due nudges in-thread, email them + kit views."""
-    from services.polly_tracker import process_due_nudges
+    """Cron entry: Autopilot sends and the daily line, then event emails (kit views) and the weekly report.
+
+    Per-brand nudges ("quick pulse on X", "day 10, still quiet") no longer post: follow-ups send on
+    their own for Pro, and the Monday report lists what's waiting for free creators.
+    """
     from services.resend_mail import resend_configured
 
     can_email = dry_run or bool(send_fn) or resend_configured()
@@ -935,7 +938,6 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
                 conn.rollback()
             except Exception:
                 pass
-    delivered: List[Dict[str, Any]] = []
     nudged = 0
     autopilot: Dict[str, Any] = {}
     if not dry_run:
@@ -975,10 +977,8 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
                 conn.rollback()
             except Exception:
                 pass
-        nudged = process_due_nudges(conn, creator_limit=limit, delivered=delivered)
     emails = []
     if can_email:
-        emails += email_nudges(conn, delivered, dry_run=dry_run, send_fn=send_fn, test_email=test_email)
         emails += email_kit_views(conn, limit=limit, dry_run=dry_run, send_fn=send_fn, test_email=test_email)
         try:
             emails += email_never_opened(conn, dry_run=dry_run, send_fn=send_fn, test_email=test_email)
@@ -989,7 +989,6 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
             except Exception:
                 pass
         from services.autopilot_health import email_autopilot_blocked
-        from services.autopilot_report import email_autopilot_reports
         from services.founder_wins import email_founder_wins
         from services.new_brand_push import email_new_brand_pushes
         from services.pro_delivery_watch import email_founder_delivery
@@ -1001,7 +1000,7 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
         for job in (email_new_brand_pushes, email_founder_wins, email_trial_journey, email_autopilot_blocked,
                     email_founder_delivery,
                     email_month_reports,
-                    email_unsent_briefs, email_renewal_notes, email_monday_boards, email_autopilot_reports,
+                    email_unsent_briefs, email_renewal_notes, email_monday_boards,
                     email_ugc_roundups, email_paywall_followups, email_pro_week, email_weekly_digests):
             try:
                 emails += job(conn, dry_run=dry_run, send_fn=send_fn, test_email=test_email)

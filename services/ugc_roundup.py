@@ -14,7 +14,7 @@ ROUNDUP_EVERY = timedelta(hours=47)
 ROUNDUP_WINDOW = timedelta(hours=48)
 SEND_HOURS_UTC = range(14, 18)  # 10am New York, 3pm London
 MAX_GIGS = 6
-# Monday board / Friday report day: the roundup waits until the next day's window.
+# Monday weekly report day: the roundup waits until the next day's window.
 SAME_DAY_KINDS = ("monday_board", "autopilot_week", "renewal_note")
 
 _GIG_COLUMNS = """

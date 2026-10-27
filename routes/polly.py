@@ -106,9 +106,7 @@ from services.polly_tracker import (
     list_relationships,
     load_creator_context,
     maybe_bootstrap_nudge,
-    maybe_deliver_login_checkin,
     morning_brief,
-    process_due_nudges,
     record_pitch_sent,
     session_context_text,
 )
@@ -1187,10 +1185,36 @@ def _deliver_manager_note(conn, creator_id, first, career, tracker, balance, que
 
 
 def _deliver_monday_board(conn, creator_id, first, kit, balance):
-    """Pro: first open of each week posts the Monday board instead of the month/away notes."""
+    """First open of each week posts the weekly report instead of the month/away notes.
+
+    Pro gets the report with the week's checklist; free gets the same numbers with the manual step
+    (the month plan still wins on the first open of a month).
+    """
+    from services.pro_manager import board_due, board_message, free_report_message, load_board, week_key
     if not (balance or {}).get("is_unlimited"):
-        return False
-    from services.pro_manager import board_due, board_message, load_board, week_key
+        try:
+            thread = load_thread(conn, creator_id)
+            notes = dict(thread.get("notes") or {})
+            if not board_due(notes) or plan_open_note(notes, bool(thread.get("messages"))) == "month":
+                return False
+            message = free_report_message(conn, creator_id, thread, first)
+            notes["board_week"] = week_key()
+            if not message:
+                save_thread(conn, creator_id, thread.get("messages") or [], thread.get("suggested_brands") or [],
+                            notes=notes)
+                return False
+            notes["away_brief_at"] = utc_iso_now()
+            messages = list(thread.get("messages") or []) + [json_safe(message)]
+            save_thread(conn, creator_id, messages, thread.get("suggested_brands") or [], notes=notes)
+            _log_polly_event(creator_id, "manager_note", {"kind": "free_report"})
+            return True
+        except Exception as err:
+            print(f"[Polly] free weekly report skipped: {err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return False
     try:
         thread = load_thread(conn, creator_id)
         notes = dict(thread.get("notes") or {})
@@ -1479,13 +1503,7 @@ def bootstrap():
                 except Exception as err:
                     print(f"[Polly] location ask stamp skipped: {err}")
         timer.mark("state")
-        checked_in = False
-        try:
-            if maybe_deliver_login_checkin(conn, creator_id, tracker):
-                checked_in = True
-                thread = load_thread(conn, creator_id)
-        except Exception as err:
-            print(f"[Polly] login checkin skipped: {err}")
+        checked_in = False  # login check-ins ("got any reply from X?") retired: the weekly report covers it
         offered = False
         if not checked_in and (
             _deliver_credits_out_offer(conn, creator_id, first, balance, tracker)
@@ -2475,15 +2493,7 @@ def checkin_one_tap():
 
 @polly_bp.route("/cron/nudges", methods=["GET", "POST"])
 def cron_nudges():
+    """Retired: per-brand nudges are replaced by the daily line and the weekly report."""
     if not _cron_authorized():
         return jsonify({"success": False, "error": "unauthorized"}), 401
-    from pr_crm_routes import get_db_connection
-    conn = get_db_connection()
-    try:
-        sent = process_due_nudges(conn)
-        return jsonify({"success": True, "sent": sent})
-    except Exception as err:
-        print(f"[Polly] cron nudges error: {err}")
-        return jsonify({"success": False, "error": "nudge run failed"}), 500
-    finally:
-        conn.close()
+    return jsonify({"success": True, "sent": 0})
