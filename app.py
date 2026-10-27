@@ -82,6 +82,7 @@ from routes.admin_brands import admin_brands_bp
 from routes.admin_reports import admin_reports_bp
 from routes.admin_email import admin_email_bp
 from routes.brand_pipeline import brand_pipeline_bp
+from routes.outreach_v3 import outreach_v3_bp
 from routes.brand_scan import brand_scan_bp
 from routes.brand_workspace import brand_workspace_bp, init_brand_workspace
 from routes.admin_creators import admin_creators_bp
@@ -393,6 +394,7 @@ app.register_blueprint(admin_brands_bp)
 app.register_blueprint(admin_reports_bp)
 app.register_blueprint(admin_email_bp)
 app.register_blueprint(brand_pipeline_bp)
+app.register_blueprint(outreach_v3_bp)
 app.register_blueprint(admin_creators_bp)
 app.register_blueprint(ugc_supply_bp)
 app.register_blueprint(content_hub_bp)

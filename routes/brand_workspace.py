@@ -107,6 +107,7 @@ def signup():
                             "error": "This email is a creator account. Use your brand's work email."}), 409
         hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode()
         ids = ws.create_brand_account(conn, email=email, password_hash=hashed, method="email", **f)
+        ws.attach_outreach_ref(conn, ids["brand_id"], str(body.get("oref") or ""))
         carried = _carry_free_scan(conn, ids["brand_id"], body)
         return _signed_in(conn, ids["user_id"], ids["brand_id"], 201, approval_status="pending",
                           needs_profile=True, free_scan=carried)
@@ -160,6 +161,7 @@ def google():
         # users.password is NOT NULL: Google-only accounts get the same unusable placeholder as /google-signup.
         placeholder = f"GOOGLE_AUTH_{uuid.uuid4().hex}"
         ids = ws.create_brand_account(conn, email=email, password_hash=placeholder, method="google", **f)
+        ws.attach_outreach_ref(conn, ids["brand_id"], str(body.get("oref") or ""))
         carried = _carry_free_scan(conn, ids["brand_id"], body)
         return _signed_in(conn, ids["user_id"], ids["brand_id"], 201, approval_status="pending",
                           needs_profile=True, free_scan=carried)
@@ -251,7 +253,7 @@ def campaigns():
             "brand_email": me["email"],
             "brand_website": brand.get("website") or brand.get("app_url") or "",
             "brand_category": payload.get("brand_category") or brand.get("category"),
-            "ref": payload.get("ref") or brand.get("signup_source") or "workspace",
+            "ref": brand.get("outreach_ref") or payload.get("ref") or brand.get("signup_source") or "workspace",
         })
         if not payload["brand_website"]:
             return jsonify({"success": False, "error": "Add your website first."}), 400
@@ -264,6 +266,7 @@ def campaigns():
             return resp, status
         if not brand.get("opportunity_id"):
             ws.link_opportunity(conn, brand["id"], int(data["id"]), me["email"])
+        ws.outreach_mark(conn, brand.get("outreach_ref") or "", "campaign", {"opportunity_id": int(data["id"])})
         if me["pr_brand_id"]:  # a subscribed brand's billing row: publishing reuses it instead of making another
             cur = conn.cursor()
             cur.execute("UPDATE opportunities SET pr_brand_id = %s WHERE id = %s AND pr_brand_id IS NULL",

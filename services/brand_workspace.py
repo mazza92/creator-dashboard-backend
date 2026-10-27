@@ -48,7 +48,8 @@ def ensure_schema(conn) -> None:
           ADD COLUMN IF NOT EXISTS app_url TEXT,
           ADD COLUMN IF NOT EXISTS profile_completed_at TIMESTAMPTZ,
           ADD COLUMN IF NOT EXISTS signup_method TEXT,
-          ADD COLUMN IF NOT EXISTS free_scan_brand TEXT
+          ADD COLUMN IF NOT EXISTS free_scan_brand TEXT,
+          ADD COLUMN IF NOT EXISTS outreach_ref TEXT
     """)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS brand_workspace_scans (
@@ -123,7 +124,7 @@ def brand_for_user(conn, user_id: int) -> Optional[Dict[str, Any]]:
     ensure_schema(conn)
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("""SELECT id, name, website, app_url, category, logo, approval_status, pr_brand_id, opportunity_id,
-                          signup_niche, profile_completed_at, free_scan_brand
+                          signup_niche, profile_completed_at, free_scan_brand, signup_source, outreach_ref
                    FROM brands WHERE user_id = %s
                    ORDER BY (approval_status IS NULL OR approval_status = 'approved') DESC,
                             (approval_status = 'pending') DESC, id DESC
@@ -165,6 +166,30 @@ def create_brand_account(conn, *, email: str, password_hash: Optional[str], firs
     brand_id = int(cur.fetchone()[0])
     conn.commit()
     return {"user_id": user_id, "brand_id": brand_id}
+
+
+def outreach_mark(conn, ref: str, event: str, meta: Optional[Dict[str, Any]] = None) -> None:
+    """Credit a cold email (pipeline v3 ref code) with a funnel step. Never raises into the caller."""
+    if not ref:
+        return
+    try:
+        from services import outreach_v3
+
+        outreach_v3.mark(conn.cursor(cursor_factory=RealDictCursor), ref, event, meta)
+        conn.commit()
+    except Exception as err:
+        conn.rollback()
+        print(f"[brand-workspace] outreach mark skipped ({event}): {type(err).__name__}: {err}")
+
+
+def attach_outreach_ref(conn, brand_id: int, ref: str) -> None:
+    ref = clean_text(ref, 40)
+    if not ref:
+        return
+    cur = conn.cursor()
+    cur.execute("UPDATE brands SET outreach_ref = COALESCE(outreach_ref, %s) WHERE id = %s", (ref, brand_id))
+    conn.commit()
+    outreach_mark(conn, ref, "signed_up", {"workspace_brand_id": brand_id})
 
 
 def update_profile(conn, brand_id: int, *, name: str, website: str = "", app_url: str = "",

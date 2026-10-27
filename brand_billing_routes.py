@@ -276,6 +276,14 @@ def brand_billing_webhook():
                 status="active",
             )
             conn.commit()
+            try:
+                from services.outreach_v3 import mark_paid
+
+                mark_paid(cursor, brand_id)
+                conn.commit()
+            except Exception as mark_err:
+                conn.rollback()
+                print(f"[brand-billing] outreach credit skipped: {mark_err}")
             conn.close()
             print(f"✅ Brand {brand_id} Gifted UGC subscription active")
 
