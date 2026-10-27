@@ -749,10 +749,13 @@ def _deliver(cursor, row, to, subject, text, sender, in_reply_to=None, reference
 
 def send_step(cursor, brand_id: int, kind: str = "initial", dry_run: bool = False,
               sender: Optional[Callable] = None, rng: Optional[random.Random] = None,
-              test: bool = False) -> Dict[str, Any]:
+              test: bool = False, test_to: str = "") -> Dict[str, Any]:
     """kind: initial | followup | nudge. test (or outreach not live): the exact email goes to TEST_EMAIL with
     the real recipient in the subject, and no pipeline state changes."""
-    test = test or not outreach_live()
+    test_to = (test_to or "").strip().lower()
+    if test_to and not _EMAIL_RE.fullmatch(test_to):
+        return {"ok": False, "error": "test_to is not a valid email"}
+    test = test or bool(test_to) or not outreach_live()
     row = load_row(cursor, brand_id)
     if not row:
         return {"ok": False, "error": "brand not found"}
@@ -801,12 +804,13 @@ def send_step(cursor, brand_id: int, kind: str = "initial", dry_run: bool = Fals
     if dry_run:
         return {**preview, "dry_run": True}
     if test:
-        mid = _deliver(cursor, row, TEST_EMAIL, f"[TEST to {to}] {subject}", text, sender)
+        inbox = test_to or TEST_EMAIL
+        mid = _deliver(cursor, row, inbox, f"[TEST to {to}] {subject}", text, sender)
         if not mid:
             return {"ok": False, "brand_id": brand_id, "error": "test send failed"}
-        log_activity(cursor, brand_id, "test_sent", variant=variant, email=TEST_EMAIL, subject=subject, body=text,
+        log_activity(cursor, brand_id, "test_sent", variant=variant, email=inbox, subject=subject, body=text,
                      message_id=mid, meta={"kind": kind, "step": step, "would_send_to": to})
-        return {**preview, "test": True, "to": TEST_EMAIL, "would_send_to": to, "message_id": mid}
+        return {**preview, "test": True, "to": inbox, "would_send_to": to, "message_id": mid}
 
     mid = _deliver(cursor, row, to, subject, text, sender, in_reply_to=in_reply_to, references=in_reply_to)
     if not mid:

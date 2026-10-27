@@ -438,3 +438,12 @@ def test_explicit_test_send_while_live():
     sender = Sender()
     out = bp.send_step(cur, 7, "initial", sender=sender, test=True)
     assert out["test"] and sender.calls[0]["to"] == "team@newcollab.co" and out["would_send_to"] == "tacy@mdaire.com"
+
+
+def test_test_to_sends_the_real_email_to_any_inbox():
+    cur = FakeCursor([("bo.last_inbound_subject", [_row()]), ("AS positive", [])])
+    sender = Sender()
+    out = bp.send_step(cur, 7, "initial", sender=sender, test_to="Me@Example.com")
+    assert out["test"] and sender.calls[0]["to"] == "me@example.com" and out["would_send_to"] == "tacy@mdaire.com"
+    assert sender.calls[0]["subject"].startswith("[TEST to tacy@mdaire.com] ")
+    assert not bp.send_step(FakeCursor([("bo.last_inbound_subject", [_row()])]), 7, "initial", sender=Sender(), test_to="nope")["ok"]

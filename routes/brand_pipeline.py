@@ -78,7 +78,8 @@ def send():
     if not data.get("brand_id"):
         return jsonify({"error": "brand_id is required"}), 400
     out = _run(lambda c: bp.send_step(c, int(data["brand_id"]), data.get("kind") or "initial",
-                                      dry_run=bool(data.get("dry_run")), test=bool(data.get("test"))))
+                                      dry_run=bool(data.get("dry_run")), test=bool(data.get("test")),
+                                      test_to=str(data.get("test_to") or "")))
     return jsonify(out), (200 if out.get("ok") else 409)
 
 
