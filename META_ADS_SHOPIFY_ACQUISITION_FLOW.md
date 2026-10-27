@@ -21,7 +21,7 @@ Goal: discover Shopify brands running Meta ads → enrich emails → cold outrea
 | 1 | Scrape Meta Ad Library → Shopify DTC | `creator_dashboard` Python scripts |
 | 2 | Insert `status=draft` + `[META_ADS_OUTREACH]` notes | `pr_brands` (production Supabase) |
 | 3 | Hunter domain-search + verify | `hunter_draft_enricher.py` |
-| 4 | Send locked PR + UGC swap emails | `run_meta_ads_outreach_send.py` → `send_outreach_email` |
+| 4 | Send scan-led cold emails (backend copy) | `run_meta_ads_outreach_send.py` → `/api/admin/brand-pipeline/send` |
 
 **Cron cadence:** 2 runs/day (suggested: **09:00 UTC** and **17:00 UTC**).
 Each run: scrape (quota 50) → Hunter → outreach send (cap 50). Daily objective: **100 new brands**.
@@ -227,93 +227,26 @@ DATABASE_URL=...
 
 ## Step 4 — Cold email (backend API only)
 
-### Bootstrap (every run)
+The skills for this step live in the backend repo at `hermes/brand-acquisition/` and are symlinked into
+`/home/hermes/.hermes/profiles/brand-acquisition/skills/` by `hermes/install.sh` (run once; it also keeps the
+repo pulled every 15 minutes). Don't edit them on the VPS.
 
-```python
-import sys
-sys.path.insert(0, "/home/hermes/.hermes/profiles/brand-acquisition/skills")
-from brand_outreach_api import (
-    test_connection,
-    send_ugc_outreach_email,
-    send_bulk_ugc_outreach,
-    get_outreach_stats,
-)
-print(test_connection())
+The backend writes every email (`services/brand_pipeline.py`): scan-led copy, first campaign free, Pro $299/mo.
+Until `BRAND_OUTREACH_LIVE=1` on the backend, every send is a test to the team inbox.
+
+```bash
+cd /home/hermes/.hermes/profiles/brand-acquisition/skills
+python run_meta_ads_outreach_send.py --limit 25          # scheduled run, cap 25
+python run_followups.py                                  # day 3 / day 7 / last note when due
+python run_meta_ads_outreach_send.py --test-to team@newcollab.co   # one brand's real email to an inbox
+python run_meta_ads_outreach_send.py --preview           # print the email, send nothing
 ```
-
-### Pull ready Meta Ads leads (python + DB)
-
-```python
-import os
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from dotenv import load_dotenv
-
-# Load backend .env for DATABASE_URL (or set in brand-acquisition .env)
-load_dotenv("/home/hermes/apps/creator_dashboard/.env")
-
-def fetch_meta_ads_outreach_ready(limit=25):
-    conn = psycopg2.connect(os.environ["DATABASE_URL"])
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute(
-        """
-        SELECT b.id, b.brand_name, b.contact_email, b.email_status, b.website
-        FROM pr_brands b
-        LEFT JOIN brand_outreach_tracking bo ON bo.brand_id = b.id
-        WHERE b.status = 'draft'
-          AND b.source = 'meta_ads_library'
-          AND b.notes ILIKE %s
-          AND b.contact_email IS NOT NULL AND TRIM(b.contact_email) <> ''
-          AND COALESCE(b.email_status, 'unverified') IN ('valid', 'catch-all', 'risky', 'unverified')
-          AND COALESCE(b.email_status, '') <> 'invalid'
-          AND (bo.brand_id IS NULL OR COALESCE(bo.last_contacted_at::text, '') = '')
-        ORDER BY
-          CASE b.email_status
-            WHEN 'valid' THEN 0
-            WHEN 'catch-all' THEN 1
-            WHEN 'risky' THEN 2
-            ELSE 3
-          END,
-          b.id DESC
-        LIMIT %s
-        """,
-        ("%META_ADS_OUTREACH%", limit),
-    )
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-ready = fetch_meta_ads_outreach_ready(limit=25)
-brand_ids = [r["id"] for r in ready]
-print(len(brand_ids), "ready", brand_ids[:10])
-```
-
-### Send
-
-```python
-# Cap per cron run — do NOT blast hundreds
-MAX_SEND = 25
-ids = brand_ids[:MAX_SEND]
-
-# Optional: preview one
-# from brand_outreach_api import render_outreach_email
-# print(render_outreach_email(ids[0]))
-
-python /home/hermes/.hermes/profiles/brand-acquisition/skills/run_meta_ads_outreach_send.py --limit 50
-```
-
-Prefer the script (no agent code). Body is locked. Subject is a variation of `PR + UGC swap for {brand}?`.
 
 Rules:
 
-- **Only** `run_meta_ads_outreach_send.py` + `send_outreach_email`
-- Do **not** call `render_outreach_email` or `/brand-outreach/render` from this cron
-- Cap **≤ 25** emails per cron run (adjust with Mahery if volume grows)
-- `delay_seconds ≥ 1.5` (prefer 2.0)
-- If send returns `success: False` → log error, do not invent another channel
-- Duplicate protection is already on the backend (`brand_outreach_tracking`)
-
-Locked email: Mazza’s **PR + UGC swap** note (5 organic + 5 UGC, no platform fee). Subject is only `PR + UGC swap for {brand}?`. Do not use excess-inventory B2B or the “Free UGC / 3 creators” HTML.
+- **Only** these scripts. Never write, paste or "lock" an email body, and never send brand email over SMTP.
+- If a send returns an error, report it; do not invent another channel.
+- Duplicate protection, follow-up timing and test mode are on the backend.
 
 ---
 
