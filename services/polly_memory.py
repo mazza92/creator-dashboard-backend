@@ -104,6 +104,8 @@ def _clean_message(msg: Any) -> Optional[Dict[str, Any]]:
             out["brief"] = msg.get("brief")
         if kind == "board" and isinstance(msg.get("board"), dict):
             out["board"] = msg["board"]
+        if kind == "autopilot" and isinstance(msg.get("daily"), str):
+            out["daily"] = msg["daily"][:10]  # the day's Autopilot line, rewritten in place
     return out
 
 

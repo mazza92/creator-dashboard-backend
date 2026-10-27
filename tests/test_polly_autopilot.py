@@ -8,7 +8,6 @@ from unittest import mock
 
 import routes.polly_autopilot as rpa
 import services.polly_autopilot as pa
-from services.autopilot_report import next_step, report_note, report_sections, report_subject
 from services.polly_autopilot import (
     MAX_SENDS_PER_DAY,
     TARGET_MAX,
@@ -17,7 +16,7 @@ from services.polly_autopilot import (
     batch_size,
     clamp_target,
     compose_followup,
-    drafts_note,
+    daily_line,
     effective_target,
     next_slots,
     parse_send_days,
@@ -104,32 +103,6 @@ class FollowupCopyTests(unittest.TestCase):
         self.assertEqual(mail["subject"], "Re: Glow x Ana collab")
 
 
-class WeeklyReportTests(unittest.TestCase):
-    def _facts(self, **kw):
-        base = {"sent": [], "followups": [], "scheduled": [], "drafts": [], "replies": [],
-                "month": {"sent": 0, "replied": 0}, "target": 24, "enabled": True}
-        base.update(kw)
-        return base
-
-    def test_reply_leads_subject_and_next_step(self):
-        facts = self._facts(
-            sent=[{"brand_name": "Glow"}, {"brand_name": "Bloom"}],
-            replies=[{"brand_name": "Glow", "event_type": "brand_replied_interested"}],
-            month={"sent": 6, "replied": 1},
-        )
-        self.assertEqual(report_subject(facts), "Your Autopilot week: 1 brand replied")
-        labels = [s["label"] for s in report_sections(facts)]
-        self.assertEqual(labels, ["Replies", "Pitched", "This month"])
-        self.assertIn("6 of 24 brands pitched, 1 reply", report_note(facts))
-        self.assertIn("said yes", next_step(facts))
-
-    def test_drafts_waiting_ask_for_ok(self):
-        facts = self._facts(drafts=[{"brand_name": "A"}, {"brand_name": "B"}])
-        self.assertIn("2 pitches written", report_note(facts))
-        self.assertIn("tap OK", next_step(facts))
-        self.assertEqual(report_subject(facts), "Your Autopilot week: next pitches are ready")
-
-
 class GmailMessageTests(unittest.TestCase):
     def test_raw_threads_follow_up(self):
         built = build_raw("ana@gmail.com", "Ana Lee", "pr@glow.com", "Re: Glow collab", "Hi",
@@ -165,11 +138,20 @@ class RefillTests(unittest.TestCase):
         self.assertEqual(refill_size({"sent": 21, "scheduled": 1, "drafts": 0}, 24), 2)
         self.assertEqual(refill_size({"sent": 24}, 24), 0)
 
-    def test_drafts_note_names_brands(self):
-        note = drafts_note(["Glow", "Kind"])
-        self.assertIn("2 new pitches", note)
-        self.assertIn("**Glow**, **Kind**", note)
-        self.assertIn("Nothing for you to do", note)
+    def test_daily_line_is_one_message_for_the_whole_day(self):
+        b = lambda n, i: {"brand_id": i, "brand_name": n}
+        line = daily_line({"sent": [b("Glow", 1), b("Kind", 2), b("Rare", 3)], "followups": [b("Oat", 4)],
+                           "tomorrow": [b("Lume", 5)], "next": [b("Haus", 6)]})
+        self.assertIn("✉️ **Today:** 3 pitches sent from your Gmail (**Glow**, **Kind** and **Rare**)", line["text"])
+        self.assertIn("🔁 1 follow-up (**Oat**)", line["text"])
+        self.assertIn("Tomorrow I follow up with **Lume**", line["text"])
+        self.assertIn("Next up: **Haus**", line["text"])
+        self.assertEqual([c["label"] for c in line["chips"]], ["Lume replied"])
+
+    def test_daily_line_lists_new_pitches_when_nothing_went_out_yet(self):
+        line = daily_line({"next": [{"brand_id": 1, "brand_name": "Glow"}]})
+        self.assertIn("**Lined up:** **Glow**", line["text"])
+        self.assertIsNone(daily_line({}))
 
 
 class AutoApproveTests(unittest.TestCase):
@@ -293,7 +275,7 @@ class AutoFillTests(unittest.TestCase):
         with self.app.app_context(), mock.patch.object(rpa, "fill_candidates", return_value=rows):
             return rpa.auto_fill(mock.MagicMock(), now=self.NOW, budget=budget,
                                  note_fn=lambda c, cid, text, chips: self.notes.append(text),
-                                 email_fn=lambda c, cid, names: self.emails.append(names))
+                                 daily_fn=lambda c, cid, now: self.emails.append(cid))
 
     def test_budget_spreads_a_big_refill_and_waits_to_announce(self):
         out = self._run([{"creator_id": 7, "need": 4, "fill_blocked": None}])
@@ -307,8 +289,8 @@ class AutoFillTests(unittest.TestCase):
         out = self._run([{"creator_id": 7, "need": 2, "fill_blocked": None}], budget=4)
         self.assertEqual(out["drafted"], 2)
         self.assertEqual(self.marked, [(7, self.NOW, None)])
-        self.assertEqual(self.emails, [["B1", "B2"]])
-        self.assertIn("**B1**, **B2**", self.notes[0])
+        self.assertEqual(self.emails, [7])  # new pitches land in today's line, not a note or email of their own
+        self.assertEqual(self.notes, [])
 
     def test_missing_location_asks_once(self):
         with mock.patch("services.polly.resolve_pitch_location", return_value={"needs_location": True}):
