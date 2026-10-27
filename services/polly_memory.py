@@ -97,8 +97,11 @@ def _clean_message(msg: Any) -> Optional[Dict[str, Any]]:
     radar = msg.get("radar")
     if isinstance(radar, dict) and radar.get("status"):
         out["radar"] = {**radar, "brands": (radar.get("brands") or [])[:12]}
+    hooks = msg.get("hooks")
+    if isinstance(hooks, dict) and hooks.get("scan_id"):
+        out["hooks"] = {k: hooks.get(k) for k in ("scan_id", "niche", "band")}
     kind = msg.get("kind")
-    if kind in ("nudge", "brief", "alert", "autopilot", "board"):
+    if kind in ("nudge", "brief", "alert", "autopilot", "board", "hooks"):
         out["kind"] = kind
         if msg.get("brief"):
             out["brief"] = msg.get("brief")

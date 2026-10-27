@@ -26,9 +26,15 @@ from services import radar_source as source
 from services.radar_extract import MAX_CREATOR_FOLLOWERS, brand_key, radar_niche
 from services.radar_queries import SHARED_HASHTAGS, niche_queries
 
-KINDS = ("gifting_brands", "niche_hooks", "niche_creators", "ask")
+KINDS = ("gifting_brands", "niche_hooks", "niche_creators", "ask", "creator_hooks")
 # Kinds answered by the insight agent: planned searches across the niche, then a written answer.
-DEEP = ("niche_hooks", "niche_creators", "ask")
+# creator_hooks is the creator-side twin of niche_hooks (Polly): same engine, read from creators their size,
+# answered to the creator, with the brands gifting that size linked to the Newcollab directory.
+DEEP = ("niche_hooks", "niche_creators", "ask", "creator_hooks")
+# Follower bands: (label, low, high) for picking creators "their size" out of the pool.
+BANDS = (("under 5K", 0, 15_000, 5_000), ("5K to 20K", 2_000, 60_000, 20_000),
+         ("20K to 100K", 8_000, 250_000, 100_000), ("100K+", 40_000, 10**9, 10**9))
+MIN_BAND_VIDEOS = 15
 DEEP_PER_QUERY = 20
 ANSWER_FRESH = timedelta(hours=24)
 QUESTIONS = {
@@ -47,7 +53,66 @@ TITLES = {
     "niche_hooks": "Hooks creators reuse in {niche}",
     "niche_creators": "Creators posting gifted {niche} content",
     "ask": "{niche}",
+    "creator_hooks": "Hooks that work for {niche} creators",
 }
+
+
+def size_band(followers: Any) -> str:
+    n = int(followers or 0)
+    for label, _lo, _hi, top in BANDS:
+        if n < top:
+            return label
+    return BANDS[-1][0]
+
+
+def creator_question(niche: str, band: str) -> str:
+    return (f"Which hooks, opening lines and video formats are working best right now for {niche.replace('_', ' ')} "
+            f"creators with {band} followers on TikTok, and which brands are gifting or paying creators that size?")
+
+
+def same_size(videos: List[Dict[str, Any]], band: str, keep: int = 120) -> List[Dict[str, Any]]:
+    """Posts from creators near this band; if too few, the closest ones by follower count."""
+    import math
+
+    lo, hi = next(((b[1], b[2]) for b in BANDS if b[0] == band), (0, 10**9))
+    inside = [v for v in videos if lo <= int(v.get("creator_followers") or 0) <= hi]
+    if len(inside) >= MIN_BAND_VIDEOS:
+        return inside[:keep]
+    mid = math.log10(max(1000, (lo + min(hi, 10**6)) / 2))
+    near = sorted(videos, key=lambda v: abs(math.log10(max(100, int(v.get("creator_followers") or 0))) - mid))
+    return sorted(near[:max(keep // 2, MIN_BAND_VIDEOS)], key=lambda v: -int(v.get("views") or 0))
+
+
+def pool_brands(conn, videos: List[Dict[str, Any]], limit: int = 30) -> List[Dict[str, Any]]:
+    """Brands the radar tied to these exact videos (gifted, paid, tagged), with their directory id when listed."""
+    ids = [str(v["tiktok_id"]) for v in videos]
+    if not ids:
+        return []
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cur.execute("""
+            SELECT db.name, db.brand_key, db.brand_id, COUNT(DISTINCT v.creator_handle) AS creators,
+                   PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY v.creator_followers) AS median_followers,
+                   ARRAY_AGG(DISTINCT s.signal_type) AS types, ARRAY_AGG(DISTINCT v.tiktok_id) AS video_ids
+            FROM brand_signals s
+            JOIN tiktok_videos v ON v.tiktok_id = s.tiktok_id
+            JOIN discovered_brands db ON db.id = s.discovered_brand_id
+            WHERE s.tiktok_id = ANY(%s) AND db.status <> 'rejected'
+            GROUP BY db.id ORDER BY COUNT(DISTINCT v.creator_handle) DESC, db.name LIMIT %s
+        """, (ids, int(limit)))
+        return [{**dict(r), "creators": int(r["creators"] or 0), "median_followers": int(r["median_followers"] or 0),
+                 "types": [t for t in (r["types"] or []) if t], "video_ids": [str(x) for x in r["video_ids"] or []]}
+                for r in cur.fetchall()]
+    except Exception as err:
+        conn.rollback()
+        print(f"[brand-insight] pool brands skipped: {type(err).__name__}: {err}")
+        return []
+
+
+def _brand_card(b: Dict[str, Any]) -> Dict[str, Any]:
+    return {"name": b["name"], "key": b.get("brand_key"), "creators": b.get("creators") or 0,
+            "median_followers_label": scan._k(b.get("median_followers")), "types": b.get("types") or [],
+            "pitch_id": b.get("brand_id")}
 
 
 def _now() -> datetime:
@@ -73,7 +138,7 @@ def insight_key(kind: str, niche: str, question: str = "") -> str:
 
 
 def question_for(kind: str, niche: str, brand: str = "", question: str = "") -> str:
-    if kind == "ask":
+    if kind in ("ask", "creator_hooks"):
         return " ".join(str(question or "").split())[:300]
     return QUESTIONS.get(kind, "").format(niche=niche.replace("_", " "), brand=brand or "our brand")
 
@@ -224,12 +289,12 @@ def searching(run_id: int, niche: str, kind: str, items: int = 0, ingesting: boo
 
 
 def start(conn, kind: str, niche: str, *, brand_name: str = "", redis_client=None,
-          can_start: bool = True, question: str = "") -> Dict[str, Any]:
+          can_start: bool = True, question: str = "", band: str = "") -> Dict[str, Any]:
     if kind not in KINDS or not niche:
         return {"status": "invalid"}
     if kind in DEEP:
         return deep_start(conn, kind, niche, brand_name=brand_name, question=question, redis_client=redis_client,
-                          can_start=can_start)
+                          can_start=can_start, band=band)
     radar.finalize_stale(conn)
     count = len(niche_videos(conn, niche))
     fresh_at = radar.last_topup(conn, niche)
@@ -336,6 +401,7 @@ def deep_build(kind: str, conn, niche: str, question: str, data: Dict[str, Any],
                            "title": (answer or {}).get("headline") or TITLES[kind].format(niche=label),
                            "queries": queries,
                            "stats": {"videos": len(videos), "creators": len(creators), "searches": len(queries)}}
+    brands = {str(b["name"]).strip().lower(): b for b in data.get("brands") or []}
     if answer:
         sections = []
         for s in answer["sections"]:
@@ -344,8 +410,15 @@ def deep_build(kind: str, conn, niche: str, question: str, data: Dict[str, Any],
                 item = {**it, "videos": [scan.video_card(by_id[x], "", now, thumb) for x in it["videos"] if x in by_id]}
                 if it.get("handle") and it["handle"] in creators:
                     item["creator"] = _creator_card(creators[it["handle"]], videos, now, thumb)
+                if s["kind"] == "brands" and it["title"].strip().lower() in brands:
+                    b = brands[it["title"].strip().lower()]
+                    item["brand"] = _brand_card(b)
+                    if not item["videos"]:
+                        item["videos"] = [scan.video_card(by_id[x], "", now, thumb) for x in b["video_ids"][:3] if x in by_id]
                 items.append(item)
             sections.append({**s, "items": items})
+        if kind == "creator_hooks" and brands and not any(s["kind"] == "brands" for s in sections):
+            sections.append(_brands_section(list(brands.values()), by_id, now, thumb))
         out.update({"summary": answer["summary"], "sections": sections, "shortlist": answer.get("shortlist") or "",
                     "followups": answer.get("followups") or []})
     elif videos:
@@ -367,23 +440,44 @@ def deep_build(kind: str, conn, niche: str, question: str, data: Dict[str, Any],
     return out
 
 
+def _brands_section(brands: List[Dict[str, Any]], by_id, now, thumb) -> Dict[str, Any]:
+    items = []
+    for b in brands[:6]:
+        n = int(b.get("creators") or 0)
+        how = " and ".join(t for t in (b.get("types") or []) if t in ("gifted", "paid")) or "featured"
+        items.append({"title": b["name"], "text": f"{n} creator{'s' if n != 1 else ''} your size posted {how} content "
+                      f"for them here.", "tag": f"{n} creator{'s' if n != 1 else ''}", "handle": "",
+                      "videos": [scan.video_card(by_id[x], "", now, thumb) for x in b["video_ids"][:3] if x in by_id],
+                      "brand": _brand_card(b)})
+    return {"kind": "brands", "title": "Brands working with creators your size",
+            "intro": "Brands seen gifting or paying creators in these videos.", "items": items}
+
+
 def deep_respond(kind, conn, niche, question, keys, queries, *, brand_name, redis_client, scan_id=None, note="",
-                 run=None, write=None):
+                 run=None, write=None, band=""):
     niche_rows = niche_videos(conn, niche)[:60] if kind != "ask" else []
     data = agent.pool(conn, keys, niche_rows)
+    band = band or ((run or {}).get("params") or {}).get("band") or ""
+    if kind == "creator_hooks":
+        data["videos"] = same_size(data["videos"], band)
+        handles = {v["creator_handle"] for v in data["videos"]}
+        data["creators"] = {h: c for h, c in data["creators"].items() if h in handles}
+        data["brands"] = pool_brands(conn, data["videos"])
     from services.cover_refresh import refresh
 
     refresh(conn, data["videos"], redis_client, shown=48)
     params = (run or {}).get("params") or {}
     answer = params.get("answer") if params.get("answer_at") else None
     if not answer:
-        answer = agent.synthesize(question, niche, brand_name, data, write=write)
+        answer = agent.synthesize(question, niche, brand_name, data, write=write,
+                                  band=band if kind == "creator_hooks" else "")
         if answer and scan_id:
             cur = conn.cursor()
             cur.execute("UPDATE discovery_runs SET params = params || %s::jsonb WHERE id = %s",
                         (json.dumps({"answer": answer, "answer_at": _now().isoformat()}), scan_id))
             conn.commit()
-    wants_matches = kind == "niche_creators" or (answer and any(s["kind"] == "creators" for s in answer["sections"]))
+    wants_matches = kind != "creator_hooks" and (
+        kind == "niche_creators" or (answer and any(s["kind"] == "creators" for s in answer["sections"])))
     matches = scan.creator_matches(niche, conn=conn, redis_client=redis_client) if wants_matches else None
     return deep_build(kind, conn, niche, question, data, answer, queries=queries, matches=matches, scan_id=scan_id,
                       note=note)
@@ -405,7 +499,7 @@ def deep_searching(run_id: int, niche: str, kind: str, queries: List[str], label
 
 
 def deep_start(conn, kind: str, niche: str, *, brand_name: str = "", question: str = "", redis_client=None,
-               can_start: bool = True, write=None) -> Dict[str, Any]:
+               can_start: bool = True, write=None, band: str = "") -> Dict[str, Any]:
     question = question_for(kind, niche, brand_name, question)
     if not question:
         return {"status": "invalid"}
@@ -433,21 +527,22 @@ def deep_start(conn, kind: str, niche: str, *, brand_name: str = "", question: s
                                           served_from="database",
                                           params={"kind": "brand_insight", "insight": kind, "deep": True,
                                                   "question": question, "keys": keys, "queries_text": queries,
-                                                  "label": label, "brand": brand_name[:80]}),
+                                                  "label": label, "brand": brand_name[:80], "band": band}),
                       "params": {}}
         return deep_respond(kind, conn, niche, question, keys, queries, brand_name=brand_name,
-                            redis_client=redis_client, scan_id=recent["id"], note=note, run=recent, write=write)
+                            redis_client=redis_client, scan_id=recent["id"], note=note, run=recent, write=write,
+                            band=band)
     try:
         apify_id = source.start_run([], [p["query"] for p in stale], DEEP_PER_QUERY)
     except Exception as err:
         print(f"[brand-insight] deep start failed: {type(err).__name__}: {err}")
         return deep_respond(kind, conn, niche, question, keys, queries, brand_name=brand_name,
-                            redis_client=redis_client, note="source_down", write=write)
+                            redis_client=redis_client, note="source_down", write=write, band=band)
     run_id = radar._record(conn, {"niche": niche, "creator_id": None}, status="running", served_from="full_apify",
                            run_ids=[apify_id], queries=[{k: p[k] for k in ("key", "type", "query")} for p in stale],
                            params={"kind": "brand_insight", "insight": kind, "deep": True, "question": question,
                                    "keys": keys, "queries_text": queries, "label": label, "est_cost": est,
-                                   "per_query": DEEP_PER_QUERY, "round": 1, "brand": brand_name[:80]})
+                                   "per_query": DEEP_PER_QUERY, "round": 1, "brand": brand_name[:80], "band": band})
     print(f"[brand-insight] deep run {run_id} niche={niche} kind={kind} searches={len(stale)}/{len(queries)} est=${est}")
     return {**deep_searching(run_id, niche, kind, queries, label), "started": True}
 
