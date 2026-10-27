@@ -12,8 +12,8 @@ FACTS = {"pitched": 2, "left": 1, "matched": 5, "brand_names": ["Glossier", "Tow
 class TestCopy(unittest.TestCase):
     def test_pro_offer(self):
         mail = pu.pro_week_email("Ana", FACTS)
-        self.assertEqual(mail["subject"], "Want me to pitch 60 brands a month for you?")
-        self.assertIn("60 matched brands a month", mail["html"])
+        self.assertEqual(mail["subject"], "Want me to pitch 3 brands for you every day?")
+        self.assertIn("3 new matched brands every weekday", mail["html"])
         self.assertIn("about 20 hours a month", mail["html"])
         self.assertIn("write 2 pitches so far", mail["html"])
         self.assertIn("<strong>Glossier</strong> and <strong>Tower 28</strong>, plus 3 other brands,", mail["html"])
@@ -100,3 +100,13 @@ class TestWeeklyDigestHandoff(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_pro_offer_is_daily_and_never_promises_a_yes():
+    from services import pro_offer
+    from services.polly_persona import PRO_VALUE_LINE
+
+    assert pro_offer.DAILY_PITCHES == 3
+    for text in (pro_offer.PROMISE, pro_offer.SHORT, PRO_VALUE_LINE):
+        assert "every weekday" in text.lower() and "one yes" not in text
+    assert "Never promise" in pro_offer.RULE

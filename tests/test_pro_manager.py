@@ -88,7 +88,8 @@ class BoardTests(unittest.TestCase):
         self.assertEqual(board["week_label"], "Oct 5")
         text = board_summary(board, "Ana")
         self.assertIn("Ana", text)
-        self.assertIn("one yes", text)
+        self.assertIn("Every weekday I send new pitches", text)
+        self.assertNotIn("one yes", text)
 
     def test_board_message_survives_thread_save(self):
         board = board_from_facts(_facts(), THU)

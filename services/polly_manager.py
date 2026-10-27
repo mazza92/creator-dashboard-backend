@@ -163,7 +163,7 @@ def _next_step(key: str, c: Dict[str, int], has_rates: bool) -> Dict[str, Any]:
         }
     if key == "pitching":
         return {
-            "label": "Get your first yes",
+            "label": "Keep pitches going out",
             "why": "Replies come from steady pitching plus day-4 follow-ups.",
             "chip": dict(gifted_chip, label="Line up brands to pitch"),
         }

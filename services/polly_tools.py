@@ -44,6 +44,7 @@ from services.polly import (
     unmark_pitched,
 )
 import services.polly_tracker as tracker
+from services import pro_offer
 from services.polly_discovery import merge_notes_patch, paid_first, stated_niches
 from services.polly_persona import (
     paywall_preview_lines,
@@ -1281,10 +1282,9 @@ def offer_pro(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "ok": True,
         "price": "$19/mo",
-        "pro_does": "Polly as their manager. Goal: one yes this month, turned into a paid usage deal. "
+        "pro_does": pro_offer.RULE + " No approval step. "
                     "Every Monday a board with the week: setup, paid briefs to apply to, and replies to send. "
-                    "Autopilot picks brands from their settings and sends ~6 gifted pitches a week from their "
-                    "Gmail with no approval step, plus follow-ups. When a brand says yes, "
+                    "When a brand says yes, "
                     "Polly writes the reply with a usage rate to run the video as an ad. To change who gets "
                     "pitched they adjust niche and targets in Settings. Unlimited roster applications.",
         "free_path": "Follow-ups are free. Publishing the kit is free. Drafts left unsent for 7 days "

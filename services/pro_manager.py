@@ -287,7 +287,7 @@ def board_summary(board: Dict[str, Any], first: str = "") -> str:
         body = "Everything on it is done. I'll keep following up, and next week's board lands Monday."
     else:
         body = f"{_plural(left, 'thing')} left this week. Work top to bottom, setup first."
-    goal = "The goal this month: **one yes**, then I turn it into a paid usage deal."
+    goal = "Every weekday I send new pitches from your Gmail and follow up. You focus on content."
     return "\n\n".join([head, body, goal])
 
 
@@ -318,7 +318,7 @@ def board_email(first_name: str, board: Dict[str, Any], unsubscribe_url: str = "
             f"This month so far: <strong>{stats.get('month_sent', 0)}</strong> of "
             f"{stats['month_target']} brands pitched from your Gmail."
         )
-    lines.append("The goal this month: <strong>one yes</strong>, then I turn it into a paid usage deal.")
+    lines.append("Every weekday I send new pitches from your Gmail and follow up, so your outreach never stops.")
     buttons = [{"label": "Open my board", "href": open_href}] if open_href else []
     return {"subject": subject, "html": render_email(first_name, subject, lines, buttons, unsubscribe_url)}
 

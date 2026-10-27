@@ -598,7 +598,7 @@ def wrap_up(notes: Optional[Dict] = None, first_name: Optional[str] = None) -> s
     dream_txt = ", ".join(dream_bits[:3]) if dream_bits else "ones that actually fit"
     challenge = (notes.get("biggest_challenge") or "").strip()
     if not challenge or _is_empty_answer(challenge):
-        challenge = "getting a clean first yes"
+        challenge = "getting brands to notice you"
     return (
         f"Amazing. Ok {name}, I've got everything I need. Here's what I'm going to do with all this:\n\n"
         f"Based on you being {stage.replace('_', ' ')} in {niche_txt}, aiming at "
