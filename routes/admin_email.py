@@ -2401,7 +2401,7 @@ def _close_refused(cursor, brand_id):
     return cursor.rowcount > 0
 
 
-def _pipeline_cold_send(cursor, brand_id, allow_followup=False, test=False):
+def _pipeline_cold_send(cursor, brand_id, allow_followup=False, test=False, test_to=""):
     """Cold brand emails always use the brand pipeline's copy, test mode and tracking, whatever subject/body a
     caller (e.g. an older Hermes script) passes. Returns (status_code, payload)."""
     from services import brand_pipeline as bp
@@ -2418,7 +2418,7 @@ def _pipeline_cold_send(cursor, brand_id, allow_followup=False, test=False):
             return 409, {'error': f"Follow-up not due yet (due {due})", 'brand_id': brand_id}
         kind = row["next_action"]
     _sync_closed_prospects(cursor)
-    if not test and not bp.outreach_live():
+    if not test and not test_to and not bp.outreach_live():
         # Not live yet: a scheduled run would send its whole batch to the team inbox. Keep a few a day.
         cursor.execute("""SELECT COUNT(*) AS n FROM brand_activity
                           WHERE kind = 'test_sent' AND created_at > date_trunc('day', NOW())""")
@@ -2426,7 +2426,7 @@ def _pipeline_cold_send(cursor, brand_id, allow_followup=False, test=False):
             return 409, {'error': f"Test mode: {AUTO_TEST_SENDS_PER_DAY} test emails already sent today. "
                                   "Set BRAND_OUTREACH_LIVE=1 to send to brands.", 'brand_id': brand_id,
                          'skipped': True}
-    out = bp.send_step(cursor, int(brand_id), kind, test=test)
+    out = bp.send_step(cursor, int(brand_id), kind, test=test, test_to=test_to)
     if not out.get("ok"):
         closed = _close_refused(cursor, brand_id)
         return 409, {'error': out.get("error") or 'send refused', 'brand_id': brand_id, 'skipped': True,
@@ -2461,7 +2461,8 @@ def send_brand_outreach():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         try:
-            code, payload = _pipeline_cold_send(cursor, brand_id, allow_followup, bool(data.get('test')))
+            code, payload = _pipeline_cold_send(cursor, brand_id, allow_followup, bool(data.get('test')),
+                                                str(data.get('test_to') or ''))
             conn.commit()
         except Exception:
             conn.rollback()
