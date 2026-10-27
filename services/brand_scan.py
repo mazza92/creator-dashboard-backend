@@ -694,3 +694,70 @@ def notify_lead(email: str, brand: str, website: str = "", ref: str = "", report
                                                                                           "value": "brand_scan_lead"}])
     except Exception as err:
         print(f"[brand-scan] lead notify skipped: {err}")
+
+
+# ----- landing page example ----------------------------------------------------------------------
+
+EXAMPLE_BRANDS = [b.strip() for b in (os.getenv("BRAND_SCAN_EXAMPLES")
+                                      or "Glow Recipe,Summer Fridays,Bubble Skincare,Tower 28,Topicals").split(",")
+                  if b.strip()]
+EXAMPLE_MIN = {"videos": 15, "creators": 8}
+
+
+def _has_cover(v: Dict[str, Any]) -> bool:
+    cover = str(v.get("cover_url") or "")
+    if not cover:
+        return False
+    if "/storage/v1/object/public/" in cover:
+        return True
+    exp = _cover_expires(cover)
+    return exp is None or exp > _now().timestamp() + 3600
+
+
+def example_candidates(conn) -> List[str]:
+    """The configured examples first, then brands people scanned recently with the most videos."""
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("""SELECT params->>'brand' AS brand, MAX(brands_returned) AS n FROM discovery_runs
+                   WHERE niche LIKE 'scan:%%' AND status = 'done' AND created_at > %s AND params->>'brand' IS NOT NULL
+                   GROUP BY 1 ORDER BY 2 DESC LIMIT 15""", (_now() - timedelta(days=30),))
+    recent = [r["brand"] for r in cur.fetchall()]
+    return list(dict.fromkeys(EXAMPLE_BRANDS + recent))
+
+
+def example_report(conn, candidates: Optional[List[str]] = None, now: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
+    """A real Brand Scan for the landing page: the first candidate whose stored data is rich enough (enough videos
+    and creators, a hook 2+ creators reuse, 4 top videos with a cover). Store only, never starts an Apify run."""
+    now = now or _now()
+    for name in candidates if candidates is not None else example_candidates(conn):
+        target = resolve(conn, name)
+        if not target:
+            continue
+        videos = sorted(matched_videos(conn, target, now), key=lambda v: -int(v.get("views") or 0))
+        st = stats(videos, target["key"])
+        hooks = group_hooks(videos)
+        if st["videos"] < EXAMPLE_MIN["videos"] or st["creators"] < EXAMPLE_MIN["creators"]:
+            continue
+        if not hooks or hooks[0]["creators"] < 2:
+            continue
+        try:
+            persist_covers(conn, videos[:12], limit=12, budget_s=10.0)
+        except Exception as err:
+            conn.rollback()
+            print(f"[brand-scan] example covers skipped: {type(err).__name__}: {err}")
+        shown = [v for v in videos if _has_cover(v)][:4]
+        if len(shown) < 4:
+            continue
+        h = hooks[0]
+        return {
+            "brand": {"key": target["key"], "name": target["name"]},
+            "stats": {"creators": st["creators"], "videos": st["videos"], "views_label": _k(st["views"]),
+                      "median_followers_label": _k(st["median_followers"]),
+                      "small_creators": st["median_followers"] <= SMALL_FOLLOWERS},
+            "hook": {"text": short_hook(h["videos"][0].get("caption"), 9), "videos": len(h["videos"]),
+                     "creators": h["creators"]},
+            "videos": [{"url": v["url"], "thumb": radar._thumb(v.get("cover_url"), v["url"]) or None,
+                        "views_label": _k(v.get("views")), "creator": f"@{v.get('creator_handle')}"} for v in shown],
+            "window": "last 6 months",
+            "as_of": now.date().isoformat(),
+        }
+    return None
