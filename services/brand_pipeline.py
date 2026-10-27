@@ -154,7 +154,7 @@ def initial_email(variant: str, brand: str, first: str, ref: str = "") -> Tuple[
             f"{greet}\n\n"
             "Do you know which TikTok creators are posting for your competitors?\n\n"
             "Type any brand here and you'll see the creators, the hooks they reuse and their best videos. "
-            f"Free, no signup:\n{scan_link(ref)}\n\n"
+            f"Free to start:\n{scan_link(ref)}\n\n"
             f"If you like what you see, your first gifted campaign with creators like them is free.\n\n{SIGNATURE}",
         )
     if variant == "free_campaign":
