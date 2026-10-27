@@ -2370,17 +2370,39 @@ def get_brands_for_outreach():
         return jsonify({'error': str(e)}), 500
 
 
+def _pipeline_cold_send(cursor, brand_id, allow_followup=False, test=False):
+    """Cold brand emails always use the brand pipeline's copy, test mode and tracking, whatever subject/body a
+    caller (e.g. an older Hermes script) passes. Returns (status_code, payload)."""
+    from services import brand_pipeline as bp
+
+    kind = "initial"
+    if allow_followup:
+        row = bp.load_row(cursor, int(brand_id)) or {}
+        if row.get("pipeline") != bp.PIPELINE or row.get("next_action") not in ("followup", "nudge"):
+            return 409, {'error': 'Follow-ups are sent by the brand pipeline (queue/followups), not this endpoint',
+                         'brand_id': brand_id}
+        due = row.get("next_action_at")
+        now = datetime.now(due.tzinfo) if due is not None and due.tzinfo else datetime.now()
+        if not due or due > now:
+            return 409, {'error': f"Follow-up not due yet (due {due})", 'brand_id': brand_id}
+        kind = row["next_action"]
+    out = bp.send_step(cursor, int(brand_id), kind, test=test)
+    if not out.get("ok"):
+        return 409, {'error': out.get("error") or 'send refused', 'brand_id': brand_id}
+    where = f"TEST sent to {out['to']} (would go to {out.get('would_send_to')})" if out.get("test") else f"Email sent to {out['to']}"
+    return 200, {'success': True, 'message': f"{where}: {out['subject']}", 'brand_id': brand_id, 'email': out['to'],
+                 'test': bool(out.get('test')), 'would_send_to': out.get('would_send_to'), 'subject': out['subject'],
+                 'variant': out.get('variant')}
+
+
 @admin_email_bp.route('/brand-outreach/send', methods=['POST'])
 @admin_required
 def send_brand_outreach():
     """
-    Send a single outreach email to a brand
+    Send a cold email to a brand. Body: brand_id, test (optional), allow_followup (optional).
 
-    Body:
-        brand_id: ID of the brand to contact
-        subject: Email subject line
-        html_content: HTML email body
-        template_id: (optional) Use a saved template instead
+    subject / html_content / template_id are ignored: the copy, test mode (BRAND_OUTREACH_LIVE) and tracking
+    come from services.brand_pipeline, so every caller sends the same current email.
     """
     try:
         data = request.get_json()
@@ -2393,110 +2415,18 @@ def send_brand_outreach():
 
         if not brand_id:
             return jsonify({'error': 'brand_id is required'}), 400
-        if template_id is not None:
-            ok, err, code = _enforce_template_allowlist(int(template_id))
-            if not ok:
-                return jsonify(err), code
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        # Get brand details
-        cursor.execute("""
-            SELECT
-                b.id, b.brand_name, b.contact_email, b.website, b.category, b.description,
-                bo.last_response_status, bo.last_contacted_at
-            FROM pr_brands b
-            LEFT JOIN brand_outreach_tracking bo ON bo.brand_id = b.id
-            WHERE b.id = %s
-        """, (brand_id,))
-        brand = cursor.fetchone()
-
-        if not brand:
-            conn.close()
-            return jsonify({'error': 'Brand not found'}), 404
-
-        if not brand.get('contact_email'):
-            conn.close()
-            return jsonify({'error': 'Brand has no contact email'}), 400
-        if _is_blocked_outreach_status(brand.get('last_response_status')):
-            conn.close()
-            return jsonify({
-                'error': f"Outreach blocked for status '{brand.get('last_response_status')}'",
-                'brand_id': brand_id
-            }), 409
-        if brand.get('last_contacted_at') and not allow_followup:
-            conn.close()
-            return jsonify({
-                'error': 'Duplicate outreach blocked: brand already contacted',
-                'brand_id': brand_id,
-                'last_contacted_at': str(brand.get('last_contacted_at')),
-                'hint': 'Pass allow_followup=true only for intentional day-4/day-9 sequences'
-            }), 409
-        if allow_followup and _has_recent_contact(brand.get('last_contacted_at'), min_hours=min_followup_hours):
-            conn.close()
-            return jsonify({
-                'error': f"Follow-up blocked by cooldown ({min_followup_hours}h)",
-                'brand_id': brand_id,
-                'last_contacted_at': str(brand.get('last_contacted_at'))
-            }), 409
-
-        # Get template if specified
-        if template_id and not html_content:
-            cursor.execute("""
-                SELECT subject, html_content FROM campaign_templates WHERE id = %s
-            """, (template_id,))
-            template = cursor.fetchone()
-            if template:
-                subject = subject or template['subject']
-                html_content = template['html_content']
-
-        if not subject or not html_content:
-            conn.close()
-            return jsonify({'error': 'subject and html_content are required'}), 400
-
-        # Personalize content with brand data
-        personalized_content = html_content.replace('{{brand_name}}', brand['brand_name'] or '')
-        personalized_content = personalized_content.replace('{{website}}', brand['website'] or '')
-        personalized_content = personalized_content.replace('{{category}}', brand['category'] or '')
-
-        personalized_subject = subject.replace('{{brand_name}}', brand['brand_name'] or '')
-
-        # Ensure message_id logging support exists, then send.
-        _ensure_brand_outreach_log_message_id_column(cursor)
-        send_res = send_email_gmail_with_meta(brand['contact_email'], personalized_subject, personalized_content)
-        success = bool(send_res.get("success"))
-        sent_message_id = send_res.get("message_id")
-
-        if success:
-            # Track the outreach
-            cursor.execute("""
-                INSERT INTO brand_outreach_tracking (brand_id, outreach_count, last_contacted_at, last_subject)
-                VALUES (%s, 1, NOW(), %s)
-                ON CONFLICT (brand_id) DO UPDATE SET
-                    outreach_count = brand_outreach_tracking.outreach_count + 1,
-                    last_contacted_at = NOW(),
-                    last_subject = EXCLUDED.last_subject
-            """, (brand_id, personalized_subject))
-
-            # Log the email
-            cursor.execute("""
-                INSERT INTO brand_outreach_log (brand_id, email_sent_to, subject, status, sent_at, message_id)
-                VALUES (%s, %s, %s, 'sent', NOW(), %s)
-            """, (brand_id, brand['contact_email'], personalized_subject, sent_message_id))
-
+        try:
+            code, payload = _pipeline_cold_send(cursor, brand_id, allow_followup, bool(data.get('test')))
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
             conn.close()
-
-            return jsonify({
-                'success': True,
-                'message': f"Email sent to {brand['brand_name']} at {brand['contact_email']}",
-                'brand_id': brand_id,
-                'email': brand['contact_email']
-            })
-        else:
-            conn.close()
-            return jsonify({'error': 'Failed to send email'}), 500
+        return jsonify(payload), code
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -2525,114 +2455,29 @@ def send_bulk_brand_outreach():
 
         if not brand_ids:
             return jsonify({'error': 'brand_ids list is required'}), 400
-        if not subject or not html_content:
-            return jsonify({'error': 'subject and html_content are required'}), 400
 
-        conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        # Get all brands
-        cursor.execute("""
-            SELECT
-                b.id, b.brand_name, b.contact_email, b.website, b.category,
-                bo.last_response_status
-            FROM pr_brands b
-            LEFT JOIN brand_outreach_tracking bo ON bo.brand_id = b.id
-            WHERE b.id = ANY(%s)
-              AND b.contact_email IS NOT NULL
-              AND b.contact_email != ''
-        """, (brand_ids,))
-        brands = cursor.fetchall()
-
-        results = {
-            'sent': [],
-            'failed': [],
-            'skipped': []
-        }
-
-        for brand in brands:
-            if _is_blocked_outreach_status(brand.get('last_response_status')):
-                results['skipped'].append({
-                    'brand_id': brand['id'],
-                    'reason': f"blocked_status:{brand.get('last_response_status')}"
-                })
-                continue
-            # do not re-send by default once contacted
-            cursor.execute(
-                "SELECT last_contacted_at FROM brand_outreach_tracking WHERE brand_id=%s",
-                (brand['id'],)
-            )
-            trk = cursor.fetchone() or {}
-            last_contacted_at = trk.get('last_contacted_at')
-            if last_contacted_at and not allow_followup:
-                results['skipped'].append({
-                    'brand_id': brand['id'],
-                    'reason': 'already_contacted'
-                })
-                continue
-            if allow_followup and _has_recent_contact(last_contacted_at, min_hours=min_followup_hours):
-                results['skipped'].append({
-                    'brand_id': brand['id'],
-                    'reason': f'followup_cooldown_{min_followup_hours}h'
-                })
-                continue
-            # Personalize
-            personalized_content = html_content.replace('{{brand_name}}', brand['brand_name'] or '')
-            personalized_content = personalized_content.replace('{{website}}', brand['website'] or '')
-            personalized_content = personalized_content.replace('{{category}}', brand['category'] or '')
-            personalized_subject = subject.replace('{{brand_name}}', brand['brand_name'] or '')
-
-            send_res = send_email_gmail_with_meta(brand['contact_email'], personalized_subject, personalized_content)
-            success = bool(send_res.get("success"))
-            sent_message_id = send_res.get("message_id")
-
-            if success:
-                cursor.execute("""
-                    INSERT INTO brand_outreach_tracking (brand_id, outreach_count, last_contacted_at, last_subject)
-                    VALUES (%s, 1, NOW(), %s)
-                    ON CONFLICT (brand_id) DO UPDATE SET
-                        outreach_count = brand_outreach_tracking.outreach_count + 1,
-                        last_contacted_at = NOW(),
-                        last_subject = EXCLUDED.last_subject
-                """, (brand['id'], personalized_subject))
-
-                cursor.execute("""
-                    INSERT INTO brand_outreach_log (brand_id, email_sent_to, subject, status, sent_at, message_id)
-                    VALUES (%s, %s, %s, 'sent', NOW(), %s)
-                """, (brand['id'], brand['contact_email'], personalized_subject, sent_message_id))
-
-                results['sent'].append({
-                    'brand_id': brand['id'],
-                    'brand_name': brand['brand_name'],
-                    'email': brand['contact_email']
-                })
-            else:
-                results['failed'].append({
-                    'brand_id': brand['id'],
-                    'brand_name': brand['brand_name'],
-                    'email': brand['contact_email']
-                })
-
-            time.sleep(delay_seconds)
-
-        # Mark skipped (no email)
-        fetched_ids = [b['id'] for b in brands]
+        results = {'sent': [], 'failed': [], 'skipped': []}
         for bid in brand_ids:
-            if bid not in fetched_ids:
-                results['skipped'].append({'brand_id': bid, 'reason': 'No contact email'})
-
-        conn.commit()
-        conn.close()
-
-        return jsonify({
-            'success': True,
-            'total_requested': len(brand_ids),
-            'total_sent': len(results['sent']),
-            'total_failed': len(results['failed']),
-            'total_skipped': len(results['skipped']),
-            'results': results
-        })
-
+            conn = get_db_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            try:
+                code, payload = _pipeline_cold_send(cursor, bid, allow_followup, bool(data.get('test')))
+                conn.commit()
+            except Exception as err:
+                conn.rollback()
+                code, payload = 500, {'error': str(err)[:300], 'brand_id': bid}
+            finally:
+                conn.close()
+            if code == 200:
+                results['sent'].append(payload)
+                time.sleep(delay_seconds)
+            elif code == 409:
+                results['skipped'].append({'brand_id': bid, 'reason': payload.get('error')})
+            else:
+                results['failed'].append({'brand_id': bid, 'error': payload.get('error')})
+        return jsonify({'success': True, 'total_requested': len(brand_ids), 'total_sent': len(results['sent']),
+                        'total_failed': len(results['failed']), 'total_skipped': len(results['skipped']),
+                        'results': results})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
