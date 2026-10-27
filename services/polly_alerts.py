@@ -965,6 +965,16 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
                 conn.rollback()
             except Exception:
                 pass
+        try:
+            from services.autopilot_delivery import daily_check
+
+            autopilot["delivery"] = daily_check(conn)
+        except Exception as err:
+            print(f"[Polly alerts] delivery check skipped: {err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         nudged = process_due_nudges(conn, creator_limit=limit, delivered=delivered)
     emails = []
     if can_email:
