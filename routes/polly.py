@@ -1281,7 +1281,7 @@ def creator_hooks_start():
         if out.get("status") not in ("ready", "empty", "searching") or not out.get("scan_id"):
             return jsonify({"success": False, "error": "TikTok search is busy right now. Try again in a few minutes."}), 503
         ch.record(conn, creator_id, out["scan_id"], niche, band, pro=pro)
-        label = niche.replace("_", " ")
+        label = bi.niche_label(niche)
         messages = list(thread.get("messages") or []) + [
             {"role": "user", "content": ch.CHIP["label"].split(" ", 1)[1]},
             {"role": "assistant", "kind": "hooks", "content": f"Here's what's working for {label} creators with "

@@ -79,15 +79,19 @@ def owns(conn, creator_id: int, run_id: int) -> bool:
 
 
 def creator_niche(creator: Dict[str, Any]) -> str:
-    """The creator's first recorded niche, mapped to a niche the radar indexes."""
-    from services.brand_insights import niche_for
+    """The creator's own recorded niches (up to 3), as one scan key: 'travel+fashion+wellness'.
+
+    Never the brand-category mapping (that sends travel and lifestyle to home): the scan targets exactly the
+    niches the creator picked, and the planned searches cover each of them.
+    """
     from services.creator_niches import recorded_niches
 
+    picked = []
     for n in recorded_niches(creator) or []:
-        mapped = niche_for(n)
-        if mapped:
-            return mapped
-    return ""
+        key = "_".join(str(n or "").strip().lower().replace("&", " ").split())
+        if key and key not in picked:
+            picked.append(key)
+    return "+".join(picked[:3])
 
 
 def gate_message(allow: Dict[str, Any]) -> str:
