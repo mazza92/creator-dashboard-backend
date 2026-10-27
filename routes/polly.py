@@ -1295,6 +1295,32 @@ def radar_contact():
             conn.close()
 
 
+@polly_bp.route("/pitch-facts", methods=["GET", "POST"])
+def pitch_facts_route():
+    """The creator's pitch facts (free and Pro). POST {..edits, confirm: true} saves and confirms."""
+    from services import pitch_facts
+
+    creator_id, conn, _creator = _creator_auth()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    try:
+        if request.method == "GET":
+            return jsonify({"success": True, "facts": json_safe(pitch_facts.load(conn, creator_id))})
+        body = request.get_json(silent=True) or {}
+        patch = {k: body[k] for k in ("followers", "show_engagement", "niches", "niche_label", "offer_type",
+                                      "usage_rights_months", "city", "country") if k in body}
+        out = pitch_facts.save(conn, creator_id, patch, confirm=bool(body.get("confirm")))
+        return jsonify({"success": True, "facts": json_safe(out)})
+    except ValueError as err:
+        return jsonify({"success": False, "error": str(err)}), 400
+    except Exception as err:
+        conn.rollback()
+        print(f"[Polly] pitch facts failed: {type(err).__name__}: {err}")
+        return jsonify({"success": False, "error": "Could not save your pitch facts"}), 500
+    finally:
+        conn.close()
+
+
 @polly_bp.route("/board", methods=["GET"])
 def board():
     """Live Monday board (Pro). The card in the thread refreshes from here."""

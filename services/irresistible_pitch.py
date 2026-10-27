@@ -262,6 +262,23 @@ def resolve_portfolio_link(creator: dict, proof: Optional[dict] = None) -> str:
     return ""
 
 
+def deliverable_lines(platform: str, offer: Optional[dict] = None) -> list:
+    """What the gifted pitch offers, from the creator's choice. Unset = the organic post, raw clips on request."""
+    offer = offer or {}
+    kind = offer.get("offer_type") or ""
+    months = offer.get("usage_rights_months")
+    usage = f" ({int(months)}-month usage rights)" if isinstance(months, (int, float)) and months > 0 else ""
+    lines = [f"• 1 organic post to my {platform} within 5 days"]
+    if kind == "gifted_ugc":
+        lines.append(f"• 1 raw UGC video you can reuse{usage}")
+    elif kind == "gifted_ugc_photos":
+        lines.append(f"• 1 raw UGC video and 3 product photos you can reuse{usage}")
+    else:
+        lines.append("• the raw clips too, if you'd like them")
+    lines.append("• the post's stats after a week")
+    return lines
+
+
 def generate_irresistible_pitch(
     brand: dict,
     creator: dict,
@@ -269,20 +286,25 @@ def generate_irresistible_pitch(
     city: str = "",
     country: str = "",
     proof_builder: Optional[_ProofBuilder] = None,
+    offer: Optional[dict] = None,
 ) -> dict:
+    """offer: the creator's pitch facts ({offer_type, usage_rights_months, show_engagement}, see
+    services.pitch_facts.offer_for). Deliverables and engagement follow it; nothing is offered by default
+    that the creator didn't choose."""
     brand = brand or {}
     creator = creator or {}
+    offer = offer or {}
     shipping = resolve_shipping(creator, city, country)
     product = resolve_product(brand, creator)
     platform = resolve_platform(creator)
-    niche = resolve_niche(creator, brand)
+    niche = str(offer.get("niche_label") or "").strip()[:60] or resolve_niche(creator, brand)
     followers = format_followers(
         creator.get("creator_followers")
         or creator.get("media_kit_followers")
         or creator.get("followers_count")
         or creator.get("social_follower_count")
     )
-    engagement = resolve_engagement(creator)
+    engagement = resolve_engagement(creator) if offer.get("show_engagement", True) else ""
     demographic = resolve_demographic(creator, niche)
     brand_name = (brand.get("brand_name") or brand.get("name") or "there").strip()
     identity = resolve_pitch_identity(creator)
@@ -324,9 +346,7 @@ def generate_irresistible_pitch(
         "",
         box_line,
         "",
-        f"• 1 organic post to my {platform} within 5 days",
-        "• 2 raw UGC video files (yours to run as paid ads, 6-month rights)",
-        "• performance stats (views, saves, CTR, DMs) if needed",
+        *deliverable_lines(platform, offer),
         "",
         location_line,
         "",
