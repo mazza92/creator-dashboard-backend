@@ -235,6 +235,38 @@ def scan_poll(scan_id):
     return _reply(out)
 
 
+EXAMPLE_KEY = "brand_scan:example:v1"
+EXAMPLE_TTL = 6 * 3600
+
+
+@brand_scan_bp.route("/api/public/brand-scan/example", methods=["GET"])
+def scan_example():
+    """A real scan for the landing page example card. Cached 6h; served from stored data only."""
+    import json
+
+    r = _redis()
+    if r is not None:
+        try:
+            hit = r.get(EXAMPLE_KEY)
+            if hit:
+                return jsonify({"success": True, "example": json.loads(hit)})
+        except Exception:
+            pass
+    try:
+        example = _run(lambda c: brand_scan.example_report(c))
+    except Exception as err:
+        print(f"[brand-scan] example failed: {type(err).__name__}: {err!r}")
+        return jsonify({"success": False, "error": "No example available."}), 503
+    if not example:
+        return jsonify({"success": False, "error": "No example available."}), 404
+    if r is not None:
+        try:
+            r.setex(EXAMPLE_KEY, EXAMPLE_TTL, json.dumps(example))
+        except Exception:
+            pass
+    return jsonify({"success": True, "example": example})
+
+
 @brand_scan_bp.route("/api/admin/brand-scan/warm", methods=["POST"])
 @admin_required
 def scan_warm():
