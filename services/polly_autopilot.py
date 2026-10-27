@@ -35,6 +35,11 @@ AUTO_APPROVE_AFTER = timedelta(0)
 AUTO_FILL_EVERY = timedelta(hours=1)
 AUTO_DRAFTS_PER_RUN = 2
 FILL_BLOCKED_WAIT = timedelta(hours=5)
+# A new Gmail connection sends a little less for its first days (deliverability), and the very first
+# pitches go out minutes after connecting instead of waiting for the next send window.
+WARMUP_DAYS = timedelta(days=3)
+WARMUP_PER_DAY = 2
+FIRST_SEND_GAP = timedelta(minutes=10)
 
 REPLIED_EVENTS = ("brand_replied_interested", "brand_replied_question", "brand_replied_rejected")
 REPLY_EVENTS = REPLIED_EVENTS + ("dropped", "email_bounced", "pitch_not_sent")
@@ -373,7 +378,7 @@ def approve(conn, creator_id: int, item_ids: List[int], now: Optional[datetime] 
         return []
     prefs = settings(conn, creator_id)
     days = prefs["send_days"]
-    per_day = sends_per_day(prefs["monthly_target"], days)
+    per_day = daily_sends(conn, creator_id, prefs, now)
     cur = _cursor(conn)
     cur.execute(
         "SELECT MAX(scheduled_for) AS last FROM polly_autopilot_queue WHERE creator_id = %s AND status = 'approved'",
@@ -386,8 +391,9 @@ def approve(conn, creator_id: int, item_ids: List[int], now: Optional[datetime] 
         (creator_id, ids),
     )
     rows = [r["id"] for r in cur.fetchall()]
+    slots = schedule_slots(conn, creator_id, len(rows), start, now, days, per_day, first=not last)
     out = []
-    for item_id, slot in zip(rows, next_slots(len(rows), start, days=days, per_day=per_day)):
+    for item_id, slot in zip(rows, slots):
         cur.execute(
             """
             UPDATE polly_autopilot_queue SET status = 'approved', approved_at = NOW(), scheduled_for = %s
@@ -400,6 +406,53 @@ def approve(conn, creator_id: int, item_ids: List[int], now: Optional[datetime] 
             out.append({"id": row["id"], "brand_name": row["brand_name"], "scheduled_for": row["scheduled_for"].isoformat()})
     conn.commit()
     return out
+
+
+def gmail_connected_at(conn, creator_id: int) -> Optional[datetime]:
+    cur = _cursor(conn)
+    cur.execute("SELECT connected_at FROM polly_gmail_accounts WHERE creator_id = %s AND revoked_at IS NULL",
+                (creator_id,))
+    row = cur.fetchone()
+    at = (row or {}).get("connected_at")
+    return (at if at.tzinfo else at.replace(tzinfo=timezone.utc)) if at else None
+
+
+def daily_sends(conn, creator_id: int, prefs: Dict[str, Any], now: datetime) -> int:
+    """Pitches per send day: the creator's plan, held to WARMUP_PER_DAY for a freshly connected Gmail."""
+    per_day = sends_per_day(prefs["monthly_target"], prefs["send_days"])
+    connected = gmail_connected_at(conn, creator_id)
+    if connected and now - connected < WARMUP_DAYS:
+        return min(per_day, WARMUP_PER_DAY)
+    return per_day
+
+
+def _never_sent(conn, creator_id: int) -> bool:
+    cur = _cursor(conn)
+    cur.execute("SELECT 1 FROM polly_autopilot_queue WHERE creator_id = %s AND sent_at IS NOT NULL LIMIT 1",
+                (creator_id,))
+    return cur.fetchone() is None
+
+
+def schedule_slots(conn, creator_id: int, count: int, start: datetime, now: datetime, days: List[int],
+                   per_day: int, first: bool = False) -> List[datetime]:
+    """Send slots for approved drafts. A creator's very first pitches go out minutes from now (any day or
+    hour), so Pro starts working the day Gmail connects; the rest follow on their send days."""
+    if count <= 0:
+        return []
+    if first and _never_sent(conn, creator_id):
+        today = [now + FIRST_SEND_GAP * (i + 1) for i in range(min(per_day, count))]
+        tomorrow = now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        return today + next_slots(count - len(today), tomorrow, days=days, per_day=per_day)
+    return next_slots(count, start, days=days, per_day=per_day)
+
+
+def prioritize_fill(conn, creator_id: int) -> None:
+    """Put this creator first in the next fill run (e.g. right after Gmail connects)."""
+    ensure_autopilot_tables(conn)
+    cur = _cursor(conn)
+    cur.execute("UPDATE polly_autopilot SET filled_at = NULL, fill_blocked = NULL WHERE creator_id = %s",
+                (creator_id,))
+    conn.commit()
 
 
 # ---------------------------------------------------------------------------

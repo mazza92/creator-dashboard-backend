@@ -18,6 +18,7 @@ from services.polly_autopilot import (
     approve,
     batch_size,
     claim_unannounced_drafts,
+    daily_sends,
     drafts_note,
     fill_candidates,
     list_items,
@@ -25,6 +26,7 @@ from services.polly_autopilot import (
     month_counts,
     per_week,
     post_thread_note,
+    prioritize_fill,
     queued_brand_ids,
     sends_per_day,
     set_enabled,
@@ -186,6 +188,8 @@ def _status_payload(conn, creator_id, is_pro):
         "followups": prefs["followups"],
         "per_week": per_week(target),
         "per_day": sends_per_day(target, prefs["send_days"]),
+        # What goes out per send day right now: lower for a freshly connected Gmail (warm-up).
+        "sending_per_day": daily_sends(conn, creator_id, prefs, utc_now()),
         "target_range": [TARGET_MIN, TARGET_MAX],
         "target_options": list(TARGET_OPTIONS),
         "max_followups": len(FOLLOWUP_GAPS),
@@ -250,6 +254,14 @@ def gmail_callback():
         save_account(conn, creator_id, exchange_code(request.args["code"]))
         if _is_pro(creator_id, conn):
             set_enabled(conn, creator_id, True)
+            prioritize_fill(conn, creator_id)  # the next cron run writes and sends the first pitches
+            try:
+                from services.pro_gmail_clock import on_gmail_connected
+
+                on_gmail_connected(conn, creator_id)
+            except Exception as err:
+                conn.rollback()
+                print(f"[Polly autopilot] gmail clock skipped creator={creator_id}: {err}")
         return redirect(_frontend(f"{POLLY_PATH}?autopilot=gmail_connected"))
     except GmailError as gerr:
         print(f"[Polly autopilot] gmail connect failed creator={creator_id}: {gerr}")
