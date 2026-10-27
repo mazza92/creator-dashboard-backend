@@ -2370,6 +2370,37 @@ def get_brands_for_outreach():
         return jsonify({'error': str(e)}), 500
 
 
+AUTO_TEST_SENDS_PER_DAY = int(os.getenv("BRAND_OUTREACH_TEST_PER_DAY") or "3")
+_closed_synced = {"done": False}
+
+
+def _sync_closed_prospects(cursor):
+    """Hermes picks 'ready' brands with its own SQL (contact email, email_status ok, never contacted). Brands
+    the pipeline closed without emailing (bad contact, do not contact, lost) get an email_status that query
+    skips, so the script stops picking a brand the pipeline will refuse. Once per process."""
+    if _closed_synced["done"]:
+        return
+    cursor.execute("""
+        UPDATE pr_brands b
+        SET email_status = CASE WHEN bo.stage = 'bad_contact' THEN 'invalid' ELSE 'do_not_contact' END
+        FROM brand_outreach_tracking bo
+        WHERE bo.brand_id = b.id AND bo.stage IN ('bad_contact', 'do_not_contact', 'lost')
+          AND bo.last_contacted_at IS NULL
+          AND COALESCE(b.email_status, '') NOT IN ('invalid', 'do_not_contact')
+    """)
+    _closed_synced["done"] = True
+
+
+def _close_refused(cursor, brand_id):
+    cursor.execute("""
+        UPDATE pr_brands b
+        SET email_status = CASE WHEN bo.stage = 'bad_contact' THEN 'invalid' ELSE 'do_not_contact' END
+        FROM brand_outreach_tracking bo
+        WHERE bo.brand_id = b.id AND b.id = %s AND bo.stage IN ('bad_contact', 'do_not_contact', 'lost')
+    """, (int(brand_id),))
+    return cursor.rowcount > 0
+
+
 def _pipeline_cold_send(cursor, brand_id, allow_followup=False, test=False):
     """Cold brand emails always use the brand pipeline's copy, test mode and tracking, whatever subject/body a
     caller (e.g. an older Hermes script) passes. Returns (status_code, payload)."""
@@ -2386,9 +2417,20 @@ def _pipeline_cold_send(cursor, brand_id, allow_followup=False, test=False):
         if not due or due > now:
             return 409, {'error': f"Follow-up not due yet (due {due})", 'brand_id': brand_id}
         kind = row["next_action"]
+    _sync_closed_prospects(cursor)
+    if not test and not bp.outreach_live():
+        # Not live yet: a scheduled run would send its whole batch to the team inbox. Keep a few a day.
+        cursor.execute("""SELECT COUNT(*) AS n FROM brand_activity
+                          WHERE kind = 'test_sent' AND created_at > date_trunc('day', NOW())""")
+        if int((cursor.fetchone() or {}).get("n") or 0) >= AUTO_TEST_SENDS_PER_DAY:
+            return 409, {'error': f"Test mode: {AUTO_TEST_SENDS_PER_DAY} test emails already sent today. "
+                                  "Set BRAND_OUTREACH_LIVE=1 to send to brands.", 'brand_id': brand_id,
+                         'skipped': True}
     out = bp.send_step(cursor, int(brand_id), kind, test=test)
     if not out.get("ok"):
-        return 409, {'error': out.get("error") or 'send refused', 'brand_id': brand_id}
+        closed = _close_refused(cursor, brand_id)
+        return 409, {'error': out.get("error") or 'send refused', 'brand_id': brand_id, 'skipped': True,
+                     'removed_from_queue': closed}
     where = f"TEST sent to {out['to']} (would go to {out.get('would_send_to')})" if out.get("test") else f"Email sent to {out['to']}"
     return 200, {'success': True, 'message': f"{where}: {out['subject']}", 'brand_id': brand_id, 'email': out['to'],
                  'test': bool(out.get('test')), 'would_send_to': out.get('would_send_to'), 'subject': out['subject'],
