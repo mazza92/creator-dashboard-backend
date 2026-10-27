@@ -4156,6 +4156,7 @@ def generate_pitch():
                 city=(data.get('city') or '').strip(),
                 country=(data.get('country') or '').strip(),
                 proof_builder=build_pitch_proof,
+                offer=_creator_offer(creator_id),
             )
             pitch_body = pitch.get('body', '')
             pitch_subject = pitch.get('subject', '')
@@ -4341,6 +4342,22 @@ def _attach_scraped_engagement(creator, cursor):
     return creator
 
 
+def _creator_offer(creator_id):
+    """The creator's pitch facts for the templates (deliverables, usage rights, engagement shown)."""
+    if not creator_id:
+        return {}
+    conn = get_db_connection()
+    try:
+        from services.pitch_facts import offer_for
+        from services.polly_memory import load_thread
+        return offer_for(load_thread(conn, creator_id).get("notes") or {})
+    except Exception as err:
+        print(f"[pitch] offer lookup skipped: {err}")
+        return {}
+    finally:
+        conn.close()
+
+
 def _irresistible_pr_package_pitches(brand, creator, city='', country='', cursor=None):
     """Fill PR-package pitch slots with the gifted-PR template (no Gemini rewrite)."""
     from services.irresistible_pitch import generate_irresistible_pitch, irresistible_package_slots
@@ -4351,6 +4368,7 @@ def _irresistible_pr_package_pitches(brand, creator, city='', country='', cursor
         city=city or '',
         country=country or '',
         proof_builder=build_pitch_proof,
+        offer=_creator_offer((creator or {}).get('id') or (creator or {}).get('creator_id')),
     )
     print(
         f"[generate-pr-package] Irresistible v1 product={pitch.get('product_name')} "

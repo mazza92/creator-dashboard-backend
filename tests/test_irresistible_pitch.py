@@ -94,8 +94,10 @@ class TestIrresistiblePitch(unittest.TestCase):
         self.assertNotIn("Trade offer", body)
         self.assertNotIn("retail", body)
         self.assertIn("• 1 organic post to my TikTok within 5 days", body)
-        self.assertIn("• 2 raw UGC video files (yours to run as paid ads, 6-month rights)", body)
-        self.assertIn("• performance stats (views, saves, CTR, DMs) if needed", body)
+        self.assertIn("• the raw clips too, if you'd like them", body)
+        self.assertIn("• the post's stats after a week", body)
+        self.assertNotIn("UGC video files", body)
+        self.assertNotIn("CTR", body)
         self.assertIn("No fee. Just product + shipping to Lyon, France.", body)
         self.assertIn("Recent work: https://newcollab.co/kit/gabydky?ref=abc", body)
         self.assertIn("Worth a look?", body)
@@ -162,3 +164,28 @@ class TestIrresistiblePitch(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+def test_deliverables_follow_the_creators_choice():
+    from services.irresistible_pitch import deliverable_lines
+
+    assert deliverable_lines("TikTok") == ["• 1 organic post to my TikTok within 5 days",
+                                          "• the raw clips too, if you'd like them", "• the post's stats after a week"]
+    ugc = deliverable_lines("TikTok", {"offer_type": "gifted_ugc", "usage_rights_months": 6})
+    assert "• 1 raw UGC video you can reuse (6-month usage rights)" in ugc
+    no_rights = deliverable_lines("TikTok", {"offer_type": "gifted_ugc", "usage_rights_months": 0})
+    assert "• 1 raw UGC video you can reuse" in no_rights
+    photos = deliverable_lines("Instagram", {"offer_type": "gifted_ugc_photos"})
+    assert "• 1 raw UGC video and 3 product photos you can reuse" in photos
+
+
+def test_engagement_hidden_when_the_creator_turned_it_off():
+    from services.irresistible_pitch import generate_irresistible_pitch
+
+    creator = {"creator_followers": 18400, "engagement_rate": 4.2, "creator_niches": ["skincare"],
+               "social_links": [{"platform": "tiktok", "handle": "gaby"}], "username": "gaby"}
+    shown = generate_irresistible_pitch({"brand_name": "Anua"}, creator, city="Lyon", country="France")
+    hidden = generate_irresistible_pitch({"brand_name": "Anua"}, creator, city="Lyon", country="France",
+                                         offer={"show_engagement": False})
+    assert "engagement" in shown["body"] and "engagement" not in hidden["body"]
