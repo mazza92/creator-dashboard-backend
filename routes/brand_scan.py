@@ -202,6 +202,8 @@ def scan():
             return _gate("signup", target)
         out = brand_scan.start(conn, body.get("brand"), can_start=_can_start(ip), redis_client=_redis(),
                                ref=str(body.get("ref") or ""), locked=not me)
+        if body.get("oref"):
+            ws.outreach_mark(conn, str(body["oref"])[:40], "scan_open", {"brand": target["name"]})
         if out.get("status") in ("ready", "empty", "searching"):
             if me:
                 ws.record_scan(conn, me["brand"]["id"], target["key"], target["name"], out.get("scan_id"))

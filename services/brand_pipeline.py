@@ -459,7 +459,8 @@ Rules:
 FACTS = """- Newcollab connects brands with 1,800+ small creators (mostly under 10K followers), strongest in beauty, skincare, wellness and fashion.
 - How it works: the brand posts a 2-minute brief, sees matched creators with real profiles (niche, engagement, past content, country) and approves who they want. Polly, our matching assistant, pre-selects the 5 best fits.
 - The brand ships product. Each creator posts organically and delivers UGC (photo or video) the brand can reuse and run as paid ads.
-- The test: no platform fee, just product + shipping. For scaling or ongoing pricing, offer a quick call.
+- Pricing: the first gifted campaign is free (the brand only pays product + shipping). After that, Newcollab Pro is $299/month for a new campaign every month, unlimited Brand Scans and the full applicant list. For anything custom, offer a quick call.
+- Brand Scan (free): any brand's TikTok creators, the hooks they reuse and their top videos, at newcollab.co/brands/scan.
 - Shipping regions are chosen in the brief; the brand only sees creators who match.
 - All posts and UGC are tracked on one private roster page, no login needed.
 - Creators who perform can be kept as long-term ambassadors."""
@@ -470,7 +471,7 @@ def _safe_reply(body: str, their_text: str, link: str) -> bool:
         return False
     if _HANDLE_RE.search(body):
         return False
-    allowed = {"1,800", "1800", "5", "10", "10K", "15", "2", "1", "3"}
+    allowed = {"1,800", "1800", "5", "10", "10K", "15", "2", "1", "3", "299", "$299"}
     theirs = set(_NUMBER_RE.findall(their_text or ""))
     for n in _NUMBER_RE.findall(body.replace(link, "").replace(BOOKING_URL, "")):
         n = n.strip(".,")
