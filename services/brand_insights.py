@@ -23,7 +23,7 @@ from services import brand_scan as scan
 from services import insight_agent as agent
 from services import gifting_radar as radar
 from services import radar_source as source
-from services.radar_extract import MAX_CREATOR_FOLLOWERS, brand_key, radar_niche
+from services.radar_extract import MAX_CREATOR_FOLLOWERS, NICHE_WORDS, brand_key, radar_niche
 from services.radar_queries import SHARED_HASHTAGS, niche_queries
 
 KINDS = ("gifting_brands", "niche_hooks", "niche_creators", "ask", "creator_hooks")
@@ -65,8 +65,18 @@ def size_band(followers: Any) -> str:
     return BANDS[-1][0]
 
 
+def niche_parts(niche: str) -> List[str]:
+    """A creator scan covers all their niches: 'travel+fashion+wellness' -> ['travel', 'fashion', 'wellness']."""
+    return [p for p in str(niche or "").split("+") if p]
+
+
+def niche_label(niche: str) -> str:
+    parts = [p.replace("_", " ") for p in niche_parts(niche)] or [str(niche or "").replace("_", " ")]
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
 def creator_question(niche: str, band: str) -> str:
-    return (f"Which hooks, opening lines and video formats are working best right now for {niche.replace('_', ' ')} "
+    return (f"Which hooks, opening lines and video formats are working best right now for {niche_label(niche)} "
             f"creators with {band} followers on TikTok, and which brands are gifting or paying creators that size?")
 
 
@@ -358,6 +368,8 @@ def poll(conn, run_id: int, kind: str, *, brand_name: str = "", redis_client=Non
 # ----- deep answers (insight agent) -----------------------------------------------------------------
 
 def _fallback_searches(kind: str, niche: str) -> List[str]:
+    if kind == "creator_hooks" and len(niche_parts(niche)) > 1:
+        return list(dict.fromkeys(q for p in niche_parts(niche) for q in _fallback_searches("niche_hooks", p)[:5]))
     bank = niche_queries(niche)["searches"]
     label = niche.replace("_", " ")
     generic = [f"{label} review", f"{label} haul", f"{label} routine", f"{label} must haves", f"best {label} products",
@@ -392,7 +404,7 @@ def deep_build(kind: str, conn, niche: str, question: str, data: Dict[str, Any],
                queries: List[str], now: Optional[datetime] = None, thumb=None, matches=None,
                scan_id: Optional[int] = None, note: str = "") -> Dict[str, Any]:
     now = now or _now()
-    label = niche.replace("_", " ")
+    label = niche_label(niche)
     videos = data.get("videos") or []
     creators = data.get("creators") or {}
     by_id = {str(v["tiktok_id"]): v for v in videos}
@@ -455,7 +467,10 @@ def _brands_section(brands: List[Dict[str, Any]], by_id, now, thumb) -> Dict[str
 
 def deep_respond(kind, conn, niche, question, keys, queries, *, brand_name, redis_client, scan_id=None, note="",
                  run=None, write=None, band=""):
-    niche_rows = niche_videos(conn, niche)[:60] if kind != "ask" else []
+    if kind == "creator_hooks":  # posts the radar filed under each of the creator's niches it indexes
+        niche_rows = [v for p in niche_parts(niche) if p in NICHE_WORDS for v in niche_videos(conn, p)[:40]]
+    else:
+        niche_rows = niche_videos(conn, niche)[:60] if kind != "ask" else []
     data = agent.pool(conn, keys, niche_rows)
     band = band or ((run or {}).get("params") or {}).get("band") or ""
     if kind == "creator_hooks":
@@ -469,7 +484,7 @@ def deep_respond(kind, conn, niche, question, keys, queries, *, brand_name, redi
     params = (run or {}).get("params") or {}
     answer = params.get("answer") if params.get("answer_at") else None
     if not answer:
-        answer = agent.synthesize(question, niche, brand_name, data, write=write,
+        answer = agent.synthesize(question, niche_label(niche), brand_name, data, write=write,
                                   band=band if kind == "creator_hooks" else "")
         if answer and scan_id:
             cur = conn.cursor()
@@ -512,7 +527,8 @@ def deep_start(conn, kind: str, niche: str, *, brand_name: str = "", question: s
         p = recent["params"]
         queries, label = p.get("queries_text") or [], p.get("label") or ""
     else:
-        planned = agent.plan(question, niche, brand_name, write=write, fallback=_fallback_searches(kind, niche))
+        planned = agent.plan(question, niche_label(niche), brand_name, write=write,
+                             fallback=_fallback_searches(kind, niche))
         queries, label = planned["queries"], planned["label"]
     plan = _plan_entries(queries)
     keys = [p["key"] for p in plan]
