@@ -977,6 +977,16 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
                 conn.rollback()
             except Exception:
                 pass
+        try:
+            from services.retention_context import run_pauses
+
+            autopilot["pauses"] = run_pauses(conn)  # Pro off when a pause starts, back on when billing restarts
+        except Exception as err:
+            print(f"[Polly alerts] pause check skipped: {err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
     emails = []
     if can_email:
         emails += email_kit_views(conn, limit=limit, dry_run=dry_run, send_fn=send_fn, test_email=test_email)

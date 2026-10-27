@@ -393,6 +393,17 @@ def create_checkout_session():
             WHERE c.id = %s
         ''', (creator_id,))
         creator = cursor.fetchone()
+        if creator:
+            try:
+                from services.retention_context import open_pause
+                if open_pause(conn, creator_id):
+                    cursor.close()
+                    conn.close()
+                    return jsonify({'error': 'Pro is paused. Resume it in Settings instead of starting a new plan.',
+                                    'paused': True}), 409
+            except Exception as e:
+                print(f"⚠️ pause check failed for creator {creator_id}: {e}")
+                conn.rollback()
         offer_trial = False
         if creator and offer != 'winback':
             try:
@@ -707,6 +718,17 @@ def get_subscription_status():
         if creator and (last_unlock is None or last_unlock < month_start):
             monthly_unlocks = 0
 
+        paused = None
+        if creator:
+            try:
+                from services.retention_context import open_pause
+                pause = open_pause(conn, creator_id)
+                if pause:
+                    paused = {'state': pause['state'], 'starts_at': pause['starts_at'].isoformat(),
+                              'resumes_at': pause['resumes_at'].isoformat()}
+            except Exception as err:
+                print(f"[retention] pause lookup skipped: {err}")
+                conn.rollback()
         cursor.close()
         conn.close()
 
@@ -727,6 +749,7 @@ def get_subscription_status():
             'started_at': creator.get('subscription_started_at').isoformat() if creator.get('subscription_started_at') else None,
             'ends_at': ends_at.isoformat() if ends_at else None,
             'cancel_scheduled': cancel_scheduled,
+            'pause': paused,
             'brands_saved_count': creator.get('brands_saved_count', 0),
             'pitches_sent_this_week': pitches_used,  # Monthly reset, keeping field name for compatibility
             'daily_unlocks_used': monthly_unlocks  # Monthly reset, keeping field name for compatibility
@@ -741,7 +764,7 @@ def _creator_billing_row(cursor, creator_id):
     cursor.execute(
         '''
         SELECT c.id, c.username, c.stripe_subscription_id, c.stripe_customer_id,
-               c.subscription_tier, c.subscription_status, u.email
+               c.subscription_tier, c.subscription_status, c.subscription_started_at, u.email
         FROM creators c
         JOIN users u ON u.id = c.user_id
         WHERE c.id = %s
@@ -764,7 +787,11 @@ def _require_paid_creator():
         cursor.close()
         conn.close()
         return None, (jsonify({'error': 'Creator not found'}), 404)
-    if (creator.get('subscription_tier') or 'free') != 'pro':
+    paused = creator.get('subscription_status') == 'paused'
+    if not paused and (creator.get('subscription_tier') or 'free') != 'pro':
+        from services.retention_context import open_pause
+        paused = bool(open_pause(conn, creator_id))  # the Stripe webhook may have reset the status
+    if (creator.get('subscription_tier') or 'free') != 'pro' and not paused:
         cursor.close()
         conn.close()
         return None, (jsonify({'error': 'No paid subscription to cancel'}), 400)
@@ -779,37 +806,68 @@ def _unstrike_cancel(subscription_id):
     return stripe.Subscription.modify(subscription_id, cancel_at_period_end=False)
 
 
-@subscription_bp.route('/cancel-flow/reason', methods=['POST'])
-def cancel_flow_reason():
-    """Log why they want to leave and return the matching save offer."""
+def _save_plan(conn, creator, reason, sub):
+    """The cancel screen for this reason: real 30-day numbers and the offers that fit them."""
+    from services import retention_context as rc
+    from services.subscription_retention import offer_for_reason, subscription_price_snapshot
+
+    amount, interval = subscription_price_snapshot(sub)
+    ctx = rc.load(conn, creator['id'])
+    status = sub.get('status') if hasattr(sub, 'get') else getattr(sub, 'status', None)
+    pause_ok = (interval in ('month', 'monthly') and status == 'active'
+                and (creator.get('subscription_tier') or 'free') == 'pro' and not rc.open_pause(conn, creator['id']))
+    price_hold_ok = offer_for_reason('too_expensive', amount, interval) == 'price_hold'
+    out = rc.plan(reason, ctx, price_hold_ok=price_hold_ok, pause_ok=pause_ok)
+    return out, {**ctx, 'situation': out['situation']}
+
+
+def _retrieve_sub(creator):
+    return stripe.Subscription.retrieve(creator['stripe_subscription_id'], expand=['items.data.price'])
+
+
+@subscription_bp.route('/retention-context', methods=['GET'])
+def retention_context():
+    """What Pro did for this creator in the last 30 days (the cancel screen's numbers)."""
     packed, err = _require_paid_creator()
     if err:
         return err
     conn, cursor, creator = packed
     try:
-        from services.subscription_retention import (
-            CANCEL_REASONS,
-            HOLD_MONTHS,
-            log_retention_event,
-            offer_for_reason,
-            subscription_price_snapshot,
-        )
+        from services import retention_context as rc
+        ctx = rc.load(conn, creator['id'])
+        return jsonify({'success': True, 'context': {**ctx, 'situation': rc.situation(ctx)}})
+    except Exception as e:
+        print(f"[retention] context failed: {e}")
+        return jsonify({'error': 'Could not load your numbers'}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@subscription_bp.route('/cancel-flow/reason', methods=['POST'])
+def cancel_flow_reason():
+    """Log why they want to leave and return the matching screen: their numbers plus the fix that fits."""
+    packed, err = _require_paid_creator()
+    if err:
+        return err
+    conn, cursor, creator = packed
+    try:
+        from services.subscription_retention import CANCEL_REASONS, HOLD_MONTHS, log_retention_event
 
         reason = ((request.json or {}).get('reason') or '').strip()
         if reason not in CANCEL_REASONS:
             return jsonify({'error': 'Pick a cancel reason'}), 400
-
-        sub = stripe.Subscription.retrieve(
-            creator['stripe_subscription_id'],
-            expand=['items.data.price'],
-        )
-        amount, interval = subscription_price_snapshot(sub)
-        offer = offer_for_reason(reason, amount, interval)
-        log_retention_event(cursor, creator['id'], reason, offer, 'viewed_offer')
+        out, ctx = _save_plan(conn, creator, reason, _retrieve_sub(creator))
+        offer = out['offers'][0] if out['offers'] else None
+        log_retention_event(cursor, creator['id'], reason, offer, 'viewed_offer', context=ctx)
         conn.commit()
         return jsonify({
             'reason': reason,
             'offer': offer,
+            'offers': out['offers'],
+            'headline': out['headline'],
+            'body': out['body'],
+            'context': ctx,
             'hold_months': HOLD_MONTHS,
             'hold_price': 12,
             'resume_price': 19,
@@ -824,18 +882,18 @@ def cancel_flow_reason():
 
 @subscription_bp.route('/cancel-flow/accept', methods=['POST'])
 def cancel_flow_accept():
-    """Accept talent-manager help or the $12/3-month hold instead of canceling."""
+    """Take a save offer instead of canceling. Never a credit or free days."""
     packed, err = _require_paid_creator()
     if err:
         return err
     conn, cursor, creator = packed
     try:
+        from services import retention_context as rc
         from services.subscription_retention import (
             get_or_create_retention_coupon,
             log_retention_event,
-            offer_for_reason,
+            period_end_datetime,
             price_hold_creator_email_html,
-            subscription_price_snapshot,
             talent_manager_creator_email_html,
             talent_manager_team_email_html,
         )
@@ -843,72 +901,51 @@ def cancel_flow_accept():
         body = request.json or {}
         reason = (body.get('reason') or '').strip()
         offer = (body.get('offer') or '').strip()
-        if offer not in ('talent_manager', 'price_hold'):
-            return jsonify({'error': 'Unknown offer'}), 400
-
-        sub = stripe.Subscription.retrieve(
-            creator['stripe_subscription_id'],
-            expand=['items.data.price'],
-        )
-        amount, interval = subscription_price_snapshot(sub)
-        expected = offer_for_reason(reason, amount, interval)
-        if expected != offer:
+        if offer == 'talent_manager':
+            offer = 'outreach_review'
+        sub = _retrieve_sub(creator)
+        out, ctx = _save_plan(conn, creator, reason, sub)
+        if offer not in out['offers']:
             return jsonify({'error': 'That save offer is not available for this reason'}), 400
 
         if getattr(sub, 'cancel_at_period_end', False) or (
             hasattr(sub, 'get') and sub.get('cancel_at_period_end')
         ):
             _unstrike_cancel(creator['stripe_subscription_id'])
-
-        if offer == 'price_hold':
-            coupon_id = get_or_create_retention_coupon(stripe)
-            stripe.Subscription.modify(
-                creator['stripe_subscription_id'],
-                coupon=coupon_id,
-                cancel_at_period_end=False,
-            )
-
         cursor.execute(
-            '''
-            UPDATE creators
-            SET subscription_status = 'active',
-                subscription_ends_at = NULL
-            WHERE id = %s
-            ''',
+            "UPDATE creators SET subscription_ends_at = NULL WHERE id = %s AND subscription_status <> 'paused'",
             (creator['id'],),
         )
-        log_retention_event(cursor, creator['id'], reason, offer, 'accepted')
+        reply = {'success': True, 'offer': offer}
+        name, email = creator.get('username'), creator.get('email')
+
+        if offer == 'price_hold':
+            stripe.Subscription.modify(creator['stripe_subscription_id'], coupon=get_or_create_retention_coupon(stripe),
+                                       cancel_at_period_end=False)
+            _send_creator_resend(email, 'Pro is $12/month for the next 3 months', price_hold_creator_email_html(name))
+            reply['message'] = 'Next 3 months of Pro are $12. Then it returns to $19.'
+        elif offer == 'outreach_review':
+            _send_creator_resend(email, 'A person is reviewing your outreach this week',
+                                 talent_manager_creator_email_html(name))
+            _send_creator_resend('team@newcollab.co', f"Outreach review save: @{name or creator['id']}",
+                                 talent_manager_team_email_html(creator, ctx))
+            reply['message'] = 'Someone on our team reviews your kit, pitch facts and brand list this week.'
+        elif offer == 'connect_gmail':
+            from services.polly_gmail import auth_url
+            reply['redirect'] = auth_url(creator['id'])
+            reply['message'] = 'Connect Gmail and your first pitches go out within the hour.'
+        elif offer == 'autopilot_on':
+            from services.polly_autopilot import set_enabled
+            set_enabled(conn, creator['id'], True)
+            reply['message'] = 'Autopilot is on. Polly sends your pitches every weekday from your Gmail.'
+        elif offer == 'pause':
+            window = rc.schedule_pause(conn, stripe, creator, period_end_datetime(sub))
+            reply['pause'] = {k: v.isoformat() for k, v in window.items() if k != 'stripe_resumes_at'}
+            reply['message'] = (f"Paused from {window['starts_at'].strftime('%B %-d')} to "
+                                f"{window['resumes_at'].strftime('%B %-d')}. No charge in between.")
+        log_retention_event(cursor, creator['id'], reason, offer, 'accepted', context=ctx)
         conn.commit()
-
-        name = creator.get('username')
-        email = creator.get('email')
-        if offer == 'talent_manager':
-            _send_creator_resend(
-                email,
-                'A talent manager is on your first collab',
-                talent_manager_creator_email_html(name),
-            )
-            _send_creator_resend(
-                'team@newcollab.co',
-                f"Talent manager save: @{name or creator['id']}",
-                talent_manager_team_email_html(creator),
-            )
-            return jsonify({
-                'success': True,
-                'offer': offer,
-                'message': 'A talent manager will help you land the first collab. We will email you this week.',
-            })
-
-        _send_creator_resend(
-            email,
-            'Pro is $12/month for the next 3 months',
-            price_hold_creator_email_html(name),
-        )
-        return jsonify({
-            'success': True,
-            'offer': offer,
-            'message': 'Next 3 months of Pro are $12. Then it returns to $19.',
-        })
+        return jsonify(reply)
     except Exception as e:
         print(f"[retention] cancel-flow accept failed: {e}")
         import traceback
@@ -917,6 +954,45 @@ def cancel_flow_accept():
     finally:
         cursor.close()
         conn.close()
+
+
+@subscription_bp.route('/pause/resume', methods=['POST'])
+def pause_resume():
+    """Undo a pause. During the paused month this starts a new paid month today."""
+    packed, err = _require_paid_creator()
+    if err:
+        return err
+    conn, cursor, creator = packed
+    try:
+        from services import retention_context as rc
+        pause = rc.resume_now(conn, stripe, creator['id'])
+        if not pause:
+            return jsonify({'error': 'Pro is not paused'}), 400
+        return jsonify({'success': True, 'message': 'Pro is back on. Polly picks up where she left off.'})
+    except Exception as e:
+        print(f"[retention] resume failed: {e}")
+        return jsonify({'error': 'Could not resume Pro'}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@subscription_bp.route('/admin/retention-report', methods=['GET'])
+def admin_retention_report():
+    """Cancels split into never sent / sent, no replies / had replies, plus accepted saves."""
+    from routes.admin_email import admin_required
+
+    @admin_required
+    def _report():
+        conn = get_db_connection()
+        try:
+            from services.retention_context import churn_report
+            from services.subscription_retention import ensure_cancel_retention_schema
+            ensure_cancel_retention_schema(conn)
+            return jsonify({'success': True, **churn_report(conn, request.args.get('days', 90, type=int))})
+        finally:
+            conn.close()
+    return _report()
 
 
 @subscription_bp.route('/cancel-flow/confirm', methods=['POST'])
@@ -933,6 +1009,14 @@ def cancel_flow_confirm():
         )
 
         reason = ((request.json or {}).get('reason') or '').strip() or 'other'
+        try:
+            from services import retention_context as rc
+            ctx = rc.load(conn, creator['id'])
+            ctx['situation'] = rc.situation(ctx)
+        except Exception as err:
+            print(f"[retention] cancel context skipped: {err}")
+            conn.rollback()
+            ctx = None
         sub = stripe.Subscription.modify(
             creator['stripe_subscription_id'],
             cancel_at_period_end=True,
@@ -946,7 +1030,7 @@ def cancel_flow_confirm():
             ''',
             (ends_at, creator['id']),
         )
-        log_retention_event(cursor, creator['id'], reason, None, 'canceled')
+        log_retention_event(cursor, creator['id'], reason, None, 'canceled', context=ctx)
         conn.commit()
         return jsonify({
             'success': True,
