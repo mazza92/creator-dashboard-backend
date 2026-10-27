@@ -174,6 +174,48 @@ Rules:
 - If the videos don't answer the question well, say so in the summary and give the closest useful answer."""
 
 
+_CREATOR_PROMPT = """You are a sharp TikTok coach for UGC and gifting creators. A creator asked a question; answer it
+from the TikTok videos below (real, recent posts from creators about their size in their niche). Be specific: name
+the patterns, say why they work and how to copy them, point to the exact videos.
+
+Creator's niche: {niche}
+Creator's size: {band} followers
+Question: {question}
+
+VIDEOS (id | creator | followers | region | views | likes | age | flags | caption)
+{videos}
+
+BRANDS seen gifting or paying creators in these videos (name | creators | median creator followers | how)
+{brands}
+
+Write the answer as JSON:
+{{
+  "headline": "short answer title, under 9 words",
+  "summary": "2 to 3 sentences answering directly. Use **bold** for the key formats or names.",
+  "sections": [
+    {{"kind": "hooks", "title": "Effective opening lines", "intro": "one sentence",
+      "items": [{{"title": "the opening line pattern in quotes, with the brand name replaced by Brand",
+                  "text": "1 to 2 sentences: why it works and how to use it", "tag": "short label, e.g. Direct Product Intro",
+                  "handle": "", "videos": ["1 to 3 ids from the list"]}}]}},
+    {{"kind": "formats", "title": "Top-performing video formats", "intro": "one sentence", "items": [...same shape...]}},
+    {{"kind": "brands", "title": "Brands working with creators your size", "intro": "one sentence",
+      "items": [{{"title": "brand name exactly as in BRANDS", "text": "what they send and what the creators made",
+                  "tag": "e.g. 6 creators", "handle": "", "videos": ["ids that show it"]}}]}}
+  ],
+  "shortlist": "2 to 3 sentences: the one hook and one format to try first, and which brand to pitch first. Use **bold**.",
+  "followups": []
+}}
+Rules:
+- Exactly these 3 sections in this order. 3 to 6 items each. Brands only from BRANDS; skip the section if BRANDS is empty.
+- Only use video ids that appear above. Never invent numbers, brands or results; only cite counts you can see.
+- Talk to the creator ("you"). Plain words, short sentences, no em dashes. Never promise a brand will reply."""
+
+
+def _brand_lines(brands: List[Dict[str, Any]]) -> str:
+    return "\n".join(" | ".join([str(b["name"]), str(b.get("creators") or 0), str(b.get("median_followers") or 0),
+                                 ",".join(b.get("types") or []) or "-"]) for b in brands[:30]) or "(none)"
+
+
 def _age_days(when: Any, now: datetime) -> str:
     if not isinstance(when, datetime):
         return "?"
@@ -239,17 +281,33 @@ def clean_answer(raw: Dict[str, Any], video_ids: set, handles: set) -> Optional[
 
 
 def synthesize(question: str, niche: str, brand: str, data: Dict[str, Any], write: Optional[Writer] = None,
-               now: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
+               now: Optional[datetime] = None, band: str = "") -> Optional[Dict[str, Any]]:
+    """``band`` set = a creator asked (their follower band): hooks, formats and brands, written to them."""
     videos = data.get("videos") or []
     if len(videos) < 3:
         return None
     now = now or datetime.now(timezone.utc)
     write = write or _gemini
-    prompt = _ANSWER_PROMPT.format(brand=brand or "not given", niche=niche.replace("_", " "), question=question,
-                                   videos=_video_lines(videos, now), creators=_creator_lines(data.get("creators") or {}))
+    if band:
+        prompt = _CREATOR_PROMPT.format(niche=niche.replace("_", " "), band=band, question=question,
+                                        videos=_video_lines(videos, now), brands=_brand_lines(data.get("brands") or []))
+    else:
+        prompt = _ANSWER_PROMPT.format(brand=brand or "not given", niche=niche.replace("_", " "), question=question,
+                                       videos=_video_lines(videos, now),
+                                       creators=_creator_lines(data.get("creators") or {}))
     try:
         raw = write(prompt, {"temperature": 0.4, "thinking": 1024, "timeout": 50, "source": "brand_insight_answer"})
     except Exception as err:
         print(f"[insight-agent] answer skipped: {type(err).__name__}: {err}")
         return None
-    return clean_answer(raw, {str(v["tiktok_id"]) for v in videos}, set((data.get("creators") or {}).keys()))
+    out = clean_answer(raw, {str(v["tiktok_id"]) for v in videos}, set((data.get("creators") or {}).keys()))
+    if out and band:  # brands only from the list we gave: never an invented one
+        known = {str(b["name"]).strip().lower() for b in data.get("brands") or []}
+        sections = []
+        for s in out["sections"]:
+            if s["kind"] == "brands":
+                s = {**s, "items": [it for it in s["items"] if it["title"].strip().lower() in known]}
+            if s["items"]:
+                sections.append(s)
+        out = {**out, "sections": sections, "followups": []} if sections else None
+    return out

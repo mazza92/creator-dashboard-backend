@@ -1237,6 +1237,91 @@ def _deliver_monday_board(conn, creator_id, first, kit, balance):
         return False
 
 
+def _hooks_reply(out):
+    out = dict(out or {})
+    out.pop("started", None)
+    out.pop("matches", None)
+    return out
+
+
+@polly_bp.route("/hooks", methods=["POST"])
+def creator_hooks_start():
+    """Hooks that work in my niche: opening lines, formats and brands from creators the creator's size."""
+    creator_id, conn, creator = _creator_auth()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    try:
+        from routes.brand_scan import _redis
+        from services import brand_insights as bi
+        from services import creator_hooks as ch
+        from services.creator_stats import pitch_stats
+
+        creator = dict(creator or {})
+        thread = load_thread(conn, creator_id)
+        notes = dict(thread.get("notes") or {})
+        niche = ch.creator_niche(creator)
+        if not niche:
+            return jsonify({"success": False, "error": "Add your niche in Pitch facts first, then I can scan it."}), 400
+        pro = bool(_unlock_balance(creator_id, conn=conn).get("is_unlimited"))
+        allow = ch.allowance(conn, creator_id, pro)
+        if not allow["allowed"]:
+            _log_polly_event(creator_id, "paywall_shown", {"moment": "creator_hooks"})
+            return jsonify({"success": True, "gated": True, "message": ch.gate_message(allow), "allowance": allow})
+        scrape = _load_scrape(conn, creator.get("user_id") or session.get("user_id")) or {}
+        try:
+            followers = int((pitch_stats(conn, creator_id, creator.get("user_id"), scrape, notes)["snap"] or {})
+                            .get("followers") or 0)
+        except Exception as err:
+            conn.rollback()
+            print(f"[Polly] hooks size lookup skipped: {err}")
+            followers = 0
+        band = bi.size_band(followers)
+        out = bi.start(conn, "creator_hooks", niche, question=bi.creator_question(niche, band), band=band,
+                       redis_client=_redis(), can_start=True)
+        if out.get("status") not in ("ready", "empty", "searching") or not out.get("scan_id"):
+            return jsonify({"success": False, "error": "TikTok search is busy right now. Try again in a few minutes."}), 503
+        ch.record(conn, creator_id, out["scan_id"], niche, band, pro=pro)
+        label = niche.replace("_", " ")
+        messages = list(thread.get("messages") or []) + [
+            {"role": "user", "content": ch.CHIP["label"].split(" ", 1)[1]},
+            {"role": "assistant", "kind": "hooks", "content": f"Here's what's working for {label} creators with "
+                                                              f"{band} followers right now.",
+             "hooks": {"scan_id": out["scan_id"], "niche": niche, "band": band}},
+        ]
+        save_thread(conn, creator_id, messages, thread.get("suggested_brands") or [], notes=notes)
+        _log_polly_event(creator_id, "creator_hooks", {"niche": niche, "band": band, "pro": pro})
+        return jsonify({"success": True, "scan": _hooks_reply(out), "allowance": ch.allowance(conn, creator_id, pro),
+                        "messages": json_safe(messages[-2:])})
+    except Exception as err:
+        conn.rollback()
+        print(f"[Polly] hooks failed: {type(err).__name__}: {err!r}")
+        return jsonify({"success": False, "error": "Could not scan your niche. Try again."}), 500
+    finally:
+        conn.close()
+
+
+@polly_bp.route("/hooks/<int:run_id>", methods=["GET"])
+def creator_hooks_poll(run_id):
+    creator_id, conn, _creator = _creator_auth()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    try:
+        from routes.brand_scan import _redis
+        from services import brand_insights as bi
+        from services import creator_hooks as ch
+
+        if not ch.owns(conn, creator_id, run_id):
+            return jsonify({"success": False, "error": "Not found"}), 404
+        return jsonify({"success": True, "scan": json_safe(_hooks_reply(
+            bi.poll(conn, run_id, "creator_hooks", redis_client=_redis())))})
+    except Exception as err:
+        conn.rollback()
+        print(f"[Polly] hooks poll failed: {type(err).__name__}: {err!r}")
+        return jsonify({"success": False, "error": "Could not load this scan."}), 500
+    finally:
+        conn.close()
+
+
 @polly_bp.route("/radar/<int:run_id>", methods=["GET"])
 def radar_poll(run_id):
     """Gifting Radar card polls this until the TikTok search is ingested, then gets the brands."""
