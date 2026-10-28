@@ -594,6 +594,15 @@ def list_applications():
                     "variant_answer": row.get("variant_answer") or "",
                 }
             apps.append(card)
+        try:  # unread brand messages per pick
+            from services.roster_messages import unread_counts
+
+            unread = unread_counts(conn, [c["application_id"] for c in apps if c.get("pick")], "creator")
+            for c in apps:
+                if c.get("pick"):
+                    c["pick"]["unread_messages"] = unread.get(c["application_id"], 0)
+        except Exception:
+            conn.rollback()
         return jsonify({"success": True, "applications": apps})
     except Exception as e:
         try:
@@ -687,6 +696,35 @@ def answer_application_variant(application_id):
         return jsonify({"success": False, "error": "Could not save your answer"}), 500
     finally:
         cursor.close()
+        conn.close()
+
+
+@brand_apply_bp.route("/applications/<int:application_id>/messages", methods=["GET", "POST"])
+def application_messages(application_id):
+    """Creator side of the roster thread with the brand that picked them."""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    from services.roster_messages import load_thread, notify_async, post_message, thread_context
+
+    conn = get_db_connection()
+    try:
+        ctx = thread_context(conn, application_id)
+        if not ctx or int(ctx["creator_id"]) != int(creator_id):
+            return jsonify({"success": False, "error": "Application not found"}), 404
+        if request.method == "POST":
+            data = request.get_json(silent=True) or {}
+            msg, error = post_message(conn, ctx, "creator", data.get("body"))
+            if error:
+                return jsonify({"success": False, "error": error}), 400
+            notify_async(application_id, "creator", msg["id"])
+            return jsonify({"success": True, "message": msg})
+        return jsonify({"success": True, "open": ctx["open"], "messages": load_thread(conn, application_id, "creator")})
+    except Exception as e:
+        conn.rollback()
+        print(f"[brand-apply] messages error: {e}")
+        return jsonify({"success": False, "error": "Could not load messages"}), 500
+    finally:
         conn.close()
 
 

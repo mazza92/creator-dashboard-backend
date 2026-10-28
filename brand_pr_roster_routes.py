@@ -1465,6 +1465,17 @@ def _build_roster_response(cursor, campaign, *, include_hidden=False):
     shown, hidden = split_visible(cards, subscribed or include_hidden)
     payload = _campaign_public(campaign, shown, slot_limit=slot_limit)
     payload["campaign"]["top_pick_ids"] = [c["application_id"] for c in shown if c.get("top_pick")]
+    if reveal:  # messaging opens with the lock: unread replies per picked creator
+        try:
+            from services.roster_messages import unread_counts
+
+            picked = [c["application_id"] for c in cards if c.get("status") in ("ships", "posted")]
+            unread = unread_counts(cursor.connection, picked, "brand")
+            for c in cards:
+                c["unread_messages"] = unread.get(c["application_id"], 0)
+        except Exception:
+            cursor.connection.rollback()
+            current_app.logger.exception("[roster] unread counts skipped")
     payload["campaign"]["free_pick_limit"] = FREE_PICK_LIMIT
     payload["campaign"]["paid_pick_limit"] = PAID_PICK_LIMIT
     payload["campaign"]["target_regions"] = targets.get("regions_label") or []
@@ -2213,6 +2224,57 @@ def mark_shipped(token):
     except Exception as e:
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _roster_thread(token, application_id):
+    """The campaign behind this roster link, and the thread context if this creator is one of its picks."""
+    from services.roster_messages import thread_context
+
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    _ensure_schema(cursor, conn)
+    campaign = _load_campaign(cursor, token)
+    ctx = None
+    if campaign and application_id:
+        ctx = thread_context(conn, application_id)
+        if ctx and (ctx["brand_id"] != campaign["brand_id"]
+                    or (ctx.get("campaign_id") != campaign["id"] and application_id not in _selected_ids(campaign))):
+            ctx = None
+    return conn, campaign, ctx
+
+
+@brand_pr_roster_bp.route("/r/<token>/messages", methods=["GET", "POST"])
+def roster_messages(token):
+    """Brand side of the roster thread with one picked creator."""
+    from services.roster_messages import load_thread, notify_async, post_message
+
+    data = request.get_json(silent=True) or {} if request.method == "POST" else {}
+    try:
+        app_id = int(data.get("application_id") or request.args.get("application_id") or 0)
+    except (TypeError, ValueError):
+        app_id = 0
+    if not app_id:
+        return jsonify({"success": False, "error": "application_id required"}), 400
+    conn = None
+    try:
+        conn, campaign, ctx = _roster_thread(token, app_id)
+        if not campaign:
+            return jsonify({"success": False, "error": "Roster link not found or expired"}), 404
+        if not ctx:
+            return jsonify({"success": False, "error": "Creator not found on this roster"}), 404
+        if request.method == "POST":
+            msg, error = post_message(conn, ctx, "brand", data.get("body"))
+            if error:
+                return jsonify({"success": False, "error": error}), 400
+            notify_async(app_id, "brand", msg["id"])
+            return jsonify({"success": True, "message": msg})
+        return jsonify({"success": True, "open": ctx["open"], "messages": load_thread(conn, app_id, "brand")})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": "Could not load messages"}), 500
+    finally:
+        if conn:
+            conn.close()
 
 
 @brand_pr_roster_bp.route("/r/<token>/unship", methods=["POST"])
