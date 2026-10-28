@@ -56,8 +56,12 @@ def allowance(conn, creator_id: int, pro: bool, now: Optional[datetime] = None) 
                     (creator_id, start))  # the free scan doesn't eat into Pro's 4
         limit = PRO_SCANS_PER_MONTH
     else:
+        from services.unlock_quota import free_limit
+
         cur.execute("SELECT COUNT(*) AS n FROM polly_hook_scans WHERE creator_id = %s", (creator_id,))
-        limit = FREE_SCANS
+        used_row = cur.fetchone()
+        limit = min(FREE_SCANS, free_limit(cur, creator_id))  # an account with 0 free credits gets no free scan
+        cur.execute("SELECT %s::int AS n", (int((used_row or {}).get("n") or 0),))
     used = int((cur.fetchone() or {}).get("n") or 0)
     return {"used": used, "limit": limit, "left": max(0, limit - used), "allowed": used < limit, "pro": pro,
             "period": "month" if pro else "ever"}

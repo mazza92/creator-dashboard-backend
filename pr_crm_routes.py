@@ -3288,7 +3288,7 @@ def dashboard_init():
                 'tier': 'free',
                 'remaining': remaining,
                 'used': used,
-                'limit': FREE_UNLOCK_LIMIT,
+                'limit': free_limit(cursor, creator_id),
                 'is_unlimited': False,
                 'reset_at': unlocks_reset_at.isoformat() if unlocks_reset_at else None
             }
@@ -3859,7 +3859,7 @@ def get_pitch_limits():
         return jsonify({
             'success': True,
             'used': used,
-            'limit': None if is_unlimited else FREE_UNLOCK_LIMIT,
+            'limit': None if is_unlimited else balance.get('limit', FREE_UNLOCK_LIMIT),
             'remaining': remaining,
             'canPitch': is_unlimited or (remaining or 0) > 0,
             'tier': balance.get('tier') or 'free',
@@ -7222,6 +7222,7 @@ from services.unlock_quota import (
     FREE_UNLOCK_LIMIT,
     brand_already_delivered,
     count_delivered_unlocks_this_month,
+    free_limit,
     free_unlock_usage,
     sync_free_unlock_remaining,
 )
@@ -7279,11 +7280,12 @@ def attempt_unlock(creator_id, brand_id, conn=None):
             return {"status": "unlocked", "credits_used": 0, "remaining": None, "tier": "pro"}
 
         delivered = count_delivered_unlocks_this_month(cursor, creator_id)
+        limit = free_limit(cursor, creator_id)
 
-        if delivered >= FREE_UNLOCK_LIMIT:
+        if delivered >= limit:
             print(
                 f"[attempt_unlock] PAYWALL triggered for creator {creator_id}: "
-                f"delivered={delivered}/{FREE_UNLOCK_LIMIT} this month"
+                f"delivered={delivered}/{limit} this month"
             )
             conn.rollback()
             return {
@@ -7313,7 +7315,7 @@ def attempt_unlock(creator_id, brand_id, conn=None):
         ''', (creator_id, brand_id))
 
         delivered_after = count_delivered_unlocks_this_month(cursor, creator_id)
-        if delivered_after > FREE_UNLOCK_LIMIT:
+        if delivered_after > limit:
             cursor.execute(
                 'DELETE FROM brand_unlocks WHERE creator_id = %s AND brand_id = %s',
                 (creator_id, brand_id),
@@ -7505,6 +7507,7 @@ def get_creator_unlock_balance(creator_id, conn=None):
     cursor.execute('SELECT unlocks_reset_at FROM creators WHERE id = %s', (creator_id,))
     reset_row = cursor.fetchone() or {}
     unlocks_reset_at = reset_row.get('unlocks_reset_at') or unlocks_reset_at
+    limit = free_limit(cursor, creator_id)
 
     cursor.close()
     if close_conn:
@@ -7514,7 +7517,7 @@ def get_creator_unlock_balance(creator_id, conn=None):
         "tier": "free",
         "remaining": remaining,
         "used": used,
-        "limit": FREE_UNLOCK_LIMIT,
+        "limit": limit,
         "reset_at": unlocks_reset_at.isoformat() if unlocks_reset_at else None,
         "is_unlimited": False
     }

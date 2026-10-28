@@ -139,11 +139,26 @@ DELIVERED_LAST_MONTH_BY_CREATOR_SQL = '''
 '''
 
 
-def usage_from_delivered(delivered):
+def usage_from_delivered(delivered, limit=FREE_UNLOCK_LIMIT):
     """used / free remaining / total remaining for the quota bar."""
-    used = min(FREE_UNLOCK_LIMIT, max(0, int(delivered or 0)))
-    remaining_free = max(0, FREE_UNLOCK_LIMIT - used)
+    used = min(limit, max(0, int(delivered or 0)))
+    remaining_free = max(0, limit - used)
     return used, remaining_free, remaining_free
+
+
+def free_limit(cursor, creator_id):
+    """Free credits a month for this creator: FREE_UNLOCK_LIMIT unless overridden in creator_credit_overrides
+    (e.g. 0 after a refunded Pro cancel, so a refund never turns into free credits)."""
+    cursor.execute("SELECT to_regclass('public.creator_credit_overrides') IS NOT NULL AS ok")
+    row = cursor.fetchone() or {}
+    if not (row.get("ok") if isinstance(row, dict) else row[0]):
+        return FREE_UNLOCK_LIMIT
+    cursor.execute("SELECT free_limit FROM creator_credit_overrides WHERE creator_id = %s", (creator_id,))
+    row = cursor.fetchone()
+    if not row:
+        return FREE_UNLOCK_LIMIT
+    value = row.get("free_limit") if isinstance(row, dict) else row[0]
+    return max(0, int(value)) if value is not None else FREE_UNLOCK_LIMIT
 
 
 def count_delivered_unlocks_all_time(cursor, creator_id):
@@ -176,14 +191,14 @@ def brand_already_delivered(cursor, creator_id, brand_id):
 def free_unlock_usage(cursor, creator_id, unlocks_remaining=None, unlocks_reset_at=None):
     """Quota bar is packs delivered this calendar month, not the remaining counter."""
     delivered = count_delivered_unlocks_this_month(cursor, creator_id)
-    used, _remaining_free, remaining = usage_from_delivered(delivered)
+    used, _remaining_free, remaining = usage_from_delivered(delivered, free_limit(cursor, creator_id))
     return used, remaining
 
 
 def sync_free_unlock_remaining(cursor, creator_id):
     """Write unlocks_remaining to match packs delivered this month."""
     used, remaining = free_unlock_usage(cursor, creator_id)
-    remaining_free = max(0, FREE_UNLOCK_LIMIT - used)
+    remaining_free = max(0, free_limit(cursor, creator_id) - used)
     cursor.execute(
         '''
         UPDATE creators
