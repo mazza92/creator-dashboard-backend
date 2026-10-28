@@ -21,9 +21,10 @@ FROM_NAME = "Mazza from Newcollab"
 SIGNATURE = "Mazza\nFounder, Newcollab"
 
 PIPELINE = "v2"
-# Scan-led copy: the email holds no numbers or names we'd have to verify; the free Brand Scan shows the real
-# data when they open it. Fresh variant names, so the A/B test starts clean.
-VARIANTS = ("scan_self", "scan_rivals", "free_campaign")
+# Offer-led copy: 5 creators, the brand only covers product + shipping, UGC back to run as ads. Two versions
+# alternate (fresh names, so the A/B test starts clean). No creator names or counts we'd have to verify.
+VARIANTS = ("ugc5", "quick_idea")
+CLAUDE_CONNECTOR_URL = "https://claude.ai/directory/newcollab"
 SITE_URL = (os.getenv("PUBLIC_SITE_URL") or "https://newcollab.co").rstrip("/")
 PRO_PRICE = "$299/mo"
 TEST_EMAIL = os.getenv("BRAND_OUTREACH_TEST_EMAIL") or "team@newcollab.co"
@@ -63,6 +64,8 @@ LEGACY_STATUS = {
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 _URL_RE = re.compile(r"https?://[^\s<>\"]+")
+# [label](url) in copy: rendered as "label (clean url)", both linked, so tracking params never show.
+_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)")
 _HANDLE_RE = re.compile(r"(?<![\w.@])@[A-Za-z0-9_.]{3,}")
 _NUMBER_RE = re.compile(r"\d[\d,.]*")
 
@@ -126,6 +129,19 @@ def new_ref() -> str:
     return secrets.token_urlsafe(6).replace("-", "x").replace("_", "y")
 
 
+def link(label: str, url: str) -> str:
+    return f"[{label}]({url})"
+
+
+def _clean_url(url: str) -> str:
+    return url.split("?", 1)[0].split("#", 1)[0]
+
+
+def _autolink(raw: str) -> str:
+    safe = html.escape(raw)
+    return _URL_RE.sub(lambda m: f'<a href="{m.group(0)}">{m.group(0)}</a>', safe)
+
+
 def text_to_html(text: str) -> str:
     """Same markup Gmail's composer produces: unstyled divs, so it reads as a hand-typed email."""
     rows = []
@@ -133,10 +149,21 @@ def text_to_html(text: str) -> str:
         if not line.strip():
             rows.append("<div><br></div>")
             continue
-        safe = html.escape(line)
-        safe = _URL_RE.sub(lambda m: f'<a href="{m.group(0)}">{m.group(0)}</a>', safe)
-        rows.append(f"<div>{safe}</div>")
+        parts, pos = [], 0
+        for m in _LINK_RE.finditer(line):
+            href = html.escape(m.group(2))
+            parts.append(_autolink(line[pos:m.start()]))
+            parts.append(f'<a href="{href}">{html.escape(m.group(1))}</a> '
+                         f'(<a href="{href}">{html.escape(_clean_url(m.group(2)))}</a>)')
+            pos = m.end()
+        parts.append(_autolink(line[pos:]))
+        rows.append(f"<div>{''.join(parts)}</div>")
     return '<div dir="ltr">' + "".join(rows) + "</div>"
+
+
+def text_to_plain(text: str) -> str:
+    """The text/plain part: links read "label (clean url)" like the HTML."""
+    return _LINK_RE.sub(lambda m: f"{m.group(1)} ({_clean_url(m.group(2))})", text or "")
 
 
 def _greet(first: str, word: str = "Hey") -> str:
@@ -146,72 +173,71 @@ def _greet(first: str, word: str = "Hey") -> str:
 # --------------------------------------------------------------------------- templates
 
 
-def initial_email(variant: str, brand: str, first: str, ref: str = "") -> Tuple[str, str]:
+def _join_line(link_url: str) -> str:
+    return f"{link('Newcollab', link_url)} or straight from {link('Claude', CLAUDE_CONNECTOR_URL)} with our connector"
+
+
+def initial_email(variant: str, brand: str, first: str, ref: str = "", category: Optional[str] = None) -> Tuple[str, str]:
     greet = _greet(first)
-    if variant == "scan_rivals":
+    signup = brief_link(category, ref)
+    if variant == "quick_idea":
         return (
-            f"{brand}{'' if brand.lower().endswith('s') else chr(39) + 's'} competitors on TikTok",
+            f"PR + UGC swap for {brand}?",
             f"{greet}\n\n"
-            "Do you know which TikTok creators are posting for your competitors?\n\n"
-            "Type any brand here and you'll see the creators, the hooks they reuse and their best videos. "
-            f"Free to start:\n{scan_link(ref)}\n\n"
-            f"If you like what you see, your first gifted campaign with creators like them is free.\n\n{SIGNATURE}",
-        )
-    if variant == "free_campaign":
-        return (
-            f"Free gifted campaign for {brand}",
-            f"{greet}\n\n"
-            f"Want to test creator content for {brand} for the cost of product?\n\n"
-            "Your first gifted campaign on Newcollab is free. You pick small creators from real profiles, ship your "
-            "product, and they post and send you videos you can run as ads.\n\n"
-            f"See the creators already posting about {brand} first:\n{scan_link(ref, brand)}\n\n{SIGNATURE}",
+            f"Quick idea for {brand}: 5 creators make UGC you can run as ads, and all it costs is product + shipping.\n\n"
+            f"• Join in {link('Newcollab', signup)} or {link('Claude', CLAUDE_CONNECTOR_URL)}\n"
+            "• Each one posts organically and sends you the raw content\n"
+            "• No agency, no platform fee\n\n"
+            f"Want me to line up 5 who fit {brand}?\n\n{SIGNATURE}",
         )
     return (
-        f"Who's posting about {brand} on TikTok?",
+        f"5 UGC creators for {brand}, free",
         f"{greet}\n\n"
-        "Quick one: we built a free tool that shows which TikTok creators post about a brand, the hooks they reuse "
-        "and their top videos.\n\n"
-        f"Here's what it finds for {brand}:\n{scan_link(ref, brand)}\n\n"
-        f"You can run it on your competitors too.\n\n{SIGNATURE}",
+        f"Want 5 fresh UGC videos for {brand}'s ads?\n\n"
+        f"We match you with 5 creators who fit {brand}. They're free: you only cover product + shipping, "
+        "and each one sends you UGC you can run as ads.\n\n"
+        f"Join in {_join_line(signup)}.\n\n"
+        f"Want me to line up 5 who fit {brand}?\n\n{SIGNATURE}",
     )
 
 
-def followup_email(step: int, brand: str, first: str, link: str, ref: str = "") -> str:
+def followup_email(step: int, brand: str, first: str, link_url: str, ref: str = "") -> str:
     greet = _greet(first)
     if step == 1:
         return (
-            f"{greet}\n\nBumping this in case it got buried. The scan for {brand} takes a few seconds:\n"
-            f"{scan_link(ref, brand)}\n\n"
+            f"{greet}\n\nBumping this in case it got buried. 5 creators, UGC you can run as ads, "
+            f"and you only cover product + shipping.\n\n"
+            f"Join in {_join_line(link_url)}.\n\n"
             "If you're not the right person, who handles creators or UGC?\n\nMazza"
         )
     if step == 2:
         return (
             f"{greet}\n\nEasiest next step: your first gifted campaign is free. You pick the creators, ship "
-            "product, and get videos back to run as ads.\n"
-            f"{link}\n\n"
+            f"product, and get videos back to run as ads.\n\n"
+            f"Start in {_join_line(link_url)}.\n\n"
             f"If you want more campaigns after that, Pro is {PRO_PRICE}.\n\nMazza"
         )
     return (
         f"{greet}\n\nLast note from me. If creator content isn't a priority for {brand} right now, no worries.\n\n"
-        f"The free scan stays open whenever it is:\n{scan_link(ref, brand)}\n\nMazza"
+        f"Whenever it is, your 5 creators are one click away: {link('Newcollab', link_url)}\n\nMazza"
     )
 
 
-def nudge_email(brand: str, first: str, link: str) -> str:
+def nudge_email(brand: str, first: str, link_url: str) -> str:
     return (
         f"{_greet(first, 'Hi')}\n\nDid you get a chance to look? Once you sign up, your first gifted campaign is "
-        f"free and Polly pre-selects the creators who fit {brand} best.\n{link}\n\n"
-        f"Or grab 15 min with me: {BOOKING_URL}\n\nMazza"
+        f"free and Polly pre-selects the creators who fit {brand} best: {link('Newcollab', link_url)}\n\n"
+        f"Or grab 15 min with me: {link('book a call', BOOKING_URL)}\n\nMazza"
     )
 
 
-def redirect_email(brand: str, first: str, referrer: str, link: str) -> str:
+def redirect_email(brand: str, first: str, referrer: str, link_url: str) -> str:
     who = referrer or "Your team"
     return (
         f"{_greet(first, 'Hi')}\n\n{who} pointed me your way for creator partnerships at {brand}.\n\n"
         "Short version: small creators post about your product and send you videos you can run as ads. "
         "Your first gifted campaign is free, you only ship product, and you approve every creator first.\n\n"
-        f"Start here:\n{link}\n\nWorth a look?\n\n{SIGNATURE}"
+        f"Start in {_join_line(link_url)}.\n\nWorth a look?\n\n{SIGNATURE}"
     )
 
 
@@ -735,7 +761,7 @@ def _log_outbound(cursor, brand_id: int, to: str, subject: str, html_body: str, 
 def _deliver(cursor, row, to, subject, text, sender, in_reply_to=None, references=None):
     body_html = text_to_html(text)
     res = (sender or _default_sender())(
-        to, subject, body_html, text_content=text, in_reply_to=in_reply_to,
+        to, subject, body_html, text_content=text_to_plain(text), in_reply_to=in_reply_to,
         references=references, from_name=FROM_NAME,
     )
     if not res.get("success"):
@@ -776,7 +802,7 @@ def send_step(cursor, brand_id: int, kind: str = "initial", dry_run: bool = Fals
         if row.get("last_contacted_at") or stage not in ("new",):
             return {"ok": False, "error": f"already in pipeline (stage={stage})"}
         variant = pick_variant(cursor, rng)
-        subject, text = initial_email(variant, brand, first, ref)
+        subject, text = initial_email(variant, brand, first, ref, row.get("category"))
         step = 0
     elif kind == "followup":
         if row.get("pipeline") != PIPELINE or stage != "contacted" or row.get("next_action") != "followup":
@@ -800,7 +826,7 @@ def send_step(cursor, brand_id: int, kind: str = "initial", dry_run: bool = Fals
         return {"ok": False, "error": f"unknown kind {kind}"}
 
     preview = {"ok": True, "brand_id": brand_id, "brand_name": brand, "to": to, "kind": kind, "step": step,
-               "variant": variant, "subject": subject, "text": text}
+               "variant": variant, "subject": subject, "text": text_to_plain(text)}
     if dry_run:
         return {**preview, "dry_run": True}
     if test:

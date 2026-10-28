@@ -148,15 +148,18 @@ def test_initial_send_logs_variant_ref_and_schedules_day3():
     cur = FakeCursor([("bo.last_inbound_subject", [_row()]), ("AS positive", [])])
     sender = Sender()
     out = bp.send_step(cur, 7, "initial", sender=sender)
-    assert out["ok"] and out["variant"] == "scan_self"
+    assert out["ok"] and out["variant"] == "ugc5"
     call = sender.calls[0]
     assert call["to"] == "tacy@mdaire.com"
-    assert call["subject"] == "Who's posting about Kappel on TikTok?"
-    assert "/brands/scan?b=Kappel&ref=cold_email&oref=abc123" in call["text_content"]
+    assert call["subject"] == "5 UGC creators for Kappel, free"
+    assert "Newcollab (https://app.newcollab.co/for-brands)" in call["text_content"]
+    assert "Claude (https://claude.ai/directory/newcollab)" in call["text_content"]
+    assert "oref=abc123" not in call["text_content"] and "/for-brands?niche=" not in call["text_content"]
+    assert 'oref=abc123' in call["html"] and ">Newcollab</a> (<a" in call["html"]
     assert call["text_content"].startswith("Hey Tacy,")
     assert call["from_name"] == bp.FROM_NAME
     upd = cur.ran("SET outreach_count = COALESCE(outreach_count, 0) + 1, last_contacted_at = NOW(), last_subject = %s, pipeline")
-    assert upd and upd[0][2] == "scan_self" and upd[0][3] == "abc123" and upd[0][6] == 3
+    assert upd and upd[0][2] == "ugc5" and upd[0][3] == "abc123" and upd[0][6] == 3
     kinds = [p[1] for p in cur.ran("INSERT INTO brand_activity")]
     assert kinds == ["stage_change", "sent"]
     assert cur.ran("INSERT INTO brand_outreach_log")
@@ -192,17 +195,16 @@ def test_last_followup_moves_brand_to_nurture():
 
 
 def test_pick_variant_balances_then_exploits_the_winner():
-    few = FakeCursor([("AS positive", [{"variant": "scan_self", "sent": 90, "positive": 3},
-                                       {"variant": "scan_rivals", "sent": 10, "positive": 0}])])
-    assert bp.pick_variant(few) == "free_campaign"
-    full = [{"variant": "scan_self", "sent": 100, "positive": 2}, {"variant": "scan_rivals", "sent": 100, "positive": 9},
-            {"variant": "free_campaign", "sent": 100, "positive": 3}]
+    few = FakeCursor([("AS positive", [{"variant": "ugc5", "sent": 90, "positive": 3},
+                                       {"variant": "quick_idea", "sent": 10, "positive": 0}])])
+    assert bp.pick_variant(few) == "quick_idea"
+    full = [{"variant": "ugc5", "sent": 100, "positive": 2}, {"variant": "quick_idea", "sent": 100, "positive": 9}]
 
     class Always:
         def random(self):
             return 0.1
 
-    assert bp.pick_variant(FakeCursor([("AS positive", full)]), rng=Always()) == "scan_rivals"
+    assert bp.pick_variant(FakeCursor([("AS positive", full)]), rng=Always()) == "quick_idea"
 
 
 def test_queue_new_skips_domains_already_contacted_or_customers():
@@ -400,6 +402,16 @@ def test_html_body_matches_gmail_composer_markup():
     assert "style=" not in out and "<body" not in out
 
 
+def test_links_render_as_label_and_clean_url():
+    text = "Join in [Newcollab](https://app.newcollab.co/for-brands?ref=cold_email&oref=r1)."
+    assert bp.text_to_plain(text) == "Join in Newcollab (https://app.newcollab.co/for-brands)."
+    href = "https://app.newcollab.co/for-brands?ref=cold_email&amp;oref=r1"
+    assert bp.text_to_html(text) == (
+        f'<div dir="ltr"><div>Join in <a href="{href}">Newcollab</a> '
+        f'(<a href="{href}">https://app.newcollab.co/for-brands</a>).</div></div>'
+    )
+
+
 def test_brief_link_maps_category_to_niche():
     assert "/for-brands?niche=fitness&ref=cold_email&oref=r1" in bp.brief_link("activewear", "r1")
     assert "niche=lifestyle" in bp.brief_link(None, "r1")
@@ -416,9 +428,9 @@ def test_cold_copy_has_no_unverified_numbers_or_em_dashes():
     for body in bodies:
         assert "\u2014" not in body
         prose = re.sub(r"https?://\S+", "", body)
-        assert set(re.findall(r"\d[\d,.]*", prose)) <= {"299", "15"}, prose
-    assert all("oref=r1" in b for b in bodies[:6])
-    assert "$299/mo" in bodies[4]
+        assert set(re.findall(r"\d[\d,.]*", prose)) <= {"5", "299", "15"}, prose
+    assert all("oref=r1" in b for b in bodies[:5])
+    assert "$299/mo" in bodies[3]
 
 
 def test_not_live_sends_the_exact_email_to_the_team_inbox_only(monkeypatch):
@@ -428,7 +440,7 @@ def test_not_live_sends_the_exact_email_to_the_team_inbox_only(monkeypatch):
     out = bp.send_step(cur, 7, "initial", sender=sender)
     call = sender.calls[0]
     assert out["ok"] and out["test"] and call["to"] == "team@newcollab.co"
-    assert call["subject"] == "[TEST to tacy@mdaire.com] Who's posting about Kappel on TikTok?"
+    assert call["subject"] == "[TEST to tacy@mdaire.com] 5 UGC creators for Kappel, free"
     assert not cur.ran("SET outreach_count = COALESCE(outreach_count, 0) + 1, last_contacted_at = NOW()")
     assert [p[1] for p in cur.ran("INSERT INTO brand_activity")] == ["test_sent"]
 
