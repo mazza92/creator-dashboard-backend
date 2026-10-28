@@ -305,7 +305,6 @@ def start(conn, kind: str, niche: str, *, brand_name: str = "", redis_client=Non
     if kind in DEEP:
         return deep_start(conn, kind, niche, brand_name=brand_name, question=question, redis_client=redis_client,
                           can_start=can_start, band=band)
-    radar.finalize_stale(conn)
     count = len(niche_videos(conn, niche))
     fresh_at = radar.last_topup(conn, niche)
     fresh = bool(fresh_at) and _now() - fresh_at < FRESH_FOR
@@ -518,7 +517,6 @@ def deep_start(conn, kind: str, niche: str, *, brand_name: str = "", question: s
     question = question_for(kind, niche, brand_name, question)
     if not question:
         return {"status": "invalid"}
-    radar.finalize_stale(conn)
     recent = _recent_run(conn, niche, question)
     if recent and recent["status"] in ("running", "ingesting"):
         p = recent["params"] or {}

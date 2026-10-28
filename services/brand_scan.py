@@ -477,7 +477,6 @@ def start(conn, raw: Any, *, can_start: bool = True, redis_client=None, ref: str
     if not target:
         return {"status": "invalid"}
     niche = scan_niche(target)
-    radar.finalize_stale(conn)
     videos = matched_videos(conn, target)
     fresh_at = _last_done(conn, niche)
     fresh = bool(fresh_at) and _now() - fresh_at < FRESH_FOR
