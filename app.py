@@ -4016,6 +4016,65 @@ def unlock_brand_access(slug):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/public/brands/<slug>/redirect', methods=['GET'])
+def brand_application_redirect(slug):
+    """Apply Now on a public brand page: send a signed-in creator to the brand's application form.
+
+    Same rules as /unlock (5 free application forms a day, unlimited on Pro), but uses the session cookie,
+    since this is a plain link. Signed out, over the limit, or no form on file: back to the brand page.
+    """
+    from datetime import date
+    from urllib.parse import quote
+    from services.polly_alerts import frontend_url
+
+    page = f"{frontend_url()}/brand/{quote(slug)}"
+    user_id = session.get('user_id')
+    if not user_id:
+        return redirect(f"{frontend_url()}/register/creator?redirect=/brand/{quote(slug)}", code=302)
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute('SELECT id, application_url, website FROM brands WHERE slug = %s AND is_visible = true', (slug,))
+        brand = cursor.fetchone() or {}
+        target = next((u for u in (brand.get('application_url'), brand.get('website'))
+                       if str(u or '').startswith(('https://', 'http://'))), None)
+        if not brand or not target:
+            return redirect(page, code=302)
+        cursor.execute(
+            'SELECT id, subscription_tier, daily_unlocks_used, last_unlock_date FROM creators WHERE user_id = %s',
+            (user_id,))
+        creator = cursor.fetchone()
+        if not creator:
+            return redirect(page, code=302)
+        if (creator.get('subscription_tier') or 'free') != 'pro':
+            today = date.today()
+            used = creator.get('daily_unlocks_used') or 0
+            last = creator.get('last_unlock_date')
+            if hasattr(last, 'date'):  # a timestamp column still means "same calendar day"
+                last = last.date()
+            if last != today:
+                used = 0
+            if used >= 5:
+                return redirect(f"{page}?limit=daily", code=302)
+            cursor.execute('UPDATE creators SET daily_unlocks_used = %s, last_unlock_date = %s WHERE id = %s',
+                           (used + 1, today, creator['id']))
+        cursor.execute(
+            "INSERT INTO creator_pipeline (creator_id, brand_id, status, created_at) VALUES (%s, %s, 'interested', NOW()) "
+            "ON CONFLICT (creator_id, brand_id) DO UPDATE SET updated_at = NOW()",
+            (creator['id'], brand['id']))
+        conn.commit()
+        return redirect(target, code=302)
+    except Exception as e:
+        app.logger.error(f"Brand application redirect failed for {slug}: {e}")
+        if conn:
+            conn.rollback()
+        return redirect(page, code=302)
+    finally:
+        if conn:
+            conn.close()
+
+
 @app.route('/c/<username>', methods=['GET'])
 def public_creator_profile(username):
     """
