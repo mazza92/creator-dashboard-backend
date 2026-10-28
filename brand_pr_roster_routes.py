@@ -58,6 +58,7 @@ from services.roster_fit import (
 )
 from services.roster_delivery import (
     brief_public,
+    can_unship,
     clean_brief,
     clean_content_url,
     content_due_at,
@@ -67,6 +68,8 @@ from services.roster_delivery import (
     ensure_brief_column,
     notify_brief_added_async,
     notify_creators_async,
+    notify_unshipped_async,
+    unship,
 )
 
 brand_pr_roster_bp = Blueprint("brand_pr_roster", __name__, url_prefix="/api/brand-pr")
@@ -323,7 +326,7 @@ def _save_selected(cursor, campaign_id, ids):
 
 _BRAND_FACING_EVENTS = frozenset({
     "roster_view", "roster_profile_view", "roster_select", "roster_deselect",
-    "roster_skip", "roster_unskip", "roster_lock", "roster_shipped", "roster_creator_shipped",
+    "roster_skip", "roster_unskip", "roster_lock", "roster_shipped", "roster_creator_shipped", "roster_unshipped",
     "roster_csv", "roster_brief", "roster_paywall",
 })
 _ROSTER_VIEW_DEDUPE_SECONDS = 120
@@ -1205,6 +1208,7 @@ def _fetch_applications(cursor, campaign, *, include_hidden=False):
             a.declined_at,
             a.shipped_at,
             a.campaign_id,
+            to_jsonb(a) ->> 'variant_answer' AS variant_answer,
             {delivery_select_sql(cursor)},
             c.username,
             c.image_profile,
@@ -1313,6 +1317,8 @@ def _card_from_row(row, *, reveal_shipping, selected_ids, campaign_status):
         ),
         "applied_at": row.get("applied_at").isoformat() if row.get("applied_at") else None,
         "shipped_at": row.get("shipped_at").isoformat() if row.get("shipped_at") else None,
+        "can_unship": status == "ships" and can_unship(row.get("shipped_at")),
+        "variant_answer": row.get("variant_answer") or "",
         **_content_due_fields(row, status),
         "kit_slug": row.get("kit_slug") or "",
         "kit_url": public_kit_url(
@@ -2056,7 +2062,7 @@ def shipping_csv(token):
         writer = csv.writer(buf)
         writer.writerow([
             "creator_name", "handle", "full_name", "address_line1", "address_line2",
-            "city", "state", "zip", "country", "phone", "sku_note",
+            "city", "state", "zip", "country", "phone", "sku_note", "size_or_variant",
         ])
         sku = campaign.get("sku_note") or ""
         for c in selected:
@@ -2073,6 +2079,7 @@ def shipping_csv(token):
                 ship.get("country") or "",
                 ship.get("phone") or "",
                 sku,
+                c.get("variant_answer") or "",
             ])
         slug = (campaign.get("brand_slug") or "brand").replace("/", "-")
         filename = f"{slug}-pr-ship.csv"
@@ -2195,6 +2202,45 @@ def mark_shipped(token):
                 current_app.logger.exception("[roster] mark_free_campaign_consumed failed")
         conn.commit()
         notify_creators_async(campaign["id"])
+        campaign = _load_campaign(cursor, token)
+        payload = _build_roster_response(cursor, campaign)
+        conn.close()
+        return jsonify(payload), 200
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@brand_pr_roster_bp.route("/r/<token>/unship", methods=["POST"])
+def unship_roster(token):
+    """Undo a mistaken "Mark shipped" (one creator or all) within 24 hours, and tell creators it hasn't left."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        _ensure_schema(cursor, conn)
+        campaign = _load_campaign(cursor, token)
+        if not campaign:
+            conn.close()
+            return jsonify({"success": False, "error": "Roster link not found or expired"}), 404
+        data = request.get_json(silent=True) or {}
+        try:
+            only_id = int(data["application_id"]) if data.get("application_id") not in (None, "") else None
+        except (TypeError, ValueError):
+            conn.close()
+            return jsonify({"success": False, "error": "Invalid application_id"}), 400
+        corrected, error = unship(cursor, campaign, only_id)
+        if error:
+            conn.rollback()
+            conn.close()
+            return jsonify({"success": False, "error": error}), 400
+        _record_roster_event(
+            cursor,
+            "roster_unshipped",
+            brand_id=campaign["brand_id"],
+            meta={"campaign_id": campaign["id"], "application_id": only_id, "corrected": len(corrected)},
+        )
+        conn.commit()
+        notify_unshipped_async(corrected, campaign.get("brand_name") or "", campaign.get("brief"))
         campaign = _load_campaign(cursor, token)
         payload = _build_roster_response(cursor, campaign)
         conn.close()

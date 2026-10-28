@@ -554,6 +554,7 @@ def list_applications():
                  AND a.applied_at < NOW() - make_interval(days => %s)) AS stale,
                 a.selected_posts,
                 a.shipped_at,
+                to_jsonb(a) ->> 'variant_answer' AS variant_answer,
                 {delivery_select_sql(cursor)},
                 camp.sku_note,
                 {brief_select_sql(cursor)},
@@ -583,11 +584,14 @@ def list_applications():
             card["applied_at"] = row["applied_at"].isoformat() if row.get("applied_at") else None
             card["source"] = row.get("source")
             if card["apply_status"] in ("ships", "posted"):
+                brief = brief_public(row.get("brief"))
                 card["pick"] = {
                     "product": row.get("sku_note") or row.get("hero_product") or "",
                     "shipped": bool(row.get("shipped_at")) or row.get("campaign_status") == "shipped",
                     "delivered": delivered_public(row),
-                    "brief": brief_public(row.get("brief")),
+                    "brief": brief,
+                    "variant_question": (brief or {}).get("variant_question") or "",
+                    "variant_answer": row.get("variant_answer") or "",
                 }
             apps.append(card)
         return jsonify({"success": True, "applications": apps})
@@ -651,6 +655,36 @@ def deliver_application_content(application_id):
         print(f"[brand-apply] deliver error: {e}")
         traceback.print_exc()
         return jsonify({"success": False, "error": "Could not save your content"}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@brand_apply_bp.route("/applications/<int:application_id>/variant", methods=["POST"])
+def answer_application_variant(application_id):
+    """Picked creator answers the brand's size / shade / variant question from the brief."""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    data = request.get_json(silent=True) or {}
+    from services.roster_delivery import ensure_delivery_columns, save_variant_answer
+
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        if not ensure_delivery_columns(cursor, conn):
+            return jsonify({"success": False, "error": "Try again in a minute."}), 503
+        answer, error = save_variant_answer(cursor, creator_id=creator_id, application_id=application_id,
+                                            answer=data.get("answer"))
+        if error:
+            conn.rollback()
+            return jsonify({"success": False, "error": error}), 404 if error == "Application not found" else 400
+        conn.commit()
+        return jsonify({"success": True, "variant_answer": answer})
+    except Exception as e:
+        conn.rollback()
+        print(f"[brand-apply] variant error: {e}")
+        return jsonify({"success": False, "error": "Could not save your answer"}), 500
     finally:
         cursor.close()
         conn.close()
