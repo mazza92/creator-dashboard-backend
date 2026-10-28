@@ -2111,7 +2111,10 @@ def save_roster_brief(token):
         if not ensure_brief_column(cursor, conn):
             conn.close()
             return jsonify({"success": False, "error": "Try again in a minute."}), 503
-        had_brief = bool(brief_public(campaign.get("brief")))
+        old = brief_public(campaign.get("brief"))
+        had_brief = bool(old)
+        new_question = (brief or {}).get("variant_question") or ""
+        asks_again = bool(new_question) and new_question != ((old or {}).get("variant_question") or "")
         cursor.execute(
             "UPDATE brand_pr_campaigns SET brief = %s, updated_at = NOW() WHERE id = %s",
             (Json(brief) if brief else None, campaign["id"]),
@@ -2123,7 +2126,8 @@ def save_roster_brief(token):
             meta={"campaign_id": campaign["id"], "fields": sorted(k for k in (brief or {}) if k != "updated_at")},
         )
         conn.commit()
-        if brief and not had_brief and campaign.get("status") in ("locked", "shipped"):
+        # Picked creators hear about a new brief, or a new size / variant question added to an existing one.
+        if brief and (not had_brief or asks_again) and campaign.get("status") in ("locked", "shipped"):
             notify_brief_added_async(campaign["id"])
         campaign = _load_campaign(cursor, token)
         payload = _build_roster_response(cursor, campaign)
