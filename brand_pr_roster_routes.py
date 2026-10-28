@@ -53,7 +53,6 @@ from services.roster_fit import (
     locked_teasers,
     pick_limit_for,
     rank_cards,
-    split_visible,
     _as_list as _niche_list,
 )
 from services.roster_delivery import (
@@ -1439,9 +1438,9 @@ def _paywall_response(cursor, conn, campaign, reason, app_id=None):
     conn.close()
     message = (
         f"Your free campaign gifts {FREE_PICK_LIMIT} creators. Gifted UGC ($299/mo) lets you gift "
-        f"{PAID_PICK_LIMIT} a month and see every applicant."
+        f"{PAID_PICK_LIMIT} a month."
         if reason == "pick_limit"
-        else "This creator is in your full applicant list. Gifted UGC ($299/mo) unlocks everyone who applied."
+        else "This creator isn't available on your free campaign. Gifted UGC ($299/mo) lets you gift more creators."
     )
     return jsonify({"success": False, "paywall": True, "reason": reason, "error": message}), 402
 
@@ -1473,7 +1472,8 @@ def _build_roster_response(cursor, campaign, *, include_hidden=False):
     cards = rank_cards(pairs, targets)
     with_rate = sum(1 for c in cards if c.get("engagement_label"))
     current_app.logger.info("[roster] engagement %s/%s cards have a rate", with_rate, len(cards))
-    shown, hidden = split_visible(cards, subscribed or include_hidden)
+    # Every brand sees everyone who applied. Pro is about gifting more creators and running more campaigns.
+    shown, hidden = cards, []
     payload = _campaign_public(campaign, shown, slot_limit=slot_limit)
     payload["campaign"]["top_pick_ids"] = [c["application_id"] for c in shown if c.get("top_pick")]
     if reveal:  # messaging opens with the lock: unread replies per picked creator
