@@ -29,3 +29,19 @@ class CreatorNicheTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FreeLimitOverrideTests(unittest.TestCase):
+    def test_override_sets_the_free_quota(self):
+        from services.unlock_quota import free_limit, usage_from_delivered
+
+        class Cur:
+            def __init__(self, rows): self.rows = list(rows)
+            def execute(self, *a): pass
+            def fetchone(self): return self.rows.pop(0)
+
+        self.assertEqual(free_limit(Cur([{"ok": False}]), 189), 3)
+        self.assertEqual(free_limit(Cur([{"ok": True}, None]), 189), 3)
+        self.assertEqual(free_limit(Cur([{"ok": True}, {"free_limit": 0}]), 189), 0)
+        self.assertEqual(usage_from_delivered(0, 0), (0, 0, 0))
+        self.assertEqual(usage_from_delivered(1), (1, 2, 2))
