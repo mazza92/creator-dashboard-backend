@@ -327,7 +327,7 @@ def _save_selected(cursor, campaign_id, ids):
 _BRAND_FACING_EVENTS = frozenset({
     "roster_view", "roster_profile_view", "roster_select", "roster_deselect",
     "roster_skip", "roster_unskip", "roster_lock", "roster_shipped", "roster_creator_shipped", "roster_unshipped",
-    "roster_csv", "roster_brief", "roster_paywall",
+    "roster_csv", "roster_brief", "roster_paywall", "roster_add_pick",
 })
 _ROSTER_VIEW_DEDUPE_SECONDS = 120
 
@@ -1376,6 +1376,8 @@ def _campaign_public(campaign, cards, slot_limit=None):
                 "selected_application_ids": selected_ids,
                 "selected_count": len(selected_ids),
                 "can_lock": campaign.get("status") == "active" and 1 <= len(selected_ids) <= slot_limit,
+                # Unused gift seats after the lock: the brand can still add creators up to its limit.
+                "picks_left": max(0, slot_limit - len(selected_ids)) if campaign.get("status") in ("locked", "shipped") else None,
                 "portal_url": f"{_frontend_base()}/r/{campaign['token']}",
             },
             "creators": cards,
@@ -1414,6 +1416,15 @@ def _roster_access(cursor, campaign):
         billing = None
     subscribed = bool(billing and billing.get("subscribed"))
     return billing, subscribed, pick_limit_for(subscribed)
+
+
+def _picked_count(cursor, campaign):
+    """Creators already on a locked list (ships or posted) for this campaign."""
+    cursor.execute(
+        "SELECT COUNT(*) AS n FROM brand_pr_applications WHERE campaign_id = %s AND status IN ('ships', 'posted')",
+        (campaign["id"],),
+    )
+    return int((cursor.fetchone() or {}).get("n") or 0)
 
 
 def _paywall_response(cursor, conn, campaign, reason, app_id=None):
@@ -1960,6 +1971,95 @@ def lock_roster(token):
             conn.rollback()
             conn.close()
             return jsonify({"success": False, "error": error}), 400
+        conn.commit()
+        notify_creators_async(campaign["id"])
+        campaign = _load_campaign(cursor, token)
+        payload = _build_roster_response(cursor, campaign)
+        conn.close()
+        return jsonify(payload), 200
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@brand_pr_roster_bp.route("/r/<token>/add-pick", methods=["POST"])
+def add_pick(token):
+    """After the lock: fill an unused gift seat. A brand that locked 1 of its 5 still has 4 to use.
+
+    The creator goes straight to ships (their address unlocks) and gets the usual "you were picked" email.
+    A shipped campaign goes back to locked, since the new box hasn't gone out yet.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        app_id = int(data.get("application_id") or 0)
+        if not app_id:
+            return jsonify({"success": False, "error": "application_id required"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        _ensure_schema(cursor, conn)
+        campaign = _load_campaign(cursor, token)
+        if not campaign:
+            conn.close()
+            return jsonify({"success": False, "error": "Roster link not found or expired"}), 404
+        if campaign.get("status") not in ("locked", "shipped"):
+            conn.close()
+            return jsonify({"success": False, "error": "Pick creators, then lock your list"}), 400
+
+        cursor.execute(
+            """
+            SELECT id, status, creator_id FROM brand_pr_applications
+            WHERE id = %s AND brand_id = %s AND (campaign_id IS NULL OR campaign_id = %s)
+            """,
+            (app_id, campaign["brand_id"], campaign["id"]),
+        )
+        app = cursor.fetchone()
+        if not app:
+            conn.close()
+            return jsonify({"success": False, "error": "Application not found"}), 404
+        if app["status"] in ("ships", "posted"):
+            payload = _build_roster_response(cursor, campaign)
+            conn.close()
+            return jsonify(payload), 200
+        if app["status"] != "review":
+            conn.close()
+            return jsonify({"success": False, "error": "Creator is not available to pick"}), 400
+
+        _billing, subscribed, slot_limit = _roster_access(cursor, campaign)
+        picked = _picked_count(cursor, campaign)
+        if picked >= slot_limit:
+            if not subscribed:
+                return _paywall_response(cursor, conn, campaign, "pick_limit", app_id)
+            conn.close()
+            return jsonify({"success": False, "error": f"All {slot_limit} gift seats are used"}), 400
+        if not subscribed:
+            visible = {c["application_id"] for c in _build_roster_response(cursor, campaign)["creators"]}
+            if app_id not in visible:
+                return _paywall_response(cursor, conn, campaign, "full_list", app_id)
+
+        cursor.execute(
+            """
+            UPDATE brand_pr_applications
+            SET status = 'ships', campaign_id = COALESCE(campaign_id, %s), updated_at = NOW()
+            WHERE id = %s AND status = 'review'
+            """,
+            (campaign["id"], app_id),
+        )
+        selected = _selected_ids(campaign)
+        if app_id not in selected:
+            _save_selected(cursor, campaign["id"], selected + [app_id])
+        if campaign.get("status") == "shipped":
+            cursor.execute(
+                "UPDATE brand_pr_campaigns SET status = 'locked', updated_at = NOW() WHERE id = %s",
+                (campaign["id"],),
+            )
+        _record_roster_event(
+            cursor,
+            "roster_add_pick",
+            brand_id=campaign["brand_id"],
+            creator_id=app["creator_id"],
+            meta={"campaign_id": campaign["id"], "application_id": app_id, "seat": picked + 1},
+        )
         conn.commit()
         notify_creators_async(campaign["id"])
         campaign = _load_campaign(cursor, token)
