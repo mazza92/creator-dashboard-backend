@@ -999,6 +999,7 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
             except Exception:
                 pass
         from services.autopilot_health import email_autopilot_blocked
+        from services.checkout_recovery import email_second_recovery
         from services.founder_wins import email_founder_wins
         from services.new_brand_push import email_new_brand_pushes
         from services.pro_delivery_watch import email_founder_delivery
@@ -1011,7 +1012,8 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
                     email_founder_delivery,
                     email_month_reports,
                     email_unsent_briefs, email_renewal_notes, email_monday_boards,
-                    email_ugc_roundups, email_paywall_followups, email_pro_week, email_weekly_digests):
+                    email_ugc_roundups, email_paywall_followups, email_pro_week, email_weekly_digests,
+                    email_second_recovery):
             try:
                 emails += job(conn, dry_run=dry_run, send_fn=send_fn, test_email=test_email)
             except Exception as err:
