@@ -29,7 +29,12 @@ DELIVERY_COLUMNS = {
     "delivered_at": "TIMESTAMPTZ",
     "picked_notified_at": "TIMESTAMPTZ",
     "shipped_notified_at": "TIMESTAMPTZ",
+    "variant_answer": "TEXT",
+    "variant_answered_at": "TIMESTAMPTZ",
 }
+# A mistaken "shipped" can be undone this long after the click.
+UNSHIP_WINDOW_HOURS = 24
+MAX_VARIANT_LEN = 120
 CREATOR_NOTICE_WINDOW_DAYS = 21
 CONTENT_DUE_DAYS = 10
 # Past this, the creator can't apply for more gifted PR until they deliver.
@@ -54,6 +59,8 @@ BRIEF_FIELDS = {
     "must_include": 500,
     "avoid": 300,
     "tags": 160,
+    # e.g. "Which bedsheet size do you need? Twin, Full, Queen or King". Picked creators answer it on Newcollab.
+    "variant_question": 160,
 }
 
 _READY = False
@@ -245,6 +252,119 @@ def _brief_teaser(row: dict) -> str:
     )
 
 
+def _variant_ask(row: dict) -> str:
+    brief = brief_public(row.get("brief"))
+    question = (brief or {}).get("variant_question")
+    if not question:
+        return ""
+    return (
+        '<p style="margin: 0 0 16px; padding: 12px 14px; background: #fff7ed; border-radius: 10px; '
+        'font-size: 15px; line-height: 1.5; color: #1d1d1f;">'
+        f'<b>{escape(safe_brand_name(row.get("brand_name")))} asks:</b> {escape(question)}<br>'
+        '<span style="color: #6e6e73;">Answer on Newcollab so they send the right one.</span></p>'
+    )
+
+
+def can_unship(shipped_at: Any, now: Optional[datetime] = None) -> bool:
+    if not isinstance(shipped_at, datetime):
+        return False
+    shipped = shipped_at if shipped_at.tzinfo else shipped_at.replace(tzinfo=timezone.utc)
+    return (now or datetime.now(timezone.utc)) - shipped <= timedelta(hours=UNSHIP_WINDOW_HOURS)
+
+
+def save_variant_answer(cursor, *, creator_id: int, application_id: int, answer: Any) -> tuple:
+    """Picked creator answers the brand's size / shade / variant question. Returns (answer, error)."""
+    text = " ".join(str(answer or "").split())[:MAX_VARIANT_LEN]
+    if not text:
+        return None, "Add your answer"
+    cursor.execute(
+        """
+        UPDATE brand_pr_applications SET variant_answer = %s, variant_answered_at = NOW(), updated_at = NOW()
+        WHERE id = %s AND creator_id = %s AND status IN ('ships', 'posted')
+        RETURNING id
+        """,
+        (text, application_id, creator_id),
+    )
+    if not cursor.fetchone():
+        return None, "Application not found"
+    return text, None
+
+
+def unship(cursor, campaign: dict, application_id: Optional[int] = None,
+           now: Optional[datetime] = None) -> tuple:
+    """Undo a mistaken "shipped" within UNSHIP_WINDOW_HOURS. Returns (rows_to_correct, error).
+
+    Reverts the creator(s), the campaign status and, when this campaign was the brand's free one, the
+    free-campaign use. rows_to_correct are creators who already got the "on its way" email."""
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=UNSHIP_WINDOW_HOURS)
+    cursor.execute(
+        """
+        SELECT a.id, a.shipped_notified_at, u.email, u.first_name
+        FROM brand_pr_applications a
+        JOIN creators cr ON cr.id = a.creator_id
+        JOIN users u ON u.id = cr.user_id
+        WHERE a.brand_id = %s AND a.campaign_id = %s AND a.status = 'ships'
+          AND a.shipped_at IS NOT NULL AND a.shipped_at >= %s
+          AND (%s::int IS NULL OR a.id = %s::int)
+        """,
+        (campaign["brand_id"], campaign["id"], cutoff, application_id, application_id),
+    )
+    rows = [dict(r) for r in cursor.fetchall() or []]
+    if not rows:
+        return None, f"Only shipments marked in the last {UNSHIP_WINDOW_HOURS} hours can be undone"
+    ids = [r["id"] for r in rows]
+    cursor.execute(
+        """UPDATE brand_pr_applications SET shipped_at = NULL, shipped_notified_at = NULL, updated_at = NOW()
+           WHERE id = ANY(%s)""",
+        (ids,),
+    )
+    if campaign.get("status") == "shipped":
+        cursor.execute(
+            "UPDATE brand_pr_campaigns SET status = 'locked', shipped_at = NULL, updated_at = NOW() WHERE id = %s",
+            (campaign["id"],),
+        )
+        cursor.execute(
+            "SELECT 1 FROM brand_pr_campaigns WHERE brand_id = %s AND id <> %s AND shipped_at IS NOT NULL LIMIT 1",
+            (campaign["brand_id"], campaign["id"]),
+        )
+        if not cursor.fetchone():  # this was their free campaign: it counts again when they really ship
+            cursor.execute(
+                """UPDATE brand_billing SET status = 'none', free_campaigns_used = 0, updated_at = NOW()
+                   WHERE brand_id = %s AND status = 'trial_used' AND stripe_subscription_id IS NULL""",
+                (campaign["brand_id"],),
+            )
+    return [r for r in rows if r.get("shipped_notified_at") and r.get("email")], None
+
+
+def build_creator_unshipped_email(row: dict) -> dict:
+    brand = safe_brand_name(row.get("brand_name"))
+    subject = f"Update on your {brand} box"
+    inner = "".join([
+        _p(f"Hi {escape(_first_name(row.get('first_name')))},"),
+        _p(f"Quick correction: {escape(brand)} marked your PR box as shipped by mistake. It hasn't left yet."),
+        _variant_ask(row),
+        _p("You'll get an email from us the moment it's really on its way. Nothing to do until then."),
+    ])
+    url = _link("/creator/dashboard/pr-brands", "roster_creator", "unshipped", {"picked": row["id"]})
+    return {"subject": subject, "html": _wrap(subject, f"Your {brand} box hasn't shipped yet.", inner, url,
+                                              "See my PR box"), "url": url}
+
+
+def notify_unshipped_async(rows: list, brand_name: str, brief: Any) -> None:
+    def run():
+        for row in rows or []:
+            try:
+                payload = build_creator_unshipped_email({**row, "brand_name": brand_name, "brief": brief})
+                res = _default_send(row["email"], payload["subject"], payload["html"], "roster_creator_unshipped")
+                if not res.get("success"):
+                    print(f"[roster-delivery] unshipped email failed app={row['id']}: {res.get('error')}")
+            except Exception:
+                traceback.print_exc()
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 def build_creator_brief_added_email(row: dict) -> dict:
     brand = safe_brand_name(row.get("brand_name"))
     subject = f"{brand} added a brief for your post"
@@ -252,6 +372,7 @@ def build_creator_brief_added_email(row: dict) -> dict:
         _p(f"Hi {escape(_first_name(row.get('first_name')))},"),
         _p(f"{escape(brand)} just shared what they'd love to see in your content."),
         _brief_teaser(row),
+        _variant_ask(row),
         _p("Take a minute to read it before you film. It's the easiest way to get picked again."),
     ])
     url = _link("/creator/dashboard/pr-brands", "roster_creator", "brief", {"picked": row["id"]})
@@ -319,6 +440,7 @@ def build_creator_picked_email(row: dict, *, already_shipped: bool = False) -> d
         _p(f"Hi {escape(_first_name(row.get('first_name')))},"),
         _p(f"Good news: {escape(brand)} picked you from their creator roster. They're sending you {gift} for free."),
         _brief_teaser(row),
+        _variant_ask(row),
         _p("<b>What happens next</b>"),
         _steps([
             ship_line,
