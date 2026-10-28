@@ -730,7 +730,6 @@ def search(conn, ctx: Dict[str, Any]) -> Dict[str, Any]:
     ctx = {**ctx, "niche": niche}
     if niche in {str(c).lower() for c in ctx.get("avoid_categories") or []}:
         return {"status": "excluded_category", "niche": niche}
-    finalize_stale(conn)
     cards = ranked(conn, ctx)
     fresh_at = last_topup(conn, niche)
     fresh = bool(fresh_at) and _now() - fresh_at < FRESH_FOR
@@ -880,7 +879,11 @@ def poll(conn, run_id: int, ctx: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def finalize_stale(conn, limit: int = 1) -> None:
-    """Ingest runs nobody polled to the end (tab closed), so paid results aren't lost."""
+    """Ingest runs nobody polled to the end (tab closed), so paid results aren't lost.
+
+    Cron only (polly alerts): ingesting a run (fetch, classify, store covers) can take over a minute, so it
+    must never run inside someone's scan request.
+    """
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("""SELECT * FROM discovery_runs WHERE status = 'running'
                      AND COALESCE((params->>'round_started_at')::timestamptz, created_at) < NOW() - INTERVAL '45 seconds'

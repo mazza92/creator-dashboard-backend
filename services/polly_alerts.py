@@ -978,6 +978,16 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
             except Exception:
                 pass
         try:
+            from services.gifting_radar import finalize_stale
+
+            finalize_stale(conn, limit=1)  # one abandoned TikTok run per pass, kept out of user requests
+        except Exception as err:
+            print(f"[Polly alerts] radar finalize skipped: {err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        try:
             from services.retention_context import run_pauses
 
             autopilot["pauses"] = run_pauses(conn)  # Pro off when a pause starts, back on when billing restarts
