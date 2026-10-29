@@ -805,7 +805,7 @@ def get_apply_pack(brand_id):
                 "examples": examples,
                 "posts": posts or [],
                 "shipping": shipping,
-                "already_applied": bool(existing),
+                "already_applied": bool(existing) and existing["status"] != "confirm",
                 "apply_status": existing["status"] if existing else None,
                 "media_pending": media_pending,
                 "transparency": transparency,
@@ -957,12 +957,38 @@ def submit_apply(brand_id):
 
         cursor.execute(
             """
-            SELECT id FROM brand_pr_applications
+            SELECT id, status FROM brand_pr_applications
             WHERE creator_id = %s AND brand_id = %s
             """,
             (creator_id, brand_id),
         )
-        if cursor.fetchone():
+        existing = cursor.fetchone()
+        if existing and existing["status"] == "confirm":
+            # Applied on the old listing: this apply confirms it (posts, address, terms). No credit used.
+            cursor.execute(
+                """
+                UPDATE brand_pr_applications
+                SET status = 'review', selected_posts = %s, shipping_address = %s, agreed_at = NOW(), updated_at = NOW()
+                WHERE id = %s AND status = 'confirm'
+                RETURNING id, status, applied_at
+                """,
+                (Json(selected), Json(addr), existing["id"]),
+            )
+            app_row = cursor.fetchone()
+            if save_shipping:
+                _save_shipping(cursor, creator_id, addr)
+            _record_event(cursor, creator_id, "apply_confirmed", brand_id=brand_id, source=payload.get("source"),
+                          meta={"application_id": existing["id"]})
+            conn.commit()
+            return jsonify({
+                "success": True,
+                "application_id": app_row["id"],
+                "status": app_row["status"],
+                "applied_at": app_row["applied_at"].isoformat() if app_row.get("applied_at") else None,
+                "confirmed": True,
+                "quota": get_creator_unlock_balance(creator_id),
+            })
+        if existing:
             return jsonify({"success": False, "error": "Already applied", "already_applied": True}), 409
 
         cursor.execute(

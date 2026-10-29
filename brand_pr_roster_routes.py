@@ -77,13 +77,15 @@ _SCHEMA_READY = False
 _SCHEMA_LOCK = threading.Lock()
 _ROSTER_APP_COLUMNS = ("campaign_id", "declined_at", "shipped_at")
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
-PUBLIC_APP_STATUSES = ("review", "ships", "posted", "declined")
+# "confirm": applied on an old listing, waiting to add an address and accept the terms (services/listing_import).
+PUBLIC_APP_STATUSES = ("review", "ships", "posted", "declined", "confirm")
 # Pro includes a monthly placement, so Pro applicants lead every roster.
 PRO_FIRST_SQL = (
     "(LOWER(COALESCE(c.subscription_tier, '')) = 'pro' "
     "AND LOWER(COALESCE(c.subscription_status, '')) = 'active')"
 )
 ADMIN_APP_STATUSES = PUBLIC_APP_STATUSES + ("hidden",)
+CONFIRM_PENDING = "This creator is confirming their address. You can pick them once they do."
 
 DEFAULT_DEAL_CHIPS = [
     "Organic posts",
@@ -1470,6 +1472,7 @@ def _build_roster_response(cursor, campaign, *, include_hidden=False):
         current_app.logger.exception("[roster] fit targets failed")
         targets = brand_targets(campaign.get("brand_category"), campaign.get("brand_regions"))
     cards = rank_cards(pairs, targets)
+    cards.sort(key=lambda c: c.get("status") == "confirm")  # still confirming: after everyone pickable
     with_rate = sum(1 for c in cards if c.get("engagement_label"))
     current_app.logger.info("[roster] engagement %s/%s cards have a rate", with_rate, len(cards))
     # Every brand sees everyone who applied. Pro is about gifting more creators and running more campaigns.
@@ -1708,6 +1711,9 @@ def select_creator(token):
         if app["status"] == "declined":
             conn.close()
             return jsonify({"success": False, "error": "Unskip this creator before approving"}), 400
+        if app["status"] == "confirm":
+            conn.close()
+            return jsonify({"success": False, "error": CONFIRM_PENDING}), 400
         if app["status"] not in ("review",):
             conn.close()
             return jsonify({"success": False, "error": "Creator is not available to pick"}), 400
@@ -2021,6 +2027,9 @@ def add_pick(token):
             payload = _build_roster_response(cursor, campaign)
             conn.close()
             return jsonify(payload), 200
+        if app["status"] == "confirm":
+            conn.close()
+            return jsonify({"success": False, "error": CONFIRM_PENDING}), 400
         if app["status"] != "review":
             conn.close()
             return jsonify({"success": False, "error": "Creator is not available to pick"}), 400
@@ -3072,12 +3081,20 @@ def cron_roster_waiting_emails():
 
         minted = []
         pro = None
+        listing = None
         if not dry_run and not test_email and not brand_id:
             conn = get_db_connection()
             try:
                 cursor = conn.cursor(cursor_factory=RealDictCursor)
                 minted = auto_mint_waiting_rosters(cursor)
                 conn.commit()
+            except Exception:
+                conn.rollback()
+                traceback.print_exc()
+            try:
+                from services.listing_import import process_listing_import
+
+                listing = process_listing_import(conn)
             except Exception:
                 conn.rollback()
                 traceback.print_exc()
@@ -3108,6 +3125,7 @@ def cron_roster_waiting_emails():
             "dry_run": dry_run,
             "minted_brand_ids": minted,
             "pro_placement": pro,
+            "listing_import": listing,
             "stats": stats,
             "delivery": delivery,
         }), 200
