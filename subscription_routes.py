@@ -1314,6 +1314,28 @@ def stripe_webhook():
             cursor.close()
             conn.close()
 
+        elif event['type'] in ('invoice.paid', 'invoice.payment_succeeded'):
+            # Promote Newcollab: a referred creator's first Pro renewal earns their referrer the bonus (once).
+            invoice = event['data']['object']
+            if invoice.get('billing_reason') == 'subscription_cycle':
+                from services.subscription_retention import invoice_customer_id, invoice_subscription_id
+                from services.ugc_program import record_renewal
+
+                conn = get_db_connection()
+                try:
+                    cursor = conn.cursor(cursor_factory=RealDictCursor)
+                    creator = _creator_by_stripe(cursor, invoice_subscription_id(invoice), invoice_customer_id(invoice))
+                    if creator:
+                        cursor.execute('SELECT user_id FROM creators WHERE id = %s', (creator['id'],))
+                        row = cursor.fetchone()
+                        if row and row.get('user_id'):
+                            record_renewal(conn, row['user_id'])
+                except Exception as bonus_err:
+                    conn.rollback()
+                    print(f"[promote] renewal bonus skipped: {bonus_err}")
+                finally:
+                    conn.close()
+
         return jsonify({'success': True}), 200
 
     except Exception as e:

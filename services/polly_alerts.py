@@ -988,6 +988,16 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
             except Exception:
                 pass
         try:
+            from services.ugc_program import refresh as promote_refresh
+
+            autopilot["promote"] = promote_refresh(conn)  # daily view refresh for Promote Newcollab videos
+        except Exception as err:
+            print(f"[Polly alerts] promote refresh skipped: {err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        try:
             from services.retention_context import run_pauses
 
             autopilot["pauses"] = run_pauses(conn)  # Pro off when a pause starts, back on when billing restarts

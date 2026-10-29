@@ -85,6 +85,7 @@ from routes.brand_pipeline import brand_pipeline_bp
 from routes.brand_scan import brand_scan_bp
 from routes.brand_workspace import brand_workspace_bp, init_brand_workspace
 from routes.admin_creators import admin_creators_bp
+from routes.ugc_program import ugc_program_bp
 from routes.ugc_supply import ugc_supply_bp
 from routes.resend_webhooks import resend_webhooks_bp
 from content_submission_routes import content_hub_bp
@@ -394,6 +395,7 @@ app.register_blueprint(admin_reports_bp)
 app.register_blueprint(admin_email_bp)
 app.register_blueprint(brand_pipeline_bp)
 app.register_blueprint(admin_creators_bp)
+app.register_blueprint(ugc_program_bp)
 app.register_blueprint(ugc_supply_bp)
 app.register_blueprint(content_hub_bp)
 app.register_blueprint(creator_approval_bp)
@@ -1007,6 +1009,18 @@ def _placeholder_username(cursor, email):
     return f"creator_{uuid.uuid4().hex[:12]}"
 
 
+def _record_promo_signup(conn, user_id, code):
+    """Promote Newcollab: credit the creator whose referral link (?promo=) brought this signup."""
+    if not code:
+        return
+    try:
+        from services.ugc_program import record_signup
+        record_signup(conn, user_id, code)
+    except Exception as err:
+        conn.rollback()
+        print(f"[promote] referral skipped: {err}")
+
+
 def _create_pending_creator(cursor, user_id, email):
     cursor.execute(
         '''
@@ -1178,6 +1192,7 @@ def google_signup():
             app.logger.info(f"Created new creator with ID: {creator_id}")
 
             conn.commit()
+            _record_promo_signup(conn, user_id, data.get('promo_code'))
 
             _establish_auth_session(user_id, 'creator', creator_id=creator_id)
 
@@ -6406,6 +6421,7 @@ def register_creator_account():
             )
         user_id = cursor.fetchone()['id']
         conn.commit()
+        _record_promo_signup(conn, user_id, data.get('promo_code'))
 
         email_sent = False
         if skip_verify:
