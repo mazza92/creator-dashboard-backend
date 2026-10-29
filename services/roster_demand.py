@@ -80,8 +80,8 @@ LEFT JOIN (
             -- A full list stops being live; creators can still pitch the brand directly.
             CASE WHEN i.brand_id IS NOT NULL AND COALESCE(co.fill_count, 0) < GREATEST(5 * 3, 5 + 8)
                  THEN 1 ELSE 0 END AS inbound,
-            CASE WHEN s.brand_id IS NOT NULL AND COALESCE(co.fill_count, 0) < GREATEST(5 * 3, 5 + 8)
-                 THEN 1 ELSE 0 END AS spotlighted,
+            -- An admin push ("Push to Live now") stays live even past the fill target, until removed.
+            CASE WHEN s.brand_id IS NOT NULL THEN 1 ELSE 0 END AS spotlighted,
             bs.viewed_at,
             bm.emailed_at
         FROM keys k
@@ -96,8 +96,7 @@ LEFT JOIN (
     focused AS (
         SELECT brand_id
         FROM targets
-        WHERE (fill_count >= 3 OR inbound = 1 OR spotlighted = 1)
-          AND fill_count < target
+        WHERE ((fill_count >= 3 OR inbound = 1) AND fill_count < target) OR spotlighted = 1
         ORDER BY spotlighted DESC, inbound DESC, fill_count DESC, brand_id
         LIMIT 8
     )
