@@ -1229,6 +1229,7 @@ def _ig_fetch_embed_post_meta(
             "displayUrl": display or "",
             "caption": caption,
             "timestamp": timestamp,
+            "ownerUsername": str((media.get("owner") or {}).get("username") or ""),
         }
     except Exception as e:
         print(f"[InHouse/IG] embed/shortcode meta error: {e}")
