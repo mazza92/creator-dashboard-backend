@@ -1813,7 +1813,7 @@ def skip_creator(token):
         if not campaign:
             conn.close()
             return jsonify({"success": False, "error": "Roster link not found or expired"}), 404
-        if campaign.get("status") != "active":
+        if campaign.get("status") not in ("active", "locked", "shipped"):  # skip stays open on a rolling roster
             conn.close()
             return jsonify({"success": False, "error": "Picks are locked for this roster"}), 400
 
@@ -1867,7 +1867,7 @@ def unskip_creator(token):
         if not campaign:
             conn.close()
             return jsonify({"success": False, "error": "Roster link not found or expired"}), 404
-        if campaign.get("status") != "active":
+        if campaign.get("status") not in ("active", "locked", "shipped"):  # skip stays open on a rolling roster
             conn.close()
             return jsonify({"success": False, "error": "Picks are locked for this roster"}), 400
 
@@ -2773,7 +2773,7 @@ def admin_spotlight_campaigns():
                 """
                 UPDATE brand_pr_campaigns
                 SET creator_spotlighted_at = NOW(), updated_at = NOW()
-                WHERE id = ANY(%s) AND status = 'active'
+                WHERE id = ANY(%s) AND status IN ('active', 'locked', 'shipped')
                 RETURNING id, brand_id
                 """,
                 (campaign_ids,),

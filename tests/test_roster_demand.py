@@ -93,7 +93,7 @@ class TestFocusAndMint(unittest.TestCase):
     def test_demand_sql_finishes_fuller_lists(self):
         sql = ' '.join(ROSTER_DEMAND_JOIN.split())
         self.assertIn('fill_count >= 3', sql)
-        self.assertIn('ORDER BY spotlighted DESC, inbound DESC, fill_count DESC', sql)
+        self.assertIn('ORDER BY spotlighted DESC, inbound DESC, fill_count ASC', sql)
         self.assertIn('LIMIT 8', sql)
         self.assertIn('t.fill_count', sql)
         self.assertIn('slot_limit', sql)
@@ -113,10 +113,10 @@ class TestFocusAndMint(unittest.TestCase):
         out = pick_open_lists(rows, limit=4)
         self.assertEqual([b["id"] for b in out], [2])
 
-    def test_demand_sql_drops_closed_and_full_lists(self):
+    def test_demand_sql_drops_closed_lists_but_not_full_ones(self):
         sql = ' '.join(ROSTER_DEMAND_JOIN.split())
         self.assertIn("o.closes_at IS NULL OR o.closes_at > NOW()", sql)
-        self.assertIn("COALESCE(co.fill_count, 0) < GREATEST(5 * 3, 5 + 8)", sql)
+        self.assertNotIn("fill_count, 0) < GREATEST", sql)  # no applicant cap
         self.assertIn("WHEN t.spotlighted = 1 OR t.inbound = 1 THEN 1 ELSE 0 END AS is_open", sql)
         self.assertIn("emailed_at", sql)
         self.assertIn("viewed_at", sql)
@@ -150,7 +150,7 @@ class TestFocusAndMint(unittest.TestCase):
         out = merge_spotlighted_open_lists(open_lists, spotlighted, limit=8)
         self.assertEqual([b["id"] for b in out], [9, 1, 2])
 
-    def test_mark_focus_picks_closest_to_full(self):
+    def test_mark_focus_has_no_applicant_cap(self):
         rows = [
             {"id": 1, "status": "active", "fill_count": 1, "fill_target": 15},
             {"id": 2, "status": "active", "fill_count": 11, "fill_target": 15},
@@ -159,7 +159,7 @@ class TestFocusAndMint(unittest.TestCase):
         ]
         out = mark_focus(rows)
         focused = {c["id"] for c in out if c["in_focus"]}
-        self.assertEqual(focused, {2, 3})
+        self.assertEqual(focused, {2, 3, 4})
 
     def test_mark_focus_caps_at_eight(self):
         rows = [
@@ -167,7 +167,9 @@ class TestFocusAndMint(unittest.TestCase):
             for i in range(12)
         ]
         out = mark_focus(rows)
-        self.assertEqual(sum(1 for c in out if c["in_focus"]), 8)
+        focused = [c["id"] for c in out if c["in_focus"]]
+        self.assertEqual(len(focused), 8)
+        self.assertEqual(sorted(focused), list(range(8)))  # fewest applicants first
 
     def test_mark_focus_always_includes_spotlighted(self):
         rows = [

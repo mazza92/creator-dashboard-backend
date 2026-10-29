@@ -22,7 +22,6 @@ from services.pro_roster_placement import _as_dict, _country_code, creator_niche
 from services.audience_fit import audience_mismatch
 from services.roster_fit import REGION_CODES, RELATED, _as_list, brand_targets, niche_group
 from services.roster_delivery import CONTENT_OVERDUE_DAYS
-from services.roster_demand import fill_target
 
 PUSH_KIND = "new_brand_push"
 PUSH_WINDOW = timedelta(hours=72)
@@ -65,10 +64,9 @@ def load_fresh_rosters(conn) -> List[Dict[str, Any]]:
         """,
         (PUSH_KIND, utc_now() - PUSH_WINDOW, utc_now() - PUSH_WINDOW),
     )
-    target = fill_target()
     return [
         dict(r) for r in cur.fetchall() or []
-        if int(r["fill_count"] or 0) < target and int(r["pushed"] or 0) < PUSH_PER_BRAND
+        if int(r["pushed"] or 0) < PUSH_PER_BRAND
         and not looks_like_test_brand(r)
     ]
 

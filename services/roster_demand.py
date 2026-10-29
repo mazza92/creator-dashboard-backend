@@ -26,6 +26,16 @@ ROSTER_PICK_LIMIT = 5
 _SPOTLIGHT_COL_READY = False
 _SPOTLIGHT_COL_LOCK = threading.Lock()
 
+# A pushed campaign (alias c) is live while it's open, or locked/shipped with gift seats left (rolling
+# roster: picked creators ship while new ones keep applying). 5 seats free, 10 on an active subscription.
+SPOTLIGHT_LIVE_SQL = """c.creator_spotlighted_at IS NOT NULL AND (
+    c.status = 'active'
+    OR (c.status IN ('locked', 'shipped')
+        AND (SELECT COUNT(*) FROM brand_pr_applications pa
+             WHERE pa.campaign_id = c.id AND pa.status IN ('ships', 'posted'))
+          < CASE WHEN EXISTS (SELECT 1 FROM brand_billing bb WHERE bb.brand_id = c.brand_id AND bb.status = 'active')
+                 THEN 10 ELSE 5 END))"""
+
 # SQL joined as roster_demand on pr_brands b
 ROSTER_DEMAND_JOIN = """
 LEFT JOIN (
@@ -45,10 +55,9 @@ LEFT JOIN (
           AND (o.closes_at IS NULL OR o.closes_at > NOW())
     ),
     spotlight_ids AS (
-        SELECT DISTINCT brand_id
-        FROM brand_pr_campaigns
-        WHERE status = 'active'
-          AND creator_spotlighted_at IS NOT NULL
+        SELECT DISTINCT c.brand_id
+        FROM brand_pr_campaigns c
+        WHERE """ + SPOTLIGHT_LIVE_SQL + """
     ),
     keys AS (
         SELECT brand_id FROM counts
@@ -77,10 +86,8 @@ LEFT JOIN (
             COALESCE(co.fill_count, 0) AS fill_count,
             LEAST(COALESCE(c.slot_limit, 5), 5) AS slot_limit,
             GREATEST(5 * 3, 5 + 8) AS target,
-            -- A full list stops being live; creators can still pitch the brand directly.
-            CASE WHEN i.brand_id IS NOT NULL AND COALESCE(co.fill_count, 0) < GREATEST(5 * 3, 5 + 8)
-                 THEN 1 ELSE 0 END AS inbound,
-            -- An admin push ("Push to Live now") stays live even past the fill target, until removed.
+            -- No applicant cap: a list stays open while its campaign is (creators see the total applied).
+            CASE WHEN i.brand_id IS NOT NULL THEN 1 ELSE 0 END AS inbound,
             CASE WHEN s.brand_id IS NOT NULL THEN 1 ELSE 0 END AS spotlighted,
             bs.viewed_at,
             bm.emailed_at
@@ -96,8 +103,9 @@ LEFT JOIN (
     focused AS (
         SELECT brand_id
         FROM targets
-        WHERE ((fill_count >= 3 OR inbound = 1) AND fill_count < target) OR spotlighted = 1
-        ORDER BY spotlighted DESC, inbound DESC, fill_count DESC, brand_id
+        WHERE fill_count >= 3 OR inbound = 1 OR spotlighted = 1
+        -- Organic lists with the fewest applicants first, so the same big lists don't hold every slot.
+        ORDER BY spotlighted DESC, inbound DESC, fill_count ASC, brand_id
         LIMIT 8
     )
     SELECT DISTINCT ON (t.brand_id)
@@ -211,9 +219,8 @@ def mark_focus(campaigns):
         if c.get("status") == "active"
         and c.get("id") not in spotlight_ids
         and int(c.get("fill_count") or 0) >= ROSTER_FOCUS_MIN
-        and int(c.get("fill_count") or 0) < int(c.get("fill_target") or fill_target(c.get("slot_limit")))
     ]
-    eligible.sort(key=lambda c: (-int(c.get("fill_count") or 0), int(c.get("id") or 0)))
+    eligible.sort(key=lambda c: (int(c.get("fill_count") or 0), int(c.get("id") or 0)))
     focus_ids = {c.get("id") for c in eligible[:ROSTER_FOCUS_CAP]}
     for c in rows:
         c["in_focus"] = c.get("id") in focus_ids or c.get("id") in spotlight_ids
@@ -280,11 +287,10 @@ def fetch_spotlighted_brand_rows(cursor, exclude_ids=None, limit=8):
         FROM pr_brands b
         {ROSTER_DEMAND_JOIN}
         JOIN (
-            SELECT brand_id, MAX(creator_spotlighted_at) AS spotlighted_at
-            FROM brand_pr_campaigns
-            WHERE status = 'active'
-              AND creator_spotlighted_at IS NOT NULL
-            GROUP BY brand_id
+            SELECT c.brand_id, MAX(c.creator_spotlighted_at) AS spotlighted_at
+            FROM brand_pr_campaigns c
+            WHERE {SPOTLIGHT_LIVE_SQL}
+            GROUP BY c.brand_id
         ) c ON c.brand_id = b.id
         WHERE b.slug IS NOT NULL
           AND COALESCE(b.status, 'published') = 'published'
