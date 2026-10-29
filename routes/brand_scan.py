@@ -127,16 +127,6 @@ def free_scan_for_ip():
     return _read_free(_ip())
 
 
-def _free_scan_ok(ip: str, brand_key: str) -> bool:
-    """Visitors get one free brand scan. Re-opening that same brand is fine. Fails open without Redis;
-    the global daily $ cap still holds."""
-    r = _redis()
-    if r is None or not ip:
-        return True
-    used = _read_free(ip)
-    return not used or used.get("key") == brand_key
-
-
 def _mark_free_scan(ip: str, target: dict, scan_id) -> None:
     import json
 
@@ -162,6 +152,7 @@ def _viewer(conn):
 
 
 GATE_COPY = {
+    "account": "Create a free brand account to run this scan. It takes a minute, and your first scan is on us.",
     "signup": "You've used your free Brand Scan. Try your first campaign free to keep scanning and see every creator.",
     "pending": "Your brand account is being reviewed (usually within 24h). You can scan more brands once it's approved.",
     "daily_limit": "You've scanned 3 brands today. Subscribe for unlimited scans, or come back tomorrow.",
@@ -198,10 +189,11 @@ def scan():
             # Signed up, awaiting approval: one competitor scan (their landing-page one carries over), unlocked.
             if not ws.pending_scan_allowed(conn, me["brand"]["id"], target["key"]):
                 return _gate("pending", target)
-        elif not _free_scan_ok(ip, target["key"]):
-            return _gate("signup", target)
-        out = brand_scan.start(conn, body.get("brand"), can_start=_can_start(ip), redis_client=_redis(),
+        # Signed out: stored reports only. Anything that needs a new (paid) Apify run asks for an account.
+        out = brand_scan.start(conn, body.get("brand"), can_start=bool(me) and _can_start(ip), redis_client=_redis(),
                                ref=str(body.get("ref") or ""), locked=not me)
+        if not me and out.get("note") == "limit":
+            return _gate("account", target)
         if body.get("oref"):
             ws.outreach_mark(conn, str(body["oref"])[:40], "scan_open", {"brand": target["name"]})
         if out.get("status") in ("ready", "empty", "searching"):
