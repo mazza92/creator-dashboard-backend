@@ -412,6 +412,24 @@ def test_links_render_as_label_and_clean_url():
     )
 
 
+def test_label_only_links_show_just_the_name():
+    text = "- [ChatGPT]<https://chatgpt.com/plugins/plugin_x1>"
+    assert bp.text_to_plain(text) == "- ChatGPT (https://chatgpt.com/plugins/plugin_x1)"
+    assert bp.text_to_html(text) == (
+        '<div dir="ltr"><div>- <a href="https://chatgpt.com/plugins/plugin_x1">ChatGPT</a></div></div>'
+    )
+
+
+def test_every_join_email_offers_newcollab_chatgpt_and_claude():
+    texts = [bp.initial_email(v, "Kappel", "Tacy", "r1")[1] for v in bp.VARIANTS]
+    texts += [bp.followup_email(n, "Kappel", "Tacy", "https://newcollab.co/for-brands?oref=r1") for n in (1, 2)]
+    texts += [bp.redirect_email("Kappel", "Tacy", "", "https://newcollab.co/for-brands?oref=r1")]
+    for t in texts:
+        html_body = bp.text_to_html(t)
+        assert bp.CHATGPT_PLUGIN_URL in html_body and bp.CLAUDE_CONNECTOR_URL in html_body
+        assert ">Newcollab</a> (<a" in html_body and ">ChatGPT</a>" in html_body and ">Claude</a>" in html_body
+
+
 def test_brief_link_maps_category_to_niche():
     assert "/for-brands?niche=fitness&ref=cold_email&oref=r1" in bp.brief_link("activewear", "r1")
     assert "niche=lifestyle" in bp.brief_link(None, "r1")

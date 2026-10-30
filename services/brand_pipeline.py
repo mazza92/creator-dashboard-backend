@@ -25,6 +25,7 @@ PIPELINE = "v2"
 # alternate (fresh names, so the A/B test starts clean). No creator names or counts we'd have to verify.
 VARIANTS = ("ugc5", "quick_idea")
 CLAUDE_CONNECTOR_URL = "https://claude.ai/directory/newcollab"
+CHATGPT_PLUGIN_URL = "https://chatgpt.com/plugins/plugin_asdk_app_6abe79ce38148191847a65e16723d8b3"
 SITE_URL = (os.getenv("PUBLIC_SITE_URL") or "https://newcollab.co").rstrip("/")
 PRO_PRICE = "$299/mo"
 TEST_EMAIL = os.getenv("BRAND_OUTREACH_TEST_EMAIL") or "team@newcollab.co"
@@ -64,8 +65,9 @@ LEGACY_STATUS = {
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 _URL_RE = re.compile(r"https?://[^\s<>\"]+")
-# [label](url) in copy: rendered as "label (clean url)", both linked, so tracking params never show.
-_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)")
+# Links in copy. [label](url): rendered "label (clean url)", both linked, so tracking params never show.
+# [label]<url>: just the linked label (for long URLs like the ChatGPT plugin).
+_LINK_RE = re.compile(r"\[([^\]\n]+)\](?:\((https?://[^\s)]+)\)|<(https?://[^\s>]+)>)")
 _HANDLE_RE = re.compile(r"(?<![\w.@])@[A-Za-z0-9_.]{3,}")
 _NUMBER_RE = re.compile(r"\d[\d,.]*")
 
@@ -133,6 +135,10 @@ def link(label: str, url: str) -> str:
     return f"[{label}]({url})"
 
 
+def label_link(label: str, url: str) -> str:
+    return f"[{label}]<{url}>"
+
+
 def _clean_url(url: str) -> str:
     return url.split("?", 1)[0].split("#", 1)[0]
 
@@ -151,10 +157,11 @@ def text_to_html(text: str) -> str:
             continue
         parts, pos = [], 0
         for m in _LINK_RE.finditer(line):
-            href = html.escape(m.group(2))
             parts.append(_autolink(line[pos:m.start()]))
-            parts.append(f'<a href="{href}">{html.escape(m.group(1))}</a> '
-                         f'(<a href="{href}">{html.escape(_clean_url(m.group(2)))}</a>)')
+            url = m.group(2) or m.group(3)
+            href = html.escape(url)
+            a = f'<a href="{href}">{html.escape(m.group(1))}</a>'
+            parts.append(f'{a} (<a href="{href}">{html.escape(_clean_url(url))}</a>)' if m.group(2) else a)
             pos = m.end()
         parts.append(_autolink(line[pos:]))
         rows.append(f"<div>{''.join(parts)}</div>")
@@ -162,8 +169,10 @@ def text_to_html(text: str) -> str:
 
 
 def text_to_plain(text: str) -> str:
-    """The text/plain part: links read "label (clean url)" like the HTML."""
-    return _LINK_RE.sub(lambda m: f"{m.group(1)} ({_clean_url(m.group(2))})", text or "")
+    """The text/plain part: links read "label (clean url)" like the HTML; label-only links keep their full URL."""
+    return _LINK_RE.sub(
+        lambda m: f"{m.group(1)} ({_clean_url(m.group(2))})" if m.group(2) else f"{m.group(1)} ({m.group(3)})",
+        text or "")
 
 
 def _greet(first: str, word: str = "Hey") -> str:
@@ -173,8 +182,12 @@ def _greet(first: str, word: str = "Hey") -> str:
 # --------------------------------------------------------------------------- templates
 
 
-def _join_line(link_url: str) -> str:
-    return f"{link('Newcollab', link_url)} or straight from {link('Claude', CLAUDE_CONNECTOR_URL)} with our connector"
+def _join_block(link_url: str) -> str:
+    return (
+        f"You can try us by listing your brand on {link('Newcollab', link_url)} or by using your official AI platforms:\n"
+        f"- {label_link('ChatGPT', CHATGPT_PLUGIN_URL)}\n"
+        f"- {label_link('Claude', CLAUDE_CONNECTOR_URL)}"
+    )
 
 
 def initial_email(variant: str, brand: str, first: str, ref: str = "", category: Optional[str] = None) -> Tuple[str, str]:
@@ -185,7 +198,8 @@ def initial_email(variant: str, brand: str, first: str, ref: str = "", category:
             f"PR + UGC swap for {brand}?",
             f"{greet}\n\n"
             f"Quick idea for {brand}: 5 creators make UGC you can run as ads, and all it costs is product + shipping.\n\n"
-            f"• Join in {link('Newcollab', signup)} or {link('Claude', CLAUDE_CONNECTOR_URL)}\n"
+            f"• Join on {link('Newcollab', signup)}, or from {label_link('ChatGPT', CHATGPT_PLUGIN_URL)} "
+            f"or {label_link('Claude', CLAUDE_CONNECTOR_URL)}\n"
             "• Each one posts organically and sends you the raw content\n"
             "• No agency, no platform fee\n\n"
             f"Want me to line up 5 who fit {brand}?\n\n{SIGNATURE}",
@@ -196,8 +210,8 @@ def initial_email(variant: str, brand: str, first: str, ref: str = "", category:
         f"Want 5 fresh UGC videos for {brand}'s ads?\n\n"
         f"We match you with 5 creators who fit {brand}. They're free: you only cover product + shipping, "
         "and each one sends you UGC you can run as ads.\n\n"
-        f"Join in {_join_line(signup)}.\n\n"
-        f"Want me to line up 5 who fit {brand}?\n\n{SIGNATURE}",
+        f"{_join_block(signup)}\n\n"
+        f"Worth a look?\n\n{SIGNATURE}",
     )
 
 
@@ -207,14 +221,14 @@ def followup_email(step: int, brand: str, first: str, link_url: str, ref: str = 
         return (
             f"{greet}\n\nBumping this in case it got buried. 5 creators, UGC you can run as ads, "
             f"and you only cover product + shipping.\n\n"
-            f"Join in {_join_line(link_url)}.\n\n"
+            f"{_join_block(link_url)}\n\n"
             "If you're not the right person, who handles creators or UGC?\n\nMazza"
         )
     if step == 2:
         return (
             f"{greet}\n\nEasiest next step: your first gifted campaign is free. You pick the creators, ship "
             f"product, and get videos back to run as ads.\n\n"
-            f"Start in {_join_line(link_url)}.\n\n"
+            f"{_join_block(link_url)}\n\n"
             f"If you want more campaigns after that, Pro is {PRO_PRICE}.\n\nMazza"
         )
     return (
@@ -237,7 +251,7 @@ def redirect_email(brand: str, first: str, referrer: str, link_url: str) -> str:
         f"{_greet(first, 'Hi')}\n\n{who} pointed me your way for creator partnerships at {brand}.\n\n"
         "Short version: small creators post about your product and send you videos you can run as ads. "
         "Your first gifted campaign is free, you only ship product, and you approve every creator first.\n\n"
-        f"Start in {_join_line(link_url)}.\n\nWorth a look?\n\n{SIGNATURE}"
+        f"{_join_block(link_url)}\n\nWorth a look?\n\n{SIGNATURE}"
     )
 
 
