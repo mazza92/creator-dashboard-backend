@@ -46,6 +46,8 @@ FRESH_FOR = timedelta(hours=48)
 INSTANT_MIN = 5
 PAGE = 7
 RUN_TIMEOUT = timedelta(minutes=4)
+# A run still empty at RUN_TIMEOUT is usually waiting in Apify's queue: give it until here before failing.
+RUN_HARD_TIMEOUT = timedelta(minutes=8)
 MIN_CREATORS = 2
 DRAFT_NOTE = "TIKTOK RADAR"
 
@@ -576,7 +578,7 @@ def _inflight(conn, niche: str) -> Optional[int]:
     cur = conn.cursor()
     cur.execute("""SELECT id FROM discovery_runs WHERE niche = %s AND status IN ('running', 'ingesting')
                      AND COALESCE((params->>'round_started_at')::timestamptz, created_at) > NOW() - %s
-                   ORDER BY id DESC LIMIT 1""", (niche, RUN_TIMEOUT))
+                   ORDER BY id DESC LIMIT 1""", (niche, RUN_HARD_TIMEOUT))
     row = cur.fetchone()
     return int(row[0]) if row else None
 
@@ -797,13 +799,22 @@ def _finish(conn, run: Dict[str, Any]) -> Dict[str, Any]:
     state = source.run_state(run["apify_run_ids"][-1])
     age = _now() - _round_started(run)
     if not state["finished"]:
-        if age > RUN_TIMEOUT:
+        if age <= RUN_TIMEOUT:
+            return {"done": False, "items": state["items_so_far"]}
+        # Slow run: keep what it already found (stop it, ingest the partial dataset) instead of throwing it away.
+        found = source.fetch_items(state["dataset_id"], limit=1) if state.get("dataset_id") else []
+        if found:
+            source.abort_run(run["apify_run_ids"][-1])
+            state = {**state, "finished": True, "ok": True, "partial": True}
+        elif age <= RUN_HARD_TIMEOUT:
+            return {"done": False, "items": 0}
+        else:
+            source.abort_run(run["apify_run_ids"][-1])
             cur = conn.cursor()
             cur.execute("UPDATE discovery_runs SET status = 'failed', error = 'timeout', finished_at = NOW() "
                         "WHERE id = %s AND status = 'running'", (run["id"],))
             conn.commit()
             return {"done": True, "failed": True}
-        return {"done": False, "items": state["items_so_far"]}
     cur = conn.cursor()
     cur.execute("UPDATE discovery_runs SET status = 'ingesting' WHERE id = %s AND status = 'running' RETURNING id",
                 (run["id"],))
@@ -847,7 +858,7 @@ def poll(conn, run_id: int, ctx: Dict[str, Any]) -> Dict[str, Any]:
     if run["status"] in ("running", "ingesting"):
         age = (_now() - _round_started(run)).total_seconds()
         deeper = int((run.get("params") or {}).get("round") or 1) > 1
-        if run["status"] == "ingesting" and age > (RUN_TIMEOUT + timedelta(minutes=2)).total_seconds():
+        if run["status"] == "ingesting" and age > (RUN_HARD_TIMEOUT + timedelta(minutes=2)).total_seconds():
             cur = conn.cursor()
             cur.execute("UPDATE discovery_runs SET status = 'failed', error = 'ingest stalled', finished_at = NOW() "
                         "WHERE id = %s AND status = 'ingesting'", (run_id,))
