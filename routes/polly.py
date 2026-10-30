@@ -1312,8 +1312,10 @@ def creator_hooks_poll(run_id):
 
         if not ch.owns(conn, creator_id, run_id):
             return jsonify({"success": False, "error": "Not found"}), 404
-        return jsonify({"success": True, "scan": json_safe(_hooks_reply(
-            bi.poll(conn, run_id, "creator_hooks", redis_client=_redis())))})
+        scan = bi.poll(conn, run_id, "creator_hooks", redis_client=_redis())
+        if scan.get("status") in ("ready", "empty"):
+            ch.mark_viewed(conn, creator_id, run_id)  # seen in chat: no "ready" email needed
+        return jsonify({"success": True, "scan": json_safe(_hooks_reply(scan))})
     except Exception as err:
         conn.rollback()
         print(f"[Polly] hooks poll failed: {type(err).__name__}: {err!r}")

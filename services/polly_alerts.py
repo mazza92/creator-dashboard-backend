@@ -988,6 +988,16 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
             except Exception:
                 pass
         try:
+            from services.creator_hooks import notify_ready
+
+            autopilot["hooks_ready"] = notify_ready(conn)  # email slow hook scans once they finish
+        except Exception as err:
+            print(f"[Polly alerts] hooks ready email skipped: {err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        try:
             from services.ugc_program import refresh as promote_refresh
 
             autopilot["promote"] = promote_refresh(conn)  # daily view refresh for Promote Newcollab videos
