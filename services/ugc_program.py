@@ -18,9 +18,9 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-CPM_CENTS = 500                 # $5 per 1,000 views
-MIN_VIEWS = 1000                # nothing below this
-VIDEO_CAP_CENTS = 5000          # $50 per video
+CPM_CENTS = 250                 # $2.50 per 1,000 views (above SideShift's typical view bonus, ~2x Whop's median)
+MIN_VIEWS = 2000                # nothing below this: 1K-view posts rarely bring signups
+VIDEO_CAP_CENTS = 4000          # $40 per video (16K views)
 CREATOR_MONTH_CAP_CENTS = 15000  # $150 per creator per calendar month (by submission)
 BUDGET_CENTS = int(os.getenv("UGC_PROGRAM_BUDGET_CENTS") or 50000)  # $500 total
 PRO_BONUS_CENTS = 1000          # $10 per referred creator after their first Pro renewal
