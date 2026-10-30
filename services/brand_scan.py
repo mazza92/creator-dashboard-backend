@@ -523,7 +523,7 @@ def poll(conn, scan_id: int, *, redis_client=None, locked: bool = True) -> Dict[
     if run["status"] in ("running", "ingesting"):
         age = _now() - radar._round_started(run)
         if run["status"] == "ingesting":
-            if age < radar.RUN_TIMEOUT + timedelta(minutes=2):
+            if age < radar.RUN_HARD_TIMEOUT + timedelta(minutes=2):
                 return searching(scan_id, target, ingesting=True)
         else:
             try:

@@ -346,7 +346,7 @@ def poll(conn, run_id: int, kind: str, *, brand_name: str = "", redis_client=Non
     if run["status"] in ("running", "ingesting"):
         age = _now() - radar._round_started(run)
         if run["status"] == "ingesting":
-            if age < radar.RUN_TIMEOUT + timedelta(minutes=2):
+            if age < radar.RUN_HARD_TIMEOUT + timedelta(minutes=2):
                 return searching(run_id, niche, kind, ingesting=True)
         else:
             try:
@@ -440,7 +440,9 @@ def deep_build(kind: str, conn, niche: str, question: str, data: Dict[str, Any],
         out["summary"] = (f"We read **{len(videos)} recent {label} posts** from **{len(creators)} creators** across "
                           f"{len(queries)} searches. Here are the most viewed, plus openings several creators reuse.")
     else:
-        out["summary"] = f"We couldn't find recent {label} posts for this yet. Try again in a minute."
+        about = "posts for this question" if kind == "ask" else f"{label} posts"
+        out["summary"] = (f"TikTok search took too long this time, so there's nothing to show yet. Try again in a minute."
+                          if note == "source_down" else f"We couldn't find recent {about} yet. Try again in a minute.")
     out["top_videos"] = [scan.video_card(v, "", now, thumb) for v in videos[:12]]
     if kind == "niche_creators":
         out["creators"] = scan.creator_rows(videos, "")[:30]
@@ -571,7 +573,7 @@ def deep_poll(conn, run: Dict[str, Any], kind: str, *, brand_name: str = "", red
     if run["status"] in ("running", "ingesting"):
         age = _now() - radar._round_started(run)
         if run["status"] == "ingesting":
-            if age < radar.RUN_TIMEOUT + timedelta(minutes=2):
+            if age < radar.RUN_HARD_TIMEOUT + timedelta(minutes=2):
                 return deep_searching(run["id"], niche, kind, queries, label, ingesting=True)
         else:
             try:

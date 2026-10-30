@@ -87,6 +87,14 @@ def run_state(run_id: str) -> Dict[str, Any]:
     }
 
 
+def abort_run(run_id: str) -> None:
+    """Stop a slow run; what it already pushed to its dataset stays readable."""
+    try:
+        requests.post(f"{_API}/actor-runs/{run_id}/abort", headers=_headers(), timeout=20)
+    except Exception as err:  # best effort: the run ends on its own anyway
+        print(f"[radar] abort failed run={run_id}: {err}")
+
+
 def fetch_items(dataset_id: str, limit: int = 400) -> List[Dict[str, Any]]:
     resp = requests.get(f"{_API}/datasets/{dataset_id}/items", headers=_headers(),
                         params={"clean": 1, "limit": int(limit)}, timeout=60)
