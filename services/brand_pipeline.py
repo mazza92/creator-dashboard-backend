@@ -184,7 +184,7 @@ def _greet(first: str, word: str = "Hey") -> str:
 
 def _join_block(link_url: str) -> str:
     return (
-        f"You can try us by listing your brand on {link('Newcollab', link_url)} or by using your official AI platforms:\n"
+        f"You can try us by listing your brand on {link('Newcollab', link_url)} or with our official apps in:\n"
         f"- {label_link('ChatGPT', CHATGPT_PLUGIN_URL)}\n"
         f"- {label_link('Claude', CLAUDE_CONNECTOR_URL)}"
     )
