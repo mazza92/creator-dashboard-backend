@@ -9,7 +9,7 @@ Allowance: 1 scan for free creators (ever), 4 a calendar month on Pro. Re-openin
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from psycopg2.extras import RealDictCursor
@@ -42,6 +42,14 @@ def ensure_table(conn) -> None:
         )
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_polly_hook_scans_creator ON polly_hook_scans (creator_id, created_at)")
+    # viewed_at: the creator saw the finished playbook in chat. notified_at: we emailed it (or decided not to).
+    cur.execute("""SELECT 1 FROM information_schema.columns
+                   WHERE table_name = 'polly_hook_scans' AND column_name = 'notified_at'""")
+    if not cur.fetchone():
+        cur.execute("ALTER TABLE polly_hook_scans ADD COLUMN IF NOT EXISTS viewed_at TIMESTAMPTZ")
+        cur.execute("ALTER TABLE polly_hook_scans ADD COLUMN IF NOT EXISTS notified_at TIMESTAMPTZ")
+        # Scans from before this existed were already seen (or abandoned long ago): never email them.
+        cur.execute("UPDATE polly_hook_scans SET notified_at = NOW() WHERE notified_at IS NULL")
     conn.commit()
     _READY = True
 
@@ -104,3 +112,101 @@ def gate_message(allow: Dict[str, Any]) -> str:
                 "you ran stays in this chat.")
     return ("Your free hook scan is used. On Pro you get 4 a month, plus Polly sends your pitches every weekday "
             "from your Gmail.")
+
+
+# ---------------------------------------------------------------------------
+# "Your playbook is ready" email, for scans that finish after the creator left the chat
+# ---------------------------------------------------------------------------
+
+EMAIL_KIND = "hooks_ready"
+NOTIFY_AFTER = timedelta(minutes=2)    # quick scans are seen in chat; only slow ones get an email
+NOTIFY_WITHIN = timedelta(days=2)      # don't email about a scan from last week
+NOTIFY_PER_PASS = 2                    # finishing a scan writes the answer (an LLM call): keep cron passes short
+
+
+def mark_viewed(conn, creator_id: int, run_id: int) -> None:
+    ensure_table(conn)
+    cur = conn.cursor()
+    cur.execute("UPDATE polly_hook_scans SET viewed_at = NOW() WHERE creator_id = %s AND run_id = %s AND viewed_at IS NULL",
+                (creator_id, run_id))
+    conn.commit()
+
+
+def playbook_url(run_id: int) -> str:
+    from urllib.parse import urlencode
+
+    from services.creator_directory_search import frontend_base
+
+    q = urlencode({"hooks": run_id, "utm_source": "email", "utm_medium": "polly_alert", "utm_campaign": EMAIL_KIND})
+    return f"{frontend_base().rstrip('/')}/creator/dashboard/for-you?{q}"
+
+
+def build_ready_email(first_name: str, scan: Dict[str, Any], niche: str, band: str, run_id: int,
+                      unsubscribe_url: str = "") -> Dict[str, str]:
+    from html import escape
+
+    from services.brand_insights import niche_label
+    from services.polly_alerts import render_email
+
+    stats = scan.get("stats") or {}
+    label = escape(niche_label(niche))
+    subject = "Your hooks playbook is ready"
+    read = ""
+    if stats.get("videos"):
+        read = (f" I read <strong>{int(stats['videos']):,} posts</strong> from "
+                f"<strong>{int(stats.get('creators') or 0):,} creators</strong> your size.")
+    lines = [
+        f"Your scan of <strong>{label}</strong> creators with {escape(band or 'your')} followers is done.{read}",
+        "Inside: the opening lines working right now, the formats getting views, and the brands gifting creators "
+        "your size, ready to pitch.",
+    ]
+    buttons = [{"label": "Open my playbook", "href": playbook_url(run_id)}]
+    return {"subject": subject, "html": render_email(first_name, subject, lines, buttons, unsubscribe_url)}
+
+
+def notify_ready(conn, *, poll_fn=None, send_fn=None, now: Optional[datetime] = None) -> Dict[str, int]:
+    """Cron: finish hook scans the creator walked away from, and email them once each when ready."""
+    from psycopg2.extras import RealDictCursor
+
+    from services.polly_alerts import _default_send, _log_email, _recipient, _unsubscribe_url, ensure_alert_tables
+
+    ensure_table(conn)
+    now = now or _now()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("""SELECT * FROM polly_hook_scans
+                   WHERE run_id IS NOT NULL AND viewed_at IS NULL AND notified_at IS NULL
+                     AND created_at < %s AND created_at > %s
+                   ORDER BY created_at LIMIT %s""",
+                (now - NOTIFY_AFTER, now - NOTIFY_WITHIN, NOTIFY_PER_PASS))
+    rows = [dict(r) for r in cur.fetchall()]
+    if not rows:
+        return {"checked": 0, "emailed": 0}
+    if poll_fn is None:
+        from routes.brand_scan import _redis
+        from services import brand_insights as bi
+
+        def poll_fn(c, run_id):
+            return bi.poll(c, run_id, "creator_hooks", redis_client=_redis())
+    ensure_alert_tables(conn)
+    send = send_fn or _default_send
+    emailed = 0
+    for row in rows:
+        scan = poll_fn(conn, row["run_id"]) or {}
+        if scan.get("status") == "searching":
+            continue  # still running: next pass
+        mark = conn.cursor()
+        mark.execute("UPDATE polly_hook_scans SET notified_at = NOW() WHERE id = %s", (row["id"],))
+        conn.commit()
+        if scan.get("status") != "ready" or not (scan.get("sections") or scan.get("hooks")):
+            continue  # nothing worth an email; the chat explains it when they come back
+        who = _recipient(conn, row["creator_id"])
+        if not who:
+            continue
+        unsub = _unsubscribe_url(who["user_id"])
+        mail = build_ready_email(who.get("first") or "", scan, row.get("niche") or "", row.get("band") or "",
+                                 row["run_id"], unsub)
+        result = send(who["email"], mail["subject"], mail["html"], unsub, EMAIL_KIND)
+        _log_email(conn, row["creator_id"], EMAIL_KIND, None, row["run_id"], mail["subject"], result)
+        conn.commit()
+        emailed += int(bool(result.get("success")))
+    return {"checked": len(rows), "emailed": emailed}
