@@ -141,8 +141,27 @@ def provisional_name(email: str) -> str:
     return " ".join(w.capitalize() for w in re.split(r"[-_]+", domain) if w)
 
 
-FREE_MAIL = {"gmail", "googlemail", "yahoo", "hotmail", "outlook", "live", "icloud", "me", "aol", "proton",
-             "protonmail", "gmx", "mail", "yandex"}
+FREE_MAIL = {"gmail", "googlemail", "yahoo", "ymail", "rocketmail", "hotmail", "outlook", "live", "msn", "icloud",
+             "me", "mac", "aol", "proton", "protonmail", "pm", "gmx", "mail", "yandex", "zoho", "qq", "163",
+             "naver", "hey", "tutanota", "fastmail", "mailinator", "comcast", "att", "verizon"}
+
+BRAND_EMAIL_ERROR = "Use your brand's work email (like you@yourbrand.com). Personal emails like Gmail or iCloud can't open a brand account."
+BRAND_WEBSITE_ERROR = "Add your brand's website, like yourbrand.com."
+
+
+def is_free_mail(email: str) -> bool:
+    """Personal inboxes (gmail.com, icloud.com, yahoo.co.uk...): not a brand's work email."""
+    domain = email.split("@")[-1].lower() if "@" in (email or "") else ""
+    return not domain or domain.split(".")[0] in FREE_MAIL
+
+
+def new_brand_signup_error(email: str, website: str) -> str:
+    """Brand accounts are for brands: a work email and the brand's website. '' when both look right."""
+    if is_free_mail(email):
+        return BRAND_EMAIL_ERROR
+    if not re.match(r"^https?://[^\s/]+\.[a-z]{2,}(/|$)", website or "", re.I):
+        return BRAND_WEBSITE_ERROR
+    return ""
 
 
 def create_brand_account(conn, *, email: str, password_hash: Optional[str], first_name: str = "", last_name: str = "",

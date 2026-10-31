@@ -96,6 +96,9 @@ def signup():
         return jsonify({"success": False, "error": "Enter a valid work email."}), 400
     if len(password) < 8:
         return jsonify({"success": False, "error": "Use a password of at least 8 characters."}), 400
+    gate = ws.new_brand_signup_error(email, f["website"])
+    if gate:
+        return jsonify({"success": False, "code": "NOT_A_BRAND", "error": gate}), 400
     conn = _conn()
     try:
         existing = ws.find_user(conn, email)
@@ -155,6 +158,9 @@ def google():
             return _signed_in(conn, existing["id"], brand["id"], approval_status=brand.get("approval_status"),
                               needs_profile=not brand.get("profile_completed_at"))
         f = _signup_fields(body)
+        gate = ws.new_brand_signup_error(email, f["website"])  # new accounts only: existing ones signed in above
+        if gate:
+            return jsonify({"success": False, "code": "NOT_A_BRAND", "error": gate}), 400
         name = str(info.get("name") or "").split()
         f["first_name"] = f["first_name"] or (name[0] if name else "")
         f["last_name"] = f["last_name"] or " ".join(name[1:])
