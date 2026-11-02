@@ -35,5 +35,10 @@
       "path": "/api/polly/cron/refresh-profiles",
       "schedule": "20 * * * *"
     }
-  ]
+  ],
+  "git": {
+    "deploymentEnabled": {
+      "claude/*": false
+    }
+  }
 }
