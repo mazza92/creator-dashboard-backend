@@ -30,6 +30,24 @@ SITE_URL = (os.getenv("PUBLIC_SITE_URL") or "https://newcollab.co").rstrip("/")
 PRO_PRICE = "$299/mo"
 TEST_EMAIL = os.getenv("BRAND_OUTREACH_TEST_EMAIL") or "team@newcollab.co"
 
+# Second campaign: pay-per-view UGC (newcollab.co/ugc). Its own pipeline value keeps its sends, A/B stats and
+# follow-ups apart from the v2 gifting sequence. Max 3 emails, and every reply is held for Mazza (no auto-answer).
+UGC_PIPELINE = "ugc_views"
+UGC_VARIANTS = ("per_view", "views_not_videos")
+UGC_URL = f"{SITE_URL}/ugc"
+UGC_SIGNATURE = "Mazza, Newcollab"
+UGC_FOLLOWUP_GAP_DAYS = {1: 3, 2: 4}
+UGC_LAST_STEP = 2
+CAMPAIGNS = (PIPELINE, UGC_PIPELINE)
+
+
+def campaign_of(value: Optional[str]) -> str:
+    return value if value in CAMPAIGNS else PIPELINE
+
+
+def variants_for(campaign: str) -> Tuple[str, ...]:
+    return UGC_VARIANTS if campaign == UGC_PIPELINE else VARIANTS
+
 
 def outreach_live() -> bool:
     """Cold sends reach brands only once BRAND_OUTREACH_LIVE=1. Until then every send is a test to TEST_EMAIL."""
@@ -252,6 +270,44 @@ def redirect_email(brand: str, first: str, referrer: str, link_url: str) -> str:
         "Short version: small creators post about your product and send you videos you can run as ads. "
         "Your first gifted campaign is free, you only ship product, and you approve every creator first.\n\n"
         f"{_join_block(link_url)}\n\nWorth a look?\n\n{SIGNATURE}"
+    )
+
+
+def ugc_initial_email(variant: str, brand: str, first: str) -> Tuple[str, str]:
+    subject = "Pay for views, not UGC videos" if variant == "views_not_videos" else f"{brand} UGC, paid per view"
+    return (
+        subject,
+        f"{_greet(first or 'there', 'Hi')}\n\n"
+        f"Quick idea for {brand}: instead of paying $150+ per UGC video upfront, pay creators per view they "
+        "actually get.\n\n"
+        "You set the rate per 1,000 views and a cap, and you only pay for views delivered. "
+        "The videos that take off become your next Spark Ads.\n\n"
+        f"How it works (1 min): {UGC_URL}\n\n"
+        f"Want me to set up a first test for {brand}? We do the setup.\n\n{UGC_SIGNATURE}",
+    )
+
+
+def ugc_followup_email(step: int, brand: str, first: str) -> str:
+    """Numbers are always an example: views depend on rate and niche (never promise results)."""
+    if step == 1:
+        lead = f"{first}, one example" if first else "One example"
+        return (
+            f"{lead}: at $2.50 per 1,000 views, $500 buys about 160K views from 20+ creator posts, compared with "
+            "3 UGC videos at a fixed fee. Actual views depend on rate and niche.\n\n"
+            f"Worth a test? {UGC_URL}\n\nMazza"
+        )
+    return (
+        f"Last note from me. If paid UGC is on your list this quarter, happy to run a small first campaign for "
+        f"{brand} together. Reply \"test\" and I'll set it up.\n\n"
+        f"Prefer to talk it through first? Here's a {label_link('quick intro call', BOOKING_URL)}.\n\nMazza"
+    )
+
+
+def ugc_reply_draft(first: str) -> str:
+    """Held for Mazza to finish: the per-view campaign never auto-answers."""
+    return (
+        f"{_greet(first or 'there', 'Hi')}\n\nThanks for getting back to me.\n\n[your answer]\n\n"
+        f"How it works: {UGC_URL}\n\nMazza"
     )
 
 
@@ -662,8 +718,9 @@ def skip_brand(cursor, brand_id: int, reason: str = "", already_contacted: bool 
     _set_stage(cursor, row, "bad_contact", reason or "no contact")
 
 
-def pick_variant(cursor, rng: Optional[random.Random] = None) -> str:
+def pick_variant(cursor, rng: Optional[random.Random] = None, campaign: str = PIPELINE) -> str:
     rng = rng or random.Random()
+    variants = variants_for(campaign)
     cursor.execute(
         """
         SELECT variant, COUNT(*) AS sent,
@@ -673,16 +730,16 @@ def pick_variant(cursor, rng: Optional[random.Random] = None) -> str:
         WHERE pipeline = %s AND variant IS NOT NULL AND last_contacted_at IS NOT NULL
         GROUP BY variant
         """,
-        (PIPELINE,),
+        (campaign,),
     )
-    stats = {v: {"sent": 0, "positive": 0} for v in VARIANTS}
+    stats = {v: {"sent": 0, "positive": 0} for v in variants}
     for r in cursor.fetchall():
         if r["variant"] in stats:
             stats[r["variant"]] = {"sent": int(r["sent"]), "positive": int(r["positive"])}
     if any(s["sent"] < MIN_TEST_PER_VARIANT for s in stats.values()):
-        return min(VARIANTS, key=lambda v: (stats[v]["sent"], VARIANTS.index(v)))
-    best = max(VARIANTS, key=lambda v: (stats[v]["positive"] + 1) / (stats[v]["sent"] + 2))
-    return best if rng.random() < 0.7 else rng.choice([v for v in VARIANTS if v != best])
+        return min(variants, key=lambda v: (stats[v]["sent"], variants.index(v)))
+    best = max(variants, key=lambda v: (stats[v]["positive"] + 1) / (stats[v]["sent"] + 2))
+    return best if rng.random() < 0.7 else rng.choice([v for v in variants if v != best])
 
 
 def queue_new(cursor, limit: int) -> List[Dict[str, Any]]:
@@ -737,7 +794,8 @@ def queue_new(cursor, limit: int) -> List[Dict[str, Any]]:
 
 
 def record_contact(cursor, brand_id: int, email: str, name: str = "", role: str = "",
-                   source: str = "hunter", meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                   source: str = "hunter", meta: Optional[Dict[str, Any]] = None,
+                   campaign: str = PIPELINE) -> Dict[str, Any]:
     email = (email or "").strip().lower()
     if not _EMAIL_RE.fullmatch(email):
         return {"ok": False, "error": "invalid email"}
@@ -749,7 +807,7 @@ def record_contact(cursor, brand_id: int, email: str, name: str = "", role: str 
             contact_source = %s, pipeline = COALESCE(pipeline, %s)
         WHERE brand_id = %s
         """,
-        (email, (name or "")[:255], (role or "")[:255], (source or "hunter")[:30], PIPELINE, brand_id),
+        (email, (name or "")[:255], (role or "")[:255], (source or "hunter")[:30], campaign_of(campaign), brand_id),
     )
     log_activity(cursor, brand_id, "contact_found", email=email,
                  meta={"name": name, "role": role, "source": source, **(meta or {})})
@@ -789,9 +847,10 @@ def _deliver(cursor, row, to, subject, text, sender, in_reply_to=None, reference
 
 def send_step(cursor, brand_id: int, kind: str = "initial", dry_run: bool = False,
               sender: Optional[Callable] = None, rng: Optional[random.Random] = None,
-              test: bool = False, test_to: str = "") -> Dict[str, Any]:
+              test: bool = False, test_to: str = "", campaign: str = PIPELINE) -> Dict[str, Any]:
     """kind: initial | followup | nudge. test (or outreach not live): the exact email goes to TEST_EMAIL with
-    the real recipient in the subject, and no pipeline state changes."""
+    the real recipient in the subject, and no pipeline state changes. campaign picks the first email's sequence;
+    follow-ups use the campaign the brand was first emailed in."""
     test_to = (test_to or "").strip().lower()
     if test_to and not _EMAIL_RE.fullmatch(test_to):
         return {"ok": False, "error": "test_to is not a valid email"}
@@ -808,28 +867,34 @@ def send_step(cursor, brand_id: int, kind: str = "initial", dry_run: bool = Fals
         return {"ok": False, "error": "no usable brand name"}
     first = first_name(row.get("contact_name"))
     ref = row.get("ref_code") or new_ref()
-    link = brief_link(row.get("category"), ref)
+    campaign = campaign_of(campaign if kind == "initial" else row.get("pipeline"))
+    ugc = campaign == UGC_PIPELINE
+    link = UGC_URL if ugc else brief_link(row.get("category"), ref)
+    gaps, last_step = (UGC_FOLLOWUP_GAP_DAYS, UGC_LAST_STEP) if ugc else (FOLLOWUP_GAP_DAYS, LAST_STEP)
     step = int(row.get("sequence_step") or 0)
     in_reply_to = None
 
     if kind == "initial":
         if row.get("last_contacted_at") or stage not in ("new",):
             return {"ok": False, "error": f"already in pipeline (stage={stage})"}
-        variant = pick_variant(cursor, rng)
-        subject, text = initial_email(variant, brand, first, ref, row.get("category"))
+        variant = pick_variant(cursor, rng, campaign)
+        subject, text = (ugc_initial_email(variant, brand, first) if ugc
+                         else initial_email(variant, brand, first, ref, row.get("category")))
         step = 0
     elif kind == "followup":
-        if row.get("pipeline") != PIPELINE or stage != "contacted" or row.get("next_action") != "followup":
+        if row.get("pipeline") not in CAMPAIGNS or stage != "contacted" or row.get("next_action") != "followup":
             return {"ok": False, "error": f"not due for follow-up (stage={stage})"}
         step += 1
-        if step > LAST_STEP:
+        if step > last_step:
             return {"ok": False, "error": "sequence finished"}
         variant = row.get("variant")
-        subject = "Re: " + (row.get("thread_subject") or initial_email(variant or "swap", brand, first)[0])
-        text = followup_email(step, brand, first, link, ref)
+        first_subject = (ugc_initial_email(variant or "", brand, first) if ugc
+                         else initial_email(variant or "swap", brand, first))[0]
+        subject = "Re: " + (row.get("thread_subject") or first_subject)
+        text = ugc_followup_email(step, brand, first) if ugc else followup_email(step, brand, first, link, ref)
         in_reply_to = row.get("thread_message_id")
     elif kind == "nudge":
-        if stage != "interested" or row.get("next_action") != "nudge":
+        if ugc or stage != "interested" or row.get("next_action") != "nudge":
             return {"ok": False, "error": f"not due for nudge (stage={stage})"}
         variant = row.get("variant")
         last_subject = row.get("last_inbound_subject") or row.get("thread_subject") or brand
@@ -840,7 +905,7 @@ def send_step(cursor, brand_id: int, kind: str = "initial", dry_run: bool = Fals
         return {"ok": False, "error": f"unknown kind {kind}"}
 
     preview = {"ok": True, "brand_id": brand_id, "brand_name": brand, "to": to, "kind": kind, "step": step,
-               "variant": variant, "subject": subject, "text": text_to_plain(text)}
+               "campaign": campaign, "variant": variant, "subject": subject, "text": text_to_plain(text)}
     if dry_run:
         return {**preview, "dry_run": True}
     if test:
@@ -867,11 +932,11 @@ def send_step(cursor, brand_id: int, kind: str = "initial", dry_run: bool = Fals
                 next_action_at = NOW() + (%s * INTERVAL '1 day')
             WHERE brand_id = %s
             """,
-            (subject, PIPELINE, variant, ref, subject, mid, FOLLOWUP_GAP_DAYS[1], brand_id),
+            (subject, campaign, variant, ref, subject, mid, gaps[1], brand_id),
         )
         _set_stage(cursor, row, "contacted")
     elif kind == "followup":
-        nxt = FOLLOWUP_GAP_DAYS.get(step + 1)
+        nxt = gaps.get(step + 1)
         cursor.execute(
             """
             UPDATE brand_outreach_tracking
@@ -883,7 +948,7 @@ def send_step(cursor, brand_id: int, kind: str = "initial", dry_run: bool = Fals
             """,
             (subject, step, ref, nxt, nxt, nxt or 0, brand_id),
         )
-        if step >= LAST_STEP:
+        if step >= last_step:
             _set_stage(cursor, row, "nurture", "sequence finished without reply")
     else:
         cursor.execute(
@@ -896,11 +961,11 @@ def send_step(cursor, brand_id: int, kind: str = "initial", dry_run: bool = Fals
             (subject, ref, brand_id),
         )
     log_activity(cursor, brand_id, "sent", variant=variant, email=to, subject=subject, body=text,
-                 message_id=mid, in_reply_to=in_reply_to, meta={"kind": kind, "step": step})
+                 message_id=mid, in_reply_to=in_reply_to, meta={"kind": kind, "step": step, "campaign": campaign})
     return {**preview, "message_id": mid}
 
 
-def queue_followups(cursor, limit: int = 100) -> List[Dict[str, Any]]:
+def queue_followups(cursor, limit: int = 100, campaign: str = PIPELINE) -> List[Dict[str, Any]]:
     cursor.execute(
         """
         SELECT bo.brand_id, bo.next_action, bo.sequence_step
@@ -912,7 +977,7 @@ def queue_followups(cursor, limit: int = 100) -> List[Dict[str, Any]]:
         ORDER BY bo.next_action_at
         LIMIT %s
         """,
-        (PIPELINE, max(1, min(int(limit), 200))),
+        (campaign_of(campaign), max(1, min(int(limit), 200))),
     )
     return [
         {"brand_id": r["brand_id"], "kind": r["next_action"], "step": int(r["sequence_step"] or 0) + 1}
@@ -1007,8 +1072,10 @@ def ingest_message(cursor, msg: Dict[str, Any], sender: Optional[Callable] = Non
     their_text = strip_quoted(body)
     intent = cls["intent"]
     action = decide(cls, row)
+    ugc = row.get("pipeline") == UGC_PIPELINE
     brand = display_name(row.get("brand_name"), row.get("website"))
     result = {"action": action, "brand_id": brand_id, "brand_name": brand, "intent": intent,
+              "campaign": row.get("pipeline") or "",
               "confidence": cls.get("confidence"), "summary": cls.get("summary"), "message_id": mid}
     if dry_run:
         return {**result, "dry_run": True, "classification": cls}
@@ -1036,7 +1103,7 @@ def ingest_message(cursor, msg: Dict[str, Any], sender: Optional[Callable] = Non
     ref = row.get("ref_code") or new_ref()
     if not row.get("ref_code"):
         cursor.execute("UPDATE brand_outreach_tracking SET ref_code = %s WHERE brand_id = %s", (ref, brand_id))
-    link = brief_link(row.get("category"), ref)
+    link = UGC_URL if ugc else brief_link(row.get("category"), ref)
     first = first_name(row.get("contact_name"))
 
     if intent == "bounce":
@@ -1079,6 +1146,13 @@ def ingest_message(cursor, msg: Dict[str, Any], sender: Optional[Callable] = Non
         cursor.execute("UPDATE brand_outreach_tracking SET lost_reason = %s WHERE brand_id = %s",
                        (("not now: " + (cls.get("summary") or ""))[:300], brand_id))
         _set_stage(cursor, row, "nurture", "not right now")
+    elif intent == "forwarded" and ugc:
+        cursor.execute(
+            "UPDATE brand_outreach_tracking SET intent = 'forwarded', last_response_at = NOW(), "
+            "next_action = NULL, next_action_at = NULL WHERE brand_id = %s",
+            (brand_id,),
+        )
+        _set_stage(cursor, row, "replied", "forwarded to their team")
     elif intent == "forwarded":
         cursor.execute(
             """
@@ -1123,7 +1197,7 @@ def ingest_message(cursor, msg: Dict[str, Any], sender: Optional[Callable] = Non
             result["note"] = note
     else:
         _set_stage(cursor, row, "interested" if intent in POSITIVE_INTENTS else "replied", intent)
-        text, source = compose_reply(row, their_text, cls, link, llm=llm)
+        text, source = (ugc_reply_draft(first), "template") if ugc else compose_reply(row, their_text, cls, link, llm=llm)
         reply_subject = subject if subject.lower().startswith("re:") else f"Re: {subject}"
         to = from_addr
         if action == "auto":
@@ -1242,21 +1316,27 @@ def brief_prefill(cursor, ref: str) -> Optional[Dict[str, Any]]:
 # --------------------------------------------------------------------------- report
 
 
-def report(cursor, hours: int = 24) -> Dict[str, Any]:
+def report(cursor, hours: int = 24, campaign: str = PIPELINE) -> Dict[str, Any]:
+    """Funnel, activity, variants, hot leads, drafts and wins for one campaign. The v2 report keeps everything
+    outside the per-view campaign (legacy replies included); bounce rate stays mailbox-wide."""
     hours = max(1, min(int(hours), 24 * 31))
+    campaign = campaign_of(campaign)
+    ugc = campaign == UGC_PIPELINE
+    mine = ("COALESCE(bo.pipeline, '') = %s" if ugc else "COALESCE(bo.pipeline, '') <> %s")
     cursor.execute(
         "SELECT COALESCE(stage, 'new') AS stage, COUNT(*) AS n FROM brand_outreach_tracking WHERE pipeline = %s GROUP BY 1",
-        (PIPELINE,),
+        (campaign,),
     )
     funnel = {r["stage"]: int(r["n"]) for r in cursor.fetchall()}
     cursor.execute(
         """
         SELECT a.kind, COALESCE(a.meta->>'kind', '') AS sub, COALESCE(a.intent, '') AS intent, COUNT(*) AS n
         FROM brand_activity a
-        WHERE a.created_at > NOW() - (%s * INTERVAL '1 hour')
+        LEFT JOIN brand_outreach_tracking bo ON bo.brand_id = a.brand_id
+        WHERE a.created_at > NOW() - (%s * INTERVAL '1 hour') AND {mine}
         GROUP BY 1, 2, 3
-        """,
-        (hours,),
+        """.format(mine=mine),
+        (hours, UGC_PIPELINE),
     )
     window: Dict[str, int] = {}
     for r in cursor.fetchall():
@@ -1274,7 +1354,7 @@ def report(cursor, hours: int = 24) -> Dict[str, Any]:
         WHERE pipeline = %s AND variant IS NOT NULL AND last_contacted_at IS NOT NULL
         GROUP BY variant ORDER BY variant
         """,
-        (PIPELINE,),
+        (campaign,),
     )
     variants = [dict(r) for r in cursor.fetchall()]
     cursor.execute(
@@ -1293,31 +1373,33 @@ def report(cursor, hours: int = 24) -> Dict[str, Any]:
         WHERE bo.pipeline = %s AND bo.stage IN ('interested', 'meeting')
         ORDER BY bo.last_response_at DESC NULLS LAST LIMIT 15
         """,
-        (PIPELINE,),
+        (campaign,),
     )
     hot = [dict(r) for r in cursor.fetchall()]
     cursor.execute(
         """
         SELECT b.brand_name, a.intent, a.subject, LEFT(COALESCE(a.body, ''), 160) AS preview, a.created_at
         FROM brand_activity a JOIN pr_brands b ON b.id = a.brand_id
-        WHERE a.kind = 'draft_held' AND a.created_at > NOW() - (%s * INTERVAL '1 hour')
+        LEFT JOIN brand_outreach_tracking bo ON bo.brand_id = a.brand_id
+        WHERE a.kind = 'draft_held' AND a.created_at > NOW() - (%s * INTERVAL '1 hour') AND {mine}
         ORDER BY a.created_at DESC LIMIT 15
-        """,
-        (hours,),
+        """.format(mine=mine),
+        (hours, UGC_PIPELINE),
     )
     held = [dict(r) for r in cursor.fetchall()]
     cursor.execute(
         """
         SELECT b.brand_name, bo.opportunity_id, bo.won_at
         FROM brand_outreach_tracking bo JOIN pr_brands b ON b.id = bo.brand_id
-        WHERE bo.won_at > NOW() - (%s * INTERVAL '1 hour') ORDER BY bo.won_at DESC
-        """,
-        (hours,),
+        WHERE bo.won_at > NOW() - (%s * INTERVAL '1 hour') AND {mine} ORDER BY bo.won_at DESC
+        """.format(mine=mine),
+        (hours, UGC_PIPELINE),
     )
     wins = [dict(r) for r in cursor.fetchall()]
     from services.outreach_attribution import funnel as after_email
 
     return {
+        "campaign": campaign,
         "hours": hours,
         "funnel": funnel,
         "after_email": after_email(cursor, hours),

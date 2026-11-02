@@ -39,7 +39,8 @@ def queue_new():
 @admin_required
 def queue_followups():
     limit = request.args.get("limit", 100, type=int)
-    rows = _run(lambda c: bp.queue_followups(c, limit))
+    campaign = request.args.get("campaign") or bp.PIPELINE
+    rows = _run(lambda c: bp.queue_followups(c, limit, campaign))
     return jsonify({"success": True, "total": len(rows), "items": rows})
 
 
@@ -51,7 +52,7 @@ def record_contact():
         return jsonify({"error": "brand_id and email are required"}), 400
     out = _run(lambda c: bp.record_contact(
         c, int(data["brand_id"]), data["email"], data.get("name") or "", data.get("role") or "",
-        data.get("source") or "hunter", data.get("meta") or {},
+        data.get("source") or "hunter", data.get("meta") or {}, data.get("campaign") or bp.PIPELINE,
     ))
     return jsonify(out), (200 if out.get("ok") else 400)
 
@@ -79,7 +80,8 @@ def send():
         return jsonify({"error": "brand_id is required"}), 400
     out = _run(lambda c: bp.send_step(c, int(data["brand_id"]), data.get("kind") or "initial",
                                       dry_run=bool(data.get("dry_run")), test=bool(data.get("test")),
-                                      test_to=str(data.get("test_to") or "")))
+                                      test_to=str(data.get("test_to") or ""),
+                                      campaign=data.get("campaign") or bp.PIPELINE))
     return jsonify(out), (200 if out.get("ok") else 409)
 
 
@@ -106,7 +108,8 @@ def inbound():
 @admin_required
 def report():
     hours = request.args.get("hours", 24, type=int)
-    rep = _run(lambda c: bp.report(c, hours))
+    campaign = request.args.get("campaign") or bp.PIPELINE
+    rep = _run(lambda c: bp.report(c, hours, campaign))
     rep["daily_new_limit"] = bp.daily_new_limit(rep)
     rep["live"] = bp.outreach_live()
     rep["test_email"] = bp.TEST_EMAIL

@@ -477,3 +477,99 @@ def test_test_to_sends_the_real_email_to_any_inbox():
     assert out["test"] and sender.calls[0]["to"] == "me@example.com" and out["would_send_to"] == "tacy@mdaire.com"
     assert sender.calls[0]["subject"].startswith("[TEST to tacy@mdaire.com] ")
     assert not bp.send_step(FakeCursor([("bo.last_inbound_subject", [_row()])]), 7, "initial", sender=Sender(), test_to="nope")["ok"]
+
+
+# --------------------------------------------------------------- per-view UGC campaign (newcollab.co/ugc)
+
+
+def test_ugc_initial_uses_its_own_copy_variants_and_pipeline():
+    cur = FakeCursor([("bo.last_inbound_subject", [_row()]), ("AS positive", [])])
+    sender = Sender()
+    out = bp.send_step(cur, 7, "initial", sender=sender, campaign=bp.UGC_PIPELINE)
+    assert out["ok"] and out["variant"] == "per_view" and out["campaign"] == bp.UGC_PIPELINE
+    call = sender.calls[0]
+    assert call["subject"] == "Kappel UGC, paid per view"
+    text = call["text_content"]
+    assert text.startswith("Hi Tacy,\n\nQuick idea for Kappel: instead of paying $150+ per UGC video upfront")
+    assert "How it works (1 min): https://newcollab.co/ugc" in text
+    assert text.rstrip().endswith("Mazza, Newcollab")
+    assert bp.BOOKING_URL not in text and "<img" not in call["html"]
+    upd = cur.ran("SET outreach_count = COALESCE(outreach_count, 0) + 1, last_contacted_at = NOW(), last_subject = %s, pipeline")
+    assert upd[0][1] == bp.UGC_PIPELINE and upd[0][2] == "per_view" and upd[0][6] == 3
+    variant_sql = cur.ran("AS positive")
+    assert variant_sql[0] == (bp.UGC_PIPELINE,)
+
+
+def test_ugc_variant_b_subject():
+    subject, _ = bp.ugc_initial_email("views_not_videos", "Kappel", "")
+    assert subject == "Pay for views, not UGC videos"
+    few = FakeCursor([("AS positive", [{"variant": "per_view", "sent": 12, "positive": 0}])])
+    assert bp.pick_variant(few, campaign=bp.UGC_PIPELINE) == "views_not_videos"
+
+
+def test_ugc_sequence_is_three_emails_and_call_only_in_the_last():
+    row = _row(pipeline=bp.UGC_PIPELINE, stage="contacted", next_action="followup", sequence_step=0,
+               variant="per_view", thread_subject="Kappel UGC, paid per view", thread_message_id="<first@newcollab.co>")
+    sender = Sender()
+    out = bp.send_step(FakeCursor([("bo.last_inbound_subject", [row])]), 7, "followup", sender=sender)
+    assert out["ok"] and out["step"] == 1
+    fu1 = sender.calls[0]
+    assert fu1["subject"] == "Re: Kappel UGC, paid per view" and fu1["in_reply_to"] == "<first@newcollab.co>"
+    assert fu1["text_content"].startswith("Tacy, one example: at $2.50 per 1,000 views, $500 buys about 160K views")
+    assert "depend on rate and niche" in fu1["text_content"] and bp.BOOKING_URL not in fu1["text_content"]
+
+    cur = FakeCursor([("bo.last_inbound_subject", [{**row, "sequence_step": 1}])])
+    out = bp.send_step(cur, 7, "followup", sender=sender)
+    fu2 = sender.calls[1]["text_content"]
+    assert out["step"] == 2 and fu2.startswith("Last note from me.") and 'Reply "test"' in fu2
+    assert f"quick intro call ({bp.BOOKING_URL})" in fu2
+    assert [p[4] for p in cur.ran("INSERT INTO brand_activity") if p[1] == "stage_change"] == ["nurture"]
+
+    done = bp.send_step(FakeCursor([("bo.last_inbound_subject", [{**row, "sequence_step": 2}])]), 7, "followup",
+                        sender=sender)
+    assert not done["ok"] and len(sender.calls) == 2
+
+
+def test_ugc_copy_never_promises_results():
+    import re
+
+    bodies = [bp.ugc_initial_email(v, "Kappel", "Tacy")[1] for v in bp.UGC_VARIANTS]
+    bodies += [bp.ugc_followup_email(n, "Kappel", "Tacy") for n in (1, 2)]
+    for body in bodies:
+        assert "—" not in body
+        assert not re.search(r"you'?ll get|guarantee", body, re.I)
+        assert "discount" not in body.lower() and "% off" not in body
+    assert "example" in bodies[2].lower()
+
+
+def test_ugc_replies_are_always_held_with_a_per_view_draft():
+    row = _row(pipeline=bp.UGC_PIPELINE, stage="contacted", next_action="followup", thread_message_id="<first@newcollab.co>")
+    cur = _inbound_cursor(row)
+    sender = Sender()
+    msg = {"message_id": "<their1@mdaire.com>", "in_reply_to": "<first@newcollab.co>", "from_email": "tacy@mdaire.com",
+           "subject": "Re: Kappel UGC, paid per view", "body": "Sounds interesting, how does the cap work?"}
+    llm = lambda system, *_a: ({"intent": "interested", "confidence": 0.95, "questions": []}
+                               if "triage" in system else {"body": "should not be used"})
+    out = bp.ingest_message(cur, msg, sender=sender, llm=llm)
+    assert out["action"] == "hold" and out["campaign"] == bp.UGC_PIPELINE and not sender.calls
+    assert "https://newcollab.co/ugc" in out["draft"]["text"] and "gifted" not in out["draft"]["text"]
+    assert cur.ran("next_action = NULL, next_action_at = NULL")
+
+
+def test_ugc_forwarded_reply_stops_the_sequence():
+    row = _row(pipeline=bp.UGC_PIPELINE, stage="contacted", next_action="followup")
+    cur = _inbound_cursor(row)
+    msg = {"message_id": "<f1@mdaire.com>", "from_email": "tacy@mdaire.com", "subject": "Re: Kappel UGC, paid per view",
+           "body": "I've forwarded this to our marketing team."}
+    llm = lambda system, *_a: {"intent": "forwarded", "confidence": 0.9} if "triage" in system else {}
+    out = bp.ingest_message(cur, msg, sender=Sender(), llm=llm)
+    assert out["intent"] == "forwarded"
+    assert cur.ran("SET intent = 'forwarded', last_response_at = NOW(), next_action = NULL")
+
+
+def test_v2_followup_queue_and_report_ignore_the_ugc_campaign():
+    cur = FakeCursor()
+    bp.queue_followups(cur, 10)
+    assert cur.ran("FROM brand_outreach_tracking bo WHERE bo.pipeline = %s")[0][0] == "v2"
+    bp.queue_followups(cur, 10, bp.UGC_PIPELINE)
+    assert cur.ran("FROM brand_outreach_tracking bo WHERE bo.pipeline = %s")[1][0] == bp.UGC_PIPELINE
