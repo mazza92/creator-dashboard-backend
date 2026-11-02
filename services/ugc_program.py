@@ -329,7 +329,7 @@ def update_payout(conn, creator_id: int, body: Dict[str, Any]) -> Optional[str]:
 
 
 def _resolve_short(url: str) -> str:
-    """vm.tiktok.com / vt.tiktok.com links redirect to the full /@handle/video/<id> URL."""
+    """vm.tiktok.com / vt.tiktok.com links redirect to the full /@handle/video/<id> (or /photo/<id>) URL."""
     import requests
 
     try:
@@ -339,7 +339,14 @@ def _resolve_short(url: str) -> str:
         return url
 
 
-_TT_FULL = re.compile(r"tiktok\.com/@([\w.]+)/video/(\d+)", re.I)
+# Videos and photo slideshows both earn views; keep the kind so the scraper opens the right page.
+_TT_FULL = re.compile(r"tiktok\.com/@([\w.]+)/(video|photo)/(\d+)", re.I)
+
+
+def parse_tiktok(url: str) -> Optional[Tuple[str, str, str]]:
+    """(author, kind, id) from a full TikTok post link, kind being 'video' or 'photo'."""
+    m = _TT_FULL.search(url or "")
+    return (m.group(1).lower(), m.group(2).lower(), m.group(3)) if m else None
 _IG_CODE = re.compile(r"instagram\.com/(?:reel|reels|p)/([\w-]+)", re.I)
 
 
@@ -372,14 +379,14 @@ def submit_video(conn, creator_id: int, raw_url: str, *, ig_fetch=None,
     if platform == "tiktok":
         if not _TT_FULL.search(url):
             url = (resolve or _resolve_short)(url)
-        m = _TT_FULL.search(url)
-        if not m:
-            return None, "Paste the full TikTok link, like tiktok.com/@you/video/123"
-        author, vid = m.group(1).lower(), m.group(2)
+        parsed = parse_tiktok(url)
+        if not parsed:
+            return None, "Paste the full TikTok link, like tiktok.com/@you/video/123 (photo posts work too)"
+        author, kind, vid = parsed
         if member.get("tiktok_handle") and author != member["tiktok_handle"]:
             return None, f"This video is from @{author}, not your account @{member['tiktok_handle']}"
         posted = tiktok_posted_at(vid)
-        clean = f"https://www.tiktok.com/@{author}/video/{vid}"
+        clean = f"https://www.tiktok.com/@{author}/{kind}/{vid}"
         meta = {"views": 0, "likes": 0, "comments": 0}
     else:
         m = _IG_CODE.search(url)
@@ -403,7 +410,7 @@ def submit_video(conn, creator_id: int, raw_url: str, *, ig_fetch=None,
     if posted and approved_at and posted < approved_at - timedelta(hours=1):
         return None, "Only videos posted after you joined count. Post a new one for Newcollab."
     cur = _cur(conn)
-    cur.execute("SELECT 1 FROM ugc_program_videos WHERE url = %s", (clean,))
+    cur.execute("SELECT 1 FROM ugc_program_videos WHERE platform = %s AND external_id = %s", (platform, vid))
     if cur.fetchone():
         return None, "This video is already submitted"
     cur.execute(
