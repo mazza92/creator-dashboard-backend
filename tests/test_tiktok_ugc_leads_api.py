@@ -29,20 +29,17 @@ class TestTikTokUgcLeadsApiHelpers(unittest.TestCase):
         row = _json_ready({"handle": "hannahs.ugccorner", "profile_url": None})
         self.assertEqual(row["profile_url"], "https://www.tiktok.com/@hannahs.ugccorner")
 
-    def test_default_html_is_match_invite_not_unpaid_brief(self):
+    def test_default_html_leads_with_paid_per_view(self):
         html = personalize(default_onboarding_html(), {
             "handle": "hannahs.ugccorner",
             "niche": "hairstylist",
         })
         self.assertIn(SIGNUP_URL, html)
         self.assertIn("@hannahs.ugccorner", html)
-        self.assertIn("newcollab.co/land-your-first-pr-package", html)
+        self.assertIn("https://newcollab.co/", html)
+        self.assertIn("earn per 1,000 views", html)
         self.assertIn("gifted product", html)
-        self.assertIn("portfolio", html)
-        self.assertIn("paid and retainers", html)
-        self.assertIn("good match", html)
-        self.assertIn("If you're interested", html)
-        self.assertIn("Worth a look?", html)
+        self.assertIn("looks like a fit", html)
         self.assertIn("Mazza", html)
         self.assertNotIn("register/creator", html)
         self.assertNotIn("1 organic", html.lower())

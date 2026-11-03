@@ -33,7 +33,7 @@ BLOCKED_OUTREACH_STATUSES = {
     "reply",
 }
 
-SIGNUP_URL = "https://newcollab.co/land-your-first-pr-package"
+SIGNUP_URL = "https://newcollab.co/"
 DEFAULT_SUBJECT = "Paid UGC for @{{handle}}"
 DEFAULT_FOLLOWUP_HOURS = 96
 MAX_EMAILS_PER_LEAD = 2  # first email + one follow-up
