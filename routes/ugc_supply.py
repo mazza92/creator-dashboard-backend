@@ -34,7 +34,7 @@ BLOCKED_OUTREACH_STATUSES = {
 }
 
 SIGNUP_URL = "https://newcollab.co/land-your-first-pr-package"
-DEFAULT_SUBJECT = "PR / gifting campaigns for @{{handle}}"
+DEFAULT_SUBJECT = "Paid UGC for @{{handle}}"
 DEFAULT_FOLLOWUP_HOURS = 96
 MAX_EMAILS_PER_LEAD = 2  # first email + one follow-up
 FOLLOWUP_WINDOW_DAYS = 21  # a "quick bump" weeks later reads oddly; older leads get a fresh pitch instead
@@ -109,13 +109,12 @@ def personalize(text, lead):
 
 
 def default_onboarding_html(lead=None):
-    """Match invite, not unpaid-work pitch — avoids 'I only do fixed rate' replies."""
+    """Paid-first invite: per-view campaigns lead, gifting second (avoids 'I only do paid' replies)."""
     return """
 <p>Hey,</p>
 <p>Saw your TikTok (@{{handle}}).</p>
-<p>Brands on Newcollab are looking for UGC in exchange for gifted product. It's a straightforward way to build your portfolio, and the collabs that land often move into paid and retainers. Your profile could be a good match.</p>
-<p>If you're interested, you can see how it works and apply here:<br><a href="{{signup_url}}">{{signup_url}}</a></p>
-<p>Worth a look?</p>
+<p>Brands on Newcollab can now run two kinds of campaigns: gifted product, and paid campaigns where you earn per 1,000 views your video gets. Your profile looks like a fit.</p>
+<p>See how it works and apply:<br><a href="{{signup_url}}">{{signup_url}}</a></p>
 <p>Mazza<br>Founder, Newcollab</p>
 """
 
@@ -124,7 +123,7 @@ def followup_html(lead=None):
     """Day-4 bump, same offer as the first email. Sent once, never after a reply."""
     return """
 <p>Hey,</p>
-<p>Quick bump in case this got buried. Brands on Newcollab are still looking for UGC creators, and @{{handle}} looks like a good fit.</p>
+<p>Quick bump in case this got buried. Paid per-view and gifted campaigns on Newcollab are open to creators like @{{handle}}.</p>
 <p>Applying takes 2 minutes:<br><a href="{{signup_url}}">{{signup_url}}</a></p>
 <p>Mazza</p>
 """
