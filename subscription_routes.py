@@ -346,14 +346,20 @@ def trial_offer():
 
     creator_id = get_creator_id_from_session()
     if not creator_id:
-        return jsonify({'trial_days': 0})
+        return jsonify({'trial_days': 0, 'invited': False})
     conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         eligible = checkout_trial_eligible(cursor, creator_id)
+        invited = False
+        if eligible:
+            # Came in through the free-week link (or the cold email that carries it): Polly leads with the offer.
+            from services.creator_offers import has_trial_offer
+            from services.quota_trial_test import outreach_trial_eligible
+            invited = bool(has_trial_offer(cursor, creator_id) or outreach_trial_eligible(cursor, creator_id))
         cursor.close()
-        return jsonify({'trial_days': TRIAL_DAYS if eligible else 0})
+        return jsonify({'trial_days': TRIAL_DAYS if eligible else 0, 'invited': invited})
     except Exception as e:
         print(f"⚠️ trial offer check failed for creator {creator_id}: {e}")
         return jsonify({'trial_days': 0})
