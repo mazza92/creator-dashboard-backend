@@ -18,7 +18,8 @@ GMAIL_KIND = "autopilot_gmail"
 PAUSED_KIND = "autopilot_paused"
 # Gap before each reminder: the first counts from when sending stopped, the rest from the
 # previous reminder. The last gap repeats for Gmail; paused stops after PAUSED_MAX reminders.
-GMAIL_GAPS = (timedelta(hours=2), timedelta(days=2), timedelta(days=4), timedelta(days=7))
+# First Gmail reminder 1 hour after Pro starts: new payers who can't connect leave within the first hour.
+GMAIL_GAPS = (timedelta(hours=1), timedelta(days=2), timedelta(days=4), timedelta(days=7))
 PAUSED_GAPS = (timedelta(days=2), timedelta(days=7), timedelta(days=14))
 PAUSED_MAX = len(PAUSED_GAPS)
 # Emails follow the gaps above; the chat warning shows at most once a week.
@@ -39,6 +40,36 @@ def _aware(dt: Optional[datetime]) -> Optional[datetime]:
 
 def _plural(n: int, word: str) -> str:
     return f"{n} {word if n == 1 else word + ('es' if word.endswith(('ch', 'sh', 's', 'x')) else 's')}"
+
+
+def record_gmail_failure(conn, creator_id: int, reason: str) -> None:
+    """Remember the last failed Gmail connect, so the reminder can say exactly what to do."""
+    cur = conn.cursor()
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS polly_gmail_failures (
+               creator_id INTEGER PRIMARY KEY,
+               reason TEXT NOT NULL,
+               failed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+               attempts INTEGER NOT NULL DEFAULT 1)"""
+    )
+    cur.execute(
+        """INSERT INTO polly_gmail_failures (creator_id, reason) VALUES (%s, %s)
+           ON CONFLICT (creator_id) DO UPDATE SET reason = EXCLUDED.reason, failed_at = NOW(),
+               attempts = polly_gmail_failures.attempts + 1""",
+        (creator_id, reason),
+    )
+    conn.commit()
+
+
+def last_gmail_failure(conn, creator_id: int) -> Optional[str]:
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT reason FROM polly_gmail_failures WHERE creator_id = %s", (creator_id,))
+        row = cur.fetchone()
+        return row["reason"] if row else None
+    except Exception:
+        conn.rollback()
+        return None
 
 
 def _due_after(since: Optional[datetime], warned: Sequence[datetime], gaps: Sequence[timedelta],
@@ -94,6 +125,10 @@ def gmail_email(first_name: str, facts: Dict[str, Any], unsubscribe_url: str = "
     waiting = _waiting_line(int(facts.get("waiting") or 0))
     if waiting:
         lines.append(waiting)
+    if facts.get("failed") in ("gmail_scope", "gmail_denied"):
+        lines.append("Last time Google didn't give me permission to send. On the Google screen, tick "
+                     "<strong>Send email on your behalf</strong> before you tap Continue (Google leaves it unticked). "
+                     "That's the only permission I ask for, and I can't read your inbox.")
     lines.append("It takes 30 seconds. Once it's connected I send on your next send day and follow up on day 4.")
     if not facts.get("enabled", True):
         lines.append("Autopilot is also paused. Switch it back on in the same panel.")
@@ -203,7 +238,8 @@ def email_autopilot_blocked(conn, limit: int = 40, dry_run: bool = False, send_f
         if not who:
             continue
         facts = {"waiting": row.get("waiting"), "enabled": row.get("enabled", True),
-                 "revoked": bool(row.get("revoked_at")), "paused_since": row.get("paused_since")}
+                 "revoked": bool(row.get("revoked_at")), "paused_since": row.get("paused_since"),
+                 "failed": last_gmail_failure(conn, cid) if kind == GMAIL_KIND else None}
         unsub = _unsubscribe_url(who["user_id"])
         mail = (gmail_email if kind == GMAIL_KIND else paused_email)(who["first"], facts, unsub)
         item = {"creator_id": cid, "kind": kind, "subject": mail["subject"], "to": who["email"]}

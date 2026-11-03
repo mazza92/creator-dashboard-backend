@@ -21,7 +21,8 @@ class TestDueKind(unittest.TestCase):
     def test_gmail_missing_on_day_one(self):
         self.assertEqual(ah.due_kind(_row(), NOW), ah.GMAIL_KIND)
         self.assertEqual(ah.due_kind(_row(pro_since=NOW - timedelta(hours=3)), NOW), ah.GMAIL_KIND)
-        self.assertIsNone(ah.due_kind(_row(pro_since=NOW - timedelta(hours=1)), NOW))
+        self.assertEqual(ah.due_kind(_row(pro_since=NOW - timedelta(hours=1)), NOW), ah.GMAIL_KIND)
+        self.assertIsNone(ah.due_kind(_row(pro_since=NOW - timedelta(minutes=40)), NOW))
 
     def test_gmail_reminders_widen_then_repeat(self):
         first = NOW - timedelta(days=1)
