@@ -33,8 +33,9 @@ BLOCKED_OUTREACH_STATUSES = {
     "reply",
 }
 
-SIGNUP_URL = "https://newcollab.co/"
-DEFAULT_SUBJECT = "A pitching assistant for @{{handle}}"
+# Sign up, then Polly's Autopilot card opens with the 7-day trial (outreach_trial_eligible grants it).
+SIGNUP_URL = "https://app.newcollab.co/register/creator?upgrade=pro"
+DEFAULT_SUBJECT = "@{{handle}}, your brand pitches done for you (7 days free)"
 DEFAULT_FOLLOWUP_HOURS = 96
 MAX_EMAILS_PER_LEAD = 2  # first email + one follow-up
 FOLLOWUP_WINDOW_DAYS = 21  # a "quick bump" weeks later reads oddly; older leads get a fresh pitch instead
@@ -109,16 +110,16 @@ def personalize(text, lead):
 
 
 def default_onboarding_html(lead=None):
-    """Assistant angle: Polly Autopilot pitches matched brands from the creator's Gmail while they create.
-    Only what the product does today: it finds brands, writes, sends and follows up. Replies land in the
-    creator's own inbox (send-only Gmail scope), so the copy never says Polly negotiates or signs deals."""
+    """Polly pitches brands for the creator; 7 days free. Only what the product does: it finds brands, writes,
+    sends from their Gmail and follows up. Replies land in their inbox (send-only Gmail scope), so the copy
+    never says Polly negotiates or signs deals."""
     return """
 <p>Hey,</p>
-<p>Saw your TikTok (@{{handle}}).</p>
-<p>Newcollab gives creators a personal assistant, Polly, that pitches brands for you on autopilot:</p>
-<p>&bull; finds brands that match your content<br>&bull; writes and sends the pitches from your own Gmail<br>&bull; follows up so nothing goes cold</p>
-<p>Brands reply straight to your inbox, and you stay focused on creating.</p>
-<p>See how it works:<br><a href="{{signup_url}}">{{signup_url}}</a></p>
+<p>Saw your TikTok (@{{handle}}). Quick question: how many brands did you pitch last week?</p>
+<p>More pitches means more deals, but between filming, editing and posting, outreach is the first thing to slip.</p>
+<p>Polly, our AI assistant, does it for you:<br>&bull; finds brands that fit your content<br>&bull; writes and sends the pitches from your Gmail, every week<br>&bull; follows up so no brand goes cold</p>
+<p>You keep creating. Brand replies land in your inbox.</p>
+<p><a href="{{signup_url}}">Try Polly free for 7 days</a></p>
 <p>Mazza<br>Founder, Newcollab</p>
 """
 
@@ -127,8 +128,8 @@ def followup_html(lead=None):
     """Day-4 bump, same offer as the first email. Sent once, never after a reply."""
     return """
 <p>Hey,</p>
-<p>Quick bump in case this got buried. Polly can pitch matched brands for @{{handle}} every week from your own Gmail, while you keep posting.</p>
-<p>Applying takes 2 minutes:<br><a href="{{signup_url}}">{{signup_url}}</a></p>
+<p>Quick bump: your 7 free days of Polly are still open. Connect your Gmail and this week's brand pitches go out for you, while you keep posting.</p>
+<p><a href="{{signup_url}}">Start your free week</a></p>
 <p>Mazza</p>
 """
 

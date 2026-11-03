@@ -29,19 +29,16 @@ class TestTikTokUgcLeadsApiHelpers(unittest.TestCase):
         row = _json_ready({"handle": "hannahs.ugccorner", "profile_url": None})
         self.assertEqual(row["profile_url"], "https://www.tiktok.com/@hannahs.ugccorner")
 
-    def test_default_html_pitches_the_assistant(self):
+    def test_default_html_offers_polly_free_week(self):
         html = personalize(default_onboarding_html(), {
             "handle": "hannahs.ugccorner",
             "niche": "hairstylist",
         })
         self.assertIn(SIGNUP_URL, html)
         self.assertIn("@hannahs.ugccorner", html)
-        self.assertIn("https://newcollab.co/", html)
-        self.assertIn("personal assistant", html)
-        self.assertIn("from your own Gmail", html)
+        self.assertIn("free for 7 days", html)
         self.assertNotIn("negotiat", html.lower())
         self.assertIn("Mazza", html)
-        self.assertNotIn("register/creator", html)
         self.assertNotIn("1 organic", html.lower())
         self.assertNotIn("forever", html.lower())
         self.assertNotIn("perpetual", html.lower())

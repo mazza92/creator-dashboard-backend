@@ -42,6 +42,32 @@ def active_arm(creator_id):
     return quota_trial_arm(creator_id) if experiment_on() else 'control'
 
 
+def outreach_trial_eligible(cursor, creator_id):
+    """Creators our UGC supply cold email offered 7 days free: their account email is one we emailed, and
+    they never paid. No arm, account-age or pitch rules, so the offer holds on the day they sign up."""
+    cursor.execute(
+        """
+        SELECT 1
+        FROM creators c
+        JOIN users u ON u.id = c.user_id
+        JOIN ugc_supply l ON LOWER(TRIM(l.contact_email)) = LOWER(TRIM(u.email))
+        JOIN ugc_supply_outreach_tracking t ON t.lead_id = l.id
+        WHERE c.id = %s
+          AND c.stripe_subscription_id IS NULL
+          AND c.stripe_customer_id IS NULL
+          AND c.subscription_started_at IS NULL
+        LIMIT 1
+        """,
+        (creator_id,),
+    )
+    return cursor.fetchone() is not None
+
+
+def checkout_trial_eligible(cursor, creator_id):
+    """What the paywall offers and checkout honours: the cold-email offer, else the experiment's rule."""
+    return outreach_trial_eligible(cursor, creator_id) or trial_eligible(cursor, creator_id)
+
+
 def trial_eligible(cursor, creator_id):
     """Trial arm, never paid, account old enough, and has used Polly. Checkout enforces the same rule."""
     if active_arm(creator_id) != 'trial':

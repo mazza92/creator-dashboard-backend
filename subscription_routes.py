@@ -342,7 +342,7 @@ def _log_checkout_source(conn, creator_id, metadata, session_id=None):
 @subscription_bp.route('/trial-offer', methods=['GET'])
 def trial_offer():
     """Same check as create-checkout, so the paywall only promises a trial checkout will honour."""
-    from services.quota_trial_test import TRIAL_DAYS, trial_eligible
+    from services.quota_trial_test import TRIAL_DAYS, checkout_trial_eligible
 
     creator_id = get_creator_id_from_session()
     if not creator_id:
@@ -351,7 +351,7 @@ def trial_offer():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        eligible = trial_eligible(cursor, creator_id)
+        eligible = checkout_trial_eligible(cursor, creator_id)
         cursor.close()
         return jsonify({'trial_days': TRIAL_DAYS if eligible else 0})
     except Exception as e:
@@ -407,8 +407,8 @@ def create_checkout_session():
         offer_trial = False
         if creator and offer != 'winback':
             try:
-                from services.quota_trial_test import trial_eligible
-                offer_trial = trial_eligible(cursor, creator_id)
+                from services.quota_trial_test import checkout_trial_eligible
+                offer_trial = checkout_trial_eligible(cursor, creator_id)
             except Exception as e:
                 print(f"⚠️ quota trial check failed for creator {creator_id}: {e}")
         cursor.close()
