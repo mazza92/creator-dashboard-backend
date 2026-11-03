@@ -460,6 +460,16 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         pitch = _with_radar_line(pitch, brand_name, radar_hint)
     if to_email:
         pitch = _with_inbox(pitch, to_email)
+    inbox_check = {}
+    if not to_email and directory_inbox and brand_id:
+        from services.contact_repair import ensure_deliverable
+
+        inbox_check = ensure_deliverable(state.db(), brand_id, directory_inbox, creator_id=state.creator_id)
+        if inbox_check.get("changed"):
+            pitch = dict(pitch, email=inbox_check["email"],
+                         mailto=build_mailto(inbox_check["email"], pitch.get("subject") or "", pitch.get("body") or ""))
+        elif inbox_check.get("email") is None and inbox_check.get("previous"):
+            pitch = dict(pitch, email="", mailto=None)
     pitch["brand_id"] = pitch.get("brand_id") or brand_id
     pitch["brand_name"] = pitch.get("brand_name") or brand_name
     if stats.get("line") and not followup:
@@ -482,6 +492,14 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         "inbox": pitch.get("email") or None,
         "inbox_from_creator": bool(to_email),
         "directory_inbox": directory_inbox if to_email and directory_inbox != to_email else None,
+        "inbox_replaced": ({"old": inbox_check["previous"], "new": inbox_check["email"],
+                            "explain": "The directory inbox failed verification, so the pitch now goes to a verified "
+                                       "inbox at the same brand. Mention it in one short line."}
+                           if inbox_check.get("changed") else None),
+        "inbox_dead": ({"explain": "The brand's only known inbox is invalid and no alternative was found. Say so "
+                                   "plainly and ask the creator for an email if they have one (draft_pitch with "
+                                   "to_email), or offer the next brand."}
+                       if inbox_check.get("previous") and not inbox_check.get("email") else None),
         "opens_in_mail_app": bool(pitch.get("mailto")),
         "needs_city_and_country": pitch["needs_location"],
         "ships_from": pitch.get("location_display") or None,

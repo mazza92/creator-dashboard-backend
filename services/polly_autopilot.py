@@ -797,6 +797,7 @@ def run_autopilot(
     headsup_fn: Optional[Callable] = None,
     note_fn: Optional[Callable] = None,
     daily_fn: Optional[Callable] = None,
+    verify_fn: Optional[Callable] = None,
 ) -> Dict[str, int]:
     """Cron: send due pitches, warn a day before follow-ups, then send the follow-ups.
 
@@ -809,6 +810,8 @@ def run_autopilot(
     ensure_gmail_table(conn)
     now = now or utc_now()
     send = send_fn or send_email
+    if verify_fn is None:
+        from services.contact_repair import ensure_deliverable as verify_fn
     headsup = headsup_fn or _default_headsup_email
     note = note_fn or post_thread_note
     daily = daily_fn or post_daily_line
@@ -827,10 +830,21 @@ def run_autopilot(
     """, (now, now - timedelta(hours=24), MAX_SENDS_PER_DAY, limit))
     for item in pitches:
         cid, bid, name = item["creator_id"], item["brand_id"], item.get("brand_name") or "the brand"
-        if _already_pitched(conn, cid, bid):
+        resend = item.get("error") == RESEND_AFTER_BOUNCE
+        if _already_pitched(conn, cid, bid) and not resend:
             _set(conn, item["id"], status="skipped", error="already_pitched")
             out["skipped"] += 1
             continue
+        check = verify_fn(conn, bid, item["to_email"], creator_id=cid)
+        if not check.get("email"):
+            _set(conn, item["id"], status="skipped", error="no_deliverable_contact")
+            note(conn, cid, f"I skipped **{name}**: their inbox is dead and I couldn't find another one. "
+                            "I'll line up a different brand.", [])
+            out["skipped"] += 1
+            continue
+        if check.get("changed"):
+            _set(conn, item["id"], to_email=check["email"])
+            item["to_email"] = check["email"]
         try:
             sent = send(conn, cid, item["to_email"], item["subject"], item["body"],
                         from_name=_creator_names(conn, cid)["full"])
@@ -917,7 +931,43 @@ def run_autopilot(
 
 
 _SETTABLE = {"status", "sent_at", "gmail_id", "thread_id", "message_id", "error", "followup_status",
-             "followup_due_at", "headsup_at", "followup_sent_at", "followups_sent"}
+             "followup_due_at", "headsup_at", "followup_sent_at", "followups_sent", "to_email", "scheduled_for"}
+
+RESEND_AFTER_BOUNCE = "resend_after_bounce"
+
+
+def requeue_after_bounce(conn, creator_id: int, brand_id: int, new_email: str, now: Optional[datetime] = None) -> bool:
+    """An autopilot pitch bounced and we found a verified inbox: send the same pitch there on the next run."""
+    ensure_autopilot_tables(conn)
+    cur = _cursor(conn)
+    cur.execute(
+        """SELECT id FROM polly_autopilot_queue
+           WHERE creator_id = %s AND brand_id = %s AND status = 'sent' AND LOWER(to_email) <> LOWER(%s)""",
+        (creator_id, brand_id, new_email),
+    )
+    row = cur.fetchone()
+    if not row:
+        return False
+    _set(conn, row["id"], to_email=new_email, status="approved", scheduled_for=now or utc_now(), sent_at=None,
+         gmail_id=None, thread_id=None, message_id=None, error=RESEND_AFTER_BOUNCE, followup_status=None,
+         followup_due_at=None, headsup_at=None, followup_sent_at=None, followups_sent=0)
+    return True
+
+
+def last_sent_to(conn, creator_id: int, brand_id: int) -> Optional[str]:
+    """The inbox autopilot last pitched for this brand, if it did."""
+    try:
+        cur = _cursor(conn)
+        cur.execute(
+            """SELECT to_email FROM polly_autopilot_queue WHERE creator_id = %s AND brand_id = %s AND sent_at IS NOT NULL
+               ORDER BY sent_at DESC LIMIT 1""",
+            (creator_id, brand_id),
+        )
+        row = cur.fetchone()
+        return row["to_email"] if row else None
+    except Exception:
+        conn.rollback()
+        return None
 
 
 def _set(conn, item_id: int, **fields) -> None:

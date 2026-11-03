@@ -667,6 +667,22 @@ def get_hunt_stats():
         return jsonify({'error': str(e)}), 500
 
 
+@admin_pr_hunter_bp.route('/contact-repair', methods=['GET'])
+@admin_required
+def contact_repair_status():
+    """Hunter credits, today's verification spend and the latest inbox repairs for creator pitches."""
+    from pr_crm_routes import get_db_connection as crm_conn
+    from services.contact_repair import account_status, admin_summary
+
+    conn = crm_conn()
+    try:
+        return jsonify({'hunter': account_status(), **admin_summary(conn)}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+
 # ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================

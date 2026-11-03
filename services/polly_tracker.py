@@ -1007,6 +1007,28 @@ def contact_logged(conn, creator_id: int, brand_id: Optional[int], name: Optiona
     return bool(row) and row["event_type"] != "pitch_not_sent"
 
 
+def _repair_bounced_contact(conn, creator_id: int, brand_id: Optional[int]) -> Dict[str, Any]:
+    """Mark the bounced inbox bad for every creator and look for a verified one. Autopilot pitches are requeued."""
+    if not brand_id:
+        return {}
+    try:
+        from services.contact_repair import repair_after_bounce
+        from services.polly_autopilot import last_sent_to, requeue_after_bounce
+
+        bounced = last_sent_to(conn, creator_id, brand_id)
+        fix = repair_after_bounce(conn, brand_id, bounced, creator_id=creator_id)
+        if fix.get("new_email") and bounced:
+            fix["requeued"] = requeue_after_bounce(conn, creator_id, brand_id, fix["new_email"])
+        return fix
+    except Exception as err:
+        print(f"[Polly tracker] bounce repair skipped: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {}
+
+
 def apply_lifecycle_intent(
     conn,
     creator_id: int,
@@ -1180,6 +1202,26 @@ def apply_lifecycle_intent(
         chips = [
             {"id": "line_up", "label": "Next brand", "action": "suggest_brands"},
         ]
+        fix = _repair_bounced_contact(conn, creator_id, brand_id)
+        if fix.get("new_email"):
+            new = fix["new_email"]
+            if fix.get("requeued"):
+                action = "bounced_resending"
+                say_hint = (
+                    f"**{name}**'s old inbox bounced. I found a verified one, {new}, and Autopilot "
+                    "resends your pitch there on its next run. Nothing for you to do."
+                )
+            else:
+                action = "bounced_new_inbox"
+                say_hint = (
+                    f"**{name}**'s old inbox bounced. I found a verified one: {new}. "
+                    "Want me to put your pitch on it so you can resend?"
+                )
+                chips = [
+                    {"id": "resend_new_inbox", "label": f"Resend to {new}", "action": "generate_pitch",
+                     "brand_id": brand_id, "brand_name": name},
+                    {"id": "line_up", "label": "Next brand", "action": "suggest_brands"},
+                ]
     elif intent == "pitch_not_sent":
         close_tasks(
             conn, creator_id, ["follow_up_due", "pitch_sent"], brand_id,
