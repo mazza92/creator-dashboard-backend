@@ -36,6 +36,10 @@ BLOCKED_OUTREACH_STATUSES = {
 SIGNUP_URL = "https://newcollab.co/land-your-first-pr-package"
 DEFAULT_SUBJECT = "PR / gifting campaigns for @{{handle}}"
 DEFAULT_FOLLOWUP_HOURS = 96
+MAX_EMAILS_PER_LEAD = 2  # first email + one follow-up
+FOLLOWUP_WINDOW_DAYS = 21  # a "quick bump" weeks later reads oddly; older leads get a fresh pitch instead
+# Creators who already have a Newcollab account never get the join pitch.
+NOT_A_MEMBER_SQL = "NOT EXISTS (SELECT 1 FROM users u WHERE LOWER(u.email) = LOWER(TRIM(l.contact_email)))"
 
 
 def get_db_connection():
@@ -116,6 +120,16 @@ def default_onboarding_html(lead=None):
 """
 
 
+def followup_html(lead=None):
+    """Day-4 bump, same offer as the first email. Sent once, never after a reply."""
+    return """
+<p>Hey,</p>
+<p>Quick bump in case this got buried. Brands on Newcollab are still looking for UGC creators, and @{{handle}} looks like a good fit.</p>
+<p>Applying takes 2 minutes:<br><a href="{{signup_url}}">{{signup_url}}</a></p>
+<p>Mazza</p>
+"""
+
+
 def _ensure(conn):
     cur = conn.cursor()
     ensure_schema(cur)
@@ -131,6 +145,7 @@ def _lead_select():
             l.notes, l.created_at, l.updated_at,
             COALESCE(t.outreach_count, 0) AS times_contacted,
             t.last_contacted_at,
+            t.last_subject,
             t.last_response_status
         FROM ugc_supply l
         LEFT JOIN ugc_supply_outreach_tracking t ON t.lead_id = l.id
@@ -214,6 +229,7 @@ def leads_for_outreach():
             "l.contact_email IS NOT NULL AND TRIM(l.contact_email) <> ''",
             "COALESCE(l.status, 'draft') IN ('draft', 'review')",
             "t.lead_id IS NULL",
+            NOT_A_MEMBER_SQL,
         ]
         params = []
         if niche:
@@ -338,6 +354,8 @@ def _send_one(cur, conn, lead, subject, html_content, allow_followup, min_hours)
         return False, f"blocked_status:{status}", 409
     if lead.get("last_contacted_at") and not allow_followup:
         return False, "already_contacted", 409
+    if allow_followup and int(lead.get("times_contacted") or 0) >= MAX_EMAILS_PER_LEAD:
+        return False, "sequence_finished", 409
     if allow_followup and lead.get("last_contacted_at") and min_hours:
         last = lead["last_contacted_at"]
         if getattr(last, "tzinfo", None) is None:
@@ -429,6 +447,7 @@ def send_bulk():
         return jsonify({"error": "lead_ids list is required"}), 400
     lead_ids = [int(i) for i in lead_ids][:50]
     delay = float(data.get("delay_seconds") or 0.4)
+    followup = data.get("kind") == "followup"
     try:
         conn = get_db_connection()
         _ensure(conn)
@@ -441,15 +460,21 @@ def send_bulk():
             if not lead:
                 results["failed"].append({"lead_id": lead_id, "reason": "not_found"})
                 continue
-            ok, err, code = _send_one(
-                cur,
-                conn,
-                lead,
-                data.get("subject"),
-                data.get("html_content"),
-                bool(data.get("allow_followup", False)),
-                int(data.get("min_followup_hours", DEFAULT_FOLLOWUP_HOURS)),
-            )
+            if followup:
+                first = lead.get("last_subject") or DEFAULT_SUBJECT
+                subject = first if first.lower().startswith("re:") else f"Re: {first}"
+                ok, err, code = _send_one(cur, conn, lead, subject, followup_html(lead), True,
+                                          int(data.get("min_followup_hours", DEFAULT_FOLLOWUP_HOURS)))
+            else:
+                ok, err, code = _send_one(
+                    cur,
+                    conn,
+                    lead,
+                    data.get("subject"),
+                    data.get("html_content"),
+                    bool(data.get("allow_followup", False)),
+                    int(data.get("min_followup_hours", DEFAULT_FOLLOWUP_HOURS)),
+                )
             if ok:
                 results["sent"].append({
                     "lead_id": lead_id,
@@ -464,6 +489,64 @@ def send_bulk():
                 _time.sleep(delay)
         conn.close()
         return jsonify({"success": True, **results, "sent_count": len(results["sent"])})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@ugc_supply_bp.route("/outreach/followups", methods=["GET"])
+@admin_required
+def followups_due():
+    """Contacted once, no reply, not a member, first email at least DEFAULT_FOLLOWUP_HOURS ago."""
+    try:
+        limit = min(int(request.args.get("limit", 50)), 100)
+        conn = get_db_connection()
+        _ensure(conn)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            f"""{_lead_select()}
+            WHERE t.outreach_count = 1
+              AND t.last_contacted_at < NOW() - (%s * INTERVAL '1 hour')
+              AND t.last_contacted_at > NOW() - (%s * INTERVAL '1 day')
+              AND COALESCE(t.last_response_status, '') = ''
+              AND COALESCE(l.status, '') = 'contacted'
+              AND {NOT_A_MEMBER_SQL}
+            ORDER BY t.last_contacted_at
+            LIMIT %s""",
+            (DEFAULT_FOLLOWUP_HOURS, FOLLOWUP_WINDOW_DAYS, limit),
+        )
+        rows = [_json_ready(r) for r in (cur.fetchall() or [])]
+        conn.close()
+        return jsonify({"success": True, "total": len(rows), "leads": rows})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@ugc_supply_bp.route("/replies", methods=["POST"])
+@admin_required
+def record_replies():
+    """Mark leads whose contact email replied, so no follow-up goes out. Body: {"emails": [...]}."""
+    data = request.get_json() or {}
+    emails = sorted({(e or "").strip().lower() for e in (data.get("emails") or []) if "@" in (e or "")})[:200]
+    if not emails:
+        return jsonify({"success": True, "matched": []})
+    try:
+        conn = get_db_connection()
+        _ensure(conn)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            """
+            UPDATE ugc_supply_outreach_tracking t SET last_response_status = 'replied'
+            FROM ugc_supply l
+            WHERE l.id = t.lead_id AND LOWER(TRIM(l.contact_email)) = ANY(%s)
+              AND COALESCE(t.last_response_status, '') = ''
+            RETURNING l.id, l.handle, l.contact_email
+            """,
+            (emails,),
+        )
+        matched = [_json_ready(r) for r in (cur.fetchall() or [])]
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "matched": matched})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -483,7 +566,12 @@ def outreach_stats():
               (SELECT COUNT(*) FROM ugc_supply
                  WHERE qualified AND contact_email IS NOT NULL) AS ready_email,
               (SELECT COUNT(*) FROM ugc_supply WHERE status = 'contacted') AS contacted,
-              (SELECT COUNT(*) FROM ugc_supply_outreach_log WHERE status = 'sent') AS emails_sent
+              (SELECT COUNT(*) FROM ugc_supply_outreach_log WHERE status = 'sent') AS emails_sent,
+              (SELECT COUNT(*) FROM ugc_supply WHERE created_at > NOW() - INTERVAL '24 hours') AS new_leads_24h,
+              (SELECT COUNT(*) FROM ugc_supply l JOIN ugc_supply_outreach_tracking t ON t.lead_id = l.id
+                 JOIN users u ON LOWER(u.email) = LOWER(TRIM(l.contact_email))
+                 WHERE u.created_at > t.last_contacted_at - INTERVAL '1 day') AS signed_up,
+              (SELECT COUNT(*) FROM ugc_supply_outreach_tracking WHERE last_response_status = 'replied') AS replied
             """
         )
         row = _json_ready(cur.fetchone() or {})
