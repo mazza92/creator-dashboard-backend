@@ -1021,6 +1021,18 @@ def _record_promo_signup(conn, user_id, code):
         print(f"[promote] referral skipped: {err}")
 
 
+def _record_signup_offer(conn, user_id, ref):
+    """Link offers (?ref=polly_trial7 from the creator cold email): checkout honours them later."""
+    if not ref:
+        return
+    try:
+        from services.creator_offers import record_offer
+        record_offer(conn, user_id, ref)
+    except Exception as err:
+        conn.rollback()
+        print(f"[offer] skipped: {err}")
+
+
 def _create_pending_creator(cursor, user_id, email):
     cursor.execute(
         '''
@@ -1193,6 +1205,7 @@ def google_signup():
 
             conn.commit()
             _record_promo_signup(conn, user_id, data.get('promo_code'))
+            _record_signup_offer(conn, user_id, data.get('signup_ref'))
 
             _establish_auth_session(user_id, 'creator', creator_id=creator_id)
 
@@ -6422,6 +6435,7 @@ def register_creator_account():
         user_id = cursor.fetchone()['id']
         conn.commit()
         _record_promo_signup(conn, user_id, data.get('promo_code'))
+        _record_signup_offer(conn, user_id, data.get('signup_ref'))
 
         email_sent = False
         if skip_verify:

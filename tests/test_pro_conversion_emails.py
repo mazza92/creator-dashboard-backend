@@ -215,6 +215,7 @@ class TestCheckoutTrial(unittest.TestCase):
                 patch.object(sr, 'get_db_connection', return_value=conn), \
                 patch('services.quota_trial_test.trial_eligible', return_value=eligible), \
                 patch('services.quota_trial_test.outreach_trial_eligible', return_value=False), \
+                patch('services.creator_offers.has_trial_offer', return_value=False), \
                 patch('services.subscription_retention.qualifies_for_winback_coupon', return_value=False), \
                 patch.dict('os.environ', {'STRIPE_PRICE_ID_PRO': 'price_x'}), \
                 patch.object(sr.stripe.checkout.Session, 'create', return_value=session) as create:
@@ -246,6 +247,7 @@ class TestTrialOfferInApp(unittest.TestCase):
         with patch.object(sr, 'get_creator_id_from_session', return_value=creator_id), \
                 patch.object(sr, 'get_db_connection', return_value=MagicMock()), \
                 patch('services.quota_trial_test.outreach_trial_eligible', return_value=False), \
+                patch('services.creator_offers.has_trial_offer', return_value=False), \
                 patch('services.quota_trial_test.trial_eligible', return_value=eligible) as check:
             resp = self.app.test_client().get('/api/subscription/trial-offer')
         return resp.get_json(), check

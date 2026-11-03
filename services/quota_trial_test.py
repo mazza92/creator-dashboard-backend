@@ -64,8 +64,11 @@ def outreach_trial_eligible(cursor, creator_id):
 
 
 def checkout_trial_eligible(cursor, creator_id):
-    """What the paywall offers and checkout honours: the cold-email offer, else the experiment's rule."""
-    return outreach_trial_eligible(cursor, creator_id) or trial_eligible(cursor, creator_id)
+    """What the paywall offers and checkout honours: a trial-offer link at signup, the cold-email address
+    match, else the experiment's rule."""
+    from services.creator_offers import has_trial_offer
+    return (has_trial_offer(cursor, creator_id) or outreach_trial_eligible(cursor, creator_id)
+            or trial_eligible(cursor, creator_id))
 
 
 def trial_eligible(cursor, creator_id):

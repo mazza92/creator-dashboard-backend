@@ -16,7 +16,7 @@ def test_first_email_offers_the_free_week_without_overclaiming():
     subject = us.personalize(us.DEFAULT_SUBJECT, {"handle": "jaye.ugc"})
     assert subject == "@jaye.ugc, your brand pitches done for you (7 days free)"
     assert "free for 7 days" in html and "from your Gmail" in html
-    assert 'href="https://app.newcollab.co/register/creator?upgrade=pro"' in html
+    assert 'href="https://app.newcollab.co/register/creator?ref=polly_trial7"' in html
     for claim in ("negotiat", "contract", "guarantee"):
         assert claim not in html.lower()
     assert "\u2014" not in html and "{{" not in html

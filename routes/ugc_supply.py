@@ -33,8 +33,9 @@ BLOCKED_OUTREACH_STATUSES = {
     "reply",
 }
 
-# Sign up, then Polly's Autopilot card opens with the 7-day trial (outreach_trial_eligible grants it).
-SIGNUP_URL = "https://app.newcollab.co/register/creator?upgrade=pro"
+# The ref survives signup (frontend keeps it), is stored by creator_offers, and checkout grants the 7-day
+# trial; Polly opens the Autopilot card on first visit.
+SIGNUP_URL = "https://app.newcollab.co/register/creator?ref=polly_trial7"
 DEFAULT_SUBJECT = "@{{handle}}, your brand pitches done for you (7 days free)"
 DEFAULT_FOLLOWUP_HOURS = 96
 MAX_EMAILS_PER_LEAD = 2  # first email + one follow-up
