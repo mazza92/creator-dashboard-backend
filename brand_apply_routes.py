@@ -246,6 +246,43 @@ def _ig_code(url):
     return m.group(1) if m else None
 
 
+_TT_POST_RE = re.compile(r"tiktok\.com/@([\w.]+)/(?:video|photo)/\d+", re.I)
+_POST_HOSTS = ("tiktok.com", "www.tiktok.com", "m.tiktok.com", "instagram.com", "www.instagram.com",
+               "youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be")
+
+
+def post_link_error(post_url, own_tiktok=""):
+    """Why a picked post can't go to the brand, or None. Pasted links must be the creator's own TikTok/IG posts."""
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(str(post_url or "").strip())
+    except Exception:
+        return "That link doesn't look like a TikTok or Instagram post."
+    if parsed.scheme not in ("https", "http") or (parsed.netloc or "").lower() not in _POST_HOSTS:
+        return "Only TikTok, Instagram or YouTube posts can be sent to the brand."
+    m = _TT_POST_RE.search(str(post_url))
+    own = str(own_tiktok or "").strip().lstrip("@").lower()
+    if m and own and m.group(1).lower() != own:
+        return f"That TikTok is from @{m.group(1)}, not your account @{own}. Pick posts from your own profile."
+    return None
+
+
+def _own_tiktok_handle(cursor, creator_id):
+    try:
+        cursor.execute(
+            """SELECT d.handle, d.primary_platform FROM creators c
+               JOIN creator_profile_data d ON d.user_id = c.user_id WHERE c.id = %s""",
+            (creator_id,),
+        )
+        row = cursor.fetchone() or {}
+        if str(row.get("primary_platform") or "").lower() == "tiktok":
+            return row.get("handle") or ""
+    except Exception:
+        cursor.connection.rollback()
+    return ""
+
+
 def _proxy_thumb(url, post_url=None):
     try:
         from media_proxy_routes import post_preview_url, to_proxied_media_url
@@ -954,6 +991,12 @@ def submit_apply(brand_id):
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
         _ensure_schema(cursor, conn)
+
+        own_tiktok = _own_tiktok_handle(cursor, creator_id)
+        for item in selected:
+            bad = post_link_error(item.get("post_url"), own_tiktok)
+            if bad:
+                return jsonify({"success": False, "error": bad}), 400
 
         cursor.execute(
             """
