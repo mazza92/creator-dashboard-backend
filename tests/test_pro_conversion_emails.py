@@ -253,12 +253,12 @@ class TestTrialOfferInApp(unittest.TestCase):
         return resp.get_json(), check
 
     def test_endpoint_uses_checkout_check(self):
-        self.assertEqual(self._get(True)[0], {'trial_days': 7})
-        self.assertEqual(self._get(False)[0], {'trial_days': 0})
+        self.assertEqual(self._get(True)[0], {'trial_days': 7, 'invited': False})
+        self.assertEqual(self._get(False)[0], {'trial_days': 0, 'invited': False})
 
     def test_endpoint_logged_out(self):
         body, check = self._get(True, creator_id=None)
-        self.assertEqual(body, {'trial_days': 0})
+        self.assertEqual(body, {'trial_days': 0, 'invited': False})
         check.assert_not_called()
 
     def test_credits_out_message_trial_copy(self):
