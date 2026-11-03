@@ -2011,6 +2011,20 @@ def _run_chip(state, action, chip_id, data):
         return prior
     elif action == "pitch_batch":
         call = ("draft_pitch_batch", {"brand_ids": list(data.get("brand_ids") or [])[:3]})
+    elif action == "set_niche" and data.get("niche"):
+        from services.creator_niches import save_creator_niches
+        import json
+
+        from services.niche_check import mark_answered, parse_choice
+
+        recorded = save_creator_niches(state.db(), state.creator_id, parse_choice(data.get("niche")))
+        if recorded:
+            state.notes["niche"] = recorded
+            state.notes = mark_answered(state.notes, recorded)
+            state.creator = {**(state.creator or {}), "creator_niches": recorded, "niche": json.dumps(recorded)}
+            prior.append({"tool": "set_niche", "result": {"saved": recorded,
+                                                          "explain": "Saved as their niches. Say so in one line."}})
+        call = ("suggest_brands", {})
     elif action == "suggest_brands":
         call = ("suggest_brands", {"deal": data.get("deal")} if data.get("deal") else {})
     elif action == "suggest_gigs":

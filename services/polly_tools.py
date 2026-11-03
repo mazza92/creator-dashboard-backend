@@ -179,6 +179,17 @@ def shipping_summary(rows: List[Dict[str, Any]], ship: Dict[str, Any]) -> Dict[s
 
 
 def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
+    from services.niche_check import conflict as niche_conflict
+    from services.niche_check import mark_asked, question
+
+    clash = niche_conflict(state.scrape, state.creator, state.notes)
+    if clash:
+        ask = question(clash)
+        state.notes = mark_asked(state.notes, clash)
+        state.final_say = ask["say"]
+        state.add_chips(ask["chips"])
+        return {"ok": True, "status": "niche_question", "scraped": clash["scraped"], "picked": clash["picked"],
+                "explain": "Brands are on hold until the creator picks a niche. The question and buttons are shown."}
     deal = str(args.get("deal") or "").strip().lower()
     if deal in ("gifted", "paid") and not (deal == "paid" and gifted_only(state.notes)):
         state.notes["deal_intent"] = deal

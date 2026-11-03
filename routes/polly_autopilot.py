@@ -241,12 +241,52 @@ def gmail_connect():
         conn.close()
 
 
+GMAIL_FAILURE_SAY = {
+    "gmail_scope": ("Gmail didn't connect: Google didn't give me permission to send. On the Google screen, "
+                    "tick **Send email on your behalf** before you tap Continue (Google leaves it unticked). "
+                    "That's the only permission I ask for, and I can't read your inbox."),
+    "gmail_denied": ("Gmail didn't connect, so I can't send your pitches yet. It takes 30 seconds: tap below, "
+                     "pick your account and tick **Send email on your behalf**."),
+    "gmail_failed": "Gmail didn't connect on Google's side. Tap below to try again, it usually works the second time.",
+}
+
+
+def _note_gmail_failure(creator_id, reason, conn=None):
+    """Say it in chat right away, with a one-tap retry, and remember why for the reminder email."""
+    from datetime import timedelta
+
+    from services.autopilot_health import record_gmail_failure
+    from services.polly_autopilot import post_thread_note
+
+    own = conn is None
+    if own:
+        from pr_crm_routes import get_db_connection
+
+        conn = get_db_connection()
+    try:
+        record_gmail_failure(conn, creator_id, reason)
+        post_thread_note(conn, creator_id, GMAIL_FAILURE_SAY.get(reason, GMAIL_FAILURE_SAY["gmail_failed"]),
+                         [{"id": "autopilot", "label": "Connect Gmail again", "action": "autopilot"}],
+                         dedupe_key="gmail_connect_failed", within=timedelta(minutes=20))
+    except Exception as err:
+        print(f"[Polly autopilot] gmail failure note skipped creator={creator_id}: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        if own:
+            conn.close()
+
+
 @autopilot_bp.route("/gmail/callback", methods=["GET"])
 def gmail_callback():
     from pr_crm_routes import get_db_connection
 
     creator_id = read_state(request.args.get("state") or "")
     if not creator_id or request.args.get("error") or not request.args.get("code"):
+        if creator_id:
+            _note_gmail_failure(creator_id, "gmail_denied")
         return redirect(_frontend(f"{POLLY_PATH}?autopilot=gmail_denied"))
     conn = get_db_connection()
     try:
@@ -258,6 +298,7 @@ def gmail_callback():
     except GmailError as gerr:
         print(f"[Polly autopilot] gmail connect failed creator={creator_id}: {gerr}")
         reason = "gmail_scope" if "gmail.send" in str(gerr) else "gmail_failed"
+        _note_gmail_failure(creator_id, reason, conn)
         return redirect(_frontend(f"{POLLY_PATH}?autopilot={reason}"))
     finally:
         conn.close()
