@@ -174,6 +174,9 @@ def save(conn, creator_id: int, patch: Dict[str, Any], confirm: bool = False) ->
             changed.append("niche_label")
     if confirm:
         notes[CONFIRMED_KEY] = _now()
+        if isinstance(patch.get("niches"), list) and patch["niches"]:
+            # They picked their niches themselves: the posts-vs-signup niche question has its answer.
+            notes["niche_check"] = {**(notes.get("niche_check") or {}), "answered": list(patch["niches"])}
     save_notes(conn, creator_id, notes)
     if isinstance(patch.get("niches"), list) and [n.lower() for n in patch["niches"]] != [n.lower() for n in before["niches"]]:
         save_creator_niches(conn, creator_id, patch["niches"])
