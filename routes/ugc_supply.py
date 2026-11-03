@@ -34,7 +34,7 @@ BLOCKED_OUTREACH_STATUSES = {
 }
 
 SIGNUP_URL = "https://newcollab.co/"
-DEFAULT_SUBJECT = "Paid UGC for @{{handle}}"
+DEFAULT_SUBJECT = "A pitching assistant for @{{handle}}"
 DEFAULT_FOLLOWUP_HOURS = 96
 MAX_EMAILS_PER_LEAD = 2  # first email + one follow-up
 FOLLOWUP_WINDOW_DAYS = 21  # a "quick bump" weeks later reads oddly; older leads get a fresh pitch instead
@@ -109,12 +109,16 @@ def personalize(text, lead):
 
 
 def default_onboarding_html(lead=None):
-    """Paid-first invite: per-view campaigns lead, gifting second (avoids 'I only do paid' replies)."""
+    """Assistant angle: Polly Autopilot pitches matched brands from the creator's Gmail while they create.
+    Only what the product does today: it finds brands, writes, sends and follows up. Replies land in the
+    creator's own inbox (send-only Gmail scope), so the copy never says Polly negotiates or signs deals."""
     return """
 <p>Hey,</p>
 <p>Saw your TikTok (@{{handle}}).</p>
-<p>Brands on Newcollab can now run two kinds of campaigns: gifted product, and paid campaigns where you earn per 1,000 views your video gets. Your profile looks like a fit.</p>
-<p>See how it works and apply:<br><a href="{{signup_url}}">{{signup_url}}</a></p>
+<p>Newcollab gives creators a personal assistant, Polly, that pitches brands for you on autopilot:</p>
+<p>&bull; finds brands that match your content<br>&bull; writes and sends the pitches from your own Gmail<br>&bull; follows up so nothing goes cold</p>
+<p>Brands reply straight to your inbox, and you stay focused on creating.</p>
+<p>See how it works:<br><a href="{{signup_url}}">{{signup_url}}</a></p>
 <p>Mazza<br>Founder, Newcollab</p>
 """
 
@@ -123,7 +127,7 @@ def followup_html(lead=None):
     """Day-4 bump, same offer as the first email. Sent once, never after a reply."""
     return """
 <p>Hey,</p>
-<p>Quick bump in case this got buried. Paid per-view and gifted campaigns on Newcollab are open to creators like @{{handle}}.</p>
+<p>Quick bump in case this got buried. Polly can pitch matched brands for @{{handle}} every week from your own Gmail, while you keep posting.</p>
 <p>Applying takes 2 minutes:<br><a href="{{signup_url}}">{{signup_url}}</a></p>
 <p>Mazza</p>
 """
