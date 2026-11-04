@@ -36,14 +36,14 @@ BLOCKED_OUTREACH_STATUSES = {
 # The ref survives signup (frontend keeps it), is stored by creator_offers, and checkout grants the 7-day
 # trial; Polly opens the Autopilot card on first visit.
 SIGNUP_URL = "https://app.newcollab.co/register/creator?ref=polly_trial7"
-# These creators want paid deals, so the email sells Autopilot for paid UGC, not gifting. Subjects read like a
-# note from a person: short, about paid work, no "free", no "done for you", no brackets. History: "Paid UGC for
-# @handle" 2 signups from 9; "@handle, your brand pitches done for you (7 days free)" 0 from 49. Each lead gets
-# one variant (stable per lead, so the follow-up's "Re:" matches) and the log keeps it, so the winner shows.
+# Bait = the paid-job feed, not the software. History: "Paid UGC for @handle" 2 signups from 9; the 7-day trial
+# emails ("done for you (7 days free)", then three "paid deals on autopilot" subjects) 0 clicks from ~190.
+# Paid UGC jobs live on many boards; Newcollab's scanner pulls them into one feed (SideShift, LinkedIn,
+# Freelancer, Craigslist...). The email says exactly that, with the live weekly count; the trial stays one line.
+# Each lead gets one subject (stable per lead, so the follow-up's "Re:" matches) and the log keeps it.
 SUBJECT_VARIANTS = (
-    "paid UGC deals for @{{handle}}",
-    "more paid brand deals, @{{handle}}?",
-    "quick question, @{{handle}}",
+    "paid UGC jobs for @{{handle}}",
+    "{{gig_count}} paid UGC jobs this week",
 )
 DEFAULT_SUBJECT = SUBJECT_VARIANTS[0]
 
@@ -108,8 +108,42 @@ def _json_ready(row):
     return out
 
 
+# Scanner gigs (paid jobs pulled from external boards) that went live in the last 7 days. Counted once an hour.
+GIG_COUNT_TTL_S = 3600
+MIN_GIG_COUNT = 10
+_gig_count = {"n": 0, "at": 0.0}
+
+
+def refresh_gig_count(cur):
+    import time as _t
+
+    if _t.time() - _gig_count["at"] < GIG_COUNT_TTL_S:
+        return _gig_count["n"]
+    try:
+        cur.execute(
+            """
+            SELECT COUNT(*) AS n FROM opportunities
+            WHERE status = 'live' AND additional_notes ILIKE '%%[scanner:%%'
+              AND (closes_at IS NULL OR closes_at > NOW())
+              AND created_at > NOW() - INTERVAL '7 days'
+            """
+        )
+        row = cur.fetchone() or {}
+        _gig_count.update(n=int(row.get("n") if isinstance(row, dict) else row[0] or 0), at=_t.time())
+    except Exception:
+        pass
+    return _gig_count["n"]
+
+
+def gig_count_label():
+    """'105' when the feed is busy, else 'new' ("new paid UGC jobs this week") so the copy never shows a tiny number."""
+    n = _gig_count["n"]
+    return str(n) if n >= MIN_GIG_COUNT else "new"
+
+
 def personalize(text, lead):
     mapping = {
+        "{{gig_count}}": gig_count_label(),
         "{{display_name}}": lead.get("display_name") or lead.get("handle") or "there",
         "{{handle}}": lead.get("handle") or "",
         "{{niche}}": lead.get("niche") or "UGC",
@@ -127,16 +161,14 @@ def personalize(text, lead):
 
 
 def default_onboarding_html(lead=None):
-    """Autopilot pitches brands that pay for UGC, with the creator's rate; 7 days free. Only what the product
-    does: it finds brands, writes, sends from their Gmail and follows up. Replies land in their inbox and brands
-    pay them directly, so the copy never says Polly negotiates, signs or guarantees deals."""
+    """Lead with the paid-job feed (real, live count); the Polly trial is one line. Free accounts see a few jobs,
+    Pro sees them all, so the copy says "free to look", never "free jobs" or "all jobs free"."""
     return """
 <p>Hey,</p>
-<p>Saw your UGC on TikTok (@{{handle}}). Quick question: how many brands did you pitch for paid work last week?</p>
-<p>Paid deals come from pitching a lot of brands, and that's the part that eats your week.</p>
-<p>Polly, our AI assistant, runs it on autopilot:<br>&bull; finds brands that pay creators for UGC, each with a checked contact<br>&bull; writes a pitch for each brand with your rate, sent from your Gmail<br>&bull; follows up on day 4 and day 10 so no brand goes cold</p>
-<p>Brands reply straight to your inbox and pay you directly.</p>
-<p><a href="{{signup_url}}">Try it free for 7 days</a></p>
+<p>Saw your UGC on TikTok (@{{handle}}).</p>
+<p>Paid UGC jobs are scattered across SideShift, LinkedIn, Freelancer, Craigslist and more. Newcollab pulls them into one feed every day: {{gig_count}} new this week.</p>
+<p><a href="{{signup_url}}">See this week's paid UGC jobs</a></p>
+<p>Free to look. Pro unlocks every job, and Polly pitches brands for you, free for 7 days.</p>
 <p>Mazza<br>Founder, Newcollab</p>
 """
 
@@ -145,8 +177,8 @@ def followup_html(lead=None):
     """Day-4 bump, same offer as the first email. Sent once, never after a reply."""
     return """
 <p>Hey,</p>
-<p>Quick bump: your 7 free days are still open. Add your rate, connect Gmail, and this week's pitches to brands that pay for UGC go out for you while you keep creating.</p>
-<p><a href="{{signup_url}}">Start your free week</a></p>
+<p>Quick bump: {{gig_count}} paid UGC jobs went up this week, all in one feed instead of five job boards.</p>
+<p><a href="{{signup_url}}">See them here</a></p>
 <p>Mazza</p>
 """
 
@@ -384,6 +416,7 @@ def _send_one(cur, conn, lead, subject, html_content, allow_followup, min_hours)
         if datetime.now(timezone.utc) - last < timedelta(hours=int(min_hours)):
             return False, "followup_cooldown", 409
 
+    refresh_gig_count(cur)
     subj = personalize(subject or subject_for_lead(lead), lead)
     html = personalize(html_content or default_onboarding_html(lead), lead)
     send_res = send_resend_email(
