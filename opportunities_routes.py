@@ -832,7 +832,8 @@ def _opportunity_card(opp, creator_tokens: set, applied_ids: set) -> tuple:
         'fit_label': fit_label,
         'already_applied': opp['id'] in applied_ids,
         'external_apply_url': external_apply_url,
-        'apply_email': apply_email,
+        # The brand inbox is only handed out by /apply; list payloads carry the direct_contact flag instead.
+        'apply_email': apply_email if apply_mode == 'email' else None,
         'source_platform': source_platform,
         'apply_mode': apply_mode,
         'is_sourced': is_sourced,
@@ -894,7 +895,7 @@ def fetch_live_opportunity_cards(creator_id, extra_tokens=None):
 
     cursor.execute('''
         SELECT
-            id, brand_name, brand_category, brand_logo_url, brand_website,
+            id, brand_name, brand_category, brand_logo_url, brand_website, brand_email,
             product_name, campaign_description,
             pr_value_usd, creator_count_range, shipping_regions, follower_ranges,
             content_types, creator_niches, additional_notes,
