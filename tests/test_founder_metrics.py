@@ -94,3 +94,30 @@ class TestTrials(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_churn_summary_rates_and_evolution():
+    from datetime import datetime
+    from services.founder_metrics import churn_summary
+    months = [
+        {"month": datetime(2026, 9, 1), "start_subs": 17, "new_paid": 19, "churned": 11, "churned_first_month": 2},
+        {"month": datetime(2026, 10, 1), "start_subs": 25, "new_paid": 27, "churned": 10, "churned_first_month": 9},
+        {"month": datetime(2026, 11, 1), "start_subs": 42, "new_paid": 6, "churned": 1, "churned_first_month": 0},
+    ]
+    window = {"start_30": 26, "new_30": 31, "churned_30": 10, "early_30": 8,
+              "start_prev": 17, "new_prev": 20, "churned_prev": 11}
+    out = churn_summary(months, window, 19)
+    assert out["rate_30d"] == 17.5
+    assert out["rate_prev_30d"] == 29.7
+    assert out["change_pts"] == -12.2
+    assert out["mrr_lost_30d"] == 190
+    assert out["first_month_share"] == 80
+    assert [m["month"] for m in out["months"]] == ["2026-09", "2026-10", "2026-11"]
+    assert out["months"][1]["rate"] == 19.2
+    assert out["months"][-1]["partial"] is True and "partial" not in out["months"][0]
+
+
+def test_churn_summary_empty():
+    from services.founder_metrics import churn_summary
+    out = churn_summary([], {}, 19)
+    assert out["rate_30d"] is None and out["change_pts"] is None and out["first_month_share"] is None

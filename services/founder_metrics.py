@@ -147,6 +147,102 @@ PACE_SQL = """
 """
 
 
+# Paid subscribers only: trial-only cancels (ended inside the free week) are trial losses, not churn.
+# A trialist counts as paid from their first charge. One row per creator, so a resubscribe counts once.
+CHURN_SUBS_CTE = """
+    WITH trials AS (SELECT DISTINCT creator_id FROM polly_email_log WHERE kind = 'trial_started'),
+    subs AS (
+      SELECT c.subscription_started_at + CASE WHEN t.creator_id IS NULL THEN INTERVAL '0 days'
+                                              ELSE make_interval(days => %(days)s) END AS paid_from,
+             CASE WHEN c.subscription_status NOT IN ('active', 'past_due', 'trialing')
+                  THEN c.subscription_ends_at END AS lost_at,
+             (t.creator_id IS NOT NULL
+              AND c.subscription_status NOT IN ('active', 'past_due', 'trialing')
+              AND c.subscription_ends_at < c.subscription_started_at + make_interval(days => %(days)s + 1)) AS trial_only
+      FROM creators c LEFT JOIN trials t ON t.creator_id = c.id
+      WHERE c.subscription_started_at IS NOT NULL
+    ), paid AS (SELECT * FROM subs WHERE NOT trial_only AND paid_from <= NOW())
+"""
+
+CHURN_MONTHS_SQL = CHURN_SUBS_CTE + """
+    , months AS (
+      SELECT generate_series(date_trunc('month', NOW()) - make_interval(months => %(months)s - 1),
+                             date_trunc('month', NOW()), INTERVAL '1 month') AS m
+    )
+    SELECT m AS month,
+      (SELECT COUNT(*) FROM paid WHERE paid_from < m AND (lost_at IS NULL OR lost_at >= m)) AS start_subs,
+      (SELECT COUNT(*) FROM paid WHERE paid_from >= m AND paid_from < m + INTERVAL '1 month') AS new_paid,
+      (SELECT COUNT(*) FROM paid WHERE lost_at >= m AND lost_at < m + INTERVAL '1 month') AS churned,
+      (SELECT COUNT(*) FROM paid WHERE lost_at >= m AND lost_at < m + INTERVAL '1 month'
+                                   AND lost_at < paid_from + INTERVAL '31 days') AS churned_first_month
+    FROM months ORDER BY m
+"""
+
+CHURN_WINDOW_SQL = CHURN_SUBS_CTE + """
+    SELECT
+      (SELECT COUNT(*) FROM paid WHERE paid_from < NOW() - INTERVAL '30 days'
+                                   AND (lost_at IS NULL OR lost_at >= NOW() - INTERVAL '30 days')) AS start_30,
+      (SELECT COUNT(*) FROM paid WHERE paid_from >= NOW() - INTERVAL '30 days') AS new_30,
+      (SELECT COUNT(*) FROM paid WHERE lost_at >= NOW() - INTERVAL '30 days') AS churned_30,
+      (SELECT COUNT(*) FROM paid WHERE lost_at >= NOW() - INTERVAL '30 days'
+                                   AND lost_at < paid_from + INTERVAL '31 days') AS early_30,
+      (SELECT COUNT(*) FROM paid WHERE paid_from < NOW() - INTERVAL '60 days'
+                                   AND (lost_at IS NULL OR lost_at >= NOW() - INTERVAL '60 days')) AS start_prev,
+      (SELECT COUNT(*) FROM paid WHERE paid_from >= NOW() - INTERVAL '60 days'
+                                   AND paid_from < NOW() - INTERVAL '30 days') AS new_prev,
+      (SELECT COUNT(*) FROM paid WHERE lost_at >= NOW() - INTERVAL '60 days'
+                                   AND lost_at < NOW() - INTERVAL '30 days') AS churned_prev
+"""
+
+CHURN_MONTHS = 6
+CHURN_TARGET_PCT = 8  # healthy monthly churn for a $19 consumer subscription
+
+
+def churn_rate(churned: int, start: int, new: int) -> Optional[float]:
+    """Share of the paying customers we had in a window (at its start + new in it) who cancelled in it.
+    Counting new ones too keeps a month with many fast cancels from showing over 100%."""
+    base = int(start or 0) + int(new or 0)
+    return round(int(churned or 0) / base * 100, 1) if base else None
+
+
+def churn_summary(months: List[Dict[str, Any]], window: Dict[str, Any], price: int) -> Dict[str, Any]:
+    w = {k: int(v or 0) for k, v in (window or {}).items()}
+    rate = churn_rate(w.get("churned_30"), w.get("start_30"), w.get("new_30"))
+    prev = churn_rate(w.get("churned_prev"), w.get("start_prev"), w.get("new_prev"))
+    series = []
+    for r in months:
+        month = r.get("month")
+        series.append({
+            "month": month.strftime("%Y-%m") if hasattr(month, "strftime") else str(month)[:7],
+            "start": int(r.get("start_subs") or 0),
+            "new": int(r.get("new_paid") or 0),
+            "churned": int(r.get("churned") or 0),
+            "first_month": int(r.get("churned_first_month") or 0),
+            "rate": churn_rate(r.get("churned"), r.get("start_subs"), r.get("new_paid")),
+        })
+    if series:
+        series[-1]["partial"] = True
+    churned = w.get("churned_30", 0)
+    return {
+        "rate_30d": rate,
+        "rate_prev_30d": prev,
+        "change_pts": round(rate - prev, 1) if rate is not None and prev is not None else None,
+        "churned_30d": churned,
+        "mrr_lost_30d": churned * price,
+        "first_month_share": round(w.get("early_30", 0) / churned * 100) if churned else None,
+        "retention_30d": round(100 - rate, 1) if rate is not None else None,
+        "target_pct": CHURN_TARGET_PCT,
+        "months": series,
+    }
+
+
+def churn_metrics(cursor, price: int) -> Dict[str, Any]:
+    cursor.execute(CHURN_MONTHS_SQL, {"days": TRIAL_DAYS, "months": CHURN_MONTHS})
+    months = [dict(r) for r in cursor.fetchall()]
+    cursor.execute(CHURN_WINDOW_SQL, {"days": TRIAL_DAYS})
+    return churn_summary(months, dict(cursor.fetchone() or {}), price)
+
+
 def trial_rows(cursor, since, cancel_flags: Optional[Dict[str, bool]] = None) -> List[Dict[str, Any]]:
     cursor.execute(TRIAL_ROWS_SQL, {"days": TRIAL_DAYS, "since": since})
     out = []
@@ -183,4 +279,10 @@ def founder_metrics(cursor, current_mrr: float, price: int, period_start,
         },
         "mrr_with_pipeline": round(float(current_mrr or 0) + all_trials["pipeline_mrr"]),
     }
-    return {"milestones": stage, "pace": growth, "trials": trials}
+    try:
+        churn = churn_metrics(cursor, price)
+    except Exception as exc:  # never lose the rest of the dashboard over this block
+        print(f"[FOUNDER] churn metrics failed: {exc}")
+        cursor.connection.rollback()
+        churn = None
+    return {"milestones": stage, "pace": growth, "trials": trials, "churn": churn}

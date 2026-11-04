@@ -2259,6 +2259,7 @@ def get_founder_dashboard():
             'milestones': growth['milestones'],
             'pace': growth['pace'],
             'trials': growth['trials'],
+            'churn': growth.get('churn'),
             'mrr': {
                 'current': current_mrr,
                 'goal': goal_mrr,
