@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest import mock
 
 import services.pitch_writer as pw
 from services.polly_autopilot import add_draft  # noqa: F401  (import check)
@@ -186,3 +187,28 @@ class NameCleanupTests(unittest.TestCase):
     def test_review_prompt_only_blocks_real_problems(self):
         from services.pitch_writer import REVIEW_SYSTEM
         self.assertIn("do NOT judge style", REVIEW_SYSTEM)
+
+
+class ProofAndAskTests(unittest.TestCase):
+    def test_tiny_view_counts_are_left_out(self):
+        from services.pitch_writer import proof_line
+        self.assertEqual(proof_line({"avg_views": "256", "avg_views_n": 256}), "")
+        self.assertIn("14.8K", proof_line({"avg_views": "14.8K", "avg_views_n": 14800}))
+        self.assertEqual(proof_line({"followers": "202"}), "")
+
+    def test_ask_found_mid_paragraph(self):
+        from services.pitch_writer import find_ask
+        body = "I'd love to make a post for 3 months. No fee. Just product + shipping to NEW YORK, United States.\n\nThanks"
+        self.assertEqual(find_ask(body), "No fee. Just product + shipping to New York, United States.")
+        self.assertEqual(find_ask("x\nRate: $150 per video\ny"), "Rate: $150 per video")
+
+
+class RosterReminderPauseTests(unittest.TestCase):
+    def test_only_first_nudge_can_go_out(self):
+        from services import roster_waiting_email as rw
+        self.assertEqual(rw.PAUSED_TRIGGERS, frozenset({2, 3, 4}))
+        with mock.patch.object(rw, "passes_caps", return_value=(True, "")):
+            with mock.patch.object(rw, "_choose_trigger", return_value=rw.TriggerChoice(3, "weekly_reminder")):
+                self.assertIsNone(rw.choose_trigger(object()))
+            with mock.patch.object(rw, "_choose_trigger", return_value=rw.TriggerChoice(1, "first_nudge")):
+                self.assertEqual(rw.choose_trigger(object()).number, 1)

@@ -15,6 +15,7 @@ from services.roster_waiting_email import (
     build_email,
     build_roster_link,
     choose_trigger,
+    _choose_trigger,
     greeting_for_brand,
     html_subject_for,
     in_send_window,
@@ -112,6 +113,10 @@ class TestRosterLinkAndSubjects(unittest.TestCase):
             self.assertNotIn("\u2013", subj)
 
 
+def _selection(state):
+    return _choose_trigger(state)
+
+
 class TestCapsAndTriggers(unittest.TestCase):
     def test_first_nudge_at_three_unopened(self):
         choice = choose_trigger(_state(applicant_count=3, last_roster_view_days=None, trigger1_sent=False))
@@ -127,7 +132,7 @@ class TestCapsAndTriggers(unittest.TestCase):
         )
 
     def test_volume_after_first_nudge(self):
-        choice = choose_trigger(
+        choice = _selection(  # reminders are paused; the selection logic is kept for when they return
             _state(
                 applicant_count=10,
                 trigger1_sent=True,
@@ -144,7 +149,7 @@ class TestCapsAndTriggers(unittest.TestCase):
         self.assertEqual(choice.number, 1)
 
     def test_weekly_after_fourteen_days_no_picks(self):
-        choice = choose_trigger(
+        choice = _selection(  # reminders are paused; the selection logic is kept for when they return
             _state(
                 applicant_count=5,
                 trigger1_sent=True,
@@ -155,7 +160,7 @@ class TestCapsAndTriggers(unittest.TestCase):
         self.assertEqual(choice.number, 3)
 
     def test_weekly_caps_at_three(self):
-        choice = choose_trigger(
+        choice = _selection(  # reminders are paused; the selection logic is kept for when they return
             _state(
                 applicant_count=5,
                 trigger1_sent=True,

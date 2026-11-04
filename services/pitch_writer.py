@@ -90,7 +90,9 @@ _PLACEHOLDER = re.compile(r"\[[A-Z ,_]+\]|\{\w+\}|lorem|TODO|XX", re.I)
 # Stat-like numbers the opener may not use (durations like "15-second" or "3 products" are fine).
 _STAT = re.compile(r"(?i)\d[\d,.]*\s*(?:k\b|m\b|%|percent|views?|followers?|likes?|saves?|clicks?|sales|x\b|times)"
                    r"|\d{1,3}(?:,\d{3})+|\b\d{4,}\b")
-_ASK = re.compile(r"(?im)^(?:no fee\.[^\n]*|rate:[^\n]*)$")
+# The offer line, also when an older pitch has it mid-paragraph ("... for 3 months. No fee. Just product ...").
+_ASK = re.compile(r"(?im)(?:\bno fee\.[^\n]*|^rate:[^\n]*$)")
+MIN_PROOF_VIEWS = 1000  # below this, view counts read as a weakness: say nothing
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +143,15 @@ def _engagement_pct(raw: Any) -> float:
     return float(m.group(1)) if m else 0.0
 
 
+def _count(v: Any) -> int:
+    s = str(v or "").strip().upper().replace(",", "")
+    mult = 1000 if s.endswith("K") else 1_000_000 if s.endswith("M") else 1
+    try:
+        return int(float(s.rstrip("KM") or 0) * mult)
+    except ValueError:
+        return 0
+
+
 def proof_line(facts: Dict[str, Any]) -> str:
     """One line of real proof. Engagement only when it's strong; nothing when stats are off."""
     lead = facts.get("lead_metric") or ""
@@ -155,9 +166,9 @@ def proof_line(facts: Dict[str, Any]) -> str:
         parts.append(f"I have {followers} followers on {facts.get('platform') or 'my page'}.")
     elif lead == "engagement" and eng >= STRONG_ENGAGEMENT:
         parts.append(f"{what} get {eng:g}% engagement.")
-    elif views:
+    elif views and (facts.get("avg_views_n") or 0) >= MIN_PROOF_VIEWS:
         parts.append(f"{what} average {views} views.")
-    elif followers:
+    elif followers and _count(followers) >= MIN_PROOF_VIEWS:
         parts.append(f"I have {followers} followers on {facts.get('platform') or 'my page'}.")
     if facts.get("win"):
         win = facts["win"].rstrip(".")
@@ -241,7 +252,8 @@ OPENER_SYSTEM = (
     "concrete short-form video idea for it (the format and what the viewer sees). First person, in the tone given. "
     "Follow the creator's style rules if any, but keep it clear to a stranger at a brand (proper capitalisation, "
     "no slang a brand could misread). NEVER use stats, view or follower counts, percentages or past results (a video length like 15-second is fine). Do not claim you "
-    "already use or own the product. No greeting, no sign-off, no links, no hashtags, at most one emoji."
+    "already use or own the product. No greeting, no sign-off, no links, no hashtags, at most one emoji. "
+    "Open naturally and vary it; don't start with 'I envision' or 'Imagine'."
 )
 
 REVIEW_SYSTEM = (
@@ -392,6 +404,7 @@ def build_facts(pitch: Dict[str, Any], *, brand: Dict[str, Any], profile: Dict[s
         "followers": pitch.get("followers") or "",
         "engagement": engagement,
         "avg_views": stats.get("avg_views") or "",
+        "avg_views_n": stats.get("avg_views_n") or 0,
         "lead_metric": "none" if lead in ("none", "no_stats") else lead,
         "win": profile.get("win") or "",
         "posts": list(dict.fromkeys(posts))[:2],
