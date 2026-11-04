@@ -1592,26 +1592,32 @@ def login():
 
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     try:
+        # A few old accounts share an email in different case (e.g. @Gmail.com and @gmail.com). Take the one
+        # whose password matches, most recently used first, instead of whichever row comes back first.
         cursor.execute(
-            "SELECT id, password, role, country FROM users WHERE LOWER(email) = LOWER(%s)",
+            "SELECT id, password, role, country FROM users WHERE LOWER(email) = LOWER(%s) "
+            "ORDER BY last_login DESC NULLS LAST, id DESC",
             (email,),
         )
-        user = cursor.fetchone()
-        app.logger.info(f"🟢 User Query Result: {user.get('id') if user else None}")
+        candidates = cursor.fetchall() or []
+        app.logger.info(f"🟢 User Query Result: {[c.get('id') for c in candidates]}")
 
-        password_ok = False
-        if user and user.get('password'):
+        user, password_ok = (candidates[0] if candidates else None), False
+        for candidate in candidates:
+            if not candidate.get('password'):
+                continue
             try:
-                stored = user['password']
+                stored = candidate['password']
                 if isinstance(stored, str):
                     stored = stored.encode('utf-8')
-                password_ok = bcrypt.checkpw(password.encode('utf-8'), stored)
+                if bcrypt.checkpw(password.encode('utf-8'), stored):
+                    user, password_ok = candidate, True
+                    break
             except (ValueError, TypeError) as e:
                 # Corrupt/legacy non-bcrypt hash — treat as bad credentials, not 500
                 app.logger.warning(
-                    f"Login rejected: invalid password hash for user_id={user.get('id')}: {e}"
+                    f"Login rejected: invalid password hash for user_id={candidate.get('id')}: {e}"
                 )
-                password_ok = False
 
         if not user or not password_ok:
             app.logger.error("🔥 Invalid email or password")

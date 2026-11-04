@@ -206,6 +206,41 @@ def instagram_handle_from_creator_row(social_handle, username, social_platform):
     return ''
 
 
+_IG_HANDLE = re.compile(r'^[A-Za-z0-9._]{1,30}$')
+
+
+def legacy_instagram_handle(kit_theme, social_links):
+    """Instagram @handle from the kit (newest, edited by the creator) or the signup social links."""
+    def clean(raw):
+        h = str(raw or '').strip().lstrip('@').strip('/')
+        return h if _IG_HANDLE.match(h) else ''
+
+    kit = kit_theme
+    if isinstance(kit, str):
+        try:
+            kit = json.loads(kit or '{}')
+        except ValueError:
+            kit = {}
+    kit = kit if isinstance(kit, dict) else {}
+    if str(kit.get('social_platform') or '').lower() == 'instagram' and clean(kit.get('social_handle')):
+        return clean(kit.get('social_handle'))
+    for prof in kit.get('social_profiles') or []:
+        if isinstance(prof, dict) and str(prof.get('platform') or '').lower() == 'instagram' and clean(prof.get('handle')):
+            return clean(prof.get('handle'))
+    links = social_links
+    if isinstance(links, str):
+        try:
+            links = json.loads(links or '[]')
+        except ValueError:
+            links = []
+    for link in links if isinstance(links, list) else []:
+        url = str((link or {}).get('url') or '') if isinstance(link, dict) else ''
+        m = re.search(r'instagram\.com/([^/?#\s]+)', url, re.I)
+        if m and clean(m.group(1)) and m.group(1).lower() not in ('p', 'reel', 'reels', 'stories', 'explore'):
+            return clean(m.group(1))
+    return ''
+
+
 def _lookup_creator_instagram_handle(creator_id=None, user_id=None):
     """Existing Instagram @handle so Graph-denied OAuth can finish via public scrape."""
     try:
@@ -249,6 +284,19 @@ def _lookup_creator_instagram_handle(creator_id=None, user_id=None):
         if not handle:
             from services.profile_refresh import scraped_handle
             handle = scraped_handle(conn, user_id, 'instagram')
+        if not handle and (creator_id or user_id):
+            # Creators from before Instagram connect only have it in their kit or signup social links.
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT kit_theme, social_links FROM creators WHERE ' + ('id = %s' if creator_id else 'user_id = %s')
+                + ' ORDER BY id DESC LIMIT 1',
+                (creator_id or user_id,),
+            )
+            legacy = cursor.fetchone()
+            cursor.close()
+            if legacy:
+                kit, links = (legacy['kit_theme'], legacy['social_links']) if isinstance(legacy, dict) else legacy[:2]
+                handle = legacy_instagram_handle(kit, links)
         conn.close()
         return handle
     except Exception as exc:
