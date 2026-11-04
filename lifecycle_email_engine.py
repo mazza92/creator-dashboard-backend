@@ -407,7 +407,8 @@ def send_lifecycle_email(
             full_context['cta_url'] += f"?{utm}"
 
         # Render email
-        subject = render_subject(template['subject_template'], full_context)
+        # A context can carry its own subject (the Monday check-in names the brand it asks about).
+        subject = full_context.get('subject_override') or render_subject(template['subject_template'], full_context)
         html_content = render_template(template['body_template_file'], full_context)
 
         success, message_id = _deliver_email(
@@ -1671,210 +1672,25 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
 
 
 def build_weekly_digest_context(creator_id: int) -> Dict[str, Any]:
-    """
-    Build context for the weekly digest email using AI Manager data.
-    Uses Reply Chance score and pending manager plans.
-    """
-    # Import pr_ready for score calculation
-    try:
-        from services.pr_ready import compute_pr_ready_score
-    except ImportError:
-        compute_pr_ready_score = None
+    """Monday check-in (services.monday_checkin): check in on last week's pitches, three brands ready to pitch,
+    free pitches left, and what Pro would do for them this week."""
+    from services.monday_checkin import build_context
+    from services.unlock_quota import count_delivered_unlocks_this_month, usage_from_delivered
 
     conn = get_db_connection()
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        # Get full creator data including user_id for scrape lookup
         cursor.execute("""
-            SELECT c.id, c.username, c.user_id, u.email, u.first_name,
-                   c.daily_unlocks_used, c.unlocks_remaining,
-                   c.pitches_sent_this_week, c.subscription_tier,
-                   c.bio, c.image_profile, c.niche, c.creator_niches,
-                   c.kit_published, c.total_pitches_sent, c.total_replies_received,
-                   c.followers_count, c.creator_followers, c.engagement_rate,
-                   c.avg_engagement_rate, c.weekly_digest_week_number
-            FROM creators c
-            JOIN users u ON c.user_id = u.id
+            SELECT c.id, u.first_name, c.username, c.subscription_tier
+            FROM creators c JOIN users u ON c.user_id = u.id
             WHERE c.id = %s
         """, (creator_id,))
         creator = cursor.fetchone()
-
         if not creator:
             return {}
-
-        user_id = creator.get('user_id')
-        subscription_tier = creator.get('subscription_tier') or 'free'
-        is_pro = subscription_tier == 'pro'
-
-        from services.unlock_quota import FREE_UNLOCK_LIMIT, count_delivered_unlocks_this_month, usage_from_delivered
-        if is_pro:
-            credits_used = 0
-            credits_remaining = None
-            credits_quota = 'unlimited'
-        else:
-            delivered = count_delivered_unlocks_this_month(cursor, creator_id)
-            credits_used, _remaining_free, credits_remaining = usage_from_delivered(delivered)
-            credits_quota = FREE_UNLOCK_LIMIT
-
-        applications_this_week = 0
-        try:
-            cursor.execute(
-                """
-                SELECT COUNT(*)::int AS n
-                FROM brand_pr_applications
-                WHERE creator_id = %s
-                  AND applied_at >= date_trunc('week', NOW())
-                """,
-                (creator_id,),
-            )
-            row = cursor.fetchone() or {}
-            applications_this_week = int(row.get('n') or 0)
-        except Exception:
-            applications_this_week = 0
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-
-        # === REPLY CHANCE SCORE: Use AI Manager score ===
-        reply_chance = 0
-        pending_plans = []
-        score_delta = 0
-
-        if compute_pr_ready_score and user_id:
-            try:
-                # Get creator_profile_data (scrape) - same as dashboard
-                cursor.execute("""
-                    SELECT * FROM creator_profile_data WHERE user_id = %s
-                """, (user_id,))
-                scrape = cursor.fetchone()
-
-                # Debug: log scrape data found
-                if scrape:
-                    print(f"[WEEKLY DIGEST] Scrape found: handle={scrape.get('handle')}, "
-                          f"has_bio={bool(scrape.get('raw_bio'))}, "
-                          f"posts={len(scrape.get('recent_posts') or [])}")
-                else:
-                    print(f"[WEEKLY DIGEST] No scrape data for user_id={user_id}")
-
-                # Get kit status - same query pattern as check_media_kit_complete
-                cursor.execute("""
-                    SELECT kit_published as is_published,
-                           (SELECT COUNT(*) FROM portfolio_posts WHERE creator_id = %s) as post_count
-                    FROM creators WHERE id = %s
-                """, (creator_id, creator_id))
-                kit_row = cursor.fetchone()
-                kit_status = {
-                    'is_published': kit_row.get('is_published') if kit_row else False,
-                    'post_count': kit_row.get('post_count') or 0 if kit_row else 0
-                }
-                print(f"[WEEKLY DIGEST] Kit status: published={kit_status['is_published']}, posts={kit_status['post_count']}")
-
-                # Compute PR-Ready score
-                report = compute_pr_ready_score(
-                    scrape=dict(scrape) if scrape else {},
-                    kit_status=kit_status,
-                    is_pro=is_pro,
-                    creator_bio=creator.get('bio'),
-                    creator_profile=dict(creator)
-                )
-
-                reply_chance = report.get('score') or 0
-                score_delta = report.get('projected_gain') or 0
-                print(f"[WEEKLY DIGEST] PR-Ready score: {reply_chance}, projected_gain: {score_delta}, status: {report.get('status')}")
-
-                # Get pending plans - ONLY items where done=False
-                fixes = report.get('fixes') or []
-                not_done_fixes = [f for f in fixes if not f.get('done', False)]
-                pending_plans = [
-                    {'number': i + 1, 'title': f.get('title', '')}
-                    for i, f in enumerate(not_done_fixes[:3])  # Top 3 pending items
-                ]
-                # Debug: show which fixes are done vs not done
-                for f in fixes:
-                    print(f"[WEEKLY DIGEST] Fix: {f.get('id')} - {f.get('title')[:30]}... done={f.get('done')}")
-                print(f"[WEEKLY DIGEST] Pending plans to show: {pending_plans}")
-            except Exception as e:
-                print(f"[WEEKLY DIGEST] Error computing PR-Ready score: {e}")
-                reply_chance = _calculate_creator_progress_score(creator)
-
-        # Fallback if pr_ready not available
-        if not reply_chance:
-            reply_chance = _calculate_creator_progress_score(creator)
-
-        # === NEW BRANDS: Match to creator's niche ===
-        # Parse niche - can be a string or JSON array
-        raw_niche = creator.get('niche') or ''
-        creator_niches = creator.get('creator_niches') or []
-
-        # Parse raw_niche if it's a JSON array string
-        if isinstance(raw_niche, str) and raw_niche.startswith('['):
-            try:
-                raw_niche = json.loads(raw_niche)
-            except:
-                pass
-
-        # Normalize to list
-        if isinstance(raw_niche, list):
-            niche_list = raw_niche
-        elif raw_niche:
-            niche_list = [raw_niche]
-        else:
-            niche_list = []
-
-        # Parse creator_niches if it's a JSON string
-        if isinstance(creator_niches, str):
-            try:
-                creator_niches = json.loads(creator_niches)
-            except:
-                creator_niches = []
-
-        # Combine all niches
-        all_niches_raw = niche_list + (creator_niches if isinstance(creator_niches, list) else [])
-        all_niches = [n.strip().lower() for n in all_niches_raw if n and isinstance(n, str)]
-
-        # Get clean primary niche for display (first niche, capitalized)
-        primary_niche_display = all_niches[0].title() if all_niches else 'content'
-
-        try:
-            new_brands = get_for_you_brands_for_email(creator_id, cursor, limit=3)
-            print(f"[WEEKLY DIGEST] For You brands for email: {[b['name'] for b in new_brands]}")
-        except Exception as e:
-            print(f"[WEEKLY DIGEST] Error getting For You brands: {e}")
-            new_brands = []
-
-        live_campaigns = get_live_campaigns_for_email(cursor, limit=3)
-
-        context = {
-            'first_name': creator.get('first_name') or creator.get('username') or 'there',
-            'current_score': reply_chance,
-            'score_label': 'Reply Chance',
-            'score_delta': score_delta,
-            'unlocks_used': credits_used,
-            'unlocks_quota': credits_quota,
-            'credits_used': credits_used,
-            'credits_remaining': credits_remaining,
-            'credits_quota': credits_quota,
-            'is_pro': is_pro,
-            'applications_this_week': applications_this_week,
-            'replies_count': creator.get('total_replies_received') or 0,
-            'weekly_theme_title': pending_plans[0]['title'] if pending_plans else 'Keep your kit ready',
-            'weekly_theme_body': (
-                f"Your manager found {len(pending_plans)} improvements. Start with #{pending_plans[0]['number']}."
-                if pending_plans else
-                'Apply to open gifted PR lists and keep your media kit published.'
-            ),
-            'pending_plans': pending_plans,
-            'new_brands': new_brands if new_brands else [
-                {'name': 'Explore For You', 'category': 'Gifted PR', 'reason': 'Open lists this week'}
-            ],
-            'live_campaigns': live_campaigns,
-            'win_story': None,
-            'cta_url': f"{FRONTEND_URL}/creator/dashboard/for-you",
-        }
-
-        return context
+        delivered = count_delivered_unlocks_this_month(cursor, creator_id)
+        _used, _left, credits_remaining = usage_from_delivered(delivered)
+        return build_context(cursor, creator_id, creator.get('first_name') or '', credits_remaining)
     finally:
         conn.close()
 

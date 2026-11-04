@@ -1,93 +1,83 @@
 {% extends "lifecycle/base_lifecycle.html" %}
-
+{% block signature %}Polly<br><span style="color:#6b7280;font-weight:400;">Your outreach assistant at Newcollab</span>{% endblock %}
 {% block content %}
-<p>Hi {{ first_name or "there" }},</p>
+{% set ink = '#12141a' %}{% set muted = '#5c6470' %}{% set line = '#e4e2dc' %}{% set soft = '#faf9f5' %}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 20px 0;">
+<tr>
+<td style="font-weight:800;letter-spacing:0.04em;font-size:13px;color:{{ ink }};">NEWCOLLAB</td>
+<td align="right" style="font-size:12px;color:{{ muted }};">Monday check-in</td>
+</tr>
+</table>
 
-<p>Here's what's new this week.</p>
+{% if variant == 'checkin' %}
+<h1 style="margin:0 0 8px 0;font-size:24px;line-height:1.25;color:{{ ink }};">Hi {{ first_name }}, how did last week's pitches go?</h1>
+<p style="margin:0 0 20px 0;font-size:15px;line-height:1.55;color:#3a3f4a;">Tell me with one tap each, and I'll handle the next step.</p>
 
-<div class="stats-block">
-    <p style="margin: 0 0 8px 0; font-size: 13px; color: #6b7280;">YOUR PROGRESS</p>
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-        <tr>
-            <td style="padding: 4px 0;">
-                <span style="color: #6b7280; font-size: 13px;">Reply Chance:</span>
-            </td>
-            <td style="padding: 4px 0; text-align: right;">
-                <span style="color: #15161a; font-weight: 600;">{{ current_score }}%</span>
-                {% if score_delta and score_delta > 0 %}
-                <span style="color: #10b981; font-size: 13px;">
-                    (+{{ score_delta }} potential)
-                </span>
-                {% endif %}
-            </td>
-        </tr>
-        <tr>
-            <td style="padding: 4px 0;">
-                <span style="color: #6b7280; font-size: 13px;">Free pitches:</span>
-            </td>
-            <td style="padding: 4px 0; text-align: right;">
-                {% if is_pro %}
-                <span style="color: #15161a; font-weight: 600;">Unlimited</span>
-                {% elif credits_remaining is not none %}
-                <span style="color: #15161a; font-weight: 600;">{{ credits_remaining }} left</span>
-                <span style="color: #6b7280; font-size: 13px;">({{ credits_used }} used of {{ credits_quota }} this month)</span>
-                {% else %}
-                <span style="color: #15161a; font-weight: 600;">{{ unlocks_used }} used of {{ unlocks_quota }}</span>
-                {% endif %}
-            </td>
-        </tr>
-        <tr>
-            <td style="padding: 4px 0;">
-                <span style="color: #6b7280; font-size: 13px;">Applications this week:</span>
-            </td>
-            <td style="padding: 4px 0; text-align: right;">
-                <span style="color: #15161a; font-weight: 600;">{{ applications_this_week or 0 }}</span>
-            </td>
-        </tr>
-    </table>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {{ line }};border-radius:14px;border-collapse:separate;margin:0 0 24px 0;">
+{% for c in checks %}
+<tr><td style="padding:14px 16px;{% if not loop.first %}border-top:1px solid {{ line }};{% endif %}">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr><td style="font-size:15px;font-weight:700;color:{{ ink }};">{{ c.name }}</td><td align="right" style="font-size:12px;color:{{ muted }};">{{ c.sent_label }}</td></tr>
+</table>
+<div style="margin-top:10px;line-height:2.6;">
+<span style="display:inline-block;padding:0 4px 4px 0;"><a href="{{ c.replied_url }}" style="display:inline-block;padding:9px 14px;border-radius:999px;background:#e7f3ee;color:#095a46;font-size:13px;font-weight:700;text-decoration:none;line-height:1.3;">They replied</a></span>
+{% if c.bounced_url %}<span style="display:inline-block;padding:0 4px 4px 0;"><a href="{{ c.bounced_url }}" style="display:inline-block;padding:8px 13px;border-radius:999px;border:1px solid {{ line }};color:{{ ink }};font-size:13px;font-weight:600;text-decoration:none;line-height:1.3;">Email bounced</a></span>{% endif %}
+{% if c.quiet_url %}<span style="display:inline-block;padding:0 4px 4px 0;"><a href="{{ c.quiet_url }}" style="display:inline-block;padding:8px 13px;border-radius:999px;border:1px solid {{ line }};color:{{ ink }};font-size:13px;font-weight:600;text-decoration:none;line-height:1.3;">No reply yet</a></span>{% endif %}
 </div>
-
-<p style="margin: 24px 0 8px 0; font-size: 13px; color: #6b7280;">YOUR MANAGER'S PLAN</p>
-{% if pending_plans and pending_plans|length > 0 %}
-{% for plan in pending_plans %}
-<p style="margin: 4px 0;"><strong>#{{ plan.number }}</strong> {{ plan.title }}</p>
+<a href="{{ c.gmail_url }}" style="font-size:12px;color:#0d7a5f;">Not sure? Check in Gmail</a>
+</td></tr>
 {% endfor %}
+<tr><td style="padding:12px 16px;background:{{ soft }};border-top:1px solid {{ line }};border-radius:0 0 14px 14px;font-size:13px;line-height:1.5;color:#3a3f4a;">
+<strong style="color:{{ ink }};">What happens next:</strong> replied, I help you answer and stop the follow-ups. Bounced, I find a working inbox. No reply, your follow-up is written and ready to send.
+</td></tr>
+</table>
 {% else %}
-<p><strong>{{ weekly_theme_title }}</strong></p>
-<p>{{ weekly_theme_body }}</p>
+<h1 style="margin:0 0 8px 0;font-size:24px;line-height:1.25;color:{{ ink }};">Hi {{ first_name }}, here's your week{% if niche %} in {{ niche }}{% endif %}.</h1>
+<p style="margin:0 0 20px 0;font-size:15px;line-height:1.55;color:#3a3f4a;">Open a brand and I write the pitch for that brand's product. Check it, send it. Two minutes.</p>
 {% endif %}
 
-{% if live_campaigns and live_campaigns|length > 0 %}
-<p style="margin: 24px 0 8px 0; font-size: 13px; color: #6b7280;">OPEN BRAND PR CAMPAIGNS</p>
-<div class="brand-list">
-{% for campaign in live_campaigns %}
-    <div class="brand-item">
-        <span class="brand-name">{{ campaign.name }}</span>
-        {% if campaign.reason %}<span class="brand-meta"> — {{ campaign.reason }}</span>{% endif %}
-        {% if campaign.spots %}<span class="brand-meta"> · {{ campaign.spots }} spots left</span>{% endif %}
-    </div>
+{% if picks %}
+<p style="margin:0 0 10px 0;font-size:17px;font-weight:700;color:{{ ink }};">{% if variant == 'checkin' %}{{ picks|length }} brands ready for you this week{% else %}Ready for you this week{% endif %}</p>
+{% for p in picks %}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid {{ line }};border-radius:14px;border-collapse:separate;margin:0 0 10px 0;">
+<tr>
+<td style="padding:14px 16px;">
+<span style="font-size:15px;font-weight:700;color:{{ ink }};">{{ p.name }}</span>
+<span style="display:inline-block;margin-left:6px;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:800;letter-spacing:0.04em;{% if p.badge_kind == 'gold' %}background:#fbf1dc;color:#7a4f08;{% elif p.badge_kind == 'green' %}background:#e7f3ee;color:#095a46;{% else %}background:#eef0f3;color:#3a3f4a;{% endif %}">{{ p.badge }}</span>
+<div style="font-size:13px;color:#3a3f4a;margin-top:4px;">{{ p.line }}</div>
+</td>
+<td align="right" style="padding:14px 16px 14px 0;white-space:nowrap;">
+<a href="{{ p.url }}" style="display:inline-block;padding:10px 14px;border-radius:10px;background:{{ ink }};color:#ffffff;font-size:13px;font-weight:700;text-decoration:none;">{{ p.cta }}</a>
+</td>
+</tr>
+</table>
 {% endfor %}
-</div>
 {% endif %}
 
-<p style="margin: 24px 0 8px 0; font-size: 13px; color: #6b7280;">POLLY'S PICKS THIS WEEK</p>
-<div class="brand-list">
-{% for brand in new_brands %}
-    <div class="brand-item">
-        <span class="brand-name">{{ brand.name }}</span>
-        {% if brand.reason %}<span class="brand-meta"> — {{ brand.reason }}</span>{% elif brand.description %}<span class="brand-meta"> — {{ brand.description }}</span>{% endif %}
-    </div>
-{% endfor %}
-</div>
-
-{% if win_story %}
-<div class="win-box">
-    <p style="margin: 0 0 8px 0; font-size: 13px; color: #065f46;">CREATOR WIN OF THE WEEK</p>
-    <p style="margin: 0;">{{ win_story.handle }} ({{ win_story.followers }} followers) landed {{ win_story.brand }} using {{ win_story.tactic }}. {{ win_story.summary }}</p>
-</div>
+{% if credits_remaining is not none %}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:6px 0 24px 0;">
+<tr><td style="padding:10px 14px;border-radius:10px;background:{{ soft }};font-size:13px;color:{{ ink }};">
+{% if credits_remaining > 0 %}<strong>{{ credits_remaining }} of {{ credits_quota }} free pitches left</strong> this month{% else %}<strong>Your {{ credits_quota }} free pitches are used</strong> this month{% endif %}
+<span style="color:{{ muted }};"> · resets {{ reset_label }}</span>
+</td></tr>
+</table>
 {% endif %}
 
-<p>Polly can write the pitch to any of these. You read it before it goes out.</p>
-
-<a href="{{ cta_url }}" class="cta-button">Pitch this week's picks</a>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:{{ ink }};border-radius:16px;margin:0 0 24px 0;">
+<tr><td style="padding:22px;">
+<div style="font-size:12px;font-weight:800;letter-spacing:0.06em;color:#7ce0b8;margin-bottom:12px;">YOUR WEEK, ON AUTOPILOT</div>
+{% if brands_waiting %}
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:12px;">
+<tr>
+<td style="padding-right:22px;"><div style="font-size:30px;font-weight:800;line-height:1;color:#ffffff;">{{ brands_waiting }}</div><div style="font-size:12px;color:#c9ccd3;">brands in your niche</div></td>
+<td style="padding-right:22px;"><div style="font-size:30px;font-weight:800;line-height:1;color:#ffffff;">{{ pitched_last_week }}</div><div style="font-size:12px;color:#c9ccd3;">you pitched last week</div></td>
+<td><div style="font-size:30px;font-weight:800;line-height:1;color:#7ce0b8;">{{ pro_per_week }}</div><div style="font-size:12px;color:#c9ccd3;">I'd pitch a week on Pro</div></td>
+</tr>
+</table>
+{% endif %}
+<p style="margin:0 0 14px 0;font-size:14px;line-height:1.55;color:#e4e6ea;">On Pro I pitch {{ pro_per_week }} brands a week for you, each written for that brand, sent from your Gmail, with follow-ups on day 4 and day 10. You just answer the replies.</p>
+<a href="{{ pro_url }}" style="display:inline-block;padding:12px 18px;border-radius:10px;background:#7ce0b8;color:{{ ink }};font-size:14px;font-weight:800;text-decoration:none;">{% if trial %}Start 7 days free{% else %}Put Polly on Autopilot{% endif %}</a>
+<span style="font-size:12px;color:#c9ccd3;margin-left:10px;">{% if trial %}Then $19/mo · cancel anytime{% else %}$19/mo · cancel anytime{% endif %}</span>
+</td></tr>
+</table>
 {% endblock %}
