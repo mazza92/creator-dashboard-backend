@@ -464,10 +464,17 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "status": "failed", "brand": brand_name, "error": "empty pitch"}
     directory_inbox = pitch.get("email") or None
     pitch, pitch_paid = _dress_pitch(state, pitch, shipping, loc_display, followup)
-    if not followup and args.get("sample_posts"):
-        pitch = apply_work_samples_to_pitch(pitch, clean_sample_posts(args.get("sample_posts")))
+    picked_posts = clean_sample_posts(args.get("sample_posts")) if args.get("sample_posts") else []
+    if not followup and brand_id:
+        # Same short, send-ready writer as Autopilot, in the creator's saved voice.
+        from services.pitch_writer import finalize_for
+        pitch = finalize_for(state.db(), state.creator_id, brand_id, pitch, state.notes,
+                             first_name=state.first or "", posts=picked_posts) or pitch
+    v2 = (pitch.get("pitch_meta") or {}).get("writer") == "v2"
+    if not followup and picked_posts and not v2:
+        pitch = apply_work_samples_to_pitch(pitch, picked_posts)
     radar_hint = args.get("radar") if isinstance(args.get("radar"), dict) else None
-    if radar_hint and not followup:
+    if radar_hint and not followup and not v2:
         pitch = _with_radar_line(pitch, brand_name, radar_hint)
     if to_email:
         pitch = _with_inbox(pitch, to_email)

@@ -5,6 +5,7 @@ in the same thread unless the brand replied."""
 from __future__ import annotations
 
 import random
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
@@ -53,6 +54,7 @@ _ADDED_COLUMNS = (
     ("polly_autopilot", "fill_blocked", "TEXT"),
     ("polly_autopilot_queue", "followups_sent", "INTEGER NOT NULL DEFAULT 0"),
     ("polly_autopilot_queue", "announced_at", "TIMESTAMPTZ"),
+    ("polly_autopilot_queue", "pitch_meta", "JSONB"),
 )
 
 
@@ -275,23 +277,28 @@ def sends_per_day(target: int, days: List[int]) -> int:
 
 
 def add_draft(conn, creator_id: int, brand_id: int, brand_name: str, to_email: str,
-              subject: str, body: str, announced: bool = False) -> Dict[str, Any]:
-    """``announced`` when the creator wrote it in the panel, so the cron doesn't email about it."""
+              subject: str, body: str, announced: bool = False,
+              meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """``announced`` when the creator wrote it in the panel, so the cron doesn't email about it.
+    ``meta``: how the pitch was written (writer, subject variant, product, ideas) for follow-ups and learning."""
+    import json as _json
+
     ensure_autopilot_tables(conn)
     cur = _cursor(conn)
     cur.execute(
         """
         INSERT INTO polly_autopilot_queue
-          (creator_id, brand_id, brand_name, to_email, subject, body, status, announced_at)
-        VALUES (%s, %s, %s, %s, %s, %s, 'draft', CASE WHEN %s THEN NOW() END)
+          (creator_id, brand_id, brand_name, to_email, subject, body, status, announced_at, pitch_meta)
+        VALUES (%s, %s, %s, %s, %s, %s, 'draft', CASE WHEN %s THEN NOW() END, %s::jsonb)
         ON CONFLICT (creator_id, brand_id) DO UPDATE
           SET brand_name = EXCLUDED.brand_name, to_email = EXCLUDED.to_email, subject = EXCLUDED.subject,
               body = EXCLUDED.body, status = 'draft', error = NULL, created_at = NOW(),
-              announced_at = EXCLUDED.announced_at
+              announced_at = EXCLUDED.announced_at, pitch_meta = EXCLUDED.pitch_meta
           WHERE polly_autopilot_queue.status IN ('draft', 'skipped', 'failed')
         RETURNING id, brand_id, brand_name, to_email, subject, body, status
         """,
-        (creator_id, brand_id, brand_name, to_email, subject, body, bool(announced)),
+        (creator_id, brand_id, brand_name, to_email, subject, body, bool(announced),
+         _json.dumps(meta) if meta else None),
     )
     row = cur.fetchone()
     conn.commit()
@@ -901,7 +908,13 @@ def run_autopilot(
             continue
         wave = int(item.get("followups_sent") or 0) + 1
         names = _creator_names(conn, cid)
-        mail = compose_followup(names["first"], name, item["subject"], wave=wave)
+        meta = item.get("pitch_meta") if isinstance(item.get("pitch_meta"), dict) else {}
+        if meta.get("writer") == "v2":
+            from services.pitch_writer import compose_followup_v2
+            mail = compose_followup_v2(names["first"], name, item["subject"], wave, meta=meta,
+                                       paid=bool(re.search(r"(?im)^rate:", item.get("body") or "")))
+        else:
+            mail = compose_followup(names["first"], name, item["subject"], wave=wave)
         try:
             send(conn, cid, item["to_email"], mail["subject"], mail["body"], from_name=names["full"],
                  thread_id=item.get("thread_id") or "", in_reply_to=item.get("message_id") or "")
