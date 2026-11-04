@@ -194,3 +194,18 @@ class GoLiveSchedulesTests(unittest.TestCase):
             out = rpa._schedule_waiting_drafts(conn, 7)
         approve.assert_called_once_with(conn, 7, [5, 6])
         self.assertEqual(len(out), 2)
+
+
+class DefaultDealTests(unittest.TestCase):
+    def test_offer_signups_start_on_paid_until_they_choose(self):
+        conn = mock.MagicMock()
+        with mock.patch.object(rpa, "settings", return_value={"deal_focus": "auto"}), \
+                mock.patch("services.creator_offers.came_from_offer", return_value=True):
+            self.assertEqual(rpa._default_deal(conn, 7, {}), "paid")
+            self.assertEqual(rpa._default_deal(conn, 7, {"setup_done_at": "x"}), "auto")
+        with mock.patch.object(rpa, "settings", return_value={"deal_focus": "gifted"}), \
+                mock.patch("services.creator_offers.came_from_offer", return_value=True):
+            self.assertEqual(rpa._default_deal(conn, 7, {}), "gifted")
+        with mock.patch.object(rpa, "settings", return_value={"deal_focus": "auto"}), \
+                mock.patch("services.creator_offers.came_from_offer", return_value=False):
+            self.assertEqual(rpa._default_deal(conn, 7, {}), "auto")

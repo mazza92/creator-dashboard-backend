@@ -63,3 +63,17 @@ def has_trial_offer(cursor, creator_id: int) -> bool:
         (creator_id, list(TRIAL_OFFERS)),
     )
     return cursor.fetchone() is not None
+
+
+def came_from_offer(cursor, creator_id: int) -> bool:
+    """Signed up through the cold-email offer link (paid or not since). They came for paid brand deals."""
+    cursor.execute("SELECT to_regclass('public.creator_signup_offers') AS t")
+    row = cursor.fetchone()
+    if not row or not (row["t"] if isinstance(row, dict) else row[0]):
+        return False
+    cursor.execute(
+        """SELECT 1 FROM creators c JOIN creator_signup_offers o ON o.user_id = c.user_id
+           WHERE c.id = %s AND o.offer = ANY(%s) LIMIT 1""",
+        (creator_id, list(TRIAL_OFFERS)),
+    )
+    return cursor.fetchone() is not None
