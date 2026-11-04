@@ -135,3 +135,35 @@ class StyleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GeminiCallTests(unittest.TestCase):
+    def test_pitch_calls_turn_thinking_off_with_room_for_json(self):
+        from unittest import mock
+        import services.pitch_writer as pw
+        with mock.patch("services.brand_pipeline._gemini_json", return_value={"opener": "x"}) as call:
+            pw.gemini_json("sys", "user", max_tokens=200)
+        self.assertEqual(call.call_args.kwargs["thinking_budget"], 0)
+        self.assertGreaterEqual(call.call_args.kwargs["max_tokens"], 600)
+
+    def test_thinking_config_sent_to_gemini(self):
+        from unittest import mock
+        import services.brand_pipeline as bp
+        resp = mock.MagicMock(status_code=200)
+        resp.json.return_value = {"candidates": [{"content": {"parts": [{"text": '{"opener": "hi"}'}]}}]}
+        with mock.patch("services.polly.get_gemini_key", return_value="k"), \
+                mock.patch("services.polly.llm_disabled", return_value=False), \
+                mock.patch("services.polly.get_polly_model", return_value="gemini-2.5-flash"), \
+                mock.patch("requests.post", return_value=resp) as post:
+            out = bp._gemini_json("s", "u", max_tokens=600, thinking_budget=0)
+        self.assertEqual(out, {"opener": "hi"})
+        self.assertEqual(post.call_args.kwargs["json"]["generationConfig"]["thinkingConfig"], {"thinkingBudget": 0})
+
+
+class AskLineTests(unittest.TestCase):
+    def test_capitals_city_softened(self):
+        from services.pitch_writer import find_ask
+        self.assertEqual(find_ask("x\nNo fee. Just product + shipping to NEW YORK, United States.\ny"),
+                         "No fee. Just product + shipping to New York, United States.")
+        self.assertEqual(find_ask("No fee. Just product + shipping to Austin, USA."),
+                         "No fee. Just product + shipping to Austin, USA.")

@@ -63,7 +63,7 @@ IDEA_BANK: Dict[str, List[str]] = {
                "a 15-second before/after reveal"],
     "haircare": ["a wash-day routine video with it as the hero step", "a 15-second before/after on second-day hair",
                  "a 'how I get this volume' tutorial"],
-    "wellness": ["a 'my morning reset' video with it in the routine", "a honest week-one check-in video",
+    "wellness": ["a 'my morning reset' video with it in the routine", "an honest week-one check-in video",
                  "a 'what's in my bag' video featuring it"],
     "home": ["a 15-second 'room reset' video featuring it", "a 'small upgrades that changed my space' video",
              "a cosy evening routine video with it in shot"],
@@ -201,9 +201,20 @@ def _pick_dict(seq: List[Dict[str, str]], seed: str) -> Dict[str, str]:
     return seq[h % len(seq)]
 
 
+def _place(part: str) -> str:
+    # "NEW YORK" -> "New York"; short codes like USA or UK stay as they are.
+    letters = re.sub(r"[^A-Za-z]", "", part)
+    return part.title() if part.isupper() and len(letters) > 3 else part
+
+
 def find_ask(body: str) -> str:
     m = _ASK.search(body or "")
-    return m.group(0).strip() if m else ""
+    if not m:
+        return ""
+    line = m.group(0).strip()
+    # Ship-to typed in capitals ("NEW YORK") reads like shouting in a pitch.
+    head, sep, place = line.partition("shipping to ")
+    return head + sep + ", ".join(_place(p) for p in place.split(", ")) if sep else line
 
 
 def find_kit(body: str) -> str:
@@ -220,7 +231,8 @@ def gemini_json(system: str, user: str, max_tokens: int = 400) -> Dict[str, Any]
         from services.brand_pipeline import _gemini_json
     except Exception:
         return {}
-    return _gemini_json(system, user, max_tokens=max_tokens)
+    # No thinking: these are short JSON answers, and thinking tokens would eat the budget and cut the JSON off.
+    return _gemini_json(system, user, max_tokens=max(max_tokens, 600), thinking_budget=0)
 
 
 OPENER_SYSTEM = (
@@ -268,7 +280,7 @@ def fallback_opener(facts: Dict[str, Any]) -> str:
     product = facts["product"]
     if facts["structure"] == "fan_first":
         return f"{product} fits right into the kind of content my audience saves. I'd love to make {idea} for it."
-    return f"I have an idea for {product}: {idea}, filmed in natural light and ending on the result."
+    return f"I have an idea for {product}: {idea}, short and easy to reuse in your ads."
 
 
 def opener_issues(opener: str, facts: Dict[str, Any]) -> List[str]:

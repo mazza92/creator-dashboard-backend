@@ -745,6 +745,14 @@ def _setup_payload(conn, creator_id, creator, notes):
     }
 
 
+def _schedule_waiting_drafts(conn, creator_id):
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM polly_autopilot_queue WHERE creator_id = %s AND status = 'draft' ORDER BY id",
+                (creator_id,))
+    ids = [r[0] if not isinstance(r, dict) else r["id"] for r in cur.fetchall()]
+    return approve(conn, creator_id, ids) if ids else []
+
+
 @autopilot_bp.route("/setup", methods=["GET"])
 def setup_get():
     creator_id, conn, creator, err = _guard(require_gmail=False)
@@ -814,6 +822,7 @@ def setup_save():
         save_settings(conn, creator_id, patch)
         if body.get("done"):
             set_enabled(conn, creator_id, True)
+            _schedule_waiting_drafts(conn, creator_id)  # the first pitch they just saw goes out now, no OK needed
             prioritize_fill(conn, creator_id)
         notes, _scrape = _creator_context(conn, creator)
         return jsonify(_setup_payload(conn, creator_id, creator, notes))

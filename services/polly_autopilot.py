@@ -294,7 +294,7 @@ def add_draft(conn, creator_id: int, brand_id: int, brand_name: str, to_email: s
           SET brand_name = EXCLUDED.brand_name, to_email = EXCLUDED.to_email, subject = EXCLUDED.subject,
               body = EXCLUDED.body, status = 'draft', error = NULL, created_at = NOW(),
               announced_at = EXCLUDED.announced_at, pitch_meta = EXCLUDED.pitch_meta
-          WHERE polly_autopilot_queue.status IN ('draft', 'skipped', 'failed')
+          WHERE polly_autopilot_queue.status IN ('draft', 'approved', 'skipped', 'failed')
         RETURNING id, brand_id, brand_name, to_email, subject, body, status
         """,
         (creator_id, brand_id, brand_name, to_email, subject, body, bool(announced),

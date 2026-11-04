@@ -482,7 +482,10 @@ Rules:
 - Only list questions they actually asked. Only add flags that clearly apply."""
 
 
-def _gemini_json(system: str, user: str, max_tokens: int = 500) -> Dict[str, Any]:
+def _gemini_json(system: str, user: str, max_tokens: int = 500,
+                 thinking_budget: Optional[int] = None) -> Dict[str, Any]:
+    """``thinking_budget=0`` for short JSON: 2.5 Flash otherwise spends the output budget thinking and the
+    JSON comes back cut off."""
     try:
         from services.polly import get_gemini_key, get_polly_model, llm_disabled
     except Exception:
@@ -493,13 +496,15 @@ def _gemini_json(system: str, user: str, max_tokens: int = 500) -> Dict[str, Any
         import requests
 
         model = get_polly_model() or "gemini-2.5-flash"
+        config = {"temperature": 0.2, "maxOutputTokens": max_tokens, "responseMimeType": "application/json"}
+        if thinking_budget is not None and "2.5" in model:
+            config["thinkingConfig"] = {"thinkingBudget": thinking_budget}
         resp = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
             json={
                 "systemInstruction": {"parts": [{"text": system}]},
                 "contents": [{"role": "user", "parts": [{"text": user}]}],
-                "generationConfig": {"temperature": 0.2, "maxOutputTokens": max_tokens,
-                                     "responseMimeType": "application/json"},
+                "generationConfig": config,
             },
             headers={"Content-Type": "application/json", "x-goog-api-key": get_gemini_key()},
             timeout=15,
