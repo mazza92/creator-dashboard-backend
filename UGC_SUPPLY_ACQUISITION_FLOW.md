@@ -134,7 +134,8 @@ Location is extracted when present but **not required**.
 Invite / match — not an unpaid-work brief. Do **not** list deliverables (1 organic + 1 UGC) or “just product”; that triggers “I only do fixed rate.”
 Objective: **read the landing page + apply if interested.** Gifted UGC is the first collab; paid/retainer is the path, not the ask.
 
-**Subject:** `PR / gifting campaigns for @{{handle}}`
+**Subject:** picked by the backend, one per lead (stable, so the follow-up's `Re:` matches), rotated to find the winner:
+`PR & gifting for @{{handle}}` · `brand deals for @{{handle}}?` · `quick question, @{{handle}}`
 
 ```
 Hey,
