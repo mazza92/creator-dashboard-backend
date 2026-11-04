@@ -127,7 +127,7 @@ class TestPollyEmailGap(unittest.TestCase):
         conn.cursor.return_value = cursor
         with patch.object(engine, 'get_db_connection', return_value=conn), \
                 patch.object(engine, 'check_throttling', return_value=(True, '')), \
-                patch('services.quota_trial_test.active_arm', return_value='control'), \
+                patch('services.quota_trial_test.trial_eligible', return_value=False), \
                 patch.object(engine, '_polly_emailed_recently') as polly_check, \
                 patch.object(engine, '_deliver_email', return_value=(False, 'stop')) as deliver:
             engine.send_lifecycle_email('a@b.com', 'max_quota_hit', {}, 7)
@@ -215,11 +215,15 @@ class TestTemplateCopy(unittest.TestCase):
         self.assertNotIn('your plan', html)
 
     def test_weekly_digest_points_to_polly(self):
-        html = self._render('21_weekly_digest.html', current_score=40, is_pro=False, credits_remaining=2,
-                            credits_used=1, credits_quota=3, new_brands=[{'name': 'Kora', 'reason': 'fits you'}])
-        self.assertIn("POLLY'S PICKS THIS WEEK", html)
-        self.assertIn('Free pitches:', html)
+        # The Monday check-in (services/monday_checkin.py; full coverage in test_monday_checkin.py).
+        html = self._render('21_weekly_digest.html', variant='quiet', first_name='Ana', credits_remaining=2,
+                            credits_quota=3, reset_label='Dec 1', checks=[], brands_waiting=0,
+                            picks=[{'name': 'Kora', 'badge': 'GIFTED PR', 'badge_kind': 'grey', 'line': 'fits you',
+                                    'url': 'https://x', 'cta': 'Open my pitch'}], pro_url='https://p', trial=False)
+        self.assertIn('Kora', html)
+        self.assertIn('2 of 3 free pitches left', html)
         self.assertNotIn('Credits:', html)
+        self.assertNotIn('Reply Chance', html)
 
     def test_welcome_drops_unlocks_and_guides(self):
         html = self._render('02_welcome_manager.html', unlocks_quota=3)

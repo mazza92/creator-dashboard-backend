@@ -109,35 +109,31 @@ class TestQuotaTrialArms(unittest.TestCase):
         with patch.object(qt, "experiment_on", return_value=False):
             self.assertEqual({qt.active_arm(i) for i in range(1, 200)}, {"control"})
 
-    def test_trial_eligible_needs_trial_arm(self):
+    def _eligible(self, account_ok=True, hit_days_ago=5, pitches=3):
+        from datetime import datetime, timedelta, timezone
         cursor = MagicMock()
-        with patch.object(qt, "active_arm", return_value="control"):
-            self.assertFalse(qt.trial_eligible(cursor, 5))
-        cursor.execute.assert_not_called()
-        cursor.fetchone.return_value = (1,)
-        with patch.object(qt, "active_arm", return_value="trial"), \
-                patch("services.unlock_quota.count_delivered_unlocks_all_time", return_value=3):
-            self.assertTrue(qt.trial_eligible(cursor, 5))
-        sql = cursor.execute.call_args.args[0]
+        hit = datetime.now(timezone.utc) - timedelta(days=hit_days_ago) if hit_days_ago is not None else None
+        cursor.fetchone.side_effect = [(1,) if account_ok else None, {"hit": hit}]
+        with patch("services.unlock_quota.count_delivered_unlocks_all_time", return_value=pitches):
+            return qt.trial_eligible(cursor, 5), cursor
+
+    def test_free_week_opens_four_days_after_the_limit(self):
+        ok, cursor = self._eligible(hit_days_ago=5)
+        self.assertTrue(ok)
+        sql = cursor.execute.call_args_list[0].args[0]
         self.assertIn("subscription_started_at IS NULL", sql)
         self.assertIn("stripe_customer_id IS NULL", sql)
         self.assertIn("created_at <=", sql)
-        self.assertEqual(cursor.execute.call_args.args[1], (5, qt.MIN_ACCOUNT_AGE_DAYS))
+
+    def test_no_free_week_at_the_limit_itself(self):
+        self.assertFalse(self._eligible(hit_days_ago=1)[0])
+        self.assertFalse(self._eligible(hit_days_ago=None)[0])
 
     def test_trial_needs_real_usage(self):
-        cursor = MagicMock()
-        cursor.fetchone.return_value = (1,)
-        with patch.object(qt, "active_arm", return_value="trial"), \
-                patch("services.unlock_quota.count_delivered_unlocks_all_time", return_value=2):
-            self.assertFalse(qt.trial_eligible(cursor, 5))
+        self.assertFalse(self._eligible(pitches=2)[0])
 
     def test_trial_skips_paid_or_new_accounts(self):
-        cursor = MagicMock()
-        cursor.fetchone.return_value = None
-        with patch.object(qt, "active_arm", return_value="trial"), \
-                patch("services.unlock_quota.count_delivered_unlocks_all_time", return_value=9) as count:
-            self.assertFalse(qt.trial_eligible(cursor, 5))
-        count.assert_not_called()
+        self.assertFalse(self._eligible(account_ok=False)[0])
 
 
 class TestQuotaEmailArms(unittest.TestCase):
@@ -157,15 +153,6 @@ class TestQuotaEmailArms(unittest.TestCase):
                                                  dedup_key='k')
         return result, cursor, render, deliver
 
-    def test_holdout_logs_without_sending(self):
-        (ok, msg), cursor, _render, deliver = self._send('holdout')
-        self.assertFalse(ok)
-        self.assertIn('holdout', msg)
-        deliver.assert_not_called()
-        insert = cursor.execute.call_args_list[-1].args
-        self.assertIn("'holdout'", insert[0])
-        self.assertIn('max_quota_hit_holdout', insert[1])
-
     def test_trial_arm_gets_trial_copy_and_campaign(self):
         _result, _cursor, render, deliver = self._send('trial')
         ctx = render.call_args.args[1]
@@ -174,7 +161,7 @@ class TestQuotaEmailArms(unittest.TestCase):
         self.assertIn('free for 7 days', ctx['preheader'])
         deliver.assert_called_once()
 
-    def test_trial_arm_not_yet_eligible_gets_control_copy(self):
+    def test_at_the_limit_everyone_gets_the_19_offer(self):
         _result, _cursor, render, _deliver = self._send('trial', eligible=False)
         ctx = render.call_args.args[1]
         self.assertEqual(ctx['quota_arm'], 'control')
