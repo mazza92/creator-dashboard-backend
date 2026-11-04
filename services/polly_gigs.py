@@ -257,6 +257,7 @@ def gig_card_from_opp(opp: Dict[str, Any]) -> Dict[str, Any]:
         "source_label": source_platform_label(source),
         "is_sourced": bool(opp.get("is_sourced")),
         "apply_mode": apply_mode,
+        "direct_contact": bool(opp.get("direct_contact")),
         "external_apply_url": opp.get("external_apply_url"),
         "apply_email": apply_email,
         "already_applied": bool(opp.get("already_applied")),

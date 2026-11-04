@@ -366,12 +366,18 @@ def _resolve_apply_path(opp) -> dict:
     else:
         mode = 'kit'
 
+    # Scanned gig whose brand inbox we found ourselves (services/gig_contact.py): creators can pitch it
+    # directly as well as apply on the source platform.
+    from services.gig_contact import direct_contact_source
+    direct_contact = bool(is_sourced and direct_contact_source(notes) and _is_real_apply_email(brand_email))
+
     return {
         'apply_mode': mode,
         'external_apply_url': external_apply_url if mode == 'url' else None,
         'apply_email': apply_email,
         'source_platform': source_platform,
         'is_sourced': is_sourced,
+        'direct_contact': direct_contact,
     }
 
 
@@ -830,6 +836,7 @@ def _opportunity_card(opp, creator_tokens: set, applied_ids: set) -> tuple:
         'source_platform': source_platform,
         'apply_mode': apply_mode,
         'is_sourced': is_sourced,
+        'direct_contact': path['direct_contact'],
         'posted_at': (opp.get('published_at') or opp.get('created_at')).isoformat()
         if (opp.get('published_at') or opp.get('created_at')) else None,
     }
@@ -1006,6 +1013,9 @@ def apply_opportunity(opp_id):
         apply_mode = path['apply_mode']
         external_apply_url = path['external_apply_url']
         apply_email = path['apply_email']
+        # "Pitch directly": email the brand's own inbox instead of applying on the source platform.
+        if (request.get_json(silent=True) or {}).get('via') == 'direct' and path['direct_contact']:
+            apply_mode, external_apply_url = 'email', None
 
         if apply_mode == 'email' and not apply_email:
             cursor.close()
