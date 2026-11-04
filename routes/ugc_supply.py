@@ -36,13 +36,13 @@ BLOCKED_OUTREACH_STATUSES = {
 # The ref survives signup (frontend keeps it), is stored by creator_offers, and checkout grants the 7-day
 # trial; Polly opens the Autopilot card on first visit.
 SIGNUP_URL = "https://app.newcollab.co/register/creator?ref=polly_trial7"
-# Cold-email subjects that work read like a note from a person: short, about what the creator wants (brand
-# deals), no "free", no "done for you", no brackets. The old "PR / gifting campaigns — @handle" got 16 signups
-# from 254 sends; "@handle, your brand pitches done for you (7 days free)" got 0 from 49. Each lead gets one
-# variant (stable per lead, so the follow-up's "Re:" matches) and the log keeps it, so the winner shows.
+# These creators want paid deals, so the email sells Autopilot for paid UGC, not gifting. Subjects read like a
+# note from a person: short, about paid work, no "free", no "done for you", no brackets. History: "Paid UGC for
+# @handle" 2 signups from 9; "@handle, your brand pitches done for you (7 days free)" 0 from 49. Each lead gets
+# one variant (stable per lead, so the follow-up's "Re:" matches) and the log keeps it, so the winner shows.
 SUBJECT_VARIANTS = (
-    "PR & gifting for @{{handle}}",
-    "brand deals for @{{handle}}?",
+    "paid UGC deals for @{{handle}}",
+    "more paid brand deals, @{{handle}}?",
     "quick question, @{{handle}}",
 )
 DEFAULT_SUBJECT = SUBJECT_VARIANTS[0]
@@ -127,16 +127,16 @@ def personalize(text, lead):
 
 
 def default_onboarding_html(lead=None):
-    """Polly pitches brands for the creator; 7 days free. Only what the product does: it finds brands, writes,
-    sends from their Gmail and follows up. Replies land in their inbox (send-only Gmail scope), so the copy
-    never says Polly negotiates or signs deals."""
+    """Autopilot pitches brands that pay for UGC, with the creator's rate; 7 days free. Only what the product
+    does: it finds brands, writes, sends from their Gmail and follows up. Replies land in their inbox and brands
+    pay them directly, so the copy never says Polly negotiates, signs or guarantees deals."""
     return """
 <p>Hey,</p>
-<p>Saw your TikTok (@{{handle}}). Quick question: how many brands did you pitch last week?</p>
-<p>More pitches means more deals, but between filming, editing and posting, outreach is the first thing to slip.</p>
-<p>Polly, our AI assistant, does it for you:<br>&bull; finds brands that fit your content<br>&bull; writes and sends the pitches from your Gmail, every week<br>&bull; follows up so no brand goes cold</p>
-<p>You keep creating. Brand replies land in your inbox.</p>
-<p><a href="{{signup_url}}">Try Polly free for 7 days</a></p>
+<p>Saw your UGC on TikTok (@{{handle}}). Quick question: how many brands did you pitch for paid work last week?</p>
+<p>Paid deals come from pitching a lot of brands, and that's the part that eats your week.</p>
+<p>Polly, our AI assistant, runs it on autopilot:<br>&bull; finds brands that pay creators for UGC, each with a checked contact<br>&bull; writes a pitch for each brand with your rate, sent from your Gmail<br>&bull; follows up on day 4 and day 10 so no brand goes cold</p>
+<p>Brands reply straight to your inbox and pay you directly.</p>
+<p><a href="{{signup_url}}">Try it free for 7 days</a></p>
 <p>Mazza<br>Founder, Newcollab</p>
 """
 
@@ -145,7 +145,7 @@ def followup_html(lead=None):
     """Day-4 bump, same offer as the first email. Sent once, never after a reply."""
     return """
 <p>Hey,</p>
-<p>Quick bump: your 7 free days of Polly are still open. Connect your Gmail and this week's brand pitches go out for you, while you keep posting.</p>
+<p>Quick bump: your 7 free days are still open. Add your rate, connect Gmail, and this week's pitches to brands that pay for UGC go out for you while you keep creating.</p>
 <p><a href="{{signup_url}}">Start your free week</a></p>
 <p>Mazza</p>
 """

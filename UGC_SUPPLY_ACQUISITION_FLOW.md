@@ -131,27 +131,37 @@ Location is extracted when present but **not required**.
 
 ## Locked email (do not rewrite)
 
-Invite / match — not an unpaid-work brief. Do **not** list deliverables (1 organic + 1 UGC) or “just product”; that triggers “I only do fixed rate.”
-Objective: **read the landing page + apply if interested.** Gifted UGC is the first collab; paid/retainer is the path, not the ask.
+Angle: **paid brand deals on autopilot.** These creators want paid UGC work, so the email sells Polly Autopilot
+(finds brands that pay for UGC, pitches them with the creator's rate from their Gmail, follows up), with 7 days free.
+Never say Polly negotiates, signs or guarantees deals: brands reply to the creator and pay them directly.
 
 **Subject:** picked by the backend, one per lead (stable, so the follow-up's `Re:` matches), rotated to find the winner:
-`PR & gifting for @{{handle}}` · `brand deals for @{{handle}}?` · `quick question, @{{handle}}`
+`paid UGC deals for @{{handle}}` · `more paid brand deals, @{{handle}}?` · `quick question, @{{handle}}`
 
 ```
 Hey,
 
-Saw your TikTok (@{{handle}}).
+Saw your UGC on TikTok (@{{handle}}). Quick question: how many brands did you pitch for paid work last week?
 
-Brands on Newcollab are looking for UGC in exchange for gifted product. It's a straightforward way to build your portfolio, and the collabs that land often move into paid and retainers. Your profile could be a good match.
+Paid deals come from pitching a lot of brands, and that's the part that eats your week.
 
-If you're interested, you can see how it works and apply here:
-https://newcollab.co/land-your-first-pr-package
+Polly, our AI assistant, runs it on autopilot:
+• finds brands that pay creators for UGC, each with a checked contact
+• writes a pitch for each brand with your rate, sent from your Gmail
+• follows up on day 4 and day 10 so no brand goes cold
 
-Worth a look?
+Brands reply straight to your inbox and pay you directly.
+
+Try it free for 7 days → https://app.newcollab.co/register/creator?ref=polly_trial7
 
 Mazza
 Founder, Newcollab
 ```
+
+Day-4 follow-up (same thread, sent once, never after a reply): "Quick bump: your 7 free days are still open. Add your
+rate, connect Gmail, and this week's pitches to brands that pay for UGC go out for you while you keep creating."
+
+Creators who sign up through this link start the Pro setup with **Paid only** selected.
 
 Hermes sends by **omitting** `subject` and `html_content`. The backend fills this template.
 Tokens: `{{handle}}`, `{{niche}}`, `{{signup_url}}`, `{{display_name}}`, `{{profile_url}}`, `{{followers}}`.
@@ -378,8 +388,7 @@ Crontab (as user `hermes`):
 ## Out of scope
 
 - Writing to `pr_brands`
-- Asking for a paid rate or pitching Creator Pro on first email
-- Listing deliverables (1 organic + 1 UGC) or “just product” on first email
+- Promising deals, earnings or that Polly negotiates for them
 - Promising perpetual copyright or 6-month reuse in the cold email
 - Inventing emails, follower counts, or brand counts
 - Sending via Resend/Gmail from the Hermes process directly

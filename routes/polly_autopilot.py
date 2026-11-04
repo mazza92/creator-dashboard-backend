@@ -705,6 +705,19 @@ DEAL_FOR_CHOICE = {"gifted": "gifted", "auto": "auto", "paid": "paid"}
 BRAND_SIZES = ("emerging", "growing", "established")
 
 
+def _default_deal(conn, creator_id, profile):
+    """Saved choice once set up. Before that, creators who came from the paid-deals cold email start on paid."""
+    deal = settings(conn, creator_id).get("deal_focus") or "auto"
+    if deal != "auto" or profile.get("setup_done_at"):
+        return deal
+    try:
+        from services.creator_offers import came_from_offer
+        return "paid" if came_from_offer(conn.cursor(), creator_id) else deal
+    except Exception:
+        conn.rollback()
+        return deal
+
+
 def _setup_payload(conn, creator_id, creator, notes):
     from pr_crm_routes import _live_pitch_posts
     from services.pitch_facts import OFFER_LABELS, load as load_facts
@@ -732,7 +745,7 @@ def _setup_payload(conn, creator_id, creator, notes):
         "tones": [{"id": k, **v} for k, v in TONES.items()],
         "offer": {"offer_type": facts.get("offer_type") or "gifted_ugc", "options":
                   [{"id": k, "label": v} for k, v in OFFER_LABELS.items() if k != "paid_only"],
-                  "deal": settings(conn, creator_id).get("deal_focus") or "auto",
+                  "deal": _default_deal(conn, creator_id, profile),
                   "city": facts.get("city") or "", "country": facts.get("country") or ""},
         "stats": {"avg_views": stats.get("avg_views") or "", "followers": facts.get("followers"),
                   "engagement": facts.get("engagement_rate"), "engagement_strong": eng >= STRONG_ENGAGEMENT,

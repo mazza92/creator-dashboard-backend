@@ -14,7 +14,8 @@ def test_outreach_queue_skips_existing_members():
 def test_first_email_offers_the_free_week_without_overclaiming():
     html = us.personalize(us.default_onboarding_html(), {"handle": "jaye.ugc"})
     subject = us.personalize(us.DEFAULT_SUBJECT, {"handle": "jaye.ugc"})
-    assert subject == "PR & gifting for @jaye.ugc"
+    assert subject == "paid UGC deals for @jaye.ugc"
+    assert "paid" in html.lower() and "your rate" in html and "gift" not in html.lower()
     assert "free for 7 days" in html and "from your Gmail" in html
     assert 'href="https://app.newcollab.co/register/creator?ref=polly_trial7"' in html
     for claim in ("negotiat", "contract", "guarantee"):
@@ -35,4 +36,4 @@ def test_subject_variants_are_short_personal_and_stable():
 
 def test_followup_keeps_the_free_week():
     html = us.personalize(us.followup_html(), {"handle": "jaye.ugc"})
-    assert "7 free days" in html and us.SIGNUP_URL in html
+    assert "7 free days" in html and "pay for UGC" in html and us.SIGNUP_URL in html
