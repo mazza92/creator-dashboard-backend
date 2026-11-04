@@ -35,10 +35,12 @@ def test_appstore_site_picks_the_matching_app_and_skips_job_boards():
     assert gc.appstore_site("Smudge", http=lambda *a, **k: Resp({}, 500)) == ""
 
 
-def _find(website_email="", hunter=("", "", 999), verdict="valid", spend=True, site_http=None):
+def _find(website_email="", hunter=("", "", 999), verdict="valid", spend=True, site_http=None, used=0):
     with mock.patch("services.radar_contact.website_email", return_value=website_email) as web, \
             mock.patch("services.radar_contact.hunter_lookup", return_value=hunter) as hl, \
             mock.patch("services.contact_repair._spend", return_value=spend), \
+            mock.patch("services.contact_repair._calls_today", return_value=used), \
+            mock.patch("services.contact_repair.daily_cap", return_value=150), \
             mock.patch("services.contact_repair.hunter_verify", return_value=verdict):
         found = gc.find_gig_contact(mock.MagicMock(), "Kettlebell Body", "",
                                     http=site_http or (lambda *a, **k: Resp(APPSTORE)))
@@ -59,16 +61,38 @@ def test_hunter_when_site_has_nothing():
 
 
 def test_company_lookup_when_no_website_found():
-    found, _, hl = _find(website_email="", hunter=("kb.co", "hello@kb.co", 200),
+    found, _, hl = _find(website_email="", hunter=("kettlebellbody.com", "hello@kettlebellbody.com", 200),
                          site_http=lambda *a, **k: Resp({"results": []}))
-    assert found["email"] == "hello@kb.co" and found["website"] == "https://kb.co"
-    hl.assert_called_once_with(company="Kettlebell Body")
+    assert found["email"] == "hello@kettlebellbody.com" and found["website"] == "https://kettlebellbody.com"
+    assert hl.call_args_list[0] == mock.call(company="Kettlebell Body")
 
 
-def test_invalid_email_dropped_and_no_hunter_past_the_cap():
-    assert _find(website_email="info@kettlebellbody.app", verdict="invalid")[0]["email"] == ""
+def test_invalid_hunter_email_dropped_site_emails_trusted_and_hunter_budget_kept():
+    assert _find(hunter=("kettlebellbody.app", "jo@kettlebellbody.app", 50), verdict="invalid")[0]["email"] == ""
+    assert _find(website_email="info@kettlebellbody.app", verdict="invalid")[0]["email"] == "info@kettlebellbody.app"
     found, _, hl = _find(spend=False)
     assert found["email"] == "" and hl.call_count == 0
+    found, _, hl = _find(used=80)  # past half of the shared daily cap: leave the rest to Autopilot
+    assert found["email"] == "" and hl.call_count == 0
+
+
+def test_domain_must_be_the_brands_own():
+    good = [("FitFo", "fitfo.app"), ("Kettlebell Body: Home Workouts", "kettlebellbody.app"), ("CekatAI", "cekat.ai"),
+            ("Oncourse AI", "getoncourse.ai"), ("claimHood", "claimhoodapp.com"), ("The UGC Lab", "theugclab.in"),
+            ("Rods — Corner & Road Alerts", "driverods.com")]
+    bad = [("Flash Studio", "flashforge.com"), ("Exhale", "mindbodyonline.com"), ("RELDA", "reldan.com"),
+           ("Trendread", "trendreader.net"), ("TikTok", "tiktok.com"), ("Google", "google.com"),
+           ("CreatorFlow", "youtube.com"), ("Bump", "thebump.com"), ("IQLab", "matlubapps.com")]
+    assert all(gc.domain_matches(b, d) for b, d in good)
+    assert not any(gc.domain_matches(b, d) for b, d in bad)
+
+
+def test_other_company_from_appstore_is_ignored():
+    other = {"results": [{"trackName": "Exhale", "sellerName": "Exhale", "sellerUrl": "https://www.mindbodyonline.com/x"}]}
+    with mock.patch("services.radar_contact.website_email", return_value="sales@mindbodyonline.com") as web, \
+            mock.patch("services.contact_repair._spend", return_value=False):
+        found = gc.find_gig_contact(mock.MagicMock(), "Exhale", "", http=lambda *a, **k: Resp(other))
+    assert found["email"] == "" and web.call_count == 0
 
 
 def test_due_gigs_skips_recent_checks_and_real_emails():
