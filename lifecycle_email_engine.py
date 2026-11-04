@@ -387,19 +387,11 @@ def send_lifecycle_email(
             """, (creator_id,))
             if cursor.fetchone():
                 return False, "Polly already sent the paywall follow-up this month"
-            from services.quota_trial_test import active_arm, trial_eligible
-            arm = active_arm(creator_id)
-            if arm == 'trial' and not trial_eligible(cursor, creator_id):
-                arm = 'control'
+            # $19 at the limit for everyone; the free week follows LIMIT_TO_TRIAL_DAYS later if they don't buy
+            # (services.free_week_offer). A creator already past that point (rare) sees the trial here too.
+            from services.quota_trial_test import trial_eligible
+            arm = 'trial' if trial_eligible(cursor, creator_id) else 'control'
             utm_campaign = f"max_quota_hit_{arm}"
-            if arm == 'holdout':
-                cursor.execute("""
-                    INSERT INTO lifecycle_email_sends
-                    (creator_id, template_slug, email_address, status, dedup_key, utm_campaign)
-                    VALUES (%s, %s, %s, 'holdout', %s, %s)
-                """, (creator_id, template_slug, to_email, dedup_key, utm_campaign))
-                conn.commit()
-                return False, "Experiment holdout - no email"
             full_context['quota_arm'] = arm
             full_context['preheader'] = (
                 'Your 3 are out. Try Pro free for 7 days: Polly keeps pitching for you.'

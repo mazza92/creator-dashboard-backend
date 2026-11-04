@@ -127,7 +127,7 @@ class TestPollyEmailGap(unittest.TestCase):
         conn.cursor.return_value = cursor
         with patch.object(engine, 'get_db_connection', return_value=conn), \
                 patch.object(engine, 'check_throttling', return_value=(True, '')), \
-                patch('services.quota_trial_test.active_arm', return_value='control'), \
+                patch('services.quota_trial_test.trial_eligible', return_value=False), \
                 patch.object(engine, '_polly_emailed_recently') as polly_check, \
                 patch.object(engine, '_deliver_email', return_value=(False, 'stop')) as deliver:
             engine.send_lifecycle_email('a@b.com', 'max_quota_hit', {}, 7)
