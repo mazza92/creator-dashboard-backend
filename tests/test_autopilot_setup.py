@@ -184,3 +184,13 @@ class SetupStateTests(unittest.TestCase):
             st = rpa._setup_state(mock.MagicMock(), 7)
         self.assertTrue(st["done"])
         self.assertEqual(st["style"], "Short and warm")
+
+
+class GoLiveSchedulesTests(unittest.TestCase):
+    def test_waiting_drafts_scheduled(self):
+        conn = mock.MagicMock()
+        conn.cursor.return_value.fetchall.return_value = [(5,), (6,)]
+        with mock.patch.object(rpa, "approve", return_value=[{"id": 5}, {"id": 6}]) as approve:
+            out = rpa._schedule_waiting_drafts(conn, 7)
+        approve.assert_called_once_with(conn, 7, [5, 6])
+        self.assertEqual(len(out), 2)
