@@ -205,8 +205,16 @@ def _setup_state(conn, creator_id):
     """Whether the Pro setup journey is finished, and where to resume it."""
     from services.polly_memory import load_thread
 
-    prof = (load_thread(conn, creator_id).get("notes") or {}).get("pitch_profile") or {}
-    return {"done": bool(prof.get("setup_done_at")), "step": int(prof.get("step") or 0)}
+    from services.pitch_writer import TONES, profile_from_notes
+
+    notes = load_thread(conn, creator_id).get("notes") or {}
+    raw = notes.get("pitch_profile") or {}
+    prof = profile_from_notes(notes)
+    tone = TONES.get(prof["tone"]) or {}
+    style = (raw.get("style_summary") or "Your own style") if prof["voice"] == "sample" else \
+        f"{tone.get('emoji', '')} {tone.get('label', '')}".strip()
+    return {"done": bool(prof.get("setup_done_at")), "step": int(raw.get("step") or 0), "style": style,
+            "posts": len(prof.get("proof_posts") or [])}
 
 
 def _guard(require_gmail=True):

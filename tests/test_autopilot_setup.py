@@ -166,3 +166,21 @@ class SetupPayloadTests(unittest.TestCase):
         self.assertTrue(data["gmail_connected"])
         self.assertNotIn("paid_only", [o["id"] for o in data["offer"]["options"]])
         self.assertEqual(len(data["tones"]), 6)
+
+
+class SetupStateTests(unittest.TestCase):
+    def test_state_summarises_style(self):
+        thread = {"notes": {"pitch_profile": {"tone": "warm", "step": 2}}}
+        with mock.patch("services.polly_memory.load_thread", return_value=thread):
+            st = rpa._setup_state(mock.MagicMock(), 7)
+        self.assertEqual(st["step"], 2)
+        self.assertFalse(st["done"])
+        self.assertIn("Warm", st["style"])
+
+    def test_state_sample_voice(self):
+        thread = {"notes": {"pitch_profile": {"voice": "sample", "style_rules": ["Short sentences"],
+                                              "style_summary": "Short and warm", "setup_done_at": "x"}}}
+        with mock.patch("services.polly_memory.load_thread", return_value=thread):
+            st = rpa._setup_state(mock.MagicMock(), 7)
+        self.assertTrue(st["done"])
+        self.assertEqual(st["style"], "Short and warm")
