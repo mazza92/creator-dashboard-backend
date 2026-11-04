@@ -197,7 +197,16 @@ def _status_payload(conn, creator_id, is_pro):
         "month": counts,
         "next_batch": batch_size(counts, target),
         "items": list_items(conn, creator_id),
+        "setup": _setup_state(conn, creator_id) if is_pro else None,
     }
+
+
+def _setup_state(conn, creator_id):
+    """Whether the Pro setup journey is finished, and where to resume it."""
+    from services.polly_memory import load_thread
+
+    prof = (load_thread(conn, creator_id).get("notes") or {}).get("pitch_profile") or {}
+    return {"done": bool(prof.get("setup_done_at")), "step": int(prof.get("step") or 0)}
 
 
 def _guard(require_gmail=True):
@@ -439,7 +448,7 @@ def _pick_brands(conn, creator_id, creator, notes, scrape):
     return matched, None if matched else "no_matches"
 
 
-def _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=False):
+def _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=False, angle=0):
     """Generate and queue one pitch. (item, error code)."""
     from routes.polly import _invoke_generate_pr_package
     from services.polly import (
@@ -484,12 +493,20 @@ def _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=F
     inputs = pitch_pref_inputs(conn, notes, brand_id, creator=creator, scrape=scrape, kit=kit,
                                location=loc_display)
     pitch = apply_pitch_prefs(pitch, notes, slots=inputs["slots"], facts=inputs["facts"])
+    if pitch_has_placeholder(pitch.get("body") or ""):
+        return None, "needs_location"
+    # Short, brand-specific and send-ready (falls back to the pitch above if anything fails).
+    from services.pitch_writer import finalize_for
+    from services.polly_autopilot import _creator_names
+    pitch = finalize_for(conn, creator_id, brand_id, pitch, notes,
+                         first_name=_creator_names(conn, creator_id).get("first") or "", angle=angle) or pitch
     body = pitch.get("body") or ""
     if not body or pitch_has_placeholder(body):
         return None, "needs_location"
     item = add_draft(
         conn, creator_id, brand_id, brand["brand_name"], pitch.get("email") or brand["email"],
         pitch.get("subject") or f"{brand['brand_name']} collab", body, announced=announced,
+        meta=pitch.get("pitch_meta"),
     )
     return (item, None) if item else (None, "already_queued")
 
@@ -668,5 +685,200 @@ def approve_batch():
         payload = _status_payload(conn, creator_id, True)
         payload["scheduled"] = scheduled
         return jsonify(payload)
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Pro setup journey: voice, offer, best work, brands, live first pitch
+# ---------------------------------------------------------------------------
+
+DEAL_FOR_CHOICE = {"gifted": "gifted", "auto": "auto", "paid": "paid"}
+BRAND_SIZES = ("emerging", "growing", "established")
+
+
+def _setup_payload(conn, creator_id, creator, notes):
+    from pr_crm_routes import _live_pitch_posts
+    from services.pitch_facts import OFFER_LABELS, load as load_facts
+    from services.pitch_writer import STRONG_ENGAGEMENT, TONES, _engagement_pct, creator_stats, profile_from_notes
+    from services.polly_prefs import get_prefs
+
+    profile = profile_from_notes(notes)
+    raw = dict(notes.get("pitch_profile") or {})
+    facts = load_facts(conn, creator_id)
+    stats = creator_stats(conn, creator_id)
+    cur = conn.cursor()
+    posts = _live_pitch_posts(cur, creator.get("user_id")) or []
+    picked = profile["proof_posts"] or stats.get("top_posts") or []
+    prefs = get_prefs(notes)
+    account = load_account(conn, creator_id) if gmail_configured() else None
+    eng = _engagement_pct(facts.get("engagement_rate"))
+    return {
+        "success": True,
+        "is_pro": _is_pro(creator_id, conn),
+        "setup_done": bool(profile.get("setup_done_at")),
+        "step": int(raw.get("step") or 0),
+        "profile": {**profile, "style_summary": raw.get("style_summary") or "",
+                    "brand_size": raw.get("brand_size") or ["emerging", "growing"],
+                    "proof_posts": picked},
+        "tones": [{"id": k, **v} for k, v in TONES.items()],
+        "offer": {"offer_type": facts.get("offer_type") or "gifted_ugc", "options":
+                  [{"id": k, "label": v} for k, v in OFFER_LABELS.items() if k != "paid_only"],
+                  "deal": settings(conn, creator_id).get("deal_focus") or "auto",
+                  "city": facts.get("city") or "", "country": facts.get("country") or ""},
+        "stats": {"avg_views": stats.get("avg_views") or "", "followers": facts.get("followers"),
+                  "engagement": facts.get("engagement_rate"), "engagement_strong": eng >= STRONG_ENGAGEMENT,
+                  "lead_metric": prefs.get("lead_metric") or ""},
+        "posts": [{"post_url": p.get("post_url"), "thumbnail_url": p.get("thumbnail_url"),
+                   "views": p.get("views") or 0} for p in posts if p.get("post_url")][:8],
+        "niches": facts.get("niches") or [], "niche_options": facts.get("niche_options") or [],
+        "monthly_target": settings(conn, creator_id).get("monthly_target") or 60,
+        "gmail_connected": bool(account and not account.get("revoked_at")),
+    }
+
+
+@autopilot_bp.route("/setup", methods=["GET"])
+def setup_get():
+    creator_id, conn, creator, err = _guard(require_gmail=False)
+    if err:
+        return err
+    try:
+        notes, _scrape = _creator_context(conn, creator)
+        return jsonify(_setup_payload(conn, creator_id, creator, notes))
+    finally:
+        conn.close()
+
+
+@autopilot_bp.route("/setup", methods=["POST"])
+def setup_save():
+    """Save any part of the setup. Every field is optional so each screen saves as the creator goes."""
+    from datetime import datetime, timezone
+
+    from services.pitch_facts import OFFER_LABELS, save as save_facts
+    from services.pitch_writer import TONES
+    from services.polly_memory import save_notes
+    from services.polly_prefs import clean_pitch_prefs, merge_prefs
+
+    creator_id, conn, creator, err = _guard(require_gmail=False)
+    if err:
+        return err
+    body = request.get_json(silent=True) or {}
+    try:
+        notes, _scrape = _creator_context(conn, creator)
+        prof = dict(notes.get("pitch_profile") or {})
+        if body.get("tone") in TONES:
+            prof["tone"] = body["tone"]
+            notes = merge_prefs(notes, {"tone": "professional" if body["tone"] == "professional" else "friendly"})
+        if body.get("voice") in ("preset", "sample"):
+            prof["voice"] = body["voice"]
+        if isinstance(body.get("style_rules"), list):
+            prof["style_rules"] = [" ".join(str(r).split())[:120] for r in body["style_rules"] if str(r).strip()][:5]
+            prof["style_summary"] = str(body.get("style_summary") or "")[:60]
+        if isinstance(body.get("proof_posts"), list):
+            prof["proof_posts"] = [str(u).strip()[:500] for u in body["proof_posts"]
+                                   if str(u).strip().startswith("https://")][:2]
+        if "win" in body:
+            prof["win"] = " ".join(str(body.get("win") or "").split())[:160]
+        if isinstance(body.get("brand_size"), list):
+            prof["brand_size"] = [s for s in body["brand_size"] if s in BRAND_SIZES] or ["emerging", "growing"]
+        if body.get("step") is not None:
+            prof["step"] = max(int(prof.get("step") or 0), min(6, int(body.get("step") or 0)))
+        if body.get("done"):
+            prof["setup_done_at"] = datetime.now(timezone.utc).isoformat()
+        notes["pitch_profile"] = prof
+        prefs_patch = clean_pitch_prefs({k: body[k] for k in ("lead_metric",) if k in body})
+        if prefs_patch:
+            notes = merge_prefs(notes, prefs_patch)
+        save_notes(conn, creator_id, notes)
+        # Offer, niches and ship-to go through the same saver as Polly chat, so both always agree.
+        facts_patch = {k: body[k] for k in ("offer_type", "city", "country") if body.get(k)}
+        if isinstance(body.get("niches"), list) and body["niches"]:
+            facts_patch["niches"] = body["niches"][:3]
+        if facts_patch.get("offer_type") not in (None, *OFFER_LABELS):
+            facts_patch.pop("offer_type")
+        if facts_patch:
+            save_facts(conn, creator_id, facts_patch, confirm="niches" in facts_patch)
+        patch = {"send_days": [0, 1, 2, 3, 4]}  # Autopilot always runs every weekday: no picking days
+        if body.get("deal") in DEAL_FOR_CHOICE:
+            patch["deal_focus"] = DEAL_FOR_CHOICE[body["deal"]]
+        if body.get("monthly_target"):
+            patch["monthly_target"] = body["monthly_target"]
+        save_settings(conn, creator_id, patch)
+        if body.get("done"):
+            set_enabled(conn, creator_id, True)
+            prioritize_fill(conn, creator_id)
+        notes, _scrape = _creator_context(conn, creator)
+        return jsonify(_setup_payload(conn, creator_id, creator, notes))
+    finally:
+        conn.close()
+
+
+@autopilot_bp.route("/setup/sample", methods=["POST"])
+def setup_sample():
+    """Write like me: the creator's sample -> style rules + how their opener will sound."""
+    from services.pitch_writer import style_from_sample, write_opener, opener_issues, fallback_opener, ideas_for
+
+    creator_id, conn, creator, err = _guard(require_gmail=False)
+    if err:
+        return err
+    try:
+        sample = (request.get_json(silent=True) or {}).get("sample") or ""
+        style = style_from_sample(sample)
+        if not style.get("ok"):
+            return jsonify({"success": False, "error": style.get("error")}), 400
+        notes, _scrape = _creator_context(conn, creator)
+        niche = ((creator.get("creator_niches") or [None])[0] or "skincare")
+        facts = {"brand": "the brand", "product": "their bestseller", "niche": niche, "platform": "",
+                 "structure": "idea_first", "ideas": ideas_for(niche)}
+        from services.pitch_writer import profile_from_notes
+        profile = {**profile_from_notes(notes), "style_rules": style["rules"]}
+        opener = write_opener(facts, profile)
+        if opener_issues(opener, facts):
+            opener = fallback_opener(facts)
+        return jsonify({"success": True, "rules": style["rules"], "summary": style.get("summary") or "",
+                        "example_opener": opener})
+    finally:
+        conn.close()
+
+
+@autopilot_bp.route("/setup/preview", methods=["POST"])
+def setup_preview():
+    """The creator's real first Autopilot pitch for their top matched brand, send-ready checked."""
+    from services.pitch_writer import MAX_WORDS, words
+
+    creator_id, conn, creator, err = _guard(require_gmail=False)
+    if err:
+        return err
+    body = request.get_json(silent=True) or {}
+    try:
+        notes, scrape = _creator_context(conn, creator)
+        brand_id = body.get("brand_id")
+        if not brand_id:
+            brands, pick_err = _pick_brands(conn, creator_id, creator, notes, scrape)
+            if not brands:
+                return jsonify({"success": False, "error": pick_err or "no_matches"}), 409
+            brand_id = int(brands[0]["id"])
+        item, error = _write_draft(conn, creator_id, creator, int(brand_id), notes, scrape, announced=True,
+                                   angle=int(body.get("angle") or 0))
+        if error:
+            return jsonify({"success": False, "error": error}), _DRAFT_STATUS.get(error, 502)
+        cur = conn.cursor()
+        cur.execute("SELECT pitch_meta FROM polly_autopilot_queue WHERE id = %s", (item["id"],))
+        row = cur.fetchone()
+        meta = (row[0] if row and not isinstance(row, dict) else (row or {}).get("pitch_meta")) or {}
+        from services.pitch_writer import compose_followup_v2
+        from services.polly_autopilot import _creator_names
+        first = _creator_names(conn, creator_id).get("first") or ""
+        followups = [compose_followup_v2(first, item["brand_name"], item["subject"], w, meta=meta) for w in (1, 2)]
+        n = words(item["body"])
+        checks = [
+            {"ok": meta.get("writer") == "v2", "label": "Written for this brand's product"},
+            {"ok": n <= MAX_WORDS, "label": f"{n} words, about a {max(10, round(n / 3.5))}s read"},
+            {"ok": "newcollab.co/kit/" in item["body"], "label": "Your portfolio is linked"},
+            {"ok": bool(meta.get("source")), "label": "Checked send-ready" if meta.get("source") == "gemini"
+             else "Uses our proven template"},
+            {"ok": True, "label": "Follow-ups on day 4 and day 10, each with a new angle"},
+        ]
+        return jsonify({"success": True, "item": item, "meta": meta, "followups": followups, "checks": checks})
     finally:
         conn.close()
