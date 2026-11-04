@@ -580,7 +580,8 @@ def list_polly_gigs(
     fit = {id(c): gig_fit_note(c, followers, country) for c in paid}
     open_first = newest_published([c for c in paid if not c.get("already_applied")])
     pool = open_first or newest_published(paid)
-    pool = sorted(pool, key=lambda c: fit[id(c)]["rank"])
+    # Within the same fit, gigs creators can pitch directly come first (stable: newest order kept).
+    pool = sorted(pool, key=lambda c: (fit[id(c)]["rank"], not c.get("direct_contact")))
     skip = set(exclude_ids or [])
     skip |= set(shown_gig_ids(notes))
     skip |= set(gig_ids_from_history(history))

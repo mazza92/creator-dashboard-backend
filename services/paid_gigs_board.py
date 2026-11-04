@@ -92,10 +92,12 @@ def filter_view(cards: List[Dict[str, Any]], view: str, now: Optional[datetime] 
 
 
 def rank_cards(cards: List[Dict[str, Any]], now: Optional[datetime] = None) -> List[Dict[str, Any]]:
-    """Open before applied; niche matches posted this week lead, then newest."""
+    """Open before applied; gigs creators can pitch directly (we found the brand's inbox) lead, then niche
+    matches posted this week, then newest."""
     def key(card):
         fresh_match = bool(card.get("is_match")) and (_age_days(card, now) or 99) <= 7
-        return (bool(card.get("already_applied")), not fresh_match, -published_stamp(card))
+        return (bool(card.get("already_applied")), not card.get("direct_contact"), not fresh_match,
+                -published_stamp(card))
     return sorted(cards, key=key)
 
 
