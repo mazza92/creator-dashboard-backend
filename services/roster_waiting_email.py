@@ -38,6 +38,10 @@ TRIGGER3_SPACING_DAYS = 7
 TRIGGER3_MAX = 3
 TRIGGER4_WEEKDAY = 4  # Friday
 
+# Paused 2026-11-04: brands that never signed up read the reminders as spam ("Who signed up? Delete this
+# account."). 383 weekly reminders -> 1 pick, 0 signups. Only the first nudge still goes out, once per brand.
+PAUSED_TRIGGERS = frozenset({2, 3, 4})
+
 EMAIL_TYPES = {
     1: "first_nudge",
     2: "volume_escalation",
@@ -308,6 +312,11 @@ def choose_trigger(state: RosterEmailState) -> Optional[TriggerChoice]:
     ok, _reason = passes_caps(state)
     if not ok:
         return None
+    choice = _choose_trigger(state)
+    return None if choice and choice.number in PAUSED_TRIGGERS else choice
+
+
+def _choose_trigger(state: RosterEmailState) -> Optional[TriggerChoice]:
 
     n = int(state.applicant_count or 0)
     view_days = state.last_roster_view_days
