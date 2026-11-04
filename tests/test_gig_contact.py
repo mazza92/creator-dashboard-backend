@@ -152,3 +152,33 @@ def test_direct_contact_gigs_rank_first_on_the_board():
         {"id": 4, "posted_at": "2026-11-02T10:00:00Z", "direct_contact": True, "is_match": True},
     ]
     assert [c["id"] for c in rank_cards(cards, now=NOW)] == [4, 2, 1, 3]
+
+
+def test_board_path_end_to_end_from_a_db_row():
+    """Regression: the live-feed query didn't select brand_email, so no card ever got the badge."""
+    import inspect
+    from datetime import datetime as dt
+    import opportunities_routes as orr
+    from services.paid_gigs_board import board_cards, public_card, rank_cards
+
+    assert "brand_email" in inspect.getsource(orr.fetch_live_opportunity_cards).split("FROM opportunities")[0]
+    row = {"id": 1758, "brand_name": "Glosshouse", "brand_category": "beauty", "brand_logo_url": None,
+           "brand_website": "https://glosshouse.com", "brand_email": "hello@glosshouse.com",
+           "product_name": "Glosshouse UGC", "campaign_description": "2 TikToks a week", "pr_value_usd": 300,
+           "creator_count_range": None, "shipping_regions": ["US"], "follower_ranges": [], "content_types": ["UGC"],
+           "creator_niches": ["beauty"], "spots_total": 1, "spots_filled": 0, "closes_at": None,
+           "created_at": dt(2026, 11, 4, 10), "published_at": dt(2026, 11, 4, 10), "listing_brief": None,
+           "additional_notes": "[scanner:sideshift:abc] | source=sideshift | apply_url=https://app.sideshift.app/jobs/abc"
+                               " | contact_checked=2026-11-04 | contact=website"}
+    plain = {**row, "id": 1700, "brand_name": "Smudge", "brand_email": "sourced@newcollab.co",
+             "additional_notes": "[scanner:sideshift:def] | apply_url=https://app.sideshift.app/jobs/def"}
+    cards = []
+    for r in (plain, row):
+        serialized, _ = orr._opportunity_card(r, {"beauty"}, set())
+        assert serialized["apply_email"] is None  # never in list payloads
+        cards.append(serialized)
+    ranked = rank_cards(board_cards(cards))
+    assert ranked[0]["id"] == 1758 and ranked[0]["direct_contact"] is True
+    pub = public_card(ranked[0])
+    assert pub["direct_contact"] is True and "hello@glosshouse.com" not in str(pub)
+    assert public_card(ranked[1])["direct_contact"] is False
