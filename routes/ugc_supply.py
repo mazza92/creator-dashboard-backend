@@ -36,7 +36,23 @@ BLOCKED_OUTREACH_STATUSES = {
 # The ref survives signup (frontend keeps it), is stored by creator_offers, and checkout grants the 7-day
 # trial; Polly opens the Autopilot card on first visit.
 SIGNUP_URL = "https://app.newcollab.co/register/creator?ref=polly_trial7"
-DEFAULT_SUBJECT = "@{{handle}}, your brand pitches done for you (7 days free)"
+# Cold-email subjects that work read like a note from a person: short, about what the creator wants (brand
+# deals), no "free", no "done for you", no brackets. The old "PR / gifting campaigns — @handle" got 16 signups
+# from 254 sends; "@handle, your brand pitches done for you (7 days free)" got 0 from 49. Each lead gets one
+# variant (stable per lead, so the follow-up's "Re:" matches) and the log keeps it, so the winner shows.
+SUBJECT_VARIANTS = (
+    "PR & gifting for @{{handle}}",
+    "brand deals for @{{handle}}?",
+    "quick question, @{{handle}}",
+)
+DEFAULT_SUBJECT = SUBJECT_VARIANTS[0]
+
+
+def subject_for_lead(lead):
+    import hashlib
+
+    key = str((lead or {}).get("id") or (lead or {}).get("handle") or "")
+    return SUBJECT_VARIANTS[int(hashlib.sha1(key.encode()).hexdigest(), 16) % len(SUBJECT_VARIANTS)]
 DEFAULT_FOLLOWUP_HOURS = 96
 MAX_EMAILS_PER_LEAD = 2  # first email + one follow-up
 FOLLOWUP_WINDOW_DAYS = 21  # a "quick bump" weeks later reads oddly; older leads get a fresh pitch instead
@@ -368,7 +384,7 @@ def _send_one(cur, conn, lead, subject, html_content, allow_followup, min_hours)
         if datetime.now(timezone.utc) - last < timedelta(hours=int(min_hours)):
             return False, "followup_cooldown", 409
 
-    subj = personalize(subject or DEFAULT_SUBJECT, lead)
+    subj = personalize(subject or subject_for_lead(lead), lead)
     html = personalize(html_content or default_onboarding_html(lead), lead)
     send_res = send_resend_email(
         lead["contact_email"],
@@ -466,7 +482,7 @@ def send_bulk():
                 results["failed"].append({"lead_id": lead_id, "reason": "not_found"})
                 continue
             if followup:
-                first = lead.get("last_subject") or DEFAULT_SUBJECT
+                first = lead.get("last_subject") or personalize(subject_for_lead(lead), lead)
                 subject = first if first.lower().startswith("re:") else f"Re: {first}"
                 ok, err, code = _send_one(cur, conn, lead, subject, followup_html(lead), True,
                                           int(data.get("min_followup_hours", DEFAULT_FOLLOWUP_HOURS)))
