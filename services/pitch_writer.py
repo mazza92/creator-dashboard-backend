@@ -82,7 +82,7 @@ DEFAULT_IDEAS = ["a 15-second unboxing + first-impression video", "a 'how I use 
                  "a '3 things I love about it' video"]
 
 CLOSES = {"brief": "Worth a try?", "warm": "Would love to make this for you.", "upbeat": "Want to give it a go?",
-          "playful": "Shall I start filming?", "professional": "Would this be of interest?",
+          "playful": "Up for a little test video?", "professional": "Would this be of interest?",
           "data": "Open to a test video?"}
 
 _URL = re.compile(r"https?://\S+|\b[\w.-]+\.(?:com|co|net|io|app)/\S*", re.I)
@@ -181,7 +181,7 @@ def _pick(seq: List[str], seed: str, offset: int = 0) -> str:
 
 
 def subject_options(brand: str, product: str, first: str) -> List[Dict[str, str]]:
-    p = product if product and product != "PR sample" else ""
+    p = product if product and product != "PR sample" and not product.startswith("your ") else ""
     out = []
     if p and first:
         out.append({"id": "brand_x_name", "text": f"{brand} × {first}: an idea for {p}"})
@@ -245,11 +245,15 @@ OPENER_SYSTEM = (
 )
 
 REVIEW_SYSTEM = (
-    "You check a cold pitch email from a UGC creator to a brand before it is sent. Return JSON "
-    "{\"send_ready\": true|false, \"issues\": [\"...\"]}. It is send-ready only if: it makes sense to someone at the "
-    "brand who has never heard of the creator; it has a greeting, one clear video idea for the brand's product, "
-    "proof, a clear ask and a sign-off; it reads naturally (no broken sentences, no leftover template text); "
-    "nothing sounds rude, spammy, or misleading. Short is good. Do not rewrite it."
+    "You are the last safety check on a short cold pitch from a UGC creator to a brand. The format is fixed and "
+    "proven: 'Hi <Brand> team,', a 1-2 sentence video idea, 'Recent posts:' links, a one-line offer (e.g. 'No fee. "
+    "Just product + shipping to ...' or 'Rate: ...'), a short close question, the creator's first name and a "
+    "portfolio link. Brand and product names are written the way the brand writes them (lowercase is fine), and the "
+    "creator's handle can differ from their first name. Short and direct is the goal: do NOT judge style, tone, "
+    "length, the close, the sign-off or the offer line. Return JSON {\"send_ready\": true|false, \"issues\": [...]}. "
+    "Set send_ready false ONLY for a real problem: a broken or nonsensical sentence, leftover template text or "
+    "placeholders, the idea is about a different product or brand, invented facts or numbers, or something rude, "
+    "spammy or misleading. Otherwise send_ready is true and issues is empty."
 )
 
 
@@ -349,14 +353,29 @@ def _signoff(pitch_body: str, first_name: str) -> str:
     return last[-1].strip() if last else ""
 
 
+def clean_brand(name: str) -> str:
+    """'Nutrisense (US)' -> 'Nutrisense': the region tag is for our catalog, not the greeting."""
+    return re.sub(r"\s*\((?:US|UK|EU|CA|AU|USA|Global|International)\)\s*$", "", str(name or "").strip(), flags=re.I)
+
+
+def clean_product(product: str) -> str:
+    """A real product name stays; a category ('Lighting fixtures and home hardware') reads as 'your ...'."""
+    p = " ".join(str(product or "").split())
+    if not p or p.lower() in ("pr sample", "product", "products"):
+        return "your products"
+    words_ = p.split()
+    looks_category = (" and " in p or " & " in p) and sum(w[:1].islower() for w in words_) >= len(words_) / 2
+    return f"your {p[0].lower()}{p[1:]}" if looks_category else p
+
+
 def build_facts(pitch: Dict[str, Any], *, brand: Dict[str, Any], profile: Dict[str, Any],
                 first_name: str = "", stats: Optional[Dict[str, Any]] = None,
                 prefs: Optional[Dict[str, Any]] = None, seed: str = "") -> Dict[str, Any]:
     stats = stats or {}
     prefs = prefs or {}
     body = str(pitch.get("body") or "")
-    brand_name = (brand.get("brand_name") or brand.get("name") or pitch.get("brand_name") or "").strip()
-    product = (pitch.get("product_name") or brand.get("hero_product") or "").strip() or "PR sample"
+    brand_name = clean_brand(brand.get("brand_name") or brand.get("name") or pitch.get("brand_name") or "")
+    product = clean_product(pitch.get("product_name") or brand.get("hero_product") or "")
     niche = (pitch.get("niche") or (pitch.get("creator_stats") or {}).get("niche") or "").strip()
     ideas = ideas_for(niche or brand.get("category") or "")
     lead = str(prefs.get("lead_metric") or "").lower()
@@ -487,6 +506,7 @@ def compose_followup_v2(first_name: str, brand_name: str, subject: str, wave: in
     if not subj.lower().startswith("re:"):
         subj = f"Re: {subj}"
     product = meta.get("product") if meta.get("product") and meta.get("product") != "PR sample" else "it"
+    product = "them" if product.startswith("your ") else product
     ideas = meta.get("ideas") or DEFAULT_IDEAS
     sign = (first_name or "").strip()
     if wave >= 2:

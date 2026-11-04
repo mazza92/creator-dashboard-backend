@@ -167,3 +167,22 @@ class AskLineTests(unittest.TestCase):
                          "No fee. Just product + shipping to New York, United States.")
         self.assertEqual(find_ask("No fee. Just product + shipping to Austin, USA."),
                          "No fee. Just product + shipping to Austin, USA.")
+
+
+class NameCleanupTests(unittest.TestCase):
+    def test_brand_region_tag_dropped(self):
+        from services.pitch_writer import clean_brand
+        self.assertEqual(clean_brand("Nutrisense (US)"), "Nutrisense")
+        self.assertEqual(clean_brand("burnd"), "burnd")
+
+    def test_category_reads_as_your(self):
+        from services.pitch_writer import clean_product, subject_options
+        self.assertEqual(clean_product("Lighting fixtures and home hardware"), "your lighting fixtures and home hardware")
+        self.assertEqual(clean_product("Sea Mineral Cleanser"), "Sea Mineral Cleanser")
+        self.assertEqual(clean_product("Salt & Stone"), "Salt & Stone")
+        self.assertEqual(clean_product(""), "your products")
+        self.assertEqual([o["id"] for o in subject_options("Schoolhouse", "your products", "Maya")], ["ugc_for_brand"])
+
+    def test_review_prompt_only_blocks_real_problems(self):
+        from services.pitch_writer import REVIEW_SYSTEM
+        self.assertIn("do NOT judge style", REVIEW_SYSTEM)
