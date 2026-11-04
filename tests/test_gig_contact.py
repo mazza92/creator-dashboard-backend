@@ -141,3 +141,14 @@ def test_card_carries_the_badge_flag_not_the_email():
                               "source_platform": "sideshift", "is_sourced": True, "pr_value_usd": 300})
     pub = public_card(card)
     assert pub["direct_contact"] is True and "apply_email" not in pub
+
+
+def test_direct_contact_gigs_rank_first_on_the_board():
+    from services.paid_gigs_board import rank_cards
+    cards = [
+        {"id": 1, "posted_at": "2026-11-04T10:00:00Z", "is_match": True},
+        {"id": 2, "posted_at": "2026-10-28T10:00:00Z", "direct_contact": True},
+        {"id": 3, "posted_at": "2026-11-03T10:00:00Z", "direct_contact": True, "already_applied": True},
+        {"id": 4, "posted_at": "2026-11-02T10:00:00Z", "direct_contact": True, "is_match": True},
+    ]
+    assert [c["id"] for c in rank_cards(cards, now=NOW)] == [4, 2, 1, 3]
