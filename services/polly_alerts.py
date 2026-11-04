@@ -938,6 +938,18 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
                 conn.rollback()
             except Exception:
                 pass
+    gig_contacts: Dict[str, int] = {}
+    if not dry_run:
+        try:
+            from services.gig_contact import enrich_due_gigs
+
+            gig_contacts = enrich_due_gigs(conn)
+        except Exception as err:
+            print(f"[Polly alerts] gig contact enrichment skipped: {err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
     nudged = 0
     autopilot: Dict[str, Any] = {}
     if not dry_run:
@@ -1060,4 +1072,5 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
         "emails": emails,
         "email_enabled": can_email,
         "recycled_gigs": recycled,
+        "gig_contacts": gig_contacts,
     }

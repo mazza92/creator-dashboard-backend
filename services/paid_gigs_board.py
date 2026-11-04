@@ -26,7 +26,7 @@ VIEWS = ("all", "for_you", "new", "high_pay")
 _PUBLIC_FIELDS = (
     "id", "brand_name", "brand_unknown", "headline", "summary", "deliverable",
     "pay_label", "pr_value_usd", "location", "category", "logo", "website",
-    "source_label", "source_platform", "apply_mode", "posted_at", "already_applied",
+    "source_label", "source_platform", "apply_mode", "posted_at", "already_applied", "direct_contact",
 )
 _LOCKED_FIELDS = (
     "id", "pay_label", "pr_value_usd", "deliverable", "category", "location",
