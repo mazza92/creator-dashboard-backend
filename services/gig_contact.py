@@ -51,6 +51,58 @@ def name_matches(brand: str, *candidates: str) -> bool:
     return False
 
 
+# Platforms that post their own gigs or host other brands' pages: never a brand inbox for creators to pitch.
+PLATFORM_DOMAINS = ("tiktok.com", "google.com", "youtube.com", "apple.com", "facebook.com", "instagram.com",
+                    "meta.com", "amazon.com", "microsoft.com", "linkedin.com", "x.com", "twitter.com", "linktr.ee",
+                    "notion.site", "wixsite.com", "shopify.com", "squarespace.com", "carrd.co", "beacons.ai")
+_SUFFIXES = ("", "app", "apps", "hq", "ai", "io", "co", "inc", "official", "labs", "team", "studio")
+_PREFIXES = ("", "get", "try", "use", "join", "my", "go", "with", "hey", "hello", "drive", "play")
+_TRAILING = ("app", "ai", "hq", "io")
+# Hunter is shared with Autopilot's bounce protection: gig lookups stop once today's calls pass this share.
+HUNTER_SHARE = 0.5
+
+
+def _brand_keys(brand: str) -> List[str]:
+    """'Kettlebell Body: Home Workouts' -> ['kettlebellbodyhomeworkouts', 'kettlebellbody'];
+    'CekatAI' -> ['cekatai', 'cekat']."""
+    raw = str(brand or "").lower()
+    main = re.split(r"\s[-—–|:]\s|:", raw)[0]
+    keys = []
+    for part in (raw, main):
+        compact = re.sub(r"[^a-z0-9]+", "", part)
+        if compact and compact not in keys:
+            keys.append(compact)
+        for t in _TRAILING:
+            if compact.endswith(t) and len(compact) - len(t) >= 3 and compact[:-len(t)] not in keys:
+                keys.append(compact[:-len(t)])
+    return keys
+
+
+def domain_matches(brand: str, domain: str) -> bool:
+    """The domain is plausibly the brand's own: its name is the brand's name, give or take 'get'/'app' style
+    affixes. Rejects other companies with similar names (flashforge for 'Flash Studio') and platforms."""
+    from services.radar_contact import domain_of
+
+    root = domain_of(domain)
+    if not root or any(root == p or root.endswith("." + p) for p in PLATFORM_DOMAINS):
+        return False
+    label = root.split(".")[0]
+    for key in _brand_keys(brand):
+        if len(key) < 3:
+            continue
+        if any(label == pre + key + suf for pre in _PREFIXES for suf in _SUFFIXES):
+            return True
+    return False
+
+
+def _hunter_ok(conn) -> bool:
+    from services import contact_repair as cr
+    try:
+        return cr._calls_today(conn) < cr.daily_cap() * HUNTER_SHARE
+    except Exception:
+        return False
+
+
 def appstore_site(name: str, http: Callable = requests.get) -> str:
     """The developer's website from the App Store listing whose app or seller name matches the brand."""
     try:
@@ -87,22 +139,31 @@ def find_gig_contact(conn, brand_name: str, website: str = "", http: Callable = 
     from services.polly_gigs import public_brand_site
     from services.radar_contact import domain_of, hunter_lookup, website_email
 
+    empty = {"email": "", "source": "", "website": ""}
     site = public_brand_site(website) or appstore_site(brand_name, http=http)
     domain = domain_of(site)
-    hunter_email, hunter_score = "", 999
-    if not domain and cr._spend(conn, "gig_company"):
-        domain, hunter_email, hunter_score = hunter_lookup(company=brand_name)
-        site = site or (f"https://{domain}" if domain else "")
-    email, source = (website_email(domain), "website") if domain else ("", "")
-    if not email and not hunter_email and domain and cr._spend(conn, "gig_domain"):
-        _, hunter_email, hunter_score = hunter_lookup(domain=domain)
+    if domain and not domain_matches(brand_name, domain):
+        site, domain = "", ""
+    hunter_email = ""
+    if not domain and _hunter_ok(conn) and cr._spend(conn, "gig_company"):
+        found_domain, hunter_email, _ = hunter_lookup(company=brand_name)
+        if found_domain and domain_matches(brand_name, found_domain):
+            domain, site = found_domain, f"https://{found_domain}"
+        else:
+            hunter_email = ""
+    if not domain:
+        return empty
+    email, source = website_email(domain), "website"
+    if not email and not hunter_email and _hunter_ok(conn) and cr._spend(conn, "gig_domain"):
+        _, hunter_email, _ = hunter_lookup(domain=domain)
     if not email and hunter_email:
         email, source = hunter_email, "hunter"
-    if email:
-        verdict = cr.hunter_verify(conn, email)
-        if verdict == "invalid":
-            email, source = "", ""
-    return {"email": email or "", "source": source if email else "", "website": site or ""}
+    if not email or domain_of(email.split("@")[-1]) != domain:
+        return {**empty, "website": site}
+    # Emails published on the brand's own site are trusted; only Hunter's guesses use a verifier call.
+    if source == "hunter" and _hunter_ok(conn) and cr.hunter_verify(conn, email) == "invalid":
+        return {**empty, "website": site}
+    return {"email": email, "source": source, "website": site}
 
 
 def due_gigs(conn, limit: int = PER_RUN, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
