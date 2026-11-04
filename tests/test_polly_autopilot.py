@@ -311,3 +311,13 @@ class TargetingCapTests(TargetingTests):
         saved, sync = self._save({}, {"niches": ["beauty", "skincare", "fashion", "travel"]}, recorded=("beauty",))
         self.assertEqual(saved["niche"], ["beauty"])
         sync.assert_not_called()
+
+
+class ProOnlySendingTests(unittest.TestCase):
+    def test_send_followup_and_refill_queries_require_pro(self):
+        import inspect
+        self.assertIn("pc.subscription_tier = 'pro'", pa._ACTIVE_JOIN)
+        self.assertIn("pc.unlocks_tier = 'pro'", pa._ACTIVE_JOIN)
+        self.assertIn("PRO_SQL", inspect.getsource(pa.fill_candidates))
+        run_src = inspect.getsource(pa.run_autopilot)
+        self.assertGreaterEqual(run_src.count("_ACTIVE_JOIN"), 3)  # pitches, heads-ups, follow-ups
