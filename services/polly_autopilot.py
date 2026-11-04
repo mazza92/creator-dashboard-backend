@@ -729,9 +729,14 @@ def _due(conn, sql: str, params: tuple) -> List[Dict[str, Any]]:
     return [dict(r) for r in cur.fetchall()]
 
 
-_ACTIVE_JOIN = """
+# Autopilot is a Pro feature: the same rule as the in-app Pro check (unlocks or subscription tier is pro).
+# Without it, pitches queued before a subscription ended kept sending, follow-ups too.
+PRO_SQL = "(pc.unlocks_tier = 'pro' OR pc.subscription_tier = 'pro')"
+
+_ACTIVE_JOIN = f"""
     LEFT JOIN polly_autopilot a ON a.creator_id = q.creator_id
     JOIN polly_gmail_accounts g ON g.creator_id = q.creator_id AND g.revoked_at IS NULL
+    JOIN creators pc ON pc.id = q.creator_id AND {PRO_SQL}
 """
 
 
@@ -755,6 +760,7 @@ def fill_candidates(conn, now: Optional[datetime] = None, limit: int = 20) -> Li
         SELECT a.creator_id, a.monthly_target, a.fill_blocked
         FROM polly_autopilot a
         JOIN polly_gmail_accounts g ON g.creator_id = a.creator_id AND g.revoked_at IS NULL
+        JOIN creators pc ON pc.id = a.creator_id AND """ + PRO_SQL + """
         WHERE a.enabled AND (a.filled_at IS NULL OR a.filled_at <= %s)
         ORDER BY a.filled_at NULLS FIRST
         LIMIT %s
