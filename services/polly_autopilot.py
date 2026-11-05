@@ -3,6 +3,7 @@ creator's Gmail on their send days with no approval step, with up to two follow-
 in the same thread unless the brand replied."""
 
 from __future__ import annotations
+from services.db_ddl import ensure_index
 
 import random
 import re
@@ -110,9 +111,7 @@ def ensure_autopilot_tables(conn) -> None:
     )
     cur.execute("SELECT 1 FROM pg_indexes WHERE indexname = 'idx_polly_autopilot_due'")
     if not cur.fetchone():
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_polly_autopilot_due ON polly_autopilot_queue (status, scheduled_for)"
-        )
+        ensure_index(cur, "CREATE INDEX IF NOT EXISTS idx_polly_autopilot_due ON polly_autopilot_queue (status, scheduled_for)")
     # ALTER takes an exclusive lock even when the column exists, so only run the missing ones.
     cur.execute(
         """

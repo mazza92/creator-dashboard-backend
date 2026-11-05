@@ -6,6 +6,7 @@ priced from the token counts Gemini returns.
 """
 
 from __future__ import annotations
+from services.db_ddl import ensure_index
 
 from typing import Any, Dict, List, Optional
 
@@ -78,12 +79,10 @@ def _ensure(cursor, conn) -> None:
         )
         """
     )
-    cursor.execute(
-        """
+    ensure_index(cursor, """
         CREATE INDEX IF NOT EXISTS idx_gemini_api_usage_created
         ON gemini_api_usage (created_at DESC)
-        """
-    )
+        """)
     conn.commit()
     _TABLE_READY = True
 

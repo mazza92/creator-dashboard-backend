@@ -12,6 +12,7 @@ error we fail open: the pitch goes ahead with the address it had.
 """
 
 from __future__ import annotations
+from services.db_ddl import ensure_index
 
 import os
 from datetime import datetime, timedelta, timezone
@@ -82,7 +83,7 @@ def ensure_tables(conn) -> None:
         )
         """
     )
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_brand_contact_repairs_brand ON brand_contact_repairs (brand_id)")
+    ensure_index(cur, "CREATE INDEX IF NOT EXISTS idx_brand_contact_repairs_brand ON brand_contact_repairs (brand_id)")
     conn.commit()
 
 

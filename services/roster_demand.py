@@ -12,6 +12,7 @@ Admin can also spotlight cold-emailed rosters so they skip the 3-applicant
 gate and show on the Live now desk immediately.
 """
 
+from services.db_ddl import ensure_index
 import threading
 
 ROSTER_FILL_MULT = 3
@@ -163,13 +164,11 @@ def ensure_campaign_spotlight_column(cursor, conn=None):
                 """
             )
             if not public_index_exists(cursor, "idx_brand_pr_campaigns_spotlight"):
-                cursor.execute(
-                    """
+                ensure_index(cursor, """
                     CREATE INDEX IF NOT EXISTS idx_brand_pr_campaigns_spotlight
                     ON brand_pr_campaigns (creator_spotlighted_at DESC)
                     WHERE creator_spotlighted_at IS NOT NULL AND status = 'active'
-                    """
-                )
+                    """)
             if conn:
                 conn.commit()
             _SPOTLIGHT_COL_READY = True

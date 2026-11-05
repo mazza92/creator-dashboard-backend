@@ -8,6 +8,7 @@ brands rows predate approval: a NULL approval_status is a legacy account and cou
 """
 
 from __future__ import annotations
+from services.db_ddl import ensure_index
 
 import json
 import os
@@ -60,7 +61,7 @@ def ensure_schema(conn) -> None:
           scan_id INTEGER,
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )""")
-    cur.execute("CREATE INDEX IF NOT EXISTS brand_workspace_scans_brand_idx "
+    ensure_index(cur, "CREATE INDEX IF NOT EXISTS brand_workspace_scans_brand_idx "
                 "ON brand_workspace_scans (brand_id, created_at DESC)")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS brand_saved_creators (

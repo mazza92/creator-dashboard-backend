@@ -6,6 +6,7 @@ Public routes are token-auth only (no brand login). Admin mint/revoke uses X-Adm
 """
 
 from __future__ import annotations
+from services.db_ddl import ensure_index
 from services.admin_auth import session_user_is_admin
 
 import csv
@@ -170,19 +171,15 @@ def _ensure_schema(cursor, conn=None):
                     """
                 )
             if not public_index_exists(cursor, "idx_brand_pr_campaigns_brand"):
-                cursor.execute(
-                    """
+                ensure_index(cursor, """
                     CREATE INDEX IF NOT EXISTS idx_brand_pr_campaigns_brand
                     ON brand_pr_campaigns(brand_id, created_at DESC)
-                    """
-                )
+                    """)
             if not public_index_exists(cursor, "idx_brand_pr_campaigns_token"):
-                cursor.execute(
-                    """
+                ensure_index(cursor, """
                     CREATE INDEX IF NOT EXISTS idx_brand_pr_campaigns_token
                     ON brand_pr_campaigns(token)
-                    """
-                )
+                    """)
             for col, ddl in (
                 ("campaign_id", "INTEGER"),
                 ("declined_at", "TIMESTAMPTZ"),
@@ -208,13 +205,11 @@ def _ensure_schema(cursor, conn=None):
                 except Exception:
                     pass
             if not public_index_exists(cursor, "idx_brand_pr_applications_campaign"):
-                cursor.execute(
-                    """
+                ensure_index(cursor, """
                     CREATE INDEX IF NOT EXISTS idx_brand_pr_applications_campaign
                     ON brand_pr_applications(campaign_id)
                     WHERE campaign_id IS NOT NULL
-                    """
-                )
+                    """)
             if not public_column_is_nullable(cursor, "brand_pr_events", "creator_id"):
                 try:
                     cursor.execute(
@@ -224,13 +219,11 @@ def _ensure_schema(cursor, conn=None):
                     pass
             if not public_index_exists(cursor, "uniq_brand_pr_one_live_roster"):
                 try:
-                    cursor.execute(
-                        """
+                    ensure_index(cursor, """
                         CREATE UNIQUE INDEX IF NOT EXISTS uniq_brand_pr_one_live_roster
                         ON brand_pr_campaigns(brand_id)
                         WHERE status IN ('active', 'locked')
-                        """
-                    )
+                        """)
                 except Exception:
                     pass
             if conn:

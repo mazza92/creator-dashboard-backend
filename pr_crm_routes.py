@@ -7228,6 +7228,17 @@ from services.unlock_quota import (
 )
 
 
+def _has_sent_a_pitch(cursor, creator_id):
+    try:
+        cursor.execute(
+            "SELECT 1 FROM polly_timeline_events WHERE creator_id = %s AND event_type = 'pitch_sent' LIMIT 1",
+            (creator_id,),
+        )
+        return bool(cursor.fetchone())
+    except Exception:
+        return True  # unsure: keep the old behaviour
+
+
 def attempt_unlock(creator_id, brand_id, conn=None):
     """
     Core unlock gate function. Call this before generating a pitch.
@@ -7332,7 +7343,11 @@ def attempt_unlock(creator_id, brand_id, conn=None):
         _used, new_remaining = sync_free_unlock_remaining(cursor, creator_id)
         conn.commit()
 
-        if new_remaining == 0:
+        if new_remaining == 0 and not _has_sent_a_pitch(cursor, creator_id):
+            # Polly writes the 3 free pitches on the first open: a "you've used your free pitches" email before
+            # anything was sent reads wrong. The batch send triggers it once the pitches are out.
+            print(f"[lifecycle] quota_hit email deferred until first send, creator {creator_id}")
+        elif new_remaining == 0:
             try:
                 trigger_quota_hit(creator_id)
                 print(f"[lifecycle] Triggered quota_hit email for creator {creator_id}")

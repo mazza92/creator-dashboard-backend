@@ -4,6 +4,7 @@ Four-step funnel (local 10am), Resend only (no SMTP), logged in brand_emails.
 Does not send to brands without contact_email. Stops on picks or replies.
 """
 from __future__ import annotations
+from services.db_ddl import ensure_index
 
 import json
 import os
@@ -487,19 +488,15 @@ def ensure_brand_emails_table(cursor, conn=None) -> None:
             )
             """
         )
-        cursor.execute(
-            """
+        ensure_index(cursor, """
             CREATE INDEX IF NOT EXISTS idx_brand_emails_brand_sent
             ON brand_emails (brand_id, sent_at DESC)
-            """
-        )
-        cursor.execute(
-            """
+            """)
+        ensure_index(cursor, """
             CREATE INDEX IF NOT EXISTS idx_brand_emails_trigger
             ON brand_emails (brand_id, trigger_number, sent_at DESC)
             WHERE status = 'sent'
-            """
-        )
+            """)
         if conn is not None:
             conn.commit()
         _SCHEMA_READY = True

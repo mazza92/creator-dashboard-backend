@@ -4,6 +4,7 @@ Email marketing system for creator engagement.
 Creator campaigns send through Resend. Brand outreach still uses Gmail SMTP.
 """
 
+from services.db_ddl import ensure_index
 from services.admin_auth import session_user_is_admin
 from flask import Blueprint, request, jsonify, session
 from functools import wraps
@@ -190,7 +191,7 @@ def _ensure_brand_outreach_log_message_id_column(cursor) -> None:
             ALTER TABLE brand_outreach_log
             ADD COLUMN IF NOT EXISTS message_id TEXT
         """)
-        cursor.execute("""
+        ensure_index(cursor, """
             CREATE INDEX IF NOT EXISTS idx_brand_outreach_log_message_id
             ON brand_outreach_log(message_id)
         """)

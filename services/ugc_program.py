@@ -11,6 +11,7 @@ later videos earn nothing more and new submissions pause. A creator whose referr
 renews Pro once earns PRO_BONUS_CENTS (also counted against the budget).
 """
 from __future__ import annotations
+from services.db_ddl import ensure_index
 
 import os
 import re
@@ -220,7 +221,7 @@ def ensure_tables(conn) -> None:
             videos INTEGER NOT NULL DEFAULT 0
         )
     """)
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_ugc_videos_member ON ugc_program_videos (member_id, submitted_at)")
+    ensure_index(cur, "CREATE INDEX IF NOT EXISTS idx_ugc_videos_member ON ugc_program_videos (member_id, submitted_at)")
     conn.commit()
     _READY = True
 

@@ -1,6 +1,7 @@
 """Persist Polly threads per creator so leaving Directory doesn't wipe chat."""
 
 from __future__ import annotations
+from services.db_ddl import ensure_index
 
 
 def _json_default(value):
@@ -261,10 +262,8 @@ def _note_log_cursor(conn):
             )
             """
         )
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_polly_note_log_key "
-            "ON polly_note_log (creator_id, note_key, created_at DESC)"
-        )
+        ensure_index(cur, "CREATE INDEX IF NOT EXISTS idx_polly_note_log_key "
+            "ON polly_note_log (creator_id, note_key, created_at DESC)")
         conn.commit()
         _NOTE_LOG_READY = True
     return cur

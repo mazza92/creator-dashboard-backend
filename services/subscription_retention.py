@@ -1,5 +1,6 @@
 """Creator Pro retention helpers: dunning, cancel flow, activation."""
 
+from services.db_ddl import ensure_index
 import os
 import threading
 from datetime import datetime, timezone
@@ -330,12 +331,10 @@ def ensure_cancel_retention_schema(conn):
             )
             # 30-day numbers at the moment of the event, so cancels split into never sent vs sent, no replies.
             cursor.execute("ALTER TABLE creator_retention_events ADD COLUMN IF NOT EXISTS context JSONB")
-            cursor.execute(
-                """
+            ensure_index(cursor, """
                 CREATE INDEX IF NOT EXISTS idx_creator_retention_events_creator
                 ON creator_retention_events (creator_id, created_at DESC)
-                """
-            )
+                """)
             conn.commit()
             _RETENTION_TABLE_READY = True
         finally:
