@@ -129,8 +129,11 @@ class FollowUpScopeTests(unittest.TestCase):
         with patch.object(pa, "ensure_autopilot_tables"), patch.object(pa, "_hold_day4_nudge") as hold:
             pa.track_gmail_send(conn, 7, 1, "Glow", "pr@glow.com", "S", "B",
                                 {"gmail_id": "g", "thread_id": "t", "message_id": "<m>"}, now=now)
-        params = cur.execute.call_args[0][1]
+        params = cur.execute.call_args_list[0][0][1]
         self.assertEqual(params[11], now + pa.FOLLOWUP_GAPS[0])
+        day10 = cur.execute.call_args_list[-1][0]
+        self.assertIn("'10'", day10[0])
+        self.assertEqual(day10[1][0], now + pa.timedelta(days=11))
         self.assertIn('"first_pitches"', params[12])
         hold.assert_called_once()
 

@@ -464,6 +464,40 @@ def away_brief_message(items: Dict[str, Any], career: Optional[Dict[str, Any]] =
     }
 
 
+def away_activity_message(activity: Dict[str, Any], career: Optional[Dict[str, Any]] = None
+                          ) -> Optional[Dict[str, Any]]:
+    """The 'While you were away' card: what Polly did and what brands did, newest proof first.
+    Each row that needs the creator carries its own one-tap action."""
+    from services.polly_activity import headline
+
+    items = list((activity or {}).get("items") or [])
+    if not items:
+        return None
+    for item in items:
+        name = item.get("brand_name") or ""
+        if item["type"] == "todo_followup" and item.get("brand_id"):
+            item["chip"] = {"id": "draft_followup", "label": "Write follow-up", "action": "generate_pitch",
+                            "brand_id": item["brand_id"], "brand_name": name, "task_id": item.get("task_id"),
+                            "is_followup": True}
+        elif item["type"] == "todo_draft" and item.get("brand_id"):
+            item["chip"] = send_draft_chip({"brand_id": item["brand_id"], "brand_name": name})
+            item["chip"]["label"] = "Open pitch"
+        elif item["type"] == "kit_view" and item.get("brand_id"):
+            item["chip"] = {"id": "checkin_replied", "label": "They replied", "action": "task_act",
+                            "brand_id": item["brand_id"], "brand_name": name}
+    month = (career or {}).get("month") or {}
+    return {
+        "role": "assistant",
+        "kind": "brief",
+        "content": headline(activity),
+        "activity": {
+            "items": items,
+            "counts": (activity or {}).get("counts") or {},
+            "month": {"pitches": int(month.get("pitches") or 0), "goal": int(month.get("pitches_goal") or 0)},
+        },
+    }
+
+
 def plan_open_note(notes: Dict[str, Any], has_thread: bool, now: Optional[datetime] = None) -> Optional[str]:
     """Which note to post on this open: 'month', 'away', or None."""
     now = now or utc_now()
