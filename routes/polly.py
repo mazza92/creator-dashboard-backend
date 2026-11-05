@@ -2426,11 +2426,9 @@ def pitch_batch_send():
         sent = [r["brand_name"] for r in results if r["status"] == "sent"]
         lines = []
         if sent:
-            names = ", ".join(f"**{n}**" for n in sent)
-            lines.append(f"✉️ Sent {len(sent)} pitch{'es' if len(sent) > 1 else ''} from {account.get('email')}: "
-                         f"{names}.")
-            lines.append("That's your part done. Replies land straight in your Gmail inbox. No answer? I follow "
-                         "up for you on day 4 and day 10, in the same thread, and I'll email you before I do.")
+            n = len(sent)
+            lines.append(f"Done: {'your ' + str(n) + ' pitches are' if n > 1 else 'your pitch is'} out. "
+                         "Your part is finished, I'll take it from here.")
         if revoked:
             lines.append("Gmail stopped letting me send. Reconnect it and tap send again.")
         elif any(r["status"] == "failed" for r in results):
@@ -2439,14 +2437,25 @@ def pitch_batch_send():
             lines.append("Tell me your city and country so I can finish the rest.")
         followers, has_rates = _kit_rates(conn, creator_id)
         chips = []
-        rates = rate_line(followers)
-        if sent and rates:
-            lines.append(f"While you wait: when a brand asks your rate, say {rates}. Don't go lower on a first collab.")
-            if not has_rates:
-                chips.append({"id": "save_rates", "label": "Put these rates on my kit", "action": "save_rates"})
-        if sent and not _creator_is_pro(conn, creator_id):
-            # Free pitches used: the natural moment to offer Polly doing this every week.
-            chips.append({"id": "unlock_pro", "label": "Keep pitching for me every week", "action": "unlock_pro"})
+        summary = None
+        is_pro = _creator_is_pro(conn, creator_id)
+        if sent:
+            # The win moment, as a card: what went out (with proof), what Polly does next (with dates), the one
+            # thing to know when a brand answers, and (free) the offer to keep going.
+            from datetime import datetime as _dt, timezone as _tz
+            from services.polly_autopilot import FOLLOWUP_GAPS
+            now = _dt.now(_tz.utc)
+            day4 = now + FOLLOWUP_GAPS[0]
+            summary = {
+                "from": account.get("email"),
+                "sent": [{k: r.get(k) for k in ("brand_id", "brand_name", "to", "gmail_url", "sent_at")}
+                         for r in results if r["status"] == "sent"],
+                "followups": [day4.isoformat(), (day4 + FOLLOWUP_GAPS[1]).isoformat()],
+                "rates": rate_line(followers) or None,
+                "rates_saved": bool(has_rates),
+                "pro_offer": not is_pro,
+            }
+        if sent and not is_pro:
             try:
                 from lifecycle_email_engine import trigger_quota_hit
                 trigger_quota_hit(creator_id)  # deferred from drafting; once a month, only when the quota is hit
@@ -2466,6 +2475,7 @@ def pitch_batch_send():
             "needs_reconnect": revoked,
             "message": "\n\n".join(lines),
             "task_chips": chips,
+            "sent_summary": summary,
         })
     except Exception as err:
         print(f"[Polly] batch send error: {err}")

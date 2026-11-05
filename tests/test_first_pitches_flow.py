@@ -101,16 +101,17 @@ class BatchSendFollowUpTests(unittest.TestCase):
         args = track.call_args[0]
         self.assertEqual(args[1:5], (7, 1, "Glow", "pr@glow.com"))
         self.assertEqual(args[7]["thread_id"], "t1")
-        self.assertIn("day 4 and day 10", data["message"])
-        self.assertIn("Gmail inbox", data["message"])
+        self.assertEqual(len(data["sent_summary"]["followups"]), 2)
+        self.assertIn("Your part is finished", data["message"])
 
     def test_free_creator_gets_the_keep_going_offer(self):
         data, _ = self._post(pro=False)
-        self.assertEqual(data["task_chips"][-1]["action"], "unlock_pro")
+        self.assertTrue(data["sent_summary"]["pro_offer"])
+        self.assertEqual(data["task_chips"], [])
 
     def test_pro_creator_does_not(self):
         data, _ = self._post(pro=True)
-        self.assertFalse(any(c["action"] == "unlock_pro" for c in data["task_chips"]))
+        self.assertFalse(data["sent_summary"]["pro_offer"])
 
 
 class FollowUpScopeTests(unittest.TestCase):
