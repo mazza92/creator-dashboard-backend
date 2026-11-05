@@ -34,6 +34,7 @@ from services.polly_autopilot import (
     update_draft,
     utc_now,
 )
+from services.polly_autopilot import requeue_account_failures
 from services.polly_autopilot import update_settings as save_settings
 from services.polly_gmail import (
     GmailError,
@@ -308,6 +309,7 @@ def gmail_callback():
     conn = get_db_connection()
     try:
         save_account(conn, creator_id, exchange_code(request.args["code"]))
+        requeue_account_failures(conn, creator_id)
         if _is_pro(creator_id, conn):
             set_enabled(conn, creator_id, True)
             prioritize_fill(conn, creator_id)  # the next cron run writes and sends the first pitches
@@ -471,7 +473,7 @@ def _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=F
     brand = _brands_with_email(conn, [brand_id]).get(brand_id)
     if not brand:
         return None, "no_contact_email"
-    shipping = resolve_pitch_location(creator, scrape, notes)
+    shipping = autopilot_location(creator, scrape, notes)
     if shipping.get("needs_location"):
         return None, "needs_location"
     status, pkg = _invoke_generate_pr_package(
@@ -572,7 +574,7 @@ def _load_creator(conn, creator_id):
     cur.execute(
         """
         SELECT c.id, c.user_id, c.niche, c.creator_niches,
-               to_jsonb(c) -> 'shipping_address' AS shipping_address,
+               to_jsonb(c) -> 'shipping_address' AS shipping_address, to_jsonb(c) -> 'regions' AS regions,
                u.first_name, u.last_name, u.country
         FROM creators c
         JOIN users u ON u.id = c.user_id
@@ -592,13 +594,44 @@ _BLOCKED_NOTES = {
 }
 
 
+_REGION_COUNTRY = {"us": "United States", "usa": "United States", "united states": "United States",
+                   "uk": "United Kingdom", "gb": "United Kingdom", "united kingdom": "United Kingdom",
+                   "ca": "Canada", "canada": "Canada", "au": "Australia", "australia": "Australia"}
+
+
+def autopilot_location(creator, scrape, notes):
+    """Where pitches say to ship. Autopilot never stops for a missing city: with only a country (from the
+    address, or the region picked at signup) it pitches 'shipping to <country>'. Polly chat still asks for the
+    city when the creator is there to answer."""
+    import json as _json
+    from services.polly import resolve_pitch_location
+
+    shipping = resolve_pitch_location(creator, scrape, notes)
+    if not shipping.get("needs_location"):
+        return shipping
+    country = (shipping.get("country") or "").strip()
+    if not country:
+        regions = (creator or {}).get("regions")
+        if isinstance(regions, str):
+            try:
+                regions = _json.loads(regions)
+            except ValueError:
+                regions = [regions]
+        for region in regions if isinstance(regions, list) else []:
+            country = _REGION_COUNTRY.get(str(region or "").strip().lower(), "")
+            if country:
+                break
+    if not country:
+        return shipping
+    return {"city": "", "country": country, "display": country, "needs_location": False}
+
+
 def _fill_creator(conn, row, creator, budget):
     """Draft up to ``row['need']`` pitches, at most ``budget`` attempts. (names, blocked, attempts, failed)."""
     creator_id = row["creator_id"]
     notes, scrape = _creator_context(conn, creator)
-    from services.polly import resolve_pitch_location
 
-    if resolve_pitch_location(creator, scrape, notes).get("needs_location"):
+    if autopilot_location(creator, scrape, notes).get("needs_location"):
         return [], "needs_location", 0, False
     matched, _error = _pick_brands(conn, creator_id, creator, notes, scrape)
     if not matched:
@@ -638,10 +671,22 @@ def auto_fill(conn, now=None, budget=AUTO_DRAFTS_PER_RUN, note_fn=None, daily_fn
         if not creator:
             mark_filled(conn, creator_id, now + FILL_BLOCKED_WAIT, "not_pro")
             continue
-        with current_app.test_request_context("/api/polly/autopilot/fill", method="POST"):
-            session["creator_id"] = creator_id
-            session["user_id"] = creator["user_id"]
-            names, blocked, attempts, failed = _fill_creator(conn, row, creator, budget)
+        try:
+            with current_app.test_request_context("/api/polly/autopilot/fill", method="POST"):
+                session["creator_id"] = creator_id
+                session["user_id"] = creator["user_id"]
+                names, blocked, attempts, failed = _fill_creator(conn, row, creator, budget)
+        except Exception as err:
+            # One creator's bad data must never stop everyone else's pitches: log it, back off this creator.
+            import traceback
+            print(f"[Polly autopilot] fill failed creator={creator_id}: {err}\n{traceback.format_exc()[-1500:]}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            budget -= 1
+            mark_filled(conn, creator_id, now + FILL_BLOCKED_WAIT, "error")
+            continue
         budget -= attempts
         out["drafted"] += len(names)
         out["creators"] += 1 if names else 0
@@ -652,8 +697,15 @@ def auto_fill(conn, now=None, budget=AUTO_DRAFTS_PER_RUN, note_fn=None, daily_fn
         if not (blocked or failed or len(names) >= row["need"]):
             continue
         mark_filled(conn, creator_id, now + FILL_BLOCKED_WAIT if blocked and not names else now, blocked)
-        if claim_unannounced_drafts(conn, creator_id, now):
-            daily(conn, creator_id, now)  # new pitches show in today's line, not a message of their own
+        try:
+            if claim_unannounced_drafts(conn, creator_id, now):
+                daily(conn, creator_id, now)  # new pitches show in today's line, not a message of their own
+        except Exception as err:
+            print(f"[Polly autopilot] daily line failed creator={creator_id}: {err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
     return out
 
 
