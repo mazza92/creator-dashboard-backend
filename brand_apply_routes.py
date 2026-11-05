@@ -1161,6 +1161,47 @@ def submit_apply(brand_id):
         conn.close()
 
 
+@brand_apply_bp.route("/feed", methods=["GET"])
+def brand_feed():
+    """Brands tab "For you": TikTok posts of creators a brand gifted or paid, plus directory brands."""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    from services.brand_feed import build
+    conn = get_db_connection()
+    try:
+        data = build(conn, creator_id, request.args.get("niche"))
+        return jsonify({"success": True, **data})
+    except Exception as err:
+        conn.rollback()
+        print(f"[brand-feed] failed creator={creator_id}: {err}")
+        traceback.print_exc()
+        return jsonify({"success": False, "error": "Feed did not load"}), 500
+    finally:
+        conn.close()
+
+
+@brand_apply_bp.route("/targets/<int:brand_id>", methods=["POST", "DELETE"])
+def brand_target(brand_id):
+    """Save (POST) or drop (DELETE) a brand on the creator's targets. Autopilot pitches targets first."""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    from services.brand_feed import set_target
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM pr_brands WHERE id = %s AND COALESCE(status, 'published') = 'published'",
+                    (brand_id,))
+        if not cur.fetchone():
+            return jsonify({"success": False, "error": "Brand not found"}), 404
+        source = ((request.get_json(silent=True) or {}).get("source") or "feed")
+        count = set_target(conn, creator_id, brand_id, request.method == "POST", source=str(source))
+        return jsonify({"success": True, "targeted": request.method == "POST", "targets": count})
+    finally:
+        conn.close()
+
+
 @brand_apply_bp.route("/related/<int:brand_id>", methods=["GET"])
 def related_brands(brand_id):
     creator_id = get_creator_id_from_session()

@@ -455,7 +455,29 @@ def _pick_brands(conn, creator_id, creator, notes, scrape):
         brands = ship["brands"]
     emailable = _brands_with_email(conn, [int(b["id"]) for b in brands if b.get("id")])
     matched = [b for b in brands if b.get("id") and int(b["id"]) in emailable]
+    matched = _targets_first(conn, creator_id, matched, exclude, notes)
     return matched, None if matched else "no_matches"
+
+
+def _targets_first(conn, creator_id, matched, exclude, notes):
+    """Brands the creator saved as targets (Brands feed) go out before Polly's own picks."""
+    try:
+        from services.brand_feed import target_brands
+        from services.polly import drop_pitched
+        targets = drop_pitched(target_brands(conn, creator_id), notes, extra_ids=exclude)
+    except Exception as err:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"[Polly autopilot] targets skipped creator={creator_id}: {err}")
+        return matched
+    if not targets:
+        return matched
+    emailable = _brands_with_email(conn, [int(t["id"]) for t in targets])
+    first = [{**t, "target": True} for t in targets if int(t["id"]) in emailable]
+    ids = {int(t["id"]) for t in first}
+    return first + [b for b in matched if int(b["id"]) not in ids]
 
 
 def _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=False, angle=0):
