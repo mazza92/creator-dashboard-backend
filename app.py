@@ -2098,6 +2098,15 @@ def update_profile():
         return jsonify({"error": "Failed to update profile"}), 500
 
     
+def _mask_email(email):
+    """'team+555@newcollab.co' -> 'te•••@newcollab.co'."""
+    email = str(email or "").strip()
+    if "@" not in email:
+        return ""
+    local, domain = email.split("@", 1)
+    return f"{local[:2]}•••@{domain}"
+
+
 def _clean_person_name(value):
     """Names land in emails we send from our domain: no markup or links, so a signup can't turn our
     verification email into a phishing email."""
@@ -2723,8 +2732,9 @@ def onboarding_step1():
         # account (placeholder or abandoned duplicate) is released.
         cursor.execute(
             '''
-            SELECT id, approval_status, COALESCE(NULLIF(TRIM(niche), ''), '') AS niche
-            FROM creators WHERE username = %s AND user_id != %s
+            SELECT c.id, c.approval_status, COALESCE(NULLIF(TRIM(c.niche), ''), '') AS niche, u.email AS holder_email
+            FROM creators c LEFT JOIN users u ON u.id = c.user_id
+            WHERE c.username = %s AND c.user_id != %s
             ''',
             (username, user_id),
         )
@@ -2738,7 +2748,13 @@ def onboarding_step1():
                 app.logger.info(f"Released handle '{username}' from unfinished creator {holder['id']}")
             else:
                 conn.close()
-                return jsonify({'error': 'Username already taken'}), 409
+                # They just proved they own this handle (OAuth), so tell them where it lives: usually a second
+                # signup by the same creator. A masked hint only, never the full address.
+                return jsonify({
+                    'error': 'handle_taken',
+                    'message': f"@{username} is already linked to another Newcollab account.",
+                    'account_hint': _mask_email(holder.get('holder_email')),
+                }), 409
 
         # Build social_links JSON for the primary platform
         social_links = []
