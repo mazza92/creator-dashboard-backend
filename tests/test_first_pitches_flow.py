@@ -77,7 +77,7 @@ class WelcomeWritesTheBatchTests(unittest.TestCase):
 
 
 class BatchSendFollowUpTests(unittest.TestCase):
-    def _post(self, pro=False):
+    def _post(self, pro=False, left=0):
         notes = {"pitch_batch": {"items": [
             {"brand_id": 1, "brand_name": "Glow", "email": "pr@glow.com", "subject": "S", "body": "Hi Glow"}]}}
         send = MagicMock(return_value={"gmail_id": "g1", "thread_id": "t1", "message_id": "<m1>"})
@@ -90,6 +90,7 @@ class BatchSendFollowUpTests(unittest.TestCase):
                 patch("services.polly_tracker.record_pitch_sent"), \
                 patch.object(R, "_kit_rates", return_value=(1500, True)), \
                 patch.object(R, "_creator_is_pro", return_value=pro), \
+                patch.object(R, "_unlock_balance", return_value={"remaining": left}), \
                 patch("services.polly_autopilot.track_gmail_send") as track, \
                 patch("services.polly_usage.log_usage"):
             resp = app.test_client().post("/api/polly/pitch-batch/send", json={})
@@ -108,6 +109,11 @@ class BatchSendFollowUpTests(unittest.TestCase):
         data, _ = self._post(pro=False)
         self.assertTrue(data["sent_summary"]["pro_offer"])
         self.assertEqual(data["task_chips"], [])
+
+    def test_free_pitches_left_means_pitch_more_not_pro(self):
+        data, _ = self._post(pro=False, left=2)
+        self.assertFalse(data["sent_summary"]["pro_offer"])
+        self.assertEqual(data["sent_summary"]["credits_left"], 2)
 
     def test_pro_creator_does_not(self):
         data, _ = self._post(pro=True)

@@ -2454,8 +2454,16 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
                 "followups": [day4.isoformat(), (day4 + FOLLOWUP_GAPS[1]).isoformat()],
                 "rates": rate_line(followers) or None,
                 "rates_saved": bool(has_rates),
-                "pro_offer": not is_pro,
             }
+            # Free pitches left: the next step is pitching more, not Pro. Pro shows once the last one is sent.
+            left = None
+            if not is_pro:
+                try:
+                    left = int((_unlock_balance(creator_id) or {}).get("remaining") or 0)
+                except Exception:
+                    left = 0
+            summary["credits_left"] = left
+            summary["pro_offer"] = (not is_pro) and not left
         if sent and not is_pro:
             try:
                 from lifecycle_email_engine import trigger_quota_hit
