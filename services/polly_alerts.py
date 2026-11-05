@@ -950,6 +950,16 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
                 conn.rollback()
             except Exception:
                 pass
+        try:
+            from services.polly_gmail import revoke_idle_free_accounts
+
+            revoke_idle_free_accounts(conn)
+        except Exception as err:
+            print(f"[Polly alerts] free Gmail cleanup skipped: {err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
     nudged = 0
     autopilot: Dict[str, Any] = {}
     if not dry_run:

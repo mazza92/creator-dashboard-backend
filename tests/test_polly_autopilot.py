@@ -321,4 +321,8 @@ class ProOnlySendingTests(unittest.TestCase):
         self.assertIn("pc.unlocks_tier = 'pro'", pa._ACTIVE_JOIN)
         self.assertIn("PRO_SQL", inspect.getsource(pa.fill_candidates))
         run_src = inspect.getsource(pa.run_autopilot)
-        self.assertGreaterEqual(run_src.count("_ACTIVE_JOIN"), 3)  # pitches, heads-ups, follow-ups
+        self.assertGreaterEqual(run_src.count("_ACTIVE_JOIN"), 1)  # new pitches: Pro only
+        # Heads-ups and follow-ups: Pro, or the creator's own first pitches sent from the batch card.
+        self.assertEqual(run_src.count("_FOLLOWUP_JOIN"), 2)
+        self.assertIn(pa.PRO_SQL, pa._FOLLOWUP_JOIN)
+        self.assertIn("q.pitch_meta->>'origin' = 'first_pitches'", pa._FOLLOWUP_JOIN)
