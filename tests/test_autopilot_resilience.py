@@ -84,3 +84,37 @@ def test_health_copy_for_no_inbox_and_pro_only_misses():
     note = autopilot_health.chat_note(autopilot_health.GMAIL_KIND, {"no_inbox": True, "waiting": 23})
     assert "no Gmail inbox" in note["text"]
     assert "subscription_tier = 'pro'" in inspect.getsource(autopilot_delivery.record_misses)
+
+
+def test_pitch_preference_rewrite_handles_decimals():
+    from services import polly_pitch_edit as pe
+    import services.polly_brain as pb
+    sent = {}
+
+    class FakeGemini:
+        def call(self, payload):
+            sent["payload"] = payload
+            raise pb.BrainUnavailable("off")
+
+    with mock.patch.object(pb, "_Gemini", FakeGemini):
+        out = pe._llm_apply_prefs({"subject": "s", "body": "b"}, {"tone": "friendly"},
+                                  {"engagement_rate": Decimal("4.20"), "since": datetime(2026, 1, 2)})
+    assert out == {}
+    text = sent["payload"]["contents"][0]["parts"][0]["text"]
+    assert json.loads(text)["facts"] == {"engagement_rate": 4.2, "since": "2026-01-02T00:00:00"}
+
+
+def test_round_robin_gives_newer_creators_a_turn():
+    app = Flask(__name__)
+    app.secret_key = "t"
+    rows = [{"creator_id": 1, "need": 15, "fill_blocked": None}, {"creator_id": 2, "need": 15, "fill_blocked": None}]
+    marked = []
+    with app.app_context(), \
+            mock.patch.object(rpa, "fill_candidates", return_value=rows), \
+            mock.patch.object(rpa, "_is_pro", return_value=True), \
+            mock.patch.object(rpa, "_load_creator", side_effect=lambda c, cid: {"id": cid, "user_id": cid}), \
+            mock.patch.object(rpa, "_fill_creator", return_value=(["A", "B"], None, 2, False)), \
+            mock.patch.object(rpa, "mark_filled", side_effect=lambda c, cid, at, b: marked.append(cid)), \
+            mock.patch.object(rpa, "claim_unannounced_drafts", return_value=[]):
+        rpa.auto_fill(mock.MagicMock(), now=NOW, budget=2, note_fn=lambda *a, **k: None, daily_fn=lambda *a, **k: None)
+    assert marked == [1]  # creator 1 drafted 2 of 15 and still goes to the back of the line

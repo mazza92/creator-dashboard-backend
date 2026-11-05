@@ -694,8 +694,10 @@ def auto_fill(conn, now=None, budget=AUTO_DRAFTS_PER_RUN, note_fn=None, daily_fn
             out["blocked"] += 1
             if blocked != row.get("fill_blocked") and blocked in _BLOCKED_NOTES:
                 note(conn, creator_id, _BLOCKED_NOTES[blocked], [])
-        if not (blocked or failed or len(names) >= row["need"]):
+        if not (blocked or failed or names):
             continue
+        # Round robin: anyone who got pitches this run waits AUTO_FILL_EVERY before their next turn, so creators
+        # with a big weekly need can't take every run's budget while newer creators wait for hours.
         mark_filled(conn, creator_id, now + FILL_BLOCKED_WAIT if blocked and not names else now, blocked)
         try:
             if claim_unannounced_drafts(conn, creator_id, now):

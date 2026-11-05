@@ -277,12 +277,13 @@ class AutoFillTests(unittest.TestCase):
                                  note_fn=lambda c, cid, text, chips: self.notes.append(text),
                                  daily_fn=lambda c, cid, now: self.emails.append(cid))
 
-    def test_budget_spreads_a_big_refill_and_waits_to_announce(self):
+    def test_budget_spreads_a_big_refill_round_robin(self):
         out = self._run([{"creator_id": 7, "need": 4, "fill_blocked": None}])
         self.assertEqual(out["drafted"], 2)
         self.assertEqual(self.drafted, [1, 2])
         self.assertEqual(self.approved, [101, 102])
-        self.assertEqual(self.marked, [])
+        # Partly filled creators go to the back of the line so others get a turn; today's line updates in place.
+        self.assertEqual(self.marked, [(7, self.NOW, None)])
         self.assertEqual(self.notes, [])
 
     def test_finished_refill_announces_once(self):
