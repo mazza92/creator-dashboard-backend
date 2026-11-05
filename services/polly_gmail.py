@@ -19,7 +19,9 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
-SCOPES = ("openid", "email", "https://www.googleapis.com/auth/gmail.send")
+# Exactly the scopes approved on the verified consent screen, by their full names. Nothing else: Google shows
+# "Google hasn't verified this app" when a request carries any scope outside that list.
+SCOPES = ("openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/gmail.send")
 STATE_TTL_SEC = 15 * 60
 
 _TABLE_READY = False
@@ -132,7 +134,8 @@ def auth_url(creator_id: int, login_hint: str = "") -> str:
         "scope": " ".join(SCOPES),
         "access_type": "offline",
         "prompt": "consent",
-        "include_granted_scopes": "true",
+        # No include_granted_scopes: it folded in scopes granted earlier in this Google project (Firebase sign-in
+        # asks for 'profile', which isn't on the verified list), and Google then flagged the app as unverified.
         "state": make_state(creator_id),
     }
     if login_hint:
