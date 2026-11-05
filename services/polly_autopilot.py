@@ -753,6 +753,47 @@ _ACTIVE_JOIN = f"""
     JOIN creators pc ON pc.id = q.creator_id AND {PRO_SQL}
 """
 
+# Pitches a creator sent from Gmail in one tap (the first free ones too) get Polly's follow-ups on day 4 and 10
+# even without Pro: following up is part of doing the job, and most replies come after a follow-up.
+FIRST_PITCHES = "first_pitches"
+_FOLLOWUP_JOIN = f"""
+    LEFT JOIN polly_autopilot a ON a.creator_id = q.creator_id
+    JOIN polly_gmail_accounts g ON g.creator_id = q.creator_id AND g.revoked_at IS NULL
+    JOIN creators pc ON pc.id = q.creator_id
+      AND ({PRO_SQL} OR q.pitch_meta->>'origin' = '{FIRST_PITCHES}')
+"""
+
+
+def track_gmail_send(conn, creator_id: int, brand_id: int, brand_name: str, to_email: str, subject: str,
+                     body: str, sent: Dict[str, Any], now: Optional[datetime] = None) -> None:
+    """A pitch sent from the batch card: log it like an Autopilot send so its follow-ups go out on time,
+    in the same Gmail thread."""
+    import json as _json
+
+    now = now or utc_now()
+    ensure_autopilot_tables(conn)
+    cur = _cursor(conn)
+    cur.execute(
+        """
+        INSERT INTO polly_autopilot_queue
+          (creator_id, brand_id, brand_name, to_email, subject, body, status, announced_at, sent_at, gmail_id,
+           thread_id, message_id, followup_status, followup_due_at, pitch_meta)
+        VALUES (%s, %s, %s, %s, %s, %s, 'sent', %s, %s, %s, %s, %s, 'scheduled', %s, %s::jsonb)
+        ON CONFLICT (creator_id, brand_id) DO UPDATE
+          SET brand_name = EXCLUDED.brand_name, to_email = EXCLUDED.to_email, subject = EXCLUDED.subject,
+              body = EXCLUDED.body, status = 'sent', announced_at = EXCLUDED.announced_at, sent_at = EXCLUDED.sent_at,
+              gmail_id = EXCLUDED.gmail_id, thread_id = EXCLUDED.thread_id, message_id = EXCLUDED.message_id,
+              followup_status = 'scheduled', followup_due_at = EXCLUDED.followup_due_at, followups_sent = 0,
+              error = NULL, pitch_meta = EXCLUDED.pitch_meta
+          WHERE polly_autopilot_queue.status IN ('draft', 'approved', 'skipped', 'failed')
+        """,
+        (creator_id, brand_id, brand_name, to_email, subject, body, now, now, (sent or {}).get("gmail_id"),
+         (sent or {}).get("thread_id"), (sent or {}).get("message_id"), now + FOLLOWUP_GAPS[0],
+         _json.dumps({"origin": FIRST_PITCHES})),
+    )
+    conn.commit()
+    _hold_day4_nudge(conn, creator_id, brand_id, now + NUDGE_HOLD)
+
 
 def auto_approve_due(conn, now: Optional[datetime] = None) -> int:
     """Drafts nobody skipped within AUTO_APPROVE_AFTER get scheduled like a manual OK."""
@@ -898,7 +939,7 @@ def run_autopilot(
         out["pitches"] += 1
 
     warn = _due(conn, f"""
-        SELECT q.* FROM polly_autopilot_queue q {_ACTIVE_JOIN}
+        SELECT q.* FROM polly_autopilot_queue q {_FOLLOWUP_JOIN}
         WHERE q.followup_status = 'scheduled' AND q.followup_due_at - %s <= %s AND COALESCE(a.enabled, TRUE)
         LIMIT %s
     """, (HEADSUP_BEFORE, now, limit))
@@ -921,7 +962,7 @@ def run_autopilot(
             conn.rollback()
 
     follow = _due(conn, f"""
-        SELECT q.*, a.followups FROM polly_autopilot_queue q {_ACTIVE_JOIN}
+        SELECT q.*, a.followups FROM polly_autopilot_queue q {_FOLLOWUP_JOIN}
         WHERE q.followup_status = 'headsup' AND q.followup_due_at <= %s AND COALESCE(a.enabled, TRUE)
         LIMIT %s
     """, (now, limit))

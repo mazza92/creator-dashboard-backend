@@ -1904,6 +1904,35 @@ def _apply_suggested_rates(state):
             "Change them any time in **My Kit**.")
 
 
+def _creator_is_pro(conn, creator_id):
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT unlocks_tier, subscription_tier FROM creators WHERE id = %s", (creator_id,))
+        row = cur.fetchone()
+    except Exception:
+        conn.rollback()
+        return False
+    if not row:
+        return False
+    vals = list(row.values()) if isinstance(row, dict) else list(row)
+    return any(str(v or "").lower() == "pro" for v in vals)
+
+
+def first_batch_say(first_name, items, balance=None):
+    """What Polly says over the first batch: the job is done, one tap sends it, replies come to their inbox."""
+    items = items or []
+    n = len(items)
+    names = ", ".join(f"**{i.get('brand_name')}**" for i in items if i.get("brand_name"))
+    hi = f"{first_name}, " if first_name else ""
+    free = not (balance or {}).get("is_unlimited")
+    lead = (f"{hi}I picked the {n} brands most likely to answer a creator like you and wrote "
+            f"{'your ' + str(n) + ' free pitches' if free else 'a pitch for each'}: {names}.")
+    if any(i.get("needs_location") for i in items):
+        return lead + "\n\nTell me your city and country first, so each pitch says where to ship."
+    return (lead + "\n\nSend them from your Gmail in one tap. Replies land in your own inbox, and if a brand "
+            "doesn't answer I follow up for you on day 4 and day 10.")
+
+
 def _batch_chip(brands, balance):
     """'Write all 3 pitches' under a brand list, capped to the pitches the credits cover."""
     shown = [b.get("id") for b in (brands or [])[:3] if b.get("id")]
@@ -2038,6 +2067,19 @@ def _run_chip(state, action, chip_id, data):
         if is_weak_niche(niche):
             niche = ""
         batch = _batch_chip(state.brands, state.balance)
+        if batch and data.get("then_batch"):
+            # First session: the creator tapped "write my pitches" on the welcome card, so Polly writes the
+            # pitches for the best matches right away instead of asking for another tap.
+            shown = list(state.brands)
+            drafted = run_tool(state, "draft_pitch_batch", {"brand_ids": batch["brand_ids"]})
+            prior.append({"tool": "draft_pitch_batch", "args": {"brand_ids": batch["brand_ids"]}, "result": drafted})
+            if drafted.get("status") == "drafted":
+                state.final_say = first_batch_say(state.first, state.pitch_batch, state.balance)
+                return prior
+            if drafted.get("status") == "needs_location_first":
+                return prior
+            state.brands = shown
+            state.final_say = ""
         if batch:
             state.task_chips.insert(0, batch)
         say = persona_first_matches(state.first, state.notes.get("survey"), state.brands,
@@ -2312,9 +2354,17 @@ def pitch_batch_send():
                 status = "failed"
             else:
                 try:
-                    send_email(conn, creator_id, item["email"], item.get("subject") or "",
-                               item.get("body") or "", from_name=from_name)
+                    sent_ids = send_email(conn, creator_id, item["email"], item.get("subject") or "",
+                                          item.get("body") or "", from_name=from_name)
                     item["sent_at"] = utc_iso_now()
+                    if item.get("brand_id"):
+                        try:
+                            from services.polly_autopilot import track_gmail_send
+                            track_gmail_send(conn, creator_id, int(item["brand_id"]), name, item["email"],
+                                             item.get("subject") or "", item.get("body") or "", sent_ids)
+                        except Exception as err:
+                            print(f"[Polly] batch follow-up tracking skipped: {err}")
+                            conn.rollback()
                     notes = mark_pitched(notes, ref)
                     try:
                         record_pitch_sent(conn, creator_id, ref, drafted=False)
@@ -2334,7 +2384,9 @@ def pitch_batch_send():
         if sent:
             names = ", ".join(f"**{n}**" for n in sent)
             lines.append(f"✉️ Sent {len(sent)} pitch{'es' if len(sent) > 1 else ''} from {account.get('email')}: "
-                         f"{names}. They're on your Timeline, and I'll check in on day 4.")
+                         f"{names}.")
+            lines.append("That's your part done. Replies land straight in your Gmail inbox. No answer? I follow "
+                         "up for you on day 4 and day 10, in the same thread, and I'll email you before I do.")
         if revoked:
             lines.append("Gmail stopped letting me send. Reconnect it and tap send again.")
         elif any(r["status"] == "failed" for r in results):
@@ -2348,6 +2400,9 @@ def pitch_batch_send():
             lines.append(f"While you wait: when a brand asks your rate, say {rates}. Don't go lower on a first collab.")
             if not has_rates:
                 chips.append({"id": "save_rates", "label": "Put these rates on my kit", "action": "save_rates"})
+        if sent and not _creator_is_pro(conn, creator_id):
+            # Free pitches used: the natural moment to offer Polly doing this every week.
+            chips.append({"id": "unlock_pro", "label": "Keep pitching for me every week", "action": "unlock_pro"})
         try:
             from services.polly_usage import log_usage
             log_usage(conn, creator_id, "pitch_batch_send", ok=bool(sent),

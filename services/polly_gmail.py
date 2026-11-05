@@ -303,3 +303,35 @@ def send_email(conn, creator_id: int, to_email: str, subject: str, body: str, fr
                 (creator_id,))
     conn.commit()
     return {"gmail_id": data["id"], "thread_id": data.get("threadId") or "", "message_id": built["message_id"]}
+
+
+FREE_GMAIL_KEEP_DAYS = 30
+
+
+def revoke_idle_free_accounts(conn, limit: int = 20) -> int:
+    """Creators who connected Gmail for their free pitches and never went Pro: after 30 days with nothing
+    sent and no follow-up still due, revoke the token at Google and delete it. We keep no Gmail access we
+    don't use. They reconnect in one tap if they go Pro."""
+    ensure_gmail_table(conn)
+    cur = _cursor(conn)
+    cur.execute(
+        """
+        SELECT g.creator_id FROM polly_gmail_accounts g
+        JOIN creators c ON c.id = g.creator_id
+        WHERE GREATEST(g.connected_at, COALESCE(g.last_sent_at, g.connected_at)) < NOW() - make_interval(days => %s)
+          AND NOT (COALESCE(c.unlocks_tier, '') = 'pro' OR LOWER(COALESCE(c.subscription_tier, '')) = 'pro')
+          AND NOT EXISTS (SELECT 1 FROM polly_autopilot_queue q WHERE q.creator_id = g.creator_id
+                          AND q.followup_status IN ('scheduled', 'headsup'))
+        LIMIT %s
+        """,
+        (FREE_GMAIL_KEEP_DAYS, limit),
+    )
+    ids = [r["creator_id"] for r in cur.fetchall()]
+    for cid in ids:
+        try:
+            disconnect(conn, cid)
+            print(f"[Polly gmail] free access removed after {FREE_GMAIL_KEEP_DAYS} days creator={cid}")
+        except Exception as err:
+            print(f"[Polly gmail] free access removal failed creator={cid}: {err}")
+            conn.rollback()
+    return len(ids)
