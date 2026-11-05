@@ -349,34 +349,40 @@ def month_report_lines(last: Dict[str, int], is_pro: bool, cap: Optional[int] = 
 
 
 def month_plan_message(first: str, career: Dict[str, Any], last: Dict[str, int], is_pro: bool,
-                       brands: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
-    """First open of the month: report card, the goal, and brands to pitch toward it."""
+                       brands: Optional[List[Dict[str, Any]]] = None,
+                       batch_chip: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """First open of a new month. Polly is the assistant doing the outreach, so: last month's results, then
+    what happens now. Free: the free pitches are back, with the best 3 brands and one tap to write them.
+    Pro: Polly keeps pitching, nothing to do."""
     m = career.get("month") or {}
     cap = None if is_pro else m.get("pitches_goal")
     report = month_report_lines(last, is_pro, cap=cap, matched_left=len(brands or []))
-    brands = list(brands or [])[:5]
-    goal_bits = [f"**{_plural(int(m.get('pitches_goal') or 0), 'pitch')}**"]
-    if m.get("replies_goal"):
-        goal_bits.append(f"**{_plural(int(m['replies_goal']), 'reply')}**")
-    if m.get("posts_goal"):
-        goal_bits.append(f"**{_plural(int(m['posts_goal']), 'posted collab')}**")
     name = (first or "").strip()
-    head = f"New month{', ' + name if name else ''}. Here's the plan."
-    goal = (
-        f"You're at **{career.get('stage_label')}** (stage {int(career.get('stage_index') or 0) + 1} of "
-        f"{len(STAGES)}). This month's goal: {', '.join(goal_bits)}."
-    )
-    nxt = career.get("next") or {}
-    parts = [head]
-    parts.extend(report)
-    parts.append(goal)
-    if brands:
-        parts.append(
-            f"I picked {_plural(len(brands), 'brand')} that fit you. Tap **Contact** on one and I'll write the pitch."
-        )
-    elif nxt.get("why"):
-        parts.append(nxt["why"])
-    chips = [nxt["chip"]] if nxt.get("chip") else []
+    hello = f"New month{', ' + name if name else ''}"
+    chips: List[Dict[str, Any]] = []
+    if is_pro:
+        parts = [f"{hello}. I'll keep pitching for you."] + report + [
+            "Every week I pitch brands that fit you and follow up on day 4 and 10. "
+            "Replies land in your inbox, nothing for you to do."
+        ]
+        brands = []
+    else:
+        free = f"your {int(cap)} free pitches are back" if cap else "your free pitches are back"
+        brands = list(brands or [])[:3]
+        parts = [f"{hello}: {free}."] + report
+        if brands:
+            n = len(brands)
+            parts.append(
+                f"{'These ' + str(n) + ' brands fit' if n > 1 else 'This brand fits'} you best right now. "
+                f"Tap **{(batch_chip or {}).get('label') or 'Contact'}** and I'll write the pitches; "
+                "you send them from your Gmail in one tap."
+            )
+            if batch_chip:
+                chips = [batch_chip]
+        else:
+            nxt = career.get("next") or {}
+            if nxt.get("chip"):
+                chips = [nxt["chip"]]
     return {
         "role": "assistant",
         "kind": "brief",
