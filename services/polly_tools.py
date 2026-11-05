@@ -588,6 +588,24 @@ def _fill_batch_location(state: TurnState, city: str, country: str, display: str
     return True
 
 
+def _country_only_location(state: TurnState) -> Optional[Dict[str, Any]]:
+    try:
+        from routes.polly_autopilot import autopilot_location
+
+        creator = dict(state.creator or {})
+        if "regions" not in creator and state.creator_id:
+            cur = state.db().cursor()
+            cur.execute("SELECT regions FROM creators WHERE id = %s", (state.creator_id,))
+            row = cur.fetchone()
+            if row:
+                creator["regions"] = row["regions"] if isinstance(row, dict) else row[0]
+        loc = autopilot_location(creator, state.scrape, state.notes)
+    except Exception as err:
+        print(f"[Polly] country-only location skipped: {err}")
+        return None
+    return loc if loc and not loc.get("needs_location") and loc.get("country") else None
+
+
 def draft_pitch_batch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     """First-session wow: write every pitch on screen at once, ready to send together."""
     R = _routes()
@@ -607,6 +625,12 @@ def draft_pitch_batch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
                 "explain": "Those brands are already pitched or gone. Offer new matches."}
 
     shipping, _loc = _pitch_location(state)
+    if shipping.get("needs_location"):
+        # First pitches shouldn't wait on a city when we know the country from signup: 'shipping to the
+        # United States' reads fine, and the creator can add their city later.
+        shipping = _country_only_location(state) or shipping
+        if not shipping.get("needs_location"):
+            state._ship_override = shipping
     if shipping.get("needs_location"):
         state.notes["pending_batch"] = {
             "at": datetime.now(timezone.utc).isoformat(),
@@ -717,6 +741,9 @@ def _pitch_stats(state: TurnState) -> Dict[str, Any]:
 
 
 def _pitch_location(state: TurnState):
+    override = getattr(state, "_ship_override", None)
+    if override:
+        return override, str(override.get("display") or "").strip()
     shipping = resolve_pitch_location(state.creator, state.scrape, state.notes)
     loc_display = ""
     if not shipping.get("needs_location"):
