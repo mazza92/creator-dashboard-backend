@@ -600,7 +600,7 @@ def list_applications():
             FROM brand_pr_applications a
             JOIN pr_brands b ON b.id = a.brand_id
             LEFT JOIN brand_pr_campaigns camp ON camp.id = a.campaign_id
-            WHERE a.creator_id = %s
+            WHERE a.creator_id = %s AND COALESCE(a.status, 'review') <> 'hidden'
             ORDER BY a.applied_at DESC
             """,
             (STALE_APPLICATION_DAYS, creator_id),
@@ -1026,8 +1026,15 @@ def submit_apply(brand_id):
                 "confirmed": True,
                 "quota": get_creator_unlock_balance(creator_id),
             })
-        if existing:
+        if existing and existing["status"] != "hidden":
             return jsonify({"success": False, "error": "Already applied", "already_applied": True}), 409
+
+        from services.gifting_confirmed import ensure_columns as _gifting_cols, takes_box_requests
+        _gifting_cols(cursor)
+        if not takes_box_requests(cursor, brand_id):
+            # No list on our side: nobody would read the request. Pitch them instead (cold outreach).
+            return jsonify({"success": False, "needs_pitch": True,
+                            "error": "This brand doesn't take requests here yet. Pitch them instead."}), 409
 
         cursor.execute(
             "SELECT id FROM pr_brands WHERE id = %s AND COALESCE(status, 'published') = 'published'",
@@ -1077,6 +1084,8 @@ def submit_apply(brand_id):
         if unlock.get("status") == "error":
             return jsonify({"success": False, "error": unlock.get("error") or "Unlock failed"}), 400
 
+        if existing:  # an old request we took off their list: reuse its row
+            cursor.execute("DELETE FROM brand_pr_applications WHERE id = %s AND status = 'hidden'", (existing["id"],))
         cursor.execute(
             """
             INSERT INTO brand_pr_applications

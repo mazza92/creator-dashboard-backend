@@ -2646,6 +2646,26 @@ def cron_alerts():
         conn.close()
 
 
+@polly_bp.route("/cron/gifting-sweep", methods=["GET", "POST"])
+def cron_gifting_sweep():
+    """Hourly: scan the next niche for brands giving out boxes (each niche once a day) and refresh which
+    brands are gifting-confirmed."""
+    if not _cron_authorized():
+        return jsonify({"success": False, "error": "unauthorized"}), 401
+    from pr_crm_routes import get_db_connection
+    from services.gifting_sweep import run as run_sweep
+    dry_run = str(request.args.get("dry_run") or "").lower() in ("1", "true", "yes")
+    conn = get_db_connection()
+    try:
+        return jsonify({"success": True, "dry_run": dry_run, **json_safe(run_sweep(conn, dry_run=dry_run))})
+    except Exception as err:
+        conn.rollback()
+        print(f"[Polly] cron gifting-sweep error: {err}")
+        return jsonify({"success": False, "error": "sweep failed"}), 500
+    finally:
+        conn.close()
+
+
 @polly_bp.route("/cron/refresh-profiles", methods=["GET", "POST"])
 def cron_refresh_profiles():
     """Re-scrape a few active creators whose Instagram/TikTok data has gone stale."""
