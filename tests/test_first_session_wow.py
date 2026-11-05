@@ -133,13 +133,14 @@ class DraftBatchTests(unittest.TestCase):
         jobs = routes._invoke_generate_pr_packages.call_args[0][0]
         self.assertEqual([j["id"] for j in jobs], [1, 2, 3])
         self.assertEqual(len(state.pitch_batch), 3)
-        self.assertTrue(state.pitch_batch[1]["needs_location"])
+        self.assertFalse(state.pitch_batch[1]["needs_location"])
+        self.assertNotIn(PLACEHOLDER, state.pitch_batch[1]["body"])
         self.assertEqual(state.task_chips, [])
         self.assertIsNone(state.pitch)
         stored = state.notes["pitch_batch"]["items"]
         self.assertEqual([i["brand_id"] for i in stored], [1, 2, 3])
-        self.assertIn("**Send it from my Gmail**", state.final_say)
-        self.assertIn("city and country", state.final_say)
+        self.assertIn("**Send all 2 from my Gmail**", state.final_say)
+        self.assertNotIn("city and country", state.final_say)
 
     def test_nothing_to_write(self):
         state = _state(notes={"pitched_brand_ids": [1]})
@@ -259,12 +260,13 @@ class BatchSendRouteTests(unittest.TestCase):
         resp, send, saved, tracked = self._post()
         self.assertEqual(resp.status_code, 200, resp.get_json())
         data = resp.get_json()
-        send.assert_called_once()
-        args, kwargs = send.call_args
+        self.assertEqual(send.call_count, 2)  # a leftover [CITY, COUNTRY] is stripped, never a reason to stop
+        args, kwargs = send.call_args_list[0]
         self.assertEqual(args[2], "pr@glow.com")
         self.assertEqual(kwargs["from_name"], "Maya Chen")
-        self.assertEqual([r["status"] for r in data["results"]], ["sent", "no_inbox", "needs_location"])
-        tracked.assert_called_once()
+        self.assertNotIn(PLACEHOLDER, send.call_args_list[1][0][4])
+        self.assertEqual([r["status"] for r in data["results"]], ["sent", "no_inbox", "sent"])
+        self.assertEqual(tracked.call_count, 2)
         notes = saved.call_args[0][2]
         self.assertIn(1, notes["pitched_brand_ids"])
         self.assertTrue(notes["pitch_batch"]["items"][0]["sent_at"])
@@ -272,14 +274,14 @@ class BatchSendRouteTests(unittest.TestCase):
         self.assertEqual(summary["from"], "maya@gmail.com")
         self.assertIn("$50–$100 a video", summary["rates"])
         self.assertFalse(summary["rates_saved"])
-        self.assertEqual([x["brand_name"] for x in summary["sent"]], ["Glow"])
+        self.assertEqual([x["brand_name"] for x in summary["sent"]], ["Glow", "Byoma"])
         self.assertIn("out", data["message"])
 
     def test_resend_skips_what_already_went(self):
         items = self._items()
         items[0]["sent_at"] = "2026-10-20T10:00:00+00:00"
         resp, send, _, _ = self._post(notes={"pitch_batch": {"items": items}})
-        send.assert_not_called()
+        self.assertEqual([c[0][2] for c in send.call_args_list], ["pr@byoma.com"])
         self.assertEqual(resp.get_json()["results"][0]["status"], "already_sent")
 
     def test_needs_gmail(self):

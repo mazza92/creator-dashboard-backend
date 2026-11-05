@@ -1279,6 +1279,22 @@ def pitch_has_placeholder(text: str) -> bool:
     return is_location_placeholder(text or "")
 
 
+def drop_location_placeholder(text: str) -> str:
+    """Pitches never ask the creator for a city: a leftover '[CITY, COUNTRY]' is removed with the words that
+    point at it ('shipping to [CITY, COUNTRY].' -> 'shipping.')."""
+    if not text or not is_location_placeholder(text):
+        return text
+    ph = r"\[\s*city\s*,\s*country\s*\]"
+    # A sentence that only says where they live goes entirely; a line that's just a label goes too.
+    out = re.sub(r"[ \t]*[^.!?\n]*\bbased\s+(?:in|out of)\s+" + ph + r"[^.!?\n]*[.!?]?", " ", text, flags=re.I)
+    out = re.sub(r"(?m)^[^\n]{0,40}:\s*" + ph + r"\s*$\n?", "", out, flags=re.I)
+    out = re.sub(r"\s+(?:to|in|from|out of)\s+" + ph, "", out, flags=re.I)
+    out = re.sub(r"\(?\s*\[\s*city\s*,\s*country\s*\]\s*\)?", "", out, flags=re.I)
+    out = re.sub(r"[ \t]+([.,!?;:])", r"\1", out)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    return re.sub(r"(?m)[ \t]+$", "", out)
+
+
 def parse_location_reply(text: str) -> Optional[Dict[str, str]]:
     """City + country from a short creator reply. None if it looks like a brand ask."""
     raw = (text or "").strip().strip(" .!")

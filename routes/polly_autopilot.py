@@ -503,16 +503,16 @@ def _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=F
     inputs = pitch_pref_inputs(conn, notes, brand_id, creator=creator, scrape=scrape, kit=kit,
                                location=loc_display)
     pitch = apply_pitch_prefs(pitch, notes, slots=inputs["slots"], facts=inputs["facts"])
-    if pitch_has_placeholder(pitch.get("body") or ""):
-        return None, "needs_location"
+    from services.polly import drop_location_placeholder
+    pitch = {**pitch, "body": drop_location_placeholder(pitch.get("body") or "")}
     # Short, brand-specific and send-ready (falls back to the pitch above if anything fails).
     from services.pitch_writer import finalize_for
     from services.polly_autopilot import _creator_names
     pitch = finalize_for(conn, creator_id, brand_id, pitch, notes,
                          first_name=_creator_names(conn, creator_id).get("first") or "", angle=angle) or pitch
-    body = pitch.get("body") or ""
-    if not body or pitch_has_placeholder(body):
-        return None, "needs_location"
+    body = drop_location_placeholder(pitch.get("body") or "")
+    if not body:
+        return None, "draft_failed"
     item = add_draft(
         conn, creator_id, brand_id, brand["brand_name"], pitch.get("email") or brand["email"],
         pitch.get("subject") or f"{brand['brand_name']} collab", body, announced=announced,
@@ -622,7 +622,8 @@ def autopilot_location(creator, scrape, notes):
             if country:
                 break
     if not country:
-        return shipping
+        # Autopilot never pauses over a missing city: pitch with no location line rather than not at all.
+        return {"city": "", "country": "", "display": "", "needs_location": False}
     return {"city": "", "country": country, "display": country, "needs_location": False}
 
 
