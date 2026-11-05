@@ -373,14 +373,28 @@ def test_dm_text_is_short_and_clean():
     assert "I'm a fashion creator" in dm_text("Scentbird", "fashion")
 
 
-def test_with_radar_chip_adds_once():
-    from services.polly_discovery import starters_for, with_radar_chip
+def test_chip_row_leads_with_targets_once_and_drops_radar():
+    from services.polly_discovery import RADAR_CHIP, starters_for, with_radar_chip
     pending = starters_for({"pending_pitch": {"id": 1, "name": "Tower 28"}})
-    assert not any(c["id"] == "gifting_radar" for c in pending)
-    chips = with_radar_chip(pending)
-    assert [c["id"] for c in chips].count("gifting_radar") == 1 and chips[0]["id"] == "gifting_radar"
+    chips = with_radar_chip([dict(RADAR_CHIP)] + pending)
+    ids = [c["id"] for c in chips]
+    assert ids.count("pitch_targets") == 1 and ids[0] == "pitch_targets"
+    assert "gifting_radar" not in ids
     assert with_radar_chip(chips) == chips
-    assert with_radar_chip([])[0]["id"] == "gifting_radar"
+    assert with_radar_chip([])[0]["id"] == "pitch_targets"
+
+
+def test_creator_search_answers_from_the_index_without_apify(monkeypatch):
+    from services import gifting_radar as radar
+    monkeypatch.setattr(radar, "LIVE_SEARCH", False)
+    monkeypatch.setattr(radar, "ranked", lambda conn, ctx: [])
+    monkeypatch.setattr(radar, "last_topup", lambda conn, niche: None)
+    monkeypatch.setattr(radar, "_record", lambda *a, **k: 5)
+    monkeypatch.setattr(radar, "_respond", lambda conn, cards, ctx, **kw: {"status": "done", **kw})
+    started = []
+    monkeypatch.setattr(radar, "_start_round", lambda plan: started.append(plan) or "x")
+    res = radar.search(object(), {"creator_id": 1, "niche": "skincare"})
+    assert res["served_from"] == "database" and not started
 
 
 def test_tidy_lists_drops_emptied_items_and_renumbers():

@@ -32,6 +32,9 @@ from services.radar_extract import (
 from services.radar_queries import SHARED_HASHTAGS, ai_queries, niche_queries
 
 DAILY_CAP_USD = float(os.getenv("RADAR_DAILY_CAP_USD") or "inf")
+# Creator searches answer from the shared index the daily sweep (services.gifting_sweep) fills; set
+# RADAR_LIVE_SEARCH=1 to let a search start its own Apify run again.
+LIVE_SEARCH = os.getenv("RADAR_LIVE_SEARCH") == "1"
 SEARCHES_PER_DAY = {"free": 1, "pro": 3}
 PER_QUERY = 12
 ROUND_SIZE = 20
@@ -735,7 +738,7 @@ def search(conn, ctx: Dict[str, Any]) -> Dict[str, Any]:
     cards = ranked(conn, ctx)
     fresh_at = last_topup(conn, niche)
     fresh = bool(fresh_at) and _now() - fresh_at < FRESH_FOR
-    if (len(cards) >= INSTANT_MIN and fresh) or int(ctx.get("offset") or 0) > 0:
+    if (len(cards) >= INSTANT_MIN and fresh) or int(ctx.get("offset") or 0) > 0 or not LIVE_SEARCH:
         run_id = _record(conn, ctx, status="done", served_from="database",
                          brands=len(cards[:PAGE]))
         return _respond(conn, cards, ctx, run_id=run_id, served_from="database")
