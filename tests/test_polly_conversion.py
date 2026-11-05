@@ -116,7 +116,7 @@ class ProConversionTests(unittest.TestCase):
         self.assertIn("$19/mo", say)
         self.assertIn("every weekday", say)
         self.assertNotIn("one yes", say)
-        self.assertLess(say.index("Monday"), say.index("Unlimited roster applications"))
+        self.assertLess(len(say), 600)
         self.assertIn("**2** brands opened your kit", say)
         self.assertNotIn("reset", say.lower())
 
@@ -134,9 +134,10 @@ class ProConversionTests(unittest.TestCase):
             "Ana", {"remaining": 0, "reset_at": "2026-11-01T00:00:00+00:00"}, None, {}, kit_views=3,
         )
         self.assertEqual(msg["kind"], "brief")
-        self.assertIn("Ana, you've used your **3 free pitches**", msg["content"])
+        self.assertIn("Ana, your 3 free pitches", msg["content"])
         self.assertIn("Nov 1", msg["content"])
-        self.assertIn("Monday", msg["content"])
+        self.assertIn("Follow-ups on day 4 and 10", msg["content"])
+        self.assertLess(len(msg["content"]), 600)
         self.assertIn("$19/mo", msg["content"])
         self.assertIn("**3** brands opened your kit", msg["content"])
         actions = [c["action"] for c in msg["task_chips"]]

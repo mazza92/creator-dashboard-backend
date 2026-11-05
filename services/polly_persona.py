@@ -647,19 +647,15 @@ def persona_empty_unlock_brief(
 
 from services.pro_offer import DAILY_PITCHES as _DAILY  # noqa: E402
 
+# Short and scannable: aspiring UGC creators skim. Three outcomes, then the price.
 _PRO_VALUE_BODY = (
-    f"I pitch **{_DAILY} new brands for you every weekday**, each one written for that brand and sent from your "
-    "Gmail, with follow-ups on day 4 and day 10, and I show you who opened your kit. "
-    "That's daily outreach you couldn't keep up by hand. Nothing to approve: "
-    "set your niche and targets in Settings and I adjust. "
-    "Every Monday you get a board with the week. "
-    "When a brand says yes, I write the reply with your ad usage rate. Unlimited roster applications too."
+    f"• **{_DAILY} new brands pitched for you every weekday**\n"
+    "• Sent from **your Gmail**, written for each brand\n"
+    "• Follow-ups on day 4 and 10, so no pitch goes quiet\n"
+    "• You just answer the yeses"
 )
-PRO_VALUE_LINE = "Pro is **$19/mo** and " + _PRO_VALUE_BODY
-PRO_TRIAL_LINE = (
-    "Try Pro **free for 7 days**, then $19/mo. Cancel before day 7 and you pay nothing. "
-    + _PRO_VALUE_BODY
-)
+PRO_VALUE_LINE = "**Pro · $19/mo**, cancel anytime:\n\n" + _PRO_VALUE_BODY
+PRO_TRIAL_LINE = "Try Pro **free for 7 days**, then $19/mo. Cancel anytime:\n\n" + _PRO_VALUE_BODY
 
 
 def paywall_preview_lines(
@@ -730,11 +726,11 @@ def persona_pro_proof(kit_views: int = 0, sent: int = 0) -> str:
         pitched = 0
     if views:
         return (
-            f"**{views}** brand{'s' if views != 1 else ''} opened your kit recently — "
-            "you're getting looked at. Now's not the time to stop."
+            f"👀 **{views}** brand{'s' if views != 1 else ''} opened your kit. "
+            "You're getting noticed, don't stop now."
         )
     if pitched:
-        return f"You've got **{pitched}** pitch{'es' if pitched != 1 else ''} out. More at-bats = more boxes."
+        return f"**{pitched}** pitch{'es' if pitched != 1 else ''} out. More pitches out = more yeses."
     return ""
 
 
@@ -748,12 +744,12 @@ def persona_paywall_say(
     tail = f"\n\n{proof}" if proof else ""
     if name:
         return (
-            f"Keep pitching **{name}**: I've started it below. "
-            "You've used your free pitches this month, so this one's on Pro.\n\n"
+            f"Your **{name}** pitch is started below 👇 Free pitches are used this month, "
+            "so this one's on Pro.\n\n"
             f"{PRO_VALUE_LINE}{tail}"
         )
     return (
-        "You've used your free pitches this month, so the next one's on Pro.\n\n"
+        "Free pitches are used this month, so the next one's on Pro.\n\n"
         f"{PRO_VALUE_LINE}{tail}"
     )
 
@@ -814,16 +810,28 @@ def persona_credits_out_offer(
 ) -> str:
     """Once a month, when the 3 free pitches are gone: offer autopilot before they ask."""
     name = (first_name or "").strip()
-    head = f"{name}, you've" if name else "You've"
-    back = f" They come back on **{reset_label}**." if reset_label else ""
-    proof = persona_pro_proof(kit_views, sent)
-    parts = [f"{head} used your **3 free pitches** this month.{back}"]
+    try:
+        pitched = int(sent or 0)
+    except (TypeError, ValueError):
+        pitched = 0
+    try:
+        views = int(kit_views or 0)
+    except (TypeError, ValueError):
+        views = 0
+    hi = f"{name}, your" if name else "Your"
+    if pitched:
+        parts = [f"{hi} 3 free pitches are out 🎉 Replies land in your Gmail."]
+    else:
+        parts = [f"{hi} 3 free pitches are used."]
+    if views:
+        parts.append(persona_pro_proof(views, 0))
     matched = persona_matched_waiting(waiting)
     if matched:
         parts.append(matched)
-    parts.append("Want me to keep pitching until then? " + (PRO_TRIAL_LINE if trial else PRO_VALUE_LINE))
-    if proof:
-        parts.append(proof)
+    until = f" till **{reset_label}**" if reset_label else ""
+    price = "Try Pro **free for 7 days** ($19/mo after)" if trial else "On **Pro ($19/mo)**"
+    parts.append(f"Don't wait{until}. {price} I keep pitching for you:")
+    parts.append(_PRO_VALUE_BODY)
     return "\n\n".join(parts)
 
 

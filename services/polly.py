@@ -2168,7 +2168,7 @@ def credits_out_offer_message(
     follow = follow_brand_from_tracker(tracker, notes)
     chips: List[Dict[str, Any]] = [{
         "id": "unlock_pro",
-        "label": "Start my free week" if trial else "Put Polly to work · $19/mo",
+        "label": "Start my free week" if trial else "Keep pitching for me · $19/mo",
         "action": "unlock_pro",
     }]
     if follow and follow.get("name"):
