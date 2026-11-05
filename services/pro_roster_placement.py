@@ -264,6 +264,7 @@ def _load_open_rosters(cursor) -> List[Dict]:
         JOIN pr_brands b ON b.id = c.brand_id
         WHERE c.status = 'active'
           AND COALESCE(b.status, 'published') = 'published'
+          AND (to_jsonb(b) ->> 'gifting_signal' = 'brand_list' OR c.creator_spotlighted_at IS NOT NULL)
         ORDER BY last_view_at DESC NULLS LAST, waiting DESC, c.id
         """
     )

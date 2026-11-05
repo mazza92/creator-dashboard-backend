@@ -150,7 +150,9 @@ def public_seo_fields(row, estimated_value=None):
         'estimatedValue': int(value) if isinstance(value, (int, float)) and value > 0 else None,
         'collaborationType': _text(row.get('collaboration_type')) or None,
         'microFriendly': bool(row.get('micro_friendly')),
-        'acceptingPr': row.get('accepting_pr') is not False,
+        # Only brands we've seen giving out boxes (gifting_confirmed); the old accepting_pr default says nothing.
+        'acceptingPr': bool(row.get('gifting_confirmed')),
+        'giftingSignal': row.get('gifting_signal') or None,
         'youtube': _text(row.get('youtube_handle')) or None,
         'socialProfile': social_profile(row.get('pr_social_profile')),
         'examplePosts': example_posts(row.get('pr_example_posts')),

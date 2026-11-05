@@ -522,7 +522,7 @@ def get_public_brands():
             pass  # Sorting handled below
         elif activity == 'active':
             # Brands actively accepting PR
-            query += " AND b.accepting_pr = TRUE"
+            query += " AND (to_jsonb(b) ->> 'gifting_confirmed_at') IS NOT NULL"
         elif activity == 'responsive':
             query += " AND (b.id = ANY(%s) OR (b.response_rate >= 50 AND b.id != ALL(%s)))"
             params.extend([reply_ids['replies'], reply_ids['cold']])
@@ -629,7 +629,7 @@ def get_public_brands():
         if activity == 'new':
             pass  # "Added recently" just sorts, doesn't filter
         elif activity == 'active':
-            count_query += " AND accepting_pr = TRUE"
+            count_query += " AND (to_jsonb(pr_brands) ->> 'gifting_confirmed_at') IS NOT NULL"
         elif activity == 'responsive':
             count_query += " AND (id = ANY(%s) OR (response_rate >= 50 AND id != ALL(%s)))"
             count_params.extend([reply_ids['replies'], reply_ids['cold']])
@@ -786,6 +786,8 @@ def get_public_brand(slug):
                 b.collaboration_type,
                 b.micro_friendly,
                 b.accepting_pr,
+                (to_jsonb(b) ->> 'gifting_confirmed_at') IS NOT NULL AS gifting_confirmed,
+                to_jsonb(b) ->> 'gifting_signal' AS gifting_signal,
                 b.youtube_handle,
                 b.pr_social_profile,
                 b.pr_example_posts,
