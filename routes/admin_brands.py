@@ -3,6 +3,7 @@ Admin API Routes for Brand Management
 CRM-style CRUD operations for PR directory brands
 """
 
+from services.admin_auth import session_user_is_admin
 from flask import Blueprint, request, jsonify, session
 from functools import wraps
 from services.admin_auth import admin_token_valid
@@ -50,11 +51,11 @@ def admin_required(f):
         try:
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            cursor.execute('SELECT email FROM users WHERE id = %s', (user_id,))
+            cursor.execute('SELECT id, email FROM users WHERE id = %s', (user_id,))
             user = cursor.fetchone()
             conn.close()
 
-            if not user or user.get('email', '').lower() != 'team@newcollab.co':
+            if not user or not session_user_is_admin(user):
                 return jsonify({'error': 'Admin access required'}), 403
 
         except Exception as e:

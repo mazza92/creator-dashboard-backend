@@ -3,6 +3,7 @@ Creator Approval System Routes
 Handles waitlist, approval queue, and admin approval workflow
 """
 
+from services.admin_auth import session_user_is_admin
 from flask import Blueprint, request, jsonify, session
 from psycopg2.extras import RealDictCursor
 import json
@@ -170,14 +171,14 @@ def _admin_authorized():
         return False
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
-    cursor.execute("SELECT email, user_role FROM users WHERE id = %s", (user_id,))
+    cursor.execute("SELECT id, email FROM users WHERE id = %s", (user_id,))
     user = cursor.fetchone()
     cursor.close()
     conn.close()
     if not user:
         return False
     email = (user.get('email') or '').lower()
-    return email == 'team@newcollab.co' or user.get('user_role') == 'admin'
+    return session_user_is_admin(user)
 
 
 @creator_approval_bp.route('/api/admin/approval-queue', methods=['GET'])

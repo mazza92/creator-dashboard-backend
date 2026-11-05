@@ -3,6 +3,7 @@ Brand Content Hub — creator submissions + admin review.
 v1: manual admin push, no brand notification email.
 """
 
+from services.admin_auth import session_user_is_admin
 from flask import Blueprint, request, jsonify, session
 from flask_jwt_extended import get_jwt_identity
 from functools import wraps
@@ -126,10 +127,10 @@ def admin_required(f):
         try:
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            cursor.execute('SELECT email FROM users WHERE id = %s', (user_id,))
+            cursor.execute('SELECT id, email FROM users WHERE id = %s', (user_id,))
             user = cursor.fetchone()
             conn.close()
-            if not user or user.get('email', '').lower() != 'team@newcollab.co':
+            if not user or not session_user_is_admin(user):
                 return jsonify({'success': False, 'error': 'Admin access required'}), 403
         except Exception as e:
             return jsonify({'success': False, 'error': str(e)}), 500

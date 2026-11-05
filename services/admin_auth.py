@@ -131,3 +131,31 @@ def admin_login():
         _record_failure()
         return jsonify({"success": False, "error": "Invalid credentials"}), 403
     return jsonify({"success": True, "token": issue_admin_token(), "expires_in": LOGIN_TTL_SECONDS})
+
+
+def session_user_is_admin(user) -> bool:
+    """Admin pages sign in with X-Admin-Token. A logged-in account whose email reads team@newcollab.co proves
+    nothing (anyone can register that address), so a session only counts when its user id is listed in
+    ADMIN_USER_IDS."""
+    if not user:
+        return False
+    ids = {s.strip() for s in (os.getenv("ADMIN_USER_IDS") or "").split(",") if s.strip()}
+    return bool(ids) and str(user.get("id") or "") in ids
+
+
+def cron_request_ok() -> bool:
+    """Scheduled jobs: Vercel Cron sends `Authorization: Bearer $CRON_SECRET`; scripts may send the same secret
+    or the admin token. A User-Agent proves nothing (anyone can send `vercel-cron`), and there is no fallback
+    secret in code."""
+    allowed = [s for s in (os.getenv("CRON_SECRET"), os.getenv("EMAIL_CRON_SECRET"), static_admin_token()) if s]
+    auth = request.headers.get("Authorization") or ""
+    candidates = [
+        auth.split(" ", 1)[1].strip() if auth.lower().startswith("bearer ") else "",
+        request.headers.get("X-Cron-Secret") or "",
+        request.headers.get("X-Cron-Token") or "",
+        request.args.get("secret") or "",
+        request.args.get("cron_token") or "",
+    ]
+    if any(_same(c.strip(), a) for c in candidates if c for a in allowed):
+        return True
+    return request_has_admin_token()

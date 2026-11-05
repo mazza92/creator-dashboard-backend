@@ -4,6 +4,7 @@ Email marketing system for creator engagement.
 Creator campaigns send through Resend. Brand outreach still uses Gmail SMTP.
 """
 
+from services.admin_auth import session_user_is_admin
 from flask import Blueprint, request, jsonify, session
 from functools import wraps
 from services.admin_auth import admin_token_valid
@@ -127,11 +128,11 @@ def admin_required(f):
         try:
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            cursor.execute('SELECT email FROM users WHERE id = %s', (user_id,))
+            cursor.execute('SELECT id, email FROM users WHERE id = %s', (user_id,))
             user = cursor.fetchone()
             conn.close()
 
-            if not user or user.get('email', '').lower() != 'team@newcollab.co':
+            if not user or not session_user_is_admin(user):
                 return jsonify({'error': 'Admin access required'}), 403
 
         except Exception as e:
@@ -1416,16 +1417,8 @@ def _recover_orphaned_sending(cursor, campaign_id=None):
 
 
 def _cron_authorized():
-    allowed = {
-        os.getenv('CRON_SECRET'),
-        os.getenv('EMAIL_CRON_SECRET'),
-        'newcollab-cron-2026',
-    }
-    allowed -= {None, ''}
-    secret = request.headers.get('X-Cron-Secret') or request.args.get('secret')
-    auth = request.headers.get('Authorization') or ''
-    bearer = auth.split(' ', 1)[1].strip() if auth.lower().startswith('bearer ') else ''
-    return secret in allowed or bearer in allowed
+    from services.admin_auth import cron_request_ok
+    return cron_request_ok()
 
 
 @admin_email_bp.route('/cron/process', methods=['GET', 'POST'])

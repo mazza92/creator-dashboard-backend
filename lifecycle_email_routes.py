@@ -52,7 +52,6 @@ except Exception as e:
 lifecycle_email_bp = Blueprint('lifecycle_email', __name__)
 
 # Admin token for cron jobs
-CRON_TOKEN = os.getenv('CRON_SECRET', 'lifecycle-cron-secret-2026')
 
 @lifecycle_email_bp.route('/api/lifecycle-email/health', methods=['GET'])
 def lifecycle_health():
@@ -72,8 +71,8 @@ def require_cron_auth(f):
     """Decorator to require cron authentication."""
     @wraps(f)
     def decorated(*args, **kwargs):
-        token = request.headers.get('X-Cron-Token') or request.args.get('cron_token')
-        if not token or token != CRON_TOKEN:
+        from services.admin_auth import cron_request_ok
+        if not cron_request_ok():
             print("[CRON AUTH] rejected lifecycle cron call")
             return jsonify({'error': 'Unauthorized'}), 401
         return f(*args, **kwargs)
@@ -269,6 +268,7 @@ def get_weekly_digest_context_api(creator_id):
 # ============================================
 
 @lifecycle_email_bp.route('/api/lifecycle-email/trigger/welcome', methods=['POST'])
+@require_cron_auth
 def trigger_welcome():
     """
     Trigger welcome email after email verification.
@@ -296,6 +296,7 @@ def trigger_welcome():
 
 
 @lifecycle_email_bp.route('/api/lifecycle-email/trigger/reply', methods=['POST'])
+@require_cron_auth
 def trigger_reply():
     """
     Trigger celebration email when creator marks a reply.
@@ -322,6 +323,7 @@ def trigger_reply():
 
 
 @lifecycle_email_bp.route('/api/lifecycle-email/trigger/pr-box', methods=['POST'])
+@require_cron_auth
 def trigger_pr_box():
     """
     Trigger celebration email when creator marks first PR box received.
@@ -347,6 +349,7 @@ def trigger_pr_box():
 
 
 @lifecycle_email_bp.route('/api/lifecycle-email/trigger/quota-hit', methods=['POST'])
+@require_cron_auth
 def trigger_quota():
     """
     Trigger maximizer email when creator hits 3/3 unlocks.

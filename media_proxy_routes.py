@@ -92,8 +92,11 @@ def _cdn_headers(host: str) -> dict:
 def _fetch_cdn_bytes(url: str, timeout: int = 10) -> Optional[Tuple[bytes, str]]:
     """Download a social CDN image. Signed TikTok/IG URLs only work while fresh."""
     parsed = urlparse(url)
+    if not is_social_cdn_url(url):
+        return None
     headers = _cdn_headers(parsed.netloc)
-    resp = requests.get(url, headers=headers, timeout=timeout)
+    # No redirects: a CDN-looking URL must not bounce the server to an internal address.
+    resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=False)
     if resp.status_code == 200 and resp.content:
         content_type = resp.headers.get("Content-Type") or "image/jpeg"
         return resp.content, content_type
@@ -136,11 +139,16 @@ def _host_allowed(host: str) -> bool:
 def is_social_cdn_url(url: str) -> bool:
     try:
         parsed = urlparse(url)
+        host = parsed.hostname or ""
     except Exception:
         return False
     if parsed.scheme not in ("http", "https"):
         return False
-    return _host_allowed(parsed.netloc)
+    # "https://x.cdninstagram.com:a@169.254.169.254/" has a CDN-looking netloc but requests connects to the
+    # address after "@": the real hostname is what counts, and URLs with credentials are never proxied.
+    if "@" in (parsed.netloc or "") or parsed.username or parsed.password:
+        return False
+    return _host_allowed(host)
 
 
 def get_public_api_base() -> str:
@@ -167,8 +175,8 @@ def is_public_post_url(url: Optional[str]) -> bool:
         parsed = urlparse(str(url or "").strip())
     except Exception:
         return False
-    host = (parsed.netloc or "").lower().split(":")[0]
-    if parsed.scheme != "https":
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or "@" in (parsed.netloc or ""):
         return False
     return host in ("tiktok.com", "www.tiktok.com", "instagram.com", "www.instagram.com")
 
@@ -443,6 +451,8 @@ def fresh_thumb_from_post_url(post_url: Optional[str]) -> str:
 
 
 def _mint_fresh_thumb(url: str) -> str:
+    if not is_public_post_url(url):
+        return ""  # only real TikTok / Instagram post pages, never an arbitrary host
     try:
         if "tiktok.com" in url:
             resp = requests.get(
@@ -495,7 +505,7 @@ def fetch_post_preview_bytes(post_url: Optional[str]) -> Optional[Tuple[bytes, s
     if not url.startswith("http"):
         return None
     thumb = fresh_thumb_from_post_url(url)
-    if not thumb:
+    if not thumb or not is_social_cdn_url(thumb):
         return None
     fetched = _fetch_cdn_bytes(thumb, timeout=12)
     if fetched and fetched[0] and len(fetched[0]) > 800:
@@ -607,6 +617,8 @@ def proxy_media():
             return response
 
         content, content_type = fetched
+        if "svg" in content_type.lower() or content[:256].lstrip().lower().startswith((b"<svg", b"<?xml", b"<!doctype", b"<html")):
+            abort(415, description="Unsupported media")  # SVG/HTML could run script on api.newcollab.co
         if not content_type.startswith("image/") and "octet-stream" not in content_type:
             if re.search(r"\.(png)(?:\?|$)", url, re.I):
                 content_type = "image/png"
