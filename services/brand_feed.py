@@ -188,12 +188,14 @@ def build(conn, creator_id: int, niche: Optional[str] = None) -> Dict[str, Any]:
     if niche not in NICHE_CATEGORIES:
         niche = creator_niche(cur, creator_id) if niche != "all" else ""
     targets = target_ids(cur, creator_id)
-    post_items = posts(cur, niche, targets)
-    if niche and len(post_items) < 6:  # thin niche: add the newest posts from every niche after it
-        more = posts(cur, "", targets)
-        seen = {p["brand"]["id"] for p in post_items}
-        post_items += [p for p in more if p["brand"]["id"] not in seen][: POSTS_LIMIT - len(post_items)]
+    # The creator's niche first, then every other niche: sorting, never shrinking the feed.
+    post_items = posts(cur, niche, targets) if niche else []
+    seen = {p["brand"]["id"] for p in post_items}
+    post_items += [p for p in posts(cur, "", targets, limit=POSTS_LIMIT * 2) if p["brand"]["id"] not in seen]
     brand_items = directory_brands(cur, niche, [p["brand"]["id"] for p in post_items], targets)
+    if niche:
+        taken = [p["brand"]["id"] for p in post_items] + [b["brand"]["id"] for b in brand_items]
+        brand_items += directory_brands(cur, "", taken, targets, limit=BRANDS_LIMIT // 2)
     return {"niche": niche, "niches": NICHES, "items": interleave(post_items, brand_items),
             "targets": len(targets)}
 

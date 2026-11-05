@@ -107,11 +107,13 @@ class BrandFeedTests(unittest.TestCase):
         self.assertNotIn("Glow", dir_names)
         self.assertNotIn("No Email", dir_names)
 
-    def test_thin_niche_borrows_posts_from_other_niches(self):
+    def test_niche_sorts_first_but_every_niche_stays(self):
         data = feed.build(self.conn, 1, "pet")
         names = [i["brand"]["name"] for i in data["items"] if i["type"] == "post"]
         self.assertEqual(names[0], "Pup")
-        self.assertIn("Glow", names)
+        self.assertEqual(sorted(names[1:]), ["Byoma", "Glow"])
+        skin = [i["brand"]["name"] for i in feed.build(self.conn, 1, "skincare")["items"] if i["type"] == "post"]
+        self.assertEqual(skin[-1], "Pup")
 
     def test_targets_toggle_and_show_on_cards(self):
         self.assertEqual(feed.set_target(self.conn, 1, 2, True), 1)
