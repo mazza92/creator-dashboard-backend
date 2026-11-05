@@ -121,6 +121,9 @@ def _clean_message(msg: Any) -> Optional[Dict[str, Any]]:
     hooks = msg.get("hooks")
     if isinstance(hooks, dict) and hooks.get("scan_id"):
         out["hooks"] = {k: hooks.get(k) for k in ("scan_id", "niche", "band")}
+    summary = msg.get("sent_summary")
+    if isinstance(summary, dict) and summary.get("sent"):
+        out["sent_summary"] = {**summary, "sent": list(summary["sent"])[:10]}
     activity = msg.get("activity")
     if isinstance(activity, dict) and isinstance(activity.get("items"), list) and activity["items"]:
         out["activity"] = {"items": activity["items"][:6], "counts": activity.get("counts") or {},

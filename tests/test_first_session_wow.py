@@ -268,9 +268,12 @@ class BatchSendRouteTests(unittest.TestCase):
         notes = saved.call_args[0][2]
         self.assertIn(1, notes["pitched_brand_ids"])
         self.assertTrue(notes["pitch_batch"]["items"][0]["sent_at"])
-        self.assertIn("maya@gmail.com", data["message"])
-        self.assertIn("$50–$100 a video", data["message"])
-        self.assertEqual(data["task_chips"][0]["action"], "save_rates")
+        summary = data["sent_summary"]
+        self.assertEqual(summary["from"], "maya@gmail.com")
+        self.assertIn("$50–$100 a video", summary["rates"])
+        self.assertFalse(summary["rates_saved"])
+        self.assertEqual([x["brand_name"] for x in summary["sent"]], ["Glow"])
+        self.assertIn("out", data["message"])
 
     def test_resend_skips_what_already_went(self):
         items = self._items()
