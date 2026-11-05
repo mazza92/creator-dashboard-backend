@@ -129,6 +129,8 @@ def _verify_google(token: str) -> dict:
     info = id_token.verify_firebase_token(token, Request(), GOOGLE_PROJECT)
     if not info or not info.get("email"):
         raise ValueError("token has no email")
+    if info.get("email_verified") is not True:
+        raise ValueError("email not verified")
     return info
 
 

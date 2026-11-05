@@ -16,6 +16,18 @@ import psycopg2
 
 email_cron_bp = Blueprint('email_cron', __name__, url_prefix='/api/cron')
 
+
+@email_cron_bp.before_request
+def _require_cron_secret():
+    """Every route here mass-emails creators: only scheduled jobs and admins may call them."""
+    from flask import jsonify
+    from services.admin_auth import cron_request_ok
+    if request.method == 'OPTIONS':
+        return None
+    if not cron_request_ok():
+        return jsonify({'error': 'Unauthorized'}), 401
+    return None
+
 # =============================================================================
 # GLOBAL EMAIL COOL-OFF SETTINGS
 # Prevents users from receiving multiple emails on the same day

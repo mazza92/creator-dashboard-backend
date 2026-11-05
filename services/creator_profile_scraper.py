@@ -1076,7 +1076,7 @@ Analyze and return JSON only.'''
                 profile_data.get('is_public'),
                 profile_data.get('is_business_account'),
                 profile_data.get('business_category'),
-                profile_data.get('engagement_rate'),
+                _fit_rate(profile_data.get('engagement_rate')),
                 profile_data.get('posting_cadence_per_week'),
                 profile_data.get('latest_post_days_ago'),
                 profile_data.get('has_collab_email'),
@@ -1282,3 +1282,13 @@ def scrape_and_enrich_creator(user_id, handle: str, platform: str,
         scraper.save_creator_profile(user_id, profile_data, vision_data)
 
     return profile_data, vision_data
+
+
+def _fit_rate(value):
+    """engagement_rate is NUMERIC(5,2): a tiny account with viral posts can compute 1000%+, which failed the whole
+    onboarding scrape. Keep the value in range."""
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(rate, 999.99))

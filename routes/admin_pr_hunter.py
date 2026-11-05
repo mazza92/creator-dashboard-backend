@@ -3,6 +3,7 @@ Admin API Routes for PR Hunter
 Handles candidate management, approval workflow, and hunt triggers
 """
 
+from services.admin_auth import session_user_is_admin
 from flask import Blueprint, request, jsonify, session
 from functools import wraps
 from services.admin_auth import admin_token_valid
@@ -55,7 +56,7 @@ def admin_required(f):
         try:
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            cursor.execute('SELECT email FROM users WHERE id = %s', (user_id,))
+            cursor.execute('SELECT id, email FROM users WHERE id = %s', (user_id,))
             user = cursor.fetchone()
             conn.close()
 
@@ -65,7 +66,7 @@ def admin_required(f):
             # WHITELIST: Only team@newcollab.co can access PR Hunter
             user_email = user.get('email', '').lower()
 
-            if user_email != 'team@newcollab.co':
+            if not session_user_is_admin(user):
                 return jsonify({'error': 'PR Hunter is for internal use only. Admin access required.'}), 403
 
         except Exception as e:

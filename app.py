@@ -444,6 +444,23 @@ def log_request():
     app.logger.info(f"🟢 Raw request: Method={request.method}, Path={request.path}, FullPath={request.full_path}, URL={request.url}, BaseURL={request.base_url}, Args={request.args}")
 
 
+# Legacy marketplace routes that change bookings, payments, campaigns, applications and packages had no login
+# check at all. Until each gets an ownership check, at least nobody anonymous can call them.
+_LOGIN_REQUIRED_LEGACY = re.compile(
+    r"^/(?:campaigns/\d+(?:/status)?|applications/\d+/(?:accept|decline|inquire|update-status)|"
+    r"packages/\d+(?:/status)?|confirm-content/\d+|release-payment/\d+)$")
+
+
+@app.before_request
+def _legacy_routes_need_login():
+    if request.method in ('OPTIONS', 'GET', 'HEAD') and request.path != '/collaboration-requests':
+        return None
+    if request.path == '/collaboration-requests' or _LOGIN_REQUIRED_LEGACY.match(request.path or ''):
+        if not session.get('user_id'):
+            return jsonify({'error': 'Authentication required'}), 401
+    return None
+
+
 # Add CORS headers to all responses
 @app.after_request
 def add_cors_headers(response):
@@ -460,6 +477,16 @@ def add_cors_headers(response):
         response.headers['Access-Control-Allow-Origin'] = origin
         response.headers['Access-Control-Allow-Credentials'] = 'true'
         response.headers['Access-Control-Expose-Headers'] = 'Content-Type, X-CSRF-Token, Set-Cookie'
+    elif str(response.headers.get('Access-Control-Allow-Credentials', '')).lower() == 'true':
+        # Older routes copy any Origin into the CORS headers. With credentials that lets any website read a
+        # signed-in user's data (profile, address), so only our own sites keep credentialed CORS.
+        response.headers.pop('Access-Control-Allow-Origin', None)
+        response.headers.pop('Access-Control-Allow-Credentials', None)
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    response.headers.setdefault('X-Frame-Options', 'DENY')
+    response.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+    if is_production:
+        response.headers.setdefault('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
     # CORS preflight must not mint/overwrite the session cookie before POST /google-signup.
     if request.method == 'OPTIONS':
         _abandon_empty_session()
@@ -1100,6 +1127,9 @@ def google_signup():
         if (idinfo.get('email') or '').strip().lower() != (email or '').strip().lower():
             app.logger.error(f"Email mismatch: token_email={idinfo['email']}, provided_email={email}")
             return jsonify({'error': 'Email mismatch'}), 401
+        if idinfo.get('email_verified') is not True:
+            # An unverified Firebase email account could otherwise sign in as whoever owns that address.
+            return jsonify({'error': 'Please verify your email with Google first'}), 401
 
         # Connect to database
         conn = get_db_connection()
@@ -1546,8 +1576,14 @@ def create_notification(user_id, user_role, event_type, data=None, should_send_e
 def pusher_auth():
     channel_name = request.form.get('channel_name')
     socket_id = request.form.get('socket_id')
-    user_id = request.form.get('user_id')
-    if not channel_name or not socket_id or not user_id:
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'error': 'Authentication required'}), 401
+    # Private channels are private-user-<id>-<role> / private-notifications-<id>-<role>: only your own id.
+    m = re.match(r'^private-(?:user|notifications)-(\d+)-[a-z_]+$', channel_name or '')
+    if not m or int(m.group(1)) != int(user_id):
+        return jsonify({'error': 'Forbidden'}), 403
+    if not channel_name or not socket_id:
         app.logger.error(f"Missing auth parameters: channel_name={channel_name}, socket_id={socket_id}, user_id={user_id}")
         return jsonify({'error': 'Missing authentication parameters'}), 400
     try:
@@ -1995,6 +2031,8 @@ def update_profile_image():
 # File Upload Endpoint
 @app.route('/upload-file', methods=['POST'])
 def upload_file():
+    if not session.get('user_id'):
+        return jsonify({'error': 'Authentication required'}), 401
     try:
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400
@@ -2013,17 +2051,6 @@ def upload_file():
         return jsonify({'error': str(e)}), 500
 
 # Test Supabase Connection
-@app.route('/test-supabase', methods=['GET'])
-def test_supabase():
-    try:
-        buckets = supabase.storage.list_buckets()
-        return jsonify({'buckets': buckets}), 200
-    except Exception as e:
-        print(f"Error testing Supabase connection: {e}")
-        return jsonify({'error': str(e)}), 500
-
-
-
 @app.route('/profile/update', methods=['PUT'])
 def update_profile():
     try:
@@ -2071,16 +2098,37 @@ def update_profile():
         return jsonify({"error": "Failed to update profile"}), 500
 
     
+def _clean_person_name(value):
+    """Names land in emails we send from our domain: no markup or links, so a signup can't turn our
+    verification email into a phishing email."""
+    text = re.sub(r"[<>\"'`{}\\]", "", str(value or ""))
+    text = re.sub(r"(?i)\b(?:https?://|www\.)\S*", "", text)
+    return re.sub(r"\s+", " ", text).strip()[:60]
+
+
+def _norm_email(value):
+    return str(value or "").strip().lower()
+
+
+# Creator columns never returned by listing/profile routes: contact details, addresses, tokens, billing.
+_PRIVATE_CREATOR_FIELD = re.compile(
+    r"ship|address|street|postal|zip|phone|token|oauth|stripe|password|secret|email|birth|session|gmail|"
+    r"paypal|payout|iban|bank|tax|ip_addr|full_name|legal", re.I)
+
+
+def _public_creator(row):
+    return {k: v for k, v in dict(row or {}).items() if not _PRIVATE_CREATOR_FIELD.search(str(k))}
+
+
 @app.route('/creators', methods=['GET'])
 def get_creators():
+    if not session.get('user_id'):
+        return jsonify({'error': 'Authentication required'}), 401
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
-        # Fetch creators
         cursor.execute('SELECT * FROM creators')
-        creators = cursor.fetchall()
-        
+        creators = [_public_creator(r) for r in cursor.fetchall()]
         conn.close()
 
         return jsonify(creators)
@@ -2115,46 +2163,11 @@ def complete_profile():
         user_id = session.get('user_id')
         app.logger.info(f"User ID from session: {user_id}")
 
-        # If not in session, try request data
+        # Only the signed-in user can complete their own profile: a user_id or email in the body would let
+        # anyone take over any account (and get a session for it).
         if not user_id:
-            user_id_from_data = data.get('user_id')
-            if user_id_from_data:
-                user_id = int(user_id_from_data)
-                app.logger.info(f"User ID from data: {user_id}")
-            else:
-                # Try to get from email
-                email_from_data = data.get('email')
-                if email_from_data:
-                    app.logger.info(f"Looking up user by email: {email_from_data}")
-                    conn = get_db_connection()
-                    try:
-                        cursor = conn.cursor(cursor_factory=RealDictCursor)
-                        cursor.execute("SELECT id FROM users WHERE email = %s AND is_verified = true", (email_from_data,))
-                        user = cursor.fetchone()
-                        cursor.close()
-
-                        if user:
-                            user_id = user['id']
-                        else:
-                            conn.close()
-                            response = jsonify({'error': 'Invalid email or user not verified'})
-                            response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
-                            response.headers['Access-Control-Allow-Credentials'] = 'true'
-                            return response, 401
-                    except Exception as db_error:
-                        try:
-                            conn.close()
-                        except:
-                            pass
-                        response = jsonify({'error': 'Database error during validation'})
-                        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
-                        response.headers['Access-Control-Allow-Credentials'] = 'true'
-                        return response, 500
-                else:
-                    response = jsonify({'error': 'Not authenticated'})
-                    response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
-                    response.headers['Access-Control-Allow-Credentials'] = 'true'
-                    return response, 401
+            response = jsonify({'error': 'Not authenticated'})
+            return response, 401
 
         app.logger.info(f"👤 Profile onboarding for user_id: {user_id}")
 
@@ -3391,6 +3404,7 @@ def get_creator_profile(creator_id):
 
         if not profile:
             return jsonify({"error": "Creator not found"}), 404
+        profile = _public_creator(profile)
 
         cursor.execute("SELECT * FROM packages WHERE creator_id = %s", (creator_id,))
         offers = cursor.fetchall() or []
@@ -4069,32 +4083,23 @@ def brand_application_redirect(slug):
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute('SELECT id, application_url, website FROM brands WHERE slug = %s AND is_visible = true', (slug,))
+        # Brand pages are pr_brands rows (the old `brands` table has no slug: every Apply click failed).
+        cursor.execute(
+            "SELECT id, application_form_url, website FROM pr_brands "
+            "WHERE slug = %s AND COALESCE(status, 'published') = 'published'", (slug,))
         brand = cursor.fetchone() or {}
-        target = next((u for u in (brand.get('application_url'), brand.get('website'))
+        target = next((u for u in (brand.get('application_form_url'), brand.get('website'))
                        if str(u or '').startswith(('https://', 'http://'))), None)
         if not brand or not target:
             return redirect(page, code=302)
-        cursor.execute(
-            'SELECT id, subscription_tier, daily_unlocks_used, last_unlock_date FROM creators WHERE user_id = %s',
-            (user_id,))
+        cursor.execute('SELECT id FROM creators WHERE user_id = %s', (user_id,))
         creator = cursor.fetchone()
         if not creator:
             return redirect(page, code=302)
-        if (creator.get('subscription_tier') or 'free') != 'pro':
-            today = date.today()
-            used = creator.get('daily_unlocks_used') or 0
-            last = creator.get('last_unlock_date')
-            if hasattr(last, 'date'):  # a timestamp column still means "same calendar day"
-                last = last.date()
-            if last != today:
-                used = 0
-            if used >= 5:
-                return redirect(f"{page}?limit=daily", code=302)
-            cursor.execute('UPDATE creators SET daily_unlocks_used = %s, last_unlock_date = %s WHERE id = %s',
-                           (used + 1, today, creator['id']))
+        # Applying is unlimited; only unlocking contact details counts against the free quota (public_routes).
         cursor.execute(
-            "INSERT INTO creator_pipeline (creator_id, brand_id, status, created_at) VALUES (%s, %s, 'interested', NOW()) "
+            "INSERT INTO creator_pipeline (creator_id, brand_id, stage, created_at, updated_at) "
+            "VALUES (%s, %s, 'saved', NOW(), NOW()) "
             "ON CONFLICT (creator_id, brand_id) DO UPDATE SET updated_at = NOW()",
             (creator['id'], brand['id']))
         conn.commit()
@@ -6145,7 +6150,7 @@ def resend_verification():
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("SELECT id, first_name, is_verified, verification_token FROM users WHERE email = %s", (email,))
+        cursor.execute("SELECT id, first_name, is_verified, verification_token FROM users WHERE LOWER(email) = LOWER(%s)", (email,))
         user = cursor.fetchone()
         if not user:
             conn.close()
@@ -6206,13 +6211,13 @@ def register_brand():
             return jsonify({'error': error_msg}), 400
 
         # Extract fields
-        first_name = request.form.get('firstName')
-        last_name = request.form.get('lastName')
-        email = request.form.get('email')
+        first_name = _clean_person_name(request.form.get('firstName'))
+        last_name = _clean_person_name(request.form.get('lastName'))
+        email = _norm_email(request.form.get('email'))
         phone = request.form.get('phone')
         country = request.form.get('country')
         password = request.form.get('password')
-        brand_name = request.form.get('brandName')
+        brand_name = _clean_person_name(request.form.get('brandName'))
         brand_website = request.form.get('brandWebsite')
         brand_description = request.form.get('brandDescription')
         categories = request.form.get('categories')
@@ -6266,7 +6271,7 @@ def register_brand():
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         # Check if email exists
-        cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
+        cursor.execute("SELECT id FROM users WHERE LOWER(email) = LOWER(%s)", (email,))
         if cursor.fetchone():
             conn.close()
             return jsonify({"error": "This email is already registered. Please use another email or log in."}), 400
@@ -6389,14 +6394,14 @@ def register_creator_account():
             return jsonify({'error': 'Password must be at least 8 characters'}), 400
 
         # Optional fields (for backwards compat with old form)
-        first_name = data.get('firstName', data.get('first_name', ''))
-        last_name = data.get('lastName', data.get('last_name', ''))
+        first_name = _clean_person_name(data.get('firstName', data.get('first_name', '')))
+        last_name = _clean_person_name(data.get('lastName', data.get('last_name', '')))
         pr_list_signup = data.get('pr_list_signup') in ('true', True, '1')
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
+        cursor.execute("SELECT id FROM users WHERE LOWER(email) = LOWER(%s)", (email,))
         if cursor.fetchone():
             conn.close()
             return jsonify({"error": "Email already registered"}), 400
@@ -6523,9 +6528,9 @@ def register_creator():
         if missing_fields:
             return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
 
-        first_name = request.form.get('firstName')
-        last_name = request.form.get('lastName')
-        email = request.form.get('email')
+        first_name = _clean_person_name(request.form.get('firstName'))
+        last_name = _clean_person_name(request.form.get('lastName'))
+        email = _norm_email(request.form.get('email'))
         phone = request.form.get('phone')
         country = request.form.get('country')
         password = request.form.get('password')
@@ -6536,7 +6541,7 @@ def register_creator():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
+        cursor.execute("SELECT id FROM users WHERE LOWER(email) = LOWER(%s)", (email,))
         if cursor.fetchone():
             conn.close()
             return jsonify({"error": "Email already registered"}), 400
@@ -12717,70 +12722,6 @@ def confirm_stripe_account():
     finally:
         cursor.close()
         conn.close()
-
-
-@app.route('/debug/session', methods=['GET'])
-def debug_session():
-    return jsonify({
-        "user_id": session.get('user_id'),
-        "user_role": session.get('user_role'),
-        "session_contents": dict(session),
-        "cookies": request.cookies
-    })
-
-@app.route('/callback')
-def callback():
-    code = request.args.get('code')
-    if code:
-        return f"""
-        <h1>Authorization Complete</h1>
-        <p>Copy this code for your X Expert Agent:</p>
-        <p><strong>{code}</strong></p>
-        <p>Return to your terminal and paste this code when prompted.</p>
-        """
-    return "<h1>Error</h1><p>No authorization code provided.</p>", 400
-
-
-@app.route('/test-welcome-email', methods=['POST'])
-def test_welcome_email_endpoint():
-    """
-    Test endpoint to verify welcome email functionality
-    Only sends to mahery92@hotmail.fr for testing
-    """
-    try:
-        data = request.get_json() if request.is_json else {}
-        test_email = data.get('email', 'mahery92@hotmail.fr')
-        test_role = data.get('role', 'creator')
-        test_name = data.get('name', 'Maher')
-
-        user_data = {
-            'email': test_email,
-            'first_name': test_name,
-            'username': 'maher_test' if test_role == 'creator' else None,
-            'brand_name': 'Test Brand' if test_role == 'brand' else None
-        }
-
-        app.logger.info(f"🧪 Testing welcome email for {test_email} as {test_role}")
-        result = send_welcome_email(999, test_role, user_data)
-
-        if result:
-            return jsonify({
-                'success': True,
-                'message': f'Welcome email sent to {test_email}',
-                'email': test_email,
-                'role': test_role
-            }), 200
-        else:
-            return jsonify({
-                'success': False,
-                'message': 'Failed to send welcome email (check logs for details)'
-            }), 500
-
-    except Exception as e:
-        app.logger.error(f"🔥 Test welcome email failed: {str(e)}")
-        import traceback
-        app.logger.error(traceback.format_exc())
-        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/sitemap.xml', methods=['GET'])

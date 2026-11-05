@@ -271,20 +271,8 @@ def _record_polly_draft(creator_id, brand_id, brand_name, credit_used=False):
 
 
 def _cron_authorized():
-    import os
-    ua = (request.headers.get("User-Agent") or "").lower()
-    if ua.startswith("vercel-cron"):
-        return True
-    allowed = {os.getenv("CRON_SECRET"), os.getenv("ADMIN_TOKEN")}
-    allowed -= {None, ""}
-    provided = (
-        request.headers.get("X-Cron-Secret")
-        or request.headers.get("X-Admin-Token")
-        or request.args.get("secret")
-    )
-    auth = request.headers.get("Authorization") or ""
-    bearer = auth.split(" ", 1)[1].strip() if auth.lower().startswith("bearer ") else ""
-    return (provided in allowed) or (bearer in allowed)
+    from services.admin_auth import cron_request_ok
+    return cron_request_ok()
 
 
 def _log_polly_event(creator_id, event, meta=None):

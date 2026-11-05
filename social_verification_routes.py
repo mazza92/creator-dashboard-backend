@@ -126,13 +126,45 @@ def _skip_onboarding_quality_locally(return_url=None):
     return _is_local_dev_url(return_url)
 
 
+def _state_secret():
+    return (os.getenv('SOCIAL_STATE_SECRET') or os.getenv('JWT_SECRET_KEY') or os.getenv('FLASK_SECRET_KEY') or '').encode()
+
+
+def _encode_oauth_state(state_data):
+    """OAuth state carries which account the social login attaches to, so it is signed: an unsigned state let
+    anyone attach their Instagram/TikTok to another creator's account."""
+    import hmac
+    payload = base64.urlsafe_b64encode(json.dumps(state_data, default=str).encode()).decode()
+    sig = hmac.new(_state_secret(), payload.encode(), hashlib.sha256).hexdigest()[:40]
+    return f"{payload}.{sig}"
+
+
+def _safe_return_url(url):
+    url = str(url or '')
+    allowed = (FRONTEND_URL.rstrip('/'), 'https://app.newcollab.co', 'https://newcollab.co', 'https://www.newcollab.co',
+               'http://localhost:3000', 'http://localhost:3001')
+    if url.startswith('/') and not url.startswith('//'):
+        return url
+    return url if any(url == a or url.startswith(a + '/') or url.startswith(a + '?') for a in allowed) else ''
+
+
 def _decode_tiktok_oauth_state(state):
-    if not state:
+    import hmac
+    if not state or not _state_secret():
         return {}
     try:
-        return json.loads(base64.urlsafe_b64decode(state.encode()).decode()) or {}
+        payload, sig = state.rsplit('.', 1)
+        expected = hmac.new(_state_secret(), payload.encode(), hashlib.sha256).hexdigest()[:40]
+        if not hmac.compare_digest(sig, expected):
+            return {}
+        data = json.loads(base64.urlsafe_b64decode(payload.encode()).decode()) or {}
     except Exception:
         return {}
+    if 'return_url' in data:
+        data['return_url'] = _safe_return_url(data.get('return_url')) or None
+        if not data['return_url']:
+            data.pop('return_url')
+    return data
 
 
 def _decode_oauth_state(state):
@@ -1201,7 +1233,7 @@ def connect_instagram():
             'redirect_uri': redirect_uri,
             'source': (request.args.get('source') or '').strip().lower(),
         }
-        state = base64.urlsafe_b64encode(json.dumps(state_data, default=str).encode()).decode()
+        state = _encode_oauth_state(state_data)
         try:
             session['instagram_oauth_state'] = csrf_token
         except Exception:
@@ -1518,7 +1550,7 @@ def connect_tiktok():
             'redirect_uri': redirect_uri,
             'source': (request.args.get('source') or '').strip().lower(),
         }
-        state = base64.urlsafe_b64encode(json.dumps(state_data, default=str).encode()).decode()
+        state = _encode_oauth_state(state_data)
 
         try:
             session['tiktok_oauth_csrf'] = csrf_token
@@ -1567,7 +1599,7 @@ def callback_tiktok():
 
     if state:
         try:
-            state_data = json.loads(base64.urlsafe_b64decode(state.encode()).decode())
+            state_data = _decode_tiktok_oauth_state(state)
             csrf_token = state_data.get('csrf')
             user_id = state_data.get('user_id')
             creator_id = state_data.get('creator_id')
@@ -1616,7 +1648,7 @@ def callback_tiktok():
         client_key, client_secret, redirect_uri = _tiktok_oauth_config(return_url)
         if state:
             try:
-                stored_redirect = json.loads(base64.urlsafe_b64decode(state.encode()).decode()).get('redirect_uri')
+                stored_redirect = _decode_tiktok_oauth_state(state).get('redirect_uri')
                 if stored_redirect:
                     redirect_uri = stored_redirect
             except Exception:

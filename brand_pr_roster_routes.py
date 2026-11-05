@@ -6,6 +6,7 @@ Public routes are token-auth only (no brand login). Admin mint/revoke uses X-Adm
 """
 
 from __future__ import annotations
+from services.admin_auth import session_user_is_admin
 
 import csv
 import io
@@ -112,10 +113,10 @@ def _admin_required(f):
         try:
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            cursor.execute("SELECT email FROM users WHERE id = %s", (user_id,))
+            cursor.execute("SELECT id, email FROM users WHERE id = %s", (user_id,))
             user = cursor.fetchone()
             conn.close()
-            if not user or (user.get("email") or "").lower() != "team@newcollab.co":
+            if not session_user_is_admin(user):
                 return jsonify({"success": False, "error": "Admin access required"}), 403
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
@@ -3028,27 +3029,9 @@ def admin_revoke_campaign(campaign_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-def _waiting_email_cron_authorized() -> bool:
-    ua = (request.headers.get("User-Agent") or "").lower()
-    if ua.startswith("vercel-cron"):
-        return True
-    allowed = {
-        os.getenv("CRON_SECRET"),
-        os.getenv("EMAIL_CRON_SECRET"),
-        "newcollab-cron-2026",
-        os.getenv("ADMIN_TOKEN"),
-    }
-    allowed -= {None, ""}
-    secret = (
-        request.headers.get("X-Cron-Secret")
-        or request.headers.get("X-Cron-Token")
-        or request.headers.get("X-Admin-Token")
-        or request.args.get("secret")
-        or request.args.get("cron_token")
-    )
-    auth = request.headers.get("Authorization") or ""
-    bearer = auth.split(" ", 1)[1].strip() if auth.lower().startswith("bearer ") else ""
-    return secret in allowed or bearer in allowed
+def _waiting_email_cron_authorized():
+    from services.admin_auth import cron_request_ok
+    return cron_request_ok()
 
 
 @brand_pr_roster_bp.route("/cron/waiting-emails", methods=["GET", "POST"])
