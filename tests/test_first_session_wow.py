@@ -91,7 +91,7 @@ class FirstMatchesCopyTests(unittest.TestCase):
         brands = [{"name": n, "reply_signal": self.ANSWERS} for n in ("A", "B", "C")]
         say = persona_first_matches("Ava", {}, brands, batch=True)
         self.assertIn("answer Newcollab creators who pitch them", say)
-        self.assertIn("**Write all 3 pitches**", say)
+        self.assertIn("I'll write a pitch for each", say)
         self.assertNotIn("?", say)
 
     def test_partial_answers(self):
