@@ -71,7 +71,9 @@ def test_reconnect_requeues_account_failures():
 def test_autopilot_ships_to_the_signup_region_when_no_city():
     loc = rpa.autopilot_location({"regions": '["US"]'}, {}, {})
     assert loc == {"city": "", "country": "United States", "display": "United States", "needs_location": False}
-    assert rpa.autopilot_location({"regions": '["North America"]'}, {}, {})["needs_location"] is True
+    # No usable location at all: still never blocks, the pitch just has no location line.
+    assert rpa.autopilot_location({"regions": '["North America"]'}, {}, {}) == \
+        {"city": "", "country": "", "display": "", "needs_location": False}
     addr = {"shipping_address": {"city": "Austin", "country": "United States"}}
     assert rpa.autopilot_location(addr, {}, {})["display"].startswith("Austin")
 

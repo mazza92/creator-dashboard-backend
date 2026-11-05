@@ -1568,7 +1568,8 @@ def bootstrap():
                     # Brands only: credits are spent when the creator taps "Write all 3 pitches", never on open.
                 }
             shipping = resolve_pitch_location(creator, scrape, notes)
-            if not auto_action and shipping.get("needs_location") and not notes.get("location_asked_at"):
+            # Never ask for a city: pitches use the country when known and otherwise just "product + shipping".
+            if False and not auto_action and shipping.get("needs_location") and not notes.get("location_asked_at"):
                 greeting = with_location_ask(greeting)
                 notes["location_asked_at"] = utc_iso_now()
                 notes["awaiting_location"] = True
@@ -2095,15 +2096,7 @@ def _run_chip(state, action, chip_id, data):
             state.task_chips.insert(0, batch)
         say = persona_first_matches(state.first, state.notes.get("survey"), state.brands,
                                     niche=niche.strip().lower(), live=live, batch=bool(batch))
-        shipping = resolve_pitch_location(state.creator, state.scrape, state.notes)
-        if shipping.get("needs_location"):
-            from services.polly_tools import _country_only_location
-            if _country_only_location(state):
-                shipping = {"needs_location": False}  # the signup country is enough to write the pitches
-        if shipping.get("needs_location") and not state.notes.get("location_asked_at"):
-            say = with_location_ask(say)
-            state.notes["location_asked_at"] = utc_iso_now()
-        state.final_say = say
+        state.final_say = say  # no city question: pitches never wait on a location
     return prior
 
 
@@ -2378,13 +2371,15 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
                 status = "already_sent"
             elif not item.get("email"):
                 status = "no_inbox"
-            elif pitch_has_placeholder(item.get("body") or ""):
+            elif False:
                 status = "needs_location"
             elif revoked:
                 status = "failed"
             else:
                 try:
                     from services.kit_view_tracking import track_kit_links
+                    from services.polly import drop_location_placeholder
+                    item["body"] = drop_location_placeholder(item.get("body") or "")
                     item["body"] = track_kit_links(item.get("body") or "", creator_id, item.get("brand_id"))
                     sent_ids = send_email(conn, creator_id, item["email"], item.get("subject") or "",
                                           item.get("body") or "", from_name=from_name)

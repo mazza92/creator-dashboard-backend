@@ -293,14 +293,11 @@ class AutoFillTests(unittest.TestCase):
         self.assertEqual(self.emails, [7])  # new pitches land in today's line, not a note or email of their own
         self.assertEqual(self.notes, [])
 
-    def test_missing_location_asks_once(self):
+    def test_missing_location_never_blocks(self):
         with mock.patch("services.polly.resolve_pitch_location", return_value={"needs_location": True}):
             self._run([{"creator_id": 7, "need": 6, "fill_blocked": None}])
-            self._run([{"creator_id": 7, "need": 6, "fill_blocked": "needs_location"}])
-        self.assertEqual(self.drafted, [])
-        self.assertEqual(len(self.notes), 1)
-        self.assertIn("city", self.notes[0])
-        self.assertEqual(self.marked[0], (7, self.NOW + pa.FILL_BLOCKED_WAIT, "needs_location"))
+        self.assertTrue(self.drafted)  # pitches go out without a location line; nobody is asked for a city
+        self.assertFalse(any("city" in n for n in self.notes))
 
 
 if __name__ == "__main__":

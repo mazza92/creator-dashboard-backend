@@ -498,6 +498,11 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         R._record_polly_draft(state.creator_id, pitch["brand_id"], pitch["brand_name"],
                               credit_used=int(pkg.get("credits_used") or 0) > 0)
         state.notes = mark_draft_pending(state.notes, {"id": brand_id, "name": brand_name})
+    if pitch_has_placeholder(str(pitch.get("body") or "")):
+        from services.polly import drop_location_placeholder
+        pitch = {**pitch, "body": drop_location_placeholder(pitch.get("body") or ""), "needs_location": False}
+        if pitch.get("email"):
+            pitch["mailto"] = build_mailto(pitch["email"], pitch.get("subject") or "", pitch["body"])
     state.pitch = pitch
     if pitch.get("email") and brand_id and not pitch.get("is_reply"):
         # Kept server-side so 'Send for me' sends exactly this text to this inbox (the client can't redirect it).
@@ -542,7 +547,8 @@ BATCH_MAX = 3
 
 
 def batch_item(pitch: Dict[str, Any]) -> Dict[str, Any]:
-    body = str(pitch.get("body") or "")
+    from services.polly import drop_location_placeholder
+    body = drop_location_placeholder(str(pitch.get("body") or ""))
     return {
         "brand_id": _int(pitch.get("brand_id")),
         "brand_name": pitch.get("brand_name"),
@@ -752,7 +758,8 @@ def _pitch_location(state: TurnState):
         return override, str(override.get("display") or "").strip()
     shipping = resolve_pitch_location(state.creator, state.scrape, state.notes)
     if shipping.get("needs_location"):
-        shipping = _country_only_location(state) or shipping  # 'shipping to United States' beats [CITY, COUNTRY]
+        # 'shipping to United States' when the country is known; otherwise no location at all. Never ask.
+        shipping = _country_only_location(state) or {"city": "", "country": "", "display": "", "needs_location": False}
     loc_display = ""
     if not shipping.get("needs_location"):
         loc_display = str(shipping.get("display") or "").strip()
