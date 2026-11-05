@@ -10,6 +10,7 @@ Add OPENAI_API_KEY to .env to enable. Without it the service returns None
 and the email gracefully skips the AI hero (falls back to placeholder text).
 """
 
+from services.supabase_headers import supabase_auth_headers
 import hashlib
 import logging
 import os
@@ -429,14 +430,14 @@ def _upload_to_supabase(image_bytes: bytes, filename: str) -> str | None:
         # Create bucket (idempotent — ignored if already exists)
         requests.post(
             f"{SUPABASE_URL}/storage/v1/bucket",
-            headers={"Authorization": f"Bearer {SUPABASE_KEY}",
+            headers={**supabase_auth_headers(SUPABASE_KEY),
                      "Content-Type": "application/json"},
             json={"id": bucket, "name": bucket, "public": True},
             timeout=10,
         )
         up = requests.post(
             f"{SUPABASE_URL}/storage/v1/object/{bucket}/{filename}",
-            headers={"Authorization": f"Bearer {SUPABASE_KEY}",
+            headers={**supabase_auth_headers(SUPABASE_KEY),
                      "Content-Type": "image/png",
                      "x-upsert": "true"},
             data=image_bytes,

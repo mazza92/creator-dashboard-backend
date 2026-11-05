@@ -9,6 +9,7 @@ No new tables. Reuses:
 """
 
 from __future__ import annotations
+from services.supabase_headers import supabase_auth_headers
 
 import json
 import os
@@ -1446,7 +1447,7 @@ def _rehost_thumbnail_to_storage(image_url: str, creator_id: int) -> Optional[st
         upload = requests.post(
             f"{supabase_url}/storage/v1/object/{bucket}/{filename}",
             headers={
-                "Authorization": f"Bearer {supabase_key}",
+                **supabase_auth_headers(supabase_key),
                 "Content-Type": content_type,
                 "x-upsert": "true",
             },
