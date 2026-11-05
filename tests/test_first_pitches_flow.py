@@ -152,3 +152,36 @@ class FreeGmailCleanupTests(unittest.TestCase):
         self.assertIn("'pro'", sql)
         self.assertIn("followup_status IN ('scheduled', 'headsup')", sql)
         self.assertEqual(cur.execute.call_args[0][1][0], 30)
+
+
+class CountryOnlyFirstBatchTests(unittest.TestCase):
+    def test_signup_country_is_enough_for_the_first_pitches(self):
+        import services.polly_tools as pt
+        state = _state()
+        seen = []
+
+        def fake_draft(st, args):
+            seen.append(pt._pitch_location(st))
+            st.pitch = {"brand_id": args["brand_id"], "brand_name": "B", "email": "pr@b.com", "subject": "S",
+                        "body": "Hi, shipping to United States"}
+
+        routes = MagicMock()
+        routes._invoke_generate_pr_packages.return_value = {}
+        routes._unlock_balance.return_value = {"remaining": 1}
+        us = {"city": "", "country": "United States", "display": "United States", "needs_location": False}
+        with patch.object(pt, "_routes", return_value=routes), \
+                patch.object(pt, "find_brand", side_effect=lambda st, brand_id=None, brand_name=None: {"id": brand_id, "name": "B"}), \
+                patch.object(pt, "resolve_pitch_location", return_value={"needs_location": True}), \
+                patch.object(pt, "_country_only_location", return_value=us), \
+                patch.object(pt, "draft_pitch", side_effect=fake_draft):
+            out = pt.draft_pitch_batch(state, {"brand_ids": [1, 2]})
+        self.assertEqual(out["status"], "drafted")
+        self.assertEqual(routes._invoke_generate_pr_packages.call_args[1]["country"], "United States")
+        self.assertEqual(seen[0][1], "United States")
+        self.assertNotIn("pending_batch", state.notes)
+
+    def test_first_open_auto_action_writes_the_pitches(self):
+        import inspect
+        src = inspect.getsource(R)
+        i = src.index('"starter": "first_matches",\n                    "chip_id": "first_matches"')
+        self.assertIn('"then_batch": True', src[i:i + 500])

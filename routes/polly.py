@@ -1564,6 +1564,9 @@ def bootstrap():
                     "chip_id": "first_matches",
                     "deal": "gifted",
                     "skip_discovery": True,
+                    # First open: Polly finds the matches and writes the pitches in the same turn (nothing is
+                    # sent until the creator taps send), whether or not the welcome card showed.
+                    "then_batch": True,
                 }
             shipping = resolve_pitch_location(creator, scrape, notes)
             if not auto_action and shipping.get("needs_location") and not notes.get("location_asked_at"):
