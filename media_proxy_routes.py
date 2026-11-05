@@ -6,6 +6,7 @@ Fetching server-side and re-serving avoids broken thumbnails in the AI pitch mod
 """
 
 from __future__ import annotations
+from services.supabase_headers import supabase_auth_headers
 
 import os
 import re
@@ -364,7 +365,7 @@ def rehost_social_image(
         upload = requests.post(
             f"{supabase_url}/storage/v1/object/{bucket}/{filename}",
             headers={
-                "Authorization": f"Bearer {supabase_key}",
+                **supabase_auth_headers(supabase_key),
                 "Content-Type": content_type,
                 "x-upsert": "true",
             },
