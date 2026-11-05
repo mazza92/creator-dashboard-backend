@@ -186,3 +186,45 @@ class CountryOnlyFirstBatchTests(unittest.TestCase):
         src = inspect.getsource(R)
         i = src.index('"starter": "first_matches",\n                    "chip_id": "first_matches"')
         self.assertNotIn('"then_batch": True', src[i:i + 500])
+
+
+class SinglePitchSendTests(unittest.TestCase):
+    def _post(self, notes, brand_id=9):
+        send = MagicMock(return_value={"gmail_id": "g", "thread_id": "th9", "message_id": "<m>"})
+        saved = MagicMock()
+        with patch.object(R, "_creator_auth", return_value=(7, FakeConn(), {"first_name": "Maya"})), \
+                patch("services.polly_gmail.gmail_configured", return_value=True), \
+                patch("services.polly_gmail.load_account", return_value={"email": "maya@gmail.com"}), \
+                patch("services.polly_gmail.send_email", send), \
+                patch.object(R, "load_thread", return_value={"notes": notes}), \
+                patch("services.polly_memory.save_notes", saved), \
+                patch("services.polly_tracker.record_pitch_sent"), \
+                patch.object(R, "_kit_rates", return_value=(1500, True)), \
+                patch.object(R, "_creator_is_pro", return_value=False), \
+                patch("services.polly_autopilot.track_gmail_send") as track, \
+                patch("services.polly_alerts.record_handoff"), \
+                patch("services.polly_usage.log_usage"):
+            resp = app.test_client().post("/api/polly/pitch/send", json={"brand_id": brand_id})
+        return resp, send, saved, track
+
+    def test_sends_the_stored_pitch_only(self):
+        notes = {"pitch_outbox": {"9": {"brand_id": 9, "brand_name": "Love Lashes", "email": "pr@ll.com",
+                                        "subject": "S", "body": "Hi"}}}
+        resp, send, saved, track = self._post(notes)
+        data = resp.get_json()
+        self.assertEqual(resp.status_code, 200, data)
+        self.assertEqual(send.call_args[0][2], "pr@ll.com")
+        self.assertEqual(data["sent_summary"]["sent"][0]["brand_name"], "Love Lashes")
+        track.assert_called_once()
+        self.assertTrue(saved.call_args[0][2]["pitch_outbox"]["9"]["sent_at"])
+
+    def test_unknown_brand_is_refused(self):
+        resp, send, _, _ = self._post({"pitch_outbox": {}}, brand_id=3)
+        self.assertEqual(resp.status_code, 404)
+        send.assert_not_called()
+
+    def test_draft_stores_the_pitch_for_send_for_me(self):
+        import inspect
+        import services.polly_tools as pt
+        src = inspect.getsource(pt.draft_pitch)
+        self.assertIn('state.notes["pitch_outbox"]', src)

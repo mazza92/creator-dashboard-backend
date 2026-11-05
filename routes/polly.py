@@ -2344,10 +2344,10 @@ def activity_live():
             conn.close()
 
 
-@polly_bp.route("/pitch-batch/send", methods=["POST"])
-def pitch_batch_send():
-    """Send the drafted batch from the creator's Gmail. Only the server-stored drafts go out,
-    each to its brand's inbox, so the client can't redirect mail."""
+def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
+    """Send server-stored pitches from the creator's Gmail (the client never supplies content or inboxes),
+    then answer with the 'pitches sent' summary. load_items(notes) returns the item dicts (edited in place);
+    store_items(notes, items) returns the notes to save."""
     from services.polly import pitch_has_placeholder
     from services.polly_gmail import GmailError, gmail_configured, load_account, send_email
     from services.polly_memory import save_notes
@@ -2364,10 +2364,9 @@ def pitch_batch_send():
         if not account or account.get("revoked_at"):
             return jsonify({"success": False, "error": "gmail_not_connected"}), 409
         notes = load_thread(conn, creator_id).get("notes") or {}
-        batch = notes.get("pitch_batch") if isinstance(notes.get("pitch_batch"), dict) else {}
-        items = [i for i in (batch.get("items") or []) if isinstance(i, dict)]
+        items = load_items(notes)
         if not items:
-            return jsonify({"success": False, "error": "no_batch"}), 404
+            return jsonify({"success": False, "error": missing_error}), 404
         creator = creator or {}
         from_name = " ".join(p for p in (creator.get("first_name"), creator.get("last_name")) if p).strip()
         results, revoked = [], False
@@ -2422,7 +2421,7 @@ def pitch_batch_send():
                 result["to"] = item.get("email")
                 result["gmail_url"] = gmail_thread_url(account.get("email") or "", item.get("thread_id") or "")
             results.append(result)
-        notes["pitch_batch"] = {**batch, "items": items}
+        notes = store_items(notes, items)
         save_notes(conn, creator_id, notes)
 
         sent = [r["brand_name"] for r in results if r["status"] == "sent"]
@@ -2465,7 +2464,7 @@ def pitch_batch_send():
                 print(f"[Polly] quota_hit after send skipped: {err}")
         try:
             from services.polly_usage import log_usage
-            log_usage(conn, creator_id, "pitch_batch_send", ok=bool(sent),
+            log_usage(conn, creator_id, usage_event, ok=bool(sent),
                       meta={"sent": len(sent), "total": len(results)})
         except Exception:
             pass
@@ -2485,6 +2484,40 @@ def pitch_batch_send():
     finally:
         if conn:
             conn.close()
+
+
+@polly_bp.route("/pitch-batch/send", methods=["POST"])
+def pitch_batch_send():
+    """Send the drafted batch from the creator's Gmail."""
+    def load(notes):
+        batch = notes.get("pitch_batch") if isinstance(notes.get("pitch_batch"), dict) else {}
+        return [i for i in (batch.get("items") or []) if isinstance(i, dict)]
+
+    def store(notes, items):
+        batch = notes.get("pitch_batch") if isinstance(notes.get("pitch_batch"), dict) else {}
+        notes["pitch_batch"] = {**batch, "items": items}
+        return notes
+
+    return _gmail_send_flow(load, store, "pitch_batch_send", "no_batch")
+
+
+@polly_bp.route("/pitch/send", methods=["POST"])
+def pitch_single_send():
+    """'Send for me' on a single pitch card: the pitch Polly stored for that brand, from the creator's Gmail."""
+    brand_id = str((request.get_json(silent=True) or {}).get("brand_id") or "")
+
+    def load(notes):
+        item = ((notes.get("pitch_outbox") or {}).get(brand_id)) if brand_id else None
+        return [item] if isinstance(item, dict) else []
+
+    def store(notes, items):
+        outbox = dict(notes.get("pitch_outbox") or {})
+        if items:
+            outbox[brand_id] = items[0]
+        notes["pitch_outbox"] = outbox
+        return notes
+
+    return _gmail_send_flow(load, store, "pitch_single_send", "no_pitch")
 
 
 @polly_bp.route("/timeline", methods=["GET"])

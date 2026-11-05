@@ -499,6 +499,12 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
                               credit_used=int(pkg.get("credits_used") or 0) > 0)
         state.notes = mark_draft_pending(state.notes, {"id": brand_id, "name": brand_name})
     state.pitch = pitch
+    if pitch.get("email") and brand_id and not pitch.get("is_reply"):
+        # Kept server-side so 'Send for me' sends exactly this text to this inbox (the client can't redirect it).
+        outbox = dict(state.notes.get("pitch_outbox") or {})
+        outbox.pop(str(brand_id), None)
+        outbox[str(brand_id)] = {k: pitch.get(k) for k in ("brand_id", "brand_name", "email", "subject", "body")}
+        state.notes["pitch_outbox"] = dict(list(outbox.items())[-10:])
     state.brands = []
     state.add_chips(pitch_confirm_chips({"id": brand_id, "name": brand_name}))
     state.balance = R._unlock_balance(state.creator_id)
@@ -745,6 +751,8 @@ def _pitch_location(state: TurnState):
     if override:
         return override, str(override.get("display") or "").strip()
     shipping = resolve_pitch_location(state.creator, state.scrape, state.notes)
+    if shipping.get("needs_location"):
+        shipping = _country_only_location(state) or shipping  # 'shipping to United States' beats [CITY, COUNTRY]
     loc_display = ""
     if not shipping.get("needs_location"):
         loc_display = str(shipping.get("display") or "").strip()
