@@ -92,6 +92,15 @@ to use in your ads for 3 months." Rules:
 Return JSON only: {"subject": "...", "body": "..."}."""
 
 
+def _json_safe(value):
+    """Database numbers (Decimal) and dates in pitch facts: one creator's stats crashed the Autopilot fill."""
+    from decimal import Decimal
+
+    if isinstance(value, Decimal):
+        return float(value)
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
 def _llm_apply_prefs(pitch: Dict[str, Any], prefs: Dict[str, Any], facts: Dict[str, Any]) -> Dict[str, Any]:
     from services.polly_brain import BrainUnavailable, _Gemini, _parts, _text
     payload = {
@@ -101,7 +110,7 @@ def _llm_apply_prefs(pitch: Dict[str, Any], prefs: Dict[str, Any], facts: Dict[s
             "facts": facts,
             "subject": pitch.get("subject") or "",
             "body": pitch.get("body") or "",
-        })}]}],
+        }, default=_json_safe)}]}],
         "generationConfig": {
             "temperature": 0.3,
             "maxOutputTokens": 1400,
@@ -125,7 +134,7 @@ def _rewrite_with_prefs(pitch: Dict[str, Any], prefs: Dict[str, Any], facts: Dic
     if not body:
         return pitch
     old = str(pitch.get("subject") or "") + " " + str(pitch.get("body") or "")
-    allowed = _numbers(old + " " + json.dumps(prefs) + " " + json.dumps(facts))
+    allowed = _numbers(old + " " + json.dumps(prefs, default=_json_safe) + " " + json.dumps(facts, default=_json_safe))
     if _numbers(subject + " " + body) - allowed:
         print("[Polly] pitch prefs rewrite dropped: invented a number")
         return pitch
