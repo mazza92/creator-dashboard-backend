@@ -1143,9 +1143,10 @@ def _deliver_manager_note(conn, creator_id, first, career, tracker, balance, que
         is_pro = bool((balance or {}).get("is_unlimited"))
         now_iso = utc_iso_now()
         if which == "month":
+            picks = [b for b in (queue or []) if isinstance(b, dict) and b.get("name")][:3]
             message = month_plan_message(
                 first, career, load_last_month(conn, creator_id), is_pro,
-                brands=[b for b in (queue or []) if isinstance(b, dict) and b.get("name")],
+                brands=picks, batch_chip=None if is_pro else _batch_chip(picks, balance),
             )
             notes["month_plan_month"] = month_key()
         else:
@@ -2065,6 +2066,10 @@ def _run_chip(state, action, chip_id, data):
         return prior
     result = run_tool(state, call[0], call[1])
     prior.append({"tool": call[0], "args": call[1], "result": result})
+    if chip_id == "first_matches":
+        # The first matches are this month's plan: no 'New month' note in the month they sign up.
+        from services.polly_manager import month_key
+        state.notes["month_plan_month"] = month_key()
     if chip_id == "first_matches" and state.brands and not state.final_say:
         live = any((b or {}).get("source") in ("recruiting", "open_lists") for b in state.brands)
         niche = str(_match_scrape(state.scrape, state.notes, state.creator).get("primary_niche") or "")

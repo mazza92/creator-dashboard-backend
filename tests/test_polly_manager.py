@@ -72,14 +72,25 @@ class MonthPlanTests(unittest.TestCase):
         pro = month_report_lines({"pitched": 3, "kit_views": 2}, is_pro=True, matched_left=4)
         self.assertFalse(any("🔒" in line for line in pro))
 
-    def test_plan_message_carries_goal_brands_and_next_chip(self):
+    def test_free_plan_brings_back_the_free_pitches_with_one_tap(self):
         career = career_from_counts({"pitched": 1}, {}, pitch_cap=3)
-        msg = month_plan_message("Ana", career, {"pitched": 1}, False, brands=[{"id": i, "name": f"B{i}"} for i in range(7)])
+        batch = {"id": "pitch_all", "label": "Write all 3 pitches", "action": "pitch_batch", "brand_ids": [0, 1, 2]}
+        msg = month_plan_message("Ana", career, {"pitched": 1}, False,
+                                 brands=[{"id": i, "name": f"B{i}"} for i in range(7)], batch_chip=batch)
         self.assertEqual(msg["kind"], "brief")
-        self.assertIn("New month, Ana", msg["content"])
-        self.assertIn("**3 pitches**", msg["content"])
-        self.assertEqual(len(msg["brands"]), 5)
-        self.assertEqual(msg["task_chips"][0]["action"], "suggest_brands")
+        self.assertIn("New month, Ana: your 3 free pitches are back.", msg["content"])
+        self.assertIn("**Write all 3 pitches**", msg["content"])
+        self.assertNotIn("stage", msg["content"])
+        self.assertEqual(len(msg["brands"]), 3)
+        self.assertEqual(msg["task_chips"], [batch])
+
+    def test_pro_plan_is_hands_off(self):
+        career = career_from_counts({"pitched": 12}, {}, pitch_cap=None)
+        msg = month_plan_message("Ana", career, {"pitched": 12, "replies": 2}, True, brands=[{"id": 1, "name": "B"}])
+        self.assertIn("I'll keep pitching for you", msg["content"])
+        self.assertIn("nothing for you to do", msg["content"])
+        self.assertEqual(msg["brands"], [])
+        self.assertEqual(msg["task_chips"], [])
 
 
 class AwayBriefTests(unittest.TestCase):
