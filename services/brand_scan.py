@@ -6,6 +6,7 @@ radar's claim/ingest/cost code, daily spend cap and stale-run finalizer all appl
 """
 
 from __future__ import annotations
+from services.db_ddl import ensure_index
 
 import os
 import re
@@ -570,7 +571,7 @@ def ensure_leads_table(conn) -> None:
           ip TEXT,
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )""")
-    cur.execute("CREATE INDEX IF NOT EXISTS brand_scan_leads_email_idx ON brand_scan_leads (lower(email))")
+    ensure_index(cur, "CREATE INDEX IF NOT EXISTS brand_scan_leads_email_idx ON brand_scan_leads (lower(email))")
     cur.execute("ALTER TABLE brand_scan_leads ENABLE ROW LEVEL SECURITY")
     conn.commit()
 

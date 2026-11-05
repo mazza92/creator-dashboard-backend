@@ -6,6 +6,7 @@ published pr_brands row with an active roster so creators apply in-app.
 """
 
 from __future__ import annotations
+from services.db_ddl import ensure_index
 
 import json
 import re
@@ -167,12 +168,8 @@ def ensure_opportunity_gifted_pr_columns(cursor):
         cursor.execute("SET LOCAL lock_timeout = '2s'")
         cursor.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS pr_brand_id INTEGER")
         cursor.execute("ALTER TABLE pr_brands ADD COLUMN IF NOT EXISTS source_opportunity_id INTEGER")
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_opportunities_pr_brand_id ON opportunities(pr_brand_id)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_pr_brands_source_opportunity ON pr_brands(source_opportunity_id)"
-        )
+        ensure_index(cursor, "CREATE INDEX IF NOT EXISTS idx_opportunities_pr_brand_id ON opportunities(pr_brand_id)")
+        ensure_index(cursor, "CREATE INDEX IF NOT EXISTS idx_pr_brands_source_opportunity ON pr_brands(source_opportunity_id)")
         _GIFTED_PR_COLUMNS_READY = True
 
 

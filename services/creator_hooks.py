@@ -8,6 +8,7 @@ so Polly can pitch them).
 Allowance: 1 scan for free creators (ever), 4 a calendar month on Pro. Re-opening a scan is free.
 """
 from __future__ import annotations
+from services.db_ddl import ensure_index
 
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
@@ -41,7 +42,7 @@ def ensure_table(conn) -> None:
             created_at TIMESTAMPTZ DEFAULT NOW()
         )
     """)
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_polly_hook_scans_creator ON polly_hook_scans (creator_id, created_at)")
+    ensure_index(cur, "CREATE INDEX IF NOT EXISTS idx_polly_hook_scans_creator ON polly_hook_scans (creator_id, created_at)")
     # viewed_at: the creator saw the finished playbook in chat. notified_at: we emailed it (or decided not to).
     cur.execute("""SELECT 1 FROM information_schema.columns
                    WHERE table_name = 'polly_hook_scans' AND column_name = 'notified_at'""")

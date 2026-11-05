@@ -9,6 +9,7 @@ Each new message is emailed to the other side, at most once per thread every EMA
 conversation. Reading a thread marks the other side's messages as seen (shown as "Seen" to the sender).
 """
 from __future__ import annotations
+from services.db_ddl import ensure_index
 
 import re
 import threading
@@ -56,7 +57,7 @@ def ensure_table(conn) -> None:
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
     """)
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_roster_messages_app ON roster_messages (application_id, created_at)")
+    ensure_index(cur, "CREATE INDEX IF NOT EXISTS idx_roster_messages_app ON roster_messages (application_id, created_at)")
     conn.commit()
     _READY = True
 

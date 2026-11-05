@@ -2,6 +2,7 @@
 """Brand Gifted UGC billing helpers ($299/mo)."""
 
 from __future__ import annotations
+from services.db_ddl import ensure_index
 
 import threading
 from typing import Any, Optional, Tuple
@@ -51,20 +52,16 @@ def ensure_brand_billing_schema(cursor, conn=None) -> None:
                 )
                 """
             )
-            cursor.execute(
-                """
+            ensure_index(cursor, """
                 CREATE INDEX IF NOT EXISTS idx_brand_billing_stripe_customer
                     ON brand_billing(stripe_customer_id)
                     WHERE stripe_customer_id IS NOT NULL
-                """
-            )
-            cursor.execute(
-                """
+                """)
+            ensure_index(cursor, """
                 CREATE INDEX IF NOT EXISTS idx_brand_billing_stripe_subscription
                     ON brand_billing(stripe_subscription_id)
                     WHERE stripe_subscription_id IS NOT NULL
-                """
-            )
+                """)
             if conn is not None:
                 conn.commit()
             _SCHEMA_READY = True

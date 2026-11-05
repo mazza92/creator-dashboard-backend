@@ -5,6 +5,7 @@ into Polly with a chip so one tap records the outcome (e.g. "They replied").
 """
 
 from __future__ import annotations
+from services.db_ddl import ensure_index
 
 import os
 from datetime import datetime, timedelta, timezone
@@ -105,9 +106,7 @@ def ensure_alert_tables(conn) -> None:
         )
         """
     )
-    cur.execute(
-        "CREATE INDEX IF NOT EXISTS idx_polly_email_log_creator ON polly_email_log (creator_id, kind, sent_at DESC)"
-    )
+    ensure_index(cur, "CREATE INDEX IF NOT EXISTS idx_polly_email_log_creator ON polly_email_log (creator_id, kind, sent_at DESC)")
     conn.commit()
     _ALERT_TABLES_READY = True
 

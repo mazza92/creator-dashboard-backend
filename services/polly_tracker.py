@@ -4,6 +4,7 @@ Integer IDs (creators.id / pr_brands.id). Does not invent brands.
 """
 
 from __future__ import annotations
+from services.db_ddl import ensure_index
 
 import json
 import os
@@ -281,12 +282,8 @@ def ensure_tracker_tables(cursor, conn) -> None:
         )
         """
     )
-    cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_polly_tasks_creator_status ON polly_tasks (creator_id, status)"
-    )
-    cursor.execute(
-        "CREATE INDEX IF NOT EXISTS idx_polly_timeline_creator ON polly_timeline_events (creator_id, occurred_at DESC)"
-    )
+    ensure_index(cursor, "CREATE INDEX IF NOT EXISTS idx_polly_tasks_creator_status ON polly_tasks (creator_id, status)")
+    ensure_index(cursor, "CREATE INDEX IF NOT EXISTS idx_polly_timeline_creator ON polly_timeline_events (creator_id, occurred_at DESC)")
     conn.commit()
     _TRACKER_TABLES_READY = True
 

@@ -4,6 +4,7 @@ Does not store message text. Outcomes still come from timeline / applies.
 """
 
 from __future__ import annotations
+from services.db_ddl import ensure_index
 
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -38,12 +39,10 @@ def _cursor(conn):
         )
         """
     )
-    cur.execute(
-        """
+    ensure_index(cur, """
         CREATE INDEX IF NOT EXISTS idx_polly_usage_created
         ON polly_usage_events (created_at DESC)
-        """
-    )
+        """)
     conn.commit()
     _USAGE_TABLE_READY = True
     return cur

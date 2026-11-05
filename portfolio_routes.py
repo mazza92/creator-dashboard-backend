@@ -3,6 +3,7 @@ Portfolio Builder Routes for Creator Dashboard
 API endpoints for the new media kit portfolio builder - posts CRUD, settings, public kit, views tracking
 """
 
+from services.db_ddl import ensure_index
 from io import BytesIO
 from urllib.parse import parse_qs, urlparse, quote
 
@@ -469,13 +470,11 @@ def _ensure_free_portfolios_table(cursor, conn=None):
         )
         """
     )
-    cursor.execute(
-        """
+    ensure_index(cursor, """
         CREATE UNIQUE INDEX IF NOT EXISTS free_portfolios_email_lower_uidx
         ON free_portfolios (lower(btrim(email)))
         WHERE email IS NOT NULL AND btrim(email) <> ''
-        """
-    )
+        """)
     if conn is not None:
         conn.commit()
     _FREE_PORTFOLIOS_READY = True

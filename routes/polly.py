@@ -2440,6 +2440,11 @@ def pitch_batch_send():
         if sent and not _creator_is_pro(conn, creator_id):
             # Free pitches used: the natural moment to offer Polly doing this every week.
             chips.append({"id": "unlock_pro", "label": "Keep pitching for me every week", "action": "unlock_pro"})
+            try:
+                from lifecycle_email_engine import trigger_quota_hit
+                trigger_quota_hit(creator_id)  # deferred from drafting; once a month, only when the quota is hit
+            except Exception as err:
+                print(f"[Polly] quota_hit after send skipped: {err}")
         try:
             from services.polly_usage import log_usage
             log_usage(conn, creator_id, "pitch_batch_send", ok=bool(sent),

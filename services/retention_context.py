@@ -9,6 +9,7 @@ Stripe voids the invoice that falls inside the pause; Pro and Autopilot are off 
 and come back on the day the next invoice is charged.
 """
 from __future__ import annotations
+from services.db_ddl import ensure_index
 
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -197,7 +198,7 @@ def ensure_pause_table(conn) -> None:
             created_at TIMESTAMPTZ DEFAULT NOW()
         )
     """)
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_creator_pauses_state ON creator_pauses (state, starts_at)")
+    ensure_index(cur, "CREATE INDEX IF NOT EXISTS idx_creator_pauses_state ON creator_pauses (state, starts_at)")
     conn.commit()
     _PAUSE_READY = True
 
