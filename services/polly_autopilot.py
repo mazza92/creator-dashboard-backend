@@ -793,6 +793,14 @@ def track_gmail_send(conn, creator_id: int, brand_id: int, brand_name: str, to_e
     )
     conn.commit()
     _hold_day4_nudge(conn, creator_id, brand_id, now + NUDGE_HOLD)
+    # Polly sends the day-10 follow-up too, so the creator's own day-10 reminder waits as well.
+    cur.execute(
+        """UPDATE polly_tasks SET snoozed_until = %s
+           WHERE creator_id = %s AND brand_id = %s AND type = 'follow_up_due' AND metadata->>'wave' = '10'
+             AND status IN ('pending', 'in_progress')""",
+        (now + timedelta(days=11), creator_id, brand_id),
+    )
+    conn.commit()
 
 
 def auto_approve_due(conn, now: Optional[datetime] = None) -> int:
@@ -914,6 +922,8 @@ def run_autopilot(
             _set(conn, item["id"], to_email=check["email"])
             item["to_email"] = check["email"]
         try:
+            from services.kit_view_tracking import track_kit_links
+            item["body"] = track_kit_links(item.get("body") or "", cid, bid)
             sent = send(conn, cid, item["to_email"], item["subject"], item["body"],
                         from_name=_creator_names(conn, cid)["full"])
         except GmailError as err:

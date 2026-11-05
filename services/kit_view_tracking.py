@@ -339,3 +339,20 @@ def _notify_polly_portfolio_view(cursor, creator_id, brand_id, brand_name):
         )
     except Exception as err:
         print(f"[KIT_VIEW] Polly tracker skip: {err}")
+
+
+_UNTRACKED_KIT_RE = None
+
+
+def track_kit_links(body, creator_id, brand_id):
+    """Every newcollab kit link in a pitch carries this brand's ?ref= token, so a brand opening it shows up
+    as 'Saltwell Skin opened your media kit'. Links that already have a ref are left alone."""
+    import re
+
+    global _UNTRACKED_KIT_RE
+    if not body or not creator_id or not brand_id:
+        return body
+    if _UNTRACKED_KIT_RE is None:
+        _UNTRACKED_KIT_RE = re.compile(r"(https?://(?:www\.)?newcollab\.co/kit/[A-Za-z0-9_.\-]+)(?![A-Za-z0-9_.\-/?#])")
+    token = generate_kit_token(creator_id, brand_id)
+    return _UNTRACKED_KIT_RE.sub(lambda m: f"{m.group(1)}?ref={token}", body)

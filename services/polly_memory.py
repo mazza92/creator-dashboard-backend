@@ -120,6 +120,10 @@ def _clean_message(msg: Any) -> Optional[Dict[str, Any]]:
     hooks = msg.get("hooks")
     if isinstance(hooks, dict) and hooks.get("scan_id"):
         out["hooks"] = {k: hooks.get(k) for k in ("scan_id", "niche", "band")}
+    activity = msg.get("activity")
+    if isinstance(activity, dict) and isinstance(activity.get("items"), list) and activity["items"]:
+        out["activity"] = {"items": activity["items"][:6], "counts": activity.get("counts") or {},
+                           "month": activity.get("month") or {}}
     kind = msg.get("kind")
     if kind in ("nudge", "brief", "alert", "autopilot", "board", "hooks"):
         out["kind"] = kind

@@ -1149,10 +1149,13 @@ def _deliver_manager_note(conn, creator_id, first, career, tracker, balance, que
             )
             notes["month_plan_month"] = month_key()
         else:
-            message = away_brief_message(
-                away_items(tracker, unsent_drafts(conn, creator_id), since=notes.get("away_brief_at")),
+            from services.polly_activity import collect as collect_activity
+            from services.polly_manager import away_activity_message
+
+            message = away_activity_message(
+                collect_activity(conn, creator_id, since=notes.get("away_brief_at"), tracker=tracker,
+                                 drafts=unsent_drafts(conn, creator_id)),
                 career,
-                early=early_followup_brands(conn, creator_id),
             )
         notes["away_brief_at"] = now_iso
         messages = list(thread.get("messages") or [])
@@ -2313,6 +2316,22 @@ def thread():
             conn.close()
 
 
+@polly_bp.route("/activity/live", methods=["GET"])
+def activity_live():
+    """In-app only: kit views and replies since the page last checked, for a live toast. No email."""
+    from services.polly_activity import live_events
+
+    creator_id, conn, _creator = _creator_auth()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    try:
+        return jsonify({"success": True, "events": live_events(conn, creator_id, request.args.get("since")),
+                        "now": utc_iso_now()})
+    finally:
+        if conn:
+            conn.close()
+
+
 @polly_bp.route("/pitch-batch/send", methods=["POST"])
 def pitch_batch_send():
     """Send the drafted batch from the creator's Gmail. Only the server-stored drafts go out,
@@ -2354,9 +2373,18 @@ def pitch_batch_send():
                 status = "failed"
             else:
                 try:
+                    from services.kit_view_tracking import track_kit_links
+                    item["body"] = track_kit_links(item.get("body") or "", creator_id, item.get("brand_id"))
                     sent_ids = send_email(conn, creator_id, item["email"], item.get("subject") or "",
                                           item.get("body") or "", from_name=from_name)
                     item["sent_at"] = utc_iso_now()
+                    item["thread_id"] = (sent_ids or {}).get("thread_id") or ""
+                    try:
+                        from services.polly_alerts import record_handoff
+                        record_handoff(conn, creator_id, item.get("brand_id"), "gmail")
+                    except Exception as err:
+                        print(f"[Polly] batch handoff skipped: {err}")
+                        conn.rollback()
                     if item.get("brand_id"):
                         try:
                             from services.polly_autopilot import track_gmail_send
@@ -2375,7 +2403,13 @@ def pitch_batch_send():
                     print(f"[Polly] batch send failed creator={creator_id} brand={name}: {err}")
                     revoked = bool(err.revoked)
                     status = "failed"
-            results.append({"brand_id": item.get("brand_id"), "brand_name": name, "status": status})
+            result = {"brand_id": item.get("brand_id"), "brand_name": name, "status": status}
+            if status == "sent":
+                from services.polly_activity import gmail_thread_url
+                result["sent_at"] = item.get("sent_at")
+                result["to"] = item.get("email")
+                result["gmail_url"] = gmail_thread_url(account.get("email") or "", item.get("thread_id") or "")
+            results.append(result)
         notes["pitch_batch"] = {**batch, "items": items}
         save_notes(conn, creator_id, notes)
 
