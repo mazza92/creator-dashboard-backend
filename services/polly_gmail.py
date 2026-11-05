@@ -26,6 +26,10 @@ _TABLE_READY = False
 _ACCESS_CACHE: Dict[int, tuple] = {}
 
 
+NO_INBOX = "no_gmail_inbox"
+NO_INBOX_TEXT = "mail service not enabled"
+
+
 class GmailError(Exception):
     """Sending failed. ``revoked`` means the creator must reconnect."""
 
@@ -287,7 +291,13 @@ def send_email(conn, creator_id: int, to_email: str, subject: str, body: str, fr
         _mark_revoked(conn, creator_id, f"send http {resp.status_code}")
         raise GmailError("Gmail access was revoked", revoked=True)
     if resp.status_code != 200 or not data.get("id"):
-        raise GmailError(f"send failed: {(data.get('error') or {}).get('message') or resp.status_code}")
+        message = (data.get("error") or {}).get("message") or str(resp.status_code)
+        if NO_INBOX_TEXT in message.lower():
+            # A Google account made with a non-Gmail address (e.g. @aol.com) has no Gmail inbox, so every send
+            # fails. It's the account, not the pitch: stop and ask the creator to reconnect with a Gmail address.
+            _mark_revoked(conn, creator_id, NO_INBOX)
+            raise GmailError("This Google account has no Gmail inbox", revoked=True)
+        raise GmailError(f"send failed: {message}")
     cur = _cursor(conn)
     cur.execute("UPDATE polly_gmail_accounts SET last_sent_at = NOW(), last_error = NULL WHERE creator_id = %s",
                 (creator_id,))

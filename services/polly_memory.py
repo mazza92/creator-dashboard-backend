@@ -2,6 +2,26 @@
 
 from __future__ import annotations
 
+
+def _json_default(value):
+    """Database numbers and dates inside messages / brand cards / notes (Decimal broke the Autopilot fill)."""
+    from datetime import date, datetime
+    from decimal import Decimal
+
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return str(value)
+
+
+def _Json(obj):
+    import json as _j
+    from psycopg2.extras import Json as _PgJson
+
+    return _PgJson(obj, dumps=lambda o: _j.dumps(o, default=_json_default))
+
+
 import json
 import re
 from datetime import datetime, timedelta, timezone
@@ -181,7 +201,7 @@ def save_thread(
                 suggested_brands = EXCLUDED.suggested_brands,
                 updated_at = NOW()
             """,
-            (creator_id, Json(payload["messages"]), Json(payload["suggested_brands"])),
+            (creator_id, _Json(payload["messages"]), _Json(payload["suggested_brands"])),
         )
     else:
         cursor.execute(
@@ -196,9 +216,9 @@ def save_thread(
             """,
             (
                 creator_id,
-                Json(payload["messages"]),
-                Json(payload["suggested_brands"]),
-                Json(notes if isinstance(notes, dict) else {}),
+                _Json(payload["messages"]),
+                _Json(payload["suggested_brands"]),
+                _Json(notes if isinstance(notes, dict) else {}),
             ),
         )
     conn.commit()
@@ -267,6 +287,6 @@ def save_notes(conn, creator_id: int, notes: Dict[str, Any]) -> None:
     ensure_polly_thread_table(cursor, conn)
     cursor.execute(
         "UPDATE polly_threads SET notes = %s, updated_at = NOW() WHERE creator_id = %s",
-        (Json(notes if isinstance(notes, dict) else {}), creator_id),
+        (_Json(notes if isinstance(notes, dict) else {}), creator_id),
     )
     conn.commit()

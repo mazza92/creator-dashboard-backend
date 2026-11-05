@@ -56,6 +56,7 @@ def record_misses(conn, day: date) -> List[Dict[str, Any]]:
                   AND q.sent_at >= %s AND q.sent_at < %s) AS sent
         FROM polly_autopilot a
         JOIN polly_gmail_accounts g ON g.creator_id = a.creator_id AND g.revoked_at IS NULL
+        JOIN creators pc ON pc.id = a.creator_id AND (pc.unlocks_tier = 'pro' OR pc.subscription_tier = 'pro')
         WHERE a.enabled""", (start, start + timedelta(days=1)))
     misses = []
     for r in cur.fetchall():

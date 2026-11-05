@@ -298,11 +298,25 @@ def add_draft(conn, creator_id: int, brand_id: int, brand_name: str, to_email: s
         RETURNING id, brand_id, brand_name, to_email, subject, body, status
         """,
         (creator_id, brand_id, brand_name, to_email, subject, body, bool(announced),
-         _json.dumps(meta) if meta else None),
+         _json.dumps(meta, default=str) if meta else None),
     )
     row = cur.fetchone()
     conn.commit()
     return dict(row) if row else {}
+
+
+def requeue_account_failures(conn, creator_id: int) -> int:
+    """After a Gmail reconnect: pitches that failed because of the account (not the brand) go out again."""
+    ensure_autopilot_tables(conn)
+    cur = conn.cursor()
+    cur.execute(
+        """UPDATE polly_autopilot_queue SET status = 'draft', error = NULL, scheduled_for = NULL
+           WHERE creator_id = %s AND status = 'failed'
+             AND (error ILIKE '%%mail service not enabled%%' OR error ILIKE '%%no Gmail inbox%%')""",
+        (creator_id,),
+    )
+    conn.commit()
+    return cur.rowcount
 
 
 def list_items(conn, creator_id: int, limit: int = 40) -> List[Dict[str, Any]]:
@@ -864,8 +878,13 @@ def run_autopilot(
         except GmailError as err:
             _set(conn, item["id"], error=str(err)[:300], **({} if err.revoked else {"status": "failed"}))
             if err.revoked:
-                note(conn, cid, "I couldn't send from your Gmail: access was removed. Reconnect it in "
-                                "**Autopilot** and I'll pick up where I left off.", [])
+                if "no Gmail inbox" in str(err):
+                    note(conn, cid, "I can't send from that Google account: it has no Gmail inbox (it was made "
+                                    "with a non-Gmail address). Reconnect **Autopilot** with a Gmail address and "
+                                    "I'll send your waiting pitches.", [])
+                else:
+                    note(conn, cid, "I couldn't send from your Gmail: access was removed. Reconnect it in "
+                                    "**Autopilot** and I'll pick up where I left off.", [])
             out["failed"] += 1
             continue
         follows = item.get("followups") if item.get("followups") is not None else DEFAULT_FOLLOWUPS

@@ -113,7 +113,13 @@ def gmail_email(first_name: str, facts: Dict[str, Any], unsubscribe_url: str = "
     from services.polly_alerts import render_email
     from services.pro_trial import _link
 
-    if facts.get("revoked"):
+    if facts.get("no_inbox"):
+        address = escape(str(facts.get("address") or "the Google account you connected"))
+        subject = "Connect a Gmail address so I can send your pitches"
+        lead = (f"You connected <strong>{address}</strong>, but that Google account has no Gmail inbox (it was "
+                "made with a non-Gmail address), so Google won't let me send from it. Reconnect Autopilot with a "
+                "Gmail address, or a Google Workspace work email, and I'll send everything that's waiting.")
+    elif facts.get("revoked"):
         subject = "Your Gmail disconnected, so your pitches are on hold"
         lead = ("Your Gmail got disconnected from Newcollab, so I've stopped sending. "
                 "I send every pitch and follow-up from your own address, so nothing goes out until it's back.")
@@ -162,7 +168,9 @@ def chat_note(kind: str, facts: Dict[str, Any]) -> Dict[str, Any]:
     waiting = int(facts.get("waiting") or 0)
     tail = f" {_plural(waiting, 'pitch')} {'is' if waiting == 1 else 'are'} written and waiting." if waiting else ""
     if kind == GMAIL_KIND:
-        head = ("⚠️ Your Gmail disconnected, so I've stopped sending." if facts.get("revoked") else
+        head = ("⚠️ The Google account you connected has no Gmail inbox, so I can't send from it. "
+                "Reconnect with a Gmail address." if facts.get("no_inbox") else
+                "⚠️ Your Gmail disconnected, so I've stopped sending." if facts.get("revoked") else
                 "⚠️ I can't send your pitches yet: Gmail isn't connected.")
         text = f"{head}{tail} Connect it in **Autopilot** and I'll send on your next send day."
         label = "Connect Gmail"
@@ -182,9 +190,9 @@ def _candidates(conn, limit: int) -> List[Dict[str, Any]]:
                COALESCE(a.enabled, TRUE) AS enabled,
                CASE WHEN a.enabled IS FALSE THEN a.updated_at END AS paused_since,
                (g.creator_id IS NOT NULL AND g.revoked_at IS NULL) AS gmail,
-               g.revoked_at,
+               g.revoked_at, g.last_error AS gmail_error, g.email AS gmail_address,
                (SELECT COUNT(*) FROM polly_autopilot_queue q
-                WHERE q.creator_id = c.id AND q.status IN ('draft', 'approved'))::int AS waiting,
+                WHERE q.creator_id = c.id AND q.status IN ('draft', 'approved', 'failed'))::int AS waiting,
                ARRAY(SELECT l.sent_at FROM polly_email_log l
                      WHERE l.creator_id = c.id AND l.ok AND l.kind = %s) AS gmail_warned,
                ARRAY(SELECT l.sent_at FROM polly_email_log l
@@ -239,6 +247,7 @@ def email_autopilot_blocked(conn, limit: int = 40, dry_run: bool = False, send_f
             continue
         facts = {"waiting": row.get("waiting"), "enabled": row.get("enabled", True),
                  "revoked": bool(row.get("revoked_at")), "paused_since": row.get("paused_since"),
+                 "no_inbox": row.get("gmail_error") == "no_gmail_inbox", "address": row.get("gmail_address"),
                  "failed": last_gmail_failure(conn, cid) if kind == GMAIL_KIND else None}
         unsub = _unsubscribe_url(who["user_id"])
         mail = (gmail_email if kind == GMAIL_KIND else paused_email)(who["first"], facts, unsub)
