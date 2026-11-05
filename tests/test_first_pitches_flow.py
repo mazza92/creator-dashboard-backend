@@ -180,8 +180,8 @@ class CountryOnlyFirstBatchTests(unittest.TestCase):
         self.assertEqual(seen[0][1], "United States")
         self.assertNotIn("pending_batch", state.notes)
 
-    def test_first_open_auto_action_writes_the_pitches(self):
+    def test_first_open_never_spends_credits(self):
         import inspect
         src = inspect.getsource(R)
         i = src.index('"starter": "first_matches",\n                    "chip_id": "first_matches"')
-        self.assertIn('"then_batch": True', src[i:i + 500])
+        self.assertNotIn('"then_batch": True', src[i:i + 500])

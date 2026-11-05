@@ -1564,9 +1564,7 @@ def bootstrap():
                     "chip_id": "first_matches",
                     "deal": "gifted",
                     "skip_discovery": True,
-                    # First open: Polly finds the matches and writes the pitches in the same turn (nothing is
-                    # sent until the creator taps send), whether or not the welcome card showed.
-                    "then_batch": True,
+                    # Brands only: credits are spent when the creator taps "Write all 3 pitches", never on open.
                 }
             shipping = resolve_pitch_location(creator, scrape, notes)
             if not auto_action and shipping.get("needs_location") and not notes.get("location_asked_at"):
@@ -2091,6 +2089,10 @@ def _run_chip(state, action, chip_id, data):
         say = persona_first_matches(state.first, state.notes.get("survey"), state.brands,
                                     niche=niche.strip().lower(), live=live, batch=bool(batch))
         shipping = resolve_pitch_location(state.creator, state.scrape, state.notes)
+        if shipping.get("needs_location"):
+            from services.polly_tools import _country_only_location
+            if _country_only_location(state):
+                shipping = {"needs_location": False}  # the signup country is enough to write the pitches
         if shipping.get("needs_location") and not state.notes.get("location_asked_at"):
             say = with_location_ask(say)
             state.notes["location_asked_at"] = utc_iso_now()
