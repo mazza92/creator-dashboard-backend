@@ -468,8 +468,7 @@ def persona_first_matches(
     else:
         line = f"{these} {verb} a strong fit{where} and work with creators your size."
     if batch and n > 1:
-        ask = (f"Tap **Write all {n} pitches** and I'll write them now. "
-               "Then send them from your Gmail in one tap.")
+        ask = "I'll write a pitch for each, and you send them from your Gmail in one tap."
     else:
         ask = "Tap **Contact** on one and I'll write the pitch."
     return f"{opening}\n\n{line} {ask}"

@@ -2069,7 +2069,9 @@ def _run_chip(state, action, chip_id, data):
     if chip_id == "first_matches":
         # The first matches are this month's plan: no 'New month' note in the month they sign up.
         from services.polly_manager import month_key
+        from services.pro_manager import week_key
         state.notes["month_plan_month"] = month_key()
+        state.notes["board_week"] = week_key()  # nor a 'weekly report' (nothing happened yet) in the signup week
     if chip_id == "first_matches" and state.brands and not state.final_say:
         live = any((b or {}).get("source") in ("recruiting", "open_lists") for b in state.brands)
         niche = str(_match_scrape(state.scrape, state.notes, state.creator).get("primary_niche") or "")
