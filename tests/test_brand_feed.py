@@ -150,3 +150,47 @@ class AutopilotTargetsFirstTests(unittest.TestCase):
             out = ap._targets_first(object(), 1, matched, [3], {})
         self.assertEqual([b["id"] for b in out], [7, 5])
         self.assertTrue(out[0]["target"])
+
+
+class PitchTargetsTurnTests(unittest.TestCase):
+    def _state(self, balance):
+        from types import SimpleNamespace
+        chips = []
+        st = SimpleNamespace(balance=balance, notes={}, creator_id=1, final_say="", db=lambda: None,
+                             add_chips=chips.extend)
+        return st, chips
+
+    def _run(self, balance, targets):
+        from unittest import mock
+        import routes.polly as rp
+        st, chips = self._state(balance)
+        prior = []
+        with mock.patch("services.brand_feed.target_brands", return_value=targets), \
+                mock.patch.object(rp, "_pipeline_pitched_ids", return_value=[]):
+            call = rp._pitch_targets_call(st, prior)
+        return st, chips, call
+
+    T = [{"id": i, "name": f"Brand {i}"} for i in range(1, 6)]
+
+    def test_no_targets_says_where_to_add_them(self):
+        st, chips, call = self._run({"remaining": 3}, [])
+        self.assertIsNone(call)
+        self.assertIn("+ Target", st.final_say)
+
+    def test_free_pitches_left_write_that_many(self):
+        st, chips, call = self._run({"remaining": 2}, self.T)
+        self.assertEqual(call, ("draft_pitch_batch", {"brand_ids": [1, 2]}))
+        self.assertEqual(st._targets_rest, 0)
+
+    def test_pro_writes_three_and_autopilot_takes_the_rest(self):
+        st, chips, call = self._run({"is_unlimited": True}, self.T)
+        self.assertEqual(call[1]["brand_ids"], [1, 2, 3])
+        self.assertEqual(st._targets_rest, 2)
+
+    def test_out_of_free_pitches_offers_pro_naming_targets(self):
+        st, chips, call = self._run({"remaining": 0}, self.T)
+        self.assertIsNone(call)
+        self.assertIn("**5** brands on your targets", st.final_say)
+        self.assertIn("**Brand 1**", st.final_say)
+        self.assertEqual(chips[0]["label"], "Pitch my 5 targets · $19/mo")
+        self.assertEqual(chips[0]["action"], "unlock_pro")

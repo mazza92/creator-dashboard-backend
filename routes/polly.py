@@ -1924,6 +1924,52 @@ def _creator_is_pro(conn, creator_id):
     return any(str(v or "").lower() == "pro" for v in vals)
 
 
+def target_names(targets, n=3):
+    names = [f"**{t.get('name')}**" for t in (targets or [])[:n] if t.get("name")]
+    more = len(targets or []) - len(names)
+    return ", ".join(names) + (f" and {more} more" if more > 0 else "")
+
+
+def _pitch_targets_call(state, prior):
+    """'Pitch my target brands': the brands they saved from the Brands feed.
+
+    Free pitches left: write them now as a batch (same card as the first pitches). Pro: the same, and Autopilot
+    sends the rest of the targets before its own picks. No free pitches left: the Pro offer, naming them.
+    """
+    from services.brand_feed import target_brands
+    from services.polly import drop_pitched
+
+    try:
+        targets = drop_pitched(target_brands(state.db(), state.creator_id), state.notes,
+                               extra_ids=list(_pipeline_pitched_ids(state.creator_id) or []))
+    except Exception as err:
+        print(f"[Polly] targets load failed creator={state.creator_id}: {err}")
+        targets = []
+    prior.append({"tool": "load_targets", "result": {"count": len(targets)}})
+    if not targets:
+        state.final_say = ("You haven't saved any targets yet. In **Brands**, tap **+ Target** on the brands you "
+                           "like and I'll pitch them for you.")
+        return None
+    balance = state.balance or {}
+    pro = bool(balance.get("is_unlimited"))
+    try:
+        left = 99 if pro else max(int(balance.get("remaining") or 0), 0)
+    except (TypeError, ValueError):
+        left = 0
+    n = len(targets)
+    if not left:
+        state.final_say = (
+            f"You have **{n}** brand{'s' if n != 1 else ''} on your targets: {target_names(targets)}.\n\n"
+            "Your free pitches are used this month. On **Pro ($19/mo)** I pitch all your targets first, "
+            "from your Gmail, then keep going with 3 new brands every weekday.")
+        state.add_chips([{"id": "unlock_pro", "action": "unlock_pro",
+                          "label": f"Pitch my {n} target{'s' if n != 1 else ''} · $19/mo"}])
+        return None
+    ids = [int(t["id"]) for t in targets][: min(3, left)]
+    state._targets_rest = max(n - len(ids), 0) if pro else 0
+    return ("draft_pitch_batch", {"brand_ids": ids})
+
+
 def first_batch_say(first_name, items, balance=None):
     """What Polly says over the first batch: the job is done, one tap sends it, replies come to their inbox."""
     items = items or []
@@ -2034,6 +2080,10 @@ def _run_chip(state, action, chip_id, data):
         return prior
     elif action == "pitch_batch":
         call = ("draft_pitch_batch", {"brand_ids": list(data.get("brand_ids") or [])[:3]})
+    elif action == "pitch_targets":
+        call = _pitch_targets_call(state, prior)
+        if not call:
+            return prior
     elif action == "set_niche" and data.get("niche"):
         from services.creator_niches import save_creator_niches
         import json
@@ -2067,6 +2117,10 @@ def _run_chip(state, action, chip_id, data):
         return prior
     result = run_tool(state, call[0], call[1])
     prior.append({"tool": call[0], "args": call[1], "result": result})
+    rest = getattr(state, "_targets_rest", 0)
+    if action == "pitch_targets" and rest and (result or {}).get("ok") and state.final_say:
+        state.final_say += (f"\n\nYour other **{rest}** target{'s' if rest != 1 else ''} go out first with "
+                            "Autopilot, before any new matches.")
     if chip_id == "first_matches":
         # The first matches are this month's plan: no 'New month' note in the month they sign up.
         from services.polly_manager import month_key

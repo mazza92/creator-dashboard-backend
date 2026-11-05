@@ -708,10 +708,19 @@ RADAR_CHIP = {
 }
 
 
+TARGETS_CHIP = {
+    "id": "pitch_targets",
+    "label": "🎯 Pitch my target brands",
+    "hint": "The brands you saved in Brands",
+    "action": "pitch_targets",
+}
+
+
 def with_radar_chip(chips: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-    """Every chip row leads with the radar (beta we want used), exactly once."""
-    chips = [c for c in (chips or []) if (c or {}).get("action") != "gifting_radar"]
-    return [dict(RADAR_CHIP)] + chips
+    """Every chip row leads with 'Pitch my target brands', exactly once. The TikTok radar chip is retired
+    (unused, and each search cost an Apify run); its posts now live in the Brands feed."""
+    chips = [c for c in (chips or []) if (c or {}).get("action") not in ("gifting_radar", "pitch_targets")]
+    return [dict(TARGETS_CHIP)] + chips
 
 
 def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) -> List[Dict[str, Any]]:
