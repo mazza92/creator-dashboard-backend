@@ -29,7 +29,7 @@ EVENT = {"kit_view", "new_brand_push", "reply_win"}
 # max_quota_hit (lifecycle) and paywall_followup (Polly) fire at the same moment: one offer covers both.
 OFFER = {"paywall_followup", "free_week", "max_quota_hit"}
 FREE_ONLY = OFFER | {"polly_brief", "polly_intro", "month_report", "monday_checkin", "weekly_digest",
-                     "saved_brands", "first_pitch"}  # Pro: Autopilot pitches saved brands itself
+                     "saved_brands", "first_pitch", "waitlist_1", "waitlist_2", "waitlist_3"}  # Pro: Autopilot pitches saved brands itself
 PRO_ONLY = {"autopilot_headsup", "ugc_roundup", "monday_board"}
 MIN_GAP = {
     "autopilot_headsup": timedelta(hours=72),
