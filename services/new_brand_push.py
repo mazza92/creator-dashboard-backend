@@ -229,7 +229,7 @@ def email_new_brand_pushes(conn, limit: int = 40, dry_run: bool = False, send_fn
         room = min(budget, PUSH_PER_BRAND - int(roster.get("pushed") or 0))
         for creator in matching_creators(roster, load_candidates(conn, roster["brand_id"]), room):
             cid = creator["creator_id"]
-            who = _recipient(conn, cid)
+            who = _recipient(conn, cid, kind="new_brand_push")
             if not who:
                 continue
             unsub = _unsubscribe_url(who["user_id"])

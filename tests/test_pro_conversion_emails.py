@@ -53,7 +53,7 @@ class TestPaywallFollowupEmail(unittest.TestCase):
         send = MagicMock(return_value={"success": True, "message_id": "re_1"})
         with patch.object(polly_alerts, "ensure_alert_tables"), \
                 patch.object(polly_alerts, "_cursor", return_value=cur), \
-                patch.object(polly_alerts, "_recipient", side_effect=lambda c, cid: recipients[cid]), \
+                patch.object(polly_alerts, "_recipient", side_effect=lambda c, cid, kind=None: recipients[cid]), \
                 patch.object(polly_alerts, "_unsubscribe_url", return_value=""), \
                 patch.object(polly_alerts, "_log_email") as log:
             out = polly_alerts.email_paywall_followups(conn, send_fn=send)

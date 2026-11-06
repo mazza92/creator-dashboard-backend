@@ -83,7 +83,7 @@ def email_free_week_offers(conn, limit: int = 25, dry_run: bool = False, send_fn
     out = []
     for row in _candidates(conn, limit, _now()):
         cid = row["creator_id"]
-        who = pa._recipient(conn, cid)
+        who = pa._recipient(conn, cid, kind="free_week")
         if not who or who["is_pro"] or not trial_eligible(pa._cursor(conn), cid):
             continue
         facts = pro_week_facts(conn, cid)

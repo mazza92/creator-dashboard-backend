@@ -388,7 +388,8 @@ def nudge_email(first_name: str, nudge: Dict[str, Any], unsubscribe_url: str = "
     }
 
 
-def _recipient(conn, creator_id: int) -> Optional[Dict[str, Any]]:
+def _recipient(conn, creator_id: int, kind: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Who to email, or None. With ``kind`` the email rulebook (services.email_policy) decides too."""
     cur = _cursor(conn)
     cur.execute(
         """
@@ -412,6 +413,11 @@ def _recipient(conn, creator_id: int) -> Optional[Dict[str, Any]]:
     )
     first = (row.get("first_name") or "").strip()
     row["first"] = first.split()[0].capitalize() if first else ""
+    if kind:
+        from services.email_policy import allowed
+
+        if not allowed(conn, creator_id, kind, row["is_pro"]):
+            return None
     return row
 
 
@@ -489,7 +495,7 @@ def email_kit_views(conn, limit: int = 40, dry_run: bool = False, send_fn: Optio
             continue
         if _recently_emailed(conn, row["creator_id"], ["kit_view"], KIT_VIEW_THROTTLE):
             continue
-        who = _recipient(conn, row["creator_id"])
+        who = _recipient(conn, row["creator_id"], kind="kit_view")
         if not who:
             continue
         unsub = _unsubscribe_url(who["user_id"])
@@ -523,7 +529,7 @@ def email_nudges(conn, delivered: List[Dict[str, Any]], dry_run: bool = False, s
             continue
         if _recently_emailed(conn, cid, ["nudge"], NUDGE_EMAIL_THROTTLE):
             continue
-        who = _recipient(conn, cid)
+        who = _recipient(conn, cid, kind="nudge")
         if not who:
             continue
         unsub = _unsubscribe_url(who["user_id"])
@@ -607,7 +613,7 @@ def email_never_opened(conn, limit: int = 25, dry_run: bool = False, send_fn: Op
     )
     out = []
     for row in [dict(r) for r in cur.fetchall()]:
-        who = _recipient(conn, row["creator_id"])
+        who = _recipient(conn, row["creator_id"], kind="polly_intro")
         if not who:
             continue
         survey = row.get("onboarding_survey")
@@ -789,7 +795,7 @@ def email_unsent_briefs(conn, limit: int = 25, dry_run: bool = False, send_fn: O
         drafts = unsent_drafts(conn, cid)
         if not drafts:
             continue
-        who = _recipient(conn, cid)
+        who = _recipient(conn, cid, kind="polly_brief")
         if not who:
             continue
         if who["is_pro"]:
@@ -870,7 +876,7 @@ def email_month_reports(conn, limit: int = 40, dry_run: bool = False, send_fn: O
     out = []
     for row in [dict(r) for r in cur.fetchall()]:
         cid = row["creator_id"]
-        who = _recipient(conn, cid)
+        who = _recipient(conn, cid, kind="month_report")
         if not who or who["is_pro"]:
             continue
         last = load_last_month(conn, cid)
@@ -985,7 +991,7 @@ def email_paywall_followups(conn, limit: int = 25, dry_run: bool = False, send_f
     out = []
     for row in [dict(r) for r in cur.fetchall()]:
         cid = row["creator_id"]
-        who = _recipient(conn, cid)
+        who = _recipient(conn, cid, kind="paywall_followup")
         if not who or who["is_pro"]:
             continue
         unsub = _unsubscribe_url(who["user_id"])
@@ -1157,17 +1163,17 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
         from services.pro_delivery_watch import email_founder_delivery
         from services.pro_manager import email_monday_boards, email_renewal_notes
         from services.pro_trial import email_trial_journey
-        from services.pro_upsell import email_pro_week
         from services.free_week_offer import email_free_week_offers
         from services.ugc_roundup import email_ugc_roundups
 
-        for job in (email_new_brand_pushes, email_founder_wins, email_trial_journey, email_autopilot_blocked,
-                    email_founder_delivery,
-                    email_month_reports,
-                    email_unsent_briefs, email_renewal_notes, email_monday_boards,
-                    email_ugc_roundups, email_paywall_followups, email_pro_week, email_free_week_offers,
-                    email_weekly_digests,
-                    email_second_recovery):
+        # Order = priority under the one-email-a-day rule (services.email_policy): transactional first, then
+        # news (a brand that matches them), then their own work and progress, then the offers. pro_week retired.
+        for job in (email_trial_journey, email_autopilot_blocked, email_second_recovery, email_renewal_notes,
+                    email_founder_wins, email_founder_delivery,
+                    email_new_brand_pushes,
+                    email_unsent_briefs, email_month_reports, email_monday_boards, email_weekly_digests,
+                    email_ugc_roundups,
+                    email_paywall_followups, email_free_week_offers):
             try:
                 emails += job(conn, dry_run=dry_run, send_fn=send_fn, test_email=test_email)
             except Exception as err:

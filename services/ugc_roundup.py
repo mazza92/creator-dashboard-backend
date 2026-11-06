@@ -224,7 +224,7 @@ def email_ugc_roundups(conn, limit: int = 40, dry_run: bool = False, send_fn: Op
     out: List[Dict[str, Any]] = []
     for row in [dict(r) for r in cur.fetchall()]:
         cid = row["creator_id"]
-        who = _recipient(conn, cid)
+        who = _recipient(conn, cid, kind="ugc_roundup")
         if not who or not who.get("is_pro"):
             continue
         try:

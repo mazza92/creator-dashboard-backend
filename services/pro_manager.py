@@ -633,7 +633,7 @@ def email_monday_boards(conn, limit: int = 40, dry_run: bool = False, send_fn: O
     out: List[Dict[str, Any]] = []
     for row in [dict(r) for r in cur.fetchall()]:
         cid = row["creator_id"]
-        who = _recipient(conn, cid)
+        who = _recipient(conn, cid, kind="monday_board")
         if not who:
             continue
         try:
