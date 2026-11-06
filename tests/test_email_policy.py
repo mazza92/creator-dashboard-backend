@@ -125,3 +125,12 @@ class MomentKindsPolicyTests(unittest.TestCase):
         self.assertIn("reply_win", ep.EVENT)
         self.assertIn("saved_brands", ep.FREE_ONLY)
         self.assertEqual(ep.MIN_GAP["niche_gifting"].days, 6)
+
+
+class WaitlistOffTests(unittest.TestCase):
+    def test_pending_creators_get_no_waitlist_emails(self):
+        for k in ("waitlist_1", "waitlist_2", "waitlist_3"):
+            self.assertEqual(ep.decide(None, 1, k, False), (False, "retired"))
+        import inspect
+        from services import polly_alerts
+        self.assertNotIn("email_waitlist_sequence", inspect.getsource(polly_alerts.run_alerts))

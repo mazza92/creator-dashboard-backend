@@ -1165,16 +1165,15 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
         from services.pro_trial import email_trial_journey
         from services.free_week_offer import email_free_week_offers
         from services.ugc_roundup import email_ugc_roundups
-        from services.waitlist_sequence import email_waitlist_sequence
         from services.moment_emails import (email_first_pitch, email_niche_gifting, email_reply_wins,
                                             email_saved_brands)
 
         # Order = priority under the one-email-a-day rule (services.email_policy): transactional first, then
-        # news (a brand that matches them), then their own work and progress, then the offers. pro_week retired.
+        # news (a brand that matches them), then their own work and progress, then the offers. pro_week retired;
+        # waitlist sequence off (Nov 6): pending creators are mostly ones we won't approve, so we don't email them.
         for job in (email_trial_journey, email_autopilot_blocked, email_second_recovery, email_renewal_notes,
                     email_founder_wins, email_founder_delivery,
                     email_reply_wins, email_new_brand_pushes,
-                    email_waitlist_sequence,
                     email_first_pitch, email_unsent_briefs, email_saved_brands, email_month_reports, email_monday_boards, email_weekly_digests,
                     email_niche_gifting, email_ugc_roundups,
                     email_paywall_followups, email_free_week_offers):
