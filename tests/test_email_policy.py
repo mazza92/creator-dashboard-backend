@@ -118,3 +118,10 @@ class EmailPolicyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MomentKindsPolicyTests(unittest.TestCase):
+    def test_kinds(self):
+        self.assertIn("reply_win", ep.EVENT)
+        self.assertIn("saved_brands", ep.FREE_ONLY)
+        self.assertEqual(ep.MIN_GAP["niche_gifting"].days, 6)
