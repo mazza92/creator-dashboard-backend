@@ -1087,394 +1087,142 @@ def brands_missing_social():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@admin_brands_bp.route('/brands/needs-profile', methods=['GET'])
+@admin_required
+def brands_needing_profile():
+    """Brand IDs whose category was never checked by the evidence-based enricher (feed them to /brands/bulk-enrich).
+
+    ?source=meta_ads_library,tiktok_radar (default) or all; ?status=draft|published; ?limit=
+    """
+    try:
+        from services import brand_profile_ai
+        limit = min(int(request.args.get('limit', 5000)), 10000)
+        sources = [x.strip() for x in (request.args.get('source') or 'meta_ads_library,tiktok_radar').split(',')
+                   if x.strip()]
+        status_filter = request.args.get('status')
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        brand_profile_ai.ensure_profile_columns(cursor)
+        conn.commit()
+        query = """
+            SELECT id, brand_name AS name, website, category, source, COALESCE(status, 'published') AS status
+            FROM pr_brands WHERE category_checked_at IS NULL
+        """
+        params = []
+        if 'all' not in sources:
+            query += " AND source = ANY(%s)"
+            params.append(sources)
+        if status_filter in ('published', 'draft'):
+            query += " AND COALESCE(status, 'published') = %s"
+            params.append(status_filter)
+        query += " ORDER BY (COALESCE(status, 'published') = 'published') DESC, id DESC LIMIT %s"
+        params.append(limit)
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        conn.close()
+        return jsonify({'success': True, 'count': len(rows), 'ids': [r['id'] for r in rows], 'brands': rows}), 200
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @admin_brands_bp.route('/brands/<int:brand_id>/enrich', methods=['POST'])
 @admin_required
 def enrich_brand(brand_id):
     """
-    AI-enrich a single brand using Jina AI + Claude Haiku
-    Extracts hero_product, target_audience, tone, price_point, social handles,
-    min_followers, collaboration_type, SEO fields, success_stories, response metrics
+    AI-enrich one brand from real evidence (website text, Shopify products, TikTok captions that tagged it).
+
+    An admin pressing the button wants the brand fixed, so the category follows a confident answer and the
+    profile fields (description, hero product, audience, tone, price, SEO) are replaced. Hand-typed social
+    handles and PR contact fields are only filled when empty. No invented success stories.
 
     Returns:
-        { "success": true, "data": {...} } on success
-        { "success": false, "error": "..." } on failure
+        { "success": true, "data": {...changed fields..., "category_confidence", "category_reason"} }
+        { "success": false, "error": "..." }
     """
     import requests as req
-    import json as jsonlib
-    import re
+    from services import brand_profile_ai
 
-    ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
-    if not ANTHROPIC_API_KEY:
+    if not os.getenv('ANTHROPIC_API_KEY'):
         return jsonify({'success': False, 'error': 'ANTHROPIC_API_KEY not configured'}), 500
 
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        # Get brand details including current social handles
+        brand_profile_ai.ensure_profile_columns(cursor)
+        conn.commit()
         cursor.execute('''
-            SELECT id, brand_name, website, category,
-                   instagram_handle, tiktok_handle, youtube_handle,
-                   min_followers, collaboration_type, seo_title, seo_description,
-                   success_stories, response_rate, avg_response_time_days
+            SELECT id, brand_name, website, category, description, hero_product, target_audience, tone,
+                   price_point, instagram_handle, tiktok_handle, youtube_handle, min_followers,
+                   collaboration_type, seo_title, seo_description, cover_image_url
             FROM pr_brands WHERE id = %s
         ''', (brand_id,))
         brand = cursor.fetchone()
-
         if not brand:
-            conn.close()
             return jsonify({'success': False, 'error': 'Brand not found'}), 404
 
-        if not brand.get('website'):
-            conn.close()
-            return jsonify({'success': False, 'error': 'Brand has no website URL'}), 400
-
-        website = brand['website']
-        if not website.startswith('http'):
+        website = (brand.get('website') or '').strip()
+        if website and not website.startswith('http'):
             website = f'https://{website}'
+        brand = dict(brand, website=website or None)
 
-        # Step 1: Fetch page content via Jina AI
-        try:
-            jina_res = req.get(f"https://r.jina.ai/{website}", timeout=20, headers={
-                'User-Agent': 'Mozilla/5.0 (compatible; BrandEnricher/1.0)'
-            })
-            if jina_res.status_code != 200:
-                conn.close()
-                return jsonify({'success': False, 'error': f'Could not fetch website (status {jina_res.status_code})'}), 200
+        # Cover image from the homepage's OG tag when the brand has none.
+        cover = None
+        if website and not brand.get('cover_image_url'):
+            try:
+                from services.bulk_ai_enricher import scrape_brand_images
+                cover = (scrape_brand_images(website) or {}).get('cover_image_url')
+            except Exception as e:
+                print(f"[AI Enrich] cover skipped: {e}")
 
-            page_content = jina_res.text[:10000]  # Increased cap for more data
-        except req.Timeout:
-            conn.close()
-            return jsonify({'success': False, 'error': 'Website fetch timed out'}), 200
-        except Exception as e:
-            conn.close()
-            return jsonify({'success': False, 'error': f'Website fetch failed: {str(e)}'}), 200
-
-        # Step 1b: Also fetch raw HTML to extract OG image for cover_image_url
-        og_image_url = None
-        try:
-            from bs4 import BeautifulSoup
-            from urllib.parse import urlparse
-            print(f"[AI Enrich] Fetching OG image from: {website}")
-            raw_res = req.get(website, timeout=10, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }, allow_redirects=True)
-            print(f"[AI Enrich] Raw HTML fetch status: {raw_res.status_code}")
-            if raw_res.status_code == 200:
-                soup = BeautifulSoup(raw_res.text, 'html.parser')
-                # Try multiple OG image meta tags
-                og_image = soup.find('meta', property='og:image')
-                if not og_image:
-                    og_image = soup.find('meta', attrs={'name': 'og:image'})
-                if not og_image:
-                    og_image = soup.find('meta', property='twitter:image')
-                if og_image and og_image.get('content'):
-                    img_url = og_image['content']
-                    print(f"[AI Enrich] Found OG image: {img_url}")
-                    # Handle relative URLs
-                    if img_url.startswith('/'):
-                        parsed = urlparse(website)
-                        img_url = f"{parsed.scheme}://{parsed.netloc}{img_url}"
-                    # Handle protocol-relative URLs
-                    elif img_url.startswith('//'):
-                        img_url = f"https:{img_url}"
-                    og_image_url = img_url
-                    print(f"[AI Enrich] Final cover_image_url: {og_image_url}")
-                else:
-                    print(f"[AI Enrich] No OG image meta tag found on {website}")
-            else:
-                print(f"[AI Enrich] Failed to fetch {website}: status {raw_res.status_code}")
-        except Exception as e:
-            # Non-critical, continue without cover image
-            print(f"[AI Enrich] Could not fetch OG image: {str(e)}")
-
-        # Step 2: Extract data with Claude Haiku
-        category_hint = f"\nBrand category hint: {brand.get('category')}" if brand.get('category') else ""
-
-        # Check which social handles we need to extract
-        need_instagram = not brand.get('instagram_handle')
-        need_tiktok = not brand.get('tiktok_handle')
-        need_youtube = not brand.get('youtube_handle')
-
-        # Prefer direct website scrape for social handles (more reliable than AI guess)
-        scraped_ig = None
-        scraped_tt = None
-        if need_instagram or need_tiktok:
+        # Social handles straight from the site's links beat any guess.
+        scraped = {}
+        if website and (not brand.get('instagram_handle') or not brand.get('tiktok_handle')):
             try:
                 from services.bulk_ai_enricher import scrape_social_handles_from_website
-                scraped = scrape_social_handles_from_website(website)
-                scraped_ig = scraped.get('instagram_handle') if need_instagram else None
-                scraped_tt = scraped.get('tiktok_handle') if need_tiktok else None
-                if scraped_ig:
-                    print(f"[AI Enrich] Scraped Instagram: @{scraped_ig}")
-                if scraped_tt:
-                    print(f"[AI Enrich] Scraped TikTok: @{scraped_tt}")
+                scraped = scrape_social_handles_from_website(website) or {}
             except Exception as e:
-                print(f"[AI Enrich] Social scrape skipped: {e}")
-
-        prompt = f"""You are extracting structured data from a brand's website content for a PR/influencer database.
-
-Brand: {brand['brand_name']}{category_hint}
-Website: {website}
-
-Website content:
-{page_content}
-
-Extract the following as JSON:
-{{
-  "hero_product": "their most well-known or bestselling product with SPECIFIC name (e.g. 'Peptide Glazing Fluid', 'Power Leggings'). If unclear, use primary product category.",
-  "target_audience": "who they sell to in under 12 words (e.g. 'women 25-40 into clean beauty')",
-  "tone": "one of: premium / casual / wellness / functional / luxury / playful / minimalist / bold",
-  "price_point": "average single product price in USD as integer (e.g. 32, 85). Use 0 if unclear.",
-  "description": "one sentence max 25 words: [Brand] makes [product type] for [customer].",
-
-  "hero_image_url": "Find the brand's BEST lifestyle/hero banner image URL. PRIORITY: 1) Homepage hero banner showing people using products 2) Campaign photos with models/real customers 3) Bestseller lifestyle imagery 4) Brand ambassador content. MUST BE: Full URL (https://...), LARGE image (look for width=1000+ or 'hero'/'banner'/'lifestyle' in filename), Shows PEOPLE with products OR premium product lifestyle shot. AVOID: Small graphics (width<500), logos, icons, UI elements, plain product cutouts on white background, thumbnails. Return null if no quality lifestyle/hero image found.",
-
-  "instagram_handle": "Instagram username WITHOUT @ (e.g. 'glossier'). Look for instagram.com links. Use null if not found.",
-  "tiktok_handle": "TikTok username WITHOUT @ (e.g. 'glossier'). Look for tiktok.com links. Use null if not found.",
-  "youtube_handle": "YouTube channel name or handle (e.g. 'Glossier'). Look for youtube.com links. Use null if not found.",
-
-  "min_followers": "minimum follower count for PR gifting based on brand size. Small indie brands: 1000-5000. Mid-size DTC: 5000-10000. Major brands: 10000-50000. Return as integer.",
-  "collaboration_type": "one of: gifted / paid / both. Most brands do 'gifted' for micro-influencers. Larger budgets do 'both'. Use 'gifted' if unclear.",
-
-  "seo_title": "SEO-optimized title for brand page, max 60 chars. Format: '[Brand] PR Contact & Gifting | Free Products for Influencers'",
-  "seo_description": "SEO meta description, max 155 chars. Include: brand name, what they gift, who should apply.",
-
-  "success_stories": "Write 1-2 brief fictional but realistic success stories of influencers getting PR from this brand. Format: 'Sarah (@sarahbeauty, 12K followers) received [product] and created [content type]. Her post got [engagement].' Max 200 words total."
-}}
-
-Return ONLY valid JSON, no explanation.
-
-JSON:"""
+                print(f"[AI Enrich] social scrape skipped: {e}")
 
         try:
-            claude_res = req.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": ANTHROPIC_API_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json"
-                },
-                json={
-                    "model": "claude-haiku-4-5-20251001",
-                    "max_tokens": 1200,  # Increased for more fields
-                    "messages": [{"role": "user", "content": prompt}]
-                },
-                timeout=45
-            )
+            outcome = brand_profile_ai.enrich(conn, brand, overwrite=True)
+        except req.RequestException as e:
+            return jsonify({'success': False, 'error': f'Website fetch failed: {e}'}), 200
+        if not outcome['profile']:
+            why = ('no website text, products or TikTok posts to read' if not outcome['evidence']
+                   else 'AI profile failed, try again')
+            return jsonify({'success': False, 'error': f'Could not enrich: {why}'}), 200
 
-            if claude_res.status_code != 200:
-                conn.close()
-                return jsonify({'success': False, 'error': f'AI extraction failed (status {claude_res.status_code})'}), 200
-
-            response_data = claude_res.json()
-            text = response_data.get("content", [{}])[0].get("text", "")
-
-            # Clean up response
-            text = text.strip()
-            if text.startswith("```"):
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
-            text = text.strip()
-
-            data = jsonlib.loads(text)
-
-        except jsonlib.JSONDecodeError:
-            conn.close()
-            return jsonify({'success': False, 'error': 'AI returned invalid JSON'}), 200
-        except req.Timeout:
-            conn.close()
-            return jsonify({'success': False, 'error': 'AI extraction timed out'}), 200
-        except Exception as e:
-            conn.close()
-            return jsonify({'success': False, 'error': f'AI extraction failed: {str(e)}'}), 200
-
-        # Step 3: Validate and normalize all fields
-        hero_product = data.get('hero_product')
-        target_audience = data.get('target_audience')
-        tone_raw = data.get('tone')
-        price_point_raw = data.get('price_point')
-        description = data.get('description')
-
-        # Extract AI-sourced hero image if OG image not found
-        ai_hero_image = data.get('hero_image_url')
-        if ai_hero_image and ai_hero_image.lower() != 'null' and ai_hero_image.startswith('http'):
-            # Validate image quality - check for width parameter in URL
-            is_valid_size = True
-            import re
-            width_match = re.search(r'width[=_](\d+)', ai_hero_image.lower())
-            if width_match:
-                width = int(width_match.group(1))
-                if width < 400:
-                    print(f"[AI Enrich] Rejecting small image (width={width}): {ai_hero_image}")
-                    is_valid_size = False
-                else:
-                    # Upgrade to larger size if possible (Shopify CDN pattern)
-                    ai_hero_image = re.sub(r'width=\d+', 'width=1200', ai_hero_image)
-                    print(f"[AI Enrich] Upgraded image to width=1200: {ai_hero_image}")
-
-            # Use AI-sourced image if OG image wasn't found and size is valid
-            if is_valid_size and not og_image_url:
-                og_image_url = ai_hero_image
-                print(f"[AI Enrich] Using AI-sourced hero image: {og_image_url}")
-            elif og_image_url:
-                print(f"[AI Enrich] OG image already found, ignoring AI suggestion: {ai_hero_image}")
-        else:
-            print(f"[AI Enrich] AI did not find a suitable hero image")
-
-        # Validate tone
-        valid_tones = ['premium', 'casual', 'wellness', 'functional', 'luxury', 'playful', 'minimalist', 'bold']
-        tone = None
-        if tone_raw:
-            tone_lower = tone_raw.lower().strip()
-            for valid in valid_tones:
-                if valid in tone_lower:
-                    tone = valid
-                    break
-            if not tone:
-                tone = tone_raw[:50] if len(tone_raw) > 50 else tone_raw
-
-        # Truncate text fields
-        if hero_product and len(hero_product) > 255:
-            hero_product = hero_product[:255]
-        if target_audience and len(target_audience) > 255:
-            target_audience = target_audience[:255]
-
-        # Convert price_point to int
-        price_point = None
-        if price_point_raw:
-            try:
-                price_point = int(price_point_raw)
-                if price_point <= 0:
-                    price_point = None
-            except (ValueError, TypeError):
-                price_point = None
-
-        # Social handles - scrape first, AI as fallback; only fill if currently empty
-        instagram_handle = None
-        if need_instagram:
-            if scraped_ig:
-                instagram_handle = scraped_ig
-            elif data.get('instagram_handle'):
-                handle = str(data['instagram_handle']).strip().lstrip('@')
-                if handle and handle.lower() != 'null' and len(handle) <= 100:
-                    instagram_handle = handle
-
-        tiktok_handle = None
-        if need_tiktok:
-            if scraped_tt:
-                tiktok_handle = scraped_tt
-            elif data.get('tiktok_handle'):
-                handle = str(data['tiktok_handle']).strip().lstrip('@')
-                if handle and handle.lower() != 'null' and len(handle) <= 100:
-                    tiktok_handle = handle
-
-        youtube_handle = None
-        if need_youtube and data.get('youtube_handle'):
-            handle = str(data['youtube_handle']).strip().lstrip('@')
-            if handle and handle.lower() != 'null' and len(handle) <= 100:
-                youtube_handle = handle
-
-        # min_followers - validate as int between 500 and 100000
-        min_followers = None
-        if data.get('min_followers'):
-            try:
-                min_followers = int(data['min_followers'])
-                if min_followers < 500:
-                    min_followers = 1000
-                elif min_followers > 100000:
-                    min_followers = 50000
-            except (ValueError, TypeError):
-                min_followers = 5000  # Default
-
-        # collaboration_type - validate
-        collaboration_type = None
-        if data.get('collaboration_type'):
-            collab = str(data['collaboration_type']).lower().strip()
-            if collab in ['gifted', 'paid', 'both']:
-                collaboration_type = collab
-            else:
-                collaboration_type = 'gifted'  # Default
-
-        # SEO fields - truncate appropriately
-        seo_title = data.get('seo_title')
-        if seo_title:
-            seo_title = seo_title[:255]
-
-        seo_description = data.get('seo_description')
-        if seo_description:
-            seo_description = seo_description[:500]
-
-        # Success stories
-        success_stories = data.get('success_stories')
-        if success_stories:
-            success_stories = success_stories[:2000]
-
-        # Step 4: Update database with all fields
-        cursor.execute('''
-            UPDATE pr_brands
-            SET hero_product = COALESCE(%s, hero_product),
-                target_audience = COALESCE(%s, target_audience),
-                tone = COALESCE(%s, tone),
-                price_point = COALESCE(%s, price_point),
-                description = COALESCE(description, %s),
-                instagram_handle = COALESCE(%s, instagram_handle),
-                tiktok_handle = COALESCE(%s, tiktok_handle),
-                youtube_handle = COALESCE(%s, youtube_handle),
-                min_followers = COALESCE(%s, min_followers),
-                collaboration_type = COALESCE(%s, collaboration_type),
-                seo_title = COALESCE(%s, seo_title),
-                seo_description = COALESCE(%s, seo_description),
-                success_stories = COALESCE(%s, success_stories),
-                cover_image_url = COALESCE(%s, cover_image_url),
-                enriched_at = CURRENT_TIMESTAMP
-            WHERE id = %s
-        ''', (
-            hero_product,
-            target_audience,
-            tone,
-            price_point,
-            description,
-            instagram_handle,
-            tiktok_handle,
-            youtube_handle,
-            min_followers,
-            collaboration_type,
-            seo_title,
-            seo_description,
-            success_stories,
-            og_image_url,
-            brand_id
-        ))
-
+        updates = dict(outcome['updates'])
+        for col in ('instagram_handle', 'tiktok_handle'):
+            if scraped.get(col) and not brand.get(col):
+                updates[col] = scraped[col]
+        if cover:
+            updates['cover_image_url'] = cover
+        brand_profile_ai.write_updates(cursor, brand_id, updates)
+        cursor.execute("UPDATE pr_brands SET enriched_at = CURRENT_TIMESTAMP WHERE id = %s", (brand_id,))
         conn.commit()
-        conn.close()
 
-        return jsonify({
-            'success': True,
-            'data': {
-                'hero_product': hero_product,
-                'target_audience': target_audience,
-                'tone': tone,
-                'price_point': price_point,
-                'description': description,
-                'instagram_handle': instagram_handle,
-                'tiktok_handle': tiktok_handle,
-                'youtube_handle': youtube_handle,
-                'min_followers': min_followers,
-                'collaboration_type': collaboration_type,
-                'seo_title': seo_title,
-                'seo_description': seo_description,
-                'success_stories': success_stories,
-                'cover_image_url': og_image_url
-            }
-        }), 200
+        profile = outcome['profile']
+        data = dict(updates)
+        data.update({
+            'category': updates.get('category') or brand.get('category'),
+            'category_confidence': profile.get('category_confidence'),
+            'category_reason': profile.get('category_reason'),
+            'is_consumer_brand': profile.get('is_consumer_brand'),
+            'evidence': outcome['evidence'],
+        })
+        return jsonify({'success': True, 'data': data}), 200
 
     except Exception as e:
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
 
 
 # ============================================================================

@@ -20,6 +20,8 @@ import requests
 import time
 from typing import Dict, List, Optional
 
+from services import brand_profile_ai
+
 # Windows consoles default to cp1252 and crash on brand names like "ē"
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -427,6 +429,8 @@ def bulk_enrich_brands(
     try:
         conn = psycopg2.connect(db_url)
         cursor = conn.cursor(cursor_factory=RealDictCursor)
+        brand_profile_ai.ensure_profile_columns(cursor)
+        conn.commit()
 
         # Fetch brands with all fields we might enrich
         # IMPORTANT: Also fetch PR contact fields (application_form_url, contact_email) to preserve them
@@ -462,9 +466,9 @@ def bulk_enrich_brands(
                     tone IS NULL OR
                     instagram_handle IS NULL OR instagram_handle = '' OR
                     tiktok_handle IS NULL OR tiktok_handle = '' OR
-                    seo_title IS NULL OR seo_title = ''
+                    seo_title IS NULL OR seo_title = '' OR
+                    category_checked_at IS NULL
                 )
-                AND website IS NOT NULL
             """, (brand_ids,))
         else:
             # Enrich all brands
@@ -476,7 +480,6 @@ def bulk_enrich_brands(
                        application_form_url, contact_email, has_application_form, logo_url
                 FROM pr_brands
                 WHERE id = ANY(%s)
-                AND website IS NOT NULL
             """, (brand_ids,))
 
         brands = cursor.fetchall()
@@ -534,113 +537,24 @@ def bulk_enrich_brands(
                     need_tt = False
                     print(f"[AI Enrich] Scraped TikTok: @{scraped_social['tiktok_handle']}")
 
-            # 3. AI enrichment for all fields (matching individual enrich endpoint)
-            enriched = enrich_brand_with_ai(dict(brand))
-
-            if enriched:
-                # Core fields
-                if not brand.get('description') and enriched.get('description'):
-                    updates.append("description = %s")
-                    values.append(enriched['description'])
-
-                if not brand.get('hero_product') and enriched.get('hero_product'):
-                    updates.append("hero_product = %s")
-                    values.append(enriched['hero_product'])
-
-                if not brand.get('target_audience') and enriched.get('target_audience'):
-                    updates.append("target_audience = %s")
-                    values.append(enriched['target_audience'][:255] if len(enriched['target_audience']) > 255 else enriched['target_audience'])
-
-                # Tone - validate against allowed values
-                if not brand.get('tone') and enriched.get('tone'):
-                    valid_tones = ['premium', 'casual', 'wellness', 'functional', 'luxury', 'playful', 'minimalist', 'bold']
-                    tone = enriched['tone'].lower().strip()
-                    if tone in valid_tones:
-                        updates.append("tone = %s")
-                        values.append(tone)
-
-                # Price point
-                if not brand.get('price_point') and enriched.get('price_point'):
-                    try:
-                        price = int(enriched['price_point'])
-                        if price > 0:
-                            updates.append("price_point = %s")
-                            values.append(price)
-                    except (ValueError, TypeError):
-                        pass
-
-                # Social handles — fill any still missing after website scrape
-                if need_ig and enriched.get('instagram_handle'):
-                    handle = str(enriched['instagram_handle']).strip().lstrip('@')
-                    if handle and handle.lower() not in _SOCIAL_FALSE_POSITIVES and len(handle) <= 100:
-                        updates.append("instagram_handle = %s")
-                        values.append(handle)
-                        need_ig = False
-
-                if need_tt and enriched.get('tiktok_handle'):
-                    handle = str(enriched['tiktok_handle']).strip().lstrip('@')
-                    if handle and handle.lower() not in _SOCIAL_FALSE_POSITIVES and len(handle) <= 100:
-                        updates.append("tiktok_handle = %s")
-                        values.append(handle)
-                        need_tt = False
-
-                if not brand.get('youtube_handle') and enriched.get('youtube_handle'):
-                    handle = str(enriched['youtube_handle']).strip().lstrip('@')
-                    if handle and handle.lower() not in _SOCIAL_FALSE_POSITIVES and len(handle) <= 100:
-                        updates.append("youtube_handle = %s")
-                        values.append(handle)
-
-                # Min followers
-                if not brand.get('min_followers') and enriched.get('min_followers'):
-                    try:
-                        min_followers = int(enriched['min_followers'])
-                        if 500 <= min_followers <= 100000:
-                            updates.append("min_followers = %s")
-                            values.append(min_followers)
-                        elif min_followers < 500:
-                            updates.append("min_followers = %s")
-                            values.append(1000)
-                        elif min_followers > 100000:
-                            updates.append("min_followers = %s")
-                            values.append(50000)
-                    except (ValueError, TypeError):
-                        pass
-
-                # Collaboration type
-                if not brand.get('collaboration_type') and enriched.get('collaboration_type'):
-                    collab = str(enriched['collaboration_type']).lower().strip()
-                    if collab in ['gifted', 'paid', 'both']:
-                        updates.append("collaboration_type = %s")
-                        values.append(collab)
-
-                # SEO fields
-                if not brand.get('seo_title') and enriched.get('seo_title'):
-                    updates.append("seo_title = %s")
-                    values.append(enriched['seo_title'][:255])
-
-                if not brand.get('seo_description') and enriched.get('seo_description'):
-                    updates.append("seo_description = %s")
-                    values.append(enriched['seo_description'][:500])
-
-                # Success stories
-                if not brand.get('success_stories') and enriched.get('success_stories'):
-                    updates.append("success_stories = %s")
-                    values.append(enriched['success_stories'][:2000])
-
-                # Always update category if AI provides one (to fix incorrectly categorized brands)
-                if enriched.get('category'):
-                    # Validate category is in allowed list
-                    allowed_categories = [
-                        'skincare', 'beauty', 'fashion', 'wellness', 'fitness', 'food',
-                        'travel', 'tech', 'gaming', 'lifestyle', 'home', 'pet', 'baby',
-                        'jewelry', 'haircare', 'sustainable', 'luxury', 'activewear',
-                        'supplements', 'other'
-                    ]
-                    if enriched['category'] in allowed_categories:
-                        updates.append("category = %s")
-                        values.append(enriched['category'])
+            # 3. Evidence-based profile (site text, Shopify products, TikTok captions): category always follows a
+            #    confident answer; other fields fill blanks. See services/brand_profile_ai.py.
+            set_cols = {u.split(" = ")[0] for u in updates}
+            known = dict(brand)
+            for col in set_cols:
+                known[col] = "set"
+            outcome = brand_profile_ai.enrich(conn, known, overwrite=not only_missing_fields)
+            profile_cols = {c: v for c, v in outcome["updates"].items() if c not in set_cols}
+            if outcome["profile"]:
+                for col, val in profile_cols.items():
+                    updates.append(f"{col} = %s")
+                    values.append(val)
+                updates.append("category_checked_at = NOW()")
+                if "category" in profile_cols:
+                    print(f"[AI Enrich] Category {brand.get('category')} -> {profile_cols['category']} "
+                          f"({outcome['profile'].get('category_confidence')})")
             else:
-                print(f"[AI Enrich] ⚠ AI enrichment failed for {brand['brand_name']}")
+                print(f"[AI Enrich] ⚠ no profile for {brand['brand_name']} (evidence: {outcome['evidence'] or 'none'})")
 
             # Apply all updates (slug, cover_image_url, and/or AI-enriched fields)
             if updates:
