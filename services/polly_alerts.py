@@ -672,7 +672,7 @@ def brief_brand_facts(conn, brand_ids: List[Any]) -> Dict[int, Dict[str, Any]]:
         return {}
 
 
-def _brief_card(name: str, facts: Dict[str, Any], href: str) -> str:
+def _brief_card(name: str, facts: Dict[str, Any], href: str, label: str = "Send it") -> str:
     logo = (facts or {}).get("logo_url")
     initials = "".join(w[0] for w in name.split()[:2]).upper() or "?"
     mark = (f'<img src="{escape(logo, quote=True)}" width="44" height="44" alt="" '
@@ -703,7 +703,7 @@ def _brief_card(name: str, facts: Dict[str, Any], href: str) -> str:
         + '</td><td align="right" style="padding:12px;vertical-align:middle;">'
         f'<a href="{escape(href, quote=True)}" style="display:inline-block;padding:10px 14px;border-radius:999px;'
         'background:#111827;color:#FFFFFF;font-size:13px;font-weight:700;text-decoration:none;white-space:nowrap;">'
-        'Send it</a></td></tr></table>'
+        f'{escape(label)}</a></td></tr></table>'
     )
 
 
@@ -1165,14 +1165,16 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
         from services.pro_trial import email_trial_journey
         from services.free_week_offer import email_free_week_offers
         from services.ugc_roundup import email_ugc_roundups
+        from services.moment_emails import (email_first_pitch, email_niche_gifting, email_reply_wins,
+                                            email_saved_brands)
 
         # Order = priority under the one-email-a-day rule (services.email_policy): transactional first, then
         # news (a brand that matches them), then their own work and progress, then the offers. pro_week retired.
         for job in (email_trial_journey, email_autopilot_blocked, email_second_recovery, email_renewal_notes,
                     email_founder_wins, email_founder_delivery,
-                    email_new_brand_pushes,
-                    email_unsent_briefs, email_month_reports, email_monday_boards, email_weekly_digests,
-                    email_ugc_roundups,
+                    email_reply_wins, email_new_brand_pushes,
+                    email_first_pitch, email_unsent_briefs, email_saved_brands, email_month_reports, email_monday_boards, email_weekly_digests,
+                    email_niche_gifting, email_ugc_roundups,
                     email_paywall_followups, email_free_week_offers):
             try:
                 emails += job(conn, dry_run=dry_run, send_fn=send_fn, test_email=test_email)

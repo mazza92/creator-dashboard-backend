@@ -25,15 +25,18 @@ TRANSACTIONAL = {
     "renewal_note", "autopilot_paused", "autopilot_gmail", "hooks_ready",
 }
 RETIRED = {"pro_week", "nudge", "autopilot_drafts", "autopilot_week"}
-EVENT = {"kit_view", "new_brand_push"}
+EVENT = {"kit_view", "new_brand_push", "reply_win"}
 # max_quota_hit (lifecycle) and paywall_followup (Polly) fire at the same moment: one offer covers both.
 OFFER = {"paywall_followup", "free_week", "max_quota_hit"}
-FREE_ONLY = OFFER | {"polly_brief", "polly_intro", "month_report", "monday_checkin", "weekly_digest"}
+FREE_ONLY = OFFER | {"polly_brief", "polly_intro", "month_report", "monday_checkin", "weekly_digest",
+                     "saved_brands", "first_pitch"}  # Pro: Autopilot pitches saved brands itself
 PRO_ONLY = {"autopilot_headsup", "ugc_roundup", "monday_board"}
 MIN_GAP = {
     "autopilot_headsup": timedelta(hours=72),
     "ugc_roundup": timedelta(days=7),
     "polly_brief": timedelta(days=2),
+    "saved_brands": timedelta(days=7),
+    "niche_gifting": timedelta(days=6),
 }
 DAILY_GAP = timedelta(hours=20)
 WEEK = timedelta(days=7)
