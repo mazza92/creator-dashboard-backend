@@ -2315,10 +2315,32 @@ def drop_pitched(
     return kept
 
 
+def drafted_brand_ids(notes: Optional[Dict]) -> set:
+    """Brands with a pitch already written (batch card or single pitch), sent or not: never 'waiting'."""
+    notes = notes or {}
+    ids = set()
+    batch = notes.get("pitch_batch") if isinstance(notes.get("pitch_batch"), dict) else {}
+    outbox = notes.get("pitch_outbox")
+    items = list(batch.get("items") or [])
+    if isinstance(outbox, dict):
+        items += [dict(v, brand_id=v.get("brand_id") or k) if isinstance(v, dict) else {"brand_id": k}
+                  for k, v in outbox.items()]
+    elif isinstance(outbox, list):
+        items += [i for i in outbox if isinstance(i, dict)]
+    for item in items:
+        try:
+            ids.add(int((item or {}).get("brand_id") or (item or {}).get("id") or 0))
+        except (TypeError, ValueError):
+            continue
+    ids.discard(0)
+    return ids
+
+
 def matched_waiting(thread: Optional[Dict], limit: int = 2) -> Dict[str, Any]:
     """Brands Polly matched that the creator hasn't pitched yet: first names + total."""
     thread = thread or {}
-    queue = drop_pitched(thread.get("suggested_brands") or [], thread.get("notes") or {})
+    notes = thread.get("notes") or {}
+    queue = drop_pitched(thread.get("suggested_brands") or [], notes, extra_ids=sorted(drafted_brand_ids(notes)))
     names = []
     for brand in queue:
         name = str(brand.get("name") or "").strip()

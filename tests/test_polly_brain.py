@@ -171,11 +171,21 @@ class SuggestAlwaysReturnsTests(_Patched):
 
     def test_already_shown_brands_come_back_instead_of_an_empty_roster(self):
         state = make_state(notes={"shown_brand_ids": [4, 47], "deal_intent": "gifted"})
-        with patch.object(routes_polly, "_suggest_payload", return_value=(200, [self.NORD, self.SECRET], None)):
+        with patch.object(routes_polly, "_suggest_payload", return_value=(200, [self.NORD, self.SECRET], None)), \
+                patch.object(routes_polly, "_fallback_brand_pool", return_value=[self.NORD]):
             res = tools.run_tool(state, "suggest_brands", {"deal": "gifted"})
         self.assertEqual([b["name"] for b in state.brands], ["NordVPN", "Secretlab"])
         self.assertTrue(res["repeated"])
         self.assertTrue(res["cards_shown"])
+
+    def test_other_brands_widen_to_the_directory_before_repeating(self):
+        glow = {"id": 90, "name": "Glow Recipe", "slug": "glow-recipe", "category": "skincare"}
+        state = make_state(notes={"shown_brand_ids": [4, 47]})
+        with patch.object(routes_polly, "_suggest_payload", return_value=(200, [self.NORD, self.SECRET], None)), \
+                patch.object(routes_polly, "_fallback_brand_pool", return_value=[self.NORD, glow]):
+            res = tools.run_tool(state, "suggest_brands", {})
+        self.assertEqual([b["name"] for b in state.brands], ["Glow Recipe"])
+        self.assertNotIn("repeated", res)
 
     def test_fresh_brands_still_win_over_ones_already_shown(self):
         state = make_state(notes={"shown_brand_ids": [4]})

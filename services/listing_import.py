@@ -12,6 +12,7 @@ only when LISTING_CONFIRM_LIVE is set; until then a single sample goes to team@n
 from __future__ import annotations
 
 import os
+from services.db_ddl import ensure_columns as _ensure_ddl_columns
 import traceback
 from html import escape
 from typing import Any, Callable, Dict, List, Optional
@@ -29,7 +30,7 @@ def ensure_columns(cursor) -> None:
     global _READY
     if _READY:
         return
-    cursor.execute("ALTER TABLE brand_pr_applications ADD COLUMN IF NOT EXISTS confirm_emailed_at TIMESTAMPTZ")
+    _ensure_ddl_columns(cursor, "ALTER TABLE brand_pr_applications ADD COLUMN IF NOT EXISTS confirm_emailed_at TIMESTAMPTZ")
     _READY = True
 
 

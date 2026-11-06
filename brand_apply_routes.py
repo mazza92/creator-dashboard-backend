@@ -5,7 +5,7 @@ Reuses attempt_unlock() for the 3/month quota. Status lives on
 brand_pr_applications, not the email-pitch pipeline.
 """
 
-from services.db_ddl import ensure_index
+from services.db_ddl import ensure_index, ensure_columns
 from flask import Blueprint, request, jsonify
 from psycopg2.extras import RealDictCursor, Json
 import json
@@ -78,15 +78,15 @@ def _ensure_schema(cursor, conn=None):
                     """
                 )
             if not public_column_exists(cursor, "pr_brands", "pr_example_posts"):
-                cursor.execute(
+                ensure_columns(cursor, 
                     "ALTER TABLE pr_brands ADD COLUMN IF NOT EXISTS pr_example_posts JSONB"
                 )
             if not public_column_exists(cursor, "pr_brands", "pr_social_profile"):
-                cursor.execute(
+                ensure_columns(cursor, 
                     "ALTER TABLE pr_brands ADD COLUMN IF NOT EXISTS pr_social_profile JSONB"
                 )
             if not public_column_exists(cursor, "creators", "shipping_address"):
-                cursor.execute(
+                ensure_columns(cursor, 
                     "ALTER TABLE creators ADD COLUMN IF NOT EXISTS shipping_address JSONB"
                 )
             ensure_index(cursor, """
@@ -94,7 +94,7 @@ def _ensure_schema(cursor, conn=None):
                 ON brand_pr_applications(creator_id, applied_at DESC)
                 """)
             if not public_column_exists(cursor, "brand_pr_applications", "source"):
-                cursor.execute(
+                ensure_columns(cursor, 
                     "ALTER TABLE brand_pr_applications ADD COLUMN IF NOT EXISTS source VARCHAR(32)"
                 )
             if not public_table_exists(cursor, "brand_pr_events"):

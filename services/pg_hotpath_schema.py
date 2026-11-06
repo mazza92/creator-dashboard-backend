@@ -8,6 +8,7 @@ requests then deadlock pr_brands vs creators.
 from __future__ import annotations
 
 import threading
+from services.db_ddl import ensure_columns as _ensure_ddl_columns
 from typing import Any, Dict, Iterable, Sequence
 
 _READY_COLUMNS: set = set()
@@ -165,7 +166,7 @@ def ensure_columns(cursor, table: str, columns: Dict[str, str], lock_timeout: st
         cursor.execute("SAVEPOINT ensure_columns")
         cursor.execute(f"SET LOCAL lock_timeout = '{lock_timeout}'")
         for col in missing:
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {columns[col]}")
+            _ensure_ddl_columns(cursor, f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {columns[col]}")
         cursor.execute("RELEASE SAVEPOINT ensure_columns")
     except Exception as err:
         print(f"[schema] {table} add {missing} skipped: {err}")

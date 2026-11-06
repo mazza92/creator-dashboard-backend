@@ -12,7 +12,7 @@ Admin can also spotlight cold-emailed rosters so they skip the 3-applicant
 gate and show on the Live now desk immediately.
 """
 
-from services.db_ddl import ensure_index
+from services.db_ddl import ensure_index, ensure_columns
 import threading
 
 ROSTER_FILL_MULT = 3
@@ -157,7 +157,7 @@ def ensure_campaign_spotlight_column(cursor, conn=None):
                 _SPOTLIGHT_COL_READY = True
                 return
             cursor.execute("SET LOCAL lock_timeout = '2s'")
-            cursor.execute(
+            ensure_columns(cursor, 
                 """
                 ALTER TABLE brand_pr_campaigns
                 ADD COLUMN IF NOT EXISTS creator_spotlighted_at TIMESTAMPTZ
