@@ -24,7 +24,8 @@ TRANSACTIONAL = {
     "checkout_recovery", "checkout_recovery_2", "trial_started", "trial_first_sent", "trial_ending", "trial_gmail",
     "renewal_note", "autopilot_paused", "autopilot_gmail", "hooks_ready",
 }
-RETIRED = {"pro_week", "nudge", "autopilot_drafts", "autopilot_week"}
+# waitlist_*: pending creators are mostly ones we won't approve; no marketing email until approved.
+RETIRED = {"pro_week", "nudge", "autopilot_drafts", "autopilot_week", "waitlist_1", "waitlist_2", "waitlist_3"}
 EVENT = {"kit_view", "new_brand_push", "reply_win"}
 # max_quota_hit (lifecycle) and paywall_followup (Polly) fire at the same moment: one offer covers both.
 OFFER = {"paywall_followup", "free_week", "max_quota_hit"}
