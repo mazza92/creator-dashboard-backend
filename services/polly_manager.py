@@ -89,6 +89,7 @@ def unsent_drafts(conn, creator_id: int, limit: int = 3) -> List[Dict[str, Any]]
             "draft_id": r["id"],
             "brand_id": r["brand_id"],
             "brand_name": r.get("brand_name") or "this brand",
+            "drafted_at": r.get("drafted_at"),
         }
         for r in cur.fetchall()
     ]
