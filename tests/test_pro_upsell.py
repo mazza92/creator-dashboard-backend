@@ -74,9 +74,10 @@ class TestJob(unittest.TestCase):
                       "approval_status", "unlocks_tier"):
             self.assertIn(guard, sql)
 
-    def test_in_alert_cron(self):
+    def test_retired_from_alert_cron(self):
+        # Generic Pro pitch (271 sent, 4% click, 1 upgrade): retired in favour of value-first emails.
         src = inspect.getsource(polly_alerts.run_alerts)
-        self.assertIn("email_pro_week", src)
+        self.assertNotIn("email_pro_week,", src)
         self.assertIn("email_weekly_digests", src)
 
 

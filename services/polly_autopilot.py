@@ -624,7 +624,7 @@ def _default_headsup_email(conn, creator_id: int, brands: List[Dict[str, Any]]) 
 
     if not brands or _recently_emailed(conn, creator_id, ["autopilot_headsup"], timedelta(hours=20)):
         return
-    who = _recipient(conn, creator_id)
+    who = _recipient(conn, creator_id, kind="autopilot_headsup")
     if not who:
         return
     unsub = _unsubscribe_url(who["user_id"])

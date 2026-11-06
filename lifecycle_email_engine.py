@@ -344,6 +344,14 @@ def send_lifecycle_email(
         if not can_send:
             return False, throttle_reason
 
+        # One rulebook across Polly and lifecycle emails (caps, audience, one offer a week)
+        try:
+            from services.email_policy import allowed_for_creator
+            if not allowed_for_creator(conn, creator_id, template_slug):
+                return False, "email policy"
+        except Exception as _err:
+            print(f"[lifecycle] email policy check skipped: {_err}")
+
         # Check quiet hours (except for exempt emails)
         if not template.get('exempt_from_daily_cap') and is_quiet_hours():
             return False, "Quiet hours - email queued"

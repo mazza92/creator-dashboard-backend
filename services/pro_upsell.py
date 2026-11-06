@@ -143,7 +143,7 @@ def email_pro_week(conn, limit: int = 25, dry_run: bool = False, send_fn: Option
     out = []
     for row in _candidates(conn, limit, _now()):
         cid = row["creator_id"]
-        who = pa._recipient(conn, cid)
+        who = pa._recipient(conn, cid, kind="pro_week")
         if not who or who["is_pro"]:
             continue
         trial = trial_eligible(pa._cursor(conn), cid)

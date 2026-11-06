@@ -162,11 +162,28 @@ class FollowupGateTests(unittest.TestCase):
 class ManagerEmailTests(unittest.TestCase):
     def test_unsent_brief_email(self):
         mail = unsent_brief_email("Ana", [{"brand_id": 5, "brand_name": "Kora"}], career_from_counts({}, {}, 3))
-        self.assertEqual(mail["subject"], "Your Kora pitch is still waiting")
+        self.assertEqual(mail["subject"], "Your Kora pitch is ready to send")
         self.assertIn("chip=send_draft", mail["html"])
-        self.assertIn("0 of 3 pitches sent", mail["html"])
+        self.assertIn("0 of 3</strong> pitches sent", mail["html"])
+        self.assertIn("On <strong>Pro ($19/mo)</strong> I send every pitch for you", mail["html"])
+        self.assertNotIn("zero replies", mail["html"])
         multi = unsent_brief_email("Ana", [{"brand_id": 5, "brand_name": "Kora"}, {"brand_id": 6, "brand_name": "Sol"}])
-        self.assertEqual(multi["subject"], "2 pitches are written and waiting")
+        self.assertEqual(multi["subject"], "Your 2 pitches are ready to send")
+        self.assertEqual(multi["html"].count(">Send it</a>"), 2)
+
+    def test_unsent_brief_leads_with_gifting_proof(self):
+        facts = {5: {"creators_30d": 4, "avg_product_value": 45, "logo_url": "https://x/logo.png"}}
+        mail = unsent_brief_email("Ana", [{"brand_id": 5, "brand_name": "belif"}], None, facts=facts)
+        self.assertEqual(mail["subject"], "belif is gifting creators like you. Your pitch is ready")
+        self.assertIn("Gifted 4 creators this month · PR box ~$45", mail["html"])
+        self.assertIn('src="https://x/logo.png"', mail["html"])
+
+    def test_month_line_never_reads_17_of_8(self):
+        from services.polly_alerts import month_progress_line
+        self.assertIn("5 of 8", month_progress_line({"pitches": 5, "pitches_goal": 8}))
+        past = month_progress_line({"pitches": 17, "pitches_goal": 8})
+        self.assertNotIn("of 8", past)
+        self.assertIn("<strong>17</strong> pitches sent this month", past)
 
     def test_month_report_email(self):
         career = career_from_counts({"pitched": 3}, {}, 3)

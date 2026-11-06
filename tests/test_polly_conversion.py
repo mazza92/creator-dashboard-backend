@@ -287,7 +287,7 @@ class AlertEmailTests(unittest.TestCase):
         ]
         with patch("services.polly_alerts.ensure_alert_tables"), \
              patch("services.polly_alerts._recently_emailed", return_value=False), \
-             patch("services.polly_alerts._recipient", side_effect=lambda conn, cid: who if cid == 1 else None), \
+             patch("services.polly_alerts._recipient", side_effect=lambda conn, cid, kind=None: who if cid == 1 else None), \
              patch("services.polly_alerts._unsubscribe_url", return_value="https://u"), \
              patch("services.polly_alerts._log_email") as log:
             out = email_nudges(MagicMock(), delivered, send_fn=fake_send)

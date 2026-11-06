@@ -388,7 +388,8 @@ def nudge_email(first_name: str, nudge: Dict[str, Any], unsubscribe_url: str = "
     }
 
 
-def _recipient(conn, creator_id: int) -> Optional[Dict[str, Any]]:
+def _recipient(conn, creator_id: int, kind: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Who to email, or None. With ``kind`` the email rulebook (services.email_policy) decides too."""
     cur = _cursor(conn)
     cur.execute(
         """
@@ -412,6 +413,11 @@ def _recipient(conn, creator_id: int) -> Optional[Dict[str, Any]]:
     )
     first = (row.get("first_name") or "").strip()
     row["first"] = first.split()[0].capitalize() if first else ""
+    if kind:
+        from services.email_policy import allowed
+
+        if not allowed(conn, creator_id, kind, row["is_pro"]):
+            return None
     return row
 
 
@@ -489,7 +495,7 @@ def email_kit_views(conn, limit: int = 40, dry_run: bool = False, send_fn: Optio
             continue
         if _recently_emailed(conn, row["creator_id"], ["kit_view"], KIT_VIEW_THROTTLE):
             continue
-        who = _recipient(conn, row["creator_id"])
+        who = _recipient(conn, row["creator_id"], kind="kit_view")
         if not who:
             continue
         unsub = _unsubscribe_url(who["user_id"])
@@ -523,7 +529,7 @@ def email_nudges(conn, delivered: List[Dict[str, Any]], dry_run: bool = False, s
             continue
         if _recently_emailed(conn, cid, ["nudge"], NUDGE_EMAIL_THROTTLE):
             continue
-        who = _recipient(conn, cid)
+        who = _recipient(conn, cid, kind="nudge")
         if not who:
             continue
         unsub = _unsubscribe_url(who["user_id"])
@@ -607,7 +613,7 @@ def email_never_opened(conn, limit: int = 25, dry_run: bool = False, send_fn: Op
     )
     out = []
     for row in [dict(r) for r in cur.fetchall()]:
-        who = _recipient(conn, row["creator_id"])
+        who = _recipient(conn, row["creator_id"], kind="polly_intro")
         if not who:
             continue
         survey = row.get("onboarding_survey")
@@ -630,30 +636,125 @@ def email_never_opened(conn, limit: int = 25, dry_run: bool = False, send_fn: Op
     return out
 
 
+BRIEF_MAX_PER_BATCH = 2  # reminders about the same written pitches, then stop
+
+
+def month_progress_line(month: Optional[Dict[str, Any]]) -> str:
+    """'5 of 8 pitches sent' under the goal; past it, celebrate instead of printing '17 of 8'."""
+    month = month or {}
+    sent, goal = int(month.get("pitches") or 0), int(month.get("pitches_goal") or 0)
+    if not goal:
+        return ""
+    if sent >= goal:
+        return f"<strong>{sent}</strong> pitches sent this month. You're past your goal, keep it rolling."
+    return f"This month: <strong>{sent} of {goal}</strong> pitches sent."
+
+
+def brief_brand_facts(conn, brand_ids: List[Any]) -> Dict[int, Dict[str, Any]]:
+    """Logo, PR box value and how many creators the brand gifted lately (TikTok scan), for the brief's cards."""
+    ids = [int(b) for b in brand_ids if b]
+    if not ids:
+        return {}
+    cur = _cursor(conn)
+    try:
+        cur.execute("""
+            SELECT b.id, b.logo_url, b.avg_product_value, b.category,
+                   (SELECT COUNT(DISTINCT v.creator_handle)
+                    FROM discovered_brands d
+                    JOIN brand_signals s ON s.discovered_brand_id = d.id AND s.signal_type IN ('gifted', 'paid')
+                    JOIN tiktok_videos v ON v.tiktok_id = s.tiktok_id
+                    WHERE d.brand_id = b.id AND v.created_at > NOW() - INTERVAL '30 days') AS creators_30d
+            FROM pr_brands b WHERE b.id = ANY(%s)""", (ids,))
+        return {int(r["id"]): dict(r) for r in cur.fetchall()}
+    except Exception as err:
+        conn.rollback()
+        print(f"[Polly alerts] brief facts skipped: {err}")
+        return {}
+
+
+def _brief_card(name: str, facts: Dict[str, Any], href: str) -> str:
+    logo = (facts or {}).get("logo_url")
+    initials = "".join(w[0] for w in name.split()[:2]).upper() or "?"
+    mark = (f'<img src="{escape(logo, quote=True)}" width="44" height="44" alt="" '
+            f'style="display:block;width:44px;height:44px;border-radius:12px;object-fit:contain;background:#fff;'
+            f'border:1px solid #EEECE6;">' if logo else
+            f'<div style="width:44px;height:44px;border-radius:12px;background:#F1EFE9;color:#111827;'
+            f'font-weight:800;font-size:15px;line-height:44px;text-align:center;">{escape(initials)}</div>')
+    bits = []
+    n = int((facts or {}).get("creators_30d") or 0)
+    if n >= 2:
+        bits.append(f"Gifted {n} creators this month")
+    try:
+        value = int(float((facts or {}).get("avg_product_value") or 0))
+    except (TypeError, ValueError):
+        value = 0
+    if value > 0:
+        bits.append(f"PR box ~${value}")
+    if not bits and (facts or {}).get("category"):
+        bits.append(str(facts["category"]).capitalize())
+    sub = escape(" · ".join(bits))
+    return (
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        'style="border:1px solid #E7E4DC;border-radius:14px;margin:0 0 10px 0;"><tr>'
+        f'<td width="56" style="padding:12px 0 12px 12px;vertical-align:middle;">{mark}</td>'
+        '<td style="padding:12px;vertical-align:middle;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;">'
+        f'<div style="font-size:16px;font-weight:800;color:#111827;">{escape(name)}</div>'
+        + (f'<div style="font-size:13px;color:#6B7280;margin-top:2px;">{sub}</div>' if sub else "")
+        + '</td><td align="right" style="padding:12px;vertical-align:middle;">'
+        f'<a href="{escape(href, quote=True)}" style="display:inline-block;padding:10px 14px;border-radius:999px;'
+        'background:#111827;color:#FFFFFF;font-size:13px;font-weight:700;text-decoration:none;white-space:nowrap;">'
+        'Send it</a></td></tr></table>'
+    )
+
+
 def unsent_brief_email(first_name: str, drafts: List[Dict[str, Any]], career: Optional[Dict[str, Any]] = None,
-                       unsubscribe_url: str = "") -> Dict[str, str]:
-    """Pitches Polly wrote that never left the chat. The leak between drafted and sent."""
+                       unsubscribe_url: str = "", facts: Optional[Dict[int, Dict[str, Any]]] = None) -> Dict[str, str]:
+    """Free creators' pitches that Polly wrote but that never went out: the brands, why they're worth it, one tap
+    to send from Gmail, and the Pro line (on Pro, Polly sends them)."""
+    facts = facts or {}
     top = drafts[0]
     name = top.get("brand_name") or "that brand"
-    if len(drafts) == 1:
-        subject = f"Your {name} pitch is still waiting"
-        lines = [f"I wrote your <strong>{escape(name)}</strong> pitch, but it hasn't gone out yet."]
+    top_facts = facts.get(int(top.get("brand_id") or 0)) or {}
+    gifted = int(top_facts.get("creators_30d") or 0)
+    if gifted >= 2:
+        subject = f"{name} is gifting creators like you. Your pitch is ready"
+    elif len(drafts) == 1:
+        subject = f"Your {name} pitch is ready to send"
     else:
-        names = ", ".join(escape(d.get("brand_name") or "a brand") for d in drafts[:3])
-        subject = f"{len(drafts)} pitches are written and waiting"
-        lines = [f"Your pitches to <strong>{names}</strong> are written but not sent."]
-    lines.append("A written pitch gets zero replies. One tap opens it in your email, ready to send.")
-    month = (career or {}).get("month") or {}
-    if month.get("pitches_goal"):
-        lines.append(f"This month: {month.get('pitches', 0)} of {month['pitches_goal']} pitches sent.")
+        subject = f"Your {len(drafts)} pitches are ready to send"
+    intro = ("I wrote it, it just needs your tap. It goes out from your own Gmail, and I follow up for you."
+             if len(drafts) == 1 else
+             "I wrote them, they just need your tap. They go out from your own Gmail, and I follow up for you.")
+    cards = "".join(
+        _brief_card(d.get("brand_name") or "A brand", facts.get(int(d.get("brand_id") or 0)) or {},
+                    chip_link("send_draft", brand_id=d.get("brand_id"), brand_name=d.get("brand_name") or "",
+                              kind="polly_brief"))
+        for d in drafts[:3]
+    )
+    lines = [intro, cards]
+    progress = month_progress_line((career or {}).get("month"))
+    if progress:
+        lines.append(progress)
+    lines.append('<span style="color:#6B7280;">Rather not do this part? On <strong>Pro ($19/mo)</strong> I send '
+                 'every pitch for you, plus 3 new brands every weekday.</span>')
     buttons = [{
-        "label": f"Send my {name} pitch",
+        "label": f"Send my {name} pitch" if len(drafts) == 1 else "Send them from my Gmail",
         "href": chip_link("send_draft", brand_id=top.get("brand_id"), brand_name=name, kind="polly_brief"),
     }]
     return {
         "subject": subject,
         "html": render_email(first_name, subject, lines, buttons, unsubscribe_url),
     }
+
+
+def _briefs_since(conn, creator_id: int, since) -> int:
+    if not since:
+        return 0
+    cur = _cursor(conn)
+    cur.execute("SELECT COUNT(*) AS n FROM polly_email_log WHERE creator_id = %s AND kind = 'polly_brief' "
+                "AND sent_at >= %s", (creator_id, since))
+    row = cur.fetchone()
+    return int((row or {}).get("n") or 0)
 
 
 def email_unsent_briefs(conn, limit: int = 25, dry_run: bool = False, send_fn: Optional[Callable] = None,
@@ -694,12 +795,18 @@ def email_unsent_briefs(conn, limit: int = 25, dry_run: bool = False, send_fn: O
         drafts = unsent_drafts(conn, cid)
         if not drafts:
             continue
-        who = _recipient(conn, cid)
+        who = _recipient(conn, cid, kind="polly_brief")
         if not who:
             continue
+        if who["is_pro"]:
+            continue  # Pro: Polly / Autopilot sends; never "go send it yourself"
+        if _briefs_since(conn, cid, min(d.get("drafted_at") for d in drafts if d.get("drafted_at"))
+                         if any(d.get("drafted_at") for d in drafts) else None) >= BRIEF_MAX_PER_BATCH:
+            continue
         unsub = _unsubscribe_url(who["user_id"])
-        balance = {"is_unlimited": True} if who["is_pro"] else {"limit": 3}
-        mail = unsent_brief_email(who["first"], drafts, career_snapshot(conn, cid, None, balance), unsub)
+        balance = {"limit": 3}
+        mail = unsent_brief_email(who["first"], drafts, career_snapshot(conn, cid, None, balance), unsub,
+                                  facts=brief_brand_facts(conn, [d.get("brand_id") for d in drafts]))
         item = {"creator_id": cid, "kind": "polly_brief", "subject": mail["subject"], "to": who["email"]}
         if dry_run:
             out.append(item)
@@ -769,7 +876,7 @@ def email_month_reports(conn, limit: int = 40, dry_run: bool = False, send_fn: O
     out = []
     for row in [dict(r) for r in cur.fetchall()]:
         cid = row["creator_id"]
-        who = _recipient(conn, cid)
+        who = _recipient(conn, cid, kind="month_report")
         if not who or who["is_pro"]:
             continue
         last = load_last_month(conn, cid)
@@ -884,7 +991,7 @@ def email_paywall_followups(conn, limit: int = 25, dry_run: bool = False, send_f
     out = []
     for row in [dict(r) for r in cur.fetchall()]:
         cid = row["creator_id"]
-        who = _recipient(conn, cid)
+        who = _recipient(conn, cid, kind="paywall_followup")
         if not who or who["is_pro"]:
             continue
         unsub = _unsubscribe_url(who["user_id"])
@@ -1056,17 +1163,17 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
         from services.pro_delivery_watch import email_founder_delivery
         from services.pro_manager import email_monday_boards, email_renewal_notes
         from services.pro_trial import email_trial_journey
-        from services.pro_upsell import email_pro_week
         from services.free_week_offer import email_free_week_offers
         from services.ugc_roundup import email_ugc_roundups
 
-        for job in (email_new_brand_pushes, email_founder_wins, email_trial_journey, email_autopilot_blocked,
-                    email_founder_delivery,
-                    email_month_reports,
-                    email_unsent_briefs, email_renewal_notes, email_monday_boards,
-                    email_ugc_roundups, email_paywall_followups, email_pro_week, email_free_week_offers,
-                    email_weekly_digests,
-                    email_second_recovery):
+        # Order = priority under the one-email-a-day rule (services.email_policy): transactional first, then
+        # news (a brand that matches them), then their own work and progress, then the offers. pro_week retired.
+        for job in (email_trial_journey, email_autopilot_blocked, email_second_recovery, email_renewal_notes,
+                    email_founder_wins, email_founder_delivery,
+                    email_new_brand_pushes,
+                    email_unsent_briefs, email_month_reports, email_monday_boards, email_weekly_digests,
+                    email_ugc_roundups,
+                    email_paywall_followups, email_free_week_offers):
             try:
                 emails += job(conn, dry_run=dry_run, send_fn=send_fn, test_email=test_email)
             except Exception as err:

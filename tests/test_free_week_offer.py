@@ -17,7 +17,7 @@ def test_sends_once_only_to_eligible_free_creators():
     sent = []
     with mock.patch.object(fw, "_candidates", return_value=[{"creator_id": 1}, {"creator_id": 2}, {"creator_id": 3}]), \
             mock.patch("services.polly_alerts.ensure_alert_tables"), \
-            mock.patch("services.polly_alerts._recipient", side_effect=lambda c, cid: {
+            mock.patch("services.polly_alerts._recipient", side_effect=lambda c, cid, kind=None: {
                 1: {"user_id": 11, "email": "a@x.co", "first": "A", "is_pro": False},
                 2: {"user_id": 12, "email": "b@x.co", "first": "B", "is_pro": True},
                 3: {"user_id": 13, "email": "c@x.co", "first": "C", "is_pro": False}}[cid]), \

@@ -72,7 +72,7 @@ def test_push_sends_within_budget_and_logs(monkeypatch):
         {"creator_id": i, "niche": "skincare", "creator_niches": [], "country": "US"} for i in range(1, 6)
     ])
     monkeypatch.setattr(pa, "ensure_alert_tables", lambda conn: None)
-    monkeypatch.setattr(pa, "_recipient", lambda conn, cid: {"user_id": cid, "email": f"c{cid}@x.co", "first": "A"})
+    monkeypatch.setattr(pa, "_recipient", lambda conn, cid, kind=None: {"user_id": cid, "email": f"c{cid}@x.co", "first": "A"})
     monkeypatch.setattr(pa, "_unsubscribe_url", lambda uid: "")
     logged = []
     monkeypatch.setattr(pa, "_log_email", lambda *a: logged.append(a))
