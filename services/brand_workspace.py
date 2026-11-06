@@ -8,7 +8,7 @@ brands rows predate approval: a NULL approval_status is a legacy account and cou
 """
 
 from __future__ import annotations
-from services.db_ddl import ensure_index
+from services.db_ddl import ensure_index, ensure_columns
 
 import json
 import os
@@ -35,7 +35,7 @@ def ensure_schema(conn) -> None:
     if _schema_ready:
         return
     cur = conn.cursor()
-    cur.execute("""
+    ensure_columns(cur, """
         ALTER TABLE brands
           ADD COLUMN IF NOT EXISTS approval_status TEXT,
           ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ,
@@ -81,7 +81,7 @@ def ensure_schema(conn) -> None:
     if not cur.fetchone():
         try:
             cur.execute("SET LOCAL lock_timeout = '2s'")
-            cur.execute("ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS roster_campaign_id INTEGER")
+            ensure_columns(cur, "ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS roster_campaign_id INTEGER")
             conn.commit()
         except Exception as err:
             conn.rollback()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from services.db_ddl import ensure_columns
 import json
 import re
 from typing import Any, Dict, List, Optional
@@ -645,7 +646,7 @@ def _ensure_brief_column(conn, cursor) -> bool:
         prev = getattr(conn, "autocommit", False)
         conn.autocommit = True
         try:
-            cursor.execute(
+            ensure_columns(cursor, 
                 "ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS listing_brief JSONB"
             )
         finally:

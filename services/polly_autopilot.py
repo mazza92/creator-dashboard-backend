@@ -3,7 +3,7 @@ creator's Gmail on their send days with no approval step, with up to two follow-
 in the same thread unless the brand replied."""
 
 from __future__ import annotations
-from services.db_ddl import ensure_index
+from services.db_ddl import ensure_index, ensure_columns
 
 import random
 import re
@@ -122,7 +122,7 @@ def ensure_autopilot_tables(conn) -> None:
     have = {r["col"] for r in cur.fetchall()}
     for table, column, ddl in _ADDED_COLUMNS:
         if f"{table}.{column}" not in have:
-            cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl}")
+            ensure_columns(cur, f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl}")
     conn.commit()
     _TABLES_READY = True
 

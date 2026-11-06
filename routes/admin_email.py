@@ -4,7 +4,7 @@ Email marketing system for creator engagement.
 Creator campaigns send through Resend. Brand outreach still uses Gmail SMTP.
 """
 
-from services.db_ddl import ensure_index
+from services.db_ddl import ensure_index, ensure_columns
 from services.admin_auth import session_user_is_admin
 from flask import Blueprint, request, jsonify, session
 from functools import wraps
@@ -187,7 +187,7 @@ def _ensure_brand_outreach_log_message_id_column(cursor) -> None:
             _MESSAGE_ID_READY = True
             return
         cursor.execute("SET LOCAL lock_timeout = '2s'")
-        cursor.execute("""
+        ensure_columns(cursor, """
             ALTER TABLE brand_outreach_log
             ADD COLUMN IF NOT EXISTS message_id TEXT
         """)

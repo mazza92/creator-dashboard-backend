@@ -6,7 +6,7 @@ Public routes are token-auth only (no brand login). Admin mint/revoke uses X-Adm
 """
 
 from __future__ import annotations
-from services.db_ddl import ensure_index
+from services.db_ddl import ensure_index, ensure_columns
 from services.admin_auth import session_user_is_admin
 
 import csv
@@ -186,7 +186,7 @@ def _ensure_schema(cursor, conn=None):
                 ("shipped_at", "TIMESTAMPTZ"),
             ):
                 if not public_column_exists(cursor, "brand_pr_applications", col):
-                    cursor.execute(
+                    ensure_columns(cursor, 
                         f"ALTER TABLE brand_pr_applications ADD COLUMN IF NOT EXISTS {col} {ddl}"
                     )
             if not public_constraint_exists(cursor, "brand_pr_applications_campaign_id_fkey"):

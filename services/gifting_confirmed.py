@@ -15,6 +15,7 @@ badge and are pitched by email, with the evidence. refresh() recomputes the lot;
 from __future__ import annotations
 
 from typing import Dict
+from services.db_ddl import ensure_columns as _ensure_ddl_columns
 
 TIKTOK_WINDOW_DAYS = 60
 SHIPPED_WINDOW_DAYS = 90
@@ -28,7 +29,7 @@ def ensure_columns(cursor) -> None:
     global _READY
     if _READY:
         return
-    cursor.execute("""
+    _ensure_ddl_columns(cursor, """
         ALTER TABLE pr_brands ADD COLUMN IF NOT EXISTS gifting_confirmed_at TIMESTAMPTZ;
         ALTER TABLE pr_brands ADD COLUMN IF NOT EXISTS gifting_signal VARCHAR(20);
     """)

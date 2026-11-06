@@ -4,6 +4,7 @@ Mobile-first API endpoints for brand discovery and pipeline management
 """
 
 from flask import Blueprint, request, jsonify, session, Response, stream_with_context
+from services.db_ddl import ensure_columns
 from flask_jwt_extended import jwt_required, get_jwt_identity
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -4268,7 +4269,7 @@ def save_pitch_location():
         from services.pg_hotpath_schema import public_column_exists
         if not public_column_exists(cursor, "creators", "shipping_address"):
             cursor.execute("SET LOCAL lock_timeout = '2s'")
-            cursor.execute(
+            ensure_columns(cursor, 
                 """
                 ALTER TABLE creators
                 ADD COLUMN IF NOT EXISTS shipping_address JSONB
@@ -8029,7 +8030,7 @@ def confirm_send(pipeline_id):
 
 
 def _ensure_mailto_opened_at_column(cursor):
-    cursor.execute("""
+    ensure_columns(cursor, """
         ALTER TABLE creator_pipeline
         ADD COLUMN IF NOT EXISTS mailto_opened_at TIMESTAMPTZ
     """)

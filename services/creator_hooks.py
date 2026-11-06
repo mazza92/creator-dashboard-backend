@@ -8,7 +8,7 @@ so Polly can pitch them).
 Allowance: 1 scan for free creators (ever), 4 a calendar month on Pro. Re-opening a scan is free.
 """
 from __future__ import annotations
-from services.db_ddl import ensure_index
+from services.db_ddl import ensure_index, ensure_columns
 
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
@@ -47,8 +47,8 @@ def ensure_table(conn) -> None:
     cur.execute("""SELECT 1 FROM information_schema.columns
                    WHERE table_name = 'polly_hook_scans' AND column_name = 'notified_at'""")
     if not cur.fetchone():
-        cur.execute("ALTER TABLE polly_hook_scans ADD COLUMN IF NOT EXISTS viewed_at TIMESTAMPTZ")
-        cur.execute("ALTER TABLE polly_hook_scans ADD COLUMN IF NOT EXISTS notified_at TIMESTAMPTZ")
+        ensure_columns(cur, "ALTER TABLE polly_hook_scans ADD COLUMN IF NOT EXISTS viewed_at TIMESTAMPTZ")
+        ensure_columns(cur, "ALTER TABLE polly_hook_scans ADD COLUMN IF NOT EXISTS notified_at TIMESTAMPTZ")
         # Scans from before this existed were already seen (or abandoned long ago): never email them.
         cur.execute("UPDATE polly_hook_scans SET notified_at = NOW() WHERE notified_at IS NULL")
     conn.commit()

@@ -209,16 +209,28 @@ def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     fresh = drop_shown(pool, state.notes)
     repeated = False
     widened = False
+    queued = drop_pending_draft(drop_pitched(state.suggested, state.notes), state.notes)
     if fresh:
         picked = fresh
-    elif pool:
-        picked = _oldest_shown_first(pool, state.notes)
-        repeated = True
+    elif drop_shown(queued, state.notes):
+        picked = drop_shown(queued, state.notes)
     else:
-        queued = drop_pending_draft(drop_pitched(state.suggested, state.notes), state.notes)
-        unseen = drop_shown(queued, state.notes)
-        picked = unseen or _oldest_shown_first(queued, state.notes)
-        repeated = bool(picked) and not unseen
+        # Every match was already shown: widen to the rest of the directory in their niche before repeating
+        # anyone ("Show me other brands" must never answer with the same three).
+        try:
+            wide = R._fallback_brand_pool(state.notes, state.scrape, state.creator, state.creator_id, limit=40)
+        except Exception as exc:
+            print(f"[Polly] directory fallback skipped: {exc}")
+            wide = []
+        wide = drop_shown(drop_pending_draft(drop_pitched(wide, state.notes), state.notes), state.notes)
+        if wide:
+            picked, widened = wide, True
+        elif pool:
+            picked = _oldest_shown_first(pool, state.notes)
+            repeated = True
+        else:
+            picked = _oldest_shown_first(queued, state.notes)
+            repeated = bool(picked)
     if not picked:
         try:
             picked = R._fallback_brand_pool(state.notes, state.scrape, state.creator, state.creator_id)
