@@ -176,7 +176,8 @@ def insert_brands_to_pr_brands(
                     "contact_email": brand.get("contact_email"),
                     "instagram_handle": brand.get("instagram_handle"),
                     "tiktok_handle": brand.get("tiktok_handle"),
-                    "category": "beauty",
+                    # Left empty: the admin AI enrich reads the site and sets it (was hard-coded "beauty").
+                    "category": brand.get("category"),
                     "status": "draft",
                     "micro_friendly": bool(brand.get("micro_friendly")),
                     "hero_product": brand.get("hero_product"),

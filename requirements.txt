@@ -4,6 +4,7 @@ python-dotenv==1.0.0
 PyJWT>=2.10.1
 gunicorn==20.1.0
 requests==2.31.0
+anthropic==2.6.0
 beautifulsoup4==4.12.3
 stripe==7.11.0
 psycopg2-binary==2.9.9
