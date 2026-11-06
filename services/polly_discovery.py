@@ -681,7 +681,7 @@ def notes_context(notes: Optional[Dict] = None) -> str:
 
 GIFTED_LISTS_CHIP = {
     "id": "gifted_lists",
-    "label": "Find gifted brands to pitch",
+    "label": "Find brands to contact",
     "hint": "Brands that send boxes to creators your size",
     "action": "suggest_brands",
     "skip_discovery": True,
@@ -710,7 +710,7 @@ RADAR_CHIP = {
 
 TARGETS_CHIP = {
     "id": "pitch_targets",
-    "label": "🎯 Pitch my target brands",
+    "label": "Pitch my saved brands",
     "hint": "The brands you saved in Brands",
     "action": "pitch_targets",
 }

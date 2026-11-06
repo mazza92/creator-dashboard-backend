@@ -34,7 +34,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(chips[0]["deal"], "gifted")
         self.assertEqual(ids[1], "gifted_lists")
         self.assertEqual(chips[1]["action"], "suggest_brands")
-        self.assertEqual(chips[1]["label"], "Find gifted brands to pitch")
+        self.assertEqual(chips[1]["label"], "Find brands to contact")
         self.assertEqual(chips[2]["action"], "ask_brand")
         self.assertEqual(chips[3]["action"], "coach_profile")
         self.assertEqual(chips[3]["label"], "Make my kit get more replies")

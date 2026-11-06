@@ -175,7 +175,7 @@ class PitchTargetsTurnTests(unittest.TestCase):
     def test_no_targets_says_where_to_add_them(self):
         st, chips, call = self._run({"remaining": 3}, [])
         self.assertIsNone(call)
-        self.assertIn("+ Target", st.final_say)
+        self.assertIn("+ Save", st.final_say)
 
     def test_free_pitches_left_write_that_many(self):
         st, chips, call = self._run({"remaining": 2}, self.T)
@@ -187,10 +187,10 @@ class PitchTargetsTurnTests(unittest.TestCase):
         self.assertEqual(call[1]["brand_ids"], [1, 2, 3])
         self.assertEqual(st._targets_rest, 2)
 
-    def test_out_of_free_pitches_offers_pro_naming_targets(self):
+    def test_out_of_free_pitches_shows_saved_brand_cards_and_pro(self):
         st, chips, call = self._run({"remaining": 0}, self.T)
         self.assertIsNone(call)
-        self.assertIn("**5** brands on your targets", st.final_say)
-        self.assertIn("**Brand 1**", st.final_say)
-        self.assertEqual(chips[0]["label"], "Pitch my 5 targets · $19/mo")
+        self.assertIn("**5 saved brands**", st.final_say)
+        self.assertEqual([b["id"] for b in st.brands], [1, 2, 3, 4, 5])
+        self.assertEqual(chips[0]["label"], "Pitch my 5 saved brands · $19/mo")
         self.assertEqual(chips[0]["action"], "unlock_pro")

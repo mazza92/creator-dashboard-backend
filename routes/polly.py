@@ -1268,8 +1268,9 @@ def creator_hooks_start():
             print(f"[Polly] hooks size lookup skipped: {err}")
             followers = 0
         band = bi.size_band(followers)
+        # Retired chip: answers from stored videos only, never a new Apify run.
         out = bi.start(conn, "creator_hooks", niche, question=bi.creator_question(niche, band), band=band,
-                       redis_client=_redis(), can_start=True)
+                       redis_client=_redis(), can_start=False)
         if out.get("status") not in ("ready", "empty", "searching") or not out.get("scan_id"):
             return jsonify({"success": False, "error": "TikTok search is busy right now. Try again in a few minutes."}), 503
         ch.record(conn, creator_id, out["scan_id"], niche, band, pro=pro)
@@ -1924,17 +1925,15 @@ def _creator_is_pro(conn, creator_id):
     return any(str(v or "").lower() == "pro" for v in vals)
 
 
-def target_names(targets, n=3):
-    names = [f"**{t.get('name')}**" for t in (targets or [])[:n] if t.get("name")]
-    more = len(targets or []) - len(names)
-    return ", ".join(names) + (f" and {more} more" if more > 0 else "")
+def _saved_label(n):
+    return f"{n} saved brand{'s' if n != 1 else ''}"
 
 
 def _pitch_targets_call(state, prior):
-    """'Pitch my target brands': the brands they saved from the Brands feed.
+    """'Pitch my saved brands': the brands they saved from the Brands feed (+ Save).
 
     Free pitches left: write them now as a batch (same card as the first pitches). Pro: the same, and Autopilot
-    sends the rest of the targets before its own picks. No free pitches left: the Pro offer, naming them.
+    sends the rest before its own picks. No free pitches left: their saved brands as cards plus the Pro offer.
     """
     from services.brand_feed import target_brands
     from services.polly import drop_pitched
@@ -1943,12 +1942,12 @@ def _pitch_targets_call(state, prior):
         targets = drop_pitched(target_brands(state.db(), state.creator_id), state.notes,
                                extra_ids=list(_pipeline_pitched_ids(state.creator_id) or []))
     except Exception as err:
-        print(f"[Polly] targets load failed creator={state.creator_id}: {err}")
+        print(f"[Polly] saved brands load failed creator={state.creator_id}: {err}")
         targets = []
-    prior.append({"tool": "load_targets", "result": {"count": len(targets)}})
+    prior.append({"tool": "load_saved_brands", "result": {"count": len(targets)}})
     if not targets:
-        state.final_say = ("You haven't saved any targets yet. In **Brands**, tap **+ Target** on the brands you "
-                           "like and I'll pitch them for you.")
+        state.final_say = ("You haven't saved any brands yet. In **Brands**, tap **+ Save** on the ones you like "
+                           "and I'll pitch them for you.")
         return None
     balance = state.balance or {}
     pro = bool(balance.get("is_unlimited"))
@@ -1958,12 +1957,14 @@ def _pitch_targets_call(state, prior):
         left = 0
     n = len(targets)
     if not left:
+        state.brands = [{"id": t["id"], "name": t.get("name"), "slug": t.get("slug"), "category": t.get("category")}
+                        for t in targets[:6]]
         state.final_say = (
-            f"You have **{n}** brand{'s' if n != 1 else ''} on your targets: {target_names(targets)}.\n\n"
-            "Your free pitches are used this month. On **Pro ($19/mo)** I pitch all your targets first, "
-            "from your Gmail, then keep going with 3 new brands every weekday.")
+            f"Here are your **{_saved_label(n)}**, ready to pitch.\n\n"
+            "Your free pitches are used this month. On **Pro ($19/mo)** I pitch all of them first, from your "
+            "Gmail, then keep going with 3 new brands every weekday.")
         state.add_chips([{"id": "unlock_pro", "action": "unlock_pro",
-                          "label": f"Pitch my {n} target{'s' if n != 1 else ''} · $19/mo"}])
+                          "label": f"Pitch my {_saved_label(n)} · $19/mo"}])
         return None
     ids = [int(t["id"]) for t in targets][: min(3, left)]
     state._targets_rest = max(n - len(ids), 0) if pro else 0
@@ -2119,8 +2120,8 @@ def _run_chip(state, action, chip_id, data):
     prior.append({"tool": call[0], "args": call[1], "result": result})
     rest = getattr(state, "_targets_rest", 0)
     if action == "pitch_targets" and rest and (result or {}).get("ok") and state.final_say:
-        state.final_say += (f"\n\nYour other **{rest}** target{'s' if rest != 1 else ''} go out first with "
-                            "Autopilot, before any new matches.")
+        state.final_say += (f"\n\nYour other **{_saved_label(rest)}** go out first with Autopilot, "
+                            "before any new matches.")
     if chip_id == "first_matches":
         # The first matches are this month's plan: no 'New month' note in the month they sign up.
         from services.polly_manager import month_key
