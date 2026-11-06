@@ -22,8 +22,9 @@ def waitlist_email_context(kind, name, reason=None, as_pro=False):
                 f'<p>Hi {safe_name},</p>'
                 f'<p>Your creator profile is in the review queue. We look at every application by hand '
                 f'so brands only hear from real, active creators.</p>'
-                f'<p>Typical wait is about a day. We will email you the moment you are approved — nothing to do until then.</p>'
-                f'<p>Pro members skip the line and get in instantly.</p>'
+                f'<p>Approvals go in order, a few days on average. We will email you the moment you are in, '
+                f'and in the meantime show you the brands already lined up for your niche.</p>'
+                f'<p>Pro members skip the line and get in today.</p>'
             ),
         }
     if kind == 'approved':
