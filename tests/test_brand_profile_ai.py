@@ -84,3 +84,35 @@ class WriteUpdatesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SchemaShapeTests(unittest.TestCase):
+    """The API rejects an enum next to a union type (["string", "null"]): every call 400'd on Nov 6."""
+
+    def walk(self, node):
+        if isinstance(node, dict):
+            if "enum" in node:
+                self.assertIsInstance(node.get("type"), str, node)
+                self.assertNotIn(None, node["enum"], node)
+            self.assertFalse(isinstance(node.get("type"), list), node)
+            for v in node.values():
+                self.walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                self.walk(v)
+
+    def test_no_enum_on_union_types(self):
+        self.walk(bp.SCHEMA)
+        self.assertEqual(set(bp.SCHEMA["required"]), set(bp.SCHEMA["properties"]))
+
+    def test_rejected_request_is_surfaced(self):
+        import anthropic
+        import httpx
+        err = anthropic.BadRequestError("bad schema", response=httpx.Response(
+            400, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")), body=None)
+        client = mock.MagicMock()
+        client.messages.create.side_effect = err
+        bp.LAST_ERROR = None
+        with mock.patch.object(bp, "_anthropic", return_value=client):
+            self.assertIsNone(bp.profile_brand({"brand_name": "X"}, {"captions": ["gifted"]}))
+        self.assertIn("400", bp.LAST_ERROR)

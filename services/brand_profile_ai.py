@@ -43,18 +43,18 @@ SCHEMA: Dict[str, Any] = {
         "category_confidence": {"type": "string", "enum": ["high", "medium", "low"]},
         "category_reason": {"type": "string"},
         "is_consumer_brand": {"type": "boolean"},
-        "hero_product": {"type": ["string", "null"]},
-        "description": {"type": ["string", "null"]},
-        "target_audience": {"type": ["string", "null"]},
-        "tone": {"type": ["string", "null"], "enum": TONES + [None]},
-        "price_point": {"type": ["integer", "null"]},
-        "instagram_handle": {"type": ["string", "null"]},
-        "tiktok_handle": {"type": ["string", "null"]},
-        "youtube_handle": {"type": ["string", "null"]},
-        "min_followers": {"type": ["integer", "null"]},
-        "collaboration_type": {"type": ["string", "null"], "enum": ["gifted", "paid", "both", None]},
-        "seo_title": {"type": ["string", "null"]},
-        "seo_description": {"type": ["string", "null"]},
+        "hero_product": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "description": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "target_audience": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "tone": {"anyOf": [{"type": "string", "enum": TONES}, {"type": "null"}]},
+        "price_point": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        "instagram_handle": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "tiktok_handle": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "youtube_handle": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "min_followers": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+        "collaboration_type": {"anyOf": [{"type": "string", "enum": ["gifted", "paid", "both"]}, {"type": "null"}]},
+        "seo_title": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "seo_description": {"anyOf": [{"type": "string"}, {"type": "null"}]},
     },
     "required": ["category", "category_confidence", "category_reason", "is_consumer_brand", "hero_product",
                  "description", "target_audience", "tone", "price_point", "instagram_handle", "tiktok_handle",
@@ -219,6 +219,8 @@ def _prompt(brand: Dict[str, Any], ev: Dict[str, Any]) -> str:
 
 
 _client = None
+# Last request the API rejected outright (400/401/403/404): the bulk runner surfaces it and stops.
+LAST_ERROR: Optional[str] = None
 
 
 def _anthropic():
@@ -247,7 +249,10 @@ def profile_brand(brand: Dict[str, Any], ev: Dict[str, Any]) -> Optional[Dict[st
         print(f"[brand profile] rate limited for {brand.get('brand_name')}: {err.message}")
         return None
     except anthropic.APIStatusError as err:
+        global LAST_ERROR
         print(f"[brand profile] API error {err.status_code} for {brand.get('brand_name')}: {err.message}")
+        if err.status_code in (400, 401, 403, 404):
+            LAST_ERROR = f"AI request rejected ({err.status_code}): {err.message}"[:400]
         return None
     except anthropic.APIConnectionError as err:
         print(f"[brand profile] connection error for {brand.get('brand_name')}: {err}")

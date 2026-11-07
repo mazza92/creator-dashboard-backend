@@ -126,6 +126,9 @@ def get_brands():
                 cover_image_url, avg_product_value, collaboration_type, payment_offered,
                 seo_title, seo_description,
                 hero_product, target_audience, tone, price_point, enriched_at,
+                to_jsonb(pr_brands) ->> 'category_confidence' AS ai_confidence,
+                to_jsonb(pr_brands) ->> 'category_reason' AS ai_reason,
+                to_jsonb(pr_brands) ->> 'category_checked_at' AS ai_checked_at,
                 COALESCE(status, 'published') as status,
                 created_at, updated_at
             FROM pr_brands
@@ -209,6 +212,9 @@ def get_brand(brand_id):
                 cover_image_url, avg_product_value, collaboration_type, payment_offered,
                 seo_title, seo_description,
                 hero_product, target_audience, tone, price_point, enriched_at,
+                to_jsonb(pr_brands) ->> 'category_confidence' AS ai_confidence,
+                to_jsonb(pr_brands) ->> 'category_reason' AS ai_reason,
+                to_jsonb(pr_brands) ->> 'category_checked_at' AS ai_checked_at,
                 COALESCE(status, 'published') as status,
                 created_at, updated_at
             FROM pr_brands
@@ -349,6 +355,9 @@ def create_brand():
                 cover_image_url, avg_product_value, collaboration_type, payment_offered,
                 seo_title, seo_description,
                 hero_product, target_audience, tone, price_point, enriched_at,
+                to_jsonb(pr_brands) ->> 'category_confidence' AS ai_confidence,
+                to_jsonb(pr_brands) ->> 'category_reason' AS ai_reason,
+                to_jsonb(pr_brands) ->> 'category_checked_at' AS ai_checked_at,
                 COALESCE(status, 'published') as status,
                 created_at, updated_at
             FROM pr_brands
@@ -493,6 +502,9 @@ def update_brand(brand_id):
                 cover_image_url, avg_product_value, collaboration_type, payment_offered,
                 seo_title, seo_description,
                 hero_product, target_audience, tone, price_point, enriched_at,
+                to_jsonb(pr_brands) ->> 'category_confidence' AS ai_confidence,
+                to_jsonb(pr_brands) ->> 'category_reason' AS ai_reason,
+                to_jsonb(pr_brands) ->> 'category_checked_at' AS ai_checked_at,
                 COALESCE(status, 'published') as status,
                 created_at, updated_at
             FROM pr_brands
@@ -1009,6 +1021,7 @@ def bulk_enrich_brands_endpoint():
             return jsonify({'success': False, 'error': 'No valid brand IDs provided'}), 400
 
         batch = normalized[:batch_size]
+        ai_error = None
         remaining_ids = normalized[batch_size:]
 
         from services.bulk_ai_enricher import bulk_enrich_brands, bulk_fill_social_handles
@@ -1022,6 +1035,8 @@ def bulk_enrich_brands_endpoint():
             enriched_count = int(stats.get('updated') or 0)
             processed = int(stats.get('processed') or len(batch))
         else:
+            from services import brand_profile_ai
+            brand_profile_ai.LAST_ERROR = None
             enriched_count = bulk_enrich_brands(
                 brand_ids=batch,
                 only_missing_fields=only_missing,
@@ -1029,6 +1044,7 @@ def bulk_enrich_brands_endpoint():
                 rate_limit_delay=0.35,
             )
             processed = len(batch)
+            ai_error = brand_profile_ai.LAST_ERROR
 
         return jsonify({
             'success': True,
@@ -1039,6 +1055,8 @@ def bulk_enrich_brands_endpoint():
             'remaining_ids': remaining_ids,
             'remaining': len(remaining_ids),
             'mode': mode,
+            # A request the API rejects (bad schema, model, key) fails every brand the same way: the admin stops.
+            'ai_error': ai_error,
         }), 200
 
     except Exception as e:
