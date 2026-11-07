@@ -46,12 +46,21 @@ class TestTikTokUgcQualifier(unittest.TestCase):
             handle="createwithvic",
             nickname="Victoria | UGC Creator",
             signature="UGC Creator\nBeauty | Lifestyle\ncontentwithvictoria@gmail.com",
-            followers=1200,
+            followers=3200,
         )
         self.assertTrue(flags["qualified"])
         self.assertEqual(flags["niche"], "beauty")
         self.assertEqual(flags["contact_email"], "contentwithvictoria@gmail.com")
         self.assertIsNone(flags["location"])
+
+    def test_icp_band_is_3k_to_50k(self):
+        sig = "UGC Creator\nBeauty | Lifestyle\ncontentwithvictoria@gmail.com"
+        self.assertFalse(qualify_profile(handle="v", nickname="UGC", signature=sig, followers=1200)["qualified"])
+        big = qualify_profile(handle="v", nickname="UGC", signature=sig, followers=80000)
+        self.assertTrue(big["has_min_followers"])
+        self.assertFalse(big["within_max_followers"])
+        self.assertFalse(big["qualified"])
+        self.assertTrue(qualify_profile(handle="v", nickname="UGC", signature=sig, followers=45000)["qualified"])
 
     def test_below_1k_followers_fails(self):
         flags = qualify_profile(
