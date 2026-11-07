@@ -78,7 +78,10 @@ _CHECKPOINT_FILE = os.path.join(_ROOT, "_tiktok_ugc_partial.json")
 
 SOURCE = "tiktok_ugc_search"
 OUTREACH_TAG = "UGC_SUPPLY_OUTREACH"
-MIN_FOLLOWERS = 1000
+# Pro ICP (Nov 2026): approved creators convert to Pro at 1.2% under 1k, 2.9% at 1-3k, 4.8% at 3-10k,
+# 6.1% at 10-50k and fall back to 3.6% above 50k. Target the 3k-50k band.
+MIN_FOLLOWERS = 3000
+MAX_FOLLOWERS = 50000
 DEFAULT_QUOTA = 1000
 DEFAULT_MAX_HANDLES = 2000
 DEFAULT_WORKERS = 4
@@ -96,6 +99,11 @@ DEFAULT_TT_SEARCHES = [
     "paid ugc",
     "ugc portfolio",
     "brand deals ugc",
+    # Pro ICP over-indexes on 25-44 creators who want paid work, and on mom / lifestyle creators.
+    "mom ugc creator",
+    "ugc creator mom",
+    "paid brand deals ugc",
+    "ugc creator over 30",
 ]
 
 _JUNK_EMAIL_MARKERS = (
@@ -159,6 +167,11 @@ DEFAULT_HASHTAGS = [
     "ugcfashion",
     "ugcfitness",
     "ugcwellness",
+    "momugc",
+    "ugcmom",
+    "momcreator",
+    "ugcover30",
+    "paidbrandpartnership",
 ]
 _SKIP_HANDLES = {
     "www", "vm", "t", "foryou", "discover", "live", "api", "login", "signup",
@@ -384,6 +397,7 @@ def qualify_profile(
     niches: Optional[Iterable[str]] = None,
     followers: int = 0,
     min_followers: int = MIN_FOLLOWERS,
+    max_followers: int = MAX_FOLLOWERS,
 ) -> Dict[str, Any]:
     blob = _blob(handle, nickname, signature, bio_link)
     email = _pick_contact_email(emails or _extract_emails(blob))
@@ -397,13 +411,15 @@ def qualify_profile(
     except (TypeError, ValueError):
         follower_count = 0
     has_min_followers = follower_count >= int(min_followers or MIN_FOLLOWERS)
-    qualified = bool(ugc and niche and email and has_min_followers)
+    within_max = not max_followers or follower_count <= int(max_followers)
+    qualified = bool(ugc and niche and email and has_min_followers and within_max)
     return {
         "has_ugc": ugc,
         "niche": niche,
         "location": location,
         "contact_email": email,
         "has_min_followers": has_min_followers,
+        "within_max_followers": within_max,
         "qualified": qualified,
     }
 
