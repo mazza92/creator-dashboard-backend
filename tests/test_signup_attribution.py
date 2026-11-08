@@ -37,3 +37,37 @@ class RouteTests(unittest.TestCase):
         self.assertIn("signup_meta IS NULL", sql)
         self.assertIn("INTERVAL '3 days'", sql)
         self.assertEqual(params[1], 7)
+
+
+class DiscoveryTests(unittest.TestCase):
+    def setUp(self):
+        from routes import integrations as integ
+        app = Flask(__name__)
+        app.register_blueprint(integ.integrations_bp)
+        app.register_blueprint(integ.wellknown_bp)
+        self.client = app.test_client()
+
+    def test_server_card_and_robots(self):
+        for path in ("/.well-known/mcp.json", "/.well-known/mcp/server-card.json",
+                     "/api/v1/integrations/claude/mcp/server-card"):
+            r = self.client.get(path)
+            self.assertEqual(r.status_code, 200, path)
+            card = r.get_json()
+            self.assertEqual(card["remotes"][0]["url"], "https://api.newcollab.co/api/v1/integrations/claude/mcp")
+            self.assertEqual(card["tools"][0]["name"], "search_ugc_creators")
+        r = self.client.get("/robots.txt")
+        self.assertIn("Allow: /api/v1/integrations/", r.get_data(as_text=True))
+
+
+class LazyImageInitTests(unittest.TestCase):
+    def test_init_runs_once_and_skips_ddl_when_tables_exist(self):
+        from services import outreach_image_gen as og
+        og._INIT_DONE = False
+        with mock.patch.object(og, "_tables_exist", return_value=True) as te, \
+                mock.patch.object(og, "_ensure_schema") as ddl, mock.patch.object(og, "_seed_default_creators") as seed:
+            og.init()
+            og.init()
+        self.assertEqual(te.call_count, 1)
+        ddl.assert_not_called()
+        seed.assert_not_called()
+        og._INIT_DONE = False

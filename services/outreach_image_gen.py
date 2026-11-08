@@ -489,6 +489,7 @@ def _save_cache(cache_key: str, brand_id: int, vertical: str, prompt: str, image
 def get_showcase_creators(vertical: str, limit: int = 3) -> list:
     """Return curated creator list for this vertical, falling back to 'lifestyle'."""
     v = (vertical or "other").lower().strip()
+    init()
     try:
         conn = _db()
         cur = conn.cursor()
@@ -526,7 +527,7 @@ def generate_ugc_image(brand_id: int, brand_name: str, vertical: str,
     Returns:
         Public image URL or None if API key missing / generation failed.
     """
-    _ensure_schema()
+    init()
     cache_key = _make_cache_key(brand_id, vertical, brand_name)
 
     if not force:
@@ -552,7 +553,35 @@ def generate_ugc_image(brand_id: int, brand_name: str, vertical: str,
     return url
 
 
+_INIT_DONE = False
+
+
+def _tables_exist() -> bool:
+    """Catalog lookup (no lock): both tables already there means nothing to create or seed."""
+    try:
+        conn = _db()
+        cur = conn.cursor()
+        cur.execute("""SELECT to_regclass('outreach_ugc_image_cache') IS NOT NULL AS a,
+                              to_regclass('outreach_showcase_creators') IS NOT NULL AS b""")
+        row = cur.fetchone() or {}
+        conn.close()
+        return bool(row.get("a") and row.get("b"))
+    except Exception as e:
+        logger.warning(f"[outreach_image_gen] table check: {e}")
+        return False
+
+
 def init():
-    """Call once at app startup."""
-    _ensure_schema()
-    _seed_default_creators()
+    """Create tables / seed showcase creators once per process, only when they are missing.
+
+    Used to run at import of routes/admin_email.py, i.e. on every cold start of every API instance (two DB
+    connections plus CREATE TABLE/INDEX locks before the first user request). Now called lazily by the two
+    functions that need the tables.
+    """
+    global _INIT_DONE
+    if _INIT_DONE:
+        return
+    if not _tables_exist():
+        _ensure_schema()
+        _seed_default_creators()
+    _INIT_DONE = True
