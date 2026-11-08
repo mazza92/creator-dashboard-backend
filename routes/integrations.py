@@ -294,3 +294,45 @@ def openapi_spec():
         },
     }
     return jsonify(spec)
+
+
+# ----- discovery files -------------------------------------------------------------------------------------------
+# After the official MCP Registry listing (co.newcollab/ugc-creator-search), directories and agents probe these
+# paths; they 404'd. Serve a server card that points at the Claude-variant endpoint (factual tool descriptions).
+MCP_PUBLIC_URL = "https://api.newcollab.co/api/v1/integrations/claude/mcp"
+
+
+def server_card() -> dict:
+    return {
+        "name": "co.newcollab/ugc-creator-search",
+        "title": SERVER_INFO["title"],
+        "description": "Find vetted UGC creators by niche, platform and country for gifting, PR boxes and TikTok ads.",
+        "version": SERVER_INFO["version"],
+        "websiteUrl": "https://newcollab.co/integrations",
+        "serverInfo": SERVER_INFO,
+        "protocolVersions": list(PROTOCOL_VERSIONS),
+        "remotes": [{"type": "streamable-http", "url": MCP_PUBLIC_URL}],
+        "transport": {"type": "streamable-http", "url": MCP_PUBLIC_URL},
+        "authentication": {"required": False},
+        "capabilities": {"tools": {"listChanged": False}},
+        "tools": [{k: CLAUDE_TOOL[k] for k in ("name", "title", "description", "inputSchema", "annotations")}],
+    }
+
+
+@wellknown_bp.route("/.well-known/mcp.json", methods=["GET"])
+@wellknown_bp.route("/.well-known/mcp/server-card.json", methods=["GET"])
+@integrations_bp.route("/claude/mcp/server-card", methods=["GET"])
+@integrations_bp.route("/mcp/server-card", methods=["GET"])
+def mcp_server_card():
+    resp = jsonify(server_card())
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
+
+
+@wellknown_bp.route("/robots.txt", methods=["GET"])
+def api_robots():
+    """The API host only exposes the public integrations to crawlers."""
+    body = ("User-agent: *\nAllow: /api/v1/integrations/\nAllow: /.well-known/\nDisallow: /\n"
+            "\n# Website: https://newcollab.co\n")
+    return Response(body, status=200, mimetype="text/plain")

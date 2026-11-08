@@ -29,7 +29,6 @@ import psycopg2
 from services.outreach_image_gen import (
     generate_ugc_image,
     get_showcase_creators,
-    init as init_outreach_image_gen,
 )
 
 
@@ -41,12 +40,7 @@ def _safe_print(msg):
     except Exception:
         pass
 from services.resend_mail import is_transient_send_error, send_resend_email
-# Initialise schema + seed on first import (idempotent)
-try:
-    init_outreach_image_gen()
-except Exception as _e:
-    import logging as _logging
-    _logging.getLogger(__name__).warning(f"outreach_image_gen init: {_e}")
+# outreach_image_gen creates its tables lazily on first use (not at import: that ran DB DDL on every cold start).
 
 # Gmail SMTP Configuration (uses existing env vars)
 GMAIL_USER = os.getenv('SMTP_USERNAME', 'team@newcollab.co')
