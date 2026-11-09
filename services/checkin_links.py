@@ -24,7 +24,7 @@ ONE_TAP_NEXT = {
     "checkin_passed": "line_up",
     "checkin_quiet": "draft_followup",
     "checkin_not_sent": "send_draft",
-    "checkin_bounced": "line_up",
+    "checkin_bounced": "checkin_result",  # Polly replays what the tap did (new inbox found, resend...)
     "pr_arrived": "need_idea",
     "pr_not_yet": "",
     "reply_help": "paid_reply",

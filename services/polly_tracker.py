@@ -1004,6 +1004,38 @@ def contact_logged(conn, creator_id: int, brand_id: Optional[int], name: Optiona
     return bool(row) and row["event_type"] != "pitch_not_sent"
 
 
+def _other_contact_routes(conn, brand_id: Optional[int]) -> str:
+    """'through their PR form (url) or a DM to @handle on Instagram', from the directory; '' when none."""
+    if not brand_id:
+        return ""
+    try:
+        cur = conn.cursor()
+        cur.execute("""SELECT to_jsonb(b) ->> 'application_form_url', to_jsonb(b) ->> 'instagram_handle',
+                              to_jsonb(b) ->> 'tiktok_handle'
+                       FROM pr_brands b WHERE b.id = %s""", (brand_id,))
+        row = cur.fetchone()
+    except Exception as err:
+        print(f"[Polly tracker] contact routes skipped: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return ""
+    if not row:
+        return ""
+    vals = list(row.values()) if isinstance(row, dict) else list(row)
+    form, ig, tt = [(v or "").strip() for v in (vals + [None, None, None])[:3]]
+    parts = []
+    if form.startswith("http"):
+        parts.append(f"through their PR form ({form})")
+    handle = (ig or "").lstrip("@")
+    if handle:
+        parts.append(f"with a DM to @{handle} on Instagram")
+    elif (tt or "").lstrip("@"):
+        parts.append(f"with a DM to @{tt.lstrip('@')} on TikTok")
+    return " or ".join(parts)
+
+
 def _repair_bounced_contact(conn, creator_id: int, brand_id: Optional[int]) -> Dict[str, Any]:
     """Mark the bounced inbox bad for every creator and look for a verified one. Autopilot pitches are requeued."""
     if not brand_id:
@@ -1192,10 +1224,17 @@ def apply_lifecycle_intent(
             polly_notes="Wrong inbox or dead address. Do not keep pitching this contact.",
         )
         action = "bounced"
-        say_hint = (
-            f"That's a bounce on **{name}**, not a no. We stop that inbox. "
-            "I'll pull the next in-niche brand that actually accepts micros."
-        )
+        other = _other_contact_routes(conn, brand_id)
+        if other:
+            say_hint = (
+                f"That's a bounce on **{name}**, not a no. I've stopped that inbox for everyone. "
+                f"No verified replacement email yet, but you can still reach them {other}."
+            )
+        else:
+            say_hint = (
+                f"That's a bounce on **{name}**, not a no. I've stopped that inbox for everyone and "
+                "couldn't find a verified replacement yet. Let's put that pitch on another brand."
+            )
         chips = [
             {"id": "line_up", "label": "Next brand", "action": "suggest_brands"},
         ]
