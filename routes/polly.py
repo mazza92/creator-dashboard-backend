@@ -2027,11 +2027,24 @@ def _last_shown_brand_ids(messages):
     return []
 
 
+# Email one-tap outcomes whose result Polly replays when the creator lands (see checkin_one_tap).
+CHECKIN_RESULT_CHIPS = ("checkin_bounced",)
+
+
 def _run_chip(state, action, chip_id, data):
     """A tapped button already says which tool to run. Run it before the brain writes the reply."""
     prior = []
     brand_id = data.get("brand_id")
     brand_name = data.get("brand_name")
+    if action == "checkin_result":
+        # The email tap already logged the outcome (and repaired the contact). Answer with what it did.
+        notes = state.notes if isinstance(state.notes, dict) else {}
+        stored = notes.pop("checkin_result", None) or {}
+        name = stored.get("brand_name") or brand_name or "that brand"
+        said = stored.get("say") or (f"Logged: your **{name}** email bounced. I've stopped that inbox.")
+        state.add_chips(stored.get("chips") or [{"id": "line_up", "label": "Next brand", "action": "suggest_brands"}])
+        prior.append({"tool": "task_button", "result": {"route": "chat", "said": said}})
+        action = "chat"
     if action == "task_act":
         chip_res = apply_task_chip(
             state.db(), state.creator_id, chip_id,
@@ -2787,10 +2800,19 @@ def checkin_one_tap():
         if not _checkin_already_applied(conn, info["token_id"]):
             res = apply_task_chip(conn, cid, info["chip_id"], info["task_id"], info["brand_id"],
                                   info["brand_name"])
-            if res.get("unmark_pitched"):
+            keep_result = info["chip_id"] in CHECKIN_RESULT_CHIPS and bool(res.get("say"))
+            if res.get("unmark_pitched") or keep_result:
                 thread = load_thread(conn, cid)
-                notes = unmark_pitched(thread.get("notes") or {}, {
-                    "id": info["brand_id"], "name": info["brand_name"]})
+                notes = thread.get("notes") or {}
+                if res.get("unmark_pitched"):
+                    notes = unmark_pitched(notes, {"id": info["brand_id"], "name": info["brand_name"]})
+                if keep_result:
+                    # Polly opens on chip=checkin_result and answers with this, instead of a generic brand list.
+                    notes["checkin_result"] = {
+                        "chip_id": info["chip_id"], "say": res.get("say"), "chips": res.get("chips") or [],
+                        "brand_id": res.get("brand_id") or info["brand_id"],
+                        "brand_name": res.get("brand_name") or info["brand_name"],
+                    }
                 save_thread(conn, cid, thread.get("messages"), thread.get("suggested_brands"), notes)
             log_usage(conn, cid, "checkin_tap", intent=info["chip_id"], meta={
                 "token": info["token_id"], "src": src, "brand_id": info["brand_id"],
