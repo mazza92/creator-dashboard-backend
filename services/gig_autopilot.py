@@ -21,27 +21,31 @@ from psycopg2.extras import RealDictCursor
 
 GIGS_PER_WEEK = 2
 MAX_AGE = timedelta(days=30)
+# One brand never gets a pile of near-identical pitches from our creators: at most this many per gig.
+MAX_CREATORS_PER_GIG = 3
 GIG_ORIGIN = "paid_gig"
 
-# Gig niches are free text ("Home Workouts, Busy Parents, Lifestyle Fitness"): map words to our niche ids.
+# Gig niches come from the gig's category labels only ("Home Workouts, Busy Parents, Lifestyle Fitness"), never
+# its description: description words matched beauty creators to a tech app ("style") and to a body-fat scanner
+# ("nutrition"). Audience words (parents, comedy, budget) and "lifestyle" are not niches: a boat-taxi app tagged
+# lifestyle is not a beauty creator's brief.
 NICHE_WORDS = {
-    "fitness": r"fitness|workout|gym|kettlebell|exercise|running|runners?|walkers?|yoga|pilates|body recomposition",
+    "fitness": r"fitness|workouts?|gym|kettlebell|exercise|yoga|pilates",
     "activewear": r"activewear|athleisure|sportswear",
-    "wellness": r"wellness|mental health|self[- ]care|meditation|sleep|mindful|therapy|gut health",
-    "supplements": r"supplements?|vitamins?|protein|collagen|nutrition",
-    "skincare": r"skin ?care|skincare|serum|acne|spf",
-    "beauty": r"beauty|makeup|cosmetics?|nails?|lashes",
-    "haircare": r"hair ?care|haircare|scalp|hair",
-    "fashion": r"fashion|clothing|apparel|outfits?|style",
-    "jewelry": r"jewel(?:le)?ry|rings?|necklaces?",
-    "food": r"food|recipes?|snacks?|drinks?|beverages?|cooking|kitchen",
-    "home": r"home decor|home goods|furniture|interior|cleaning",
-    "travel": r"travel|trips?|hotels?|flights?",
-    "tech": r"\btech\b|gadgets?|software|apps?\b|\bai\b",
-    "gaming": r"gaming|games?|gamers?|discord|twitch",
-    "pet": r"pets?|dogs?|cats?|puppy",
-    "baby": r"baby|babies|parents?|parenting|moms?|mums?|toddlers?",
-    "lifestyle": r"lifestyle",
+    "wellness": r"wellness|mental health|self[- ]care|meditation|sleep|mindfulness",
+    "supplements": r"supplements?|vitamins?",
+    "skincare": r"skin ?care|skincare",
+    "beauty": r"beauty|makeup|cosmetics",
+    "haircare": r"hair ?care|haircare|scalp health",
+    "fashion": r"fashion|clothing|apparel",
+    "jewelry": r"jewel(?:le)?ry",
+    "food": r"food|recipes|snacks|beverages|cooking",
+    "home": r"home decor|home goods|furniture|interior design",
+    "travel": r"travel",
+    "tech": r"tech|technology|gadgets|software",
+    "gaming": r"gaming|video games",
+    "pet": r"pets?|dog|cat",
+    "baby": r"baby|babies|parenting",
 }
 # Briefs we never apply to on a creator's behalf.
 SENSITIVE = re.compile(r"adult|porn|onlyfans|nsfw|cbd|thc|cannabis|gambl|casino|betting|crypto|antidepress"
@@ -53,9 +57,8 @@ def _now() -> datetime:
 
 
 def gig_niches(opp: Dict[str, Any]) -> List[str]:
-    text = " ".join([str(opp.get("brand_category") or "")]
-                    + [str(x) for x in (opp.get("creator_niches") or []) if x]
-                    + [str(opp.get("campaign_description") or "")[:400]]).lower()
+    text = " , ".join([str(opp.get("brand_category") or "")]
+                      + [str(x) for x in (opp.get("creator_niches") or []) if x]).lower()
     return [n for n, pattern in NICHE_WORDS.items() if re.search(rf"\b(?:{pattern})\b", text)]
 
 
@@ -94,10 +97,12 @@ def candidates(conn, creator_id: int, limit: int = 40, now: Optional[datetime] =
           AND NOT EXISTS (SELECT 1 FROM opportunity_applications a WHERE a.opportunity_id = o.id AND a.creator_id = %s)
           AND NOT EXISTS (SELECT 1 FROM polly_autopilot_queue q WHERE q.creator_id = %s
                           AND q.pitch_meta->>'gig_id' = o.id::text)
+          AND (SELECT COUNT(*) FROM polly_autopilot_queue q2
+               WHERE q2.pitch_meta->>'gig_id' = o.id::text) < %s
         ORDER BY COALESCE(o.published_at, o.created_at) DESC
         LIMIT %s
         """,
-        (now - MAX_AGE, creator_id, creator_id, limit),
+        (now - MAX_AGE, creator_id, creator_id, MAX_CREATORS_PER_GIG, limit),
     )
     return [dict(r) for r in cur.fetchall()]
 
@@ -146,35 +151,46 @@ def _brief(opp: Dict[str, Any]) -> Dict[str, str]:
     return {"summary": summary, "pay": pay}
 
 
+def _name(raw: Any) -> str:
+    name = str(raw or "").strip()
+    return name[:1].upper() + name[1:] if name else ""
+
+
 def compose(opp: Dict[str, Any], creator: Dict[str, Any], stats: Optional[Dict[str, Any]] = None,
             kit_url: Optional[str] = None) -> Dict[str, str]:
-    """A short paid-work application that names their brief. Facts only; nothing invented."""
-    first = (creator.get("first_name") or "").strip() or "there"
+    """A short paid-work application. It doesn't quote the scraped brief back (scraped text has gaps), and
+    only shows numbers that help: followers, and views when they're a real number."""
+    first = _name(creator.get("first_name"))
     brand = (opp.get("brand_name") or "your team").strip()
-    b = _brief(opp)
-    niche = ", ".join((creator.get("niches") or [])[:2]) or "UGC"
+    product = (opp.get("product_name") or "").strip()
+    pay = _brief(opp)["pay"]
+    niche = " and ".join((creator.get("niches") or [])[:2]) or "UGC"
     lines = [f"Hi {brand} team,", ""]
-    seen = f"I saw your paid UGC brief ({b['summary']})" if b["summary"] else "I saw your paid UGC brief"
-    lines.append(f"{seen} and I'd love to create it for you.")
+    target = f"{product} " if product and product.lower() != brand.lower() else ""
+    lines.append(f"I saw your paid UGC brief for {target or brand + ' '}and I'd love to make it for you.".replace("  ", " "))
     proof = []
     if creator.get("followers"):
         from services.pitch_writer import fmt_count
         proof.append(f"{fmt_count(creator['followers'])} followers")
-    if (stats or {}).get("avg_views"):
+    try:
+        views_n = int((stats or {}).get("avg_views_n") or 0)
+    except (TypeError, ValueError):
+        views_n = 0
+    if views_n >= 1000:
         proof.append(f"{stats['avg_views']} median views")
     who = f"I'm a {niche} creator" + (f" ({', '.join(proof)})" if proof else "")
-    lines.append(f"{who} making short-form videos that feel native to TikTok and Reels.")
-    for url in ((stats or {}).get("top_posts") or [])[:2]:
+    lines.append(f"{who}, and I film natural, hook-first videos made for TikTok and Reels.")
+    posts = ((stats or {}).get("top_posts") or [])[:2] if views_n >= 1000 else []
+    for url in posts:
         lines.append(f"Recent video: {url}")
     if kit_url:
         lines.append(f"My media kit: {kit_url}")
     lines.append("")
-    budget = f" within your {b['pay']} budget" if b["pay"] else ""
-    lines.append(f"I can start this week{budget} and send a first draft fast. Want me to go ahead?")
-    lines += ["", "Thanks,", first if first != "there" else ""]
+    budget = f" within your {pay} budget" if pay else ""
+    lines.append(f"I can start this week{budget} and send a first draft fast. Shall I go ahead?")
+    lines += ["", "Thanks,"] + ([first] if first else [])
     body = "\n".join(lines).rstrip() + "\n"
-    product = (opp.get("product_name") or brand).strip()
-    subject = f"UGC creator for {product}: your paid brief"
+    subject = f"UGC for {product or brand}: your paid brief"
     return {"subject": subject[:120], "body": body}
 
 
