@@ -38,6 +38,10 @@
     {
       "path": "/api/polly/cron/gifting-sweep",
       "schedule": "40 * * * *"
+    },
+    {
+      "path": "/api/subscription/cron/billing-access",
+      "schedule": "5 * * * *"
     }
   ],
   "git": {

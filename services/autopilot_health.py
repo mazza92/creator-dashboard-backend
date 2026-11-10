@@ -203,7 +203,8 @@ def _candidates(conn, limit: int) -> List[Dict[str, Any]]:
         LEFT JOIN polly_autopilot a ON a.creator_id = c.id
         LEFT JOIN polly_gmail_accounts g ON g.creator_id = c.id
         WHERE (c.unlocks_tier = 'pro' OR LOWER(COALESCE(c.subscription_tier, '')) = 'pro')
-          AND (a.enabled IS FALSE OR g.creator_id IS NULL OR g.revoked_at IS NOT NULL)
+          AND (a.enabled IS FALSE
+               OR ((g.creator_id IS NULL OR g.revoked_at IS NOT NULL) AND COALESCE(a.send_via, 'gmail') <> 'newcollab'))
         ORDER BY last_warned NULLS FIRST, c.id
         LIMIT %s
         """,

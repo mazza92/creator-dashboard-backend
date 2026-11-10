@@ -26,13 +26,83 @@ def hash_email(email):
     return hashlib.sha256(email.strip().lower().encode("utf-8")).hexdigest()
 
 
+# Why people leave, asked before deletion (Nov 2026: 19 deletions in 30 days, none with a reason; 4 were paying
+# Pro members who skipped the cancel flow by deleting). Pro gets the questions the cancel flow already learns from;
+# free creators get a shorter list about why the free plan didn't work for them.
+PRO_REASONS = (
+    ("no_replies", "Brands didn't reply"),
+    ("too_expensive", "Too expensive for me"),
+    ("not_using", "I wasn't using it"),
+    ("found_alternative", "I found another way to get deals"),
+    ("privacy", "Privacy: I don't want my data here"),
+    ("other", "Something else"),
+)
+FREE_REASONS = (
+    ("not_approved", "My profile wasn't approved"),
+    ("no_brands_for_me", "No brands for my niche or country"),
+    ("not_useful", "I didn't find it useful"),
+    ("too_many_emails", "Too many emails"),
+    ("privacy", "Privacy: I don't want my data here"),
+    ("other", "Something else"),
+)
+ALL_REASONS = frozenset(k for k, _ in PRO_REASONS + FREE_REASONS)
+FEEDBACK_MAX = 1000
+
+
+def deletion_gate(cursor, creator_id):
+    """What has to happen before this creator can delete: a paying Pro member cancels through the cancel flow
+    first (reason + offers, like every subscription app), then can delete."""
+    out = {"plan": "free", "must_cancel_first": False, "cancel_scheduled": False, "pro_ends_at": None,
+           "reasons": [{"id": k, "label": v} for k, v in FREE_REASONS]}
+    if not creator_id:
+        return out
+    cursor.execute(
+        """SELECT subscription_tier, subscription_status, subscription_started_at, subscription_ends_at,
+                  stripe_subscription_id
+           FROM creators WHERE id = %s""",
+        (creator_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return out
+    row = dict(row) if not isinstance(row, dict) else row
+    tier = (row.get("subscription_tier") or "free").lower()
+    status = row.get("subscription_status") or ""
+    if tier != "pro" or status not in ("active", "trialing", "past_due") or not row.get("stripe_subscription_id"):
+        return out
+    out["plan"] = "pro"
+    out["reasons"] = [{"id": k, "label": v} for k, v in PRO_REASONS]
+    ends = row.get("subscription_ends_at")
+    out["pro_ends_at"] = ends.isoformat() if ends else None
+    scheduled = False
+    try:
+        cursor.execute("SAVEPOINT del_gate")
+        cursor.execute(
+            """SELECT 1 FROM creator_retention_events
+               WHERE creator_id = %s AND outcome = 'canceled'
+                 AND created_at >= COALESCE(%s, '-infinity'::timestamptz)
+               LIMIT 1""",
+            (creator_id, row.get("subscription_started_at")),
+        )
+        scheduled = cursor.fetchone() is not None
+        cursor.execute("RELEASE SAVEPOINT del_gate")
+    except Exception:
+        cursor.execute("ROLLBACK TO SAVEPOINT del_gate")
+    out["cancel_scheduled"] = scheduled
+    out["must_cancel_first"] = not scheduled
+    return out
+
+
 def validate_deletion_request(body, account_email):
     """Return an error string, or None if the confirmation is valid."""
     payload = body or {}
     confirmation = str(payload.get("confirmation") or "").strip().upper()
     typed_email = str(payload.get("email") or "").strip().lower()
     expected_email = str(account_email or "").strip().lower()
+    reason = str(payload.get("reason") or "").strip()
 
+    if reason not in ALL_REASONS:
+        return "Tell us why you're leaving before deleting your account."
     if confirmation != CONFIRMATION_PHRASE:
         return "Type DELETE to confirm you want to permanently erase this account."
     if not expected_email or typed_email != expected_email:
@@ -53,6 +123,9 @@ def ensure_account_deletion_schema(cursor):
         )
         """
     )
+    from services.db_ddl import ensure_columns
+    ensure_columns(cursor, """ALTER TABLE account_deletion_log ADD COLUMN IF NOT EXISTS reason TEXT,
+                              ADD COLUMN IF NOT EXISTS feedback TEXT, ADD COLUMN IF NOT EXISTS plan TEXT""")
 
 
 def cancel_stripe_billing(customer_id, subscription_id):
@@ -184,7 +257,8 @@ def _try_anonymize_email(cursor, table, email):
         cursor.execute("ROLLBACK TO SAVEPOINT account_email")
 
 
-def purge_creator_account(cursor, user_id, creator_id, email, role="creator"):
+def purge_creator_account(cursor, user_id, creator_id, email, role="creator", reason=None, feedback=None,
+                          plan=None):
     """Delete the creator, user, and related personal data. Caller commits."""
     ensure_account_deletion_schema(cursor)
 
@@ -210,8 +284,9 @@ def purge_creator_account(cursor, user_id, creator_id, email, role="creator"):
 
     cursor.execute(
         """
-        INSERT INTO account_deletion_log (user_id, creator_id, email_hash, role)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO account_deletion_log (user_id, creator_id, email_hash, role, reason, feedback, plan)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         """,
-        (user_id, creator_id, hash_email(email), role),
+        (user_id, creator_id, hash_email(email), role, reason,
+         (str(feedback).strip()[:FEEDBACK_MAX] or None) if feedback else None, plan),
     )
