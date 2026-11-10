@@ -48,9 +48,16 @@ RELATED = {
 EU_CODES = {"AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE", "IT",
             "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE"}
 REGION_CODES = {"US": {"US"}, "UK": {"GB", "UK"}, "GB": {"GB", "UK"}, "AU": {"AU"}, "CA": {"CA"},
-                "EU": EU_CODES, "NZ": {"NZ"}, "SG": {"SG"}}
+                "EU": EU_CODES, "NZ": {"NZ"}, "SG": {"SG"},
+                # pr_brands.regions and creators.regions hold names too ("Australia", "Europe"): without these a
+                # brand shipping to "Australia" matched no creator, since the code compared {"AUSTRALIA"}.
+                "USA": {"US"}, "UNITED STATES": {"US"}, "UNITED KINGDOM": {"GB", "UK"},
+                "AUSTRALIA": {"AU"}, "CANADA": {"CA"}, "NEW ZEALAND": {"NZ"},
+                "EUROPE": EU_CODES | {"GB", "UK", "NO", "CH"}, "EUROPEAN UNION": EU_CODES}
 REGION_NAMES = {"US": "the US", "UK": "the UK", "GB": "the UK", "AU": "Australia", "CA": "Canada",
-                "EU": "the EU", "NZ": "New Zealand", "SG": "Singapore"}
+                "EU": "the EU", "NZ": "New Zealand", "SG": "Singapore",
+                "USA": "the US", "UNITED STATES": "the US", "UNITED KINGDOM": "the UK", "AUSTRALIA": "Australia",
+                "CANADA": "Canada", "NEW ZEALAND": "New Zealand", "EUROPE": "Europe", "EUROPEAN UNION": "the EU"}
 FOLLOWER_RANGES = {"under 1k": (0, 1_000), "1k-10k": (1_000, 10_000), "10k-50k": (10_000, 50_000),
                    "50k-100k": (50_000, 100_000), "100k+": (100_000, 10**12)}
 
