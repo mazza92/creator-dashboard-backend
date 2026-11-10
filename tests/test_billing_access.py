@@ -87,6 +87,22 @@ class ApplyStatusTests(unittest.TestCase):
             restore.assert_not_called()
 
 
+class UnpaidSinceTests(unittest.TestCase):
+    def test_old_past_due_uses_period_start_and_locks(self):
+        stripe = MagicMock()
+        stripe.Invoice.list.return_value = {"data": [{"amount_paid": 1900}]}
+        start = int((NOW - timedelta(days=30)).timestamp())
+        creator = {"id": 9, "subscription_tier": "pro", "unlocks_tier": "free", "subscription_status": "past_due",
+                   "past_due_since": None, "pro_locked_at": None}
+        conn = MagicMock()
+        conn.cursor.return_value.fetchone.return_value = (datetime.fromtimestamp(start, tz=timezone.utc),)
+        with patch.object(ba, "lock") as lock:
+            out = ba.apply_status(conn, stripe, creator, {"id": "sub_9", "status": "past_due",
+                                                          "current_period_start": start}, NOW)
+        self.assertEqual(out, "locked")
+        lock.assert_called_once()
+
+
 class OnPaymentFailedTests(unittest.TestCase):
     def test_trial_conversion_failure_locks(self):
         stripe = MagicMock()
