@@ -122,8 +122,11 @@ def _save_location(conn, creator_id: int, city: str, country: str) -> None:
     cur.execute("UPDATE creators SET shipping_address = %s WHERE id = %s", (Json(addr), creator_id))
     if row.get("has_city"):  # the profile city wins over the address when pitches resolve a location
         cur.execute("UPDATE creators SET city = %s WHERE id = %s", (city, creator_id))
-        if country:
-            cur.execute("UPDATE creators SET country = %s WHERE id = %s", (country, creator_id))
+        # creators.country holds an ISO code (services.creator_country); a free-text name would overflow it.
+        from services.creator_country import normalize_code, OTHER
+        code = normalize_code(country) if country else None
+        if code and code != OTHER:
+            cur.execute("UPDATE creators SET country = %s WHERE id = %s", (code, creator_id))
     conn.commit()
 
 
