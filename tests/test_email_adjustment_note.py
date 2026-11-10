@@ -30,7 +30,7 @@ class AdjustmentNoteTests(unittest.TestCase):
             DROP SCHEMA IF EXISTS {SCHEMA} CASCADE; CREATE SCHEMA {SCHEMA}; SET search_path TO {SCHEMA};
             CREATE TABLE pr_brands (id int PRIMARY KEY, brand_name text, website text, contact_email text,
                                     email_status text, email_verified_at timestamp, email_verification_source text,
-                                    email_bounce_count int, notes text);
+                                    email_bounce_count int, email_last_bounced_at timestamp, notes text);
         """)
         boot.close()
 
@@ -91,3 +91,29 @@ class AdjustmentNoteTests(unittest.TestCase):
             res = cr.ensure_deliverable(self.conn, 2, "info@dead.co", http=http)
         self.assertIsNone(res["email"])
         http.assert_not_called()  # no domain search, no credit
+
+    def test_admin_typed_email_clears_dead_verdict_and_is_verified_now(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        cur = self.conn.cursor()
+        cur.execute("UPDATE pr_brands SET email_status = 'invalid', email_bounce_count = 2, contact_email = 'pr@jovs.co' "
+                    "WHERE id = 1")
+        self.conn.commit()
+        http = mock.MagicMock(return_value=SimpleNamespace(status_code=200, json=lambda: {"data": {"status": "valid"}}))
+        with mock.patch.dict(os.environ, {"HUNTER_API_KEY": "k"}):
+            res = cr.set_manual_email(self.conn, 1, "hailey@jovsbeauty.com", "pr@jovs.co", http=http)
+        self.assertEqual(res["status"], "valid")
+        cur.execute("SELECT email_status, email_bounce_count, email_adjustment, notes FROM pr_brands WHERE id = 1")
+        status, bounces, adj, notes = cur.fetchone()
+        self.assertEqual((status, bounces, adj), ("valid", 0, "manual"))
+        self.assertIn("hailey@jovsbeauty.com -> pr@jovs.co: entered manually by admin (Hunter: valid)", notes)
+        self.assertIn("hailey@jovsbeauty.com", cr.known_bad(self.conn, 1))  # the old dead one stays blocked
+
+    def test_admin_typed_known_bad_email_is_refused_without_a_credit(self):
+        from unittest import mock
+        cr._log(self.conn, 2, "info@dead.co", None, "verify_invalid", None)
+        self.conn.commit()
+        http = mock.MagicMock()
+        res = cr.set_manual_email(self.conn, 2, "other@dead.co", "info@dead.co", http=http)
+        self.assertEqual(res["status"], "invalid")
+        http.assert_not_called()
