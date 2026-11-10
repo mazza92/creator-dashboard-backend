@@ -760,7 +760,39 @@ def auto_fill(conn, now=None, budget=AUTO_DRAFTS_PER_RUN, note_fn=None, daily_fn
                 conn.rollback()
             except Exception:
                 pass
+    out["gigs"] = _fill_gigs(conn, now)
     return out
+
+
+def _fill_gigs(conn, now):
+    """Paid UGC gigs for every Pro member with Autopilot on, up to GIGS_PER_WEEK each (services.gig_autopilot)."""
+    from services.gig_autopilot import queue_gigs
+    from services.polly_autopilot import PRO_SQL, SENDER_SQL
+
+    queued = 0
+    try:
+        cur = conn.cursor()
+        cur.execute(f"""
+            SELECT a.creator_id FROM polly_autopilot a
+            LEFT JOIN polly_gmail_accounts g ON g.creator_id = a.creator_id AND g.revoked_at IS NULL
+            JOIN creators pc ON pc.id = a.creator_id AND {PRO_SQL} AND {SENDER_SQL}
+            WHERE a.enabled
+            ORDER BY random() LIMIT 25""")
+        ids = [r[0] if not isinstance(r, dict) else r["creator_id"] for r in cur.fetchall()]
+    except Exception as err:
+        print(f"[gig autopilot] creators query failed: {err}")
+        conn.rollback()
+        return 0
+    for creator_id in ids:
+        try:
+            queued += len(queue_gigs(conn, creator_id, now))
+        except Exception as err:
+            print(f"[gig autopilot] creator={creator_id} skipped: {err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+    return queued
 
 
 @autopilot_bp.route("/items/<int:item_id>", methods=["PATCH"])

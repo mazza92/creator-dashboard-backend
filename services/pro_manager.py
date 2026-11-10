@@ -389,18 +389,47 @@ def board_due(notes: Optional[Dict[str, Any]], now: Optional[datetime] = None) -
     return (notes or {}).get("board_week") != week_key(now)
 
 
+def upcoming_followups(conn, creator_id: int, now: Optional[datetime] = None, days: int = 7) -> List[Dict[str, Any]]:
+    """Autopilot follow-ups going out in the next week (brand id + name), soonest first."""
+    now = now or utc_now()
+    cur = _cursor(conn)
+    try:
+        cur.execute(
+            """SELECT brand_id, brand_name FROM polly_autopilot_queue
+               WHERE creator_id = %s AND followup_status IN ('scheduled', 'headsup')
+                 AND followup_due_at BETWEEN %s AND %s
+               ORDER BY followup_due_at""",
+            (creator_id, now, now + timedelta(days=days)),
+        )
+        return [dict(r) for r in cur.fetchall() if r.get("brand_name")]
+    except Exception:
+        conn.rollback()
+        return []
+
+
 def board_email(first_name: str, board: Dict[str, Any], unsubscribe_url: str = "",
-                open_href: str = "") -> Dict[str, str]:
-    from services.polly_alerts import render_email
+                open_href: str = "", followups: Optional[List[Dict[str, Any]]] = None) -> Dict[str, str]:
+    from services.polly_alerts import chip_link, render_email
 
     left = [t for t in board.get("tasks") or [] if not t.get("done")]
     subject = "Your weekly outreach report"
     lines = [_md_html(line) for line in board.get("report") or []]
+    followups = followups or []
+    if followups:
+        # Replaces the per-brand "Tomorrow I follow up with ..." emails: the week's follow-ups in one place.
+        names = ", ".join(f"<strong>{escape(f['brand_name'])}</strong>" for f in followups[:6])
+        more = len(followups) - 6
+        lines.append(f"🔁 This week I follow up with {names}{f' and {more} more' if more > 0 else ''}. "
+                     "If one already replied, tap it and I'll hold that follow-up.")
     if left:
         items = "".join(f"<li style=\"margin:0 0 6px 0;\">{escape(t['label'])}</li>" for t in left[:6])
         lines.append(f"For you this week:<ul style=\"margin:8px 0 0 18px;padding:0;\">{items}</ul>")
     lines.append("Every weekday I send new pitches from your Gmail and follow up in the same thread.")
-    buttons = [{"label": "Open my weekly report", "href": open_href}] if open_href else []
+    buttons = [{"label": f"{f['brand_name']} replied", "href": chip_link(
+        "checkin_replied", brand_id=f.get("brand_id"), brand_name=f["brand_name"], kind="monday_board")}
+        for f in followups[:3]]
+    if open_href:
+        buttons.append({"label": "Open my weekly report", "href": open_href})
     return {"subject": subject, "html": render_email(first_name, subject, lines, buttons, unsubscribe_url)}
 
 
@@ -436,31 +465,50 @@ def _date_label(dt: datetime) -> str:
     return f"{dt.strftime('%B')} {dt.day}"
 
 
-def renewal_lines(counts: Dict[str, int], renews_at: datetime, next_brands: List[str]) -> List[str]:
+# Minutes a creator spends finding the contact, writing and sending one pitch / one follow-up by hand.
+MINUTES_PER_PITCH = 12
+MINUTES_PER_FOLLOWUP = 3
+
+
+def hours_saved(pitched: int, followups: int) -> int:
+    return round((pitched * MINUTES_PER_PITCH + followups * MINUTES_PER_FOLLOWUP) / 60)
+
+
+def renewal_lines(counts: Dict[str, int], renews_at: datetime, next_brands: List[str],
+                  gigs: Optional[List[Dict[str, Any]]] = None, kit_names: Optional[List[str]] = None) -> List[str]:
     """Markdown lines: what Pro did this period and what's already queued for the next.
 
-    Empty when nothing went out: an idle month is fixed earlier (day-1 Gmail step, founder alert),
-    not announced the week the card is charged.
+    Written for the member deciding whether to renew: the work done for them in hours, the paid gigs applied
+    to, who looked at their kit, and replies asked about (we can't read their inbox, so "no replies" would be
+    a guess). Empty when nothing went out: an idle month is fixed earlier, not announced on charge week.
     """
     pitched = int(counts.get("pitched") or 0)
     followups = int(counts.get("followups") or 0)
     views = int(counts.get("kit_views") or 0)
     replies = int(counts.get("replies") or 0)
-    if not pitched:
+    gigs = gigs or []
+    if not pitched and not gigs:
         return []
-    lines = [f"Your Pro month renews on **{_date_label(renews_at)}**. Here's what it did:"]
+    lines = [f"Your Pro month renews on **{_date_label(renews_at)}**. Here's what it did for you:"]
     sent = f"**{_plural(pitched, 'brand')}** pitched"
     if followups:
         sent += f", {_plural(followups, 'follow-up')} sent"
-    lines.append(f"📤 {sent}.")
+    hours = hours_saved(pitched, followups)
+    lines.append(f"📤 {sent}" + (f": about **{hours} hours** of outreach you didn't have to do." if hours >= 2 else "."))
+    if gigs:
+        named = ", ".join(f"**{g['brand_name']}**" + (f" ({g['pay']})" if g.get("pay") else "") for g in gigs[:4])
+        lines.append(f"💰 Applied to **{_plural(len(gigs), 'paid UGC gig')}** for you: {named}.")
     if views:
-        lines.append(f"👀 **{views}** kit view{'s' if views != 1 else ''} from brands.")
+        who = f": {_named(kit_names or [], views)}" if kit_names else ""
+        lines.append(f"👀 **{views}** kit view{'s' if views != 1 else ''} from brands{who}. "
+                     "A view means they're considering you.")
     if replies:
-        lines.append(f"💬 **{_plural(replies, 'reply', 'replies')}**. Tap any yes and I'll write the paid usage ask.")
+        lines.append(f"💬 **{_plural(replies, 'reply', 'replies')}** logged. Tap any yes and I'll write your answer "
+                     "and the paid usage ask.")
     else:
         lines.append(
-            "💬 No replies yet. Brands usually answer 2–4 weeks after a pitch, so these pitches are "
-            "still live, and I keep following up."
+            "💬 I can't see your inbox, so tell me: **did any brand reply?** Tap below and I'll write your answer. "
+            "If not yet, that's normal: brands often answer 2–4 weeks after a pitch, and I keep following up."
         )
     if counts.get("paid"):
         lines.append(f"💰 **{_plural(int(counts['paid']), 'paid deal')}** landed.")
@@ -479,9 +527,14 @@ def renewal_email(first_name: str, lines: List[str], unsubscribe_url: str = "", 
                   manage_href: str = "") -> Dict[str, str]:
     from services.polly_alerts import render_email
 
+    from services.polly_alerts import chip_link
+
     subject = "What Pro did for you this month"
     html_lines = [_md_html(line) for line in lines]
-    buttons = [{"label": "Open my weekly report", "href": open_href}] if open_href else []
+    buttons = [{"label": "A brand replied", "href": chip_link("a_brand_replied", kind="renewal_note")},
+               {"label": "No replies yet: tune my pitches", "href": chip_link("tune_outreach", kind="renewal_note")}]
+    if open_href:
+        buttons.append({"label": "Open my weekly report", "href": open_href})
     links = [{"label": "Manage plan", "href": manage_href}] if manage_href else None
     return {"subject": subject, "html": render_email(first_name, subject, html_lines, buttons,
                                                      unsubscribe_url, links=links)}
@@ -576,7 +629,14 @@ def email_renewal_notes(conn, limit: int = 40, dry_run: bool = False, send_fn: O
         if not who:
             continue
         counts = window_counts(conn, cid, period_start, now)
-        lines = renewal_lines(counts, renews, next_brand_names(conn, cid))
+        try:
+            from services.gig_autopilot import gigs_applied
+            gigs = gigs_applied(conn, cid, period_start)
+        except Exception:
+            conn.rollback()
+            gigs = []
+        kit_names = brand_names(conn, cid, ("portfolio_viewed",), period_start, now)
+        lines = renewal_lines(counts, renews, next_brand_names(conn, cid), gigs=gigs, kit_names=kit_names)
         if not lines:
             continue
         unsub = _unsubscribe_url(who["user_id"])
@@ -643,7 +703,8 @@ def email_monday_boards(conn, limit: int = 40, dry_run: bool = False, send_fn: O
             conn.rollback()
             continue
         unsub = _unsubscribe_url(who["user_id"])
-        mail = board_email(who["first"], board, unsub, open_href=chip_link("open_board", kind="monday_board"))
+        mail = board_email(who["first"], board, unsub, open_href=chip_link("open_board", kind="monday_board"),
+                           followups=upcoming_followups(conn, cid, now))
         item = {"creator_id": cid, "kind": "monday_board", "subject": mail["subject"], "to": who["email"]}
         if dry_run:
             out.append(item)
