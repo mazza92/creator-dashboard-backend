@@ -129,6 +129,9 @@ def get_brands():
                 to_jsonb(pr_brands) ->> 'category_confidence' AS ai_confidence,
                 to_jsonb(pr_brands) ->> 'category_reason' AS ai_reason,
                 to_jsonb(pr_brands) ->> 'category_checked_at' AS ai_checked_at,
+                to_jsonb(pr_brands) ->> 'email_adjusted_at' AS email_adjusted_at,
+                to_jsonb(pr_brands) ->> 'email_adjustment' AS email_adjustment,
+                to_jsonb(pr_brands) ->> 'email_status' AS email_status,
                 COALESCE(status, 'published') as status,
                 created_at, updated_at
             FROM pr_brands
@@ -215,6 +218,9 @@ def get_brand(brand_id):
                 to_jsonb(pr_brands) ->> 'category_confidence' AS ai_confidence,
                 to_jsonb(pr_brands) ->> 'category_reason' AS ai_reason,
                 to_jsonb(pr_brands) ->> 'category_checked_at' AS ai_checked_at,
+                to_jsonb(pr_brands) ->> 'email_adjusted_at' AS email_adjusted_at,
+                to_jsonb(pr_brands) ->> 'email_adjustment' AS email_adjustment,
+                to_jsonb(pr_brands) ->> 'email_status' AS email_status,
                 COALESCE(status, 'published') as status,
                 created_at, updated_at
             FROM pr_brands
@@ -358,6 +364,9 @@ def create_brand():
                 to_jsonb(pr_brands) ->> 'category_confidence' AS ai_confidence,
                 to_jsonb(pr_brands) ->> 'category_reason' AS ai_reason,
                 to_jsonb(pr_brands) ->> 'category_checked_at' AS ai_checked_at,
+                to_jsonb(pr_brands) ->> 'email_adjusted_at' AS email_adjusted_at,
+                to_jsonb(pr_brands) ->> 'email_adjustment' AS email_adjustment,
+                to_jsonb(pr_brands) ->> 'email_status' AS email_status,
                 COALESCE(status, 'published') as status,
                 created_at, updated_at
             FROM pr_brands
@@ -505,6 +514,9 @@ def update_brand(brand_id):
                 to_jsonb(pr_brands) ->> 'category_confidence' AS ai_confidence,
                 to_jsonb(pr_brands) ->> 'category_reason' AS ai_reason,
                 to_jsonb(pr_brands) ->> 'category_checked_at' AS ai_checked_at,
+                to_jsonb(pr_brands) ->> 'email_adjusted_at' AS email_adjusted_at,
+                to_jsonb(pr_brands) ->> 'email_adjustment' AS email_adjustment,
+                to_jsonb(pr_brands) ->> 'email_status' AS email_status,
                 COALESCE(status, 'published') as status,
                 created_at, updated_at
             FROM pr_brands

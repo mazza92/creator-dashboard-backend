@@ -188,11 +188,64 @@ def known_bad(conn, brand_id: int) -> List[str]:
     return [r["e"] for r in cur.fetchall()]
 
 
+# What each adjustment means, for the note admins see on the brand.
+ADJUSTMENT_TEXT = {
+    "verify_invalid": ("old address was invalid, replaced with a verified one",
+                       "address is invalid and no working replacement was found yet"),
+    "bounce_repair": ("a creator's pitch bounced, replaced with a verified address",
+                      "a creator's pitch bounced and no working replacement was found yet"),
+    "creator_bounce": ("a creator's pitch bounced, replaced with a verified address",
+                       "a creator reported a bounce on this address"),
+    "dns_dead_domain": ("domain receives no email, replaced", "domain receives no email (no MX/A record)"),
+}
+_ADJ_READY = False
+
+
+def _ensure_adjustment_columns(cur) -> None:
+    global _ADJ_READY
+    if _ADJ_READY:
+        return
+    from services.db_ddl import ensure_columns
+    ensure_columns(cur, """ALTER TABLE pr_brands
+        ADD COLUMN IF NOT EXISTS email_adjusted_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS email_adjustment TEXT""")
+    _ADJ_READY = True
+
+
+def adjustment_note(old: Optional[str], new: Optional[str], reason: str, day: Optional[str] = None) -> str:
+    fixed, unfixed = ADJUSTMENT_TEXT.get(reason, ("email updated", "email flagged"))
+    day = day or _now().date().isoformat()
+    if new:
+        return f"[Email check {day}] {old or '(none)'} -> {new}: {fixed}"
+    return f"[Email check {day}] {old or '(none)'}: {unfixed}"
+
+
 def _log(conn, brand_id: int, old: Optional[str], new: Optional[str], reason: str, creator_id: Optional[int]) -> None:
-    conn.cursor().execute(
+    """Record every inbox adjustment: the repair log, plus a dated note and flag on the brand for the admin."""
+    cur = conn.cursor()
+    cur.execute(
         "INSERT INTO brand_contact_repairs (brand_id, old_email, new_email, reason, creator_id) VALUES (%s, %s, %s, %s, %s)",
         (brand_id, (old or "").lower() or None, (new or "").lower() or None, reason, creator_id),
     )
+    try:
+        cur.execute("SAVEPOINT email_adjust_note")
+        _ensure_adjustment_columns(cur)
+        note = adjustment_note((old or "").lower() or None, (new or "").lower() or None, reason)
+        cur.execute(
+            """UPDATE pr_brands
+               SET notes = CASE WHEN COALESCE(notes, '') = '' THEN %s ELSE notes || E'\n' || %s END,
+                   email_adjusted_at = NOW(), email_adjustment = %s
+               WHERE id = %s
+                 AND POSITION(%s IN COALESCE(notes, '')) = 0""",
+            (note, note, ("fixed" if new else "flagged") + ":" + reason, brand_id, note),
+        )
+        cur.execute("RELEASE SAVEPOINT email_adjust_note")
+    except Exception as err:  # the note never blocks the repair itself
+        print(f"[contact_repair] adjustment note skipped: {err}")
+        try:
+            cur.execute("ROLLBACK TO SAVEPOINT email_adjust_note")
+        except Exception:
+            pass
 
 
 def _save_status(conn, brand_id: int, status: str) -> None:
