@@ -154,3 +154,32 @@ def test_follow_up_to_dead_inbox_is_cancelled_and_moved_inbox_gets_a_fresh_pitch
         assert moved["sent"] == [] and moved["requeued"] == ["pr@b2.com"]
         _, ok = _run(follows=[_follow(3, "pr@b3.com")], verify=_verify("valid"))
         assert ok["sent"] == ["pr@b3.com"]
+
+
+def test_queue_time_check_rejects_dead_inbox_before_writing_the_pitch():
+    from routes import polly_autopilot as rpa
+    with mock.patch.object(rpa, "_brands_with_email", return_value={5: {"brand_name": "JOVS", "email": "hailey@jovsbeauty.com"}}), \
+            mock.patch("services.deliverability.gate", return_value={"send": False, "defer": False, "email": None}), \
+            mock.patch("routes.polly._invoke_generate_pr_package") as gen:
+        item, err = rpa._write_draft(mock.MagicMock(), 1, {"id": 1}, 5, {}, {})
+    assert item is None and err == "no_contact_email"
+    gen.assert_not_called()  # no AI call spent on a dead inbox
+
+
+def test_queue_time_check_queues_the_verified_replacement():
+    from routes import polly_autopilot as rpa
+    captured = {}
+    with mock.patch.object(rpa, "_brands_with_email", return_value={5: {"brand_name": "B", "email": "old@b.com"}}), \
+            mock.patch("services.deliverability.gate", return_value={"send": True, "email": "pr@b.com", "changed": True}), \
+            mock.patch.object(rpa, "autopilot_location", return_value={"needs_location": False}), \
+            mock.patch("routes.polly._invoke_generate_pr_package", return_value=(200, {"success": True})), \
+            mock.patch("services.polly.pitch_from_package_response", return_value={"subject": "s", "body": "hi", "email": "old@b.com"}), \
+            mock.patch.object(rpa, "settings", return_value={"deal_focus": "gifted"}), \
+            mock.patch("services.polly.apply_gifted_ask_to_pitch", side_effect=lambda p, **k: p), \
+            mock.patch("services.polly_pitch_edit.pitch_pref_inputs", return_value={"slots": {}, "facts": {}}), \
+            mock.patch("services.polly_pitch_edit.apply_pitch_prefs", side_effect=lambda p, *a, **k: p), \
+            mock.patch("services.pitch_writer.finalize_for", return_value=None), \
+            mock.patch("services.polly_autopilot._creator_names", return_value={"first": "N"}), \
+            mock.patch.object(rpa, "add_draft", side_effect=lambda c, cid, bid, name, to, *a, **k: captured.update(to=to) or {"id": 9}):
+        item, err = rpa._write_draft(mock.MagicMock(), 1, {"id": 1}, 5, {}, {})
+    assert err is None and captured["to"] == "pr@b.com"
