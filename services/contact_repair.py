@@ -437,3 +437,54 @@ def admin_summary(conn) -> Dict[str, Any]:
     last30 = {r["reason"]: {"events": r["n"], "fixed": r["fixed"]} for r in cur.fetchall()}
     return {"daily_cap": daily_cap(), "calls_today": _calls_today(conn), "usage": usage, "last_30_days": last30,
             "recent": repairs}
+
+
+def set_manual_email(conn, brand_id: int, old: Optional[str], new: Optional[str],
+                     http: Optional[Callable] = None) -> Dict[str, Any]:
+    """An admin typed a new contact email (e.g. working through "Email dead" brands).
+
+    Clears the old verdict (invalid / bounced / dead flag) so Autopilot and the send gate pick the brand up again,
+    checks the new address right away (live domain + Hunter) so the admin sees whether it works, and notes it on the
+    brand. Returns {"status": valid|catch-all|unknown|invalid|unchecked, "message": str}.
+    """
+    new = (new or "").strip().lower()
+    old = (old or "").strip().lower() or None
+    if not new or new == old:
+        return {"status": "unchanged", "message": ""}
+    from services.deliverability import EMAIL_RE, domain_receives_mail
+
+    if not EMAIL_RE.match(new):
+        status = "invalid"
+    elif domain_receives_mail(new.rsplit("@", 1)[1], http=http) is False:
+        status = "invalid"
+    elif new in known_bad(conn, int(brand_id)):
+        status = "invalid"
+    else:
+        status = hunter_verify(conn, new, http=http) or "unchecked"
+    cur = conn.cursor()
+    _ensure_adjustment_columns(cur)
+    verified = status in ("valid", "catch-all", "unknown", "invalid")
+    cur.execute(
+        """UPDATE pr_brands SET email_status = %s, email_bounce_count = 0, email_last_bounced_at = NULL,
+                  email_verification_source = 'manual', email_verified_at = CASE WHEN %s THEN NOW() ELSE NULL END,
+                  email_adjusted_at = NOW(), email_adjustment = %s
+           WHERE id = %s""",
+        ("unverified" if status == "unchecked" else status, verified,
+         "manual" if status in ("valid", "catch-all", "unchecked", "unknown") else "flagged:manual_invalid", brand_id),
+    )
+    label = {"valid": "Hunter: valid", "catch-all": "Hunter: accept all", "unknown": "Hunter: unknown",
+             "invalid": "invalid, won't be used", "unchecked": "not verified yet, checked before the next pitch"}[status]
+    note = f"[Email check {_now().date().isoformat()}] {old or '(none)'} -> {new}: entered manually by admin ({label})"
+    cur.execute("""UPDATE pr_brands SET notes = CASE WHEN COALESCE(notes, '') = '' THEN %s ELSE notes || E'\\n' || %s END
+                   WHERE id = %s""", (note, note, brand_id))
+    cur.execute("INSERT INTO brand_contact_repairs (brand_id, old_email, new_email, reason) VALUES (%s, %s, %s, 'manual')",
+                (brand_id, old, new))
+    conn.commit()
+    messages = {
+        "valid": "Verified: this inbox works. Autopilot will use it.",
+        "catch-all": "Accepted: the domain accepts all mail (can't confirm the person). Autopilot will use it.",
+        "unknown": "Saved, but Hunter couldn't confirm it. Manual sends work; Autopilot will retry the check.",
+        "unchecked": "Saved. It will be verified before the next pitch goes out.",
+        "invalid": "This address doesn't work (invalid or dead domain). Try another one.",
+    }
+    return {"status": status, "message": messages[status]}

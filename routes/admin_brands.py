@@ -468,6 +468,13 @@ def update_brand(brand_id):
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
+        # A new contact email clears the old "invalid/bounced" verdict and is checked right away (see below).
+        old_email = None
+        if 'contact_email' in data:
+            cursor.execute("SELECT contact_email FROM pr_brands WHERE id = %s", (brand_id,))
+            row = cursor.fetchone()
+            old_email = (row or {}).get('contact_email')
+
         query = f"""
             UPDATE pr_brands
             SET {", ".join(update_fields)}, updated_at = CURRENT_TIMESTAMP
@@ -493,6 +500,16 @@ def update_brand(brand_id):
         if not result:
             conn.close()
             return jsonify({'error': 'Brand not found'}), 404
+
+        email_check = None
+        new_email = (data.get('contact_email') or '').strip().lower() if 'contact_email' in data else None
+        if new_email and new_email != (old_email or '').strip().lower():
+            try:
+                from services.contact_repair import set_manual_email
+                email_check = set_manual_email(conn, brand_id, old_email, new_email)
+            except Exception as check_err:
+                conn.rollback()
+                print(f"[admin brands] manual email check skipped brand={brand_id}: {check_err}")
 
         # Get updated brand
         cursor.execute("""
@@ -528,6 +545,8 @@ def update_brand(brand_id):
         conn.commit()
         conn.close()
 
+        if email_check:
+            brand = dict(brand or {}, email_check=email_check)
         return jsonify(brand), 200
 
     except Exception as e:
