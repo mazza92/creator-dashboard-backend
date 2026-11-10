@@ -12,3 +12,12 @@ def _email_policy_off_unless_tested(request, monkeypatch):
     from services import email_policy
     monkeypatch.setattr(email_policy, "allowed", lambda *a, **k: True)
     monkeypatch.setattr(email_policy, "allowed_for_creator", lambda *a, **k: True)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_dns(request, monkeypatch):
+    """The send gate asks DNS whether a brand's domain receives mail; tests never reach the network."""
+    if request.node.fspath.basename == "test_deliverability.py":
+        return
+    from services import deliverability
+    monkeypatch.setattr(deliverability, "domain_receives_mail", lambda *a, **k: True)
