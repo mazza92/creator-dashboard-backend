@@ -7555,10 +7555,27 @@ def submit_content_pr_offer(offer_id):
         app.logger.error(f"Submit Content PR Offer: Error - {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-# Fallback for unmatched routes
+# Fallback for unmatched routes.
+# Crawlers and AI clients probe discovery files on every API host (OAuth metadata before using our public MCP
+# connector, ai-catalog.json, ard.json, robots.txt, favicons, WordPress/.env scans). A 404 is the right answer
+# (our MCP server needs no sign-in) and isn't an error: those are logged as info so level:error stays for real
+# failures. An unknown /api/... path may be our own bug (a frontend calling a removed endpoint): warning.
+_PROBE_PREFIXES = ('.well-known/', 'wp-', 'wordpress', '.env', '.git', 'ipfs/', 'cgi-bin', 'phpmyadmin', 'xmlrpc')
+_PROBE_FILES = ('robots.txt', 'favicon.ico', 'apple-touch-icon', 'sitemap', 'llms.txt', 'ads.txt', 'security.txt')
+
+
+def unmatched_route_level(path: str) -> str:
+    p = (path or '').lstrip('/').lower()
+    if p.startswith(_PROBE_PREFIXES) or any(p.startswith(f) for f in _PROBE_FILES) or '/.well-known/' in p:
+        return 'info'
+    return 'warning' if p.startswith('api/') else 'info'
+
+
 @app.route('/<path:path>', methods=['GET', 'POST', 'OPTIONS'])
 def catch_all(path):
-    app.logger.error(f"🔥 Unmatched route: Path=/{path}, Method={request.method}, URL={request.url}")
+    level = unmatched_route_level(path)
+    getattr(app.logger, level)(f"Unmatched route ({'probe' if level == 'info' else 'api'}): "
+                               f"Path=/{path}, Method={request.method}")
     return jsonify({'error': 'Route not found. Check API endpoint.'}), 404
 
 @app.route('/api/verify-email', methods=['GET'])
