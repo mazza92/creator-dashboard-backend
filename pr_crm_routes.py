@@ -209,8 +209,9 @@ def normalize_niche(niche_str):
 # Shared related-niche map for For You + matched count.
 # Keep relationships tight — lifestyle must NOT auto-pull luxury fashion.
 FOR_YOU_RELATED_NICHES = {
-    'beauty': ['skincare', 'makeup', 'wellness'],
-    'skincare': ['beauty', 'makeup', 'wellness'],
+    # Beauty/skincare and wellness/supplements are separate lanes (Nov 2026: wellness creators got skincare).
+    'beauty': ['skincare', 'makeup'],
+    'skincare': ['beauty', 'makeup'],
     'makeup': ['beauty', 'skincare'],
     'haircare': ['beauty'],
     # Fashion stays within style/apparel — not parenting/lifestyle mom finds
@@ -227,8 +228,8 @@ FOR_YOU_RELATED_NICHES = {
     'activewear': ['fitness', 'athleisure', 'sports'],
     'athleisure': ['fitness', 'activewear', 'sports'],
     'sports': ['fitness', 'activewear', 'athleisure'],
-    'wellness': ['skincare', 'supplements', 'self-care', 'beauty'],  # NOT fitness
-    'supplements': ['wellness', 'fitness'],
+    'wellness': ['supplements', 'self-care'],  # NOT fitness, NOT skincare
+    'supplements': ['wellness', 'self-care'],
     'food': ['lifestyle', 'kitchen', 'beverages', 'food & beverage', 'home'],
     'food & beverage': ['food', 'beverages', 'lifestyle', 'kitchen'],
     'beverages': ['food', 'food & beverage', 'lifestyle'],
@@ -1283,11 +1284,11 @@ def get_better_brand_matches(creator, current_brand_id, cursor, limit=3):
     # Map niches to brand categories
     niche_to_categories = {
         'beauty': ['beauty', 'skincare', 'haircare', 'cosmetics'],
-        'skincare': ['skincare', 'beauty', 'wellness'],
+        'skincare': ['skincare', 'beauty'],
         'haircare': ['haircare', 'beauty'],
         'fashion': ['fashion', 'apparel', 'clothing', 'accessories'],
         'fitness': ['fitness', 'activewear', 'sports', 'health'],
-        'wellness': ['wellness', 'health', 'skincare'],
+        'wellness': ['wellness', 'health', 'supplements'],
         'food': ['food', 'beverage', 'restaurant', 'snacks'],
         'tech': ['tech', 'electronics', 'gaming', 'software', 'saas'],
         'gaming': ['gaming', 'tech', 'electronics'],

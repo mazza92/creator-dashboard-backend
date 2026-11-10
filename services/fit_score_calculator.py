@@ -579,11 +579,12 @@ def check_brand_context_mismatch(creator_profile: Dict, brand: Optional[Dict]) -
 
 # Scraped primary niche adjacency — off-lane brands need content proof or they Stretch
 PRIMARY_NICHE_ADJACENCY = {
-    'beauty': {'beauty', 'skincare', 'makeup', 'wellness', 'cosmetics'},
-    'skincare': {'beauty', 'skincare', 'makeup', 'wellness'},
+    'beauty': {'beauty', 'skincare', 'makeup', 'cosmetics'},
+    'skincare': {'beauty', 'skincare', 'makeup'},
     'makeup': {'beauty', 'skincare', 'makeup'},
     'haircare': {'haircare', 'beauty'},
-    'wellness': {'wellness', 'beauty', 'skincare', 'supplements'},
+    'wellness': {'wellness', 'supplements', 'self-care'},
+    'supplements': {'supplements', 'wellness', 'self-care'},
     'fitness': {'fitness', 'activewear', 'athleisure', 'sports'},
     'fashion': {'fashion', 'accessories', 'activewear', 'athleisure', 'luxury'},
     'lifestyle': {'lifestyle', 'home', 'food', 'wellness', 'beauty'},

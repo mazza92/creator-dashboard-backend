@@ -30,10 +30,14 @@ class NicheConflictTests(unittest.TestCase):
         self.assertEqual(found, {"scraped": "pet", "picked": ["skincare", "wellness", "fashion"]})
 
     def test_no_question_when_they_agree_or_scrape_is_unsure(self):
-        self.assertIsNone(nc.conflict({"primary_niche": "skincare", "primary_niche_confidence": 95}, PICKS, {}))
+        self.assertIsNone(nc.conflict({"primary_niche": "supplements", "primary_niche_confidence": 95}, PICKS, {}))
         self.assertIsNone(nc.conflict({"primary_niche": "pet", "primary_niche_confidence": 50}, PICKS, {}))
         self.assertIsNone(nc.conflict({"primary_niche": "lifestyle", "primary_niche_confidence": 99}, PICKS, {}))
         self.assertIsNone(nc.conflict(PET_SCRAPE, {}, {}))
+
+    def test_skincare_content_vs_wellness_pick_is_asked(self):
+        # Wellness and skincare are separate lanes: a skincare feed with wellness picks gets the one-time question.
+        self.assertIsNotNone(nc.conflict({"primary_niche": "skincare", "primary_niche_confidence": 95}, PICKS, {}))
 
     def test_asked_once_or_told_in_chat(self):
         self.assertIsNone(nc.conflict(PET_SCRAPE, PICKS, {"niche_check": {"asked_at": "x"}}))
