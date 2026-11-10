@@ -55,10 +55,12 @@ class BrandFeedTests(unittest.TestCase):
 
     def setUp(self):
         feed._TARGETS_READY = False
+        feed._SEEN_READY = False
         self.conn = _conn()
         cur = self.conn.cursor()
         cur.execute("""
             DROP TABLE IF EXISTS creator_brand_targets;
+            DROP TABLE IF EXISTS creator_feed_seen;
             TRUNCATE creators, pr_brands, discovered_brands, tiktok_videos, brand_signals;
             INSERT INTO creators VALUES (1, 'Beauty & Skincare', NULL);
             INSERT INTO pr_brands (id, slug, brand_name, category, contact_email, gifting_signal, status) VALUES
@@ -124,6 +126,50 @@ class BrandFeedTests(unittest.TestCase):
         self.assertEqual(data["targets"], 1)
         self.assertEqual([t["name"] for t in feed.target_brands(self.conn, 1)], ["Byoma"])
         self.assertEqual(feed.set_target(self.conn, 1, 2, False), 0)
+
+
+    # ----- fresh, endless feed -----
+    def _keys(self, page):
+        return [i["key"] for i in page["items"]]
+
+    def test_pages_never_repeat_and_use_every_post_not_one_per_brand(self):
+        import random
+        first = feed.next_page(self.conn, 1, "skincare", size=4, rng=random.Random(1))
+        keys = self._keys(first)
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertNotIn("post-v4", keys)  # draft brand
+        self.assertNotIn("post-v6", keys)  # outside the window
+        posts_in_page = [i for i in first["items"] if i["type"] == "post"]
+        self.assertEqual(len({p["brand"]["id"] for p in posts_in_page}), len(posts_in_page))
+        seen_all, page, n = set(keys), first, 0
+        while page["has_more"] and n < 10:
+            page = feed.next_page(self.conn, 1, "skincare", exclude=list(seen_all), size=4, rng=random.Random(n))
+            new = self._keys(page)
+            self.assertFalse(set(new) & seen_all)
+            seen_all |= set(new)
+            n += 1
+        self.assertTrue({"post-v1", "post-v2", "post-v3", "post-v5"} <= seen_all)  # both Glow posts show up
+
+    def test_seen_posts_go_last_and_new_ones_lead(self):
+        import random
+        feed.mark_seen(self.conn, 1, ["post-v2", "post-v3", "post-v5"])
+        page = feed.next_page(self.conn, 1, "skincare", size=12, rng=random.Random(3))
+        posts = [i["key"] for i in page["items"] if i["type"] == "post"]
+        self.assertEqual(posts[0], "post-v1")  # the only unseen post leads
+        self.assertTrue(all(k not in posts for k in ("post-v2", "post-v3", "post-v5"))
+                        or posts.index("post-v1") < min(posts.index(k) for k in posts if k != "post-v1"))
+
+    def test_order_changes_between_visits(self):
+        import random
+        orders = {tuple(self._keys(feed.next_page(self.conn, 1, "all", size=12, rng=random.Random(s))))
+                  for s in range(8)}
+        self.assertGreater(len(orders), 1)
+
+    def test_mark_seen_upserts(self):
+        self.assertEqual(feed.mark_seen(self.conn, 1, ["post-v1", "post-v1", 5, None]), 1)
+        cur = self.conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM creator_feed_seen WHERE creator_id = 1")
+        self.assertEqual(cur.fetchone()[0], 1)
 
 
 class InterleaveTests(unittest.TestCase):

@@ -1167,16 +1167,45 @@ def brand_feed():
     creator_id = get_creator_id_from_session()
     if not creator_id:
         return jsonify({"success": False, "error": "Not authenticated"}), 401
-    from services.brand_feed import build
+    from services.brand_feed import build, next_page
     conn = get_db_connection()
     try:
-        data = build(conn, creator_id, request.args.get("niche"))
+        if request.args.get("v") == "2":
+            # Fresh, endless feed: unseen posts first, a new order every visit, pages that never repeat.
+            exclude = [k for k in (request.args.get("exclude") or "").split(",") if k][:240]
+            try:
+                size = max(4, min(int(request.args.get("size") or 12), 24))
+            except ValueError:
+                size = 12
+            data = next_page(conn, creator_id, request.args.get("niche"), exclude, size=size)
+        else:
+            data = build(conn, creator_id, request.args.get("niche"))
         return jsonify({"success": True, **data})
     except Exception as err:
         conn.rollback()
         print(f"[brand-feed] failed creator={creator_id}: {err}")
         traceback.print_exc()
         return jsonify({"success": False, "error": "Feed did not load"}), 500
+    finally:
+        conn.close()
+
+
+@brand_apply_bp.route("/feed/seen", methods=["POST"])
+def brand_feed_seen():
+    """Cards the creator actually viewed in the For you feed, so the next visit leads with what's new to them."""
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    from services.brand_feed import mark_seen
+    keys = (request.get_json(silent=True) or {}).get("keys") or []
+    conn = get_db_connection()
+    try:
+        n = mark_seen(conn, creator_id, keys if isinstance(keys, list) else [])
+        return jsonify({"success": True, "saved": n})
+    except Exception as err:
+        conn.rollback()
+        print(f"[brand-feed] seen failed creator={creator_id}: {err}")
+        return jsonify({"success": False}), 200
     finally:
         conn.close()
 
