@@ -10,6 +10,7 @@ from psycopg2.extras import RealDictCursor
 
 from services.account_deletion import (
     cancel_stripe_billing,
+    deletion_gate,
     purge_creator_account,
     validate_deletion_request,
 )
@@ -40,6 +41,51 @@ def _session_user_id():
         return get_jwt_identity()
     except Exception:
         return None
+
+
+@account_bp.route("/delete/preflight", methods=["GET"])
+def delete_preflight():
+    """Step 1 of deletion: which plan they're on, whether Pro must be cancelled first, the reasons to pick from,
+    and what they'd lose."""
+    user_id = _session_user_id()
+    if not user_id:
+        return jsonify({"error": "Authentication required"}), 401
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT c.id FROM creators c WHERE c.user_id = %s", (user_id,))
+        row = cursor.fetchone()
+        creator_id = row["id"] if row else None
+        gate = deletion_gate(cursor, creator_id)
+        gate["loses"] = _what_they_lose(cursor, creator_id)
+        return jsonify({"success": True, **gate})
+    except Exception as exc:
+        logger.exception("Deletion preflight failed for user_id=%s: %s", user_id, exc)
+        return jsonify({"error": "Could not load your account"}), 500
+    finally:
+        conn.close()
+
+
+def _what_they_lose(cursor, creator_id):
+    """Real counts only; a missing table just leaves the number out."""
+    if not creator_id:
+        return {}
+    queries = {
+        "pitches_sent": "SELECT COUNT(*) AS n FROM polly_autopilot_queue WHERE creator_id = %s AND sent_at IS NOT NULL",
+        "brands_tracked": "SELECT COUNT(DISTINCT brand_id) AS n FROM polly_tasks WHERE creator_id = %s",
+        "kit_views": "SELECT COUNT(*) AS n FROM polly_timeline_events WHERE creator_id = %s AND event_type = 'portfolio_viewed'",
+        "brand_replies": "SELECT COUNT(*) AS n FROM polly_timeline_events WHERE creator_id = %s AND event_type LIKE 'brand_replied%%'",
+    }
+    out = {}
+    for key, q in queries.items():
+        try:
+            cursor.execute("SAVEPOINT lose")
+            cursor.execute(q, (creator_id,))
+            out[key] = int((cursor.fetchone() or {}).get("n") or 0)
+            cursor.execute("RELEASE SAVEPOINT lose")
+        except Exception:
+            cursor.execute("ROLLBACK TO SAVEPOINT lose")
+    return out
 
 
 @account_bp.route("/delete", methods=["POST", "OPTIONS"])
@@ -92,12 +138,20 @@ def delete_account():
             return jsonify({"error": error}), 400
 
         creator_id = account.get("creator_id")
+        gate = deletion_gate(cursor, creator_id)
+        if gate["must_cancel_first"]:
+            return jsonify({
+                "error": "Cancel your Pro plan first. It takes a minute and you keep Pro until the end of what you paid for.",
+                "code": "cancel_first",
+            }), 409
         email = account.get("email")
         stripe_customer_id = account.get("stripe_customer_id")
         stripe_subscription_id = account.get("stripe_subscription_id")
 
         cancel_stripe_billing(stripe_customer_id, stripe_subscription_id)
-        purge_creator_account(cursor, user_id, creator_id, email, role="creator")
+        purge_creator_account(cursor, user_id, creator_id, email, role="creator",
+                              reason=str(body.get("reason") or "").strip(), feedback=body.get("feedback"),
+                              plan=gate["plan"] if gate["plan"] == "free" else "pro_cancelled")
         conn.commit()
     except Exception as exc:
         logger.exception("Account deletion failed for user_id=%s: %s", user_id, exc)

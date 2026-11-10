@@ -735,6 +735,16 @@ def get_subscription_status():
             except Exception as err:
                 print(f"[retention] pause lookup skipped: {err}")
                 conn.rollback()
+        billing = None
+        if creator:
+            try:
+                from services.billing_access import access_state
+                billing = access_state(conn, creator_id)
+                if billing.get('payment_issue'):
+                    billing['pay_url'] = _open_invoice_url(cursor, creator_id)
+            except Exception as err:
+                print(f"[billing] access state skipped: {err}")
+                conn.rollback()
         cursor.close()
         conn.close()
 
@@ -756,6 +766,7 @@ def get_subscription_status():
             'ends_at': ends_at.isoformat() if ends_at else None,
             'cancel_scheduled': cancel_scheduled,
             'pause': paused,
+            'billing': billing,
             'brands_saved_count': creator.get('brands_saved_count', 0),
             'pitches_sent_this_week': pitches_used,  # Monthly reset, keeping field name for compatibility
             'daily_unlocks_used': monthly_unlocks  # Monthly reset, keeping field name for compatibility
@@ -764,6 +775,41 @@ def get_subscription_status():
     except Exception as e:
         print(f"❌ Error getting subscription status: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+def _open_invoice_url(cursor, creator_id):
+    """Stripe's hosted page for the unpaid invoice: one click to pay with a new card."""
+    cursor.execute('SELECT stripe_subscription_id FROM creators WHERE id = %s', (creator_id,))
+    row = cursor.fetchone() or {}
+    sub_id = row.get('stripe_subscription_id')
+    if not sub_id:
+        return None
+    try:
+        invoices = stripe.Invoice.list(subscription=sub_id, status='open', limit=1)
+        data = invoices.get('data') or []
+        return data[0].get('hosted_invoice_url') if data else None
+    except Exception as err:
+        print(f"[billing] open invoice lookup failed: {err}")
+        return None
+
+
+@subscription_bp.route('/cron/billing-access', methods=['GET', 'POST'])
+def cron_billing_access():
+    """Hourly: Pro access matches Stripe (past due beyond grace, failed trials, missed webhooks)."""
+    from routes.polly import _cron_authorized
+    if not _cron_authorized():
+        return jsonify({'success': False, 'error': 'unauthorized'}), 401
+    from services.billing_access import reconcile
+    dry_run = str(request.args.get('dry_run') or '').lower() in ('1', 'true', 'yes')
+    conn = get_db_connection()
+    try:
+        return jsonify({'success': True, 'dry_run': dry_run, **reconcile(conn, stripe, dry_run=dry_run)})
+    except Exception as err:
+        conn.rollback()
+        print(f"[billing] reconcile failed: {err}")
+        return jsonify({'success': False, 'error': 'reconcile failed'}), 500
+    finally:
+        conn.close()
 
 
 def _creator_billing_row(cursor, creator_id):
@@ -1261,6 +1307,21 @@ def stripe_webhook():
                         subscription_ends_at = NOW()
                     WHERE stripe_subscription_id = %s
                 ''', (status, subscription_id))
+            elif status == 'past_due':
+                # Access is decided by invoice.payment_failed / the hourly reconcile (grace for paying members,
+                # none for a trial whose first charge failed): only record the status here.
+                cursor.execute('''
+                    UPDATE creators
+                    SET subscription_status = 'past_due',
+                        subscription_ends_at = COALESCE(%s, subscription_ends_at)
+                    WHERE stripe_subscription_id = %s
+                ''', (ends_at, subscription_id))
+            elif status in ('active', 'trialing') and not subscription.get('pause_collection'):
+                from services.billing_access import ensure_columns as ensure_billing_columns, restore
+                ensure_billing_columns(conn)
+                cursor.execute('SELECT id FROM creators WHERE stripe_subscription_id = %s', (subscription_id,))
+                for (cid,) in cursor.fetchall():
+                    restore(conn, cid, status, ends_at)
             else:
                 cursor.execute('''
                     UPDATE creators
@@ -1290,23 +1351,23 @@ def stripe_webhook():
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             creator = _creator_by_stripe(cursor, sub_id, cust_id)
+            access = None
             if creator and event['type'] == 'invoice.payment_failed':
-                cursor.execute(
-                    '''
-                    UPDATE creators
-                    SET subscription_status = 'past_due'
-                    WHERE id = %s AND subscription_tier = 'pro'
-                    ''',
-                    (creator['id'],),
-                )
-                conn.commit()
+                from services.billing_access import on_payment_failed
+                # A trial whose first charge failed loses Pro now; a paying member keeps it for the grace period.
+                # The payment email below goes out whatever happens here.
+                try:
+                    access = on_payment_failed(conn, stripe, creator['id'], sub_id)
+                except Exception as access_err:
+                    conn.rollback()
+                    print(f"[billing] access update after failed payment skipped: {access_err}")
             if creator and key and creator.get('email'):
                 label = invoice_amount_label(invoice)
                 pay_url = invoice.get('hosted_invoice_url')
                 if key == 'action_required':
                     subject = 'Confirm your Pro payment'
                     html = action_required_email_html(creator.get('username'), label, pay_url)
-                elif key == 'dunning_final':
+                elif key == 'dunning_final' or access == 'locked':
                     subject = 'Your Pro has switched off'
                     html = dunning_email_html(creator.get('username'), label, pay_url, final=True)
                 else:
@@ -1321,8 +1382,25 @@ def stripe_webhook():
             conn.close()
 
         elif event['type'] in ('invoice.paid', 'invoice.payment_succeeded'):
-            # Promote Newcollab: a referred creator's first Pro renewal earns their referrer the bonus (once).
             invoice = event['data']['object']
+            # A real payment on a Pro subscription: Pro back on (after a failed renewal or a locked trial).
+            if int(invoice.get('amount_paid') or 0) > 0:
+                from services.billing_access import on_payment_succeeded
+                from services.subscription_retention import invoice_customer_id, invoice_subscription_id
+
+                pconn = get_db_connection()
+                try:
+                    pcur = pconn.cursor(cursor_factory=RealDictCursor)
+                    sub_ref = invoice_subscription_id(invoice)
+                    paid_creator = _creator_by_stripe(pcur, sub_ref, None) if sub_ref else None
+                    if paid_creator:
+                        on_payment_succeeded(pconn, paid_creator['id'])
+                except Exception as access_err:
+                    pconn.rollback()
+                    print(f"[billing] restore after payment skipped: {access_err}")
+                finally:
+                    pconn.close()
+            # Promote Newcollab: a referred creator's first Pro renewal earns their referrer the bonus (once).
             if invoice.get('billing_reason') == 'subscription_cycle':
                 from services.subscription_retention import invoice_customer_id, invoice_subscription_id
                 from services.ugc_program import record_renewal

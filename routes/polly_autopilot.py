@@ -166,6 +166,20 @@ def _sync_for_you_niches(conn, creator_id, niches):
     save_creator_niches(conn, creator_id, niches)
 
 
+def _relay_available():
+    from services.pitch_relay import relay_available
+    return relay_available()
+
+
+def _reply_to(conn, creator_id):
+    try:
+        from services.pitch_relay import creator_reply_to
+        return creator_reply_to(conn, creator_id)
+    except Exception:
+        conn.rollback()
+        return None
+
+
 def _status_payload(conn, creator_id, is_pro):
     account = load_account(conn, creator_id) if gmail_configured() else None
     prefs = settings(conn, creator_id)
@@ -181,6 +195,9 @@ def _status_payload(conn, creator_id, is_pro):
             "email": (account or {}).get("email"),
             "needs_reconnect": bool(account and account.get("revoked_at")),
         },
+        # Creators without Gmail can let Polly send from "Name via Newcollab"; replies go to their own email.
+        "send_via": prefs.get("send_via") or "gmail",
+        "relay": {"available": _relay_available(), "reply_to": _reply_to(conn, creator_id)},
         "enabled": prefs["enabled"],
         "monthly_target": target,
         "deal_focus": prefs["deal_focus"],
@@ -229,8 +246,10 @@ def _guard(require_gmail=True):
     if require_gmail:
         account = load_account(conn, creator_id) if gmail_configured() else None
         if not account or account.get("revoked_at"):
-            conn.close()
-            return None, None, None, (jsonify({"success": False, "error": "gmail_not_connected"}), 409)
+            from services.pitch_relay import SEND_VIA_NEWCOLLAB, relay_available, send_via
+            if not (relay_available() and send_via(conn, creator_id) == SEND_VIA_NEWCOLLAB):
+                conn.close()
+                return None, None, None, (jsonify({"success": False, "error": "gmail_not_connected"}), 409)
     return creator_id, conn, creator, None
 
 

@@ -53,6 +53,7 @@ _ADDED_COLUMNS = (
     ("polly_autopilot", "followups", f"INTEGER NOT NULL DEFAULT {DEFAULT_FOLLOWUPS}"),
     ("polly_autopilot", "filled_at", "TIMESTAMPTZ"),
     ("polly_autopilot", "fill_blocked", "TEXT"),
+    ("polly_autopilot", "send_via", "TEXT"),
     ("polly_autopilot_queue", "followups_sent", "INTEGER NOT NULL DEFAULT 0"),
     ("polly_autopilot_queue", "announced_at", "TIMESTAMPTZ"),
     ("polly_autopilot_queue", "pitch_meta", "JSONB"),
@@ -160,7 +161,8 @@ def settings(conn, creator_id: int) -> Dict[str, Any]:
     ensure_autopilot_tables(conn)
     cur = _cursor(conn)
     cur.execute(
-        "SELECT enabled, monthly_target, deal_focus, send_days, followups FROM polly_autopilot WHERE creator_id = %s",
+        "SELECT enabled, monthly_target, deal_focus, send_days, followups, send_via FROM polly_autopilot "
+        "WHERE creator_id = %s",
         (creator_id,),
     )
     row = cur.fetchone() or {}
@@ -172,6 +174,7 @@ def settings(conn, creator_id: int) -> Dict[str, Any]:
         "deal_focus": focus,
         "send_days": parse_send_days(row.get("send_days")),
         "followups": int(followups) if followups is not None else DEFAULT_FOLLOWUPS,
+        "send_via": row.get("send_via") or "gmail",
     }
 
 
@@ -186,6 +189,10 @@ def update_settings(conn, creator_id: int, patch: Dict[str, Any]) -> Dict[str, A
         raw = patch["send_days"]
         days = parse_send_days("".join(str(d) for d in raw) if isinstance(raw, (list, tuple)) else raw)
         cols["send_days"] = "".join(str(d) for d in days)
+    if patch.get("send_via") in ("gmail", "newcollab"):
+        from services.pitch_relay import relay_available
+        if patch["send_via"] == "gmail" or relay_available():
+            cols["send_via"] = patch["send_via"]
     if "followups" in patch:
         try:
             cols["followups"] = max(0, min(len(FOLLOWUP_GAPS), int(patch["followups"])))
@@ -746,10 +753,14 @@ def _due(conn, sql: str, params: tuple) -> List[Dict[str, Any]]:
 # Without it, pitches queued before a subscription ended kept sending, follow-ups too.
 PRO_SQL = "(pc.unlocks_tier = 'pro' OR pc.subscription_tier = 'pro')"
 
+# Autopilot can send when Gmail is connected, or when the creator chose to send through Newcollab
+# (services.pitch_relay, for creators without Gmail).
+SENDER_SQL = "(g.creator_id IS NOT NULL OR a.send_via = 'newcollab')"
+
 _ACTIVE_JOIN = f"""
     LEFT JOIN polly_autopilot a ON a.creator_id = q.creator_id
-    JOIN polly_gmail_accounts g ON g.creator_id = q.creator_id AND g.revoked_at IS NULL
-    JOIN creators pc ON pc.id = q.creator_id AND {PRO_SQL}
+    LEFT JOIN polly_gmail_accounts g ON g.creator_id = q.creator_id AND g.revoked_at IS NULL
+    JOIN creators pc ON pc.id = q.creator_id AND {PRO_SQL} AND {SENDER_SQL}
 """
 
 # Pitches a creator sent from Gmail in one tap (the first free ones too) get Polly's follow-ups on day 4 and 10
@@ -757,8 +768,8 @@ _ACTIVE_JOIN = f"""
 FIRST_PITCHES = "first_pitches"
 _FOLLOWUP_JOIN = f"""
     LEFT JOIN polly_autopilot a ON a.creator_id = q.creator_id
-    JOIN polly_gmail_accounts g ON g.creator_id = q.creator_id AND g.revoked_at IS NULL
-    JOIN creators pc ON pc.id = q.creator_id
+    LEFT JOIN polly_gmail_accounts g ON g.creator_id = q.creator_id AND g.revoked_at IS NULL
+    JOIN creators pc ON pc.id = q.creator_id AND {SENDER_SQL}
       AND ({PRO_SQL} OR q.pitch_meta->>'origin' = '{FIRST_PITCHES}')
 """
 
@@ -821,8 +832,8 @@ def fill_candidates(conn, now: Optional[datetime] = None, limit: int = 20) -> Li
     rows = _due(conn, """
         SELECT a.creator_id, a.monthly_target, a.fill_blocked
         FROM polly_autopilot a
-        JOIN polly_gmail_accounts g ON g.creator_id = a.creator_id AND g.revoked_at IS NULL
-        JOIN creators pc ON pc.id = a.creator_id AND """ + PRO_SQL + """
+        LEFT JOIN polly_gmail_accounts g ON g.creator_id = a.creator_id AND g.revoked_at IS NULL
+        JOIN creators pc ON pc.id = a.creator_id AND """ + PRO_SQL + " AND " + SENDER_SQL + """
         WHERE a.enabled AND (a.filled_at IS NULL OR a.filled_at <= %s)
         ORDER BY a.filled_at NULLS FIRST
         LIMIT %s
@@ -878,13 +889,14 @@ def run_autopilot(
 
     Each creator gets one Polly message a day (the daily line), rewritten as the day's sends go out.
     """
-    from services.polly_gmail import GmailError, ensure_gmail_table, send_email
+    from services.pitch_relay import send_for_creator
+    from services.polly_gmail import GmailError, ensure_gmail_table
     from services.polly_tracker import add_event, record_pitch_sent
 
     ensure_autopilot_tables(conn)
     ensure_gmail_table(conn)
     now = now or utc_now()
-    send = send_fn or send_email
+    send = send_fn or send_for_creator
     if verify_fn is None:
         from services.contact_repair import ensure_deliverable as verify_fn
     headsup = headsup_fn or _default_headsup_email
