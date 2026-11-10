@@ -943,8 +943,10 @@ def run_autopilot(
             _set(conn, item["id"], to_email=check["email"])
             item["to_email"] = check["email"]
         try:
+            from services.kit_guard import with_kit
             from services.kit_view_tracking import track_kit_links
-            item["body"] = track_kit_links(item.get("body") or "", cid, bid)
+            # Every pitch carries the creator's kit: the only way we see a brand looking at them.
+            item["body"] = track_kit_links(with_kit(conn, cid, item.get("body") or ""), cid, bid)
             sent = send(conn, cid, item["to_email"], item["subject"], item["body"],
                         from_name=_creator_names(conn, cid)["full"])
         except GmailError as err:
