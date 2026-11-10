@@ -15,8 +15,17 @@ def _opp(**kw):
 
 class GigNiches(unittest.TestCase):
     def test_free_text_maps_to_our_niches(self):
-        self.assertIn("fitness", ga.gig_niches(_opp(brand_category="Home Workouts, Busy Parents, Lifestyle Fitness",
-                                                      creator_niches=[])))
+        niches = ga.gig_niches(_opp(brand_category="Home Workouts, Busy Parents, Lifestyle Fitness", creator_niches=[]))
+        self.assertIn("fitness", niches)
+        self.assertNotIn("baby", niches)
+
+    def test_description_words_and_vague_labels_dont_match(self):
+        tech = _opp(brand_category="tech", creator_niches=[], campaign_description="using your own account and style")
+        self.assertFalse(ga.fits(tech, ["beauty", "fashion"], 5000))
+        boat = _opp(brand_category="lifestyle", creator_niches=[], campaign_description="boat transport")
+        self.assertFalse(ga.fits(boat, ["beauty", "lifestyle"], 5000))
+        scanner = _opp(brand_category="Fitness, Nutrition, Body Recomposition Content", creator_niches=[])
+        self.assertFalse(ga.fits(scanner, ["wellness", "skincare"], 5000))
         self.assertIn("haircare", ga.gig_niches(_opp(brand_category="Haircare, Scalp Health", creator_niches=[],
                                                       campaign_description="")))
 
@@ -31,15 +40,23 @@ class GigNiches(unittest.TestCase):
 
 class Compose(unittest.TestCase):
     def test_pitch_names_brief_budget_and_proof(self):
-        mail = ga.compose(_opp(), {"first_name": "Wajeeha", "niches": ["fitness"], "followers": 12400},
-                          {"avg_views": "8.2K", "top_posts": ["https://tiktok.com/@x/video/1"]},
+        mail = ga.compose(_opp(), {"first_name": "wajeeha", "niches": ["fitness"], "followers": 12400},
+                          {"avg_views": "8.2K", "avg_views_n": 8200, "top_posts": ["https://tiktok.com/@x/video/1"]},
                           "https://newcollab.co/kit/wajeeha")
-        self.assertIn("paid UGC brief (Fitness videos for structured workouts)", mail["body"])
+        self.assertIn("I saw your paid UGC brief for FitFo", mail["body"])
         self.assertIn("within your $300 budget", mail["body"])
         self.assertIn("12.4K followers", mail["body"])
         self.assertIn("https://newcollab.co/kit/wajeeha", mail["body"])
         self.assertTrue(mail["body"].strip().endswith("Wajeeha"))
         self.assertIn("FitFo", mail["subject"])
+        self.assertIn("8.2K median views", mail["body"])
+
+    def test_weak_views_are_left_out(self):
+        mail = ga.compose(_opp(), {"first_name": "jess", "niches": ["fitness"], "followers": 7200},
+                          {"avg_views": "22", "avg_views_n": 22, "top_posts": ["https://tiktok.com/@x/video/1"]})
+        self.assertNotIn("median views", mail["body"])
+        self.assertNotIn("Recent video", mail["body"])
+        self.assertTrue(mail["body"].strip().endswith("Jess"))
 
 
 class Reports(unittest.TestCase):
