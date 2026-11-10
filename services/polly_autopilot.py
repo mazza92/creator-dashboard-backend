@@ -289,6 +289,17 @@ def add_draft(conn, creator_id: int, brand_id: int, brand_name: str, to_email: s
     ``meta``: how the pitch was written (writer, subject variant, product, ideas) for follow-ups and learning."""
     import json as _json
 
+    # Queued pitches show the final text: the creator's kit link with this brand's tracking token.
+    try:
+        from services.kit_guard import with_kit
+        from services.kit_view_tracking import track_kit_links
+        body = track_kit_links(with_kit(conn, creator_id, body or ""), creator_id, brand_id)
+    except Exception as err:
+        print(f"[Polly autopilot] kit link on draft skipped: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
     ensure_autopilot_tables(conn)
     cur = _cursor(conn)
     cur.execute(
@@ -962,8 +973,9 @@ def run_autopilot(
             out["failed"] += 1
             continue
         follows = item.get("followups") if item.get("followups") is not None else DEFAULT_FOLLOWUPS
+        # Store what actually went out (kit link + brand ref token added at send), not the queued draft.
         _set(conn, item["id"], status="sent", sent_at=now, gmail_id=sent.get("gmail_id"),
-             thread_id=sent.get("thread_id"), message_id=sent.get("message_id"), error=None,
+             thread_id=sent.get("thread_id"), message_id=sent.get("message_id"), error=None, body=item["body"],
              **({"followup_status": "scheduled", "followup_due_at": now + FOLLOWUP_GAPS[0]} if follows else {}))
         record_pitch_sent(conn, cid, {"id": bid, "name": name}, drafted=False)
         from services.gig_autopilot import mark_applied
@@ -1061,7 +1073,8 @@ def run_autopilot(
 
 
 _SETTABLE = {"status", "sent_at", "gmail_id", "thread_id", "message_id", "error", "followup_status",
-             "followup_due_at", "headsup_at", "followup_sent_at", "followups_sent", "to_email", "scheduled_for"}
+             "followup_due_at", "headsup_at", "followup_sent_at", "followups_sent", "to_email", "scheduled_for",
+             "body"}
 
 RESEND_AFTER_BOUNCE = "resend_after_bounce"
 
