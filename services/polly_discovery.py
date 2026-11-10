@@ -38,10 +38,14 @@ NICHE_CATEGORIES = {
     "haircare": ["haircare", "beauty"],
     "fashion": ["fashion"],
     "fitness": ["fitness", "activewear"],
+    "activewear": ["activewear", "fitness"],
     "food": ["food", "beverages"],
-    "wellness": ["wellness", "skincare"],  # NOT fitness — reply-chance matching
-    "lifestyle": ["lifestyle", "beauty", "home"],
-    "tech": ["tech"],
+    # Wellness is supplements, not skincare (Nov 2026: a wellness/supplements/fitness creator got 3 skincare brands).
+    "wellness": ["wellness", "supplements"],
+    "supplements": ["supplements", "wellness"],
+    "lifestyle": ["lifestyle", "home"],
+    "tech": ["tech", "gaming"],
+    "gaming": ["gaming", "tech"],
 }
 
 _BEAUTY_MATCH_CATS = frozenset({"skincare", "beauty", "makeup", "haircare", "wellness"})
@@ -357,13 +361,19 @@ def onboarding_niches(creator: Optional[Dict] = None) -> List[str]:
     return out
 
 
-def categories_for_notes(notes: Optional[Dict] = None) -> List[str]:
-    cats = []
-    for niche in stated_niches(notes):
+def categories_for_niches(niches: List[str]) -> List[str]:
+    """Directory categories for niches the creator picked. Their picks are the brief: every picked niche is
+    kept (a creator who picks wellness AND fitness gets fitness brands), only true synonyms are added."""
+    cats: List[str] = []
+    for niche in niches:
         for cat in NICHE_CATEGORIES.get(niche, [niche]):
             if cat not in cats:
                 cats.append(cat)
-    return _drop_fitness_if_beauty(cats)
+    return cats
+
+
+def categories_for_notes(notes: Optional[Dict] = None) -> List[str]:
+    return categories_for_niches(stated_niches(notes))
 
 
 def _drop_fitness_if_beauty(cats: List[str]) -> List[str]:
