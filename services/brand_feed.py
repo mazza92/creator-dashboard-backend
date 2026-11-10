@@ -224,3 +224,182 @@ def target_brands(conn, creator_id: int) -> List[Dict[str, Any]]:
                    WHERE t.creator_id = %s AND COALESCE(b.status, 'published') = 'published'
                    ORDER BY t.created_at""", (creator_id,))
     return [dict(r) for r in cur.fetchall()]
+
+
+# ----- fresh, endless feed ---------------------------------------------------------------------------------------
+# Every visit should feel new: creators never land on the same list twice. Ranking (no new scraping needed):
+#   1. posts the creator has never seen, newest week first, their niche next, a shuffle on top;
+#   2. directory brands they have never seen;
+#   3. only when everything unseen is used up, what they saw longest ago (the "archive" comes last).
+# Pages of PAGE_SIZE; the page sends the keys it already holds so pages never repeat inside a session.
+import random  # noqa: E402
+
+PAGE_SIZE = 12
+NEW_DAYS = 7
+SEEN_WINDOW_DAYS = 45
+SESSION_CAP = 240  # keys a page may send; past this the feed ends with "all caught up"
+_SEEN_READY = False
+
+
+def ensure_seen(cursor) -> None:
+    global _SEEN_READY
+    if _SEEN_READY:
+        return
+    cursor.execute("SELECT to_regclass('creator_feed_seen') IS NOT NULL AS ok")
+    row = cursor.fetchone()
+    ok = row.get("ok") if isinstance(row, dict) else (row[0] if row else False)
+    if not ok:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS creator_feed_seen (
+                creator_id INTEGER NOT NULL,
+                item_key TEXT NOT NULL,
+                seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (creator_id, item_key)
+            )""")
+    _SEEN_READY = True
+
+
+def mark_seen(conn, creator_id: int, keys: List[str]) -> int:
+    keys = list(dict.fromkeys(str(k)[:80] for k in (keys or []) if k and isinstance(k, str)))[:60]
+    if not keys:
+        return 0
+    cur = conn.cursor()
+    ensure_seen(cur)
+    cur.execute("""
+        INSERT INTO creator_feed_seen (creator_id, item_key, seen_at)
+        SELECT %s, k, NOW() FROM unnest(%s::text[]) AS k
+        ON CONFLICT (creator_id, item_key) DO UPDATE SET seen_at = EXCLUDED.seen_at
+    """, (creator_id, keys))
+    conn.commit()
+    return len(keys)
+
+
+def seen_map(cursor, creator_id: int) -> Dict[str, Any]:
+    ensure_seen(cursor)
+    cursor.execute(f"""SELECT item_key, seen_at FROM creator_feed_seen
+                       WHERE creator_id = %s AND seen_at > NOW() - INTERVAL '{SEEN_WINDOW_DAYS} days'""",
+                   (creator_id,))
+    return {(r["item_key"] if isinstance(r, dict) else r[0]): (r["seen_at"] if isinstance(r, dict) else r[1])
+            for r in cursor.fetchall()}
+
+
+def all_posts(cursor, targets: set, limit: int = 500) -> List[Dict[str, Any]]:
+    """Every gifted/paid post of a published brand in the window (not just the newest one per brand)."""
+    cursor.execute(f"""
+        WITH sig AS (
+            SELECT DISTINCT ON (v.tiktok_id) b.id AS brand_id, v.tiktok_id, v.url, v.caption, v.cover_url,
+                   v.creator_handle, v.creator_followers, v.created_at, s.signal_type, s.niche
+            FROM tiktok_videos v
+            JOIN brand_signals s ON s.tiktok_id = v.tiktok_id AND s.signal_type IN ('gifted', 'paid')
+            JOIN discovered_brands d ON d.id = s.discovered_brand_id
+            JOIN pr_brands b ON b.id = d.brand_id AND COALESCE(b.status, 'published') = 'published'
+            WHERE v.created_at > NOW() - INTERVAL '{POST_WINDOW_DAYS} days'
+            ORDER BY v.tiktok_id, (s.signal_type = 'gifted') DESC
+        ),
+        ev AS (
+            SELECT d.brand_id, COUNT(DISTINCT v.creator_handle) AS creators_30d
+            FROM discovered_brands d
+            JOIN brand_signals s ON s.discovered_brand_id = d.id AND s.signal_type IN ('gifted', 'paid')
+            JOIN tiktok_videos v ON v.tiktok_id = s.tiktok_id
+            WHERE d.brand_id IN (SELECT brand_id FROM sig)
+              AND v.created_at > NOW() - INTERVAL '{EVIDENCE_DAYS} days'
+            GROUP BY d.brand_id
+        )
+        SELECT sig.*, ev.creators_30d, {_BRAND_COLS}
+        FROM sig JOIN pr_brands b ON b.id = sig.brand_id
+        LEFT JOIN ev ON ev.brand_id = sig.brand_id
+        ORDER BY sig.created_at DESC
+        LIMIT %(limit)s
+    """, {"limit": limit})
+    out = []
+    for r in cursor.fetchall():
+        r = dict(r)
+        out.append({
+            "type": "post",
+            "key": f"post-{r['tiktok_id']}",
+            "niche": r.get("niche") or "",
+            "created_at": r.get("created_at"),
+            "stored_cover": "/storage/v1/object/public/" in (r.get("cover_url") or ""),
+            "post": {
+                "url": r.get("url"), "caption": (r.get("caption") or "")[:220], "cover_url": r.get("cover_url"),
+                "creator_handle": r.get("creator_handle"), "creator_followers": r.get("creator_followers"),
+                "posted_at": _iso(r.get("created_at")), "signal": r.get("signal_type"),
+            },
+            "brand": _brand_card(r, targets),
+        })
+    return out
+
+
+def _age_days(ts) -> float:
+    from datetime import datetime, timezone
+    if not ts:
+        return 999.0
+    if getattr(ts, "tzinfo", None) is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - ts).total_seconds() / 86400)
+
+
+def rank_posts(items: List[Dict], niche: str, seen: Dict[str, Any], rng: random.Random) -> List[Dict]:
+    """Unseen first (this week's posts on top), niche next, shuffled within; seen ones last, oldest-seen first."""
+    def key(it):
+        is_seen = it["key"] in seen
+        age = _age_days(it.get("created_at"))
+        if is_seen:
+            seen_at = seen[it["key"]]
+            return (3, _age_days(seen_at) * -1, rng.random())
+        tier = 0 if age <= NEW_DAYS else (1 if niche and it.get("niche") == niche else 2)
+        score = age / POST_WINDOW_DAYS - (0.15 if it.get("stored_cover") else 0) + rng.random() * 0.6
+        return (tier, score, 0)
+    return sorted(items, key=key)
+
+
+def _strip(it: Dict) -> Dict:
+    return {k: v for k, v in it.items() if k not in ("niche", "created_at", "stored_cover")}
+
+
+def next_page(conn, creator_id: int, niche: Optional[str] = None, exclude: Optional[List[str]] = None,
+              size: int = PAGE_SIZE, rng: Optional[random.Random] = None) -> Dict[str, Any]:
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    rng = rng or random.Random()
+    niche = (niche or "").strip().lower()
+    if niche not in NICHE_CATEGORIES:
+        niche = creator_niche(cur, creator_id) if niche != "all" else ""
+    targets = target_ids(cur, creator_id)
+    seen = seen_map(cur, creator_id)
+    exclude_set = set((exclude or [])[:SESSION_CAP])
+
+    ranked = [p for p in rank_posts(all_posts(cur, targets), niche, seen, rng) if p["key"] not in exclude_set]
+    # One post per brand inside a page; a brand's other posts wait for a later page.
+    want_posts = max(1, round(size * 2 / 3))
+    page_posts, brands_in_page, rest = [], set(), []
+    for p in ranked:
+        bid = p["brand"]["id"]
+        if len(page_posts) < want_posts and bid not in brands_in_page:
+            page_posts.append(p)
+            brands_in_page.add(bid)
+        else:
+            rest.append(p)
+
+    taken = list(brands_in_page) + [int(k.split("-", 1)[1]) for k in exclude_set
+                                    if k.startswith("brand-") and k.split("-", 1)[1].isdigit()]
+    pool = directory_brands(cur, niche, taken, targets, limit=60)
+    if niche and len(pool) < 20:
+        pool += directory_brands(cur, "", taken + [b["brand"]["id"] for b in pool], targets, limit=40)
+    unseen_b = [b for b in pool if b["key"] not in seen]
+    seen_b = sorted([b for b in pool if b["key"] in seen], key=lambda b: seen[b["key"]])
+    rng.shuffle(unseen_b)
+    brand_pool = unseen_b + seen_b
+    want_brands = size - len(page_posts)
+    page_brands = brand_pool[:want_brands]
+
+    # Unseen posts all used up: let unseen brands fill the page before any repeat shows.
+    if page_posts and page_posts[-1]["key"] in seen and len(unseen_b) > want_brands:
+        repeats = [p for p in page_posts if p["key"] in seen]
+        page_posts = [p for p in page_posts if p["key"] not in seen]
+        page_brands = unseen_b[:want_brands + len(repeats)]
+
+    items = [_strip(i) for i in interleave(page_posts, page_brands)]
+    remaining = len(rest) + max(0, len(brand_pool) - len(page_brands))
+    has_more = bool(items) and remaining > 0 and len(exclude_set) + len(items) < SESSION_CAP
+    return {"niche": niche, "niches": NICHES, "items": items, "targets": len(targets), "has_more": has_more,
+            "unseen_left": sum(1 for p in rest if p["key"] not in seen)}
