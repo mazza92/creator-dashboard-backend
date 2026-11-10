@@ -495,6 +495,20 @@ def _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=F
     brand = _brands_with_email(conn, [brand_id]).get(brand_id)
     if not brand:
         return None, "no_contact_email"
+    # Verify the inbox when the pitch is queued, not only when it sends: a dead inbox is swapped for a verified one
+    # or the refill moves on to the next brand now, so the queue holds pitches that will actually send and the
+    # creator's monthly target isn't eaten by brands that get skipped at send time.
+    try:
+        from services.deliverability import gate
+        inbox = gate(conn, brand_id, brand["email"], creator_id=creator_id)
+    except Exception as err:
+        print(f"[Polly autopilot] queue-time inbox check skipped: {err}")
+        conn.rollback()
+        inbox = {"send": True, "email": brand["email"]}
+    if not inbox.get("send") and not inbox.get("defer"):
+        return None, "no_contact_email"
+    if inbox.get("send") and inbox.get("email"):
+        brand = {**brand, "email": inbox["email"]}
     shipping = autopilot_location(creator, scrape, notes)
     if shipping.get("needs_location"):
         return None, "needs_location"
@@ -536,7 +550,7 @@ def _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=F
     if not body:
         return None, "draft_failed"
     item = add_draft(
-        conn, creator_id, brand_id, brand["brand_name"], pitch.get("email") or brand["email"],
+        conn, creator_id, brand_id, brand["brand_name"], brand["email"],
         pitch.get("subject") or f"{brand['brand_name']} collab", body, announced=announced,
         meta=pitch.get("pitch_meta"),
     )
