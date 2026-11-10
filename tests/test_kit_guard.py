@@ -46,3 +46,18 @@ class WithKit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DraftsAreTracked(unittest.TestCase):
+    def test_finalize_for_adds_tracked_kit_and_rebuilds_mailto(self):
+        from unittest.mock import MagicMock
+        from services import pitch_writer as pw
+        draft = {"subject": "UGC idea", "body": "Hi team\n\nWorth a try?\nAna", "email": "pr@brand.com",
+                 "mailto": "mailto:pr@brand.com?subject=old&body=old"}
+        with patch.object(pw, "finalize_pitch", return_value=dict(draft)), \
+                patch.object(pw, "creator_stats", return_value={}), \
+                patch.object(kg, "ensure_kit", return_value="ana"):
+            out = pw.finalize_for(MagicMock(), 7, 42, draft, {})
+        self.assertRegex(out["body"], r"newcollab\.co/kit/ana\?ref=[0-9a-f]{12}")
+        self.assertIn("ref%3D", out["mailto"])
+        self.assertNotIn("body=old", out["mailto"])

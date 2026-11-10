@@ -576,7 +576,14 @@ def finalize_for(conn, creator_id: int, brand_id: Any, pitch: Optional[Dict[str,
         # Drafts carry the kit too, so a pitch the creator copies and sends herself is tracked as well.
         if isinstance(out, dict) and out.get("body"):
             from services.kit_guard import with_kit
-            out = {**out, "body": with_kit(conn, creator_id, out["body"])}
+            from services.kit_view_tracking import track_kit_links
+            # Drafts carry the kit with this brand's ref token, so a pitch the creator opens in her own mail app
+            # or copies is tracked like one we send. The "Open email" link is rebuilt from this final body.
+            body = track_kit_links(with_kit(conn, creator_id, out["body"]), creator_id, brand_id)
+            out = {**out, "body": body}
+            if out.get("email"):
+                from services.polly import build_mailto
+                out["mailto"] = build_mailto(out["email"], out.get("subject") or "", body)
         return out
     except Exception as err:
         print(f"[pitch_writer] finalize skipped: {err}")
