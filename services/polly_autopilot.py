@@ -964,6 +964,8 @@ def run_autopilot(
              thread_id=sent.get("thread_id"), message_id=sent.get("message_id"), error=None,
              **({"followup_status": "scheduled", "followup_due_at": now + FOLLOWUP_GAPS[0]} if follows else {}))
         record_pitch_sent(conn, cid, {"id": bid, "name": name}, drafted=False)
+        from services.gig_autopilot import mark_applied
+        mark_applied(conn, cid, item.get("pitch_meta"))
         if follows:
             _hold_day4_nudge(conn, cid, bid, now + NUDGE_HOLD)
         touched.setdefault(cid, []).append({"id": bid, "name": name})

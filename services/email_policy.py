@@ -25,7 +25,10 @@ TRANSACTIONAL = {
     "renewal_note", "autopilot_paused", "autopilot_gmail", "hooks_ready",
 }
 # waitlist_*: pending creators are mostly ones we won't approve; no marketing email until approved.
-RETIRED = {"pro_week", "nudge", "autopilot_drafts", "autopilot_week", "waitlist_1", "waitlist_2", "waitlist_3"}
+# autopilot_headsup retired Nov 2026: one email per follow-up batch (33 in a month for one Pro member) repeated
+# the daily Polly line; the week's follow-ups now sit in the Monday report with one-tap "replied" buttons.
+RETIRED = {"pro_week", "nudge", "autopilot_drafts", "autopilot_week", "autopilot_headsup", "waitlist_1", "waitlist_2",
+           "waitlist_3"}
 EVENT = {"kit_view", "new_brand_push", "reply_win"}
 # max_quota_hit (lifecycle) and paywall_followup (Polly) fire at the same moment: one offer covers both.
 OFFER = {"paywall_followup", "free_week", "max_quota_hit"}
