@@ -1353,7 +1353,10 @@ def resolve_pitch_location(
             addr = None
     addr = addr if isinstance(addr, dict) else {}
     city = str(creator.get("city") or addr.get("city") or scrape.get("city") or "").strip()
-    country = str(creator.get("country") or addr.get("country") or scrape.get("country") or "").strip()
+    from services.creator_country import display_country
+
+    # creators.country holds an ISO code ('GB') or 'OTHER': pitches need the name, never the marker.
+    country = (display_country(creator.get("country")) or str(addr.get("country") or scrape.get("country") or "")).strip()
     parsed = parse_location_reply(str(notes.get("location") or ""))
     if parsed:
         city = city or parsed.get("city") or ""

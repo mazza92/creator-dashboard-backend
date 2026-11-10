@@ -81,6 +81,7 @@ POOL_SQL = r"""
         COALESCE(c.total_views, 0) AS total_views,
         COALESCE(c.total_posts, 0) AS total_posts,
         UPPER(COALESCE(
+            NULLIF(NULLIF(TRIM(c.country), ''), 'OTHER'),
             NULLIF(TRIM(u.country), ''),
             NULLIF(TRIM(c.shipping_address->>'country'), ''),
             (
@@ -91,6 +92,7 @@ POOL_SQL = r"""
                 LIMIT 1
             )
         )) AS country_raw,
+        c.regions::text AS regions_raw,
         (
             SELECT COUNT(*)::int FROM brand_pr_applications a
             WHERE a.creator_id = c.id AND a.status IN ('ships', 'posted')
@@ -135,6 +137,16 @@ def clean_niche(raw: Any) -> str:
 def clean_platform(raw: Any) -> str:
     value = str(raw or "tiktok").strip().lower()
     return value if value in PLATFORMS else "tiktok"
+
+
+def row_country(row: Dict) -> Optional[str]:
+    """creators.country / users.country / shipping country, else a single unambiguous region (["US"], ["UK"])."""
+    code = clean_country(row.get("country_raw"))
+    if code:
+        return code
+    from services.creator_country import country_from_regions
+
+    return country_from_regions(row.get("regions_raw"))
 
 
 def clean_country(raw: Any) -> Optional[str]:
@@ -278,8 +290,14 @@ def serialize(row: Dict, query: str, media: bool = False) -> Dict:
         "niches": [t.title() for t in ordered],
         "followers": follower_band(row.get("followers")),
         "engagement_rate": _engagement_label(row.get("engagement")),
-        "country": clean_country(row.get("country_raw")),
+        "country": row_country(row),
     }
+    if card["country"]:
+        from services.creator_country import SERVED_COUNTRIES, flag_for
+
+        served = SERVED_COUNTRIES.get(card["country"])
+        card["country_name"] = served[0] if served else None
+        card["country_flag"] = flag_for(card["country"]) or None
     gifted = int(row.get("gifted_collabs") or 0)
     if gifted > 0:
         card["gifted_collabs"] = gifted
@@ -324,7 +342,7 @@ def rank(
         row_platform = str(row.get("social_platform") or row.get("post_platform") or "").lower()
         if platform != "all" and row_platform and row_platform != platform:
             continue
-        if country and clean_country(row.get("country_raw")) != country:
+        if country and row_country(row) != country:
             continue
         try:
             er = float(row.get("engagement") or 0)
@@ -399,8 +417,10 @@ def _load_pool(cursor) -> List[Dict]:
     with _POOL_LOCK:
         if _POOL["rows"] is not None and time.time() - _POOL["at"] < POOL_TTL_SECONDS:
             return _POOL["rows"]
+    from services.creator_country import ensure_schema
     from services.pro_roster_placement import internal_emails
 
+    ensure_schema(cursor)
     cursor.execute(POOL_SQL, (internal_emails() or [""],))
     rows = [dict(r) for r in cursor.fetchall() or []]
     with _POOL_LOCK:
@@ -413,7 +433,7 @@ def _cache_key(
     niche: str, platform: str, country: Optional[str], limit: int, media: bool = False, offset: int = 0
 ) -> str:
     raw = f"{niche}|{platform}|{country or ''}|{limit}|{int(media)}|{offset}"
-    return "creator_search:v8:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()
+    return "creator_search:v9:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
 def clean_offset(raw: Any) -> int:

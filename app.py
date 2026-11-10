@@ -78,6 +78,8 @@ from social_verification_routes import (
     apply_pending_oauth_to_creator,
 )
 from account_routes import account_bp
+from services import creator_country
+from services.creator_country import CountryError
 from routes.admin_pr_hunter import admin_pr_hunter_bp
 from routes.admin_brands import admin_brands_bp
 from routes.admin_reports import admin_reports_bp
@@ -1104,6 +1106,10 @@ def google_signup():
         id_token_str = data.get('idToken')
         email = data.get('email')
         name = data.get('name')
+        try:
+            signup_country = creator_country.validate(data.get('country'), data.get('country_other'))
+        except CountryError as country_err:
+            return jsonify({'error': str(country_err)}), 400
 
         app.logger.debug(f"Received Google Sign-In request: email={email}, name={name}, idToken={id_token_str[:50]}...")
 
@@ -1234,6 +1240,8 @@ def google_signup():
             # Minimal creator profile; onboarding step 1 sets the real handle.
             creator_id = _create_pending_creator(cursor, user_id, email)
             app.logger.info(f"Created new creator with ID: {creator_id}")
+            if signup_country[0]:
+                creator_country.save_country(cursor, user_id, *signup_country)
 
             conn.commit()
             _record_promo_signup(conn, user_id, data.get('promo_code'))
@@ -1839,9 +1847,14 @@ def get_profile():
             }
 
             if user_role == 'creator':
+                creator_country.ensure_schema(cursor)
                 cursor.execute('SELECT id, bio, followers_count, * FROM creators WHERE user_id = %s', (user_id,))
                 creator_data = cursor.fetchone() or {}
                 profile_data.update(creator_data)
+                # 'country' stays the users.country name older screens read; the code lives in country_code.
+                profile_data['country'] = user_data.get('country')
+                profile_data.update(creator_country.response_fields(
+                    creator_data.get('country'), creator_data.get('country_other'), user_data.get('country')))
 
                 # Log approval status for debugging
                 app.logger.info(f"🔍 Creator approval_status: {creator_data.get('approval_status')} for user_id={user_id}")
@@ -2196,6 +2209,12 @@ def complete_profile():
         username = data.get('username')
         primary_age_range = data.get('primaryAgeRange')
         regions = data.get('regions', '[]')
+        try:
+            onboarding_country = creator_country.validate(data.get('country'), data.get('country_other'))
+        except CountryError as country_err:
+            return jsonify({'error': str(country_err)}), 400
+        if onboarding_country[0]:
+            regions = creator_country.regions_json(onboarding_country[0])
         interests = data.get('interests', '[]')
         social_links = data.get('socialLinks', '[]')
         portfolio_links = data.get('portfolioLinks', '[]')
@@ -2301,6 +2320,8 @@ def complete_profile():
                 creator_id = result['id']
                 sync_niche_to_pr_wishlist(creator_id, interests, conn)
 
+        if onboarding_country[0]:
+            creator_country.save_country(cursor, user_id, *onboarding_country)
         conn.commit()
 
         # Set session
@@ -2685,6 +2706,13 @@ def onboarding_step1():
         raw_username = data.get('username', '').strip()
         platform = data.get('platform', '').lower()
         followers = int(data.get('followers', 0) or 0)
+        try:
+            step_country = creator_country.validate(data.get('country'), data.get('country_other'))
+        except CountryError as country_err:
+            return jsonify({'error': str(country_err)}), 400
+        if not step_country[0] and session.get('signup_country'):
+            pending = session.get('signup_country') or []
+            step_country = (pending[0], pending[1] if len(pending) > 1 else None)
 
         # Normalize the social handle (remove URLs, @, emojis, special chars)
         username = normalize_social_handle(raw_username, platform)
@@ -2842,6 +2870,9 @@ def onboarding_step1():
             )
 
         creator_id = cursor.fetchone()['id']
+        if step_country[0]:
+            creator_country.save_country(cursor, user_id, *step_country)
+            session.pop('signup_country', None)
         # SAVEPOINT is only valid inside a transaction; the shared connection runs in autocommit.
         in_transaction = not conn.autocommit
         if in_transaction:
@@ -3080,25 +3111,37 @@ def onboarding_step2():
         bio = data.get('bio', '').strip()
         primary_age_range = data.get('primary_age_range', '').strip()
         regions = data.get('regions', [])
+        # Country replaces regions (older clients still send regions; regions are derived from the country).
+        try:
+            code, other = creator_country.validate(data.get('country'), data.get('country_other'))
+        except CountryError as country_err:
+            return jsonify({'error': str(country_err)}), 400
 
         if not bio:
             return jsonify({'error': 'Bio is required'}), 400
         if not primary_age_range:
             return jsonify({'error': 'Audience age range is required'}), 400
-        if not regions:
-            return jsonify({'error': 'At least one region is required'}), 400
+        if not code and not regions:
+            return jsonify({'error': 'Please choose your country'}), 400
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        cursor.execute(
-            'UPDATE creators SET bio = %s, primary_age_range = %s, regions = %s WHERE user_id = %s',
-            (bio, primary_age_range, json.dumps(regions), user_id)
-        )
+        if code:
+            cursor.execute(
+                'UPDATE creators SET bio = %s, primary_age_range = %s WHERE user_id = %s',
+                (bio, primary_age_range, user_id)
+            )
+            creator_country.save_country(cursor, user_id, code, other)
+        else:
+            cursor.execute(
+                'UPDATE creators SET bio = %s, primary_age_range = %s, regions = %s WHERE user_id = %s',
+                (bio, primary_age_range, json.dumps(regions), user_id)
+            )
         conn.commit()
 
         conn.close()
-        return jsonify({'ok': True}), 200
+        return jsonify({'ok': True, **creator_country.response_fields(code, other)}), 200
 
     except Exception as e:
         app.logger.error(f"🔥 Error in onboarding step2: {str(e)}")
@@ -3233,8 +3276,10 @@ def get_profile_completeness():
         user = cursor.fetchone()
 
         # Get creator data
+        creator_country.ensure_schema(cursor)
         cursor.execute("""
-            SELECT username, bio, image_profile, niche, regions, primary_age_range, followers_count
+            SELECT username, bio, image_profile, niche, regions, primary_age_range, followers_count,
+                   country, country_other
             FROM creators WHERE user_id = %s
         """, (user_id,))
         creator = cursor.fetchone()
@@ -3267,7 +3312,8 @@ def get_profile_completeness():
             'profile_photo': bool(creator and creator.get('image_profile')),
             'bio':           bool(creator and creator.get('bio') and len(creator.get('bio', '').strip()) > 10),
             'audience_age':  bool(creator and creator.get('primary_age_range')),
-            'regions':       bool(regions_val and len(regions_val) > 0),
+            # Country replaced the regions picker; creators who only have regions still count as done.
+            'country':       bool((creator and creator.get('country')) or (regions_val and len(regions_val) > 0)),
             'name':          bool(user.get('first_name')),
         }
 
@@ -3306,6 +3352,10 @@ def update_user_profile():
             return jsonify({'error': 'Not authenticated'}), 401
 
         data = request.get_json() or {}
+        try:
+            patch_country = creator_country.validate(data.get('country'), data.get('country_other'))
+        except CountryError as country_err:
+            return jsonify({'error': str(country_err)}), 400
 
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -3343,17 +3393,24 @@ def update_user_profile():
                     value = json.dumps(value)
                 creator_updates[db_col] = value
 
+        if patch_country[0]:
+            creator_updates.pop('regions', None)  # derived from the country
         if creator_updates:
             set_clause = ', '.join(f"{k} = %s" for k in creator_updates.keys())
             cursor.execute(
                 f"UPDATE creators SET {set_clause} WHERE user_id = %s",
                 list(creator_updates.values()) + [user_id]
             )
+        if patch_country[0]:
+            creator_country.save_country(cursor, user_id, *patch_country)
 
         conn.commit()
         conn.close()
 
-        return jsonify({'ok': True}), 200
+        body = {'ok': True}
+        if patch_country[0]:
+            body.update(creator_country.response_fields(*patch_country))
+        return jsonify(body), 200
 
     except Exception as e:
         app.logger.error(f"🔥 Error updating profile: {str(e)}")
@@ -3546,9 +3603,16 @@ def get_marketplace_creators():
             # Match in pr_wishlist (exact category name)
             params.append(niche)
 
+        creator_country.ensure_schema(cursor)
         if country and country.lower() != 'all locations':
-            where_clauses.append('u.country = %s')
-            params.append(country)
+            country_code = creator_country.normalize_code(country)
+            if country_code and country_code != creator_country.OTHER:
+                # ISO code or name: creators.country, falling back to users.country / regions for older rows.
+                where_clauses.append(creator_country.COUNTRY_FILTER_SQL)
+                params.extend(creator_country.country_filter_params(country_code))
+            else:
+                where_clauses.append('u.country = %s')
+                params.append(country)
 
         where_sql = ' AND '.join(where_clauses) if where_clauses else '1=1'
 
@@ -3654,6 +3718,8 @@ def get_marketplace_creators():
                 c.engagement_rate as avg_engagement_rate,
                 c.bio,
                 u.country,
+                c.country AS country_code_raw,
+                c.country_other,
                 c.created_at,
                 u.first_name,
                 u.last_name,
@@ -3703,6 +3769,8 @@ def get_marketplace_creators():
 
         # Get active projects for each creator (optional - table may not exist)
         for creator in creators:
+            creator.update(creator_country.response_fields(
+                creator.pop('country_code_raw', None), creator.pop('country_other', None), creator.get('country')))
             try:
                 # Try to get from sponsor_drafts table (if it exists)
                 cursor.execute('''
@@ -6416,6 +6484,12 @@ def register_creator_account():
         last_name = _clean_person_name(data.get('lastName', data.get('last_name', '')))
         pr_list_signup = data.get('pr_list_signup') in ('true', True, '1')
 
+        # Optional: the creators row is created at onboarding step 1, which applies it from the session.
+        try:
+            signup_country = creator_country.validate(data.get('country'), data.get('country_other'))
+        except CountryError as country_err:
+            return jsonify({'error': str(country_err)}), 400
+
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -6462,6 +6536,8 @@ def register_creator_account():
                 (first_name or None, last_name or None, email, hashed_password, is_verified, verification_token)
             )
         user_id = cursor.fetchone()['id']
+        if signup_country[0]:
+            creator_country.save_country(cursor, user_id, *signup_country)
         conn.commit()
         _record_promo_signup(conn, user_id, data.get('promo_code'))
         _record_signup_offer(conn, user_id, data.get('signup_ref'))
@@ -6486,6 +6562,8 @@ def register_creator_account():
         session.clear()
         session['user_id'] = user_id
         session['user_role'] = 'creator'
+        if signup_country[0]:
+            session['signup_country'] = list(signup_country)
         session.permanent = True
         session.modified = True
 
@@ -6550,7 +6628,12 @@ def register_creator():
         last_name = _clean_person_name(request.form.get('lastName'))
         email = _norm_email(request.form.get('email'))
         phone = request.form.get('phone')
-        country = request.form.get('country')
+        try:
+            legacy_country = creator_country.validate(request.form.get('country'), request.form.get('country_other'))
+        except CountryError as country_err:
+            return jsonify({'error': str(country_err)}), 400
+        # users.country keeps the English name; OTHER leaves it empty (see services/creator_country.py).
+        country = creator_country.name_for(legacy_country[0]) or None
         password = request.form.get('password')
         bio = request.form.get('bio')
         username = request.form.get('username')
@@ -6566,6 +6649,8 @@ def register_creator():
 
         try:
             regions = json.loads(request.form.get('regions', '[]'))
+            if legacy_country[0]:
+                regions = creator_country.regions_for(legacy_country[0])
             interests = json.loads(request.form.get('interests', '[]'))
             social_links = json.loads(request.form.get('socialLinks', '[]'))
             portfolio_links = json.loads(request.form.get('portfolioLinks', '[]'))
@@ -6665,6 +6750,8 @@ def register_creator():
             )
         )
         creator_id = cursor.fetchone()['id']
+        if legacy_country[0]:
+            creator_country.save_country(cursor, user_id, *legacy_country)
 
         conn.commit()
 

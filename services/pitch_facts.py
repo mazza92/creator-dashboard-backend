@@ -38,7 +38,8 @@ def _creator(conn, creator_id: int) -> Dict[str, Any]:
                    LEFT JOIN users u ON u.id = c.user_id WHERE c.id = %s""", (creator_id,))
     row = cur.fetchone() or {}
     out = dict(row.get("c") or {})
-    if not out.get("country") and row.get("user_country"):
+    # creators.country is an ISO code or 'OTHER'; pitch copy wants the users.country name when there is one.
+    if row.get("user_country") and (not out.get("country") or len(str(out.get("country"))) <= 5):
         out["country"] = row["user_country"]
     return out
 

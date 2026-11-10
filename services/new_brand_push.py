@@ -133,7 +133,7 @@ def normalize_regions(raw: Any) -> List[str]:
             return []
         if low in ("eu", "europe", "european union"):
             out.append("EU")
-        elif text.upper() in REGION_CODES:
+        elif len(text) <= 3 and text.upper() in REGION_CODES:  # names go through _country_code below
             out.append(text.upper())
         else:
             code = _country_code(text)
