@@ -78,3 +78,16 @@ class AdjustmentNoteTests(unittest.TestCase):
         self.assertEqual(notes.count("[Email check"), 1)
         self.assertIn("domain receives no email", notes)
         self.assertEqual(adj, "flagged:dns_dead_domain")
+
+    def test_dead_inbox_is_not_searched_again_for_two_weeks(self):
+        from unittest import mock
+        cur = self.conn.cursor()
+        cur.execute("UPDATE pr_brands SET email_status = 'invalid', website = 'https://dead.co' WHERE id = 2")
+        self.conn.commit()
+        cr._log(self.conn, 2, "info@dead.co", None, "verify_invalid", None)
+        self.conn.commit()
+        http = mock.MagicMock()
+        with mock.patch.dict(os.environ, {"HUNTER_API_KEY": "k"}):
+            res = cr.ensure_deliverable(self.conn, 2, "info@dead.co", http=http)
+        self.assertIsNone(res["email"])
+        http.assert_not_called()  # no domain search, no credit

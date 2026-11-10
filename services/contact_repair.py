@@ -282,6 +282,18 @@ def find_replacement(conn, brand: Dict[str, Any], exclude: List[str], http: Opti
     return None
 
 
+REPAIR_RETRY = timedelta(days=14)
+
+
+def _recent_failed_repair(conn, brand_id: int, email: str) -> bool:
+    cur = _cur(conn)
+    cur.execute("""SELECT 1 FROM brand_contact_repairs
+                   WHERE brand_id = %s AND LOWER(old_email) = %s AND new_email IS NULL
+                     AND reason IN ('verify_invalid', 'dns_dead_domain') AND created_at > %s LIMIT 1""",
+                (brand_id, email.lower(), _now() - REPAIR_RETRY))
+    return cur.fetchone() is not None
+
+
 def ensure_deliverable(conn, brand_id: Optional[int], email: Optional[str], *, creator_id: Optional[int] = None,
                        http: Optional[Callable] = None) -> Dict[str, Any]:
     """Before a pitch: the address to use and whether we changed it.
@@ -318,7 +330,10 @@ def ensure_deliverable(conn, brand_id: Optional[int], email: Optional[str], *, c
             if is_directory:
                 _save_status(conn, int(brand_id), status)
             return {**keep, "status": status}
-        # invalid: try to repair, everyone benefits
+        # invalid: try to repair, everyone benefits. A search that already came back empty for this inbox in the
+        # last REPAIR_RETRY isn't repeated (belif's dead inbox was searched 7 times in 5 days, 1 credit each).
+        if _recent_failed_repair(conn, int(brand_id), email):
+            return {"email": None, "status": "invalid", "changed": False, "previous": email}
         exclude = known_bad(conn, int(brand_id)) + [email]
         rep = find_replacement(conn, brand, exclude, http=http)
         if rep:
