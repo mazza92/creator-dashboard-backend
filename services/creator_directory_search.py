@@ -140,13 +140,8 @@ def clean_platform(raw: Any) -> str:
 
 
 def row_country(row: Dict) -> Optional[str]:
-    """creators.country / users.country / shipping country, else a single unambiguous region (["US"], ["UK"])."""
-    code = clean_country(row.get("country_raw"))
-    if code:
-        return code
-    from services.creator_country import country_from_regions
-
-    return country_from_regions(row.get("regions_raw"))
+    """creators.country, else users.country / shipping country. Never guessed from the old regions field."""
+    return clean_country(row.get("country_raw"))
 
 
 def clean_country(raw: Any) -> Optional[str]:

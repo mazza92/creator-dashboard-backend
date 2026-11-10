@@ -301,12 +301,12 @@ def legacy_regions_json(code: str) -> Optional[str]:
     return None
 
 
-# SQL for "creator is in country %(code)s": creators.country first, then users.country, then regions.
+# SQL for "creator is in country %(code)s": creators.country, else users.country. Never the old regions field.
 COUNTRY_FILTER_SQL = (
     "(UPPER(COALESCE(c.country, '')) = %s OR (NULLIF(c.country, '') IS NULL AND "
-    "(LOWER(TRIM(COALESCE(u.country, ''))) = ANY(%s) OR c.regions::text = %s)))"
+    "LOWER(TRIM(COALESCE(u.country, ''))) = ANY(%s)))"
 )
 
 
 def country_filter_params(code: str) -> List[Any]:
-    return [str(code).upper(), legacy_names(code), legacy_regions_json(code) or "__none__"]
+    return [str(code).upper(), legacy_names(code)]

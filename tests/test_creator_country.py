@@ -342,13 +342,14 @@ class DirectorySearchCountryTests(unittest.TestCase):
                 "creator_niches": ["skincare"], "kit_slug": f"kit{cid}", "kit_published": True, "followers": 4200,
                 "engagement": 0.04, "country_raw": country_raw, "regions_raw": regions_raw}
 
-    def test_country_filter_uses_country_then_regions(self):
+    def test_country_filter_uses_country_never_regions(self):
         from services.creator_directory_search import build_response
 
         rows = [self._row(1, "GB"), self._row(2, None, '["UK"]'), self._row(3, None, '["US"]'),
                 self._row(4, None, '["Europe"]')]
         out = build_response(rows, "skincare", "tiktok", "GB", 8)
-        self.assertEqual(out["total_creators_found"], 2)
+        # Only the creator who picked the UK: an old ["UK"] regions value is not a country.
+        self.assertEqual(out["total_creators_found"], 1)
         card = out["creators"][0]
         self.assertEqual((card["country"], card["country_name"], card["country_flag"]),
                          ("GB", "United Kingdom", "🇬🇧"))

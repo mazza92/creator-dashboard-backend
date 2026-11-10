@@ -258,7 +258,7 @@ def get_pool_matches():
 
         # Get current creator's info
         cursor.execute("""
-            SELECT id, niche, regions, subscription_tier
+            SELECT id, niche, country, subscription_tier
             FROM creators WHERE id = %s
         """, (creator_id,))
         current_creator = cursor.fetchone()
@@ -268,7 +268,10 @@ def get_pool_matches():
             return jsonify({'error': 'Creator not found'}), 404
 
         my_niche = normalize_niche(current_creator.get('niche'))
-        my_region = current_creator.get('regions')
+        # Same country (the creator's pick, never the old regions field) ranks just below a niche match.
+        my_country = (current_creator.get('country') or '').strip().upper() or None
+        if my_country == 'OTHER':
+            my_country = None
         adjacent_niches = NICHE_ADJACENCY.get(my_niche, [])
 
         # Get creators already supported by this user (to exclude)
@@ -304,7 +307,7 @@ def get_pool_matches():
             ),
             eligible AS (
                 SELECT
-                    c.id, c.username, c.username as display_name, c.niche, c.regions,
+                    c.id, c.username, c.username as display_name, c.niche, c.regions, c.country,
                     c.image_profile as profile_image_url, c.followers_count, c.subscription_tier,
                     c.social_links,
                     COALESCE(pc.balance, 0) as pool_balance,
@@ -314,7 +317,7 @@ def get_pool_matches():
                     CASE
                         WHEN LOWER(c.niche) = %s THEN 100
                         WHEN LOWER(c.niche) = ANY(%s) THEN 80
-                        WHEN c.regions = %s AND %s IS NOT NULL THEN 60
+                        WHEN UPPER(COALESCE(c.country, '')) = %s AND %s IS NOT NULL THEN 60
                         ELSE 40
                     END as match_score,
                     -- Activity score: recent boosts in last 7 days (0-10 scale)
@@ -351,7 +354,7 @@ def get_pool_matches():
                 last_boost_at DESC NULLS LAST,
                 RANDOM()
             LIMIT %s
-        """, (my_niche, adjacent_niches, my_region, my_region, already_supported, list(EXCLUDED_USER_IDS), limit))
+        """, (my_niche, adjacent_niches, my_country, my_country, already_supported, list(EXCLUDED_USER_IDS), limit))
 
         matches = cursor.fetchall()
         conn.close()
