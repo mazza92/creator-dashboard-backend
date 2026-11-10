@@ -64,7 +64,6 @@ from services.polly_prefs import (
     merge_prefs,
     pitch_prefs_line,
 )
-from services.brand_shipping import apply_shipping, creator_country, load_regions
 from services.polly_turn_state import TurnState, brand_card
 
 
@@ -163,21 +162,6 @@ def _oldest_shown_first(rows: List[Dict[str, Any]], notes: Dict[str, Any]) -> Li
     return sorted(rows or [], key=lambda b: _shown_rank(b, notes))
 
 
-def shipping_summary(rows: List[Dict[str, Any]], ship: Dict[str, Any]) -> Dict[str, Any]:
-    where = ship["ships_to"]
-    ok = sum(1 for r in rows if r.get("ships_to_you"))
-    if ok == len(rows):
-        say = f"These {ok} ship to {where}."
-    elif ok:
-        say = f"{ok} of these ship to {where}; the rest say Shipping not confirmed."
-    else:
-        say = f"None of these have confirmed shipping to {where} yet, so ask in your pitch."
-    if ship.get("dropped"):
-        say += f" I left out {ship['dropped']} that don't ship to {where}."
-    return {"ships_to": where, "confirmed": ok, "not_confirmed": len(rows) - ok,
-            "hidden_wont_ship": ship.get("dropped") or 0, "say": say}
-
-
 def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     from services.niche_check import conflict as niche_conflict
     from services.niche_check import mark_asked, question
@@ -246,10 +230,9 @@ def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         widened = bool(picked)
     hydrated = R._hydrate_brand_cards(picked)
     rows = filter_brands_by_prefs(hydrated, state.notes) or hydrated
-    country = creator_country(state.creator, state.notes, state.scrape)
-    ship = apply_shipping(rows, country, load_regions(state.db(), [b.get("id") for b in rows]))
-    rows = sorted(ship["brands"], key=lambda b: (
-        0 if b.get("ships_to_you") else 1,
+    # Country is not a matching signal for creators (it only lets brands filter creators): every niche brand
+    # stays in, whatever its shipping regions.
+    rows = sorted(rows, key=lambda b: (
         0 if (b or {}).get("source") in ("recruiting", "open_lists") else 1,
         _shown_rank(b, state.notes),
     ))
@@ -259,11 +242,6 @@ def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     rows = balance_by_niche(rows, recorded_niches(state.creator) or _stated(state.notes))
     cap = 3 if (state.chip or {}).get("id") == "first_matches" else 6
     rows = rows[:cap]
-    if not rows and ship["dropped"]:
-        return {"ok": True, "brands": [], "status": "none_ship_here", "ships_to": ship["ships_to"],
-                "explain": f"None of the brands I'd match right now ship to {ship['ships_to']}. Say so "
-                           "plainly and offer paid UGC briefs that don't need shipping, or ask for "
-                           "another niche."}
     if not rows:
         if err:
             state.error = err
@@ -280,8 +258,6 @@ def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         "cards_shown": True,
         "live_rosters": sum(1 for r in rows if r.get("source") in ("recruiting", "open_lists")),
     }
-    if ship["ships_to"]:
-        out["shipping"] = shipping_summary(rows, ship)
     if repeated:
         out["repeated"] = True
         out["note"] = "These brands were shown before and are still unpitched. The cards are on screen."
@@ -314,23 +290,16 @@ def browse_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         state.db().rollback()
         return {"ok": False, "error": "directory search failed"}
     rows = drop_pending_draft(drop_pitched(found["brands"], state.notes), state.notes)
-    rows = filter_brands_by_prefs(_routes()._hydrate_brand_cards(rows), state.notes)
-    country = creator_country(state.creator, state.notes, state.scrape)
-    ship = apply_shipping(rows, country, load_regions(state.db(), [b.get("id") for b in rows]))
-    rows = sorted(ship["brands"], key=lambda b: 0 if b.get("ships_to_you") else 1)[:6]
+    rows = filter_brands_by_prefs(_routes()._hydrate_brand_cards(rows), state.notes)[:6]
     label = found["plan"]["label"]
     if not rows:
         return {"ok": True, "status": "none_found", "searched": label,
-                "hidden_wont_ship": ship["dropped"],
                 "explain": f"No {label} brands in the directory right now"
-                           + (f" that ship to {ship['ships_to']}" if ship["dropped"] else "")
                            + ". Say so; never invent brands. Offer the closest category instead."}
     state.brands = rows
     state.notes = mark_shown_brands(state.notes, rows)
     out = {"ok": True, "status": "found", "searched": label, "brands": [brand_card(r) for r in rows],
            "cards_shown": True}
-    if ship["ships_to"]:
-        out["shipping"] = shipping_summary(rows, ship)
     return out
 
 
@@ -1435,7 +1404,7 @@ def radar_ctx(state: TurnState, niche: str = "") -> Dict[str, Any]:
         "creator_id": state.creator_id,
         "niche": niche or recorded_radar_niche(state.creator),
         "followers": followers,
-        "country": creator_country(state.creator, notes, scrape),
+        "country": None,  # country is not a brand-matching signal for creators
         "is_pro": bool((state.balance or {}).get("is_unlimited")),
         "exclude_brand_ids": list(notes.get("pitched_brand_ids") or []),
         "avoid_categories": list(get_prefs(notes).get("avoid_categories") or []),
@@ -1456,7 +1425,7 @@ def radar_profile(state: TurnState) -> Dict[str, str]:
     if picked:
         parts.insert(0, ", ".join(picked))
     return {"themes": "; ".join(dict.fromkeys(parts))[:300],
-            "country": str(creator_country(state.creator, state.notes or {}, scrape) or "")}
+            "country": ""}
 
 
 _RADAR_NOTES = {
