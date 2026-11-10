@@ -910,14 +910,24 @@ def run_autopilot(
             _set(conn, item["id"], status="skipped", error="already_pitched")
             out["skipped"] += 1
             continue
-        check = verify_fn(conn, bid, item["to_email"], creator_id=cid)
-        if not check.get("email"):
-            _set(conn, item["id"], status="skipped", error="no_deliverable_contact")
-            note(conn, cid, f"I skipped **{name}**: their inbox is dead and I couldn't find another one. "
-                            "I'll line up a different brand.", [])
+        # One gate for every send (services.deliverability): live domain, verified inbox, never fail open.
+        from services.deliverability import MAX_DEFERS, defer_count, gate
+        check = gate(conn, bid, item["to_email"], creator_id=cid, verify_fn=verify_fn)
+        if check.get("defer"):
+            tries = defer_count(item.get("error")) + 1
+            if tries <= MAX_DEFERS:
+                _set(conn, item["id"], scheduled_for=now + timedelta(hours=20), error=f"verify_pending:{tries}")
+                out.setdefault("deferred", 0)
+                out["deferred"] += 1
+                continue
+            check = {**check, "send": False, "email": None}
+        if not check.get("send"):
+            _set(conn, item["id"], status="skipped", error=f"undeliverable:{check.get('reason') or 'unknown'}"[:120])
+            note(conn, cid, f"I skipped **{name}**: I couldn't confirm a working inbox for them, and I don't send "
+                            "pitches that would bounce from your Gmail. I'll line up a different brand.", [])
             out["skipped"] += 1
             continue
-        if check.get("changed"):
+        if check.get("changed") and check.get("email") and check["email"] != (item.get("to_email") or "").lower():
             _set(conn, item["id"], to_email=check["email"])
             item["to_email"] = check["email"]
         try:
@@ -980,6 +990,22 @@ def run_autopilot(
         last_ours = item.get("followup_sent_at") or item.get("sent_at")
         if _brand_closed(conn, cid, bid, item.get("sent_at")) or _followed_up_by_hand(conn, cid, bid, last_ours):
             _set(conn, item["id"], followup_status="cancelled")
+            continue
+        # Follow-ups re-check the inbox: a follow-up to a dead address just bounces again in the creator's Gmail.
+        from services.deliverability import gate
+        fu_check = gate(conn, bid, item["to_email"], creator_id=cid, verify_fn=verify_fn)
+        if not fu_check.get("send"):
+            if fu_check.get("defer"):
+                _set(conn, item["id"], followup_due_at=now + timedelta(hours=20))
+                continue
+            _set(conn, item["id"], followup_status="cancelled", error=f"undeliverable:{fu_check.get('reason')}"[:120])
+            out["skipped"] += 1
+            continue
+        if fu_check.get("changed") and fu_check.get("email") != (item.get("to_email") or "").lower():
+            # The thread went to an inbox that no longer works: send a fresh pitch to the verified one instead.
+            _set(conn, item["id"], followup_status="cancelled")
+            requeue_after_bounce(conn, cid, bid, fu_check["email"], now=now)
+            out["skipped"] += 1
             continue
         wave = int(item.get("followups_sent") or 0) + 1
         names = _creator_names(conn, cid)

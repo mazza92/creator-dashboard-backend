@@ -2405,6 +2405,27 @@ def activity_live():
             conn.close()
 
 
+def _manual_send_ok(conn, creator_id, item):
+    """The send gate for "Send for me": swap in a verified inbox when the stored one went bad, block dead ones.
+    A creator sending by hand may still send to an unverified inbox on a live domain."""
+    try:
+        from services.deliverability import gate
+        check = gate(conn, item.get("brand_id"), item.get("email"), creator_id=creator_id, manual=True)
+    except Exception as err:
+        print(f"[Polly] send gate skipped: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return True
+    if check.get("send") and check.get("email"):
+        if check["email"] != (item.get("email") or "").strip().lower():
+            item["email"] = check["email"]
+        return True
+    item["blocked_reason"] = check.get("reason")
+    return False
+
+
 def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
     """Send server-stored pitches from the creator's Gmail (the client never supplies content or inboxes),
     then answer with the 'pitches sent' summary. load_items(notes) returns the item dicts (edited in place);
@@ -2443,6 +2464,8 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
                 status = "needs_location"
             elif revoked:
                 status = "failed"
+            elif not _manual_send_ok(conn, creator_id, item):
+                status = "bad_inbox"
             else:
                 try:
                     from services.kit_view_tracking import track_kit_links
@@ -2497,6 +2520,10 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
             lines.append("Gmail stopped letting me send. Reconnect it and tap send again.")
         elif any(r["status"] == "failed" for r in results):
             lines.append("One didn't go through. Tap send again and I'll retry it.")
+        bad = [r["brand_name"] for r in results if r["status"] == "bad_inbox"]
+        if bad:
+            lines.append(f"I held back {', '.join(bad[:3])}: their inbox doesn't exist anymore and I couldn't find a "
+                         "working one, so it would only bounce from your Gmail. I'll line up another brand.")
         if any(r["status"] == "needs_location" for r in results):
             lines.append("Tell me your city and country so I can finish the rest.")
         followers, has_rates = _kit_rates(conn, creator_id)
