@@ -462,8 +462,10 @@ def _fetch_any_published(limit=24, exclude_ids=None):
 
 
 def _fallback_brand_pool(notes, scrape, creator, creator_id, limit=12):
-    """Brands to show when the curated For You pool has nothing left to offer."""
+    """Brands to show when the curated For You pool has nothing left to offer: the creator's niches only."""
+    from services.creator_niches import with_recorded_niches
     from services.polly import drop_pitched, pitched_id_set
+    notes = with_recorded_niches(notes, creator)
     exclude = list(pitched_id_set(notes)) + _pipeline_pitched_ids(creator_id)
     match_scrape = _match_scrape(scrape, notes, creator)
     cats = list(required_categories_for_match(notes, match_scrape) or stated_niches(notes) or [])
@@ -471,7 +473,8 @@ def _fallback_brand_pool(notes, scrape, creator, creator_id, limit=12):
     if niche and not is_weak_niche(niche) and str(niche).lower() not in {str(c).lower() for c in cats}:
         cats.append(niche)
     rows = _fetch_brands_by_category(cats, limit=40, exclude_ids=exclude) if cats else []
-    if len(rows) < 6:
+    # Off-niche brands only when we know nothing about the creator: a short list beats a wrong one.
+    if not cats and len(rows) < 6:
         seen = {int(r.get("id") or 0) for r in rows}
         for row in _fetch_any_published(limit=24, exclude_ids=exclude):
             bid = int(row.get("id") or 0)
@@ -559,7 +562,9 @@ def _pipeline_pitched_ids(creator_id):
 
 
 def _suggest_payload(scrape, creator, notes=None, creator_id=None):
-    notes = notes or {}
+    from services.creator_niches import with_recorded_niches
+    # The niches on record (signup, Settings, Polly) beat a stale chat copy and anything scraped.
+    notes = with_recorded_niches(notes or {}, creator)
     stated = stated_niches(notes)
     match_scrape = _match_scrape(scrape, notes, creator)
     cats = required_categories_for_match(notes, match_scrape)

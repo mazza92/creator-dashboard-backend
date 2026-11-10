@@ -656,7 +656,8 @@ def flatten_for_you(
                 live = source in ("recruiting", "open_lists") or int((row or {}).get("roster_is_open") or (row or {}).get("roster_spotlighted") or 0)
             except (TypeError, ValueError):
                 live = source in ("recruiting", "open_lists")
-            if required and cat and not any(req in cat or cat in req for req in required):
+            # A brand with no category can't be shown as a niche match.
+            if required and not (cat and any(req in cat or cat in req for req in required)):
                 continue
             if opportunity_mismatch(row, scrape, niches, required):
                 continue
@@ -2350,6 +2351,38 @@ def matched_waiting(thread: Optional[Dict], limit: int = 2) -> Dict[str, Any]:
         if name and name not in names:
             names.append(name)
     return {"names": names[:limit], "count": len(names)}
+
+
+def balance_by_niche(rows: List[Dict[str, Any]], niches: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """Order matches so each niche the creator picked gets its turn (wellness, supplements, fitness → one of
+    each first), keeping the existing order inside each niche. A brand in the niche's own category beats a
+    synonym's. Brands that fit no picked niche stay at the end."""
+    from services.polly_discovery import NICHE_CATEGORIES
+
+    picks = [str(n).strip().lower() for n in (niches or []) if str(n or "").strip()]
+    if len(picks) < 2 or not rows:
+        return list(rows or [])
+    used: set = set()
+    out: List[Dict[str, Any]] = []
+
+    def take(match) -> bool:
+        for i, row in enumerate(rows):
+            if i not in used and match(str((row or {}).get("category") or "").strip().lower()):
+                used.add(i)
+                out.append(row)
+                return True
+        return False
+
+    while len(used) < len(rows):
+        progressed = False
+        for niche in picks:
+            synonyms = set(NICHE_CATEGORIES.get(niche, [niche]))
+            if take(lambda cat, n=niche: cat == n) or take(lambda cat, s=synonyms: cat in s):
+                progressed = True
+        if not progressed:
+            break
+    out.extend(row for i, row in enumerate(rows) if i not in used)
+    return out
 
 
 def drop_shown(

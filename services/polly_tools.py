@@ -253,6 +253,10 @@ def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         0 if (b or {}).get("source") in ("recruiting", "open_lists") else 1,
         _shown_rank(b, state.notes),
     ))
+    from services.creator_niches import recorded_niches
+    from services.polly import balance_by_niche
+    from services.polly_discovery import stated_niches as _stated
+    rows = balance_by_niche(rows, recorded_niches(state.creator) or _stated(state.notes))
     cap = 3 if (state.chip or {}).get("id") == "first_matches" else 6
     rows = rows[:cap]
     if not rows and ship["dropped"]:
