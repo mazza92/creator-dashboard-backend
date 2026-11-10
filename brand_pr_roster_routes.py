@@ -3166,3 +3166,89 @@ def admin_roster_queue_alias():
 @_admin_required
 def admin_search_pr_brands_alias():
     return admin_search_pr_brands()
+
+
+# ---------------------------------------------------------------------------
+# One-click answers from roster emails (no login): brand "remind me next week", creator "my box arrived"
+# ---------------------------------------------------------------------------
+
+_SIMPLE_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<title>Newcollab</title></head>
+<body style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;background:#F7F5F0;text-align:center;padding:64px 16px;color:#111827;">
+<div style="max-width:420px;margin:0 auto;background:#fff;border-radius:16px;padding:28px 22px;">{body}</div></body></html>"""
+
+
+def _simple_page(body_html: str, status: int = 200):
+    return _SIMPLE_PAGE.format(body=body_html), status, {"Content-Type": "text/html; charset=utf-8",
+                                                         "Cache-Control": "no-store"}
+
+
+@brand_pr_roster_bp.route("/r/<token>/snooze-ship", methods=["GET"])
+def snooze_ship(token):
+    """'Not yet: remind me next week' in a ship reminder. Harmless if a link scanner opens it (it only delays)."""
+    from html import escape as _esc
+    from services.roster_delivery import snooze_ship_reminders
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        campaign = _load_campaign(cursor, token)
+        if not campaign or campaign.get("status") != "locked":
+            return _simple_page("<p>This roster is already moving. Nothing to snooze.</p>")
+        try:
+            days = int(request.args.get("days") or 7)
+        except ValueError:
+            days = 7
+        until = snooze_ship_reminders(cursor, campaign, days)
+        conn.commit()
+        roster = f"{_frontend_base()}/r/{_esc(token)}?step=ship"
+        return _simple_page(
+            f"<h2 style='margin:0 0 8px'>Got it</h2><p>We'll check back on {until:%b} {until.day}. "
+            f"Your creators stay on hold until then.</p><p><a href='{roster}' style='color:#111827;font-weight:600;'>"
+            "Open my shipping list</a></p>")
+    finally:
+        conn.close()
+
+
+@brand_pr_roster_bp.route("/arrived", methods=["GET", "POST"])
+def creator_box_arrived():
+    """'Yes, it arrived' from the creator check-in email. GET shows a confirm button; POST records it."""
+    from html import escape as _esc
+    from services.roster_delivery import confirm_arrival, notify_creators_async, read_arrival_token
+    token = (request.values.get("t") or "").strip()
+    ids = read_arrival_token(token)
+    if not ids:
+        return _simple_page("<p>This link has expired. Open your Newcollab dashboard to update your PR box.</p>", 400)
+    if request.method == "GET":
+        return _simple_page(
+            "<h2 style='margin:0 0 8px'>Did your PR box arrive?</h2>"
+            f"<form method='post'><input type='hidden' name='t' value='{_esc(token, quote=True)}'>"
+            "<button type='submit' style='margin-top:12px;padding:12px 20px;border-radius:999px;border:0;"
+            "background:#111827;color:#fff;font-weight:600;font-size:15px;'>Yes, it arrived</button></form>")
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        res = confirm_arrival(cursor, ids[0], ids[1])
+        conn.commit()
+    finally:
+        conn.close()
+    if not res.get("ok"):
+        return _simple_page("<p>We couldn't find that roster spot. Open your Newcollab dashboard to check.</p>", 404)
+    if not res.get("already"):
+        try:
+            cur_conn = get_db_connection()
+            cur = cur_conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute("SELECT campaign_id FROM brand_pr_applications WHERE id = %s", (ids[0],))
+            row = cur.fetchone()
+            cur_conn.close()
+            if row and row.get("campaign_id"):
+                notify_creators_async(row["campaign_id"])  # sends the content brief now that it's arrived
+        except Exception:
+            current_app.logger.exception("[roster] arrival notify failed")
+    brand = _esc(res.get("brand_name") or "the brand")
+    dash = f"{_frontend_base()}/creator/dashboard/timeline"
+    return _simple_page(
+        f"<h2 style='margin:0 0 8px'>Thanks! Enjoy your {brand} box</h2>"
+        "<p>We've started your content checklist: 1 organic post tagging the brand and 1 raw UGC video. "
+        "Your brief is on its way to your inbox.</p>"
+        f"<p><a href='{dash}' style='color:#111827;font-weight:600;'>Open my dashboard</a></p>")

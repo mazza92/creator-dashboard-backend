@@ -43,8 +43,17 @@ CONTENT_OVERDUE_DAYS = CONTENT_DUE_DAYS + 4
 CONTENT_REMINDERS = ((5, 1), (CONTENT_DUE_DAYS, 2), (CONTENT_OVERDUE_DAYS, 3))
 CONTENT_REMINDER_WINDOW_DAYS = 60
 CONTENT_REMINDER_EVENT = "roster_content_reminder"
-SHIP_REMINDERS = ((2, 21, "ship_reminder_1"), (5, 22, "ship_reminder_2"))
-SHIP_REMINDER_MAX_AGE_DAYS = 30
+# Locked but nothing marked shipped: day 2, 5, then 9, 15 and a last one at 25 (brands went silent after day 5
+# and rosters sat "locked" for a month). Later emails offer one-click answers (shipped / remind me next week).
+SHIP_REMINDERS = ((2, 21, "ship_reminder_1"), (5, 22, "ship_reminder_2"), (9, 23, "ship_reminder_3"),
+                  (15, 24, "ship_reminder_4"), (25, 25, "ship_reminder_5"))
+SHIP_REMINDER_MAX_AGE_DAYS = 45
+SHIP_REMINDER_MIN_GAP_DAYS = 2
+SHIP_SNOOZE_EVENT = "roster_ship_snoozed"
+# Picked creators whose box isn't marked shipped are asked whether it arrived (day 7 and 14 after lock).
+ARRIVAL_CHECKS = (7, 14)
+ARRIVAL_CHECK_EVENT = "roster_arrival_check"
+ARRIVAL_CONFIRMED_EVENT = "roster_creator_arrived"
 # Days since the brand's last pick on a roster they never locked.
 LOCK_REMINDERS = ((1, 11, "lock_reminder_1"), (3, 12, "lock_reminder_2"))
 LOCK_REMINDER_MAX_AGE_DAYS = 21
@@ -495,15 +504,43 @@ def build_ship_reminder_email(row: dict, reminder: int) -> dict:
             ]),
             _p("Each creator posts 1 organic video tagging you and sends 1 raw UGC video you can reuse in ads for 6 months."),
         ]
-    else:
+    elif reminder == 2:
         subject = f"Still shipping to your {brand} creators?"
         body = [
             _p(f"Hi {escape(greeting_for_brand(row))},"),
             _p(f"Your {who} are still waiting on their {escape(brand)} box. They've agreed to post and send UGC as soon as it arrives."),
             _p("If something's in the way (stock, a different product, a question about the creators), just reply and I'll sort it."),
         ]
+    else:
+        subject = {3: f"Quick check: did your {brand} boxes go out?",
+                   4: f"Your {who} are still waiting on {brand}",
+                   5: f"Should we keep your {brand} creators on hold?"}[reminder]
+        lead = {3: f"Did your {escape(brand)} boxes go out? If you shipped already, one click tells your {who} "
+                   "it's on the way and starts their content clock.",
+                4: f"Your {who} are still holding a spot for {escape(brand)}. Creators who wait too long move on "
+                   "to other brands, so a quick update helps.",
+                5: f"It's been a few weeks since you locked your {escape(brand)} roster and nothing is marked "
+                   "shipped yet. This is my last reminder: tell me where you're at so your creators know too."}[reminder]
+        snooze = f"{_api_base()}/api/brand-pr/r/{row['token']}/snooze-ship?days=7"
+        body = [
+            _p(f"Hi {escape(greeting_for_brand(row))},"),
+            _p(lead),
+            _p(f'<a href="{escape(snooze, quote=True)}" style="color:#111827;">Not yet: remind me next week</a>'
+               " &middot; or reply if something changed (stock, product, creators) and I'll sort it."),
+        ]
     inner = "".join(body)
-    url = _link(f"/r/{row['token']}", "roster_delivery", f"ship_reminder_{reminder}", {"step": "ship"})
+    extra = {"step": "ship", **({"confirm": "all"} if reminder >= 3 else {})}
+    url = _link(f"/r/{row['token']}", "roster_delivery", f"ship_reminder_{reminder}", extra)
+    if reminder >= 3:
+        return {
+            "subject": subject,
+            "html": _wrap(subject, f"One click to tell your {brand} creators their box is on the way.", inner, url,
+                          "I've shipped them", BRAND_FOOTER_NOTE),
+            "url": url,
+            "trigger_number": SHIP_REMINDERS[reminder - 1][1],
+            "email_type": SHIP_REMINDERS[reminder - 1][2],
+            "applicant_count": picks,
+        }
     return {
         "subject": subject,
         "html": _wrap(subject, f"Addresses for your {brand} creators are ready to export.", inner, url,
@@ -717,10 +754,12 @@ def send_ship_reminders(cursor, conn, *, dry_run: bool = False, send_fn: Callabl
                b.brand_name, b.contact_email, {_brand_first_name_sql(cursor)},
                (SELECT COUNT(*) FROM brand_pr_applications a
                  WHERE a.campaign_id = camp.id AND a.status = 'ships' AND a.shipped_at IS NULL) AS pick_count,
+               (SELECT ARRAY_AGG(DISTINCT e.trigger_number) FROM brand_emails e
+                 WHERE e.campaign_id = camp.id AND e.trigger_number BETWEEN %s AND %s AND e.status = 'sent') AS sent_triggers,
                (SELECT MAX(e.sent_at) FROM brand_emails e
-                 WHERE e.campaign_id = camp.id AND e.trigger_number = %s AND e.status = 'sent') AS r1_at,
-               (SELECT MAX(e.sent_at) FROM brand_emails e
-                 WHERE e.campaign_id = camp.id AND e.trigger_number = %s AND e.status = 'sent') AS r2_at,
+                 WHERE e.campaign_id = camp.id AND e.trigger_number BETWEEN %s AND %s AND e.status = 'sent') AS last_at,
+               (SELECT MAX((ev.meta->>'until')::timestamptz) FROM brand_pr_events ev
+                 WHERE ev.event = %s AND ev.meta->>'campaign_id' = camp.id::text) AS snoozed_until,
                EXTRACT(EPOCH FROM (NOW() - camp.locked_at)) / 86400.0 AS age_days
         FROM brand_pr_campaigns camp
         JOIN pr_brands b ON b.id = camp.brand_id
@@ -730,12 +769,13 @@ def send_ship_reminders(cursor, conn, *, dry_run: bool = False, send_fn: Callabl
           AND COALESCE(TRIM(b.contact_email), '') <> ''
         ORDER BY camp.locked_at
         """,
-        (SHIP_REMINDERS[0][1], SHIP_REMINDERS[1][1], SHIP_REMINDERS[0][0], SHIP_REMINDER_MAX_AGE_DAYS),
+        (SHIP_REMINDERS[0][1], SHIP_REMINDERS[-1][1], SHIP_REMINDERS[0][1], SHIP_REMINDERS[-1][1],
+         SHIP_SNOOZE_EVENT, SHIP_REMINDERS[0][0], SHIP_REMINDER_MAX_AGE_DAYS),
     )
     rows = [dict(r) for r in cursor.fetchall() or []]
     stats = {"sent": 0, "failed": 0, "candidates": 0, "preview": []}
     for row in rows:
-        reminder = pick_ship_reminder(row)
+        reminder = next_ship_reminder(row)
         if not reminder or int(row.get("pick_count") or 0) < 1:
             continue
         stats["candidates"] += 1
@@ -832,6 +872,32 @@ def send_lock_reminders(cursor, conn, *, dry_run: bool = False, send_fn: Callabl
         conn.commit()
         stats["sent" if res.get("success") else "failed"] += 1
     return stats
+
+
+def _aware(ts):
+    if ts is None:
+        return None
+    return ts.replace(tzinfo=timezone.utc) if getattr(ts, "tzinfo", None) is None else ts
+
+
+def next_ship_reminder(row: dict, now: Optional[datetime] = None) -> Optional[int]:
+    """The latest step whose day has come and that wasn't sent, at least 2 days after the previous one and never
+    while the brand asked us to wait. A roster that went quiet catches up to its latest due step, not all of them."""
+    now = now or datetime.now(timezone.utc)
+    snoozed = _aware(row.get("snoozed_until"))
+    if snoozed and snoozed > now:
+        return None
+    last = _aware(row.get("last_at"))
+    if last and (now - last).total_seconds() < SHIP_REMINDER_MIN_GAP_DAYS * 86400:
+        return None
+    sent = {int(t) for t in (row.get("sent_triggers") or []) if t is not None}
+    age = float(row.get("age_days") or 0)
+    due = [i + 1 for i, (day, trig, _k) in enumerate(SHIP_REMINDERS) if age >= day and trig not in sent]
+    if not due:
+        return None
+    latest_sent = max([i + 1 for i, (_d, trig, _k) in enumerate(SHIP_REMINDERS) if trig in sent] or [0])
+    pick = due[-1]
+    return pick if pick > latest_sent else None
 
 
 def pick_ship_reminder(row: dict, schedule=SHIP_REMINDERS) -> Optional[int]:
@@ -1101,6 +1167,7 @@ def process_roster_delivery(*, dry_run: bool = False, send_fn: Callable = None) 
         out["ship_reminders"] = send_ship_reminders(cursor, conn, dry_run=dry_run, send_fn=send_fn)
         out["lock_reminders"] = send_lock_reminders(cursor, conn, dry_run=dry_run, send_fn=send_fn)
         out["content_reminders"] = send_content_reminders(cursor, conn, dry_run=dry_run, send_fn=send_fn)
+        out["arrival_checks"] = send_arrival_checks(cursor, conn, dry_run=dry_run, send_fn=send_fn)
         if dry_run:
             conn.rollback()
         return out
@@ -1111,3 +1178,152 @@ def process_roster_delivery(*, dry_run: bool = False, send_fn: Callable = None) 
         return out
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Unsticking locked rosters: brand snooze, creators confirming their box arrived
+# ---------------------------------------------------------------------------
+
+
+def _api_base() -> str:
+    import os
+    return (os.getenv("BACKEND_URL") or "https://api.newcollab.co").rstrip("/")
+
+
+def snooze_ship_reminders(cursor, campaign: dict, days: int = 7) -> datetime:
+    """'Not yet: remind me next week' from a ship reminder. No reminder goes out until then."""
+    until = datetime.now(timezone.utc) + timedelta(days=max(1, min(int(days or 7), 21)))
+    cursor.execute(
+        "INSERT INTO brand_pr_events (brand_id, event, source, meta) VALUES (%s, %s, 'email', %s)",
+        (campaign["brand_id"], SHIP_SNOOZE_EVENT, Json({"campaign_id": campaign["id"], "until": until.isoformat()})),
+    )
+    return until
+
+
+def _arrival_secret() -> str:
+    import os
+    return os.getenv("JWT_SECRET_KEY") or os.getenv("SECRET_KEY") or ""
+
+
+def arrival_token(application_id: int, creator_id: int) -> str:
+    import base64
+    import hashlib
+    import hmac
+    secret = _arrival_secret()
+    if not secret:
+        return ""
+    body = base64.urlsafe_b64encode(f"{int(application_id)}:{int(creator_id)}".encode()).decode().rstrip("=")
+    sig = hmac.new(secret.encode(), f"arrived:{body}".encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{body}.{sig}"
+
+
+def read_arrival_token(token: str) -> Optional[tuple]:
+    import base64
+    import hashlib
+    import hmac
+    try:
+        body, sig = (token or "").split(".", 1)
+        secret = _arrival_secret()
+        want = hmac.new(secret.encode(), f"arrived:{body}".encode(), hashlib.sha256).hexdigest()[:32]
+        if not secret or not hmac.compare_digest(want, sig):
+            return None
+        app_id, creator_id = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)).decode().split(":")
+        return int(app_id), int(creator_id)
+    except Exception:
+        return None
+
+
+def build_arrival_check_email(row: dict, n: int) -> dict:
+    brand = safe_brand_name(row.get("brand_name"))
+    first = _first_name(row.get("first_name"))
+    token = arrival_token(row["id"], row["creator_id"])
+    yes = f"{_api_base()}/api/brand-pr/arrived?t={token}"
+    subject = f"Did your {brand} box arrive?" if n == 1 else f"Still waiting on your {brand} box?"
+    inner = "".join([
+        _p(f"Hi {escape(first)},"),
+        _p(f"You were picked for {escape(brand)}'s gifted roster. Has your box arrived?"
+           if n == 1 else f"Checking in on your {escape(brand)} box: did it show up?"),
+        _p("If it did, tap below so we can start your content checklist (and let the brand know). "
+           "If it hasn't, no action needed: we're following up with them."),
+    ])
+    return {"subject": subject,
+            "html": _wrap(subject, f"Tell us if your {brand} PR box arrived.", inner, yes, "Yes, it arrived",
+                          "You're getting this because a brand picked you for a gifted roster on Newcollab."),
+            "url": yes}
+
+
+def send_arrival_checks(cursor, conn, *, dry_run: bool = False, send_fn: Callable = None) -> dict:
+    """Day 7 and 14 after the roster locked, picked creators whose box isn't marked shipped are asked if it came.
+    A brand that shipped but never clicked 'shipped' no longer leaves the roster stuck."""
+    send = send_fn or _default_send
+    cursor.execute(
+        """
+        SELECT a.id, a.creator_id, a.brand_id, camp.id AS campaign_id, b.brand_name, u.email, u.first_name,
+               EXTRACT(EPOCH FROM (NOW() - camp.locked_at)) / 86400.0 AS age_days,
+               (SELECT MAX((e.meta->>'n')::int) FROM brand_pr_events e
+                 WHERE e.event = %s AND e.meta->>'application_id' = a.id::text) AS last_sent
+        FROM brand_pr_applications a
+        JOIN brand_pr_campaigns camp ON camp.id = a.campaign_id
+        JOIN pr_brands b ON b.id = a.brand_id
+        JOIN creators cr ON cr.id = a.creator_id
+        JOIN users u ON u.id = cr.user_id
+        WHERE a.status = 'ships' AND a.shipped_at IS NULL AND camp.status = 'locked'
+          AND camp.locked_at < NOW() - make_interval(days => %s)
+          AND camp.locked_at > NOW() - make_interval(days => %s)
+          AND COALESCE(TRIM(u.email), '') <> '' AND u.unsubscribed_at IS NULL
+        ORDER BY camp.locked_at
+        """,
+        (ARRIVAL_CHECK_EVENT, ARRIVAL_CHECKS[0], SHIP_REMINDER_MAX_AGE_DAYS),
+    )
+    rows = [dict(r) for r in cursor.fetchall() or []]
+    stats = {"sent": 0, "failed": 0, "preview": []}
+    for row in rows:
+        age, last = float(row.get("age_days") or 0), int(row.get("last_sent") or 0)
+        n = max([i + 1 for i, day in enumerate(ARRIVAL_CHECKS) if age >= day] or [0])
+        if n <= last or not n:
+            continue
+        if dry_run:
+            stats["preview"].append({"application_id": row["id"], "n": n})
+            continue
+        cursor.execute(
+            "INSERT INTO brand_pr_events (creator_id, brand_id, event, source, meta) VALUES (%s, %s, %s, 'cron', %s)",
+            (row["creator_id"], row["brand_id"], ARRIVAL_CHECK_EVENT, Json({"application_id": row["id"], "n": n})),
+        )
+        conn.commit()
+        payload = build_arrival_check_email(row, n)
+        res = send(row["email"], payload["subject"], payload["html"], f"roster_arrival_check_{n}")
+        stats["sent" if res.get("success") else "failed"] += 1
+    return stats
+
+
+def confirm_arrival(cursor, application_id: int, creator_id: int) -> dict:
+    """The creator says their box arrived: count it as shipped (the brand forgot to click), start the content clock,
+    and close the roster when everyone has theirs. Returns {"ok", "brand_name", "all_shipped", "already"}."""
+    cursor.execute(
+        """SELECT a.id, a.brand_id, a.campaign_id, a.shipped_at, b.brand_name, camp.status AS campaign_status
+           FROM brand_pr_applications a JOIN pr_brands b ON b.id = a.brand_id
+           JOIN brand_pr_campaigns camp ON camp.id = a.campaign_id
+           WHERE a.id = %s AND a.creator_id = %s AND a.status = 'ships'""",
+        (application_id, creator_id),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return {"ok": False}
+    row = dict(row)
+    if row.get("shipped_at"):
+        return {"ok": True, "already": True, "brand_name": row["brand_name"], "all_shipped": False}
+    cursor.execute("UPDATE brand_pr_applications SET shipped_at = NOW(), updated_at = NOW() WHERE id = %s",
+                   (application_id,))
+    cursor.execute(
+        "INSERT INTO brand_pr_events (creator_id, brand_id, event, source, meta) VALUES (%s, %s, %s, 'email', %s)",
+        (creator_id, row["brand_id"], ARRIVAL_CONFIRMED_EVENT,
+         Json({"application_id": application_id, "campaign_id": row["campaign_id"]})),
+    )
+    cursor.execute("""SELECT COUNT(*) AS n FROM brand_pr_applications
+                      WHERE campaign_id = %s AND status = 'ships' AND shipped_at IS NULL""", (row["campaign_id"],))
+    left = cursor.fetchone()
+    all_shipped = int((left["n"] if isinstance(left, dict) else left[0]) or 0) == 0
+    if all_shipped:
+        cursor.execute("""UPDATE brand_pr_campaigns SET status = 'shipped', shipped_at = COALESCE(shipped_at, NOW()),
+                          updated_at = NOW() WHERE id = %s AND status = 'locked'""", (row["campaign_id"],))
+    return {"ok": True, "already": False, "brand_name": row["brand_name"], "all_shipped": all_shipped}
