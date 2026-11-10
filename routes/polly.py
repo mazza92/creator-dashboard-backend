@@ -2476,7 +2476,9 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
                     from services.kit_view_tracking import track_kit_links
                     from services.polly import drop_location_placeholder
                     item["body"] = drop_location_placeholder(item.get("body") or "")
-                    item["body"] = track_kit_links(item.get("body") or "", creator_id, item.get("brand_id"))
+                    from services.kit_guard import with_kit
+                    item["body"] = track_kit_links(with_kit(conn, creator_id, item.get("body") or ""), creator_id,
+                                                   item.get("brand_id"))
                     sent_ids = send_email(conn, creator_id, item["email"], item.get("subject") or "",
                                           item.get("body") or "", from_name=from_name)
                     item["sent_at"] = utc_iso_now()

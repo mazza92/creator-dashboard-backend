@@ -571,8 +571,13 @@ def finalize_for(conn, creator_id: int, brand_id: Any, pitch: Optional[Dict[str,
         stats = creator_stats(conn, creator_id)
         if posts:
             stats = {**stats, "top_posts": [p for p in posts if str(p).startswith("http")][:2]}
-        return finalize_pitch(pitch, brand=brand, notes=notes, first_name=first_name, stats=stats,
-                              seed=f"{creator_id}:{brand_id}" + (f":{angle}" if angle else ""), llm=llm)
+        out = finalize_pitch(pitch, brand=brand, notes=notes, first_name=first_name, stats=stats,
+                             seed=f"{creator_id}:{brand_id}" + (f":{angle}" if angle else ""), llm=llm)
+        # Drafts carry the kit too, so a pitch the creator copies and sends herself is tracked as well.
+        if isinstance(out, dict) and out.get("body"):
+            from services.kit_guard import with_kit
+            out = {**out, "body": with_kit(conn, creator_id, out["body"])}
+        return out
     except Exception as err:
         print(f"[pitch_writer] finalize skipped: {err}")
         try:
