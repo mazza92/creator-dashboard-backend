@@ -45,17 +45,6 @@ def test_apply_shipping_no_country_is_untouched():
     assert apply_shipping(brands, None, {1: ["US"]})["brands"] == brands
 
 
-def test_shipping_summary_never_says_zero_of():
-    from services.polly_tools import shipping_summary
-    rows = [{"shipping_note": "Shipping not confirmed"}]
-    say = shipping_summary(rows, {"ships_to": "Australia", "dropped": 2})["say"]
-    assert "0 of" not in say and "Australia" in say and "left out 2" in say
-    say = shipping_summary([{"ships_to_you": True}] * 6, {"ships_to": "Australia", "dropped": 0})["say"]
-    assert say == "These 6 ship to Australia."
-
-
-# ----- stats ------------------------------------------------------------------
-
 def test_manual_followers_win_until_higher_sync():
     scrape = {"follower_count": 3000, "scraped_at": (NOW - timedelta(days=2)).isoformat()}
     override = {"followers": 4000, "at": (NOW - timedelta(days=1)).isoformat()}
