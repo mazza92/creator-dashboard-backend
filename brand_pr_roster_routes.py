@@ -837,6 +837,13 @@ def _engagement(row):
 
 
 def _creator_country(row, addr):
+    """(display name, lowercase ISO code). The country the creator picked (creators.country) wins; the shipping
+    address and the old users.country only fill in for creators who haven't picked one."""
+    from services.creator_country import OTHER, is_served, name_for
+
+    picked = str(row.get("creator_country") or "").strip().upper()
+    if picked and picked != OTHER and is_served(picked):
+        return name_for(picked), picked.lower()
     addr = addr or {}
     name = (addr.get("country") or row.get("user_country") or "").strip()
     return name, _country_code(name)
@@ -1248,7 +1255,8 @@ def _fetch_applications(cursor, campaign, *, include_hidden=False):
                   )
             ) AS portfolio_posts,
             u.first_name,
-            u.country AS user_country
+            u.country AS user_country,
+            c.country AS creator_country
         FROM brand_pr_applications a
         JOIN creators c ON c.id = a.creator_id
         JOIN users u ON u.id = c.user_id

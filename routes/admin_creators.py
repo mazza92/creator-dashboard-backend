@@ -249,6 +249,7 @@ def _approval_snapshot(cursor):
 def _enrich_review_row(row):
     row = dict(row)
     row['regions'] = _parse_json_maybe(row.get('regions'), [])
+    row.update(_country_fields(row))
     row['platforms'] = _parse_json_maybe(row.get('platforms'), [])
     row['social_links'] = _parse_json_maybe(row.get('social_links'), [])
     niches = row.get('creator_niches')
@@ -576,6 +577,24 @@ def _niche_needles(raw):
     return needles
 
 
+def _country_fields(row):
+    """country_code / country_name / country_flag / country_other from the creator's picked country."""
+    from services.creator_country import response_fields
+    return response_fields(row.get('country'), row.get('country_other'))
+
+
+def _country_codes(raw):
+    """?country=FR,GB,OTHER,NONE -> codes. NONE means 'no country picked yet'."""
+    from services.creator_country import OTHER, normalize_code
+    out = []
+    for item in _split_csv(raw):
+        token = item.strip().upper()
+        code = token if token in ('NONE', OTHER) else normalize_code(item)
+        if code and code not in out:
+            out.append(code)
+    return out
+
+
 def _region_needles(raw):
     needles = []
     seen = set()
@@ -685,6 +704,7 @@ def _build_where_clause(args=None):
     q = normalize_search_token(_arg_get(src, 'q'))
     niche = _arg_get(src, 'niche')
     region = _arg_get(src, 'region')
+    country = _arg_get(src, 'country')
     tier = _arg_get(src, 'tier')
     platform = _arg_get(src, 'platform').lower()
     verified_raw = _arg_get(src, 'verified').lower()
@@ -720,7 +740,19 @@ def _build_where_clause(args=None):
             params.append(f"%{_safe_like_fragment(needle).lower()}%")
         where_clauses.append(f"({' OR '.join(niche_parts)})")
 
-    region_needles = _region_needles(region)
+    country_codes = _country_codes(country)
+    if country_codes:
+        country_parts = []
+        picked = [c for c in country_codes if c != 'NONE']
+        if picked:
+            country_parts.append("UPPER(COALESCE(c.country, '')) = ANY(%s)")
+            params.append(picked)
+        if 'NONE' in country_codes:
+            country_parts.append("NULLIF(c.country, '') IS NULL")
+        where_clauses.append(f"({' OR '.join(country_parts)})")
+
+    # Legacy ?region= links (kept for old bookmarks; the admin UI filters by country).
+    region_needles = _region_needles(region) if not country_codes else []
     if region_needles:
         region_parts = []
         for needle in region_needles:
@@ -973,6 +1005,8 @@ def list_creators():
                 c.social_links,
                 c.niche,
                 c.regions,
+                c.country,
+                c.country_other,
                 COALESCE(c.subscription_tier, 'free') AS tier,
                 {UNLOCK_STATS_SQL},
                 COALESCE(c.brands_saved_count, 0) AS brands_saved,
@@ -1014,6 +1048,7 @@ def list_creators():
 
         for c in creators:
             c['regions'] = _parse_json_maybe(c.get('regions'), [])
+            c.update(_country_fields(c))
             c['platforms'] = _parse_json_maybe(c.get('platforms'), [])
             c['social_links'] = _parse_json_maybe(c.get('social_links'), {})
 
@@ -1063,6 +1098,8 @@ def get_creator_details(creator_id):
                 c.social_links,
                 c.niche,
                 c.regions,
+                c.country,
+                c.country_other,
                 c.primary_age_range,
                 c.top_locations,
                 COALESCE(c.subscription_tier, 'free') AS tier,
@@ -1140,6 +1177,8 @@ REVIEW_QUEUE_SELECT = """
                 c.niche,
                 c.creator_niches,
                 c.regions,
+                c.country,
+                c.country_other,
                 c.primary_age_range,
                 c.total_likes,
                 c.total_posts,
