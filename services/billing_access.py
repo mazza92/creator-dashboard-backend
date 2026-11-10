@@ -115,6 +115,21 @@ def mark_past_due(conn, creator_id: int, now: Optional[datetime] = None) -> date
     return _aware(since) if isinstance(since, datetime) else now
 
 
+def _unpaid_since(sub: Any, now: Optional[datetime] = None) -> datetime:
+    """When the unpaid period started (the renewal that failed), so a creator past due for weeks before this
+    code existed doesn't get a fresh grace period."""
+    now = now or _now()
+    ts = _get(sub, "current_period_start")
+    if not ts:
+        items = _get(_get(sub, "items") or {}, "data") or []
+        ts = _get(items[0], "current_period_start") if items else None
+    try:
+        start = datetime.fromtimestamp(int(ts), tz=timezone.utc) if ts else None
+    except (TypeError, ValueError):
+        start = None
+    return min(start, now) if start else now
+
+
 def decide_past_due(paid_before: bool, past_due_since: Optional[datetime], now: Optional[datetime] = None) -> str:
     """'lock' or 'grace' for a subscription Stripe reports as past_due."""
     if not paid_before:
@@ -157,7 +172,7 @@ def apply_status(conn, stripe_client, creator: Dict[str, Any], sub: Any, now: Op
             return "restored" if not is_pro else "synced"
         return "ok"
     if status == "past_due":
-        since = creator.get("past_due_since") or mark_past_due(conn, cid, now)
+        since = creator.get("past_due_since") or mark_past_due(conn, cid, _unpaid_since(sub, now))
         if decide_past_due(has_paid(stripe_client, _get(sub, "id")), since, now) == "lock":
             if is_pro:
                 lock(conn, cid, "payment_failed", "past_due")
