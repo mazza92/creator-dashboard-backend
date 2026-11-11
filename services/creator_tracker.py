@@ -640,6 +640,14 @@ def mark_milestone(conn, creator_id: int, key: str) -> None:
     conn.commit()
 
 
+def milestone_at(conn, creator_id: int, key: str) -> Optional[datetime]:
+    ensure_tables(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT at FROM creator_milestones WHERE creator_id = %s AND key = %s", (creator_id, key))
+    row = cur.fetchone()
+    return _aware(row[0]) if row else None
+
+
 def milestones(conn, creator_id: int) -> set:
     ensure_tables(conn)
     cur = conn.cursor()
@@ -661,6 +669,10 @@ def in_first_run(conn, creator_id: int, notes: Optional[Dict[str, Any]] = None) 
     """Until the creator picks how to start (or sends a pitch), Polly shows the welcome instead of notes."""
     try:
         if (notes or {}).get("first_run_done"):
+            return False
+        # Stored as a milestone (not only in thread notes): the pitch-writing turn that starts right after the
+        # choice saves the thread with its own copy of the notes, which would drop a notes-only flag.
+        if "first_run_done" in milestones(conn, creator_id):
             return False
         return not has_pitched(conn, creator_id)
     except Exception:
