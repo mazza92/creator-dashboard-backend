@@ -1887,24 +1887,45 @@ def apply_task_chip(
         return {
             "ok": True,
             "route": "chat",
-            "say": f"Nice. On **{name}** — interested, they asked a question, or they passed?",
+            "say": f"Nice. What did **{name}** say: a gifted offer, a paid offer, a question, or a pass?",
             "chips": reply_kind_chips({"id": brand_id, "name": name}, task_id=task_id),
             "brand_id": brand_id,
             "brand_name": name,
         }
-    if chip_id == "checkin_interested":
+    if chip_id in ("checkin_interested", "checkin_gifted"):
         result = apply_lifecycle_intent(
             conn, creator_id,
             {"intent": "brand_replied_interested", "brand_id": brand_id, "brand": name, "confidence": 1},
             {"id": brand_id, "name": name},
         )
+        _tracker_deal(conn, creator_id, brand_id, name, "gifted_offer")
         return {"ok": True, "route": "chat", "say": result.get("say_hint"), "chips": result.get("chips"), "brand_id": brand_id, "brand_name": name}
+    if chip_id == "checkin_paid":
+        apply_lifecycle_intent(
+            conn, creator_id,
+            {"intent": "brand_replied_interested", "brand_id": brand_id, "brand": name, "confidence": 1},
+            {"id": brand_id, "name": name},
+        )
+        _tracker_deal(conn, creator_id, brand_id, name, "paid_offer")
+        return {
+            "ok": True, "route": "chat",
+            "say": (f"A paid offer from **{name}**, that's the goal. Add what they offered on your Tracker so it "
+                    "counts toward your month, and I'll help you answer with your rate."),
+            "chips": [
+                {"id": "open_tracker_deal", "label": "Add the amount", "action": "link", "brand_id": brand_id,
+                 "brand_name": name, "href": f"/creator/dashboard/tracker?brand={brand_id}&step=amount"},
+                {"id": "draft_followup", "label": "Help me answer", "action": "task_act", "brand_id": brand_id,
+                 "brand_name": name},
+            ],
+            "brand_id": brand_id, "brand_name": name,
+        }
     if chip_id == "checkin_question":
         result = apply_lifecycle_intent(
             conn, creator_id,
             {"intent": "brand_replied_question", "brand_id": brand_id, "brand": name, "confidence": 1},
             {"id": brand_id, "name": name},
         )
+        _tracker_deal(conn, creator_id, brand_id, name, "question")
         return {"ok": True, "route": "chat", "say": result.get("say_hint"), "chips": result.get("chips"), "brand_id": brand_id, "brand_name": name}
     if chip_id in ("checkin_passed",):
         result = apply_lifecycle_intent(
@@ -1912,6 +1933,7 @@ def apply_task_chip(
             {"intent": "brand_replied_rejected", "brand_id": brand_id, "brand": name, "confidence": 1},
             {"id": brand_id, "name": name},
         )
+        _tracker_deal(conn, creator_id, brand_id, name, "closed", reason="They passed")
         return {"ok": True, "route": "chat", "say": result.get("say_hint"), "chips": result.get("chips"), "brand_id": brand_id, "brand_name": name}
     if chip_id == "checkin_bounced":
         result = apply_lifecycle_intent(
@@ -2295,3 +2317,18 @@ def morning_brief(context: Optional[Dict], first_name: Optional[str] = None) -> 
         "watched": watched[:5],
         "chips": chips,
     }
+
+
+def _tracker_deal(conn, creator_id: int, brand_id, name: str, action: str, reason: Optional[str] = None) -> None:
+    """Check-in answers move the brand on the creator's Tracker. The lifecycle intent already logged the reply event."""
+    if not brand_id:
+        return
+    try:
+        from services.creator_tracker import record_deal
+        record_deal(conn, creator_id, int(brand_id), action, brand_name=name, reason=reason, log_event=False)
+    except Exception as err:
+        print(f"[tracker] check-in deal skipped creator={creator_id} brand={brand_id}: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass

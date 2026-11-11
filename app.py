@@ -57,6 +57,8 @@ from pr_crm_routes import pr_crm
 from routes.polly import polly_bp
 from routes.signup_attribution import signup_attribution_bp
 from routes.polly_autopilot import autopilot_bp
+from routes.creator_tracker import tracker_bp
+from routes.daily_brief import brief_bp
 from routes.integrations import integrations_bp, wellknown_bp
 from brand_apply_routes import brand_apply_bp
 from brand_pr_roster_routes import brand_pr_roster_bp, admin_brand_pr_bp
@@ -361,6 +363,8 @@ app.register_blueprint(pr_crm)
 app.register_blueprint(polly_bp)
 app.register_blueprint(signup_attribution_bp)
 app.register_blueprint(autopilot_bp)
+app.register_blueprint(tracker_bp)
+app.register_blueprint(brief_bp)
 app.register_blueprint(integrations_bp)
 app.register_blueprint(brand_scan_bp)
 app.register_blueprint(brand_workspace_bp)
@@ -395,6 +399,8 @@ from services.admin_auth import admin_auth_bp
 app.register_blueprint(admin_auth_bp)
 app.register_blueprint(admin_pr_hunter_bp)
 app.register_blueprint(admin_brands_bp)
+from routes.admin_brand_quality import admin_brand_quality_bp; app.register_blueprint(admin_brand_quality_bp)
+from routes.hotlist import hotlist_bp; app.register_blueprint(hotlist_bp)
 app.register_blueprint(admin_reports_bp)
 app.register_blueprint(admin_email_bp)
 app.register_blueprint(brand_pipeline_bp)

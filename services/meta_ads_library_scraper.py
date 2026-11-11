@@ -231,6 +231,81 @@ _EXTRACT_ADS_JS = """() => {
 }"""
 
 
+# Every Ad Library card on the page (one per "Library ID"), for the per-brand ad signal (services.meta_ads_signal):
+# how many ads, since when, the ad text, video or image. Climbs from the "Library ID" label to the largest
+# ancestor that still holds only that one card.
+_EXTRACT_AD_CARDS_JS = """() => {
+    const out = [];
+    const seen = new Set();
+    const count = (t) => ((t || '').match(/Library ID/g) || []).length;
+    const labels = [...document.querySelectorAll('span, div')].filter(
+        (n) => n.childElementCount === 0 && /^Library ID:?\\s*\\d+/.test((n.textContent || '').trim()));
+    labels.forEach((label) => {
+        const m = (label.textContent || '').match(/(\\d{6,})/);
+        if (!m || seen.has(m[1])) return;
+        seen.add(m[1]);
+        let card = label;
+        while (card.parentElement && count(card.parentElement.innerText) === 1) card = card.parentElement;
+        const text = (card.innerText || '').trim();
+        let landing = null, page = null, name = null;
+        for (const a of card.querySelectorAll('a[href]')) {
+            const href = a.getAttribute('href') || '';
+            if (!landing && (href.includes('l.php') || (href.startsWith('http') && !href.includes('facebook.com')
+                    && !href.includes('instagram.com')))) landing = href;
+            if (!page && href.includes('facebook.com/') && !href.includes('/ads/library')) {
+                page = href; name = (a.innerText || '').trim() || null;
+            }
+        }
+        const started = (text.match(/Started running on[^\\n]*/) || [null])[0];
+        out.push({library_id: m[1], started_text: started, text: text.slice(0, 900), landing_url: landing,
+                  advertiser_page: page, advertiser_name: name, has_video: !!card.querySelector('video')});
+    });
+    const total = ((document.body.innerText || '').match(/~?\\s*([\\d,.]+K?)\\s+results?/i) || [null, null])[1];
+    return {cards: out, results: total};
+}"""
+
+
+def parse_results_count(raw: Optional[str]) -> Optional[int]:
+    """'~1,200' / '1.2K' / '37' from the Ad Library header -> int."""
+    text = str(raw or "").strip().replace(",", "")
+    if not text:
+        return None
+    try:
+        if text.upper().endswith("K"):
+            return int(float(text[:-1]) * 1000)
+        return int(float(text))
+    except ValueError:
+        return None
+
+
+def extract_ad_cards(page) -> Dict[str, Any]:
+    """{'cards': [...raw cards], 'results': int|None}. Never raises: the signal is a bonus to discovery."""
+    try:
+        got = page.evaluate(_EXTRACT_AD_CARDS_JS) or {}
+    except Exception as err:
+        print(f"[MetaAds] card extraction skipped: {err}")
+        return {"cards": [], "results": None}
+    if not isinstance(got, dict):
+        return {"cards": [], "results": None}
+    return {"cards": list(got.get("cards") or []), "results": parse_results_count(got.get("results"))}
+
+
+def _attach_cards(ads_data: List[Dict], raw_cards: List[Dict]) -> None:
+    """Give each discovered domain the cards whose landing page is on that domain (same registrable domain)."""
+    if not raw_cards:
+        return
+    by_root: Dict[str, List[Dict]] = {}
+    for card in raw_cards:
+        real = unwrap_landing_url(card.get("landing_url") or "") if card.get("landing_url") else None
+        if not real:
+            continue
+        by_root.setdefault(registrable_domain(_host_of(real)), []).append(card)
+    for ad in ads_data:
+        root = registrable_domain(ad.get("shopify_domain") or "")
+        if root in by_root:
+            ad["ad_cards"] = by_root[root]
+
+
 def _proxy_config() -> Optional[Dict[str, str]]:
     """Playwright proxy dict from META_ADS_PROXY (falls back to IG_PROXY)."""
     raw = (os.getenv("META_ADS_PROXY") or os.getenv("IG_PROXY") or "").strip().strip('"').strip("'")
@@ -465,8 +540,59 @@ def _discover_on_page(
         known_hosts=known_hosts,
         known_roots=known_roots,
     )
+    _attach_cards(ads_data, extract_ad_cards(page)["cards"])
     print(f"[MetaAds] {len(ads_data)} unique DTC-looking domains for '{keyword}'")
     return ads_data
+
+
+def _load_library(page, url: str, max_scroll: int) -> Dict[str, Any]:
+    page.goto(url, wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(4000)
+    for _ in range(max_scroll):
+        page.mouse.wheel(0, 2800)
+        page.wait_for_timeout(random.uniform(1200, 2000))
+    return extract_ad_cards(page)
+
+
+def fetch_brand_ads(
+    page,
+    brand_name: str,
+    domain: str,
+    *,
+    page_id: Optional[str] = None,
+    country: str = "ALL",
+    max_scroll: int = 4,
+) -> Dict[str, Any]:
+    """Live ads of one known brand (backfill). Search the brand name, keep cards that land on the brand's own
+    domain (so a same-named advertiser never counts), then open that advertiser's page view for the full list.
+    Returns {'cards': [...], 'results': int|None, 'page_id': str|None, 'query': str}."""
+    root = registrable_domain(domain or "")
+    query = brand_name or root
+    if not page_id:
+        found = _load_library(page, _ads_library_url(query, country), max_scroll)
+        own = []
+        for card in found["cards"]:
+            real = unwrap_landing_url(card.get("landing_url") or "") if card.get("landing_url") else None
+            if real and registrable_domain(_host_of(real)) == root:
+                own.append(card)
+        if not own and root and root != query:
+            found = _load_library(page, _ads_library_url(root, country), max_scroll)
+            own = [c for c in found["cards"]
+                   if c.get("landing_url") and registrable_domain(_host_of(unwrap_landing_url(c["landing_url"]) or "")) == root]
+        from services.meta_ads_signal import page_id_from_url
+
+        page_id = next((page_id_from_url(c.get("advertiser_page")) for c in own
+                        if page_id_from_url(c.get("advertiser_page"))), None)
+        if not page_id:
+            # Keyword results only: the result counter there counts everyone's ads, not this brand's.
+            return {"cards": own, "results": None, "page_id": None, "query": query}
+    url = (
+        "https://www.facebook.com/ads/library/"
+        f"?active_status=active&ad_type=all&country={country}&view_all_page_id={page_id}"
+        "&search_type=page&media_type=all"
+    )
+    got = _load_library(page, url, max_scroll)
+    return {"cards": got["cards"], "results": got["results"], "page_id": page_id, "query": query}
 
 
 def discover_ads(
@@ -672,6 +798,8 @@ def enrich_shopify_brand(ad_data: Dict, *, verify_shopify: bool = True) -> Optio
         "creator_program_url": None,
         "creator_platform": None,
         "ad_creative_sample": ad_data.get("ad_creative_text"),
+        # Ad Library cards seen for this domain: services.meta_ads_signal turns them into the brand's ad signal.
+        "ad_cards": ad_data.get("ad_cards") or [],
         "micro_friendly": False,
         "qualified": False,
     }

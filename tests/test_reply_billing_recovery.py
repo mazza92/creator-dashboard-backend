@@ -68,8 +68,8 @@ class OneTapEmailTests(unittest.TestCase):
         mail = nudge_email("Ana", {"key": "follow_up_d4", "brand_name": "Glow Co", "brand_id": 9,
                                    "task_id": 7, "message": "Day 4 on **Glow Co**.", "chips": []}, creator_id=3)
         html = mail["html"]
-        self.assertEqual(html.count("https://api.example/api/polly/checkin?t="), 6)
-        for label in ("They&#x27;re interested", "They said no", "No reply yet", "Email bounced", "I never sent it"):
+        self.assertEqual(html.count("https://api.example/api/polly/checkin?t="), 7)  # gifted, paid, passed, quiet + question, bounced, not sent
+        for label in ("Gifted offer", "Paid offer", "They said no", "No reply yet", "Email bounced", "I never sent it"):
             self.assertIn(label, html)
         self.assertIn("no login", html)
 
