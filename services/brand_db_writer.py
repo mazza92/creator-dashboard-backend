@@ -87,6 +87,22 @@ def build_outreach_note(brand: Dict, *, batch_date: str) -> str:
     return " ".join(bits)
 
 
+def _save_ad_signal(cursor, conn, brand_id: int, brand: Dict) -> None:
+    """Live-ad count, dates, samples and UGC style seen while discovering (services.meta_ads_signal).
+    Its own savepoint: a bad signal never costs the brand insert."""
+    try:
+        from services.meta_ads_signal import save_from_scrape
+
+        cursor.execute("SAVEPOINT ad_signal")
+        saved = save_from_scrape(conn, brand_id, brand)
+        cursor.execute("RELEASE SAVEPOINT ad_signal")
+        if saved:
+            print(f"[BrandDB]   ad signal: {saved.get('active_ad_count')} live ads, ugc={saved.get('ugc_style')}")
+    except Exception as err:
+        cursor.execute("ROLLBACK TO SAVEPOINT ad_signal")
+        print(f"[BrandDB]   ad signal skipped for {brand_id}: {err}")
+
+
 def insert_brands_to_pr_brands(
     brands: List[Dict],
     *,
@@ -138,6 +154,17 @@ def insert_brands_to_pr_brands(
             f"[BrandDB] Loaded {len(existing_domains)} domains / "
             f"{len(existing_names)} names for dedupe"
         )
+
+        signals_ready = False
+        if not dry_run:
+            try:
+                from services.meta_ads_signal import ensure_table
+
+                ensure_table(conn)
+                signals_ready = True
+            except Exception as err:
+                conn.rollback()
+                print(f"[BrandDB] ad signal table unavailable, brands insert without it: {err}")
 
         for brand in brands:
             try:
@@ -215,6 +242,8 @@ def insert_brands_to_pr_brands(
                     cursor.execute("RELEASE SAVEPOINT brand_insert")
                     brand_id = result["id"] if result else None
                     print(f"[BrandDB] ✓ Inserted {brand_name} (ID: {brand_id})")
+                    if brand_id and signals_ready:
+                        _save_ad_signal(cursor, conn, brand_id, brand)
                     stats["inserted"] += 1
                     if domain:
                         existing_domains.add(domain)
