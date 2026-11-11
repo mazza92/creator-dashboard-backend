@@ -397,6 +397,8 @@ from services.admin_auth import admin_auth_bp
 app.register_blueprint(admin_auth_bp)
 app.register_blueprint(admin_pr_hunter_bp)
 app.register_blueprint(admin_brands_bp)
+from routes.admin_brand_quality import admin_brand_quality_bp; app.register_blueprint(admin_brand_quality_bp)
+from routes.hotlist import hotlist_bp; app.register_blueprint(hotlist_bp)
 app.register_blueprint(admin_reports_bp)
 app.register_blueprint(admin_email_bp)
 app.register_blueprint(brand_pipeline_bp)
