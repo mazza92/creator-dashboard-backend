@@ -9507,6 +9507,19 @@ def get_matched_brands_count():
     if not creator_id:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
+    # First run: the welcome shows the lined-up brands; no unread-style count before the creator does anything.
+    try:
+        from services.creator_tracker import in_first_run
+        from services.polly_memory import load_thread
+        _conn = get_db_connection()
+        try:
+            if in_first_run(_conn, creator_id, load_thread(_conn, creator_id).get('notes') or {}):
+                return jsonify({'success': True, 'count': 0, 'matched_total': 0, 'contacted': 0, 'first_run': True})
+        finally:
+            _conn.close()
+    except Exception as err:
+        print(f"[matched count] first-run check skipped: {err}")
+
     MATCHED_DISPLAY_CAP = 8
 
     try:

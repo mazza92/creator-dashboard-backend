@@ -15,6 +15,7 @@ from services.creator_tracker import (
     build_tracker,
     creator_profile,
     get_goal,
+    mark_milestone,
     needs_plan,
     plan_week,
     post_goal_plan,
@@ -67,6 +68,8 @@ def tracker():
     try:
         if needs_plan(conn, creator_id):
             _plan(conn, creator_id, creator)
+        if request.args.get("seen"):  # the Tracker page itself (not Polly's goal bar): checklist step 3
+            mark_milestone(conn, creator_id, "calendar_seen")
         return jsonify({"success": True, **build_tracker(conn, creator_id)})
     finally:
         conn.close()
@@ -167,3 +170,15 @@ def _jsonable(row):
     for k, v in (row or {}).items():
         out[k] = v.isoformat() if hasattr(v, "isoformat") else v
     return out
+
+
+@tracker_bp.route("/checklist/hide", methods=["POST"])
+def checklist_hide():
+    creator_id, conn, _creator = _auth()
+    if not creator_id:
+        return _unauthorized()
+    try:
+        mark_milestone(conn, creator_id, "checklist_hidden")
+        return jsonify({"success": True})
+    finally:
+        conn.close()

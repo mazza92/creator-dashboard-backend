@@ -107,6 +107,9 @@ def ensure_tables(conn) -> None:
         offer TEXT NOT NULL DEFAULT 'gifted', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         PRIMARY KEY (creator_id, brand_id))""")
     cur.execute("ALTER TABLE creator_goals ADD COLUMN IF NOT EXISTS planned_at TIMESTAMPTZ")
+    cur.execute("""CREATE TABLE IF NOT EXISTS creator_milestones (
+        creator_id INTEGER NOT NULL, key TEXT NOT NULL, at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (creator_id, key))""")
     conn.commit()
     _READY = True
 
@@ -625,6 +628,98 @@ def planned_offer(conn, creator_id: int, brand_id: int) -> Optional[str]:
 TRACKER_HREF = "/creator/dashboard/tracker"
 
 
+# ---------------------------------------------------------------------------
+# First run: a new creator's first visit, and the getting-started checklist
+# ---------------------------------------------------------------------------
+
+def mark_milestone(conn, creator_id: int, key: str) -> None:
+    ensure_tables(conn)
+    cur = conn.cursor()
+    cur.execute("INSERT INTO creator_milestones (creator_id, key) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (creator_id, key))
+    conn.commit()
+
+
+def milestones(conn, creator_id: int) -> set:
+    ensure_tables(conn)
+    cur = conn.cursor()
+    cur.execute("SELECT key FROM creator_milestones WHERE creator_id = %s", (creator_id,))
+    return {r[0] for r in cur.fetchall()}
+
+
+def has_pitched(conn, creator_id: int) -> bool:
+    """Any pitch ever sent: from Autopilot / Send for me, or logged as sent by hand."""
+    cur = conn.cursor()
+    cur.execute("""SELECT EXISTS (SELECT 1 FROM polly_autopilot_queue WHERE creator_id = %(c)s AND sent_at IS NOT NULL)
+                   OR EXISTS (SELECT 1 FROM creator_pipeline WHERE creator_id = %(c)s
+                              AND (pitched_at IS NOT NULL OR send_confirmed IS TRUE))""", {"c": creator_id})
+    row = cur.fetchone()
+    return bool(row and row[0])
+
+
+def in_first_run(conn, creator_id: int, notes: Optional[Dict[str, Any]] = None) -> bool:
+    """Until the creator picks how to start (or sends a pitch), Polly shows the welcome instead of notes."""
+    try:
+        if (notes or {}).get("first_run_done"):
+            return False
+        return not has_pitched(conn, creator_id)
+    except Exception:
+        conn.rollback()
+        return False
+
+
+def first_run_payload(conn, creator_id: int, now: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
+    """The welcome: goal, this week's lined-up brands (teaser), and the plan in plain words."""
+    now = now or _now()
+    rows = [r for r in planned_rows(conn, creator_id) if r["planned_for"] >= now.date()]
+    if not rows:
+        return None
+    prof = creator_profile(conn, creator_id)
+    goal = get_goal(conn, creator_id)
+    cents = int(goal["amount_cents"]) if goal else next(
+        o["amount_cents"] for o in suggest_goal(prof)["options"] if o["id"] == "suggested")
+    rates = own_rates(conn, creator_id)
+    m = pitch_math(cents, prof["followers"], rates)
+    hot = _hot_today(conn, creator_id) or {}
+    hot_id = int(hot["brand_id"]) if hot.get("brand_id") else None
+    week_end = now.date() + timedelta(days=7)
+    this_week = [r for r in rows if r["planned_for"] < week_end]
+    ordered = sorted(rows, key=lambda r: (int(r["brand_id"]) != hot_id, r["planned_for"]))
+    brands = []
+    for r in ordered[:6]:
+        bid = int(r["brand_id"])
+        cat = (r.get("category") or "").replace("_", " ")
+        brands.append({
+            "brand_id": bid, "brand_name": r.get("brand_name") or "Brand", "logo": r.get("logo"),
+            "offer": r.get("offer") or "gifted", "hot": bid == hot_id,
+            "reason": hot.get("reason") if bid == hot_id else (f"Fits your {cat} content" if cat else "Fits your content"),
+        })
+    balance = free_balance(conn, creator_id, prof)
+    return {
+        "goal_cents": cents, "goal_set": bool(goal), "month": datetime(now.year, now.month, 1).strftime("%B"),
+        "per_week": weekly_target(cents, prof["followers"], rates),
+        "this_week": len(this_week), "planned_total": len(rows),
+        "reply_one_in": max(1, round(1 / m["reply_rate"])) if m["reply_rate"] else None,
+        "deal_one_in": max(1, round(1 / m["deal_rate"])) if m["deal_rate"] else None,
+        "niches": prof.get("niches") or [],
+        "brands": brands,
+        "free_left": None if balance is None else balance["left"],
+        "is_pro": bool(prof.get("is_pro")),
+    }
+
+
+def getting_started(conn, creator_id: int) -> Dict[str, Any]:
+    """Checklist under the goal bar: goal set, first pitch sent, calendar seen. Hidden once all three are done."""
+    done = milestones(conn, creator_id)
+    steps = {
+        "goal": bool(get_goal(conn, creator_id)),
+        "pitched": has_pitched(conn, creator_id),
+        "calendar": "calendar_seen" in done,
+    }
+    return {**steps, "done": sum(steps.values()), "total": len(steps),
+            "show": not all(steps.values()) and "checklist_hidden" not in done}
+
+
 def goal_plan_message(conn, creator_id: int, now: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
     """Polly's "here's your plan" message right after a goal is set: the goal in plain words, this week's
     brands day by day, and ONE next step that fits the creator (Autopilot on / paused / free credits)."""
@@ -699,11 +794,13 @@ def _money_text(cents: int) -> str:
 
 def post_goal_plan(conn, creator_id: int, now: Optional[datetime] = None) -> bool:
     """Append the plan to Polly's chat (replacing an earlier plan message from today, if the goal was edited)."""
+    from services.polly_memory import load_thread, save_thread
+    thread = load_thread(conn, creator_id)
+    if in_first_run(conn, creator_id, thread.get("notes") or {}):
+        return False  # the first-run welcome lays the plan out instead
     msg = goal_plan_message(conn, creator_id, now)
     if not msg:
         return False
-    from services.polly_memory import load_thread, save_thread
-    thread = load_thread(conn, creator_id)
     today = (now or _now()).date().isoformat()
     msg["at"] = (now or _now()).isoformat()
     messages = [x for x in (thread.get("messages") or [])
@@ -1034,6 +1131,7 @@ def build_tracker(conn, creator_id: int, now: Optional[datetime] = None) -> Dict
         "closed": closed,
         "calendar": calendar,
         "your_move_count": len(your_move),
+        "getting_started": getting_started(conn, creator_id),
         "hot": hot,
         "free": None if balance is None else {"pitches_left": left, "limit": balance["limit"],
                                            "locked": sum(1 for c in cards.values() if c.get("locked"))},

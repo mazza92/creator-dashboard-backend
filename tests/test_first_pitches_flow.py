@@ -108,7 +108,7 @@ class BatchSendFollowUpTests(unittest.TestCase):
     def test_free_creator_gets_the_keep_going_offer(self):
         data, _ = self._post(pro=False)
         self.assertTrue(data["sent_summary"]["pro_offer"])
-        self.assertEqual(data["task_chips"], [])
+        self.assertEqual([c["id"] for c in data["task_chips"]], ["open_tracker"])  # first send: see the calendar
 
     def test_free_pitches_left_means_pitch_more_not_pro(self):
         data, _ = self._post(pro=False, left=2)
