@@ -198,6 +198,34 @@ class TrackerDb(unittest.TestCase):
         out = ct.build_tracker(self.conn, 7)
         self.assertEqual([c["brand_id"] for c in out["closed"]], [3])
 
+    def test_next_offer_balances_the_month(self):
+        ct.set_goal(self.conn, 7, 100000, "custom", sync_autopilot=False)   # big goal: ~70%+ paid
+        self.assertEqual(ct.next_offer(self.conn, 7), "paid")
+        cur = self.conn.cursor()
+        for bid in (1, 2, 3):
+            cur.execute("""INSERT INTO polly_autopilot_queue (creator_id, brand_id, brand_name, to_email, subject, body,
+                               status, pitch_meta) VALUES (7, %s, 'b', 'a@b.co', 's', 'b', 'draft', '{"offer": "paid"}')""",
+                        (bid,))
+        self.conn.commit()
+        self.assertEqual(ct.next_offer(self.conn, 7), "gifted")   # 3 of 4 paid would pass the share
+
+    def test_cards_show_the_offer_and_paused_slots(self):
+        cur = self.conn.cursor()
+        cur.execute("""INSERT INTO polly_autopilot_queue (creator_id, brand_id, brand_name, to_email, subject, body,
+                           status, scheduled_for, pitch_meta)
+                       VALUES (7, 1, 'Glow Co', 'a@b.co', 's', 'b', 'approved', %s, '{"offer": "paid"}'),
+                              (7, 2, 'Dew Lab', 'a@b.co', 's', 'My rate is $120 per video', 'draft', NULL, NULL)""",
+                    (NOW - timedelta(days=5),))
+        self.conn.commit()
+        out = ct.build_tracker(self.conn, 7, now=NOW)
+        lined = {c["brand_id"]: c for c in out["columns"][0]["cards"]}
+        self.assertEqual(lined[1]["type"], "paid")
+        self.assertEqual(lined[1]["next"]["label"], "Autopilot paused")
+        self.assertEqual(lined[2]["type"], "paid")
+        self.assertEqual(lined[2]["next"]["label"], "Pitch ready to check")
+        self.assertFalse(any(e["kind"] == "sched" and e["brand_id"] == 1 for e in out["calendar"]))
+        self.assertIn("paid_share", out["goal"])
+
     def test_unknown_action_rejected(self):
         with self.assertRaises(ValueError):
             ct.record_deal(self.conn, 7, 3, "won_lottery")
@@ -241,6 +269,22 @@ class TrackerDb(unittest.TestCase):
         self.assertTrue(lined[0]["hot"])
         self.assertEqual(lined[0]["hot_reason"], "Launched Meta ads this week")
         self.assertTrue(any(e["kind"] == "hot" for e in out["calendar"]))
+
+
+class OfferMix(unittest.TestCase):
+    def test_pitch_offer(self):
+        self.assertEqual(ct.pitch_offer({"offer": "paid"}), "paid")
+        self.assertEqual(ct.pitch_offer({"origin": "paid_gig", "offer": "paid"}), "gig")
+        self.assertEqual(ct.pitch_offer({}, "Hi! My rates start at $150 per video."), "paid")
+        self.assertEqual(ct.pitch_offer(None, "I'd love to try your serum and share it."), "gifted")
+
+    def test_paid_share_grows_with_goal(self):
+        small = ct.paid_share(15000, 500)
+        big = ct.paid_share(100000, 500)
+        self.assertLess(small, big)
+        self.assertGreaterEqual(small, ct.PAID_SHARE_MIN)
+        self.assertLessEqual(big, ct.PAID_SHARE_MAX)
+        self.assertGreaterEqual(ct.paid_share(15000, 500, "paid"), 0.7)
 
 
 class ReplyChips(unittest.TestCase):

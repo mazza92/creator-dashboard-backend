@@ -536,7 +536,14 @@ def _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=F
     loc_display = str(shipping.get("display") or "").strip()
     focus = settings(conn, creator_id)["deal_focus"]
     if focus == "auto":
-        focus = "paid" if notes.get("deal_intent") == "paid" else "gifted"
+        # Mix follows the creator's monthly goal (bigger goal, more paid asks); see creator_tracker.paid_share.
+        try:
+            from services.creator_tracker import next_offer
+            focus = next_offer(conn, creator_id, notes.get("deal_intent"))
+        except Exception as err:
+            print(f"[Polly autopilot] goal mix skipped: {err}")
+            conn.rollback()
+            focus = "paid" if notes.get("deal_intent") == "paid" else "gifted"
     if focus == "paid":
         from services.polly_kit import load_kit_snapshot
 
@@ -567,7 +574,7 @@ def _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=F
     item = add_draft(
         conn, creator_id, brand_id, brand["brand_name"], brand["email"],
         pitch.get("subject") or f"{brand['brand_name']} collab", body, announced=announced,
-        meta=pitch.get("pitch_meta"),
+        meta={**(pitch.get("pitch_meta") if isinstance(pitch.get("pitch_meta"), dict) else {}), "offer": focus},
     )
     return (item, None) if item else (None, "already_queued")
 

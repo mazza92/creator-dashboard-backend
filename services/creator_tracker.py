@@ -13,6 +13,7 @@ arrived / posted / paid. Gmail read access (pending Google review) will make rep
 from __future__ import annotations
 
 import math
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -37,9 +38,9 @@ COLUMNS = (
     ("lined_up", "Lined up"),
     ("pitched", "Pitched"),
     ("followed_up", "Followed up"),
-    ("replied", "Replied"),
-    ("negotiating", "Negotiating"),
-    ("booked", "Booked"),
+    ("replied", "Wrote back"),
+    ("negotiating", "Talking money"),
+    ("booked", "Confirmed"),
     ("done", "Paid / received"),
 )
 DEAL_TYPES = ("gifted", "paid", "gig")
@@ -156,6 +157,8 @@ def suggest_goal(profile: Dict[str, Any]) -> Dict[str, Any]:
     except (TypeError, ValueError):
         er = 0.0
     er_pct = er * 100 if 0 < er < 1 else er
+    if not 0 < er_pct <= 30:  # scraped values like 70% are data errors, not engagement
+        er_pct = 0.0
     boost = 1.15 if er_pct >= 4 else 1.0
     options = [
         {"id": "starter", "amount_cents": _round_goal(mid * 1.5), "deals": 2},
@@ -399,11 +402,67 @@ def _queue_rows(conn, creator_id: int) -> List[Dict[str, Any]]:
     cur = _cur(conn)
     cur.execute("""SELECT q.id, q.brand_id, q.brand_name, q.status, q.scheduled_for, q.sent_at, q.followups_sent,
                           q.followup_status, q.followup_due_at, q.followup_sent_at, q.pitch_meta, q.created_at,
+                          LEFT(q.body, 2000) AS body,
                           b.logo_url AS logo, b.category
                    FROM polly_autopilot_queue q LEFT JOIN pr_brands b ON b.id = q.brand_id
                    WHERE q.creator_id = %s AND q.status IN ('draft', 'approved', 'sent')
                    ORDER BY q.created_at DESC LIMIT 400""", (creator_id,))
     return [dict(r) for r in cur.fetchall()]
+
+
+_PAID_ASK = re.compile(r"\b(my rate|rates? (?:start|are|is)|per video|paid (?:collab|partnership|ugc)|"
+                       r"budget|\$\s?\d{2,})", re.I)
+
+
+def pitch_offer(meta: Optional[Dict[str, Any]], body: Optional[str] = None) -> str:
+    """'paid' | 'gifted' | 'gig' for one Autopilot pitch: the offer Autopilot recorded, else read from the pitch."""
+    meta = meta if isinstance(meta, dict) else {}
+    if meta.get("origin") == "paid_gig":
+        return "gig"
+    if meta.get("offer") in ("paid", "gifted"):
+        return meta["offer"]
+    return "paid" if _PAID_ASK.search(body or "") else "gifted"
+
+
+# Goal-driven mix: the bigger the goal (vs what one paid video earns), the more pitches ask for a paid deal.
+PAID_SHARE_MIN, PAID_SHARE_MAX = 0.3, 0.8
+
+
+def paid_share(goal_cents: int, followers: int, deal_intent: Optional[str] = None) -> float:
+    low, high = rate_band(followers)
+    videos = goal_cents / ((low + high) / 2)          # paid videos the goal is worth
+    share = PAID_SHARE_MIN + (PAID_SHARE_MAX - PAID_SHARE_MIN) * min(1.0, max(0.0, (videos - 1) / 6))
+    if deal_intent == "paid":
+        share = max(share, 0.7)
+    return round(share, 2)
+
+
+def next_offer(conn, creator_id: int, deal_intent: Optional[str] = None) -> str:
+    """For Autopilot's 'auto' focus: paid or gifted for the next pitch, keeping this month's mix on the goal's share."""
+    goal = get_goal(conn, creator_id)
+    prof = creator_profile(conn, creator_id)
+    cents = int(goal["amount_cents"]) if goal else next(
+        o["amount_cents"] for o in suggest_goal(prof)["options"] if o["id"] == "suggested")
+    share = paid_share(cents, prof["followers"], deal_intent)
+    cur = conn.cursor()
+    cur.execute("""SELECT pitch_meta, LEFT(body, 2000) FROM polly_autopilot_queue
+                   WHERE creator_id = %s AND created_at >= date_trunc('month', NOW()) AND status <> 'skipped'""",
+                (creator_id,))
+    offers = [pitch_offer(r[0], r[1]) for r in cur.fetchall()]
+    offers = [o for o in offers if o != "gig"]
+    paid = sum(1 for o in offers if o == "paid")
+    return "paid" if paid < share * (len(offers) + 1) else "gifted"
+
+
+def _autopilot_on(conn, creator_id: int) -> bool:
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT enabled FROM polly_autopilot WHERE creator_id = %s", (creator_id,))
+        row = cur.fetchone()
+        return bool(row and row[0])
+    except Exception:
+        conn.rollback()
+        return False
 
 
 def _manual_pitches(conn, creator_id: int) -> List[Dict[str, Any]]:
@@ -521,6 +580,7 @@ def build_tracker(conn, creator_id: int, now: Optional[datetime] = None) -> Dict
 
     cards: Dict[int, Dict[str, Any]] = {}
     calendar: List[Dict[str, Any]] = []
+    autopilot_on = _autopilot_on(conn, creator_id)
 
     def card(bid, name, logo=None, category=None):
         c = cards.get(bid)
@@ -538,8 +598,7 @@ def build_tracker(conn, creator_id: int, now: Optional[datetime] = None) -> Dict
             continue
         meta = q.get("pitch_meta") if isinstance(q.get("pitch_meta"), dict) else {}
         c = card(bid, q.get("brand_name"), q.get("logo"), q.get("category"))
-        if meta.get("origin") == "paid_gig":
-            c["type"] = "gig"
+        c["type"] = pitch_offer(meta, q.get("body"))
         if q.get("sent_at"):
             fu = int(q.get("followups_sent") or 0)
             col = "followed_up" if fu else "pitched"
@@ -561,8 +620,15 @@ def build_tracker(conn, creator_id: int, now: Optional[datetime] = None) -> Dict
                                  "brand_name": c["brand_name"], "label": "Follow-up sent"})
         elif c["column"] == "lined_up":
             when = _aware(q.get("scheduled_for"))
-            c["next"] = {"label": f"Pitch {_fmt_day(when)}" if when else "Pitch being written",
-                         "date": when.date().isoformat() if when else None}
+            if q.get("status") == "draft":
+                c["next"] = {"label": "Pitch ready to check", "your_move": not autopilot_on}
+            elif when and when < now - timedelta(hours=1):
+                # Past its slot: paused Autopilot (or a send that failed and waits for the next run).
+                c["next"] = {"label": "Autopilot paused" if not autopilot_on else "Sending next"}
+                when = None
+            else:
+                c["next"] = {"label": f"Pitch {_fmt_day(when)}" if when else "Pitch being written",
+                             "date": when.date().isoformat() if when else None}
             lined.append(c)
             if when:
                 calendar.append({"date": when.date().isoformat(), "kind": "sched", "brand_id": bid,
@@ -679,6 +745,7 @@ def build_tracker(conn, creator_id: int, now: Optional[datetime] = None) -> Dict
             "set": bool(goal), "amount_cents": goal_cents, "source": (goal or {}).get("source", "default"),
             "paid_cents": paid, "gifted_cents": gifted, "total_cents": paid + gifted, "pipeline_cents": pipeline,
             "math": math_,
+            "paid_share": paid_share(goal_cents, profile["followers"]),
         },
         "suggestion": suggestion,
         "funnel": {"pitched": pitched_month, "pitches_needed": math_["pitches"], "replied": replied_month,

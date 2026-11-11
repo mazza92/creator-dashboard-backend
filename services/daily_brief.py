@@ -384,7 +384,7 @@ def goal_line(content: Dict[str, Any]) -> str:
            f'</td></tr></table>')
     pipe = goal["pipeline_cents"]
     extra = (f'<span style="display:block;margin-top:6px;font-size:13px;color:#6B7280;">'
-             f'{_money(pipe)} more in deals in progress.</span>' if pipe else "")
+             f'Plus {_money(pipe)} from brands you\'re talking to.</span>' if pipe else "")
     if not goal.get("set"):
         extra += (f'<span style="display:block;margin-top:6px;font-size:13px;color:#6B7280;">That\'s my suggested '
                   f'goal. <a href="{escape(tracker_link(campaign="brief_goal"), quote=True)}" '
