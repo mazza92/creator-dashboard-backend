@@ -320,6 +320,12 @@ class TrackerDb(unittest.TestCase):
     def test_first_run_and_checklist(self):
         self.assertTrue(ct.in_first_run(self.conn, 7, {}))
         self.assertFalse(ct.in_first_run(self.conn, 7, {"first_run_done": "x"}))
+        ct.mark_milestone(self.conn, 7, "first_run_done")             # survives a thread save that drops notes
+        self.assertFalse(ct.in_first_run(self.conn, 7, {}))
+        self.assertIsNotNone(ct.milestone_at(self.conn, 7, "first_run_done"))
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM creator_milestones WHERE creator_id = 7")
+        self.conn.commit()
         self.assertIsNone(ct.first_run_payload(self.conn, 7, now=NOW))      # nothing planned yet
         ct.set_goal(self.conn, 7, 20000, "custom", sync_autopilot=False)
         ct.plan_week(self.conn, 7, self._brands(60), now=NOW)

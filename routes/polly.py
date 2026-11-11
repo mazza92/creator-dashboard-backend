@@ -1143,6 +1143,19 @@ def _deliver_manager_note(conn, creator_id, first, career, tracker, balance, que
         thread = load_thread(conn, creator_id)
         notes = dict(thread.get("notes") or {})
         which = plan_open_note(notes, bool(thread.get("messages")))
+        if which == "month":
+            # Started this month (first-run choice): "new month: your free pitches are back" makes no sense.
+            try:
+                from services.creator_tracker import milestone_at
+                started = milestone_at(conn, creator_id, "first_run_done")
+            except Exception:
+                conn.rollback()
+                started = None
+            if started and started.strftime("%Y-%m") == month_key():
+                notes["month_plan_month"] = month_key()
+                save_thread(conn, creator_id, messages=thread.get("messages") or [],
+                            suggested=thread.get("suggested_brands") or [], notes=notes)
+                return None
         if not which:
             return None
         is_pro = bool((balance or {}).get("is_unlimited"))
@@ -1606,6 +1619,7 @@ def bootstrap():
             first_run = None
         if first_run:
             auto_action = None
+            brief = None  # the welcome is the only thing on screen
         checked_in = False  # login check-ins ("got any reply from X?") retired: the weekly report covers it
         offered = False
         if not checked_in and not first_run and (
@@ -1687,6 +1701,8 @@ def first_run_done():
         choice = str((request.get_json(silent=True) or {}).get("choice") or "dismiss")[:20]
         thread = load_thread(conn, creator_id)
         notes = dict(thread.get("notes") or {})
+        from services.creator_tracker import mark_milestone
+        mark_milestone(conn, creator_id, "first_run_done")
         notes["first_run_done"] = utc_iso_now()
         notes["first_run_choice"] = choice
         # The month note would otherwise post on the next open ("new month: your free pitches are back").
