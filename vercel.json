@@ -45,11 +45,15 @@
     },
     {
       "path": "/api/hotlist/cron/daily",
-      "schedule": "10 6 * * *"
+      "schedule": "10 4 * * *"
     },
     {
       "path": "/api/hotlist/cron/daily",
-      "schedule": "40 6 * * *"
+      "schedule": "40 4 * * *"
+    },
+    {
+      "path": "/api/brief/cron/send",
+      "schedule": "2 * * * *"
     }
   ],
   "git": {
