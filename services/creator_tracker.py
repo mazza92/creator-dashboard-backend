@@ -38,9 +38,9 @@ COLUMNS = (
     ("lined_up", "Lined up"),
     ("pitched", "Pitched"),
     ("followed_up", "Followed up"),
-    ("replied", "Replied"),
-    ("negotiating", "Negotiating"),
-    ("booked", "Booked"),
+    ("replied", "Wrote back"),
+    ("negotiating", "Talking money"),
+    ("booked", "Confirmed"),
     ("done", "Paid / received"),
 )
 DEAL_TYPES = ("gifted", "paid", "gig")
