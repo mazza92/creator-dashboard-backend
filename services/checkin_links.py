@@ -19,7 +19,9 @@ TOKEN_TTL_SECONDS = 30 * 24 * 3600
 
 # Outcome chip -> the Polly chip to open afterwards (must exist in Polly.js DEEP_LINK_CHIPS).
 ONE_TAP_NEXT = {
-    "checkin_interested": "paid_reply",
+    "checkin_interested": "paid_reply",  # links in emails sent before the gifted / paid split
+    "checkin_gifted": "help_reply",
+    "checkin_paid": "paid_reply",
     "checkin_question": "help_reply",
     "checkin_passed": "line_up",
     "checkin_quiet": "draft_followup",
@@ -32,7 +34,8 @@ ONE_TAP_NEXT = {
 }
 
 CHECKIN_BUTTONS = (
-    ("checkin_interested", "They're interested"),
+    ("checkin_gifted", "Gifted offer"),
+    ("checkin_paid", "Paid offer"),
     ("checkin_passed", "They said no"),
     ("checkin_quiet", "No reply yet"),
 )

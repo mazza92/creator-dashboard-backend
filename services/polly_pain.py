@@ -61,8 +61,11 @@ CHECKIN_CHIPS_EARLY = [
     {"id": "checkin_not_sent", "label": "I never sent it", "action": "task_act"},
 ]
 
+# "Brand replied" answers. Gifted and paid offers also open a deal on the creator's Tracker
+# (services.creator_tracker); checkin_interested stays for one-tap email links already sent.
 REPLY_KIND_CHIPS = [
-    {"id": "checkin_interested", "label": "Interested / sending PR", "action": "task_act"},
+    {"id": "checkin_gifted", "label": "Gifted offer", "action": "task_act"},
+    {"id": "checkin_paid", "label": "Paid offer", "action": "task_act"},
     {"id": "checkin_question", "label": "They asked something", "action": "task_act"},
     {"id": "checkin_passed", "label": "They passed", "action": "task_act"},
 ]

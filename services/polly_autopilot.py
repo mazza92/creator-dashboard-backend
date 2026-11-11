@@ -54,6 +54,8 @@ _ADDED_COLUMNS = (
     ("polly_autopilot", "filled_at", "TIMESTAMPTZ"),
     ("polly_autopilot", "fill_blocked", "TEXT"),
     ("polly_autopilot", "send_via", "TEXT"),
+    # 'goal': follows the creator's monthly $ goal (services.creator_tracker); 'manual': picked by hand, kept.
+    ("polly_autopilot", "target_source", "TEXT"),
     ("polly_autopilot_queue", "followups_sent", "INTEGER NOT NULL DEFAULT 0"),
     ("polly_autopilot_queue", "announced_at", "TIMESTAMPTZ"),
     ("polly_autopilot_queue", "pitch_meta", "JSONB"),
@@ -183,6 +185,7 @@ def update_settings(conn, creator_id: int, patch: Dict[str, Any]) -> Dict[str, A
     cols: Dict[str, Any] = {}
     if "monthly_target" in patch:
         cols["monthly_target"] = clamp_target(patch["monthly_target"])
+        cols["target_source"] = "manual"
     if patch.get("deal_focus") in DEAL_FOCUS:
         cols["deal_focus"] = patch["deal_focus"]
     if "send_days" in patch:
