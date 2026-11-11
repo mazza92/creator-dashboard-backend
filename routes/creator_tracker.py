@@ -17,6 +17,7 @@ from services.creator_tracker import (
     get_goal,
     needs_plan,
     plan_week,
+    post_goal_plan,
     own_rates,
     pitch_math,
     record_deal,
@@ -103,6 +104,13 @@ def goal_save():
         profile = creator_profile(conn, creator_id)
         goal["math"] = pitch_math(goal["amount_cents"], profile["followers"], own_rates(conn, creator_id))
         goal["plan"] = _plan(conn, creator_id, creator)  # the goal becomes this week's brands, with dates
+        goal["posted_plan"] = False
+        if goal["plan"] and goal["plan"].get("planned"):
+            try:
+                goal["posted_plan"] = post_goal_plan(conn, creator_id)  # Polly lays the plan out in chat
+            except Exception as err:
+                print(f"[tracker] plan message skipped creator={creator_id}: {err}")
+                conn.rollback()
         return jsonify({"success": True, "goal": goal})
     finally:
         conn.close()

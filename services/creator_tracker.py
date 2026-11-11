@@ -596,6 +596,93 @@ def planned_offer(conn, creator_id: int, brand_id: int) -> Optional[str]:
         return None
 
 
+TRACKER_HREF = "/creator/dashboard/tracker"
+
+
+def goal_plan_message(conn, creator_id: int, now: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
+    """Polly's "here's your plan" message right after a goal is set: the goal in plain words, this week's
+    brands day by day, and ONE next step that fits the creator (Autopilot on / paused / free credits)."""
+    now = now or _now()
+    rows = [r for r in planned_rows(conn, creator_id) if r["planned_for"] >= now.date()]
+    if not rows:
+        return None
+    prof = creator_profile(conn, creator_id)
+    goal = get_goal(conn, creator_id) or {}
+    cents = int(goal.get("amount_cents") or 0)
+    rates = own_rates(conn, creator_id)
+    m = pitch_math(cents, prof["followers"], rates)
+    per_week = weekly_target(cents, prof["followers"], rates)
+    days: List[Dict[str, Any]] = []
+    for r in rows:
+        d = r["planned_for"]
+        if not days or days[-1]["date"] != d.isoformat():
+            days.append({"date": d.isoformat(), "label": "Today" if d == now.date() else _fmt_day(d), "brands": []})
+        days[-1]["brands"].append({"brand_id": int(r["brand_id"]), "brand_name": r.get("brand_name") or "Brand",
+                                   "offer": r.get("offer") or "gifted"})
+    paid_n = sum(1 for r in rows if r.get("offer") == "paid")
+    first_ids = [int(r["brand_id"]) for r in rows]
+    balance = free_balance(conn, creator_id, prof)
+    tracker = {"id": "open_tracker", "label": "See it on my calendar", "action": "link", "href": TRACKER_HREF}
+    if balance is not None:
+        left = int(balance["left"])
+        mode = "free"
+        if left:
+            note = (f"You have {left} free pitch{'es' if left != 1 else ''} this month. Let's start with the "
+                    f"top {'one' if left == 1 else left}. Pro sends the rest of the week for you.")
+            chips = [{"id": "pitch_all", "label": f"Write my first {'pitch' if left == 1 else f'{left} pitches'}",
+                      "action": "pitch_batch", "brand_ids": first_ids[:min(left, 3)]}, tracker]
+        else:
+            note = "Your free pitches are used this month. On Pro I send this whole plan from your Gmail."
+            chips = [{"id": "unlock_pro", "label": "Send my plan with Pro", "action": "unlock_pro"}, tracker]
+    elif _autopilot_on(conn, creator_id):
+        mode = "autopilot_on"
+        note = "Autopilot sends them from your Gmail on these days and follows up for you. Nothing to do."
+        chips = [tracker]
+    else:
+        mode = "autopilot_off"
+        note = "Turn on Autopilot and I send them from your Gmail on these days, with follow-ups."
+        chips = [{"id": "autopilot", "label": "Turn on Autopilot", "action": "autopilot"},
+                 {"id": "pitch_all", "label": "Write today's pitches", "action": "pitch_batch",
+                  "brand_ids": first_ids[:3]}, tracker]
+    month = datetime(now.year, now.month, 1).strftime("%B")
+    content = (f"Here's your plan for **{_money_text(cents)}** in {month}: pitch about **{per_week} brands a week**. "
+               f"I lined up this week's brands for you.")
+    return {
+        "role": "assistant",
+        "kind": "goal_plan",
+        "content": content,
+        "goal_plan": {
+            "amount_cents": cents, "month": month, "per_week": per_week, "deals": m["deals"],
+            "avg_deal_cents": m["avg_deal_cents"],
+            "reply_one_in": max(1, round(1 / m["reply_rate"])) if m["reply_rate"] else None,
+            "deal_one_in": max(1, round(1 / m["deal_rate"])) if m["deal_rate"] else None,
+            "planned": len(rows), "paid": paid_n, "gifted": len(rows) - paid_n,
+            "days": days, "mode": mode, "note": note,
+        },
+        "task_chips": chips,
+    }
+
+
+def _money_text(cents: int) -> str:
+    return f"${int(round((cents or 0) / 100)):,}"
+
+
+def post_goal_plan(conn, creator_id: int, now: Optional[datetime] = None) -> bool:
+    """Append the plan to Polly's chat (replacing an earlier plan message from today, if the goal was edited)."""
+    msg = goal_plan_message(conn, creator_id, now)
+    if not msg:
+        return False
+    from services.polly_memory import load_thread, save_thread
+    thread = load_thread(conn, creator_id)
+    today = (now or _now()).date().isoformat()
+    msg["at"] = (now or _now()).isoformat()
+    messages = [x for x in (thread.get("messages") or [])
+                if not (x.get("kind") == "goal_plan" and str(x.get("at") or "")[:10] == today)]
+    messages.append(msg)
+    save_thread(conn, creator_id, messages, thread.get("suggested_brands") or [], notes=thread.get("notes") or {})
+    return True
+
+
 def _autopilot_on(conn, creator_id: int) -> bool:
     try:
         cur = conn.cursor()

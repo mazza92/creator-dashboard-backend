@@ -271,6 +271,42 @@ class TrackerDb(unittest.TestCase):
         self.assertEqual(ct.planned_offer(self.conn, 7, ct.planned_rows(self.conn, 7)[0]["brand_id"]) in
                          ("paid", "gifted"), True)
 
+    def test_plan_message_fits_the_creator(self):
+        ct.set_goal(self.conn, 7, 20000, "custom", sync_autopilot=False)
+        ct.plan_week(self.conn, 7, self._brands(60), now=NOW)
+        msg = ct.goal_plan_message(self.conn, 7, now=NOW)            # free, 1 credit left (setUp)
+        gp = msg["goal_plan"]
+        self.assertEqual(msg["kind"], "goal_plan")
+        self.assertEqual(gp["mode"], "free")
+        self.assertEqual(sum(len(d["brands"]) for d in gp["days"]), gp["planned"])
+        self.assertEqual(gp["days"][0]["label"], "Today")
+        self.assertEqual(msg["task_chips"][0]["action"], "pitch_batch")
+        self.assertEqual(len(msg["task_chips"][0]["brand_ids"]), 1)
+        self.assertIn("pitch about", msg["content"])
+        self.balance.stop()
+        cur = self.conn.cursor()
+        cur.execute("UPDATE creators SET subscription_tier = 'pro' WHERE id = 7")
+        self.conn.commit()
+        off = ct.goal_plan_message(self.conn, 7, now=NOW)
+        self.assertEqual(off["goal_plan"]["mode"], "autopilot_off")
+        self.assertEqual(off["task_chips"][0]["action"], "autopilot")
+        import services.polly_autopilot as pa
+        pa.set_enabled(self.conn, 7, True)
+        on = ct.goal_plan_message(self.conn, 7, now=NOW)
+        self.assertEqual(on["goal_plan"]["mode"], "autopilot_on")
+        self.assertEqual([c["id"] for c in on["task_chips"]], ["open_tracker"])
+        self.balance.start()
+
+    def test_plan_message_survives_the_thread_sanitizer(self):
+        from services.polly_memory import _clean_message
+        ct.set_goal(self.conn, 7, 20000, "custom", sync_autopilot=False)
+        ct.plan_week(self.conn, 7, self._brands(10), now=NOW)
+        msg = ct.goal_plan_message(self.conn, 7, now=NOW)
+        clean = _clean_message({**msg, "at": NOW.isoformat()})
+        self.assertEqual(clean["kind"], "goal_plan")
+        self.assertEqual(clean["goal_plan"]["planned"], msg["goal_plan"]["planned"])
+        self.assertTrue(clean["task_chips"])
+
     def test_unknown_action_rejected(self):
         with self.assertRaises(ValueError):
             ct.record_deal(self.conn, 7, 3, "won_lottery")
