@@ -471,7 +471,26 @@ def _pick_brands(conn, creator_id, creator, notes, scrape):
     emailable = _brands_with_email(conn, [int(b["id"]) for b in brands if b.get("id")])
     matched = [b for b in brands if b.get("id") and int(b["id"]) in emailable]
     matched = _targets_first(conn, creator_id, matched, exclude, notes)
+    matched = _planned_first(conn, creator_id, matched)
     return matched, None if matched else "no_matches"
+
+
+def _planned_first(conn, creator_id, matched):
+    """Brands on the creator's weekly plan (services.creator_tracker.plan_week) go out first, by planned day."""
+    try:
+        from services.creator_tracker import planned_rows
+        order = {int(r["brand_id"]): (r["planned_for"], i) for i, r in enumerate(planned_rows(conn, creator_id))}
+    except Exception as err:
+        print(f"[Polly autopilot] plan order skipped creator={creator_id}: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return matched
+    if not order:
+        return matched
+    first = sorted([b for b in matched if int(b["id"]) in order], key=lambda b: order[int(b["id"])])
+    return first + [b for b in matched if int(b["id"]) not in order]
 
 
 def _targets_first(conn, creator_id, matched, exclude, notes):
@@ -538,8 +557,8 @@ def _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=F
     if focus == "auto":
         # Mix follows the creator's monthly goal (bigger goal, more paid asks); see creator_tracker.paid_share.
         try:
-            from services.creator_tracker import next_offer
-            focus = next_offer(conn, creator_id, notes.get("deal_intent"))
+            from services.creator_tracker import next_offer, planned_offer
+            focus = planned_offer(conn, creator_id, brand_id) or next_offer(conn, creator_id, notes.get("deal_intent"))
         except Exception as err:
             print(f"[Polly autopilot] goal mix skipped: {err}")
             conn.rollback()

@@ -101,7 +101,8 @@ class TrackerDb(unittest.TestCase):
         pa._TABLES_READY = False
         self.conn = _conn()
         cur = self.conn.cursor()
-        cur.execute("""DROP TABLE IF EXISTS creator_goals, creator_deals, polly_autopilot, polly_autopilot_queue;
+        cur.execute("""DROP TABLE IF EXISTS creator_goals, creator_deals, creator_pitch_plan, polly_autopilot,
+                       polly_autopilot_queue;
                        TRUNCATE creators, creator_profile_data, pr_brands, creator_pipeline, polly_timeline_events""")
         cur.execute("""INSERT INTO creators (id, user_id, followers_count, social_follower_count, creator_niches,
                            subscription_tier) VALUES (7, 70, 4000, 5000, '["skincare"]', 'free')""")
@@ -225,6 +226,50 @@ class TrackerDb(unittest.TestCase):
         self.assertEqual(lined[2]["next"]["label"], "Pitch ready to check")
         self.assertFalse(any(e["kind"] == "sched" and e["brand_id"] == 1 for e in out["calendar"]))
         self.assertIn("paid_share", out["goal"])
+
+    def _brands(self, n, start=100):
+        return [{"id": start + i, "name": f"Brand {start + i}"} for i in range(n)]
+
+    def test_goal_becomes_a_week_of_dated_brands(self):
+        ct.set_goal(self.conn, 7, 20000, "custom", sync_autopilot=False)
+        target = ct.weekly_target(20000, 5000, ct.own_rates(self.conn, 7))
+        self._queue(1, "sent", sent_days_ago=2)                    # already pitched: never planned
+        out = ct.plan_week(self.conn, 7, [{"id": 1, "name": "Glow Co"}] + self._brands(target + 10), now=NOW)
+        self.assertEqual(out["planned"], target)
+        rows = ct.planned_rows(self.conn, 7)
+        self.assertNotIn(1, [r["brand_id"] for r in rows])
+        days = {r["planned_for"] for r in rows}
+        self.assertTrue(all(d.weekday() < 5 for d in days))
+        self.assertGreater(len(days), 1)                           # spread over the week
+        offers = [r["offer"] for r in rows]
+        self.assertIn("paid", offers)
+        self.assertIn("gifted", offers)
+        # Shown on the Tracker: lined up with dates, on the calendar, beyond free credits locked.
+        tr = ct.build_tracker(self.conn, 7, now=NOW)
+        lined = [c for c in tr["columns"][0]["cards"] if c.get("planned")]
+        self.assertEqual(len(lined), target)
+        self.assertTrue(all(c["next"]["label"].startswith("Pitch ") for c in lined))
+        self.assertEqual(sum(1 for e in tr["calendar"] if e["label"] == "Planned pitch"), target)
+        self.assertEqual(tr["free"]["locked"], target - 1)         # 1 free credit left in setUp
+
+    def test_replan_keeps_moves_overdue_and_tops_up(self):
+        ct.set_goal(self.conn, 7, 20000, "custom", sync_autopilot=False)
+        ct.plan_week(self.conn, 7, self._brands(5), now=NOW - timedelta(days=9))
+        before = {r["brand_id"] for r in ct.planned_rows(self.conn, 7)}
+        out = ct.plan_week(self.conn, 7, self._brands(60, start=500), now=NOW)
+        rows = ct.planned_rows(self.conn, 7)
+        self.assertTrue(before <= {r["brand_id"] for r in rows})   # overdue brands moved, not lost
+        self.assertTrue(all(r["planned_for"] >= NOW.date() for r in rows))
+        self.assertEqual(out["planned"], ct.weekly_target(20000, 5000, ct.own_rates(self.conn, 7)))
+
+    def test_needs_plan(self):
+        self.assertFalse(ct.needs_plan(self.conn, 7))               # no goal yet
+        ct.set_goal(self.conn, 7, 20000, "custom", sync_autopilot=False)
+        self.assertTrue(ct.needs_plan(self.conn, 7))
+        ct.plan_week(self.conn, 7, self._brands(60))
+        self.assertFalse(ct.needs_plan(self.conn, 7))
+        self.assertEqual(ct.planned_offer(self.conn, 7, ct.planned_rows(self.conn, 7)[0]["brand_id"]) in
+                         ("paid", "gifted"), True)
 
     def test_unknown_action_rejected(self):
         with self.assertRaises(ValueError):

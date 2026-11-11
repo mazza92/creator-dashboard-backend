@@ -102,6 +102,11 @@ def ensure_tables(conn) -> None:
     ensure_index(cur, "CREATE UNIQUE INDEX IF NOT EXISTS uq_creator_deals_brand ON creator_deals (creator_id, brand_id) "
                       "WHERE brand_id IS NOT NULL")
     ensure_index(cur, "CREATE INDEX IF NOT EXISTS idx_creator_deals_creator ON creator_deals (creator_id, updated_at DESC)")
+    cur.execute("""CREATE TABLE IF NOT EXISTS creator_pitch_plan (
+        creator_id INTEGER NOT NULL, brand_id INTEGER NOT NULL, brand_name TEXT, planned_for DATE NOT NULL,
+        offer TEXT NOT NULL DEFAULT 'gifted', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (creator_id, brand_id))""")
+    cur.execute("ALTER TABLE creator_goals ADD COLUMN IF NOT EXISTS planned_at TIMESTAMPTZ")
     conn.commit()
     _READY = True
 
@@ -454,6 +459,143 @@ def next_offer(conn, creator_id: int, deal_intent: Optional[str] = None) -> str:
     return "paid" if paid < share * (len(offers) + 1) else "gifted"
 
 
+# ---------------------------------------------------------------------------
+# Weekly plan: the goal turns into brands with dates
+# ---------------------------------------------------------------------------
+
+PLAN_DAYS = 7
+PLAN_MAX_PER_WEEK = 60
+REPLAN_EVERY = timedelta(hours=20)
+
+
+def weekly_target(goal_cents: int, followers: int, rates: Dict[str, Any]) -> int:
+    """Brands to pitch per week for the goal (the Tracker's "Pitch about N brands a week")."""
+    return max(1, min(PLAN_MAX_PER_WEEK, round(pitch_math(goal_cents, followers, rates)["pitches"] / 4.3)))
+
+
+def plan_days(now: datetime, days: int = PLAN_DAYS) -> List[date]:
+    """Weekdays in the next ``days`` days, starting today (or tomorrow after 5pm UTC)."""
+    start = now.date() + timedelta(days=1 if now.hour >= 17 else 0)
+    out = [start + timedelta(days=i) for i in range(days)]
+    return [d for d in out if d.weekday() < 5] or [start]
+
+
+def planned_rows(conn, creator_id: int) -> List[Dict[str, Any]]:
+    ensure_tables(conn)
+    cur = _cur(conn)
+    cur.execute("""SELECT p.brand_id, COALESCE(p.brand_name, b.brand_name) AS brand_name, p.planned_for, p.offer,
+                          b.logo_url AS logo, b.category
+                   FROM creator_pitch_plan p LEFT JOIN pr_brands b ON b.id = p.brand_id
+                   WHERE p.creator_id = %s ORDER BY p.planned_for, p.brand_id""", (creator_id,))
+    return [dict(r) for r in cur.fetchall()]
+
+
+def _taken_brand_ids(conn, creator_id: int) -> set:
+    """Brands already queued, pitched or in a deal: never planned again."""
+    cur = conn.cursor()
+    cur.execute("""SELECT brand_id FROM polly_autopilot_queue WHERE creator_id = %(c)s
+                   UNION SELECT brand_id FROM creator_pipeline WHERE creator_id = %(c)s
+                     AND (pitched_at IS NOT NULL OR send_confirmed IS TRUE)
+                   UNION SELECT brand_id FROM creator_deals WHERE creator_id = %(c)s AND brand_id IS NOT NULL""",
+                {"c": creator_id})
+    return {int(r[0]) for r in cur.fetchall() if r[0] is not None}
+
+
+def plan_week(conn, creator_id: int, brands: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Line up this week's brands for the goal: ``brands`` are the creator's matches, best first (Autopilot's
+    picker). Keeps planned brands still ahead, moves overdue ones to the coming days, tops up to the weekly
+    target, and gives each one a weekday and an offer (paid / gifted, by the goal's mix)."""
+    ensure_tables(conn)
+    now = now or _now()
+    prof = creator_profile(conn, creator_id)
+    goal = get_goal(conn, creator_id)
+    cents = int(goal["amount_cents"]) if goal else next(
+        o["amount_cents"] for o in suggest_goal(prof)["options"] if o["id"] == "suggested")
+    target = weekly_target(cents, prof["followers"], own_rates(conn, creator_id))
+    share = paid_share(cents, prof["followers"])
+    days = plan_days(now)
+    taken = _taken_brand_ids(conn, creator_id)
+    cur = conn.cursor()
+    # Planned brands that got queued or pitched since are done with the plan.
+    if taken:
+        cur.execute("DELETE FROM creator_pitch_plan WHERE creator_id = %s AND brand_id = ANY(%s)",
+                    (creator_id, list(taken)))
+    current = planned_rows(conn, creator_id)
+    keep = [r for r in current if r["planned_for"] >= days[0]]
+    overdue = [r for r in current if r["planned_for"] < days[0]]
+    planned_ids = {int(r["brand_id"]) for r in current}
+    fresh = []
+    for b in brands or []:
+        bid = int(b.get("id") or b.get("brand_id") or 0)
+        if bid and bid not in taken and bid not in planned_ids:
+            fresh.append({"brand_id": bid, "brand_name": b.get("name") or b.get("brand_name")})
+            planned_ids.add(bid)
+    room = max(0, target - len(keep))
+    moving, adding = overdue[:room], fresh[:max(0, room - len(overdue[:room]))]
+    dropped = overdue[room:]
+    if dropped:
+        cur.execute("DELETE FROM creator_pitch_plan WHERE creator_id = %s AND brand_id = ANY(%s)",
+                    (creator_id, [int(r["brand_id"]) for r in dropped]))
+    # Spread over the weekdays: fill the emptiest day first.
+    load = {d: sum(1 for r in keep if r["planned_for"] == d) for d in days}
+    paid_n = sum(1 for r in keep if r.get("offer") == "paid")
+    total_n = len(keep)
+
+    def slot():
+        d = min(days, key=lambda x: (load[x], x))
+        load[d] += 1
+        return d
+
+    for r in moving:
+        cur.execute("UPDATE creator_pitch_plan SET planned_for = %s WHERE creator_id = %s AND brand_id = %s",
+                    (slot(), creator_id, int(r["brand_id"])))
+    for r in adding:
+        offer = "paid" if paid_n < share * (total_n + 1) else "gifted"
+        paid_n += offer == "paid"
+        total_n += 1
+        cur.execute("""INSERT INTO creator_pitch_plan (creator_id, brand_id, brand_name, planned_for, offer)
+                       VALUES (%s, %s, %s, %s, %s) ON CONFLICT (creator_id, brand_id) DO NOTHING""",
+                    (creator_id, r["brand_id"], (r["brand_name"] or "")[:120], slot(), offer))
+    cur.execute("UPDATE creator_goals SET planned_at = NOW() WHERE creator_id = %s AND month = %s",
+                (creator_id, month_key(now)))
+    conn.commit()
+    return {"target": target, "kept": len(keep), "moved": len(moving), "added": len(adding),
+            "planned": len(keep) + len(moving) + len(adding)}
+
+
+def needs_plan(conn, creator_id: int, now: Optional[datetime] = None) -> bool:
+    """Re-plan when the coming week is short of brands, at most once every REPLAN_EVERY."""
+    ensure_tables(conn)
+    now = now or _now()
+    cur = conn.cursor()
+    cur.execute("SELECT planned_at FROM creator_goals WHERE creator_id = %s AND month = %s",
+                (creator_id, month_key(now)))
+    row = cur.fetchone()
+    last = _aware(row[0]) if row and row[0] else None
+    if last and now - last < REPLAN_EVERY:
+        return False
+    cur.execute("SELECT COUNT(*) FROM creator_pitch_plan WHERE creator_id = %s AND planned_for >= %s",
+                (creator_id, plan_days(now)[0]))
+    ahead = int(cur.fetchone()[0])
+    prof = creator_profile(conn, creator_id)
+    goal = get_goal(conn, creator_id)
+    if not goal:
+        return False
+    return ahead < weekly_target(int(goal["amount_cents"]), prof["followers"], own_rates(conn, creator_id))
+
+
+def planned_offer(conn, creator_id: int, brand_id: int) -> Optional[str]:
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT offer FROM creator_pitch_plan WHERE creator_id = %s AND brand_id = %s",
+                    (creator_id, brand_id))
+        row = cur.fetchone()
+        return row[0] if row else None
+    except Exception:
+        conn.rollback()
+        return None
+
+
 def _autopilot_on(conn, creator_id: int) -> bool:
     try:
         cur = conn.cursor()
@@ -672,6 +814,23 @@ def build_tracker(conn, creator_id: int, now: Optional[datetime] = None) -> Dict
             if d.get(col) and d.get("stage") not in ("paid", "closed"):
                 calendar.append({"date": _aware(d[col]).date().isoformat(), "kind": kind, "brand_id": bid,
                                  "brand_name": c["brand_name"], "label": label})
+
+    # This week's plan: brands Polly lined up for the goal that aren't queued or pitched yet.
+    for r in planned_rows(conn, creator_id):
+        bid = int(r["brand_id"])
+        if bid in cards:
+            continue
+        c = card(bid, r.get("brand_name"), r.get("logo"), r.get("category"))
+        c["type"] = r.get("offer") or "gifted"
+        c["planned"] = True
+        day_ = r["planned_for"]
+        if day_ < now.date():
+            c["next"] = {"label": "Pitch when you're ready"}
+        else:
+            c["next"] = {"label": f"Pitch {_fmt_day(day_)}", "date": day_.isoformat()}
+            calendar.append({"date": day_.isoformat(), "kind": "sched", "brand_id": bid,
+                             "brand_name": c["brand_name"], "label": "Planned pitch", "hot": bid == hot_id})
+        lined.append(c)
 
     # Hot brand of the day: on the board even when it isn't queued (free creators).
     if hot and hot_id and hot_id not in cards:
