@@ -463,7 +463,8 @@ def next_offer(conn, creator_id: int, deal_intent: Optional[str] = None) -> str:
 # Weekly plan: the goal turns into brands with dates
 # ---------------------------------------------------------------------------
 
-PLAN_DAYS = 7
+PLAN_WEEKS = 4                      # how far ahead the plan goes (this week + 3)
+PLAN_DAYS = 7 * PLAN_WEEKS
 PLAN_MAX_PER_WEEK = 60
 REPLAN_EVERY = timedelta(hours=20)
 
@@ -502,9 +503,9 @@ def _taken_brand_ids(conn, creator_id: int) -> set:
 
 
 def plan_week(conn, creator_id: int, brands: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
-    """Line up this week's brands for the goal: ``brands`` are the creator's matches, best first (Autopilot's
-    picker). Keeps planned brands still ahead, moves overdue ones to the coming days, tops up to the weekly
-    target, and gives each one a weekday and an offer (paid / gifted, by the goal's mix)."""
+    """Line up the next PLAN_WEEKS weeks of brands for the goal: ``brands`` are the creator's matches, best first
+    (Autopilot's picker). Keeps planned brands still ahead, moves overdue ones forward, fills each week up to the
+    weekly target (this week pro rata), and gives each brand a weekday and an offer (paid / gifted, by the mix)."""
     ensure_tables(conn)
     now = now or _now()
     prof = creator_profile(conn, creator_id)
@@ -530,37 +531,61 @@ def plan_week(conn, creator_id: int, brands: List[Dict[str, Any]], now: Optional
         if bid and bid not in taken and bid not in planned_ids:
             fresh.append({"brand_id": bid, "brand_name": b.get("name") or b.get("brand_name")})
             planned_ids.add(bid)
-    room = max(0, target - len(keep))
-    moving, adding = overdue[:room], fresh[:max(0, room - len(overdue[:room]))]
-    dropped = overdue[room:]
-    if dropped:
-        cur.execute("DELETE FROM creator_pitch_plan WHERE creator_id = %s AND brand_id = ANY(%s)",
-                    (creator_id, [int(r["brand_id"]) for r in dropped]))
-    # Spread over the weekdays: fill the emptiest day first.
-    load = {d: sum(1 for r in keep if r["planned_for"] == d) for d in days}
+    # Weekly capacity: the goal's weekly number per full week; partial weeks (this one, the last) pro rata.
+    weeks: Dict[Tuple[int, int], List[date]] = {}
+    for d in days:
+        weeks.setdefault(tuple(d.isocalendar()[:2]), []).append(d)
+    order = sorted(weeks)
+    cap = {w: max(1, round(target * min(5, len(weeks[w])) / 5)) for w in order}  # partial weeks pro rata
+    load_day = {d: 0 for d in days}
+    load_week = {w: 0 for w in order}
+    for r in keep:
+        d = r["planned_for"]
+        if d in load_day:
+            load_day[d] += 1
+            load_week[tuple(d.isocalendar()[:2])] += 1
     paid_n = sum(1 for r in keep if r.get("offer") == "paid")
     total_n = len(keep)
 
     def slot():
-        d = min(days, key=lambda x: (load[x], x))
-        load[d] += 1
-        return d
+        """Earliest week with room, emptiest day in it. None when the whole horizon is full."""
+        for w in order:
+            if load_week[w] < cap[w]:
+                d = min(weeks[w], key=lambda x: (load_day[x], x))
+                load_day[d] += 1
+                load_week[w] += 1
+                return d
+        return None
 
-    for r in moving:
+    moving, dropped = [], []
+    for r in overdue:
+        d = slot()
+        if d is None:
+            dropped.append(r)
+            continue
+        moving.append(r)
         cur.execute("UPDATE creator_pitch_plan SET planned_for = %s WHERE creator_id = %s AND brand_id = %s",
-                    (slot(), creator_id, int(r["brand_id"])))
-    for r in adding:
+                    (d, creator_id, int(r["brand_id"])))
+    if dropped:
+        cur.execute("DELETE FROM creator_pitch_plan WHERE creator_id = %s AND brand_id = ANY(%s)",
+                    (creator_id, [int(r["brand_id"]) for r in dropped]))
+    adding = []
+    for r in fresh:
+        d = slot()
+        if d is None:
+            break
         offer = "paid" if paid_n < share * (total_n + 1) else "gifted"
         paid_n += offer == "paid"
         total_n += 1
+        adding.append(r)
         cur.execute("""INSERT INTO creator_pitch_plan (creator_id, brand_id, brand_name, planned_for, offer)
                        VALUES (%s, %s, %s, %s, %s) ON CONFLICT (creator_id, brand_id) DO NOTHING""",
-                    (creator_id, r["brand_id"], (r["brand_name"] or "")[:120], slot(), offer))
+                    (creator_id, r["brand_id"], (r["brand_name"] or "")[:120], d, offer))
     cur.execute("UPDATE creator_goals SET planned_at = NOW() WHERE creator_id = %s AND month = %s",
                 (creator_id, month_key(now)))
     conn.commit()
     return {"target": target, "kept": len(keep), "moved": len(moving), "added": len(adding),
-            "planned": len(keep) + len(moving) + len(adding)}
+            "planned": len(keep) + len(moving) + len(adding), "capacity": sum(cap.values()), "weeks": len(order)}
 
 
 def needs_plan(conn, creator_id: int, now: Optional[datetime] = None) -> bool:
@@ -581,7 +606,8 @@ def needs_plan(conn, creator_id: int, now: Optional[datetime] = None) -> bool:
     goal = get_goal(conn, creator_id)
     if not goal:
         return False
-    return ahead < weekly_target(int(goal["amount_cents"]), prof["followers"], own_rates(conn, creator_id))
+    # Re-plan when less than ~2 weeks of brands are lined up (the rolling horizon tops up week by week).
+    return ahead < 2 * weekly_target(int(goal["amount_cents"]), prof["followers"], own_rates(conn, creator_id))
 
 
 def planned_offer(conn, creator_id: int, brand_id: int) -> Optional[str]:
@@ -603,9 +629,12 @@ def goal_plan_message(conn, creator_id: int, now: Optional[datetime] = None) -> 
     """Polly's "here's your plan" message right after a goal is set: the goal in plain words, this week's
     brands day by day, and ONE next step that fits the creator (Autopilot on / paused / free credits)."""
     now = now or _now()
-    rows = [r for r in planned_rows(conn, creator_id) if r["planned_for"] >= now.date()]
+    ahead = [r for r in planned_rows(conn, creator_id) if r["planned_for"] >= now.date()]
+    rows = [r for r in ahead if r["planned_for"] < now.date() + timedelta(days=7)] or ahead[:10]
     if not rows:
         return None
+    later = len(ahead) - len(rows)
+    weeks_ahead = len({r["planned_for"].isocalendar()[:2] for r in ahead})
     prof = creator_profile(conn, creator_id)
     goal = get_goal(conn, creator_id) or {}
     cents = int(goal.get("amount_cents") or 0)
@@ -646,7 +675,7 @@ def goal_plan_message(conn, creator_id: int, now: Optional[datetime] = None) -> 
                   "brand_ids": first_ids[:3]}, tracker]
     month = datetime(now.year, now.month, 1).strftime("%B")
     content = (f"Here's your plan for **{_money_text(cents)}** in {month}: pitch about **{per_week} brands a week**. "
-               f"I lined up this week's brands for you.")
+               f"I lined up {'the next ' + str(weeks_ahead) + ' weeks' if weeks_ahead > 1 else 'this week'} for you.")
     return {
         "role": "assistant",
         "kind": "goal_plan",
@@ -657,6 +686,7 @@ def goal_plan_message(conn, creator_id: int, now: Optional[datetime] = None) -> 
             "reply_one_in": max(1, round(1 / m["reply_rate"])) if m["reply_rate"] else None,
             "deal_one_in": max(1, round(1 / m["deal_rate"])) if m["deal_rate"] else None,
             "planned": len(rows), "paid": paid_n, "gifted": len(rows) - paid_n,
+            "later": later, "weeks_ahead": weeks_ahead,
             "days": days, "mode": mode, "note": note,
         },
         "task_chips": chips,
@@ -978,7 +1008,8 @@ def build_tracker(conn, creator_id: int, now: Optional[datetime] = None) -> Dict
         o["amount_cents"] for o in suggestion["options"] if o["id"] == suggestion["recommended"])
     math_ = pitch_math(goal_cents, profile["followers"], own_rates(conn, creator_id))
 
-    window_start, window_end = (now - timedelta(days=7)).date().isoformat(), (now + timedelta(days=21)).date().isoformat()
+    window_start = (now - timedelta(days=14)).date().isoformat()
+    window_end = (now + timedelta(days=PLAN_DAYS + 7)).date().isoformat()
     calendar = sorted([e for e in calendar if window_start <= e["date"] <= window_end],
                       key=lambda e: (e["date"], not e.get("hot"), e["kind"]))
     your_move = [c for c in cards.values() if (c.get("next") or {}).get("your_move")]
@@ -992,6 +1023,7 @@ def build_tracker(conn, creator_id: int, now: Optional[datetime] = None) -> Dict
             "paid_cents": paid, "gifted_cents": gifted, "total_cents": paid + gifted, "pipeline_cents": pipeline,
             "math": math_,
             "paid_share": paid_share(goal_cents, profile["followers"]),
+            "weekly_target": weekly_target(goal_cents, profile["followers"], own_rates(conn, creator_id)),
         },
         "suggestion": suggestion,
         "funnel": {"pitched": pitched_month, "pitches_needed": math_["pitches"], "replied": replied_month,

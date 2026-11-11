@@ -33,6 +33,9 @@ def _auth():
     return _creator_auth()
 
 
+PLAN_POOL = 250  # deep enough for several weeks of brands, not just Autopilot's next batch
+
+
 def _plan(conn, creator_id, creator):
     """Line up this week's brands from the creator's matches (Autopilot's picker). Never fails the request."""
     if not creator:
@@ -40,7 +43,7 @@ def _plan(conn, creator_id, creator):
     try:
         from routes.polly_autopilot import _creator_context, _pick_brands
         notes, scrape = _creator_context(conn, creator)
-        brands, _err = _pick_brands(conn, creator_id, creator, notes, scrape)
+        brands, _err = _pick_brands(conn, creator_id, creator, notes, scrape, limit=PLAN_POOL)
         return plan_week(conn, creator_id, brands)
     except Exception as err:
         print(f"[tracker] plan skipped creator={creator_id}: {err}")

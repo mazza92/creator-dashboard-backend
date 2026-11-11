@@ -234,8 +234,17 @@ class TrackerDb(unittest.TestCase):
         ct.set_goal(self.conn, 7, 20000, "custom", sync_autopilot=False)
         target = ct.weekly_target(20000, 5000, ct.own_rates(self.conn, 7))
         self._queue(1, "sent", sent_days_ago=2)                    # already pitched: never planned
-        out = ct.plan_week(self.conn, 7, [{"id": 1, "name": "Glow Co"}] + self._brands(target + 10), now=NOW)
-        self.assertEqual(out["planned"], target)
+        out = ct.plan_week(self.conn, 7, [{"id": 1, "name": "Glow Co"}] + self._brands(target * 6), now=NOW)
+        self.assertEqual(out["weeks"], 5)                          # Wed 11 Nov + 28 days: 5 calendar weeks
+        self.assertEqual(out["planned"], out["capacity"])
+        by_week = {}
+        for r in ct.planned_rows(self.conn, 7):
+            wk = r["planned_for"].isocalendar()[1]
+            by_week[wk] = by_week.get(wk, 0) + 1
+        weeks = sorted(by_week)
+        self.assertEqual(by_week[weeks[0]], round(target * 3 / 5))   # this week: Wed-Fri only
+        self.assertEqual(by_week[weeks[1]], target)                   # full weeks: the goal's weekly number
+        planned = out["planned"]
         rows = ct.planned_rows(self.conn, 7)
         self.assertNotIn(1, [r["brand_id"] for r in rows])
         days = {r["planned_for"] for r in rows}
@@ -247,20 +256,21 @@ class TrackerDb(unittest.TestCase):
         # Shown on the Tracker: lined up with dates, on the calendar, beyond free credits locked.
         tr = ct.build_tracker(self.conn, 7, now=NOW)
         lined = [c for c in tr["columns"][0]["cards"] if c.get("planned")]
-        self.assertEqual(len(lined), target)
+        self.assertEqual(len(lined), planned)
         self.assertTrue(all(c["next"]["label"].startswith("Pitch ") for c in lined))
-        self.assertEqual(sum(1 for e in tr["calendar"] if e["label"] == "Planned pitch"), target)
-        self.assertEqual(tr["free"]["locked"], target - 1)         # 1 free credit left in setUp
+        self.assertEqual(sum(1 for e in tr["calendar"] if e["label"] == "Planned pitch"), planned)
+        self.assertEqual(tr["free"]["locked"], planned - 1)        # 1 free credit left in setUp
+        self.assertEqual(tr["goal"]["weekly_target"], target)
 
     def test_replan_keeps_moves_overdue_and_tops_up(self):
         ct.set_goal(self.conn, 7, 20000, "custom", sync_autopilot=False)
         ct.plan_week(self.conn, 7, self._brands(5), now=NOW - timedelta(days=9))
         before = {r["brand_id"] for r in ct.planned_rows(self.conn, 7)}
-        out = ct.plan_week(self.conn, 7, self._brands(60, start=500), now=NOW)
+        out = ct.plan_week(self.conn, 7, self._brands(200, start=500), now=NOW)
         rows = ct.planned_rows(self.conn, 7)
         self.assertTrue(before <= {r["brand_id"] for r in rows})   # overdue brands moved, not lost
         self.assertTrue(all(r["planned_for"] >= NOW.date() for r in rows))
-        self.assertEqual(out["planned"], ct.weekly_target(20000, 5000, ct.own_rates(self.conn, 7)))
+        self.assertEqual(out["planned"], out["capacity"])
 
     def test_needs_plan(self):
         self.assertFalse(ct.needs_plan(self.conn, 7))               # no goal yet

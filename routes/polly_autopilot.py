@@ -441,7 +441,7 @@ def _for_you_pool(exclude_ids):
         return unpack_view_result(get_for_you())
 
 
-def _pick_brands(conn, creator_id, creator, notes, scrape):
+def _pick_brands(conn, creator_id, creator, notes, scrape, limit=POOL_SIZE):
     """For You matches that are emailable and not pitched, queued or blocked, best first. (brands, error)."""
     from routes.polly import _match_scrape, _pipeline_pitched_ids
     from services.polly import drop_pitched, flatten_for_you
@@ -459,7 +459,7 @@ def _pick_brands(conn, creator_id, creator, notes, scrape):
     exclude = list(queued) + list(_pipeline_pitched_ids(creator_id) or [])
     brands = flatten_for_you(
         {key: data.get(key) for key in POOL_SECTIONS},
-        limit=POOL_SIZE,
+        limit=limit,
         scrape=match_scrape,
         niches=cats or stated_niches(notes) or (creator or {}).get("creator_niches"),
         required_categories=cats,
