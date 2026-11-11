@@ -1020,10 +1020,59 @@ def reset_daily_counters():
 # ============================================
 # EMAIL PREFERENCES (User-facing)
 # ============================================
+# These used to trust the creator_id in the path, so anyone could read or change
+# any creator's preferences, or unsubscribe them, by editing the number.
+# Preferences now need the signed-in creator; unsubscribe needs that or a signed link.
 
+def _session_creator_id():
+    """The signed-in creator's id (session, then JWT), or None."""
+    try:
+        from pr_crm_routes import get_creator_id_from_session
+        creator_id = get_creator_id_from_session()
+        return int(creator_id) if creator_id else None
+    except Exception:
+        return None
+
+
+def _own_creator_or_error(creator_id=None):
+    """(creator_id, None) for the signed-in creator, or (None, error response).
+
+    With no creator_id the session's creator is used. A creator_id that is not
+    the signed-in creator's own is refused with 403."""
+    session_creator = _session_creator_id()
+    if not session_creator:
+        return None, (jsonify({'success': False, 'error': 'Not authenticated'}), 401)
+    if creator_id is not None and int(creator_id) != session_creator:
+        return None, (jsonify({'success': False, 'error': 'Forbidden'}), 403)
+    return session_creator, None
+
+
+def make_lifecycle_unsubscribe_token(creator_id):
+    """Signed token for /api/email/unsubscribe/<creator_id>?token=...
+
+    Same secret and HMAC as public_routes.make_unsubscribe_token, but a distinct
+    message, so a token for user N can't unsubscribe creator N."""
+    from public_routes import _unsub_secret
+    import hashlib
+    import hmac
+    msg = f"lifecycle-unsub:creator:{int(creator_id)}".encode()
+    return hmac.new(_unsub_secret().encode(), msg, hashlib.sha256).hexdigest()[:32]
+
+
+def verify_lifecycle_unsubscribe_token(creator_id, token):
+    import hmac
+    if not token:
+        return False
+    return hmac.compare_digest(make_lifecycle_unsubscribe_token(creator_id), str(token))
+
+
+@lifecycle_email_bp.route('/api/email/preferences', methods=['GET'])
 @lifecycle_email_bp.route('/api/email/preferences/<int:creator_id>', methods=['GET'])
-def get_email_preferences(creator_id):
-    """Get email preferences for a creator."""
+def get_email_preferences(creator_id=None):
+    """Get the signed-in creator's email preferences."""
+    creator_id, error = _own_creator_or_error(creator_id)
+    if error:
+        return error
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -1075,11 +1124,15 @@ def get_email_preferences(creator_id):
         }), 500
 
 
+@lifecycle_email_bp.route('/api/email/preferences', methods=['POST'])
 @lifecycle_email_bp.route('/api/email/preferences/<int:creator_id>', methods=['POST'])
-def update_email_preferences(creator_id):
-    """Update email preferences for a creator."""
+def update_email_preferences(creator_id=None):
+    """Update the signed-in creator's email preferences."""
+    creator_id, error = _own_creator_or_error(creator_id)
+    if error:
+        return error
     try:
-        data = request.json
+        data = request.get_json(silent=True) or {}
         conn = get_db_connection()
         cursor = conn.cursor()
 
@@ -1124,7 +1177,18 @@ def update_email_preferences(creator_id):
 
 @lifecycle_email_bp.route('/api/email/unsubscribe/<int:creator_id>', methods=['GET', 'POST'])
 def unsubscribe(creator_id):
-    """Unsubscribe a creator from all lifecycle emails."""
+    """Unsubscribe a creator from all lifecycle emails.
+
+    Needs ?token=<make_lifecycle_unsubscribe_token(creator_id)> (email links),
+    or the signed-in creator unsubscribing themselves."""
+    token = request.args.get('token')
+    if token:
+        if not verify_lifecycle_unsubscribe_token(creator_id, token):
+            return jsonify({'success': False, 'error': 'Invalid unsubscribe link'}), 403
+    else:
+        _creator, error = _own_creator_or_error(creator_id)
+        if error:
+            return error
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
