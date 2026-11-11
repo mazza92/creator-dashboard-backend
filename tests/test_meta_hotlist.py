@@ -98,8 +98,6 @@ class GateChecks(unittest.TestCase):
             "active_ads": [{}, {"active_ad_count": 1}],
             "active_ads ": [{}, {"ads_last_seen": TODAY - timedelta(days=31)}],
             "active_ads  ": [{}, {"active_ad_count": None}],
-            "ugc_style": [{}, {"ugc_style": False}],
-            "ugc_style ": [{}, {"ugc_style": None}],
             "category": [{"category": "other"}, {}],
             "category ": [{"category_checked_at": None}, {}],
             "category  ": [{"category_confidence": "low"}, {}],
@@ -114,8 +112,24 @@ class GateChecks(unittest.TestCase):
         for key, (brand, s) in cases.items():
             out = self.check(brand, s)
             self.assertFalse(out["pass"], key)
-            failing = [k for k in gate.CHECK_ORDER if not out["checks"][k]["ok"]]
+            failing = [k for k in gate.REQUIRED if not out["checks"][k]["ok"]]
             self.assertEqual(failing, [key.strip()], (key, out["reasons"]))
+
+    def test_creator_style_ranks_but_is_not_required(self):
+        out = self.check({}, {"ugc_style": False})
+        self.assertTrue(out["pass"])
+        self.assertFalse(out["checks"]["ugc_style"]["ok"])
+
+    def test_meta_discovery_counts_as_live_ads_until_backfill(self):
+        fresh = self.check({"source": "meta_ads_library", "created_at": TODAY - timedelta(days=20)},
+                           {"active_ad_count": None})
+        self.assertTrue(fresh["pass"], fresh["reasons"])
+        self.assertIn("found on", fresh["checks"]["active_ads"]["detail"])
+        old = self.check({"source": "meta_ads_library", "created_at": TODAY - timedelta(days=90)},
+                         {"active_ad_count": None})
+        self.assertFalse(old["pass"])
+        other = self.check({"source": "manual", "created_at": TODAY}, {"active_ad_count": None})
+        self.assertFalse(other["pass"])
 
     def test_manual_override_wins_both_ways(self):
         self.assertTrue(self.check({"category": "other"}, override="approved")["pass"])
@@ -193,7 +207,8 @@ class HotlistDB(unittest.TestCase):
                 polly_autopilot, polly_gmail_accounts, brand_ad_signals, brand_quality_checks, creator_hot_brands;
             CREATE TABLE pr_brands (id serial PRIMARY KEY, brand_name text, website text, logo_url text, category text,
                 description text, hero_product text, contact_email text, email_status text, status text, source text,
-                notes text, category_confidence text, category_checked_at timestamptz, email_bounce_count int DEFAULT 0);
+                notes text, category_confidence text, category_checked_at timestamptz, email_bounce_count int DEFAULT 0,
+                created_at timestamptz DEFAULT NOW());
             CREATE TABLE users (id int PRIMARY KEY, last_login timestamp);
             CREATE TABLE creators (id int PRIMARY KEY, user_id int, creator_niches text[], niche text,
                 followers_count int, unlocks_tier text, subscription_tier text);
@@ -276,7 +291,8 @@ class HotlistDB(unittest.TestCase):
     def test_run_gate_persists_and_excludes_failures(self):
         good = self.brand("Glow", "skincare")
         few = self.brand("Few", "skincare", ads=1)
-        nosig = self.brand("Unchecked", "skincare", ads=None)
+        nosig = self.brand("Unchecked", "skincare", ads=None,
+                           created_at=datetime.now(timezone.utc) - timedelta(days=90))  # found too long ago
         draft = self.brand("Drafty", "skincare", status="draft")
         out = gate.run_gate(self.conn)
         self.assertEqual((out["checked"], out["passed"], out["failed"]), (3, 1, 2))
@@ -291,7 +307,7 @@ class HotlistDB(unittest.TestCase):
         self.assertEqual([b["id"] for b in hot.passing_pool(self.conn)], [good])
 
     def test_override_and_single_evaluate(self):
-        bid = self.brand("Meh", "skincare", ugc=False)
+        bid = self.brand("Meh", "skincare", email_status="invalid")
         self.assertFalse(gate.evaluate(self.conn, bid)["pass"])
         self.assertTrue(gate.set_override(self.conn, bid, "approved", note="looks great")["pass"])
         gate.run_gate(self.conn)  # the nightly re-run keeps the manual decision
@@ -334,14 +350,18 @@ class HotlistDB(unittest.TestCase):
         self.conn.commit()
         out = hot.hotlist_for_creator(self.conn, 1)
         self.assertEqual([r["brand_id"] for r in out], [a])
-        self.assertEqual(out[0]["reason"], f"Running 9 UGC-style ads since Oct 28{'' if TODAY.year == 2026 else ', 2026'}")
+        self.assertEqual(out[0]["reason"], f"Running 9 creator-style ads since Oct 28{'' if TODAY.year == 2026 else ', 2026'}")
 
     def test_reason_strings(self):
         today = date(2026, 11, 11)
-        self.assertEqual(hot.reason_for({"active_ad_count": 9, "ads_first_seen": date(2026, 10, 28)}, 0, today),
-                         "Running 9 UGC-style ads since Oct 28")
+        self.assertEqual(hot.reason_for({"active_ad_count": 9, "ugc_style": True, "ads_first_seen": date(2026, 10, 28)}, 0, today),
+                         "Running 9 creator-style ads since Oct 28")
         self.assertEqual(hot.reason_for({"active_ad_count": 2, "ads_first_seen": date(2025, 12, 1)}, 3, today),
-                         "Running 2 UGC-style ads since Dec 1, 2025 · Gifted 3 creators your size")
+                         "Running 2 ads since Dec 1, 2025 · Gifted 3 creators your size")
+        self.assertEqual(hot.reason_for({"found_on": date(2026, 11, 2)}, 0, today),
+                         "Running Meta ads (spotted Nov 2)")
+        self.assertEqual(hot.reason_for({"fallback": True, "category": "skincare"}, 0, today),
+                         "Fresh skincare pick · verified inbox")
         self.assertEqual(hot.your_size(5000, [1000, 2000, 15000, 16000, 400000]), 2)  # 1.7k-15k
 
     # --- daily pick ---
@@ -349,7 +369,7 @@ class HotlistDB(unittest.TestCase):
     def test_one_per_day_idempotent_no_padding_no_repeat(self):
         a = self.brand("Alpha", "skincare", ads=9)
         b = self.brand("Beta", "skincare", ads=3)
-        self.brand("Bad", "fashion", ugc=False)
+        self.brand("Bad", "fashion", email_status="invalid")
         gate.run_gate(self.conn)
         self.creator(1, ["skincare"])
         self.creator(2, ["fashion"])            # only a failing brand in the niche -> no pick
@@ -377,10 +397,21 @@ class HotlistDB(unittest.TestCase):
         self.assertEqual(set(got), {"brand_id", "brand_name", "logo", "reason", "queued_item_id"})
         self.assertEqual((got["brand_id"], got["brand_name"], got["logo"], got["queued_item_id"]),
                          (a, "Alpha", "https://logo/Alpha.png", None))
-        self.assertTrue(got["reason"].startswith("Running 9 UGC-style ads"))
+        self.assertTrue(got["reason"].startswith("Running 9 creator-style ads"))
         self.assertIsNone(hot.hot_brand_today(self.conn, 1, day=TODAY - timedelta(days=1)))
         gate.set_override(self.conn, a, "rejected")
         self.assertIsNone(hot.hot_brand_today(self.conn, 1))
+
+    def test_fallback_keeps_one_hot_brand_a_day(self):
+        self.brand("Bad", "fashion", email_status="invalid")             # gate fails: never comes back
+        self.brand("Loom", "fashion", ads=None, source="manual")          # verified, not from Meta
+        self.brand("Shady", "fashion", ads=None, source="manual", email_status="unverified")
+        gate.run_gate(self.conn)
+        self.creator(2, ["fashion"])
+        hot.assign_hot_brands(self.conn, draft=False)
+        got = hot.hot_brand_today(self.conn, 2)
+        self.assertEqual(got["brand_name"], "Loom")
+        self.assertEqual(got["reason"], "Fresh fashion pick · verified inbox")
 
     def test_pro_autopilot_pitch_is_queued_free_is_not(self):
         a = self.brand("Alpha", "skincare", ads=9)

@@ -89,13 +89,38 @@ def passing_pool(conn) -> List[Dict[str, Any]]:
     return _rows(conn, """
         SELECT b.id, b.brand_name, LOWER(COALESCE(b.category, '')) AS category, b.description, b.hero_product,
                b.logo_url, b.website, to_jsonb(b) ->> 'target_audience' AS target_audience,
-               s.active_ad_count, s.ads_first_seen, s.ads_last_seen, s.ad_library_url, q.override
+               s.active_ad_count, s.ads_first_seen, s.ads_last_seen, s.ad_library_url, s.ugc_style, q.override,
+               CASE WHEN b.source = 'meta_ads_library' THEN b.created_at::date END AS found_on
         FROM pr_brands b
         JOIN brand_quality_checks q ON q.brand_id = b.id AND q.passed
         LEFT JOIN brand_ad_signals s ON s.brand_id = b.id
         WHERE NULLIF(TRIM(b.contact_email), '') IS NOT NULL
           AND (q.override = 'approved' OR (b.source = 'meta_ads_library' AND b.status = 'published'))
     """, label="pool")
+
+
+def fallback_pool(conn) -> List[Dict[str, Any]]:
+    """Published brands with a verified inbox, used only when a creator's niches have no gate-passed brand left.
+    Gate-failed brands (and admin rejects) never come back this way."""
+    from services.brand_quality_gate import _ready
+
+    _ready(conn)
+    rows = _rows(conn, """
+        SELECT b.id, b.brand_name, LOWER(COALESCE(b.category, '')) AS category, b.description, b.hero_product,
+               b.logo_url, b.website, NULL::int AS active_ad_count, NULL::date AS ads_first_seen,
+               NULL::date AS ads_last_seen, NULL::text AS ad_library_url, NULL::boolean AS ugc_style,
+               NULL::date AS found_on, TRUE AS fallback
+        FROM pr_brands b
+        LEFT JOIN brand_quality_checks q ON q.brand_id = b.id
+        WHERE b.status = 'published' AND NULLIF(TRIM(b.contact_email), '') IS NOT NULL
+          AND LOWER(COALESCE(b.email_status, '')) = 'valid'
+          AND COALESCE(b.source, '') <> 'meta_ads_library'
+          AND COALESCE(q.override, '') <> 'rejected'
+        ORDER BY b.id DESC LIMIT 5000
+    """, label="fallback")
+    from services.brand_quality_gate import safety_flags
+    return [r for r in rows if not safety_flags(r.get("brand_name"), r.get("category"), r.get("description"),
+                                                r.get("hero_product"), website=r.get("website"))]
 
 
 def _ids(rows: Iterable[Dict[str, Any]], key: str = "brand_id") -> Set[int]:
@@ -182,10 +207,18 @@ def reason_for(brand: Dict[str, Any], gifted: int = 0, today: Optional[date] = N
     first = brand.get("ads_first_seen")
     if isinstance(first, datetime):
         first = first.date()
+    found = brand.get("found_on")
+    if isinstance(found, datetime):
+        found = found.date()
+    style = "creator-style " if brand.get("ugc_style") is True else ""
     if n:
-        text = f"Running {n} UGC-style ad{'s' if n != 1 else ''}"
+        text = f"Running {n} {style}ad{'s' if n != 1 else ''}"
         if first:
             text += f" since {_day_label(first, today)}"
+    elif found:
+        text = f"Running {style}Meta ads (spotted {_day_label(found, today)})"
+    elif brand.get("fallback"):
+        text = f"Fresh {brand.get('category') or 'niche'} pick · verified inbox"
     else:
         text = "Hand-picked by the Newcollab team"
     if gifted:
@@ -241,13 +274,15 @@ def rank_for_creator(creator: Dict[str, Any], pool: List[Dict[str, Any]], exclud
             "category": b.get("category"), "website": b.get("website"), "active_ad_count": b.get("active_ad_count"),
             "ads_first_seen": b.get("ads_first_seen"), "ads_last_seen": b.get("ads_last_seen"),
             "ad_library_url": b.get("ad_library_url"), "gifted_your_size": g,
+            "ugc_style": b.get("ugc_style"), "found_on": b.get("found_on"),
             "reason": reason_for(b, g, today),
         })
 
     def key(r):
         last = r.get("ads_last_seen")
-        return (-(r["gifted_your_size"] > 0), -int(r.get("active_ad_count") or 0),
-                -(last.toordinal() if isinstance(last, date) else 0), r["brand_id"])
+        seen = last if isinstance(last, date) else r.get("found_on")
+        return (-(r["gifted_your_size"] > 0), -(r.get("ugc_style") is True), -int(r.get("active_ad_count") or 0),
+                -(seen.toordinal() if isinstance(seen, date) else 0), r["brand_id"])
 
     out.sort(key=key)
     return out[:limit]
@@ -298,9 +333,8 @@ def assign_hot_brands(conn, day: Optional[date] = None, creator_ids: Optional[Li
     out = {"day": day.isoformat(), "candidates": len(ids), "already": len(have), "assigned": 0, "none": 0,
            "no_niche": 0, "drafted": 0, "draft_failed": 0}
     pool = passing_pool(conn) if todo else []
-    if todo and not pool:
-        out["none"] = len(todo)
-    if pool:
+    fallback = None
+    if todo:
         gifted = gifted_followers(conn, [int(b["id"]) for b in pool])
         cur = conn.cursor()
         for start in range(0, len(todo), 200):
@@ -314,6 +348,11 @@ def assign_hot_brands(conn, day: Optional[date] = None, creator_ids: Optional[Li
                     out["no_niche"] += 1
                     continue
                 picks = rank_for_creator(creator, pool, excluded.get(cid, set()), gifted, today=day, limit=1)
+                if not picks:
+                    # At least one hot brand a day: verified published brands in the creator's exact niches.
+                    if fallback is None:
+                        fallback = fallback_pool(conn)
+                    picks = rank_for_creator(creator, fallback, excluded.get(cid, set()), {}, today=day, limit=1)
                 if not picks:
                     out["none"] += 1
                     continue

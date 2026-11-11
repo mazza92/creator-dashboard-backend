@@ -30,6 +30,11 @@ LIVE_WITHIN_DAYS = 30
 OK_EMAIL = ("valid", "catch-all")
 CONFIDENT = ("high", "medium")
 CHECK_ORDER = ("active_ads", "ugc_style", "category", "inbox", "safety", "real_store")
+# Creator-style ads rank a brand higher and show in its reason; most Meta ads are promo copy, so it isn't required.
+REQUIRED = ("active_ads", "category", "inbox", "safety", "real_store")
+# Our Meta scraper only finds brands while their ads run: until the Ad Library backfill has checked a brand,
+# being found in the last DISCOVERY_WITHIN_DAYS counts as live ads.
+DISCOVERY_WITHIN_DAYS = 60
 
 DDL = """
 CREATE TABLE IF NOT EXISTS brand_quality_checks (
@@ -191,7 +196,10 @@ def evaluate_row(brand: Dict[str, Any], sig: Optional[Dict[str, Any]] = None,
 
     count = sig.get("active_ad_count")
     last = _as_date(sig.get("ads_last_seen"))
-    if count is None:
+    found = _as_date(brand.get("created_at")) if brand.get("source") == "meta_ads_library" else None
+    if count is None and found and (today - found).days < DISCOVERY_WITHIN_DAYS:
+        checks["active_ads"] = {"ok": True, "detail": f"ads running when found on {found}"}
+    elif count is None:
         checks["active_ads"] = {"ok": False, "detail": "ad library not checked yet"}
     elif int(count) < MIN_LIVE_ADS:
         checks["active_ads"] = {"ok": False, "detail": f"{int(count)} live ad(s), needs {MIN_LIVE_ADS}+"}
@@ -201,7 +209,7 @@ def evaluate_row(brand: Dict[str, Any], sig: Optional[Dict[str, Any]] = None,
         checks["active_ads"] = {"ok": True, "detail": f"{int(count)} live ads, seen {last}"}
 
     ugc = sig.get("ugc_style")
-    checks["ugc_style"] = {"ok": ugc is True,
+    checks["ugc_style"] = {"ok": ugc is True, "required": False,
                            "detail": sig.get("ugc_style_reason") or ("not classified yet" if ugc is None else "")}
     if ugc is False:
         checks["ugc_style"]["detail"] = "not creator-style: " + (sig.get("ugc_style_reason") or "")
@@ -236,8 +244,8 @@ def evaluate_row(brand: Dict[str, Any], sig: Optional[Dict[str, Any]] = None,
                             description=brand.get("description"))
     checks["real_store"] = {"ok": problem is None, "detail": problem or _host(brand.get("website"))}
 
-    auto = all(checks[k]["ok"] for k in CHECK_ORDER)
-    reasons = [f"{k}: {checks[k]['detail']}" for k in CHECK_ORDER if not checks[k]["ok"]]
+    auto = all(checks[k]["ok"] for k in REQUIRED)
+    reasons = [f"{k}: {checks[k]['detail']}" for k in REQUIRED if not checks[k]["ok"]]
     passed = auto
     if override == "approved":
         passed = True
@@ -250,7 +258,7 @@ def evaluate_row(brand: Dict[str, Any], sig: Optional[Dict[str, Any]] = None,
 
 _BRAND_SQL = """
     SELECT b.id, b.brand_name, b.website, b.category, b.description, b.hero_product, b.contact_email,
-           b.email_status, b.status, b.source,
+           b.email_status, b.status, b.source, b.created_at,
            to_jsonb(b) ->> 'category_confidence' AS category_confidence,
            to_jsonb(b) ->> 'category_checked_at' AS category_checked_at,
            COALESCE((to_jsonb(b) ->> 'email_bounce_count')::int, 0) AS email_bounce_count,
