@@ -101,7 +101,7 @@ class TrackerDb(unittest.TestCase):
         pa._TABLES_READY = False
         self.conn = _conn()
         cur = self.conn.cursor()
-        cur.execute("""DROP TABLE IF EXISTS creator_goals, creator_deals, creator_pitch_plan, polly_autopilot,
+        cur.execute("""DROP TABLE IF EXISTS creator_goals, creator_deals, creator_pitch_plan, creator_milestones, polly_autopilot,
                        polly_autopilot_queue;
                        TRUNCATE creators, creator_profile_data, pr_brands, creator_pipeline, polly_timeline_events""")
         cur.execute("""INSERT INTO creators (id, user_id, followers_count, social_follower_count, creator_niches,
@@ -316,6 +316,35 @@ class TrackerDb(unittest.TestCase):
         self.assertEqual(clean["kind"], "goal_plan")
         self.assertEqual(clean["goal_plan"]["planned"], msg["goal_plan"]["planned"])
         self.assertTrue(clean["task_chips"])
+
+    def test_first_run_and_checklist(self):
+        self.assertTrue(ct.in_first_run(self.conn, 7, {}))
+        self.assertFalse(ct.in_first_run(self.conn, 7, {"first_run_done": "x"}))
+        self.assertIsNone(ct.first_run_payload(self.conn, 7, now=NOW))      # nothing planned yet
+        ct.set_goal(self.conn, 7, 20000, "custom", sync_autopilot=False)
+        ct.plan_week(self.conn, 7, self._brands(60), now=NOW)
+        fr = ct.first_run_payload(self.conn, 7, now=NOW)
+        self.assertTrue(fr["goal_set"])
+        self.assertEqual(len(fr["brands"]), 6)
+        self.assertEqual(fr["free_left"], 1)
+        self.assertGreater(fr["this_week"], 0)
+        self.assertTrue(all(b["offer"] in ("paid", "gifted") for b in fr["brands"]))
+        gs = ct.getting_started(self.conn, 7)
+        self.assertEqual((gs["goal"], gs["pitched"], gs["calendar"], gs["show"]), (True, False, False, True))
+        self._queue(1, "sent", sent_days_ago=1)
+        self.assertFalse(ct.in_first_run(self.conn, 7, {}))                  # a pitch went out
+        ct.mark_milestone(self.conn, 7, "calendar_seen")
+        gs = ct.getting_started(self.conn, 7)
+        self.assertEqual((gs["done"], gs["show"]), (3, False))
+        self.assertIn("getting_started", ct.build_tracker(self.conn, 7, now=NOW))
+
+    def test_plan_message_waits_during_first_run(self):
+        ct.set_goal(self.conn, 7, 20000, "custom", sync_autopilot=False)
+        ct.plan_week(self.conn, 7, self._brands(10), now=NOW)
+        with patch("services.polly_memory.load_thread", return_value={"messages": [], "notes": {}}), \
+                patch("services.polly_memory.save_thread") as save:
+            self.assertFalse(ct.post_goal_plan(self.conn, 7, now=NOW))
+            save.assert_not_called()
 
     def test_unknown_action_rejected(self):
         with self.assertRaises(ValueError):

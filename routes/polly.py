@@ -1590,9 +1590,25 @@ def bootstrap():
                 except Exception as err:
                     print(f"[Polly] location ask stamp skipped: {err}")
         timer.mark("state")
+        # First run: until the creator picks how to start, Polly shows one welcome (goal, lined-up brands, two
+        # choices) and nothing else: no month note, recap, offers or auto-suggested brands.
+        first_run = None
+        try:
+            from services.creator_tracker import first_run_payload, in_first_run, planned_rows
+            if in_first_run(conn, creator_id, notes):
+                if not planned_rows(conn, creator_id):
+                    from routes.creator_tracker import _plan
+                    _plan(conn, creator_id, creator)
+                first_run = first_run_payload(conn, creator_id)
+        except Exception as err:
+            print(f"[Polly] first run skipped creator={creator_id}: {err}")
+            conn.rollback()
+            first_run = None
+        if first_run:
+            auto_action = None
         checked_in = False  # login check-ins ("got any reply from X?") retired: the weekly report covers it
         offered = False
-        if not checked_in and (
+        if not checked_in and not first_run and (
             _deliver_credits_out_offer(conn, creator_id, first, balance, tracker)
             or _deliver_followup_offer(conn, creator_id, first, balance)
         ):
@@ -1602,19 +1618,19 @@ def bootstrap():
             auto_action = None
         career = career_snapshot(conn, creator_id, notes, balance)
         boarded = False
-        if not checked_in and not offered and not empty_thread:
+        if not checked_in and not offered and not empty_thread and not first_run:
             boarded = _deliver_monday_board(conn, creator_id, first, kit, balance)
             if boarded:
                 thread = load_thread(conn, creator_id)
                 brief = None
-        if not checked_in and not offered and not empty_thread and not boarded and career:
+        if not checked_in and not offered and not empty_thread and not boarded and career and not first_run:
             posted = _deliver_manager_note(conn, creator_id, first, career, tracker, balance, queue)
             if posted:
                 thread = load_thread(conn, creator_id)
                 brief = None
         nudge = None
         try:
-            nudge = maybe_bootstrap_nudge(conn, creator_id)
+            nudge = None if first_run else maybe_bootstrap_nudge(conn, creator_id)
         except Exception as err:
             print(f"[Polly] nudge peek skipped: {err}")
         try:
@@ -1654,10 +1670,33 @@ def bootstrap():
             "career": career,
             "nudge": nudge,
             "auto_action": auto_action,
+            "first_run": json_safe(first_run) if first_run else None,
         }), extra=f"empty={int(empty_thread)} auto={int(bool(auto_action))}")
     finally:
         if conn:
             conn.close()
+
+
+@polly_bp.route("/first-run", methods=["POST"])
+def first_run_done():
+    """The creator picked how to start ('gmail': Polly sends, 'manual': they pitch themselves, 'dismiss')."""
+    creator_id, conn, _creator = _creator_auth()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    try:
+        choice = str((request.get_json(silent=True) or {}).get("choice") or "dismiss")[:20]
+        thread = load_thread(conn, creator_id)
+        notes = dict(thread.get("notes") or {})
+        notes["first_run_done"] = utc_iso_now()
+        notes["first_run_choice"] = choice
+        # The month note would otherwise post on the next open ("new month: your free pitches are back").
+        notes["month_plan_month"] = month_key()
+        save_thread(conn, creator_id, messages=thread.get("messages") or [],
+                    suggested=thread.get("suggested_brands") or [], notes=notes)
+        _log_polly_event(creator_id, "first_run_choice", {"choice": choice})
+        return jsonify({"success": True})
+    finally:
+        conn.close()
 
 
 @polly_bp.route("/paywall-brands", methods=["GET"])
@@ -2561,6 +2600,16 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
                     left = 0
             summary["credits_left"] = left
             summary["pro_offer"] = (not is_pro) and not left
+        if sent:
+            # First pitches out: the calendar shows the rest of the plan (and ticks the getting-started list).
+            try:
+                from services.creator_tracker import milestones
+                if "calendar_seen" not in milestones(conn, creator_id):
+                    chips.append({"id": "open_tracker", "label": "See my calendar", "action": "link",
+                                  "href": "/creator/dashboard/tracker"})
+            except Exception as err:
+                print(f"[Polly] calendar chip skipped: {err}")
+                conn.rollback()
         if sent and not is_pro:
             try:
                 from lifecycle_email_engine import trigger_quota_hit
