@@ -46,6 +46,10 @@
     {
       "path": "/api/hotlist/cron/daily",
       "schedule": "10 6 * * *"
+    },
+    {
+      "path": "/api/hotlist/cron/daily",
+      "schedule": "40 6 * * *"
     }
   ],
   "git": {
