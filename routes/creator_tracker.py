@@ -15,6 +15,8 @@ from services.creator_tracker import (
     build_tracker,
     creator_profile,
     get_goal,
+    needs_plan,
+    plan_week,
     own_rates,
     pitch_math,
     record_deal,
@@ -30,6 +32,24 @@ def _auth():
     return _creator_auth()
 
 
+def _plan(conn, creator_id, creator):
+    """Line up this week's brands from the creator's matches (Autopilot's picker). Never fails the request."""
+    if not creator:
+        return None
+    try:
+        from routes.polly_autopilot import _creator_context, _pick_brands
+        notes, scrape = _creator_context(conn, creator)
+        brands, _err = _pick_brands(conn, creator_id, creator, notes, scrape)
+        return plan_week(conn, creator_id, brands)
+    except Exception as err:
+        print(f"[tracker] plan skipped creator={creator_id}: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None
+
+
 def _unauthorized():
     return jsonify({"success": False, "error": "unauthorized"}), 401
 
@@ -37,10 +57,12 @@ def _unauthorized():
 @tracker_bp.route("", methods=["GET"])
 @tracker_bp.route("/", methods=["GET"])
 def tracker():
-    creator_id, conn, _creator = _auth()
+    creator_id, conn, creator = _auth()
     if not creator_id:
         return _unauthorized()
     try:
+        if needs_plan(conn, creator_id):
+            _plan(conn, creator_id, creator)
         return jsonify({"success": True, **build_tracker(conn, creator_id)})
     finally:
         conn.close()
@@ -64,7 +86,7 @@ def goal_suggest():
 
 @tracker_bp.route("/goal", methods=["POST"])
 def goal_save():
-    creator_id, conn, _creator = _auth()
+    creator_id, conn, creator = _auth()
     if not creator_id:
         return _unauthorized()
     body = request.get_json(silent=True) or {}
@@ -80,6 +102,7 @@ def goal_save():
         goal = set_goal(conn, creator_id, cents, body.get("source") or "custom")
         profile = creator_profile(conn, creator_id)
         goal["math"] = pitch_math(goal["amount_cents"], profile["followers"], own_rates(conn, creator_id))
+        goal["plan"] = _plan(conn, creator_id, creator)  # the goal becomes this week's brands, with dates
         return jsonify({"success": True, "goal": goal})
     finally:
         conn.close()
