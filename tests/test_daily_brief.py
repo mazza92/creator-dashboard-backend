@@ -42,6 +42,48 @@ def local(now=TUE):
     return db.local_time(now, "America/New_York")
 
 
+
+_ROLLOUT = None
+
+
+def setUpModule():
+    global _ROLLOUT
+    import os
+    _ROLLOUT = os.environ.get("DAILY_BRIEF_ROLLOUT")
+    os.environ["DAILY_BRIEF_ROLLOUT"] = "all"
+
+
+def tearDownModule():
+    import os
+    if _ROLLOUT is None:
+        os.environ.pop("DAILY_BRIEF_ROLLOUT", None)
+    else:
+        os.environ["DAILY_BRIEF_ROLLOUT"] = _ROLLOUT
+
+
+class RolloutSwitch(unittest.TestCase):
+    def test_switch_values(self):
+        import os
+        from unittest.mock import patch as _patch
+        from services.email_policy import brief_rollout
+        with _patch.dict(os.environ, {"DAILY_BRIEF_ROLLOUT": "204, 4248"}):
+            self.assertTrue(brief_rollout(204))
+            self.assertTrue(brief_rollout("4248"))
+            self.assertFalse(brief_rollout(7))
+        with _patch.dict(os.environ, {"DAILY_BRIEF_ROLLOUT": ""}):
+            self.assertFalse(brief_rollout(204))
+        with _patch.dict(os.environ, {"DAILY_BRIEF_ROLLOUT": "all"}):
+            self.assertTrue(brief_rollout(7))
+
+    def test_outside_rollout_keeps_old_emails(self):
+        import os
+        from unittest.mock import MagicMock, patch as _patch
+        from services import email_policy as _ep
+        with _patch.dict(os.environ, {"DAILY_BRIEF_ROLLOUT": "204"}), \
+                _patch.object(_ep, "_recent", return_value=[]):
+            self.assertEqual(_ep.decide(MagicMock(), 7, _ep.BRIEF_KIND, True), (False, "brief_rollout"))
+            self.assertEqual(_ep.decide(MagicMock(), 7, "ugc_roundup", True), (True, "ok"))
+
 class ContentTests(unittest.TestCase):
     def test_quiet_day_is_skipped(self):
         quiet = db.assemble(tracker([card(1, "Glow", column="pitched", your_move=False, label="Waiting for a reply")]),

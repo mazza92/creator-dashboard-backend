@@ -781,7 +781,10 @@ def send_due_briefs(conn, now: Optional[datetime] = None, limit: int = 300, dry_
     ensure_tables(conn)
     results: List[Dict[str, Any]] = []
     pool: Optional[List[Dict[str, Any]]] = None
+    from services.email_policy import brief_rollout
     for row in candidates(conn, now, limit * 4):
+        if not brief_rollout(row["creator_id"]):
+            continue
         settings = {k: row.get(k) for k in ("country", "mode", "brief_timezone", "timezone")}
         local = local_time(now, creator_timezone(settings))
         if not due_today(local)[0]:

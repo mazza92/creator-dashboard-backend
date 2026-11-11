@@ -111,6 +111,19 @@ def _local_midnight(now: datetime, tz_name: str) -> datetime:
     return local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
 
 
+def brief_rollout(creator_id: Any) -> bool:
+    """Daily brief rollout switch: env DAILY_BRIEF_ROLLOUT = 'all' or comma-separated creator ids (default: nobody).
+    Creators outside it keep the pre-brief emails exactly (no brief, nothing folded, Monday report as before)."""
+    import os
+    raw = (os.getenv("DAILY_BRIEF_ROLLOUT") or "").strip().lower()
+    if raw == "all":
+        return True
+    try:
+        return int(creator_id) in {int(x) for x in raw.replace(" ", "").split(",") if x.isdigit()}
+    except (TypeError, ValueError):
+        return False
+
+
 def decide(conn, creator_id: int, kind: str, is_pro: bool, now: Optional[datetime] = None,
            brief: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
     """(allowed, reason). Reason names the rule that blocked it, for the cron log."""
@@ -123,7 +136,9 @@ def decide(conn, creator_id: int, kind: str, is_pro: bool, now: Optional[datetim
         return False, "free_only"
     if not is_pro and kind in PRO_ONLY:
         return False, "pro_only"
-    if kind == BRIEF_KIND or kind in FOLDED_INTO_BRIEF or kind in WEEKLY_REPORT:
+    if kind == BRIEF_KIND and not brief_rollout(creator_id):
+        return False, "brief_rollout"
+    if (kind == BRIEF_KIND or kind in FOLDED_INTO_BRIEF or kind in WEEKLY_REPORT) and brief_rollout(creator_id):
         brief = _brief_context(conn, creator_id, is_pro, brief)
         mode = brief["mode"]
         if kind == BRIEF_KIND and mode != "daily":
