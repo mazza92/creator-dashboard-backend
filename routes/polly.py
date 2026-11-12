@@ -1159,6 +1159,20 @@ def _stamp_note(conn, creator_id, key, repeat=False):
         conn.rollback()
 
 
+def _created_at(conn, creator_id):
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT created_at FROM creators WHERE id = %s", (creator_id,))
+        row = cur.fetchone()
+        created = row[0] if row and not isinstance(row, dict) else (row or {}).get("created_at")
+        if created and created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        return created
+    except Exception:
+        conn.rollback()
+        return None
+
+
 def _signup_week(conn, creator_id):
     """Joined this week: no weekly report yet (there is no 'last week' to report on)."""
     try:
@@ -1198,6 +1212,13 @@ def _deliver_manager_note(conn, creator_id, first, career, tracker, balance, que
                 return None
         if which == "month" and _note_shown(conn, creator_id, f"month_note:{month_key()}"):
             which = "away"
+        if which == "month":
+            # Joined this month: "new month: your free pitches are back" makes no sense to them.
+            created = _created_at(conn, creator_id)
+            if created and created.strftime("%Y-%m") == month_key():
+                _stamp_note(conn, creator_id, f"month_note:{month_key()}")
+                notes["month_plan_month"] = month_key()
+                which = "away"
         if which == "away":
             from services.polly_manager import AWAY_BRIEF_GAP
             last_away = _note_shown(conn, creator_id, "away_brief")
@@ -1657,6 +1678,17 @@ def bootstrap():
         if first_run:
             auto_action = None
             brief = None  # the welcome is the only thing on screen
+            # Polly's own earlier notes (plan message from the goal step, month note...) would sit under the
+            # welcome with competing buttons. Until the creator has said anything, the welcome stands alone.
+            msgs = thread.get("messages") or []
+            if msgs and not any(str(m.get("role")) == "user" for m in msgs if isinstance(m, dict)):
+                try:
+                    save_thread(conn, creator_id, messages=[], suggested=thread.get("suggested_brands") or [],
+                                notes=notes)
+                    thread = load_thread(conn, creator_id)
+                except Exception as err:
+                    print(f"[Polly] first-run thread reset skipped: {err}")
+                    conn.rollback()
         checked_in = False  # login check-ins ("got any reply from X?") retired: the weekly report covers it
         offered = False
         if not checked_in and not first_run and (
