@@ -1717,7 +1717,9 @@ def bootstrap():
                 "due_soon": tracker.get("due_soon") or [],
                 "active_count": len(tracker.get("active_tasks") or []),
             },
-            "brief": brief,
+            # The "Polly brief" card (Your pipeline) is retired: it repeated open tasks on every open, untied to the
+            # goal. Kit views, follow-ups due and replies live on the Tracker, the daily brief email and live toasts.
+            "brief": None,
             "career": career,
             "nudge": nudge,
             "auto_action": auto_action,
