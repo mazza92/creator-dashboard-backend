@@ -1438,11 +1438,11 @@ def apply_paid_ask_to_pitch(
         + ship
     )
     if re.search(r"no fee|gifted trial|pr/gifting|gifting sample", f"{subject}\n{body}", re.I):
-        body = re.sub(r"No fee\. Just product \+ shipping to [^\n.]+.?", paid_line, body, flags=re.I)
+        body = re.sub(r"No fee\. Just product \+ shipping to [^\n.]+.?", lambda _m: paid_line, body, flags=re.I)
         if re.search(r"no fee", body, re.I):
-            body = re.sub(r"No fee[^\n]*", paid_line, body, flags=re.I)
+            body = re.sub(r"No fee[^\n]*", lambda _m: paid_line, body, flags=re.I)
     if re.search(r"(?i)^rate:", body, re.M):
-        body = re.sub(r"(?im)^rate:[^\n]+", paid_line, body)
+        body = re.sub(r"(?im)^rate:[^\n]+", lambda _m: paid_line, body)
     elif "Rate:" not in body:
         body = (body.rstrip() + "\n\n" + paid_line).strip()
     if filled and not is_location_placeholder(filled):
@@ -1517,11 +1517,11 @@ def apply_gifted_ask_to_pitch(
         loc = LOCATION_PLACEHOLDER
     gifted_line = f"No fee. Just product + shipping to {loc}."
     if re.search(r"(?im)^rate:", body):
-        body = re.sub(r"(?im)^rate:[^\n]+", gifted_line, body)
+        body = re.sub(r"(?im)^rate:[^\n]+", lambda _m: gifted_line, body)
     elif re.search(r"Rate:", body):
-        body = re.sub(r"Rate: [^\n]+", gifted_line, body)
+        body = re.sub(r"Rate: [^\n]+", lambda _m: gifted_line, body)
     elif re.search(r"(?i)no fee", body):
-        body = re.sub(r"(?i)No fee[^\n]*", gifted_line, body)
+        body = re.sub(r"(?i)No fee[^\n]*", lambda _m: gifted_line, body)
     else:
         body = (body.rstrip() + "\n\n" + gifted_line).strip()
     out["subject"] = IRRESISTIBLE_SUBJECT

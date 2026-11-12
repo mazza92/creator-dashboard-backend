@@ -38,3 +38,10 @@ class TestCancelFlag(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestLocationSwap(unittest.TestCase):
+    def test_location_starting_with_digits(self):
+        from services.irresistible_pitch import apply_location_to_body
+        body = "Hi team,\n\nNo fee. Just product + shipping to London."
+        self.assertIn("shipping to 8000 Aarhus, Denmark.", apply_location_to_body(body, "8000 Aarhus, Denmark"))
