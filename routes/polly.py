@@ -2154,6 +2154,8 @@ def _run_chip(state, action, chip_id, data):
         return prior
     elif action == "pitch_batch":
         call = ("draft_pitch_batch", {"brand_ids": list(data.get("brand_ids") or [])[:3]})
+    elif action == "show_brands":
+        call = ("show_brands", {"brand_ids": list(data.get("brand_ids") or [])[:6]})
     elif action == "pitch_targets":
         call = _pitch_targets_call(state, prior)
         if not call:
@@ -2251,7 +2253,10 @@ def _finish_turn(state, say, brain, timer, chip_id):
         _hydrate_brand_cards(drop_pitched(brands or state.suggested, notes)), notes,
     )
     task_chips = drop_early_followups(list(state.task_chips), state.early_fu)
-    if brands and not state.pitch_batch and not any(c.get("action") == "pitch_batch" for c in task_chips):
+    # "I'll pitch brands myself" (first run): one pitch per Contact, never a "write all 3" that spends every credit.
+    hand_pick = (getattr(state, "chip", None) or {}).get("id") == "show_brands"
+    if brands and not hand_pick and not state.pitch_batch and not any(
+            c.get("action") == "pitch_batch" for c in task_chips):
         batch = _batch_chip(brands, state.balance)
         if batch:
             task_chips.insert(0, batch)

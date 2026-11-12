@@ -267,6 +267,38 @@ def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def show_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Button-only: show these brands as cards (Contact on each), writing nothing. First run "I'll pitch brands
+    myself": the creator picks which ones to pitch, one free pitch each, and keeps the rest for the directory."""
+    R = _routes()
+    rows, seen = [], set()
+    for raw in args.get("brand_ids") or []:
+        bid = _int(raw)
+        if not bid or bid in seen:
+            continue
+        seen.add(bid)
+        row = find_brand(state, brand_id=bid)
+        if row and not state.is_pitched(row):
+            rows.append(row)
+    rows = R._hydrate_brand_cards(rows[:6]) if rows else []
+    if not rows:
+        return {"ok": False, "status": "no_brands", "explain": "Those brands are gone or pitched. Offer new matches."}
+    state.brands = rows
+    state.notes = mark_shown_brands(state.notes, rows)
+    state.task_chips = [{"id": "browse_directory", "label": "Browse all brands", "action": "open_directory"}]
+    balance = R._unlock_balance(state.creator_id) or {}
+    if balance.get("is_unlimited"):
+        state.final_say = ("Here are the brands I lined up for you. Tap **Contact** on any of them and I'll write "
+                           "that pitch, ready to send from your own email.")
+    else:
+        left = balance.get("remaining")
+        left_txt = f"your {left} free pitch{'es' if left != 1 else ''}" if isinstance(left, int) else "a free pitch"
+        state.final_say = ("Here are the brands I lined up for you. Tap **Contact** on the ones you want and I'll "
+                           f"write that pitch. Each one uses one of {left_txt}, so you can keep the rest for "
+                           "brands you find in **Brands**.")
+    return {"ok": True, "brands": [brand_card(r) for r in rows], "cards_shown": True}
+
+
 def browse_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     from services.brand_browse import browse_brands as search
     from services.polly_prefs import CATEGORY_WORDS
@@ -1746,6 +1778,7 @@ _BY_NAME: Dict[str, Callable[[TurnState, Dict[str, Any]], Dict[str, Any]]] = {
 }
 # Button-only tools: run from a tapped chip, never offered to the model.
 _BY_NAME["draft_pitch_batch"] = draft_pitch_batch
+_BY_NAME["show_brands"] = show_brands
 
 INTENT_FOR_TOOL = {
     "suggest_brands": "suggest_brands",
@@ -1753,6 +1786,7 @@ INTENT_FOR_TOOL = {
     "search_directory": "chat",
     "draft_pitch": "generate_pitch",
     "draft_pitch_batch": "generate_pitch",
+    "show_brands": "suggest_brands",
     "find_paid_gigs": "suggest_gigs",
     "find_gifting_brands": "find_gifting_brands",
 }
