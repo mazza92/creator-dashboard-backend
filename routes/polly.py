@@ -1086,6 +1086,8 @@ def _deliver_credits_out_offer(conn, creator_id, first, balance, tracker):
             waiting=matched_waiting(thread),
         )
         message["kind"] = "upsell"
+        # The card carries the offer; the chat line just marks the moment.
+        message["content"] = (f"{first}, your" if first else "Your") + " free pitches are out. Here's how to keep going."
         message["upsell"] = _upsell_payload(conn, creator_id, balance, trial, sent_n, views_n)
         notes["credits_out_offer_month"] = month
         messages = list(thread.get("messages") or [])
