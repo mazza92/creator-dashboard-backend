@@ -455,3 +455,14 @@ class TestCancelClearsUnlockTier(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestQuotaEmailMoments(unittest.TestCase):
+    def test_fires_and_never_raises(self):
+        from unittest.mock import patch
+        import routes.polly as rp
+        with patch('lifecycle_email_engine.trigger_quota_hit', return_value=(True, 'ok')) as trig:
+            rp._quota_email(42, 'handoff')
+        trig.assert_called_once_with(42)
+        with patch('lifecycle_email_engine.trigger_quota_hit', side_effect=RuntimeError('db down')):
+            rp._quota_email(42, 'paywall')  # swallowed
