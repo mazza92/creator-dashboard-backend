@@ -55,7 +55,8 @@ def quota_email_context(conn, creator_id: int) -> Dict[str, Any]:
             continue
         if name == "plan" and value:
             out.update(waiting=value[:SHOWN], waiting_count=len(value),
-                       waiting_more=max(0, len(value) - SHOWN), from_plan=True)
+                       waiting_more=max(0, len(value) - SHOWN), from_plan=True,
+                       hours=max(1, round(len(value) * 12 / 60)))  # ~12 min of finding + writing per brand
         elif name == "kit":
             out["kit_views"] = value
     if not out["waiting"]:
@@ -84,8 +85,8 @@ def quota_preheader(ctx: Dict[str, Any], trial: bool = False) -> str:
 def _preheader(ctx: Dict[str, Any]) -> str:
     if ctx.get("from_plan") and ctx.get("waiting_count"):
         n = ctx["waiting_count"]
-        return f"Nice start! {n} brand{'' if n == 1 else 's'} from your plan {'is' if n == 1 else 'are'} ready to pitch next."
+        return f"Nice start! Now let me pitch the other {n} brand{'' if n == 1 else 's'} for you."
     if ctx.get("kit_views"):
         n = ctx["kit_views"]
-        return f"{n} brand{'' if n == 1 else 's'} opened your kit. Keep the momentum going."
-    return "Your next brands are lined up. Keep the momentum going."
+        return f"{n} brand{'' if n == 1 else 's'} opened your kit. Let me keep pitching for you."
+    return "Nice start! Now let me do the pitching for you."

@@ -179,9 +179,9 @@ class TestQuotaEmailArms(unittest.TestCase):
         env = Environment(loader=FileSystemLoader(str(ROOT / 'templates')))
         tpl = env.get_template('lifecycle/16_max_quota_hit.html')
         base = {'first_name': 'Ana', 'days_until_reset': 10, 'reset_date': 'Nov 1', 'cta_url': 'https://x'}
-        self.assertIn('Start my free week', tpl.render(quota_arm='trial', **base))
+        self.assertIn('Try it free for 7 days', tpl.render(quota_arm='trial', **base))
         control = tpl.render(quota_arm='control', **base)
-        self.assertIn('Keep pitching for me', control)
+        self.assertIn('Let Polly pitch for me', control)
         self.assertNotIn('free week', control)
 
     def test_template_shows_their_plan(self):
@@ -193,14 +193,14 @@ class TestQuotaEmailArms(unittest.TestCase):
                'waiting': [{'brand_name': 'Kosas', 'offer': 'paid', 'meta_ads': True}], 'waiting_count': 5,
                'waiting_more': 4, 'kit_views': 2, 'goal_label': '$500', 'days_left': 9}
         html = tpl.render(quota_arm='control', **ctx)
-        for text in ('5 brands', 'Kosas', 'Paid ask', '+4 more lined up', '2 brands have already opened your kit',
-                     '$500 goal', 'Dec 1'):
+        for text in ('other <span style="color: #c0264a;">5 brands', 'Kosas', 'Paid ask', '+4 more, ready when you are', '2 brands have already opened your kit',
+                     '$500', 'your goal · 9 days left', 'Dec 1'):
             self.assertIn(text, html)
         bare = tpl.render(quota_arm='control', first_name='Ana', cta_url='https://x', waiting=[])
-        self.assertIn('Your next brands are lined up', bare)
+        self.assertIn('Now let me do the pitching for you', bare)
         self.assertNotIn('opened your kit', bare)
         self.assertNotIn('goal', bare)
-        self.assertEqual(quota_preheader(ctx), 'Nice start! 5 brands from your plan are ready to pitch next.')
+        self.assertEqual(quota_preheader(ctx), 'Nice start! Now let me pitch the other 5 brands for you.')
         self.assertIn('opened your kit', quota_preheader({'kit_views': 1}))
 
 
