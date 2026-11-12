@@ -579,7 +579,7 @@ def batch_item(pitch: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _stored_batch_item(item: Dict[str, Any]) -> Dict[str, Any]:
-    return {k: item.get(k) for k in ("brand_id", "brand_name", "brand_logo", "email", "subject", "body")}
+    return {k: item.get(k) for k in ("brand_id", "brand_name", "brand_logo", "email", "subject", "body", "meta_ads")}
 
 
 def batch_waits_on_location(notes: Dict[str, Any]) -> bool:
@@ -700,6 +700,13 @@ def draft_pitch_batch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     state.paywall_payload = None
     state.paywall_moment = None
     items = [batch_item(p) for p in pitches]
+    try:
+        from services.hot_brands import meta_brand_ids
+        meta = meta_brand_ids(state.db(), [i["brand_id"] for i in items])
+        for i in items:
+            i["meta_ads"] = i["brand_id"] in meta
+    except Exception as err:
+        print(f"[Polly] meta tag skipped: {err}")
     state.pitch_batch = items
     state.notes["pitch_batch"] = {
         "at": datetime.now(timezone.utc).isoformat(),

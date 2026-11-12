@@ -270,6 +270,7 @@ _BRAND_CARD_KEYS = (
     "reply_signal",
     "ships_to_you",
     "shipping_note",
+    "meta_ads",
 )
 
 
@@ -584,6 +585,8 @@ def sanitize_brand_card(row: Any, source: str = "matched") -> Optional[Dict[str,
         "source": source,
         "why": desc or None,
     }
+    if brand.get("meta_ads") or brand.get("source") == "meta_ads_library":
+        card["meta_ads"] = True
     if brand.get("ships_to_you"):
         card["ships_to_you"] = True
     elif brand.get("shipping_note"):

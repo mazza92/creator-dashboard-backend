@@ -488,7 +488,7 @@ def planned_rows(conn, creator_id: int) -> List[Dict[str, Any]]:
     ensure_tables(conn)
     cur = _cur(conn)
     cur.execute("""SELECT p.brand_id, COALESCE(p.brand_name, b.brand_name) AS brand_name, p.planned_for, p.offer,
-                          b.logo_url AS logo, b.category
+                          b.logo_url AS logo, b.category, (b.source = 'meta_ads_library') AS meta_ads
                    FROM creator_pitch_plan p LEFT JOIN pr_brands b ON b.id = p.brand_id
                    WHERE p.creator_id = %s ORDER BY p.planned_for, p.brand_id""", (creator_id,))
     return [dict(r) for r in cur.fetchall()]
@@ -712,7 +712,7 @@ def first_run_payload(conn, creator_id: int, now: Optional[datetime] = None) -> 
         cat = (r.get("category") or "").replace("_", " ")
         brands.append({
             "brand_id": bid, "brand_name": r.get("brand_name") or "Brand", "logo": r.get("logo"),
-            "offer": r.get("offer") or "gifted", "hot": bid == hot_id,
+            "offer": r.get("offer") or "gifted", "hot": bid == hot_id, "meta_ads": bool(r.get("meta_ads")),
             "reason": hot.get("reason") if bid == hot_id else (f"Fits your {cat} content" if cat else "Fits your content"),
         })
     balance = free_balance(conn, creator_id, prof)
@@ -763,7 +763,7 @@ def goal_plan_message(conn, creator_id: int, now: Optional[datetime] = None) -> 
         if not days or days[-1]["date"] != d.isoformat():
             days.append({"date": d.isoformat(), "label": "Today" if d == now.date() else _fmt_day(d), "brands": []})
         days[-1]["brands"].append({"brand_id": int(r["brand_id"]), "brand_name": r.get("brand_name") or "Brand",
-                                   "offer": r.get("offer") or "gifted"})
+                                   "offer": r.get("offer") or "gifted", "meta_ads": bool(r.get("meta_ads"))})
     paid_n = sum(1 for r in rows if r.get("offer") == "paid")
     first_ids = [int(r["brand_id"]) for r in rows]
     balance = free_balance(conn, creator_id, prof)
