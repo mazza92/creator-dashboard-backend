@@ -391,9 +391,10 @@ def apply_location_to_body(body: str, location_display: str, previous_display: s
     prev = (previous_display or "").strip()
     if prev and prev in body:
         return body.replace(prev, next_display)
+    # A function replacement: a location like "8000 Aarhus" after "\1" would read as group 18 and crash.
     return re.sub(
         r"(shipping to )(.+?)(\.?)$",
-        rf"\1{next_display}\3",
+        lambda m: f"{m.group(1)}{next_display}{m.group(3)}",
         body,
         count=1,
         flags=re.M,
