@@ -754,8 +754,9 @@ def free_report_message(conn, creator_id: int, thread: Dict[str, Any], first: st
     last = last_week_facts(conn, creator_id, now)
     ahead = {"followups_due": followups_due(conn, creator_id, now),
              "ready": matched_waiting(thread, limit=3)["count"]}
-    if not (last.get("pitched") or last.get("kit_names") or last.get("reply_names")
-            or ahead["followups_due"] or ahead["ready"]):
+    # A report needs something that happened (or a follow-up due). "Brands are ready" alone is a nudge the
+    # welcome and the Tracker already make, and it made this post every week to creators who did nothing.
+    if not (last.get("pitched") or last.get("kit_names") or last.get("reply_names") or ahead["followups_due"]):
         return None
     name = (first or "").strip()
     head = f"Your weekly report{', ' + name if name else ''}, week of {week_label(now)}."
