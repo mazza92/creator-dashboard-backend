@@ -682,6 +682,29 @@ def confirm_checkout():
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
+def _cancel_flag(conn, creator_id, creator):
+    """Stripe's cancel flag for a paid creator. Read once from Stripe when we haven't mirrored it yet (older rows),
+    then kept current by the cancel flow and the subscription.updated webhook."""
+    if not creator or (creator.get('subscription_tier') or 'free') == 'free' or not creator.get('stripe_subscription_id'):
+        return False
+    try:
+        from services.billing_access import ensure_columns as ensure_billing_columns, set_cancel_flag, \
+            stripe_cancel_scheduled
+        ensure_billing_columns(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT cancel_at_period_end FROM creators WHERE id = %s", (creator_id,))
+        row = cur.fetchone()
+        flag = (row.get('cancel_at_period_end') if isinstance(row, dict) else row[0]) if row else None
+        if flag is None:
+            flag = stripe_cancel_scheduled(stripe.Subscription.retrieve(creator['stripe_subscription_id']))
+            set_cancel_flag(conn, flag, creator_id=creator_id)
+        return bool(flag)
+    except Exception as err:
+        print(f"[billing] cancel flag lookup failed for creator {creator_id}: {err}")
+        conn.rollback()
+        return False  # unsure: keep the Cancel link visible rather than claim a cancellation
+
+
 @subscription_bp.route('/status', methods=['GET'])
 def get_subscription_status():
     """Get current subscription status for logged-in creator"""
@@ -702,11 +725,13 @@ def get_subscription_status():
                 pitches_sent_this_week,
                 last_pitch_reset,
                 daily_unlocks_used,
-                last_unlock_date
+                last_unlock_date,
+                stripe_subscription_id
             FROM creators
             WHERE id = %s
         ''', (creator_id,))
         creator = cursor.fetchone()
+        cancel_flag = _cancel_flag(conn, creator_id, creator)
 
         from datetime import date
         today = date.today()
@@ -753,8 +778,10 @@ def get_subscription_status():
 
         ends_at = creator.get('subscription_ends_at')
         status_value = creator.get('subscription_status', 'inactive')
+        # subscription_ends_at is just the current period end (every Stripe sync writes it), not a cancellation:
+        # only Stripe's own cancel flag (mirrored in creators.cancel_at_period_end) says the plan will end.
         cancel_scheduled = bool(
-            ends_at
+            cancel_flag
             and status_value in ('active', 'trialing', 'past_due')
             and (creator.get('subscription_tier') or 'free') != 'free'
         )
@@ -855,7 +882,17 @@ def _require_paid_creator():
 
 
 def _unstrike_cancel(subscription_id):
-    return stripe.Subscription.modify(subscription_id, cancel_at_period_end=False)
+    sub = stripe.Subscription.modify(subscription_id, cancel_at_period_end=False)
+    try:
+        from services.billing_access import set_cancel_flag
+        conn = get_db_connection()
+        try:
+            set_cancel_flag(conn, False, subscription_id=subscription_id)
+        finally:
+            conn.close()
+    except Exception as err:
+        print(f"[billing] cancel flag not cleared: {err}")
+    return sub
 
 
 def _save_plan(conn, creator, reason, sub):
@@ -1084,6 +1121,12 @@ def cancel_flow_confirm():
         )
         log_retention_event(cursor, creator['id'], reason, None, 'canceled', context=ctx)
         conn.commit()
+        try:
+            from services.billing_access import set_cancel_flag, stripe_cancel_scheduled
+            set_cancel_flag(conn, True, creator_id=creator['id'])
+        except Exception as err:
+            print(f"[billing] cancel flag not saved: {err}")
+            conn.rollback()
         return jsonify({
             'success': True,
             'cancel_scheduled': True,
@@ -1297,6 +1340,12 @@ def stripe_webhook():
             print(f"🔄 Subscription {subscription_id} updated to {status}")
 
             conn = get_db_connection()
+            try:
+                from services.billing_access import set_cancel_flag, stripe_cancel_scheduled
+                set_cancel_flag(conn, stripe_cancel_scheduled(subscription), subscription_id=subscription_id)
+            except Exception as err:
+                print(f"[billing] cancel flag sync skipped: {err}")
+                conn.rollback()
             cursor = conn.cursor()
             if should_downgrade_on_status(status):
                 cursor.execute('''

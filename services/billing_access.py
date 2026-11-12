@@ -43,9 +43,28 @@ def ensure_columns(conn) -> None:
     cur = conn.cursor()
     _ensure(cur, """ALTER TABLE creators ADD COLUMN IF NOT EXISTS past_due_since TIMESTAMPTZ,
                     ADD COLUMN IF NOT EXISTS pro_locked_at TIMESTAMPTZ,
-                    ADD COLUMN IF NOT EXISTS pro_locked_reason TEXT""")
+                    ADD COLUMN IF NOT EXISTS pro_locked_reason TEXT,
+                    ADD COLUMN IF NOT EXISTS cancel_at_period_end BOOLEAN""")
     conn.commit()
     _READY = True
+
+
+def set_cancel_flag(conn, scheduled: bool, subscription_id: Optional[str] = None,
+                    creator_id: Optional[int] = None) -> None:
+    """Mirror Stripe's "will this subscription end?" (cancel_at_period_end or cancel_at). subscription_ends_at is
+    only the current period end, so it can't tell a cancellation from a renewal."""
+    ensure_columns(conn)
+    cur = conn.cursor()
+    if subscription_id:
+        cur.execute("UPDATE creators SET cancel_at_period_end = %s WHERE stripe_subscription_id = %s",
+                    (bool(scheduled), subscription_id))
+    elif creator_id:
+        cur.execute("UPDATE creators SET cancel_at_period_end = %s WHERE id = %s", (bool(scheduled), creator_id))
+    conn.commit()
+
+
+def stripe_cancel_scheduled(sub) -> bool:
+    return bool(_get(sub, "cancel_at_period_end") or _get(sub, "cancel_at"))
 
 
 def _get(obj, key, default=None):
