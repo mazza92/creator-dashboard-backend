@@ -477,12 +477,14 @@ class Routes(unittest.TestCase):
         from routes import hotlist
         from unittest import mock
 
-        with mock.patch("services.meta_ads_signal.seed_from_notes", return_value=3), \
+        with mock.patch("services.brand_autopublish.run", return_value={"published_count": 4}), \
+                mock.patch("services.meta_ads_signal.seed_from_notes", return_value=3), \
                 mock.patch("services.meta_ads_signal.classify_pending", side_effect=RuntimeError("llm down")), \
                 mock.patch("services.brand_quality_gate.run_gate", return_value={"checked": 2}), \
                 mock.patch("services.hot_brands.assign_hot_brands", return_value={"assigned": 1}) as assign:
             conn = mock.MagicMock()
             out = hotlist.run_daily(conn, budget=5)
+        self.assertEqual(out["autopublish"], {"published_count": 4})
         self.assertEqual(out["seeded"], 3)
         self.assertIn("llm down", out["classified"]["error"])
         self.assertEqual((out["gate"], out["hot"]), ({"checked": 2}, {"assigned": 1}))
