@@ -2638,12 +2638,27 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
         creator = creator or {}
         from_name = " ".join(p for p in (creator.get("first_name"), creator.get("last_name")) if p).strip()
         results, revoked = [], False
+        # Free: pitches written but not sent yet cost their credit now, when they go out.
+        pending_ids, charged, limit = set(), 0, 0
+        if not _creator_is_pro(conn, creator_id):
+            try:
+                from services.unlock_quota import count_delivered_unlocks_this_month, free_limit, pending_send_ids
+                qcur = conn.cursor()
+                pending_ids = pending_send_ids(qcur, creator_id)
+                charged = count_delivered_unlocks_this_month(qcur, creator_id)
+                limit = free_limit(qcur, creator_id)
+            except Exception as err:
+                print(f"[Polly] pending credits check skipped: {err}")
+                conn.rollback()
         for item in items:
             name = item.get("brand_name") or "the brand"
             ref = {"id": item.get("brand_id"), "name": name}
             status = "sent"
+            bid_int = int(item["brand_id"]) if str(item.get("brand_id") or "").isdigit() else None
             if item.get("sent_at"):
                 status = "already_sent"
+            elif bid_int in pending_ids and charged >= limit:
+                status = "needs_pro"
             elif not item.get("email"):
                 status = "no_inbox"
             elif False:
@@ -2664,6 +2679,15 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
                                           item.get("body") or "", from_name=from_name)
                     item["sent_at"] = utc_iso_now()
                     item["thread_id"] = (sent_ids or {}).get("thread_id") or ""
+                    if bid_int in pending_ids:
+                        try:
+                            from services.unlock_quota import charge_pending
+                            charge_pending(conn.cursor(), creator_id, [bid_int])
+                            conn.commit()
+                            charged += 1
+                        except Exception as err:
+                            print(f"[Polly] credit charge skipped: {err}")
+                            conn.rollback()
                     try:
                         from services.polly_alerts import record_handoff
                         record_handoff(conn, creator_id, item.get("brand_id"), "gmail")
@@ -2712,6 +2736,10 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
         if bad:
             lines.append(f"I held back {', '.join(bad[:3])}: their inbox doesn't exist anymore and I couldn't find a "
                          "working one, so it would only bounce from your Gmail. I'll line up another brand.")
+        held = [r["brand_name"] for r in results if r["status"] == "needs_pro"]
+        if held:
+            lines.append(f"{', '.join(held[:3])} {'is' if len(held) == 1 else 'are'} written and waiting: your free "
+                         "pitches are used this month. Pro sends them for you.")
         if any(r["status"] == "needs_location" for r in results):
             lines.append("Tell me your city and country so I can finish the rest.")
         followers, has_rates = _kit_rates(conn, creator_id)
@@ -2900,6 +2928,14 @@ def pitch_handoff():
         from services.polly_alerts import record_handoff
         from services.polly_usage import log_usage
         updated = record_handoff(conn, creator_id, body.get("brand_id"), method)
+        if not body.get("is_followup") and str(body.get("brand_id") or "").isdigit():
+            try:
+                from services.unlock_quota import charge_pending
+                charge_pending(conn.cursor(), creator_id, [int(body["brand_id"])])  # taken out of Polly: it counts
+                conn.commit()
+            except Exception as err:
+                print(f"[Polly] credit charge on hand-off skipped: {err}")
+                conn.rollback()
         log_usage(conn, creator_id, "pitch_handoff", intent=method, meta={"brand_id": body.get("brand_id")})
         logged = False
         if method == "open_email" and not body.get("is_followup"):

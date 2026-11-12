@@ -171,12 +171,67 @@ def count_delivered_unlocks_all_time(cursor, creator_id):
 
 
 def count_delivered_unlocks_this_month(cursor, creator_id):
-    """Distinct PR brands this calendar month with a pack or unlock row."""
+    """Distinct PR brands this calendar month with a pack or unlock row, minus pitches written but not sent yet
+    (credit_pending_send): a free pitch is spent when it's sent, not when Polly writes it."""
     cursor.execute(DELIVERED_THIS_MONTH_SQL, (creator_id, creator_id, creator_id))
     row = cursor.fetchone() or {}
-    if isinstance(row, dict):
-        return int(row.get('n') or 0)
-    return int(row[0] if row else 0)
+    n = int(row.get('n') or 0) if isinstance(row, dict) else int(row[0] if row else 0)
+    return max(0, n - pending_send_count(cursor, creator_id))
+
+
+# --- Written, not sent yet -------------------------------------------------------------------------------------
+# Free creators: Polly writes a batch of pitches (which creates the unlock / package rows that count as credits),
+# but the credit is only spent when a pitch is sent (Gmail) or taken out (Open email / Copy). Until then the row
+# below cancels it out of the monthly count. Unsent ones never come back as charges.
+
+PENDING_DDL = """CREATE TABLE IF NOT EXISTS credit_pending_send (
+    creator_id INTEGER NOT NULL, brand_id INTEGER NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (creator_id, brand_id))"""
+PENDING_FRESH_DAYS = 7
+
+
+def _pending_ready(cursor):
+    cursor.execute("SELECT to_regclass('public.credit_pending_send') IS NOT NULL AS ok")
+    row = cursor.fetchone() or {}
+    return bool(row.get("ok") if isinstance(row, dict) else row[0])
+
+
+def pending_send_count(cursor, creator_id, fresh_only=False):
+    """Pitches written this month and not sent yet (fresh_only: written in the last 7 days)."""
+    try:
+        if not _pending_ready(cursor):
+            return 0
+        extra = f" AND created_at > NOW() - INTERVAL '{PENDING_FRESH_DAYS} days'" if fresh_only else ""
+        cursor.execute("SELECT COUNT(*) AS n FROM credit_pending_send WHERE creator_id = %s "
+                       "AND created_at >= date_trunc('month', NOW())" + extra, (creator_id,))
+        row = cursor.fetchone() or {}
+        return int(row.get("n") or 0) if isinstance(row, dict) else int(row[0] if row else 0)
+    except Exception:
+        return 0
+
+
+def pending_send_ids(cursor, creator_id):
+    if not _pending_ready(cursor):
+        return set()
+    cursor.execute("SELECT brand_id FROM credit_pending_send WHERE creator_id = %s "
+                   "AND created_at >= date_trunc('month', NOW())", (creator_id,))
+    return {int(r.get("brand_id") if isinstance(r, dict) else r[0]) for r in cursor.fetchall()}
+
+
+def mark_pending_send(cursor, creator_id, brand_ids):
+    cursor.execute(PENDING_DDL)
+    for bid in brand_ids or []:
+        cursor.execute("INSERT INTO credit_pending_send (creator_id, brand_id) VALUES (%s, %s) "
+                       "ON CONFLICT (creator_id, brand_id) DO UPDATE SET created_at = NOW()", (creator_id, int(bid)))
+
+
+def charge_pending(cursor, creator_id, brand_ids):
+    """The pitch left Polly (sent or taken out): its credit now counts."""
+    if not brand_ids or not _pending_ready(cursor):
+        return 0
+    cursor.execute("DELETE FROM credit_pending_send WHERE creator_id = %s AND brand_id = ANY(%s)",
+                   (creator_id, [int(b) for b in brand_ids]))
+    return cursor.rowcount
 
 
 def brand_already_delivered(cursor, creator_id, brand_id):
