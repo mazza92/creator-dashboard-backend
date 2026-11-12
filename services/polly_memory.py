@@ -128,13 +128,16 @@ def _clean_message(msg: Any) -> Optional[Dict[str, Any]]:
     if isinstance(activity, dict) and isinstance(activity.get("items"), list) and activity["items"]:
         out["activity"] = {"items": activity["items"][:6], "counts": activity.get("counts") or {},
                            "month": activity.get("month") or {}}
+    hot = msg.get("hotlist")
+    if isinstance(hot, dict) and isinstance(hot.get("brands"), list) and hot["brands"]:
+        out["hotlist"] = {**hot, "brands": hot["brands"][:8]}
     plan = msg.get("goal_plan")
     if isinstance(plan, dict) and isinstance(plan.get("days"), list):
         out["goal_plan"] = {**plan, "days": plan["days"][:7]}
         if msg.get("at"):
             out["at"] = str(msg["at"])[:40]
     kind = msg.get("kind")
-    if kind in ("nudge", "brief", "alert", "autopilot", "board", "hooks", "goal_plan"):
+    if kind in ("nudge", "brief", "alert", "autopilot", "board", "hooks", "goal_plan", "hotlist"):
         out["kind"] = kind
         if msg.get("brief"):
             out["brief"] = msg.get("brief")
