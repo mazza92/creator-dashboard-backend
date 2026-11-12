@@ -1245,59 +1245,38 @@ def _deliver_manager_note(conn, creator_id, first, career, tracker, balance, que
 
 
 def _deliver_monday_board(conn, creator_id, first, kit, balance):
-    """First open of each week posts the weekly report instead of the month/away notes.
-
-    Pro gets the report with the week's checklist; free gets the same numbers with the manual step
-    (the month plan still wins on the first open of a month).
+    """First open of each week: Polly's Brand Hotlist (services.weekly_hotlist), fresh brands in the creator's
+    niche worth pitching now. It replaced "Your weekly report", which posted "no pitches went out" to creators
+    who had done nothing. Once a week (milestone stamp), never in the signup week, never with fewer than 3 brands.
     """
-    from services.pro_manager import board_due, board_message, free_report_message, load_board, week_key
+    from services.pro_manager import board_due, week_key
+    from services.weekly_hotlist import hotlist_message
     board_key = f"board:{week_key()}"
     if _note_shown(conn, creator_id, board_key):
         return False
     if _signup_week(conn, creator_id):
         _stamp_note(conn, creator_id, board_key)
         return False
-    if not (balance or {}).get("is_unlimited"):
-        try:
-            thread = load_thread(conn, creator_id)
-            notes = dict(thread.get("notes") or {})
-            if not board_due(notes) or plan_open_note(notes, bool(thread.get("messages"))) == "month":
-                return False
-            message = free_report_message(conn, creator_id, thread, first)
-            notes["board_week"] = week_key()
-            _stamp_note(conn, creator_id, board_key)
-            if not message:
-                save_thread(conn, creator_id, thread.get("messages") or [], thread.get("suggested_brands") or [],
-                            notes=notes)
-                return False
-            notes["away_brief_at"] = utc_iso_now()
-            messages = list(thread.get("messages") or []) + [json_safe(message)]
-            save_thread(conn, creator_id, messages, thread.get("suggested_brands") or [], notes=notes)
-            _log_polly_event(creator_id, "manager_note", {"kind": "free_report"})
-            return True
-        except Exception as err:
-            print(f"[Polly] free weekly report skipped: {err}")
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            return False
     try:
         thread = load_thread(conn, creator_id)
         notes = dict(thread.get("notes") or {})
         if not board_due(notes):
             return False
-        board = load_board(conn, creator_id, kit=kit)
+        is_pro = bool((balance or {}).get("is_unlimited"))
+        message = hotlist_message(conn, creator_id, first, is_pro=is_pro)
         notes["board_week"] = week_key()
         _stamp_note(conn, creator_id, board_key)
-        notes["month_plan_month"] = month_key()
-        notes["away_brief_at"] = utc_iso_now()
-        messages = list(thread.get("messages") or []) + [json_safe(board_message(board, first))]
+        messages = list(thread.get("messages") or [])
+        if message:
+            notes["away_brief_at"] = utc_iso_now()
+            messages.append(json_safe(message))
         save_thread(conn, creator_id, messages, thread.get("suggested_brands") or [], notes=notes)
-        _log_polly_event(creator_id, "manager_note", {"kind": "board", "left": board.get("left")})
+        if not message:
+            return False
+        _log_polly_event(creator_id, "manager_note", {"kind": "hotlist", "brands": len(message["hotlist"]["brands"])})
         return True
     except Exception as err:
-        print(f"[Polly] monday board skipped: {err}")
+        print(f"[Polly] weekly hotlist skipped: {err}")
         try:
             conn.rollback()
         except Exception:
