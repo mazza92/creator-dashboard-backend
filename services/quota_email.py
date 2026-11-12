@@ -84,7 +84,7 @@ def quota_preheader(ctx: Dict[str, Any], trial: bool = False) -> str:
 def _preheader(ctx: Dict[str, Any]) -> str:
     if ctx.get("from_plan") and ctx.get("waiting_count"):
         n = ctx["waiting_count"]
-        return f"{n} brand{'' if n == 1 else 's'} from your plan {'is' if n == 1 else 'are'} ready to go."
+        return f"Nice start! {n} brand{'' if n == 1 else 's'} from your plan {'is' if n == 1 else 'are'} ready to pitch next."
     if ctx.get("kit_views"):
         n = ctx["kit_views"]
         return f"{n} brand{'' if n == 1 else 's'} opened your kit. Keep the momentum going."

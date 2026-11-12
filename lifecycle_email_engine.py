@@ -402,7 +402,7 @@ def send_lifecycle_email(
             utm_campaign = f"max_quota_hit_{arm}"
             full_context['quota_arm'] = arm
             from services.quota_email import quota_preheader
-            full_context['subject_override'] = 'Your 3 free pitches are out 🎉'
+            full_context['subject_override'] = 'Your 3 free pitches are out'
             full_context['preheader'] = quota_preheader(full_context, trial=arm == 'trial')
 
         # Add UTM parameters to CTA URL
