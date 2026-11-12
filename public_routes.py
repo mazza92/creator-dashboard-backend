@@ -245,6 +245,7 @@ def _format_public_brand_list_item(b):
         'minFollowers': b['min_followers'],
         'maxFollowers': b['max_followers'],
         'micro_friendly': b.get('micro_friendly'),
+        'meta_ads': bool(b.get('meta_ads')),
         'platforms': b['platforms'],
         'regions': b['regions'],
         'responseRate': response_rate,
@@ -393,6 +394,7 @@ def get_public_brands():
     - niche: filter by niche
     - micro_friendly: only brands marked micro-friendly
     - recruiting: only brands with an admin-pushed live gift roster
+    - hot: only 🔥 brands (found running ads with UGC creators by our Meta Ads Library crawl)
     - search: search brand names
     - activity: filter by brand activity ('new', 'active', 'responsive')
     - contact_type: filter by contact availability ('application', 'email')
@@ -411,6 +413,7 @@ def get_public_brands():
         region = request.args.get('region')  # 'Australia', 'US', 'UK', 'Canada', etc.
         micro_friendly = str(request.args.get('micro_friendly') or '').lower() in ('1', 'true', 'yes')
         recruiting = str(request.args.get('recruiting') or '').lower() in ('1', 'true', 'yes')
+        hot = str(request.args.get('hot') or '').lower() in ('1', 'true', 'yes')  # 🔥 running UGC ads (Meta crawl)
         slug = request.args.get('slug')  # Exact slug match for fetching specific brand
         # Soft sort only (Discover): user-selected niches first — does not filter the feed
         prefer_niches = []
@@ -478,6 +481,7 @@ def get_public_brands():
                 b.avg_product_value,
                 b.hero_product,
                 b.created_at,
+                (b.source = 'meta_ads_library') AS meta_ads,
                 CASE WHEN b.application_form_url IS NOT NULL THEN TRUE ELSE FALSE END as has_direct_link,
                 CASE WHEN b.contact_email IS NOT NULL THEN TRUE ELSE FALSE END as has_email_contact,
                 COALESCE(ps.pitch_count, 0) as pitch_count,
@@ -537,6 +541,9 @@ def get_public_brands():
 
         if micro_friendly:
             query += " AND COALESCE(b.micro_friendly, FALSE) = TRUE"
+
+        if hot:
+            query += " AND b.source = 'meta_ads_library'"
 
         if recruiting:
             # Open gift lists still taking applicants: listing not closed and
@@ -642,6 +649,9 @@ def get_public_brands():
 
         if micro_friendly:
             count_query += " AND COALESCE(micro_friendly, FALSE) = TRUE"
+
+        if hot:
+            count_query += " AND source = 'meta_ads_library'"
 
         if recruiting:
             count_query += """
@@ -1084,6 +1094,27 @@ def unlock_brand_access(slug):
     except Exception as e:
         print(f"Error unlocking brand {slug}: {str(e)}")
         return jsonify({'error': 'Failed to unlock brand data'}), 500
+
+
+@public_bp.route('/hot-brand-ids', methods=['GET'])
+def get_hot_brand_ids():
+    """Ids of 🔥 brands (found running ads with UGC creators by our Meta Ads Library crawl), so every brand card in
+    the app can show the tag without each endpoint carrying it. Small, public, cached for an hour."""
+    try:
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("""SELECT id FROM pr_brands
+                           WHERE source = 'meta_ads_library' AND COALESCE(status, 'published') = 'published'""")
+            ids = [int(r[0]) for r in cur.fetchall()]
+        finally:
+            conn.close()
+        resp = jsonify({'ids': ids})
+        resp.headers['Cache-Control'] = 'public, max-age=3600'
+        return resp, 200
+    except Exception as e:
+        print(f"Error fetching hot brand ids: {e}")
+        return jsonify({'ids': []}), 200
 
 
 @public_bp.route('/categories', methods=['GET'])
