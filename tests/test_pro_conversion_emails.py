@@ -159,7 +159,7 @@ class TestQuotaEmailArms(unittest.TestCase):
         self.assertEqual(ctx['quota_arm'], 'trial')
         self.assertIn('utm_campaign=max_quota_hit_trial', ctx['cta_url'])
         self.assertIn('free for 7 days', ctx['preheader'])
-        self.assertEqual(ctx['subject_override'], 'Your 3 free pitches are out 🎉')
+        self.assertEqual(ctx['subject_override'], 'Your 3 free pitches are out')
         deliver.assert_called_once()
 
     def test_at_the_limit_everyone_gets_the_19_offer(self):
@@ -200,7 +200,7 @@ class TestQuotaEmailArms(unittest.TestCase):
         self.assertIn('Your next brands are lined up', bare)
         self.assertNotIn('opened your kit', bare)
         self.assertNotIn('goal', bare)
-        self.assertEqual(quota_preheader(ctx), '5 brands from your plan are ready to go.')
+        self.assertEqual(quota_preheader(ctx), 'Nice start! 5 brands from your plan are ready to pitch next.')
         self.assertIn('opened your kit', quota_preheader({'kit_views': 1}))
 
 
