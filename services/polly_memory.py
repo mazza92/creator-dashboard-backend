@@ -128,6 +128,9 @@ def _clean_message(msg: Any) -> Optional[Dict[str, Any]]:
     if isinstance(activity, dict) and isinstance(activity.get("items"), list) and activity["items"]:
         out["activity"] = {"items": activity["items"][:6], "counts": activity.get("counts") or {},
                            "month": activity.get("month") or {}}
+    up = msg.get("upsell")
+    if isinstance(up, dict):
+        out["upsell"] = {**up, "waiting": (up.get("waiting") or [])[:6]}
     hot = msg.get("hotlist")
     if isinstance(hot, dict) and isinstance(hot.get("brands"), list) and hot["brands"]:
         out["hotlist"] = {**hot, "brands": hot["brands"][:8]}
@@ -137,7 +140,7 @@ def _clean_message(msg: Any) -> Optional[Dict[str, Any]]:
         if msg.get("at"):
             out["at"] = str(msg["at"])[:40]
     kind = msg.get("kind")
-    if kind in ("nudge", "brief", "alert", "autopilot", "board", "hooks", "goal_plan", "hotlist"):
+    if kind in ("nudge", "brief", "alert", "autopilot", "board", "hooks", "goal_plan", "hotlist", "upsell"):
         out["kind"] = kind
         if msg.get("brief"):
             out["brief"] = msg.get("brief")

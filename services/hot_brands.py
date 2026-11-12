@@ -123,6 +123,23 @@ def fallback_pool(conn) -> List[Dict[str, Any]]:
                                                 r.get("hero_product"), website=r.get("website"))]
 
 
+def meta_brand_ids(conn, brand_ids) -> Set[int]:
+    """Brands found by our Meta Ads Library crawl: shown with a 🔥 everywhere in the app."""
+    ids = [int(b) for b in (brand_ids or []) if b]
+    if not ids:
+        return set()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM pr_brands WHERE id = ANY(%s) AND source = 'meta_ads_library'", (ids,))
+        return {int(r[0]) for r in cur.fetchall()}
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return set()
+
+
 def _ids(rows: Iterable[Dict[str, Any]], key: str = "brand_id") -> Set[int]:
     return {int(r[key]) for r in rows if r.get(key) is not None}
 

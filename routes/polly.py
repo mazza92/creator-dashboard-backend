@@ -488,6 +488,21 @@ def _fallback_brand_pool(notes, scrape, creator, creator_id, limit=12):
 def _hydrate_brand_cards(brands):
     """Fill logo/category/description when the client sent id/name/slug only."""
     rows = [dict(b) for b in (brands or []) if isinstance(b, dict)]
+    meta = set()
+    all_ids = []
+    for brand in rows:
+        try:
+            all_ids.append(int(brand.get("id") or brand.get("brand_id") or 0))
+        except (TypeError, ValueError):
+            pass
+    if any(all_ids):
+        from pr_crm_routes import get_db_connection
+        from services.hot_brands import meta_brand_ids
+        _mc = get_db_connection()
+        try:
+            meta = meta_brand_ids(_mc, all_ids)
+        finally:
+            _mc.close()
     need = []
     for brand in rows:
         if brand.get("logo") or brand.get("logo_url"):
@@ -532,6 +547,8 @@ def _hydrate_brand_cards(brands):
         if not (merged.get("logo") or merged.get("logo_url")):
             merged["logo"] = extra.get("logo")
             merged["logo_url"] = extra.get("logo") or extra.get("logo_url")
+        if bid in meta:
+            merged["meta_ads"] = True
         card = sanitize_brand_card(merged, source=brand.get("source") or "matched")
         if card:
             out.append(card)
@@ -1053,6 +1070,10 @@ def _deliver_credits_out_offer(conn, creator_id, first, balance, tracker):
         if not credits_out_offer_due(notes, balance, month):
             return False
         views_n, sent_n = _pipeline_proof(tracker)
+        if not sent_n:
+            # Credits went on pitches that aren't sent yet: let the creator send them first. The send summary
+            # carries its own offer; this one waits for a later open.
+            return False
         trial = False
         try:
             from services.quota_trial_test import trial_eligible
@@ -1064,9 +1085,13 @@ def _deliver_credits_out_offer(conn, creator_id, first, balance, tracker):
             first, balance, tracker, notes, kit_views=views_n, sent=sent_n, trial=trial,
             waiting=matched_waiting(thread),
         )
+        message["kind"] = "upsell"
+        # The card carries the offer; the chat line just marks the moment.
+        message["content"] = (f"{first}, your" if first else "Your") + " free pitches are out. Here's how to keep going."
+        message["upsell"] = _upsell_payload(conn, creator_id, balance, trial, sent_n, views_n)
         notes["credits_out_offer_month"] = month
         messages = list(thread.get("messages") or [])
-        messages.append(message)
+        messages.append(json_safe(message))
         save_thread(conn, creator_id, messages, thread.get("suggested_brands") or [], notes=notes)
         _log_polly_event(creator_id, "paywall_shown", {"moment": "credits_out", "trial": trial})
         return True
@@ -1077,6 +1102,31 @@ def _deliver_credits_out_offer(conn, creator_id, first, balance, tracker):
         except Exception:
             pass
         return False
+
+
+def _upsell_payload(conn, creator_id, balance, trial, sent_n, views_n):
+    """What the free creator gets by going Pro, from their own plan: the brands waiting (🔥 = Meta ads), their
+    goal and days left, the hours of outreach Pro does, the trial, and how long until free pitches come back."""
+    from services.polly import reset_label
+    out = {"trial": bool(trial), "reset": reset_label(balance), "sent": int(sent_n or 0),
+           "kit_views": int(views_n or 0), "waiting": [], "waiting_count": 0}
+    try:
+        from datetime import date as _date
+        from services.creator_tracker import get_goal, month_bounds, planned_rows
+        rows = [r for r in planned_rows(conn, creator_id) if r["planned_for"] >= _date.today()]
+        out["waiting"] = [{"brand_id": int(r["brand_id"]), "brand_name": r.get("brand_name") or "Brand",
+                           "logo": r.get("logo"), "offer": r.get("offer") or "gifted",
+                           "meta_ads": bool(r.get("meta_ads"))} for r in rows[:4]]
+        out["waiting_count"] = len(rows)
+        out["hours"] = max(1, round(len(rows) * 12 / 60)) if rows else 0
+        goal = get_goal(conn, creator_id)
+        if goal:
+            out["goal_cents"] = int(goal["amount_cents"])
+        out["days_left"] = max(0, (month_bounds()[1] - datetime.now(timezone.utc)).days)
+    except Exception as err:
+        print(f"[Polly] upsell payload partial: {err}")
+        conn.rollback()
+    return out
 
 
 def _stale_pitches(conn, creator_id):

@@ -78,7 +78,7 @@ class TrackerDb(unittest.TestCase):
                 creator_niches jsonb, niche text, subscription_tier text, unlocks_tier text,
                 pitches_sent_this_week int, last_pitch_reset date);
             CREATE TABLE creator_profile_data (user_id int, engagement_rate numeric);
-            CREATE TABLE pr_brands (id int PRIMARY KEY, brand_name text, logo_url text, category text);
+            CREATE TABLE pr_brands (id int PRIMARY KEY, brand_name text, logo_url text, category text, source text);
             CREATE TABLE creator_pipeline (id serial PRIMARY KEY, creator_id int, brand_id int, pitched_at timestamptz,
                 created_at timestamptz DEFAULT NOW(), send_confirmed boolean, follow_up_count int, followup_count int,
                 expected_delivery date, content_deadline date, package_value numeric, pr_package_value numeric);
