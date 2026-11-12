@@ -1104,6 +1104,18 @@ def _deliver_credits_out_offer(conn, creator_id, first, balance, tracker):
         return False
 
 
+def _quota_email(creator_id, why):
+    """Send the "free pitches are out" email if the creator just used their 3rd (it checks the quota, skips Pro and
+    sends once a month). Fired when a pitch goes out (Gmail send, Open email / Copy) or when they try a 4th brand."""
+    try:
+        from lifecycle_email_engine import trigger_quota_hit
+        ok, msg = trigger_quota_hit(creator_id)
+        if ok:
+            print(f"[Polly] quota email sent ({why}) to creator {creator_id}")
+    except Exception as err:
+        print(f"[Polly] quota email ({why}) skipped: {err}")
+
+
 def _upsell_payload(conn, creator_id, balance, trial, sent_n, views_n):
     """What the free creator gets by going Pro, from their own plan: the brands waiting (🔥 = Meta ads), their
     goal and days left, the hours of outreach Pro does, the trial, and how long until free pitches come back."""
@@ -2466,6 +2478,8 @@ def _finish_turn(state, say, brain, timer, chip_id):
     )
     if paywall_moment:
         _log_polly_event(state.creator_id, "paywall_shown", paywall_moment)
+        if (paywall_moment or {}).get("moment") == "pitch":
+            _quota_email(state.creator_id, "paywall")  # tried a 4th brand: the clearest moment to offer Pro
     tools = ",".join(e.get("name") for e in state.tool_log) or "-"
     try:
         persist_conn = state.db()
@@ -2937,6 +2951,8 @@ def pitch_handoff():
                 print(f"[Polly] credit charge on hand-off skipped: {err}")
                 conn.rollback()
         log_usage(conn, creator_id, "pitch_handoff", intent=method, meta={"brand_id": body.get("brand_id")})
+        if not body.get("is_followup"):
+            _quota_email(creator_id, "handoff")  # a pitch went out by hand: same moment as a Gmail send
         logged = False
         if method == "open_email" and not body.get("is_followup"):
             logged = _log_send_on_open(conn, creator_id, body.get("brand_id"), body.get("brand_name"))
