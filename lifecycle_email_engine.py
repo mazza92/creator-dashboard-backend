@@ -401,11 +401,9 @@ def send_lifecycle_email(
             arm = 'trial' if trial_eligible(cursor, creator_id) else 'control'
             utm_campaign = f"max_quota_hit_{arm}"
             full_context['quota_arm'] = arm
-            full_context['preheader'] = (
-                'Your 3 are out. Try Pro free for 7 days: Polly keeps pitching for you.'
-                if arm == 'trial' else
-                'Your 3 are out. On Pro, Polly runs your week and turns a yes into paid.'
-            )
+            from services.quota_email import quota_preheader
+            full_context['subject_override'] = 'Your 3 free pitches are out 🎉'
+            full_context['preheader'] = quota_preheader(full_context, trial=arm == 'trial')
 
         # Add UTM parameters to CTA URL
         utm = f"utm_source=email&utm_medium=lifecycle&utm_campaign={utm_campaign}"
@@ -1517,6 +1515,13 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
         # Template-specific context
         if template_slug == 'max_quota_hit':
             context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/for-you?upgrade=pro&ref=quota_autopilot"
+            context['reset_date'] = f"{reset_date.strftime('%b')} {reset_date.day}"
+            try:
+                from services.quota_email import quota_email_context
+                context.update(quota_email_context(conn, creator_id))
+            except Exception as e:
+                print(f"[QUOTA EMAIL] personal context skipped: {e}")
+                conn.rollback()
         elif template_slug.startswith('max_'):
             context['cta_url'] = f"{FRONTEND_URL}/creator/dashboard/pr-ready"
         elif template_slug.startswith('edu_'):
