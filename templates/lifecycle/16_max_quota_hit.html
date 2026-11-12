@@ -1,23 +1,32 @@
 {% extends "lifecycle/base_lifecycle.html" %}
-{# Free pitches used: same story as the in-app upsell card. Celebrate, show their own brands waiting, one CTA. #}
+{# Free pitches used. Sells like a creator showing her assistant: the work disappears, replies show up. Their own
+   brands as proof, one CTA. Every data piece is optional. #}
 
 {% block content %}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
   <tr>
     <td style="padding: 0 0 18px 0;">
-      <span style="display: inline-block; background: #fde8ee; color: #c0264a; font-size: 13px; font-weight: 700; padding: 5px 12px; border-radius: 999px;">🎉 Your 3 free pitches are out. Nice start!</span>
+      <span style="display: inline-block; background: #fde8ee; color: #c0264a; font-size: 13px; font-weight: 700; padding: 5px 12px; border-radius: 999px;">🎉 3 pitches out. Nice start!</span>
     </td>
   </tr>
   <tr>
     <td style="padding: 0 0 6px 0; font-size: 15px; color: #6b7280;">Hi {{ first_name or "there" }},</td>
   </tr>
   <tr>
-    <td style="padding: 0 0 16px 0; font-size: 22px; line-height: 1.3; font-weight: 700; color: #15161a; letter-spacing: -0.01em;">
-      {% if from_plan and waiting_count %}Your plan has <span style="color: #c0264a;">{{ waiting_count }} brand{{ '' if waiting_count == 1 else 's' }}</span> ready to pitch.{% else %}Your next brands are lined up.{% endif %}
+    <td style="padding: 0 0 10px 0; font-size: 23px; line-height: 1.28; font-weight: 800; color: #15161a; letter-spacing: -0.015em;">
+      {% if from_plan and waiting_count %}Now let me pitch the other <span style="color: #c0264a;">{{ waiting_count }} brand{{ '' if waiting_count == 1 else 's' }}</span> for you.{% else %}Now let me do the pitching for you.{% endif %}
+    </td>
+  </tr>
+  <tr>
+    <td style="padding: 0 0 18px 0; font-size: 15px; line-height: 1.55; color: #4b5563;">
+      I find the brands, write each pitch, send it from your Gmail and follow up. You film. You wake up to replies.
     </td>
   </tr>
 
   {% if waiting %}
+  <tr>
+    <td style="padding: 0 0 8px 2px; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: #9ca3af;">{% if from_plan %}Up next in your plan{% else %}Lined up for you{% endif %}</td>
+  </tr>
   <tr>
     <td style="padding: 0 0 14px 0;">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
@@ -29,7 +38,6 @@
                 <td style="padding: 11px 14px; font-size: 15px; font-weight: 700; color: #15161a;">{% if b.meta_ads %}🔥 {% endif %}{{ b.brand_name }}</td>
                 <td align="right" style="padding: 11px 14px; white-space: nowrap;">
                   {% if b.offer == 'paid' %}<span style="font-size: 12px; font-weight: 700; color: #c0264a; background: #fde8ee; padding: 3px 9px; border-radius: 999px;">Paid ask</span>{% else %}<span style="font-size: 12px; font-weight: 700; color: #9a5b00; background: #fbf0dd; padding: 3px 9px; border-radius: 999px;">Gifted</span>{% endif %}
-                  <span style="font-size: 13px; padding-left: 6px;">🔒</span>
                 </td>
               </tr>
             </table>
@@ -37,7 +45,7 @@
         </tr>
         {% endfor %}
         {% if waiting_more %}
-        <tr><td style="padding: 2px 4px 0; font-size: 14px; font-weight: 600; color: #6b7280;">+{{ waiting_more }} more lined up</td></tr>
+        <tr><td style="padding: 2px 4px 0; font-size: 14px; font-weight: 600; color: #6b7280;">+{{ waiting_more }} more, ready when you are</td></tr>
         {% endif %}
       </table>
     </td>
@@ -47,7 +55,7 @@
   {% if kit_views %}
   <tr>
     <td style="padding: 0 0 18px 0;">
-      <div style="background: #f1e9fb; color: #5b21b6; font-size: 14px; font-weight: 600; padding: 10px 14px; border-radius: 12px;">👀 {{ kit_views }} brand{{ ' has' if kit_views == 1 else 's have' }} already opened your kit.</div>
+      <div style="background: #f1e9fb; color: #5b21b6; font-size: 14px; font-weight: 600; padding: 10px 14px; border-radius: 12px;">👀 {{ kit_views }} brand{{ ' has' if kit_views == 1 else 's have' }} already opened your kit. They're looking.</div>
     </td>
   </tr>
   {% endif %}
@@ -55,7 +63,7 @@
   <tr>
     <td style="padding: 4px 0 14px 0; border-top: 1px solid #ececef;">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-        {% for title, rest in [('Sends your whole plan', 'from your Gmail, on schedule'), ('Follows up on day 4 and 10', 'so no pitch goes quiet'), ('Adds fresh 🔥 brands', 'running ads, every day')] %}
+        {% for title, rest in [('No more hunting for emails.', 'I find the right person at each brand.'), ('No more blank page.', 'Every pitch is written for that brand, in your voice.'), ('No more forgetting to follow up.', 'Day 4 and day 10, done.'), ('Replies land in your inbox.', 'Brands only ever see you.')] %}
         <tr>
           <td width="28" valign="top" style="padding: 12px 0 0 0;">
             <span style="display: inline-block; width: 18px; height: 18px; line-height: 18px; text-align: center; border-radius: 50%; background: #e8395f; color: #ffffff; font-size: 11px; font-weight: 800;">✓</span>
@@ -67,22 +75,37 @@
     </td>
   </tr>
 
-  {% if goal_label %}
+  {% if hours or goal_label %}
   <tr>
-    <td style="padding: 0 0 20px 0; font-size: 14px; color: #4b5563;">
-      <strong style="color: #15161a;">{{ goal_label }} goal · {{ days_left }} day{{ '' if days_left == 1 else 's' }} left.</strong> Pro keeps you on pace.
+    <td style="padding: 0 0 20px 0;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background: #f7f7f8; border-radius: 12px;">
+        <tr>
+          {% if hours %}
+          <td valign="top" style="padding: 12px 14px;">
+            <div style="font-size: 20px; font-weight: 800; color: #15161a;">~{{ hours }} hr{{ '' if hours == 1 else 's' }}</div>
+            <div style="font-size: 13px; color: #6b7280;">of outreach off your plate</div>
+          </td>
+          {% endif %}
+          {% if goal_label %}
+          <td valign="top" style="padding: 12px 14px;">
+            <div style="font-size: 20px; font-weight: 800; color: #15161a;">{{ goal_label }}</div>
+            <div style="font-size: 13px; color: #6b7280;">your goal · {{ days_left }} day{{ '' if days_left == 1 else 's' }} left</div>
+          </td>
+          {% endif %}
+        </tr>
+      </table>
     </td>
   </tr>
   {% endif %}
 
   <tr>
     <td align="center" style="padding: 4px 0 8px 0;">
-      <a href="{{ cta_url }}" style="display: block; background: #e8395f; color: #ffffff !important; text-decoration: none; font-size: 16px; font-weight: 800; padding: 15px 20px; border-radius: 999px; text-align: center;">{% if quota_arm == 'trial' %}Start my free week{% else %}Keep pitching for me{% endif %}</a>
+      <a href="{{ cta_url }}" style="display: block; background: #e8395f; color: #ffffff !important; text-decoration: none; font-size: 16px; font-weight: 800; padding: 15px 20px; border-radius: 999px; text-align: center;">{% if quota_arm == 'trial' %}Try it free for 7 days{% else %}Let Polly pitch for me{% endif %}</a>
     </td>
   </tr>
   <tr>
     <td align="center" style="padding: 0 0 18px 0; font-size: 13px; color: #6b7280;">
-      {% if quota_arm == 'trial' %}7 days free, then $19/mo · Cancel anytime{% else %}$19/mo · Cancel anytime{% endif %} · Replies are always free
+      {% if quota_arm == 'trial' %}Free for 7 days, then $19/mo{% else %}$19/mo, less than one gifted product{% endif %} · Cancel anytime
     </td>
   </tr>
   {% if reset_date %}
@@ -93,4 +116,4 @@
 </table>
 {% endblock %}
 
-{% block signature %}— Polly{% endblock %}
+{% block signature %}— Polly, your pitching assistant{% endblock %}
