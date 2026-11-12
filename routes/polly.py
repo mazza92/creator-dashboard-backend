@@ -3,6 +3,7 @@
 import re
 import threading
 import time
+from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request, session, current_app
 
@@ -1137,6 +1138,45 @@ def _deliver_followup_offer(conn, creator_id, first, balance):
         return False
 
 
+def _note_shown(conn, creator_id, key):
+    """When a once-a-week/month Polly note was last posted. Kept in creator_milestones, not only thread notes:
+    a Polly turn running at the same time saves the thread with its own copy of the notes and dropped the
+    stamp, so the weekly report came back every time the creator switched tabs and returned."""
+    try:
+        from services.creator_tracker import milestone_at
+        return milestone_at(conn, creator_id, key)
+    except Exception:
+        conn.rollback()
+        return None
+
+
+def _stamp_note(conn, creator_id, key, repeat=False):
+    try:
+        from services.creator_tracker import mark_milestone, touch_milestone
+        (touch_milestone if repeat else mark_milestone)(conn, creator_id, key)
+    except Exception as err:
+        print(f"[Polly] note stamp skipped {key}: {err}")
+        conn.rollback()
+
+
+def _signup_week(conn, creator_id):
+    """Joined this week: no weekly report yet (there is no 'last week' to report on)."""
+    try:
+        from services.pro_manager import week_start
+        cur = conn.cursor()
+        cur.execute("SELECT created_at FROM creators WHERE id = %s", (creator_id,))
+        row = cur.fetchone()
+        created = row[0] if row and not isinstance(row, dict) else (row or {}).get("created_at")
+        if not created:
+            return False
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        return created >= week_start()
+    except Exception:
+        conn.rollback()
+        return False
+
+
 def _deliver_manager_note(conn, creator_id, first, career, tracker, balance, queue):
     """Post the month plan (first open of the month) or a while-you-were-away brief into the thread."""
     try:
@@ -1156,6 +1196,13 @@ def _deliver_manager_note(conn, creator_id, first, career, tracker, balance, que
                 save_thread(conn, creator_id, messages=thread.get("messages") or [],
                             suggested=thread.get("suggested_brands") or [], notes=notes)
                 return None
+        if which == "month" and _note_shown(conn, creator_id, f"month_note:{month_key()}"):
+            which = "away"
+        if which == "away":
+            from services.polly_manager import AWAY_BRIEF_GAP
+            last_away = _note_shown(conn, creator_id, "away_brief")
+            if last_away and datetime.now(timezone.utc) - last_away < AWAY_BRIEF_GAP:
+                which = None
         if not which:
             return None
         is_pro = bool((balance or {}).get("is_unlimited"))
@@ -1177,6 +1224,9 @@ def _deliver_manager_note(conn, creator_id, first, career, tracker, balance, que
                 career,
             )
         notes["away_brief_at"] = now_iso
+        if which == "month":
+            _stamp_note(conn, creator_id, f"month_note:{month_key()}")
+        _stamp_note(conn, creator_id, "away_brief", repeat=True)
         messages = list(thread.get("messages") or [])
         if message:
             messages.append(message)
@@ -1201,6 +1251,12 @@ def _deliver_monday_board(conn, creator_id, first, kit, balance):
     (the month plan still wins on the first open of a month).
     """
     from services.pro_manager import board_due, board_message, free_report_message, load_board, week_key
+    board_key = f"board:{week_key()}"
+    if _note_shown(conn, creator_id, board_key):
+        return False
+    if _signup_week(conn, creator_id):
+        _stamp_note(conn, creator_id, board_key)
+        return False
     if not (balance or {}).get("is_unlimited"):
         try:
             thread = load_thread(conn, creator_id)
@@ -1209,6 +1265,7 @@ def _deliver_monday_board(conn, creator_id, first, kit, balance):
                 return False
             message = free_report_message(conn, creator_id, thread, first)
             notes["board_week"] = week_key()
+            _stamp_note(conn, creator_id, board_key)
             if not message:
                 save_thread(conn, creator_id, thread.get("messages") or [], thread.get("suggested_brands") or [],
                             notes=notes)
@@ -1232,6 +1289,7 @@ def _deliver_monday_board(conn, creator_id, first, kit, balance):
             return False
         board = load_board(conn, creator_id, kit=kit)
         notes["board_week"] = week_key()
+        _stamp_note(conn, creator_id, board_key)
         notes["month_plan_month"] = month_key()
         notes["away_brief_at"] = utc_iso_now()
         messages = list(thread.get("messages") or []) + [json_safe(board_message(board, first))]

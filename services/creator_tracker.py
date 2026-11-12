@@ -640,6 +640,15 @@ def mark_milestone(conn, creator_id: int, key: str) -> None:
     conn.commit()
 
 
+def touch_milestone(conn, creator_id: int, key: str) -> None:
+    """Like mark_milestone, but moves the time forward (for repeating notes: last shown at)."""
+    ensure_tables(conn)
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO creator_milestones (creator_id, key) VALUES (%s, %s)
+                   ON CONFLICT (creator_id, key) DO UPDATE SET at = NOW()""", (creator_id, key))
+    conn.commit()
+
+
 def milestone_at(conn, creator_id: int, key: str) -> Optional[datetime]:
     ensure_tables(conn)
     cur = conn.cursor()
