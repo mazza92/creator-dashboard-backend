@@ -159,6 +159,7 @@ class TestQuotaEmailArms(unittest.TestCase):
         self.assertEqual(ctx['quota_arm'], 'trial')
         self.assertIn('utm_campaign=max_quota_hit_trial', ctx['cta_url'])
         self.assertIn('free for 7 days', ctx['preheader'])
+        self.assertEqual(ctx['subject_override'], 'Your 3 free pitches are out 🎉')
         deliver.assert_called_once()
 
     def test_at_the_limit_everyone_gets_the_19_offer(self):
@@ -180,8 +181,27 @@ class TestQuotaEmailArms(unittest.TestCase):
         base = {'first_name': 'Ana', 'days_until_reset': 10, 'reset_date': 'Nov 1', 'cta_url': 'https://x'}
         self.assertIn('Start my free week', tpl.render(quota_arm='trial', **base))
         control = tpl.render(quota_arm='control', **base)
-        self.assertIn('Put Polly on autopilot', control)
+        self.assertIn('Keep pitching for me', control)
         self.assertNotIn('free week', control)
+
+    def test_template_shows_their_plan(self):
+        from jinja2 import Environment, FileSystemLoader
+        from services.quota_email import quota_preheader
+        env = Environment(loader=FileSystemLoader(str(ROOT / 'templates')))
+        tpl = env.get_template('lifecycle/16_max_quota_hit.html')
+        ctx = {'first_name': 'Ana', 'reset_date': 'Dec 1', 'cta_url': 'https://x', 'from_plan': True,
+               'waiting': [{'brand_name': 'Kosas', 'offer': 'paid', 'meta_ads': True}], 'waiting_count': 5,
+               'waiting_more': 4, 'kit_views': 2, 'goal_label': '$500', 'days_left': 9}
+        html = tpl.render(quota_arm='control', **ctx)
+        for text in ('5 brands', 'Kosas', 'Paid ask', '+4 more lined up', '2 brands have already opened your kit',
+                     '$500 goal', 'Dec 1'):
+            self.assertIn(text, html)
+        bare = tpl.render(quota_arm='control', first_name='Ana', cta_url='https://x', waiting=[])
+        self.assertIn('Your next brands are lined up', bare)
+        self.assertNotIn('opened your kit', bare)
+        self.assertNotIn('goal', bare)
+        self.assertEqual(quota_preheader(ctx), '5 brands from your plan are ready to go.')
+        self.assertIn('opened your kit', quota_preheader({'kit_views': 1}))
 
 
 class TestCheckoutTrial(unittest.TestCase):
