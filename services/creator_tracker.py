@@ -869,6 +869,26 @@ def _kit_views(conn, creator_id: int) -> Dict[int, int]:
     return {int(r["brand_id"]): int(r["n"]) for r in cur.fetchall()}
 
 
+def _kit_view_events(conn, creator_id: int, since: datetime) -> List[Dict[str, Any]]:
+    """Each time a brand opened the creator's media kit (tracked ?ref= link), newest first."""
+    cur = _cur(conn)
+    cur.execute("""SELECT e.brand_id, COALESCE(b.brand_name, e.event_data->>'brand_name') AS brand_name, e.occurred_at
+                   FROM polly_timeline_events e LEFT JOIN pr_brands b ON b.id = e.brand_id
+                   WHERE e.creator_id = %s AND e.event_type = 'portfolio_viewed' AND e.brand_id IS NOT NULL
+                     AND e.occurred_at >= %s
+                   ORDER BY e.occurred_at DESC LIMIT 300""", (creator_id, since))
+    return [dict(r) for r in cur.fetchall()]
+
+
+def _ago_label(at: datetime, now: datetime) -> str:
+    days = (now.date() - at.date()).days
+    if days <= 0:
+        return "today"
+    if days == 1:
+        return "yesterday"
+    return at.strftime("%a") if days < 7 else _fmt_day(at)
+
+
 def _deals(conn, creator_id: int) -> List[Dict[str, Any]]:
     cur = _cur(conn)
     cur.execute("""SELECT d.*, b.logo_url AS logo FROM creator_deals d LEFT JOIN pr_brands b ON b.id = d.brand_id
@@ -1038,6 +1058,38 @@ def build_tracker(conn, creator_id: int, now: Optional[datetime] = None) -> Dict
             c["column"] = "replied"
             c["next"] = {"label": "Tell me what they offered", "your_move": True, "action": "replied"}
 
+    # Kit opens: the strongest "it's working" signal. A pitched brand that opened the kit is the moment to follow
+    # up (the creator's move, unless Autopilot already has the follow-up scheduled); each open is on the calendar.
+    fu_scheduled = {int(q["brand_id"]) for q in _queue_rows(conn, creator_id)
+                    if q.get("brand_id") and q.get("followup_status") in ("scheduled", "headsup")}
+    for bid, c in cards.items():
+        n = int(c.get("kit_views") or 0)
+        if n and c["column"] in ("pitched", "followed_up"):
+            c["next"] = {"label": f"Opened your kit{' ' + str(n) + '×' if n > 1 else ''} · follow up now",
+                         "your_move": bid not in fu_scheduled, "action": "followup"}
+    view_events = _kit_view_events(conn, creator_id, now - timedelta(days=30))
+    seen_day = {}
+    for e in view_events:
+        at = _aware(e["occurred_at"])
+        key = (at.date().isoformat(), int(e["brand_id"]))
+        seen_day[key] = seen_day.get(key, 0) + 1
+    for (day_iso, bid), n in seen_day.items():
+        name = next((e.get("brand_name") for e in view_events if int(e["brand_id"]) == bid), None) or "A brand"
+        calendar.append({"date": day_iso, "kind": "view", "brand_id": bid, "brand_name": name,
+                         "label": f"Opened your kit{' ' + str(n) + '×' if n > 1 else ''}"})
+    recent: Dict[int, Dict[str, Any]] = {}
+    for e in view_events:
+        at = _aware(e["occurred_at"])
+        if now - at > timedelta(days=7):
+            continue
+        bid = int(e["brand_id"])
+        r = recent.setdefault(bid, {"brand_id": bid, "brand_name": e.get("brand_name") or "A brand", "count": 0,
+                                    "last_at": at.isoformat(), "when": _ago_label(at, now),
+                                    "replied": bid in replies or bid in deal_by_brand})
+        r["count"] += 1
+    recent_views = sorted(recent.values(), key=lambda r: r["last_at"], reverse=True)
+    opened_month = len({int(e["brand_id"]) for e in view_events if _aware(e["occurred_at"]) >= m_start})
+
     # Deals win: they're what the creator told us.
     for d in deals:
         bid = int(d["brand_id"]) if d.get("brand_id") else -int(d["id"])
@@ -1144,7 +1196,8 @@ def build_tracker(conn, creator_id: int, now: Optional[datetime] = None) -> Dict
             "weekly_target": weekly_target(goal_cents, profile["followers"], own_rates(conn, creator_id)),
         },
         "suggestion": suggestion,
-        "funnel": {"pitched": pitched_month, "pitches_needed": math_["pitches"], "replied": replied_month,
+        "funnel": {"pitched": pitched_month, "pitches_needed": math_["pitches"], "opened": opened_month,
+                   "replied": replied_month,
                    "negotiating": negotiating_n, "negotiating_cents": sum(int(d.get("value_cents") or 0)
                                                                            for d in deals if d.get("stage") == "negotiating"),
                    "booked_or_paid": booked_n},
@@ -1152,6 +1205,7 @@ def build_tracker(conn, creator_id: int, now: Optional[datetime] = None) -> Dict
         "closed": closed,
         "calendar": calendar,
         "your_move_count": len(your_move),
+        "recent_views": recent_views[:5],
         "getting_started": getting_started(conn, creator_id),
         "hot": hot,
         "free": None if balance is None else {"pitches_left": left, "limit": balance["limit"],

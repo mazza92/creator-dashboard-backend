@@ -352,6 +352,27 @@ class TrackerDb(unittest.TestCase):
             self.assertFalse(ct.post_goal_plan(self.conn, 7, now=NOW))
             save.assert_not_called()
 
+    def test_kit_opens_show_everywhere(self):
+        self._queue(1, "sent", sent_days_ago=3)       # Autopilot follow-up scheduled in _queue
+        cur = self.conn.cursor()
+        cur.execute("""INSERT INTO creator_pipeline (creator_id, brand_id, pitched_at) VALUES (7, 2, %s)""",
+                    (NOW - timedelta(days=4),))
+        for bid, days in ((1, 0), (1, 0), (2, 1), (5, 20)):
+            cur.execute("""INSERT INTO polly_timeline_events (creator_id, brand_id, event_type, occurred_at)
+                           VALUES (7, %s, 'portfolio_viewed', %s)""", (bid, NOW - timedelta(days=days)))
+        self.conn.commit()
+        out = ct.build_tracker(self.conn, 7, now=NOW)
+        cards = {c["brand_id"]: c for col in out["columns"] for c in col["cards"]}
+        self.assertEqual(cards[1]["next"]["label"], "Opened your kit 2× · follow up now")
+        self.assertFalse(cards[1]["next"]["your_move"])            # Autopilot follows up already
+        self.assertTrue(cards[2]["next"]["your_move"])             # sent by hand: the creator's move
+        views = [e for e in out["calendar"] if e["kind"] == "view"]
+        self.assertIn({"date": NOW.date().isoformat(), "kind": "view", "brand_id": 1, "brand_name": "Glow Co",
+                       "label": "Opened your kit 2×"}, views)
+        self.assertEqual([r["brand_id"] for r in out["recent_views"]], [1, 2])   # last 7 days, newest first
+        self.assertEqual(out["recent_views"][0]["when"], "today")
+        self.assertEqual(out["funnel"]["opened"], 2)               # this month: brands 1, 2 (5 was in October)
+
     def test_unknown_action_rejected(self):
         with self.assertRaises(ValueError):
             ct.record_deal(self.conn, 7, 3, "won_lottery")
