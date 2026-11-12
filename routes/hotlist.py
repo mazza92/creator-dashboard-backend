@@ -2,6 +2,8 @@
 own reads.
 
 GET|POST /api/hotlist/cron/daily   cron auth (services.admin_auth.cron_request_ok). Steps, each skippable:
+    0. auto-publish scanner drafts that pass every check (verify inbox, logo, AI profile, gate)
+                                                                       (?publish=0 to skip, ?publish_budget=90 s)
     1. seed ad samples from notes for meta brands with no signal yet   (?seed=0 to skip)
     2. AI-classify inconclusive UGC samples, cached                    (?classify=40 max calls, 0 to skip)
     3. re-run the quality gate on every published meta brand          (?gate=0 to skip)
@@ -27,12 +29,15 @@ def _off(name):
     return str(request.args.get(name, "1")).lower() in ("0", "false", "no", "off")
 
 
-def run_daily(conn, *, seed=True, classify=40, gate=True, assign=True, draft=True, budget=200.0, day=None):
+def run_daily(conn, *, publish=True, publish_budget=90.0, seed=True, classify=40, gate=True, assign=True, draft=True,
+              budget=200.0, day=None):
     """The whole daily job. Each step is isolated: one failing step never stops the next."""
-    from services import brand_quality_gate, hot_brands, meta_ads_signal
+    from services import brand_autopublish, brand_quality_gate, hot_brands, meta_ads_signal
 
     out = {}
     steps = []
+    if publish:
+        steps.append(("autopublish", lambda: brand_autopublish.run(conn, budget=publish_budget)))
     if seed:
         steps.append(("seeded", lambda: meta_ads_signal.seed_from_notes(conn)))
     if classify:
@@ -66,7 +71,8 @@ def cron_daily():
 
     conn = get_db_connection()
     try:
-        out = run_daily(conn, seed=not _off("seed"), classify=_int_arg("classify", 40, 0, 500),
+        out = run_daily(conn, publish=not _off("publish"),
+                        publish_budget=float(_int_arg("publish_budget", 90, 0, 600)), seed=not _off("seed"), classify=_int_arg("classify", 40, 0, 500),
                         gate=not _off("gate"), assign=not _off("assign"), draft=not _off("draft"),
                         budget=float(_int_arg("budget", 200, 0, 800)))
         return jsonify({"success": True, **json_safe(out)})
