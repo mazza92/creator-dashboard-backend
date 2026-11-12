@@ -67,8 +67,8 @@ class TestDeliveredCountQuery(unittest.TestCase):
         cursor = MagicMock()
         cursor.fetchone.return_value = {'n': 2}
         self.assertEqual(count_delivered_unlocks_this_month(cursor, 2848), 2)
-        cursor.execute.assert_called_once()
-        self.assertEqual(cursor.execute.call_args[0][1], (2848, 2848, 2848))
+        # First query: delivered this month; then a cheap check for pitches written but not sent yet.
+        self.assertEqual(cursor.execute.call_args_list[0][0][1], (2848, 2848, 2848))
 
     def test_free_unlock_usage_uses_delivered_not_counter(self):
         cursor = MagicMock()

@@ -653,6 +653,35 @@ def draft_pitch_batch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "status": "no_brands",
                 "explain": "Those brands are already pitched or gone. Offer new matches."}
 
+    # Free: a pitch's credit is spent when it's sent, not when it's written (unlock_quota credit_pending_send).
+    # So write at most as many new pitches as credits left, minus pitches already written and waiting.
+    free = not (R._unlock_balance(state.creator_id) or {}).get("is_unlimited")
+    already: set = set()
+    waiting = 0
+    if free:
+        try:
+            from services.unlock_quota import brand_already_delivered, pending_send_count
+            cur = state.db().cursor()
+            left = int((R._unlock_balance(state.creator_id) or {}).get("remaining") or 0)
+            waiting = pending_send_count(cur, state.creator_id, fresh_only=True)
+            already = {int(r["id"]) for r in rows if brand_already_delivered(cur, state.creator_id, int(r["id"]))}
+            room = max(0, left - waiting)
+            fresh_rows = [r for r in rows if int(r["id"]) not in already]
+            rows = [r for r in rows if int(r["id"]) in already] + fresh_rows[:room]
+        except Exception as err:
+            # Never block writing pitches on this check: the per-pitch credit gate still applies.
+            print(f"[Polly] pending credits check skipped: {err}")
+            try:
+                state.db().rollback()
+            except Exception:
+                pass
+        if not rows:
+            if waiting:
+                state.final_say = (f"You have **{waiting} pitch{'es' if waiting != 1 else ''}** written and waiting. "
+                                   "Send them first: your free pitches are only used when a pitch goes out.")
+                return {"ok": True, "status": "pitches_waiting", "count": waiting}
+            return {"ok": False, "status": "locked_out_of_free_pitches"}
+
     shipping, _loc = _pitch_location(state)
     if shipping.get("needs_location"):
         # First pitches shouldn't wait on a city when we know the country from signup: 'shipping to the
@@ -692,6 +721,15 @@ def draft_pitch_batch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     state.pitch = None
     state.brands = []
     state.task_chips = []
+    if free and pitches:
+        try:
+            from services.unlock_quota import mark_pending_send
+            new_ids = [int(p["brand_id"]) for p in pitches if p.get("brand_id") and int(p["brand_id"]) not in already]
+            mark_pending_send(state.db().cursor(), state.creator_id, new_ids)
+            state.db().commit()
+        except Exception as err:
+            print(f"[Polly] pending-send mark skipped: {err}")
+            state.db().rollback()
     state.balance = R._unlock_balance(state.creator_id)
     if not pitches:
         return {"ok": False, "status": "locked_out_of_free_pitches" if locked else "failed"}
@@ -716,6 +754,8 @@ def draft_pitch_batch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     names = ", ".join(f"**{i['brand_name']}**" for i in items)
     say = (f"Done. I wrote {n} pitch{'es' if n > 1 else ''}: {names}. "
            "Each one is written for that brand and goes to their PR inbox.")
+    if free:
+        say += " Your free pitches are only used when you send."
     sendable = sum(1 for i in items if i["email"] and not i["needs_location"])
     if sendable:
         say += (f"\n\nRead them below, then tap **Send {'all ' + str(sendable) if sendable > 1 else 'it'} "
