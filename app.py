@@ -1313,7 +1313,7 @@ def forgot_password():
             secret_key = os.getenv('JWT_SECRET_KEY')
             token = pyjwt.encode({
                 'sub': str(user['id']),
-                'email': email,
+                'email': user['email'],  # as stored, not as typed (case differs: "Name@gmail.com")
                 'purpose': 'password_reset',
                 'iat': int(time.time()),
                 'exp': int(time.time()) + 3600,
@@ -1421,11 +1421,12 @@ def reset_password():
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         # Verify user
-        cursor.execute('SELECT id, email FROM users WHERE id = %s AND email = %s', (user_id, email))
+        # Email case can differ between the link and the account (older links carried the typed email).
+        cursor.execute('SELECT id, email FROM users WHERE id = %s AND LOWER(email) = LOWER(%s)', (user_id, email))
         user = cursor.fetchone()
 
         if not user:
-            app.logger.error(f"No user found for user_id: {user_id}, email: {email}")
+            app.logger.error(f"No user found for password reset: user_id={user_id}")
             conn.close()
             return jsonify({'error': 'Invalid user.'}), 404
 

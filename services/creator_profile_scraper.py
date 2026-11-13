@@ -639,13 +639,16 @@ Analyze and return JSON only.'''
                     'other': 0
                 }
 
-            if 'aesthetic' not in analysis_result:
+            # The model (or the JSON repair) sometimes returns these as a list / set: they must be dicts.
+            if not isinstance(analysis_result.get('content_format_breakdown'), dict):
+                analysis_result['content_format_breakdown'] = {}
+            if not isinstance(analysis_result.get('aesthetic'), dict):
                 analysis_result['aesthetic'] = {}
 
             analysis_result['aesthetic'].setdefault('aesthetic_consistency_score', 70)
             analysis_result['aesthetic'].setdefault('specific_colors', [])
 
-            if 'brand_readiness_signals' not in analysis_result:
+            if not isinstance(analysis_result.get('brand_readiness_signals'), dict):
                 analysis_result['brand_readiness_signals'] = {}
 
             # Smart default for shows_products_in_use based on niche and content format
