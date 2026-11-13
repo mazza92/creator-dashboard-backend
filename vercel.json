@@ -44,6 +44,14 @@
       "schedule": "5 * * * *"
     },
     {
+      "path": "/api/pulse/cron/build",
+      "schedule": "50 4 * * *"
+    },
+    {
+      "path": "/api/pulse/cron/build",
+      "schedule": "25 5 * * *"
+    },
+    {
       "path": "/api/hotlist/cron/daily",
       "schedule": "10 4 * * *"
     },
