@@ -45,3 +45,19 @@ class TestLocationSwap(unittest.TestCase):
         from services.irresistible_pitch import apply_location_to_body
         body = "Hi team,\n\nNo fee. Just product + shipping to London."
         self.assertIn("shipping to 8000 Aarhus, Denmark.", apply_location_to_body(body, "8000 Aarhus, Denmark"))
+
+
+class TestUnpaidCancel(unittest.TestCase):
+    def test_cancels_now_and_voids_open_invoices(self):
+        import subscription_routes as sr
+        with patch.object(sr.stripe.Subscription, 'cancel') as cancel, \
+                patch.object(sr.stripe.Invoice, 'list', side_effect=[{'data': [{'id': 'in_1'}]}, {'data': []}]), \
+                patch.object(sr.stripe.Invoice, 'void_invoice') as void:
+            self.assertEqual(sr.cancel_unpaid_now('sub_9'), 1)
+        cancel.assert_called_once_with('sub_9')
+        void.assert_called_once_with('in_1')
+
+    def test_unpaid_statuses(self):
+        import subscription_routes as sr
+        self.assertIn('past_due', sr.UNPAID_STATUSES)
+        self.assertNotIn('active', sr.UNPAID_STATUSES)
