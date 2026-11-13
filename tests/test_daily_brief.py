@@ -120,8 +120,10 @@ class ContentTests(unittest.TestCase):
         mail = db.brief_email("ana", content)
         self.assertEqual(mail["subject"], "Loop offered you $400: your move")
         self.assertIn("/creator/dashboard/tracker?brand=9&amp;", mail["html"])
-        self.assertIn("And 3 more", mail["html"])
-        self.assertIn("Your Tuesday brief", mail["html"])
+        self.assertIn("+ 3 more on", mail["html"])
+        self.assertIn("Tuesday, Nov 10 · Daily brief", mail["html"])
+        self.assertIn("Needs you", mail["html"])
+        self.assertIn("Review reply", mail["html"])
         self.assertIn('name="viewport"', mail["html"])
 
     def test_hot_brand_line_and_free_upgrade(self):
@@ -130,10 +132,52 @@ class ContentTests(unittest.TestCase):
                     is_pro=False, free={"pitches_left": 0, "limit": 3, "locked": 5})
         mail = db.brief_email("ana", db.assemble(t, local=local()))
         self.assertEqual(mail["subject"], "🔥 Peak is hot today")
-        self.assertIn("🔥 Hot today", mail["html"])
+        self.assertIn("is hot today", mail["html"])
         self.assertIn("Gifted 9 creators", mail["html"])
         self.assertIn("Send it with Pro", mail["html"])
         self.assertIn("Pro ($19/mo)", mail["html"])
+        self.assertNotIn("Needs you", mail["html"])  # free with nothing to answer: no empty section
+
+    def test_outreach_first_hero_and_done_for_you(self):
+        cal = [{"date": "2026-11-09", "kind": "sent", "brand_id": i, "brand_name": f"B{i}"} for i in range(1, 7)]
+        cal += [{"date": "2026-11-09", "kind": "fu", "brand_id": 7, "brand_name": "Dew", "label": "Follow-up sent"},
+                {"date": "2026-11-11", "kind": "sched", "brand_id": 8, "brand_name": "Ilia"},
+                {"date": "2026-11-09", "kind": "view", "brand_id": 2, "brand_name": "B2"}]
+        t = tracker([card(2, "B2", column="pitched", your_move=False, label="Waiting for a reply")])
+        t.update({"calendar": cal, "funnel": {"pitched": 30, "pitches_needed": 160, "replied": 2},
+                  "recent_views": [{"brand_id": 2, "brand_name": "B2", "count": 2, "last_at": TUE - timedelta(hours=3)}]})
+        pulse = {"niche": "skincare", "hook": {"text": "“I stopped doing this one step.”", "score": 4},
+                 "trend": {"text": "Raw POV texture shots", "why": "Phone-close."}, "tip": {"text": "Cut on the touch."},
+                 "more": 5}
+        content = db.assemble(t, local=local(), since=TUE - timedelta(hours=20), pulse=pulse)
+        self.assertEqual(len(content["yesterday_pitches"]), 6)
+        self.assertEqual(db.worth_sending(content), (True, "done_for_you"))
+        mail = db.brief_email("ana", content)
+        html = mail["html"]
+        self.assertEqual(mail["subject"], "6 brands pitched for you yesterday · B2 opened your kit")
+        self.assertIn("6 brands pitched", html)          # the big number: yesterday (>= 5)
+        self.assertIn("30 of 160", html)
+        self.assertNotIn("$0", html)                      # money only once it's real
+        self.assertIn("Pitches sent from your Gmail", html)
+        self.assertIn("Follow-ups sent", html)
+        self.assertIn("did any of these reply?", html)
+        self.assertIn("Ilia", html)
+        self.assertIn("Hook of the day", html)
+        self.assertIn("5 more hooks", html)
+        self.assertIn("opened your kit 2×", html)
+
+    def test_small_day_shows_the_week(self):
+        cal = [{"date": "2026-11-09", "kind": "sent", "brand_id": 1, "brand_name": "A"},
+               {"date": "2026-11-10", "kind": "sent", "brand_id": 2, "brand_name": "B"}]
+        t = tracker()
+        t.update({"calendar": cal + [{"date": "2026-11-09", "kind": "sent", "brand_id": 3, "brand_name": "C"}]})
+        html = db.brief_email("", db.assemble(t, local=local()))["html"]
+        self.assertIn("This week", html)
+        self.assertIn("3 brands pitched", html)
+
+    def test_pulse_alone_is_not_news(self):
+        pulse = {"niche": "skincare", "hook": {"text": "“Hook.”", "score": 2}}
+        self.assertFalse(db.worth_sending(db.assemble(tracker(), local=local(), pulse=pulse))[0])
 
     def test_missing_hot_brands_module_degrades(self):
         content = db.assemble(tracker([card(1, "Glow")], hot=None), local=local())
@@ -148,11 +192,10 @@ class ContentTests(unittest.TestCase):
                    {"brand_id": 3, "brand_name": "Dew", "what": "followup"}],
             gigs_applied=[{"brand_name": "Fizz", "pay": "$250"}])
         html = db.brief_email("", content)["html"]
-        self.assertIn("Today I pitch <strong>Glow</strong>", html)
-        self.assertIn("I apply to <strong>Loop</strong>", html)
-        self.assertIn("Follow-ups today: <strong>Dew</strong>", html)
-        self.assertIn("Dew replied", html)
-        self.assertIn("I applied to 1 paid UGC gig for you: <strong>Fizz</strong> ($250)", html)
+        self.assertIn("Pitch <strong>Glow</strong>, Loop · 1 follow-up", html)
+        self.assertIn("Paid gigs applied to", html)
+        self.assertIn("Fizz $250", html)
+        self.assertIn("Nothing needs you today", html)
 
     def test_clock(self):
         self.assertEqual(db.due_today(local(TUE)), (True, "due"))
@@ -399,7 +442,7 @@ class BriefDbTests(unittest.TestCase):
     def test_pro_gets_one_brief_at_7am_and_free_default_is_weekly(self):
         out = self.run_cron(TUE)
         self.assertEqual([s[0] for s in self.sent], ["pro@x.co"])
-        self.assertEqual(self.sent[0][1], "Glow Co is waiting on you")
+        self.assertEqual(self.sent[0][1], "Glow Co replied 💬")
         self.assertEqual(out["counts"], {"sent": 1})
         self.assertEqual(self.log(), [(1, True, None, 20261110)])
 
