@@ -173,7 +173,7 @@ def test_initial_send_logs_variant_ref_and_schedules_day3():
     assert "3 profiles for Kappel:\n• @glowwithsam: skincare & beauty, 21K followers on Instagram. " \
            "Portfolio (https://newcollab.co/kit/glowwithsam)" in text
     assert "• @dewydays: skincare, 980 followers on TikTok." in text
-    assert "No platform fee. Just product + shipping." in text and text.endswith("Mahery\nFounder, Newcollab")
+    assert "No platform fee. Just product + shipping." in text and text.endswith("Mazza\nFounder, Newcollab")
     assert '<a href="https://newcollab.co/kit/ugcbyleah">Portfolio</a>' in call["html"]
     assert call["from_name"] == bp.FROM_NAME == "Mazza from Newcollab"
     upd = cur.ran("SET outreach_count = COALESCE(outreach_count, 0) + 1, last_contacted_at = NOW(), last_subject = %s, pipeline")
@@ -453,9 +453,9 @@ def test_label_only_links_show_just_the_name():
     )
 
 
-def test_followups_keep_the_gifting_offer_and_sign_mahery():
+def test_followups_keep_the_gifting_offer_and_sign_mazza():
     bodies = [bp.followup_email(n, "Kappel", "Tacy", bp.brief_link("skincare", "r1"), "r1") for n in (1, 2, 3)]
-    assert all(b.startswith("Hey Tacy,") and b.endswith("\n\nMahery") for b in bodies)
+    assert all(b.startswith("Hey Tacy,") and b.endswith("\n\nMazza") for b in bodies)
     assert "product + shipping" in bodies[0] and "oref=r1" in bp.text_to_html(bodies[1])
     assert all("5 creators" not in b and "$299" not in b for b in bodies)
 

@@ -18,8 +18,8 @@ BOOKING_URL = os.getenv("BRAND_BOOKING_URL") or "https://calendar.app.google/nzA
 APP_URL = (os.getenv("FRONTEND_URL") or "https://app.newcollab.co").rstrip("/")
 OUR_DOMAIN = "newcollab.co"
 FROM_NAME = "Mazza from Newcollab"
-SIGNATURE = "Mahery\nFounder, Newcollab"
-SHORT_SIGNATURE = "Mahery"
+SIGNATURE = "Mazza\nFounder, Newcollab"
+SHORT_SIGNATURE = "Mazza"
 
 PIPELINE = "v2"
 # Back to the pitch that got the most brand replies ("PR + UGC swap", 1,000+ creators looking for their first
