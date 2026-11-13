@@ -36,7 +36,7 @@ def waitlist_email_context(kind, name, reason=None, as_pro=False):
         return {
             'subject': "You're in. Polly has brands lined up for you",
             'preheader': 'Your Newcollab profile is approved. Meet Polly, your manager.',
-            'action_url': f'{WAITLIST_APP_URL}/creator/dashboard/for-you?chip=line_up',
+            'action_url': f'{WAITLIST_APP_URL}/creator/dashboard/for-you',  # the first-run welcome lines up their brands
             'action_text': 'Meet Polly',
             'message': (
                 f'<p>Hi {safe_name},</p>'

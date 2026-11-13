@@ -63,7 +63,7 @@ class TestWaitlistEmails(unittest.TestCase):
     def test_approved_copy_is_polly_first(self):
         ctx = waitlist_emails.waitlist_email_context('approved', 'Ema')
         self.assertIn('Polly', ctx['subject'])
-        self.assertIn('chip=line_up', ctx['action_url'])
+        self.assertNotIn('chip=', ctx['action_url'])  # a chip would skip the new creator's first-run welcome
         self.assertNotIn('browse', ctx['message'])
 
     def test_status_emails_reach_waitlisted_creators_with_tags(self):
