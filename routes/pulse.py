@@ -2,7 +2,7 @@
 
 GET  /api/pulse?niche=&view=today|week|saved&offset=   creator session
 POST /api/pulse/save   {item_id, saved: true|false}     creator session
-GET|POST /api/pulse/cron/build   daily build from our Meta ad samples (cron secret; ?niche= one niche, ?day=)
+GET|POST /api/pulse/cron/build   hourly at :50; builds each niche once a day from our Meta ad samples (cron secret; ?niche=, ?day=)
 POST /api/pulse/ingest           Hermes social agent items (cron secret): {items: [...], day?: YYYY-MM-DD}
 """
 from datetime import date
