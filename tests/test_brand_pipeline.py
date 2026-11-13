@@ -175,7 +175,7 @@ def test_initial_send_logs_variant_ref_and_schedules_day3():
     assert "• @dewydays: skincare, 980 followers on TikTok." in text
     assert "No platform fee. Just product + shipping." in text and text.endswith("Mahery\nFounder, Newcollab")
     assert '<a href="https://newcollab.co/kit/ugcbyleah">Portfolio</a>' in call["html"]
-    assert call["from_name"] == bp.FROM_NAME == "Mahery from Newcollab"
+    assert call["from_name"] == bp.FROM_NAME == "Mazza from Newcollab"
     upd = cur.ran("SET outreach_count = COALESCE(outreach_count, 0) + 1, last_contacted_at = NOW(), last_subject = %s, pipeline")
     assert upd and upd[0][2] == "creators3" and upd[0][3] == "abc123" and upd[0][6] == 3
     kinds = [p[1] for p in cur.ran("INSERT INTO brand_activity")]

@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 BOOKING_URL = os.getenv("BRAND_BOOKING_URL") or "https://calendar.app.google/nzAibfYdjVnW1u1FA"
 APP_URL = (os.getenv("FRONTEND_URL") or "https://app.newcollab.co").rstrip("/")
 OUR_DOMAIN = "newcollab.co"
-FROM_NAME = "Mahery from Newcollab"
+FROM_NAME = "Mazza from Newcollab"
 SIGNATURE = "Mahery\nFounder, Newcollab"
 SHORT_SIGNATURE = "Mahery"
 
