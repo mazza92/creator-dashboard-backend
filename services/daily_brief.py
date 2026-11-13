@@ -275,7 +275,8 @@ def your_moves(tracker: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def assemble(tracker: Dict[str, Any], *, local: datetime, today: Optional[List[Dict[str, Any]]] = None,
              gigs_applied: Optional[List[Dict[str, Any]]] = None, fresh_gigs: Optional[List[Dict[str, Any]]] = None,
-             drafts: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+             drafts: Optional[List[Dict[str, Any]]] = None, since: Optional[datetime] = None,
+             pulse: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Everything the brief can say today, from the Tracker and today's Autopilot rows."""
     is_pro = bool(tracker.get("is_pro"))
     goal = tracker.get("goal") or {}
@@ -291,7 +292,10 @@ def assemble(tracker: Dict[str, Any], *, local: datetime, today: Optional[List[D
                 "gig": meta.get("origin") == "paid_gig", "pay": meta.get("pay")}
         (followups if row.get("what") == "followup" else sends).append(item)
     free = tracker.get("free") or None
+    facts = outreach_facts(tracker, local, since)
     return {
+        **facts,
+        "pulse": pulse or None,
         "is_pro": is_pro,
         "weekday": local.strftime("%A"),
         "local_date": local.date().isoformat(),
@@ -314,10 +318,82 @@ def assemble(tracker: Dict[str, Any], *, local: datetime, today: Optional[List[D
     }
 
 
+REPLIED_COLUMNS = ("replied", "negotiating")
+CHECK_WINDOW_DAYS = 14
+
+
+def outreach_facts(tracker: Dict[str, Any], local: datetime, since: Optional[datetime] = None) -> Dict[str, Any]:
+    """What Autopilot did, what's new and what's next, from the Tracker's calendar, funnel and cards."""
+    cal = tracker.get("calendar") or []
+    today = local.date()
+    yday = (today - timedelta(days=1)).isoformat()
+    week_start = (today - timedelta(days=today.weekday())).isoformat()
+    t_iso = today.isoformat()
+    sent = [e for e in cal if e.get("kind") == "sent"]
+    y_sent = [e for e in sent if e.get("date") == yday]
+    y_fu = [e for e in cal if e.get("kind") == "fu" and e.get("label") == "Follow-up sent" and e.get("date") == yday]
+    week_sent = [e for e in sent if week_start <= str(e.get("date")) <= t_iso]
+    seen_week = (today - timedelta(days=6)).isoformat()
+    opened_week = {e.get("brand_id") for e in cal if e.get("kind") == "view" and str(e.get("date")) >= seen_week}
+    funnel = tracker.get("funnel") or {}
+    cards = _all_cards(tracker)
+    moves = your_moves(tracker)
+    replies = [c for c in moves if c.get("column") in REPLIED_COLUMNS]
+    new_views = []
+    for v in tracker.get("recent_views") or []:
+        at = _aware(v.get("last_at")) if not isinstance(v.get("last_at"), str) else None
+        if isinstance(v.get("last_at"), str):
+            try:
+                at = _aware(datetime.fromisoformat(v["last_at"].replace("Z", "+00:00")))
+            except ValueError:
+                at = None
+        if v.get("replied"):
+            continue
+        if since is None or (at and at >= since):
+            new_views.append(v)
+    last_sent = {}
+    for e in sent:
+        last_sent[e.get("brand_id")] = max(str(e.get("date")), last_sent.get(e.get("brand_id"), ""))
+    oldest = (today - timedelta(days=CHECK_WINDOW_DAYS)).isoformat()
+    check = sorted((c for c in cards if c.get("column") in ("pitched", "followed_up")
+                    and not (c.get("next") or {}).get("your_move")
+                    and last_sent.get(c.get("brand_id"), "") >= oldest
+                    and last_sent.get(c.get("brand_id"), "") < t_iso),
+                   key=lambda c: last_sent.get(c.get("brand_id"), ""), reverse=True)
+    upcoming: Dict[str, List[Dict[str, Any]]] = {}
+    for e in cal:
+        if e.get("kind") in ("sched", "due", "post", "pay") and str(e.get("date")) > t_iso:
+            upcoming.setdefault(str(e["date"]), []).append(e)
+    next_days = sorted(upcoming)[:2]
+    week_end = (today + timedelta(days=7)).isoformat()
+    later = sum(1 for d, v in upcoming.items() if d not in next_days and d <= week_end
+                for x in v if x.get("kind") == "sched")
+    return {
+        "yesterday_pitches": [{"brand_id": e.get("brand_id"), "brand_name": e.get("brand_name") or "a brand"} for e in y_sent],
+        "yesterday_followups": [{"brand_id": e.get("brand_id"), "brand_name": e.get("brand_name") or "a brand"} for e in y_fu],
+        "week_pitched": len(week_sent),
+        "month_pitched": int(funnel.get("pitched") or 0),
+        "month_needed": int(funnel.get("pitches_needed") or 0),
+        "opened_week": len([b for b in opened_week if b]),
+        "replied_month": int(funnel.get("replied") or 0),
+        "replies": replies[:MAX_MOVES],
+        "new_views": new_views[:MAX_MOVES],
+        "check": [{"brand_id": c.get("brand_id"), "brand_name": c.get("brand_name") or "a brand"} for c in check[:3]],
+        "upcoming": [{"date": d, "items": [{"brand_name": x.get("brand_name") or "a brand", "kind": x.get("kind"),
+                                             "hot": bool(x.get("hot")), "label": x.get("label")} for x in upcoming[d]]}
+                     for d in next_days],
+        "planned_later": later,
+    }
+
+
 def worth_sending(content: Dict[str, Any]) -> Tuple[bool, str]:
     """Something new to act on or to know. Goal progress or locked brands alone are not a reason to email."""
     if content.get("moves"):
         return True, "your_move"
+    if content.get("yesterday_pitches") or content.get("yesterday_followups"):
+        return True, "done_for_you"
+    if content.get("new_views"):
+        return True, "kit_opens"
     if content.get("hot") and not content["hot"].get("pitched"):
         return True, "hot"
     for key in ("gigs_applied", "fresh_gigs", "sends", "followups", "drafts"):
@@ -343,53 +419,345 @@ def _names(items: List[Dict[str, Any]], limit: int = MAX_NAMES) -> str:
     return names[0] if names else ""
 
 
-def _section(title: str) -> str:
-    return (f'<span style="display:block;margin:6px 0 0 0;font-size:12px;font-weight:700;letter-spacing:.06em;'
-            f'text-transform:uppercase;color:#6B7280;">{escape(title)}</span>')
+HERO_MIN_DAILY = 5          # under this, "this week" is the big number
+MIN_PER_PITCH = 12          # minutes a creator spends finding, writing and sending one pitch
+MIN_PER_FOLLOWUP = 5
+INK, MUTED, LINE, PAPER = "#111827", "#6B7280", "#ECE9E1", "#FAF8F3"
+ACCENT, GREEN, VIOLET = "#C2410C", "#047857", "#6D28D9"
+ACTION_BUTTON_V2 = {**ACTION_BUTTON, "answer": "Review reply", "date": "Set the date", "post": "Open brief"}
 
 
-def _row(name: str, detail: str, href: str, label: str, logo: Optional[str] = None, accent: bool = False) -> str:
-    """One brand row: mark, name + what's next, and a one-tap button. Stacks cleanly at 320-390px."""
-    initials = "".join(w[0] for w in name.split()[:2]).upper() or "?"
-    mark = (f'<img src="{escape(logo, quote=True)}" width="40" height="40" alt="" style="display:block;width:40px;'
-            f'height:40px;border-radius:10px;object-fit:contain;background:#fff;border:1px solid #EEECE6;">' if logo else
-            f'<div style="width:40px;height:40px;border-radius:10px;background:{"#FFF1E6" if accent else "#F1EFE9"};'
-            f'color:#111827;font-weight:800;font-size:14px;line-height:40px;text-align:center;">{escape(initials)}</div>')
-    border = "#FDBA74" if accent else "#E7E4DC"
-    return (
-        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid {border};'
-        f'border-radius:14px;margin:0 0 10px 0;"><tr>'
-        f'<td width="52" style="padding:12px 0 12px 12px;vertical-align:top;">{mark}</td>'
-        f'<td style="padding:12px;vertical-align:top;font-family:{FONT};">'
-        f'<div style="font-size:15px;font-weight:800;color:#111827;line-height:1.3;">{escape(name)}</div>'
-        f'<div style="font-size:13px;color:#4B5563;margin:2px 0 10px 0;line-height:1.45;">{detail}</div>'
-        f'<a href="{escape(href, quote=True)}" style="display:inline-block;padding:9px 14px;border-radius:999px;'
-        f'background:#111827;color:#FFFFFF;font-size:13px;font-weight:700;text-decoration:none;">{escape(label)}</a>'
-        f'</td></tr></table>'
-    )
+def _plural(n: int, one: str, many: Optional[str] = None) -> str:
+    return f"{n} {one if n == 1 else (many or one + 's')}"
 
 
-def goal_line(content: Dict[str, Any]) -> str:
-    goal = content["goal"]
-    target, total = goal["amount_cents"], goal["total_cents"]
-    if not target:
+def _kicker(title: str, aside: str = "") -> str:
+    side = (f'<span style="font-weight:600;color:#9CA3AF;letter-spacing:0;text-transform:none;"> {escape(aside)}</span>'
+            if aside else "")
+    return (f'<div style="font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:{INK};'
+            f'margin:0 0 10px 0;">{title}{side}</div>')
+
+
+def _section(inner: str, top: int = 26) -> str:
+    return f'<tr><td class="pad" style="padding:{top}px 28px 0 28px;">{inner}</td></tr>'
+
+
+def _btn(label: str, href: str, dark: bool = True) -> str:
+    style = (f"background:{INK};color:#FFFFFF;border:1px solid {INK};" if dark
+             else f"background:#FFFFFF;color:{INK};border:1px solid #D1CEC6;")
+    return (f'<a href="{escape(href, quote=True)}" style="display:inline-block;padding:9px 14px;border-radius:999px;'
+            f'{style}font-size:13px;font-weight:700;text-decoration:none;white-space:nowrap;">{escape(label)}</a>')
+
+
+def summary_line(c: Dict[str, Any]) -> str:
+    bits = []
+    replies = c.get("replies") or []
+    if replies:
+        bits.append(f"<strong>{escape(replies[0]['brand_name'])} replied</strong>" if len(replies) == 1
+                    else f"<strong>{len(replies)} brands replied</strong>")
+    y = len(c.get("yesterday_pitches") or [])
+    if y:
+        bits.append(f"Polly pitched <strong>{_plural(y, 'brand')}</strong> for you yesterday")
+    drafts = c.get("drafts") or []
+    if drafts and not c.get("is_pro"):
+        bits.append(f"your <strong>{escape(drafts[0].get('brand_name') or 'next')}</strong> pitch is ready to send"
+                    if len(drafts) == 1 else f"<strong>{len(drafts)} pitches</strong> are ready to send")
+    needs = len(c.get("moves") or [])
+    if needs:
+        bits.append(f"<strong>{_plural(needs, 'thing needs', 'things need')} you</strong> today")
+    elif c.get("is_pro"):
+        bits.append("nothing needs you today")
+    if not bits:
+        return "Here's where your outreach stands this morning."
+    text = ", ".join(bits[:-1]) + (" and " if len(bits) > 1 else "") + bits[-1]
+    return text[0].upper() + text[1:] + "."
+
+
+def preheader_text(c: Dict[str, Any]) -> str:
+    plain = summary_line(c)
+    for tag in ("<strong>", "</strong>"):
+        plain = plain.replace(tag, "")
+    return plain
+
+
+def hero_block(c: Dict[str, Any]) -> str:
+    y, week = len(c.get("yesterday_pitches") or []), int(c.get("week_pitched") or 0)
+    if not (y or week or c.get("month_pitched")):
         return ""
-    pct = max(0, min(100, round(total * 100 / target))) if target else 0
-    days = content.get("days_left")
-    head = (f"<strong>{_money(total)} of {_money(target)}</strong> toward your {escape(content['month'])} goal"
-            + (f" &middot; {days} day{'s' if days != 1 else ''} left" if days is not None else ""))
-    bar = (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0 0 0;">'
-           f'<tr><td style="background:#F1EFE9;border-radius:999px;height:8px;line-height:8px;font-size:0;">'
-           f'<div style="width:{max(pct, 2)}%;background:#C2410C;border-radius:999px;height:8px;"></div>'
-           f'</td></tr></table>')
-    pipe = goal["pipeline_cents"]
-    extra = (f'<span style="display:block;margin-top:6px;font-size:13px;color:#6B7280;">'
-             f'Plus {_money(pipe)} from brands you\'re talking to.</span>' if pipe else "")
-    if not goal.get("set"):
-        extra += (f'<span style="display:block;margin-top:6px;font-size:13px;color:#6B7280;">That\'s my suggested '
-                  f'goal. <a href="{escape(tracker_link(campaign="brief_goal"), quote=True)}" '
-                  f'style="color:#6B7280;">Set your own</a>.</span>')
-    return head + bar + extra
+    if y >= HERO_MIN_DAILY or (y and y >= week):
+        label, num, sub = "Yesterday", y, "For you, from your Gmail, each written for that brand."
+    else:
+        label, num, sub = "This week", week, "Pitched for you from your Gmail, each written for that brand."
+    fu = len(c.get("yesterday_followups") or [])
+    if fu:
+        sub += f" Plus {_plural(fu, 'follow-up')} yesterday."
+    rows = (f'<div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#9CA3AF;">'
+            f'{label}</div><div style="font-size:30px;line-height:1.15;font-weight:800;letter-spacing:-.02em;'
+            f'margin-top:4px;color:{INK};">{_plural(num, "brand")} pitched</div>'
+            f'<div style="font-size:13px;color:{MUTED};margin-top:4px;line-height:1.45;">{sub}</div>')
+    month, need = int(c.get("month_pitched") or 0), int(c.get("month_needed") or 0)
+    pace = ""
+    if need:
+        try:
+            from calendar import monthrange
+            local = datetime.fromisoformat(c["local_date"])
+            share = local.day / monthrange(local.year, local.month)[1]
+        except Exception:
+            share = 0.5
+        on_pace = month >= need * share * 0.9
+        pct = max(2, min(100, round(month * 100 / need)))
+        tag = (f'<span style="color:{GREEN};font-weight:700;white-space:nowrap;">On pace ✓</span>' if on_pace
+               else f'<span style="color:{ACCENT};font-weight:700;white-space:nowrap;">Behind pace</span>')
+        goal = c.get("goal") or {}
+        money = ""
+        if int(goal.get("total_cents") or 0) > 0:
+            money += f" · <strong style=\"color:{INK};\">{_money(goal['total_cents'])}</strong> earned"
+        if int(goal.get("pipeline_cents") or 0) > 0:
+            money += f" · <strong style=\"color:{INK};\">{_money(goal['pipeline_cents'])}</strong> in deals you're negotiating"
+        target = f"Your plan for a {_money(goal['amount_cents'])} month" if int(goal.get("amount_cents") or 0) else "Your plan this month"
+        pace = (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:14px;"><tr>'
+                f'<td style="font-size:13.5px;color:#4B5563;"><strong style="color:{INK};">{month} of {need}</strong> '
+                f'brands pitched in {escape(c.get("month") or "")}</td><td align="right" style="font-size:12.5px;">{tag}</td>'
+                f'</tr></table><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0 4px 0;">'
+                f'<tr><td style="background:{LINE};border-radius:999px;height:8px;font-size:0;line-height:8px;">'
+                f'<div style="width:{pct}%;height:8px;background:{ACCENT};border-radius:999px;"></div></td></tr></table>'
+                f'<div style="font-size:12.5px;color:{MUTED};">{target}{money}</div>')
+    tiles = "".join(
+        f'<td class="tile" width="33%" style="padding:5px;"><div style="background:#FFFFFF;border-radius:12px;padding:10px 12px;">'
+        f'<div style="font-size:18px;font-weight:800;color:{color};">{n}</div>'
+        f'<div style="font-size:12px;color:{MUTED};">{label}</div></div></td>'
+        for n, label, color in ((week, "pitched this week", INK), (c.get("opened_week") or 0, "opened your kit", VIOLET),
+                                (c.get("replied_month") or 0, "replied", GREEN)))
+    return _section(
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{PAPER};'
+        f'border:1px solid {LINE};border-radius:16px;"><tr><td style="padding:18px 18px 6px 18px;">{rows}{pace}</td></tr>'
+        f'<tr><td style="padding:8px 12px 12px 12px;"><table role="presentation" width="100%" cellpadding="0" '
+        f'cellspacing="0"><tr>{tiles}</tr></table></td></tr></table>', top=20)
+
+
+def _line(icon: str, html: str, last: bool = False) -> str:
+    border = "" if last else "border-bottom:1px solid #F1EFE9;"
+    return (f'<tr><td style="padding:10px 0;{border}font-size:14.5px;line-height:1.45;color:{INK};">'
+            f'<span style="display:inline-block;width:24px;">{icon}</span>{html}</td></tr>')
+
+
+def whats_new_block(c: Dict[str, Any]) -> str:
+    rows = []
+    for r in (c.get("replies") or [])[:2]:
+        rows.append(("💬", f"<strong>{escape(r['brand_name'])} replied</strong>"
+                           f' <span style="color:{MUTED};">· {move_detail(r)}</span>'))
+    for v in c.get("new_views") or []:
+        n = int(v.get("count") or 1)
+        rows.append(("👀", f"<strong>{escape(v.get('brand_name') or 'A brand')}</strong> opened your kit"
+                           + (f" {n}×" if n > 1 else "") + f' <span style="color:{MUTED};">· a follow-up lands well now</span>'))
+    hot = c.get("hot")
+    if hot and not hot.get("pitched"):
+        from services.polly_alerts import upgrade_link
+        why = escape(hot.get("reason") or "running UGC ads right now")
+        cta = ""
+        if not c.get("is_pro") and hot.get("locked"):
+            cta = (f' <a href="{escape(upgrade_link("brief_hot"), quote=True)}" style="color:{ACCENT};font-weight:700;'
+                   f'text-decoration:none;">Send it with Pro →</a>')
+        elif c.get("is_pro") and hot.get("queued"):
+            cta = f' <span style="color:{MUTED};">· Autopilot pitches them today</span>'
+        rows.append(("🔥", f"<strong>{escape(hot['brand_name'])}</strong> is hot today"
+                           f' <span style="color:{MUTED};">· {why}</span>{cta}'))
+    fresh = c.get("fresh_gigs") or []
+    if fresh:
+        rows.append(("💼", f"<strong>{_plural(len(fresh), 'new paid gig')}</strong> in your niche "
+                           f'<a href="{escape(tracker_link(campaign="brief_gigs").replace(TRACKER_PATH, "/creator/dashboard/paid-gigs"), quote=True)}" '
+                           f'style="color:{ACCENT};font-weight:700;text-decoration:none;">See them →</a>'))
+    if not rows:
+        return ""
+    body = "".join(_line(i, h, last=(k == len(rows) - 1)) for k, (i, h) in enumerate(rows))
+    return _section(_kicker("✨ What's new", "since yesterday")
+                    + f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0">{body}</table>')
+
+
+def needs_you_block(c: Dict[str, Any]) -> str:
+    from services.polly_alerts import chip_link
+
+    moves, check = c.get("moves") or [], c.get("check") or []
+    if not c.get("is_pro") and not moves:
+        return ""
+    cards = []
+    for i, m in enumerate(moves):
+        nxt = m.get("next") or {}
+        kick = "Brand replied" if m.get("column") in REPLIED_COLUMNS else ("Booked" if m.get("column") == "booked" else "Your move")
+        if m.get("type") in ("paid", "gig") and m.get("value_cents"):
+            kick += f" · {_money(m['value_cents'])} paid offer"
+        accent = i == 0
+        cards.append(
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid '
+            f'{"#FDBA74" if accent else "#E7E4DC"};{"background:#FFF9F3;" if accent else ""}border-radius:14px;'
+            f'margin:0 0 10px 0;"><tr><td style="padding:14px 10px 14px 16px;">'
+            f'<div style="font-size:11.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;'
+            f'color:{ACCENT if accent else MUTED};">{escape(kick)}</div>'
+            f'<div style="font-size:15px;font-weight:800;line-height:1.3;margin-top:3px;color:{INK};">'
+            f'{escape(m.get("brand_name") or "A brand")}</div>'
+            f'<div style="font-size:13px;color:{MUTED};line-height:1.45;margin-top:2px;">{escape(nxt.get("label") or "")}</div>'
+            f'</td><td width="1" align="right" valign="middle" style="padding:14px 14px 14px 0;">'
+            f'{_btn(ACTION_BUTTON_V2.get(nxt.get("action"), "Open"), tracker_link(m.get("brand_id")), dark=accent)}'
+            f'</td></tr></table>')
+    more = int(c.get("moves_more") or 0)
+    if more:
+        cards.append(f'<div style="font-size:13px;color:{MUTED};margin:0 0 10px 0;">+ {more} more on '
+                     f'<a href="{escape(tracker_link(), quote=True)}" style="color:{MUTED};font-weight:600;">your Tracker</a></div>')
+    if not moves:
+        cards.append(f'<div style="background:#F2FBF5;border:1px solid #DCF2E3;border-radius:14px;padding:14px 16px;'
+                     f'font-size:14.5px;font-weight:700;color:#14532D;">Nothing needs you today. Polly\'s on it ✓</div>')
+    if check:
+        chips = "".join(
+            f'<a href="{escape(chip_link("checkin_replied", brand_id=b.get("brand_id"), brand_name=b["brand_name"], kind=KIND), quote=True)}" '
+            f'style="display:inline-block;margin:0 6px 6px 0;padding:7px 12px;border-radius:999px;border:1px solid #D1CEC6;'
+            f'background:#FFFFFF;color:{INK};font-size:13px;font-weight:600;text-decoration:none;">{escape(b["brand_name"])}</a>'
+            for b in check)
+        cards.append(
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:{PAPER};'
+            f'border-radius:14px;margin:4px 0 0 0;"><tr><td style="padding:14px 16px;">'
+            f'<div style="font-size:14px;font-weight:700;color:{INK};">Quick check: did any of these reply?</div>'
+            f'<div style="font-size:12.5px;color:{MUTED};margin:2px 0 10px 0;">One tap and I stop following up and track the deal.</div>'
+            f'{chips}</td></tr></table>')
+    return _section(_kicker("👋 Needs you", "only you can do these") + "".join(cards))
+
+
+def _done_row(num: int, label: str, sub: str, last: bool = False) -> str:
+    border = "" if last else "border-bottom:1px solid #DCF2E3;"
+    return (f'<tr><td width="58" valign="top" style="padding:12px 0 12px 16px;{border}"><div style="font-size:22px;'
+            f'line-height:1.1;font-weight:800;color:{GREEN};">{num}</div></td><td style="padding:12px 16px 12px 4px;'
+            f'{border}"><div style="font-size:14.5px;font-weight:700;color:{INK};line-height:1.3;">{label}</div>'
+            f'<div style="font-size:12.5px;color:{MUTED};line-height:1.45;margin-top:2px;">{sub}</div></td></tr>')
+
+
+def done_block(c: Dict[str, Any]) -> str:
+    from services.polly_alerts import chip_link, upgrade_link
+
+    if not c.get("is_pro"):
+        drafts = c.get("drafts") or []
+        rows = "".join(
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #E7E4DC;'
+            f'border-radius:14px;margin:0 0 10px 0;"><tr><td style="padding:14px 16px;"><div style="font-size:15px;'
+            f'font-weight:800;color:{INK};">{escape(d.get("brand_name") or "Brand")}</div><div style="font-size:13px;'
+            f'color:{MUTED};margin-top:2px;">Pitch written. Sends from your Gmail.</div></td><td width="1" align="right" '
+            f'style="padding:14px 14px 14px 0;">{_btn("Send it", chip_link("send_draft", brand_id=d.get("brand_id"), brand_name=d.get("brand_name") or "", kind=KIND))}'
+            f'</td></tr></table>' for d in drafts)
+        free = c.get("free") or {}
+        locked = int(free.get("locked") or 0)
+        upsell = (f'<div style="font-size:13.5px;color:{MUTED};line-height:1.5;">{_plural(locked, "more brand is", "more brands are")} '
+                  f'lined up for you. On <a href="{escape(upgrade_link("brief_locked"), quote=True)}" style="color:{INK};'
+                  f'font-weight:700;">Pro ($19/mo)</a> Polly pitches them from your Gmail every weekday.</div>') if locked else ""
+        if not (rows or upsell):
+            return ""
+        return _section((_kicker("✉️ Ready to send") + rows if rows else "") + upsell)
+    y, fu = c.get("yesterday_pitches") or [], c.get("yesterday_followups") or []
+    gigs = c.get("gigs_applied") or []
+    items = []
+    if y:
+        items.append((len(y), "Pitches sent from your Gmail", escape(_names_plain(y))))
+    if fu:
+        items.append((len(fu), "Follow-ups sent", escape(_names_plain(fu))))
+    if gigs:
+        items.append((len(gigs), "Paid gigs applied to", " · ".join(
+            escape(g.get("brand_name") or "a brand") + (f" {escape(str(g['pay']))}" if g.get("pay") else "") for g in gigs[:3])))
+    if not items:
+        return ""
+    minutes = len(y) * MIN_PER_PITCH + len(fu) * MIN_PER_FOLLOWUP + len(gigs) * MIN_PER_PITCH
+    saved = f"~{max(1, round(minutes / 60))} hr{'s' if round(minutes / 60) > 1 else ''} saved" if minutes >= 45 else f"~{minutes} min saved"
+    head = (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="font-size:12px;'
+            f'font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:{INK};">🤖 Done for you</td>'
+            f'<td align="right" style="font-size:12px;color:{GREEN};font-weight:700;">{saved}</td></tr></table>'
+            f'<div style="height:10px;line-height:10px;">&nbsp;</div>')
+    body = "".join(_done_row(n, l, sub, last=(k == len(items) - 1)) for k, (n, l, sub) in enumerate(items))
+    return _section(head + f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+                           f'style="background:#F2FBF5;border:1px solid #DCF2E3;border-radius:14px;">{body}</table>')
+
+
+def _names_plain(items: List[Dict[str, Any]], limit: int = MAX_NAMES) -> str:
+    names = [i.get("brand_name") or "a brand" for i in items]
+    more = len(names) - limit
+    head = ", ".join(names[:limit])
+    return f"{head} + {more} more" if more > 0 else head
+
+
+def _day_label(iso: str, local_date: str) -> str:
+    try:
+        d = date.fromisoformat(iso)
+        today = date.fromisoformat(local_date)
+    except ValueError:
+        return iso
+    if d == today + timedelta(days=1):
+        return "Tomorrow"
+    return d.strftime("%a")
+
+
+def up_next_block(c: Dict[str, Any]) -> str:
+    rows = []
+    sends, fus = c.get("sends") or [], c.get("followups") or []
+    if sends or fus:
+        txt = []
+        if sends:
+            txt.append("Pitch " + ", ".join(("🔥 " if (c.get("hot") or {}).get("brand_id") == s.get("brand_id") else "")
+                                            + f"<strong>{escape(s['brand_name'])}</strong>" if i == 0 else escape(s["brand_name"])
+                                            for i, s in enumerate(sends[:3]))
+                       + (f" + {len(sends) - 3} more" if len(sends) > 3 else ""))
+        if fus:
+            txt.append(_plural(len(fus), "follow-up"))
+        rows.append(("Today", " · ".join(txt), ACCENT))
+    for day in c.get("upcoming") or []:
+        items = day.get("items") or []
+        pitches = [i for i in items if i.get("kind") == "sched"]
+        other = [i for i in items if i.get("kind") != "sched"]
+        bits = []
+        if pitches:
+            bits.append("Pitch " + ", ".join(escape(i["brand_name"]) for i in pitches[:3])
+                        + (f" + {len(pitches) - 3} more" if len(pitches) > 3 else ""))
+        bits += [f"{escape(i['brand_name'])} {escape((i.get('label') or '').lower())}" for i in other[:2]]
+        if bits:
+            rows.append((_day_label(day["date"], c.get("local_date") or ""), " · ".join(bits), MUTED))
+    later = int(c.get("planned_later") or 0)
+    if later:
+        rows.append(("This week", f"{_plural(later, 'more brand')} planned to stay on pace", MUTED))
+    if not rows:
+        return ""
+    body = "".join(
+        f'<tr><td width="84" valign="top" style="padding:7px 0;font-size:13px;font-weight:700;color:{color};">{label}</td>'
+        f'<td style="padding:7px 0;font-size:14px;line-height:1.5;color:{INK};">{text}</td></tr>'
+        for label, text, color in rows)
+    return _section(_kicker("📅 Up next") + f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0">{body}</table>')
+
+
+def pulse_block(c: Dict[str, Any]) -> str:
+    from services.polly_alerts import frontend_url
+    from brand_categories import category_label
+
+    p = c.get("pulse") or {}
+    hook = p.get("hook") or {}
+    if not hook.get("text"):
+        return ""
+    niche = category_label(p.get("niche") or "") or "your niche"
+    href = (f"{frontend_url()}/creator/dashboard/pulse?"
+            + urlencode({"niche": p.get("niche") or "", "utm_source": "email", "utm_medium": KIND, "utm_campaign": "brief_pulse"}))
+    more = int(p.get("more") or 0)
+    parts = [f'<div style="font-size:11.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:{VIOLET};">'
+             f'Hook of the day</div><div style="font-size:15px;line-height:1.45;font-weight:700;margin:4px 0 2px 0;color:{INK};">'
+             f'{escape(hook["text"])}</div><div style="font-size:12.5px;color:{MUTED};">'
+             + (f"Seen in {hook['score']} {escape(niche.lower())} ads this week" if int(hook.get("score") or 0) > 1
+                else f"From a live {escape(niche.lower())} ad")
+             + (f' · <a href="{escape(href, quote=True)}" style="color:{VIOLET};font-weight:600;text-decoration:none;">'
+                f'{_plural(more, "more hook")} →</a>' if more else
+                f' · <a href="{escape(href, quote=True)}" style="color:{VIOLET};font-weight:600;text-decoration:none;">Open Pulse →</a>')
+             + '</div>']
+    for label, item in (("Trending now", p.get("trend")), ("Editing tip", p.get("tip"))):
+        if not item or not item.get("text"):
+            continue
+        body = escape(item["text"]) if label == "Editing tip" else (
+            f"<strong>{escape(item['text'])}</strong>" + (f". {escape(item['why'])}" if item.get("why") else ""))
+        parts.append(f'<div style="height:1px;background:#ECE8FB;margin:14px 0;"></div><div style="font-size:11.5px;'
+                     f'font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:{VIOLET};">{label}</div>'
+                     f'<div style="font-size:14px;line-height:1.5;margin-top:4px;color:{INK};">{body}</div>')
+    return _section(_kicker("📈 UGC pulse", f"{niche.lower()} · 2 min read")
+                    + f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F7F5FF;'
+                      f'border:1px solid #ECE8FB;border-radius:14px;"><tr><td style="padding:16px;">{"".join(parts)}</td></tr></table>')
 
 
 def move_detail(card: Dict[str, Any]) -> str:
@@ -409,6 +777,17 @@ def subject_for(content: Dict[str, Any]) -> str:
     if paid:
         value = f" {_money(paid['value_cents'])}" if paid.get("value_cents") else ""
         return f"{paid['brand_name']} offered you{value}: your move"
+    replies = content.get("replies") or []
+    if replies:
+        return (f"{replies[0]['brand_name']} replied 💬" if len(replies) == 1
+                else f"{len(replies)} brands replied 💬")
+    y = len(content.get("yesterday_pitches") or [])
+    views = content.get("new_views") or []
+    if y:
+        tail = f" · {views[0].get('brand_name')} opened your kit" if views else ""
+        return f"{_plural(y, 'brand')} pitched for you yesterday{tail}"
+    if views:
+        return f"{views[0].get('brand_name') or 'A brand'} opened your kit 👀"
     if hot and not hot.get("pitched"):
         return f"🔥 {hot['brand_name']} is hot today"
     if moves:
@@ -430,112 +809,52 @@ def subject_for(content: Dict[str, Any]) -> str:
     return f"Your {content.get('weekday') or 'daily'} brief"
 
 
-def brief_lines(content: Dict[str, Any], creator_id: Any = None) -> List[str]:
-    from services.polly_alerts import chip_link, upgrade_link
-
-    lines: List[str] = []
-    g = goal_line(content)
-    if g:
-        lines.append(g)
-
-    moves = content.get("moves") or []
-    if moves:
-        rows = "".join(
-            _row(m.get("brand_name") or "Brand", move_detail(m), tracker_link(m.get("brand_id")),
-                 ACTION_BUTTON.get((m.get("next") or {}).get("action"), "Open"), m.get("logo"), accent=bool(m.get("hot")))
-            for m in moves)
-        more = content.get("moves_more") or 0
-        tail = (f'<span style="display:block;font-size:13px;color:#6B7280;">And {more} more on '
-                f'<a href="{escape(tracker_link(), quote=True)}" style="color:#6B7280;">your Tracker</a>.</span>'
-                if more else "")
-        lines.append(_section("Your move") + '<span style="display:block;height:8px;"></span>' + rows + tail)
-
-    hot = content.get("hot")
-    if hot and not hot.get("pitched"):
-        reason = escape(hot.get("reason") or "Brands like this pick creators fast.")
-        if not content.get("is_pro") and hot.get("locked"):
-            detail = reason + "<br>Your free pitches are used this month. On Pro it goes out today."
-            label, href = "Send it with Pro", upgrade_link("brief_hot")
-        elif content.get("is_pro"):
-            detail = reason + ("<br>Autopilot pitches them today, from your Gmail." if hot.get("queued")
-                               else "<br>Your pitch for them is ready.")
-            label, href = "See the pitch", tracker_link(hot["brand_id"], "brief_hot")
-        else:
-            detail = reason
-            label, href = "Pitch it", tracker_link(hot["brand_id"], "brief_hot")
-        lines.append(_section("🔥 Hot today") + '<span style="display:block;height:8px;"></span>'
-                     + _row(hot["brand_name"], detail, href, label, hot.get("logo"), accent=True))
-
-    sends, followups = content.get("sends") or [], content.get("followups") or []
-    if sends or followups:
-        bits = []
-        gig_sends = [s for s in sends if s.get("gig")]
-        brand_sends = [s for s in sends if not s.get("gig")]
-        if brand_sends:
-            bits.append(f"📤 Today I pitch {_names(brand_sends)} from your Gmail.")
-        if gig_sends:
-            bits.append(f"💼 I apply to {_names(gig_sends)} (paid gig{'s' if len(gig_sends) != 1 else ''}).")
-        if followups:
-            replied = " &middot; ".join(
-                f'<a href="{escape(chip_link("checkin_replied", brand_id=f.get("brand_id"), brand_name=f["brand_name"], kind=KIND), quote=True)}" '
-                f'style="color:#C2410C;font-weight:600;">{escape(f["brand_name"])} replied</a>'
-                for f in followups[:MAX_NAMES])
-            bits.append(f"🔁 Follow-ups today: {_names(followups)}. Already heard back? Tap it and I'll hold "
-                        f"that follow-up:<br>{replied}")
-        lines.append(_section("Autopilot today") + "<br>" + "<br>".join(bits))
-
-    gigs, fresh = content.get("gigs_applied") or [], content.get("fresh_gigs") or []
-    if gigs or fresh:
-        bits = []
-        if gigs:
-            named = ", ".join(f"<strong>{escape(gg.get('brand_name') or 'a brand')}</strong>"
-                              + (f" ({escape(str(gg['pay']))})" if gg.get("pay") else "") for gg in gigs[:4])
-            bits.append(f"💰 I applied to {len(gigs)} paid UGC gig{'s' if len(gigs) != 1 else ''} for you: {named}.")
-        for gig in fresh:
-            from services.ugc_roundup import apply_href, gig_meta
-            meta = " &middot; ".join(escape(b) for b in gig_meta(gig))
-            href = escape(apply_href(gig), quote=True)
-            bits.append(f'<a href="{href}" style="color:#111827;font-weight:700;text-decoration:none;">'
-                        f'{escape(gig.get("headline") or "Paid UGC gig")}</a>'
-                        + (f'<br><span style="font-size:13px;color:#6B7280;">{meta}</span>' if meta else "")
-                        + f' <a href="{href}" style="font-size:13px;font-weight:600;color:#C2410C;">Apply &rarr;</a>')
-        lines.append(_section("Paid gigs") + "<br>" + "<br>".join(bits))
-
-    drafts = content.get("drafts") or []
-    if drafts:
-        rows = "".join(_row(d.get("brand_name") or "Brand", "Pitch written. Sends from your Gmail.",
-                            chip_link("send_draft", brand_id=d.get("brand_id"), brand_name=d.get("brand_name") or "",
-                                      kind=KIND), "Send it")
-                       for d in drafts)
-        lines.append(_section("Ready to send") + '<span style="display:block;height:8px;"></span>' + rows)
-
-    free = content.get("free")
-    if free and not content.get("is_pro"):
-        locked, left = int(free.get("locked") or 0), free.get("pitches_left")
-        if locked:
-            lines.append(f'<span style="color:#6B7280;">{locked} more brand{"s are" if locked != 1 else " is"} lined '
-                         f'up for you, waiting on a pitch. On <a href="{escape(upgrade_link("brief_locked"), quote=True)}" '
-                         f'style="color:#6B7280;font-weight:600;">Pro ($19/mo)</a> I send them from your Gmail every '
-                         f'weekday.</span>')
-        elif left is not None:
-            lines.append(f'<span style="color:#6B7280;">{left} free pitch{"es" if left != 1 else ""} left this month.'
-                         f'</span>')
-    return lines
-
-
 def brief_email(first_name: str, content: Dict[str, Any], unsubscribe_url: str = "",
                 creator_id: Any = None) -> Dict[str, str]:
-    from services.polly_alerts import frontend_url, render_email
+    """The morning brief: what's new, what's done, what's next. Each section only when it has something."""
+    from services.polly_alerts import frontend_url
 
-    subject = subject_for(content)
-    headline = f"Your {content.get('weekday') or 'daily'} brief"
-    buttons = [{"label": "Open my Tracker", "href": tracker_link(campaign="brief_open")}]
-    links = [{"label": "Daily, weekly or off", "href": f"{frontend_url()}{SETTINGS_PATH}?section=emails"}]
-    html = render_email(first_name, headline, brief_lines(content, creator_id), buttons, unsubscribe_url, links=links)
-    html = html.replace(
-        "<html>", '<html><head><meta name="viewport" content="width=device-width,initial-scale=1">'
-                  '<meta name="color-scheme" content="light"></head>', 1)
-    return {"subject": subject, "html": html}
+    c = content
+    name = escape((first_name or "").strip() or "there")
+    try:
+        day = date.fromisoformat(c.get("local_date") or "")
+        date_label = f"{day.strftime('%A')}, {day.strftime('%b')} {day.day}"
+    except ValueError:
+        date_label = c.get("weekday") or ""
+    pre = escape(preheader_text(c))
+    filler = "&#847;&zwnj;&nbsp;" * 90
+    settings = f"{frontend_url()}{SETTINGS_PATH}?section=emails"
+    sections = "".join(b for b in (hero_block(c), whats_new_block(c), needs_you_block(c), done_block(c),
+                                   up_next_block(c), pulse_block(c)) if b)
+    unsub = (f' · <a href="{escape(unsubscribe_url, quote=True)}" style="color:#9CA3AF;">Unsubscribe</a>'
+             if unsubscribe_url else "")
+    html = f"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light">
+<title>{escape(subject_for(c))}</title>
+<style>body{{margin:0;padding:0;background:#F4F2EC;}}
+@media (max-width:600px){{.wrap{{padding:12px 8px !important;}}.pad{{padding-left:18px !important;padding-right:18px !important;}}.tile{{padding:3px !important;}}}}</style>
+</head><body style="margin:0;padding:0;background:#F4F2EC;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;mso-hide:all;font-size:1px;line-height:1px;color:transparent;">{pre}{filler}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#F4F2EC;"><tr>
+<td class="wrap" align="center" style="padding:24px 16px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;background:#FFFFFF;border-radius:20px;font-family:{FONT};color:{INK};">
+<tr><td class="pad" style="padding:28px 28px 4px 28px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+<td style="font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#9CA3AF;">{escape(date_label)} · Daily brief</td>
+<td align="right" style="font-size:12px;font-weight:800;color:{INK};">NEWCOLLAB</td></tr></table>
+<div style="font-size:26px;line-height:1.2;font-weight:800;letter-spacing:-.02em;margin:10px 0 6px 0;color:{INK};">Morning, {name} ☀️</div>
+<div style="font-size:15px;line-height:1.5;color:#4B5563;">{summary_line(c)}</div>
+</td></tr>
+{sections}
+<tr><td class="pad" align="center" style="padding:28px 28px 8px 28px;">
+<a href="{escape(tracker_link(campaign='brief_open'), quote=True)}" style="display:block;background:{INK};color:#FFFFFF;text-decoration:none;font-size:15px;font-weight:800;padding:15px 20px;border-radius:999px;text-align:center;">Open my Tracker</a>
+</td></tr>
+<tr><td class="pad" align="center" style="padding:6px 28px 26px 28px;font-size:12.5px;color:#9CA3AF;line-height:1.6;">
+— Polly, your pitching assistant<br>
+<a href="{escape(settings, quote=True)}" style="color:#9CA3AF;">Daily, weekly or off</a>{unsub}
+</td></tr>
+</table></td></tr></table></body></html>"""
+    return {"subject": subject_for(c), "html": html}
 
 
 # ---------------------------------------------------------------------------
@@ -641,7 +960,24 @@ def gather(conn, creator_id: int, now: datetime, tz_name: str, is_pro: bool,
         gigs_applied=paid_gigs_applied(conn, creator_id, since) if is_pro else [],
         fresh_gigs=fresh_paid_gigs(conn, creator_id, since, pool) if is_pro else [],
         drafts=[] if is_pro else waiting_drafts(conn, creator_id),
+        since=since,
+        pulse=creator_pulse(conn, creator_id),
     )
+
+
+def creator_pulse(conn, creator_id: int) -> Optional[Dict[str, Any]]:
+    """Today's UGC Pulse (hook of the day, trend, tip) in the creator's niche. Never a reason to send on its own."""
+    try:
+        from services.creator_niches import recorded_niches
+        from services.ugc_pulse import brief_pulse
+        cur = _cursor(conn)
+        cur.execute("SELECT niche, creator_niches FROM creators WHERE id = %s", (creator_id,))
+        row = cur.fetchone()
+        return brief_pulse(conn, recorded_niches(dict(row)) if row else [])
+    except Exception as err:
+        print(f"[daily brief] pulse skipped creator={creator_id}: {err}")
+        _rollback(conn)
+        return None
 
 
 # ---------------------------------------------------------------------------
