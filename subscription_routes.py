@@ -839,6 +839,32 @@ def cron_billing_access():
         conn.close()
 
 
+UNPAID_STATUSES = ('past_due', 'unpaid', 'incomplete')
+
+
+def cancel_unpaid_now(subscription_id):
+    """Payment failed: end the subscription today and void the unpaid invoices, so Stripe stops retrying the card.
+    Returns how many invoices were voided."""
+    try:
+        stripe.Subscription.cancel(subscription_id)
+    except AttributeError:  # older stripe-python
+        stripe.Subscription.delete(subscription_id)
+    voided = 0
+    for status in ('open', 'uncollectible'):
+        try:
+            invoices = stripe.Invoice.list(subscription=subscription_id, status=status, limit=10)
+        except Exception as err:
+            print(f"[billing] invoice lookup failed for {subscription_id}: {err}")
+            continue
+        for inv in invoices.get('data') or []:
+            try:
+                stripe.Invoice.void_invoice(inv['id'])
+                voided += 1
+            except Exception as err:
+                print(f"[billing] void failed for {inv.get('id')}: {err}")
+    return voided
+
+
 def _creator_billing_row(cursor, creator_id):
     cursor.execute(
         '''
@@ -870,7 +896,10 @@ def _require_paid_creator():
     if not paused and (creator.get('subscription_tier') or 'free') != 'pro':
         from services.retention_context import open_pause
         paused = bool(open_pause(conn, creator_id))  # the Stripe webhook may have reset the status
-    if (creator.get('subscription_tier') or 'free') != 'pro' and not paused:
+    # A failed payment takes Pro away but Stripe keeps the subscription and retries the card: those creators must
+    # be able to cancel too (it's the moment they most want to).
+    unpaid = (creator.get('subscription_status') or '') in UNPAID_STATUSES and bool(creator.get('stripe_subscription_id'))
+    if (creator.get('subscription_tier') or 'free') != 'pro' and not paused and not unpaid:
         cursor.close()
         conn.close()
         return None, (jsonify({'error': 'No paid subscription to cancel'}), 400)
@@ -1106,6 +1135,28 @@ def cancel_flow_confirm():
             print(f"[retention] cancel context skipped: {err}")
             conn.rollback()
             ctx = None
+        if (creator.get('subscription_status') or '') in UNPAID_STATUSES:
+            # Nothing paid to keep: cancel now and stop the retries.
+            voided = cancel_unpaid_now(creator['stripe_subscription_id'])
+            cursor.execute(
+                '''
+                UPDATE creators
+                SET subscription_tier = 'free', unlocks_tier = 'free', subscription_status = 'canceled',
+                    subscription_ends_at = NOW()
+                WHERE id = %s
+                ''',
+                (creator['id'],),
+            )
+            log_retention_event(cursor, creator['id'], reason, None, 'canceled',
+                                context={**(ctx or {}), 'unpaid_cancel': True, 'invoices_voided': voided})
+            conn.commit()
+            return jsonify({
+                'success': True,
+                'cancel_scheduled': False,
+                'canceled_now': True,
+                'ends_at': None,
+                'message': 'Your subscription is cancelled. We won\'t try your card again.',
+            })
         sub = stripe.Subscription.modify(
             creator['stripe_subscription_id'],
             cancel_at_period_end=True,
