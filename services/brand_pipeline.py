@@ -17,13 +17,16 @@ from urllib.parse import urlparse
 BOOKING_URL = os.getenv("BRAND_BOOKING_URL") or "https://calendar.app.google/nzAibfYdjVnW1u1FA"
 APP_URL = (os.getenv("FRONTEND_URL") or "https://app.newcollab.co").rstrip("/")
 OUR_DOMAIN = "newcollab.co"
-FROM_NAME = "Mazza from Newcollab"
-SIGNATURE = "Mazza\nFounder, Newcollab"
+FROM_NAME = "Mahery from Newcollab"
+SIGNATURE = "Mahery\nFounder, Newcollab"
+SHORT_SIGNATURE = "Mahery"
 
 PIPELINE = "v2"
-# Offer-led copy: 5 creators, the brand only covers product + shipping, UGC back to run as ads. Two versions
-# alternate (fresh names, so the A/B test starts clean). No creator names or counts we'd have to verify.
-VARIANTS = ("ugc5", "quick_idea")
+# Back to the pitch that got the most brand replies ("PR + UGC swap", 1,000+ creators looking for their first
+# brand PR), now with 3 real creators picked for the brand: approved in the last 30 days, niche match, link to their
+# public portfolio (services/brand_creator_picks.py). Mazza's copy, 2026-11-13.
+VARIANTS = ("creators3",)
+CREATOR_COUNT = 3
 CLAUDE_CONNECTOR_URL = "https://claude.ai/directory/newcollab"
 CHATGPT_PLUGIN_URL = "https://chatgpt.com/plugins/plugin_asdk_app_6abe79ce38148191847a65e16723d8b3"
 SITE_URL = (os.getenv("PUBLIC_SITE_URL") or "https://newcollab.co").rstrip("/")
@@ -208,69 +211,79 @@ def _join_block(link_url: str) -> str:
     )
 
 
-def initial_email(variant: str, brand: str, first: str, ref: str = "", category: Optional[str] = None) -> Tuple[str, str]:
-    greet = _greet(first)
-    signup = brief_link(category, ref)
-    if variant == "quick_idea":
-        return (
-            f"PR + UGC swap for {brand}?",
-            f"{greet}\n\n"
-            f"Quick idea for {brand}: 5 creators make UGC you can run as ads, and all it costs is product + shipping.\n\n"
-            f"• Join on {link('Newcollab', signup)}, or from {label_link('ChatGPT', CHATGPT_PLUGIN_URL)} "
-            f"or {label_link('Claude', CLAUDE_CONNECTOR_URL)}\n"
-            "• Each one posts organically and sends you the raw content\n"
-            "• No agency, no platform fee\n\n"
-            f"Want me to line up 5 who fit {brand}?\n\n{SIGNATURE}",
-        )
+def _creator_block(creators: Optional[List[Dict[str, Any]]]) -> str:
+    from services.brand_creator_picks import creator_line
+
+    return "\n".join(creator_line(c) for c in (creators or []))
+
+
+def _pitch(creators: Optional[List[Dict[str, Any]]], brand: str) -> str:
+    """The body after the greeting: who we are, 3 matched profiles, the gifting deal."""
+    profiles = f"3 profiles for {brand}:\n{_creator_block(creators)}\n\n" if creators else ""
     return (
-        f"5 UGC creators for {brand}, free",
-        f"{greet}\n\n"
-        f"Want 5 fresh UGC videos for {brand}'s ads?\n\n"
-        f"We match you with 5 creators who fit {brand}. They're free: you only cover product + shipping, "
-        "and each one sends you UGC you can run as ads.\n\n"
-        f"{_join_block(signup)}\n\n"
-        f"Worth a look?\n\n{SIGNATURE}",
+        "We work with over 3,000 aspiring UGC creators looking for their first brand partnerships. "
+        "Mostly beauty, skincare, and lifestyle, from 500 up to 50K followers.\n\n"
+        f"{profiles}"
+        "Would you want to test with 3 vetted creators? You approve them from fit profiles "
+        "(niche, audience, content style). Starting with a gifting collab, in return:\n\n"
+        "• 3 organic posts on their accounts\n"
+        "• 3 unique UGC pieces, yours to reuse or run as ads\n"
+        "• No platform fee. Just product + shipping.\n\n"
+        f"Worth a look?\n\n{SIGNATURE}"
     )
+
+
+def initial_email(variant: str, brand: str, first: str, ref: str = "", category: Optional[str] = None,
+                  creators: Optional[List[Dict[str, Any]]] = None) -> Tuple[str, str]:
+    return f"PR + UGC swap for {brand}?", f"{_greet(first)}\n\n{_pitch(creators, brand)}"
 
 
 def followup_email(step: int, brand: str, first: str, link_url: str, ref: str = "") -> str:
     greet = _greet(first)
     if step == 1:
         return (
-            f"{greet}\n\nBumping this in case it got buried. 5 creators, UGC you can run as ads, "
-            f"and you only cover product + shipping.\n\n"
-            f"{_join_block(link_url)}\n\n"
-            "If you're not the right person, who handles creators or UGC?\n\nMazza"
+            f"{greet}\n\nBumping this in case it got buried. Happy to set up a first test with the 3 creators for "
+            f"{brand}: you approve each one, and it's just product + shipping, no platform fee.\n\n"
+            f"If you're not the right person, who handles creators or UGC?\n\n{SHORT_SIGNATURE}"
         )
     if step == 2:
         return (
-            f"{greet}\n\nEasiest next step: your first gifted campaign is free. You pick the creators, ship "
-            f"product, and get videos back to run as ads.\n\n"
-            f"{_join_block(link_url)}\n\n"
-            f"If you want more campaigns after that, Pro is {PRO_PRICE}.\n\nMazza"
+            f"{greet}\n\nIf it's easier, you can browse the creators yourself and pick who fits {brand}: "
+            f"{link('Newcollab', link_url)}\n\n"
+            f"Your first gifting campaign has no platform fee, just product + shipping.\n\n{SHORT_SIGNATURE}"
         )
     return (
-        f"{greet}\n\nLast note from me. If creator content isn't a priority for {brand} right now, no worries.\n\n"
-        f"Whenever it is, your 5 creators are one click away: {link('Newcollab', link_url)}\n\nMazza"
+        f"{greet}\n\nLast note from me. If creator content isn't a priority for {brand} right now, no worries. "
+        f"Whenever it is, just reply and I'll send fresh profiles.\n\n{SHORT_SIGNATURE}"
     )
 
 
 def nudge_email(brand: str, first: str, link_url: str) -> str:
     return (
-        f"{_greet(first, 'Hi')}\n\nDid you get a chance to look? Once you sign up, your first gifted campaign is "
-        f"free and Polly pre-selects the creators who fit {brand} best: {link('Newcollab', link_url)}\n\n"
-        f"Or grab 15 min with me: {link('book a call', BOOKING_URL)}\n\nMazza"
+        f"{_greet(first, 'Hi')}\n\nDid you get a chance to look? You can browse the creators who fit {brand} and "
+        f"approve the ones you like: {link('Newcollab', link_url)}\n\n"
+        f"Or grab 15 min with me: {link('book a call', BOOKING_URL)}\n\n{SHORT_SIGNATURE}"
     )
 
 
-def redirect_email(brand: str, first: str, referrer: str, link_url: str) -> str:
+def redirect_email(brand: str, first: str, referrer: str, link_url: str = "",
+                   creators: Optional[List[Dict[str, Any]]] = None) -> str:
     who = referrer or "Your team"
     return (
         f"{_greet(first, 'Hi')}\n\n{who} pointed me your way for creator partnerships at {brand}.\n\n"
-        "Short version: small creators post about your product and send you videos you can run as ads. "
-        "Your first gifted campaign is free, you only ship product, and you approve every creator first.\n\n"
-        f"{_join_block(link_url)}\n\nWorth a look?\n\n{SIGNATURE}"
+        f"{_pitch(creators, brand)}"
     )
+
+
+def referrer_name(from_name: Optional[str], from_addr: str, brand: str) -> str:
+    """Name the person who redirected us, unless the "name" is really the brand: support@aurahouse.com signed
+    "Aura House" gave "Aura pointed me your way". Emma from hello@doreandrose.com stays Emma."""
+    name = first_name(from_name)
+    brand_letters = re.sub(r"[^a-z]", "", (brand or "").lower())
+    domain_letters = re.sub(r"[^a-z]", "", (from_addr or "").split("@")[-1].lower())
+    if not name or name.lower() in brand_letters or name.lower() in domain_letters:
+        return ""
+    return name
 
 
 def ugc_initial_email(variant: str, brand: str, first: str) -> Tuple[str, str]:
@@ -632,12 +645,8 @@ def decide(cls: Dict[str, Any], row: Dict[str, Any]) -> str:
         return "hold"
     if intent == "redirect":
         return "auto" if cls.get("redirect_email") and cls.get("confidence", 0) >= 0.6 else "hold"
-    if intent in POSITIVE_INTENTS:
-        if cls.get("flags") or int(row.get("auto_reply_count") or 0) > 0:
-            return "hold"
-        if cls.get("rules_intent", intent) not in POSITIVE_INTENTS:
-            return "hold"
-        return "auto" if float(cls.get("confidence") or 0) >= AUTO_CONFIDENCE else "hold"
+    # Replies are never answered automatically (Mazza, 2026-11-13): the bot answered ticket confirmations and
+    # satisfaction surveys as if they were interested brands. Every reply becomes a Gmail draft for Mazza.
     return "hold"
 
 
@@ -721,6 +730,17 @@ def skip_brand(cursor, brand_id: int, reason: str = "", already_contacted: bool 
     cursor.execute("UPDATE brand_outreach_tracking SET lost_reason = %s WHERE brand_id = %s",
                    ((reason or "no contact")[:300], brand_id))
     _set_stage(cursor, row, "bad_contact", reason or "no contact")
+
+
+def creator_picks(cursor, brand_id: int, category: Optional[str]) -> List[Dict[str, Any]]:
+    """3 creators approved in the last 30 days who fit the brand's niche (see services/brand_creator_picks.py)."""
+    from services.brand_creator_picks import pick_creators
+
+    try:
+        return pick_creators(cursor, brand_id, category, n=CREATOR_COUNT)
+    except Exception as exc:  # never block the pipeline on the picker; send_step refuses without 3 picks
+        print(f"[brand_pipeline] creator picks failed for {brand_id}: {exc}")
+        return []
 
 
 def pick_variant(cursor, rng: Optional[random.Random] = None, campaign: str = PIPELINE) -> str:
@@ -860,6 +880,7 @@ def send_step(cursor, brand_id: int, kind: str = "initial", dry_run: bool = Fals
     if test_to and not _EMAIL_RE.fullmatch(test_to):
         return {"ok": False, "error": "test_to is not a valid email"}
     test = test or bool(test_to) or not outreach_live()
+    creators: List[Dict[str, Any]] = []
     row = load_row(cursor, brand_id)
     if not row:
         return {"ok": False, "error": "brand not found"}
@@ -883,8 +904,13 @@ def send_step(cursor, brand_id: int, kind: str = "initial", dry_run: bool = Fals
         if row.get("last_contacted_at") or stage not in ("new",):
             return {"ok": False, "error": f"already in pipeline (stage={stage})"}
         variant = pick_variant(cursor, rng, campaign)
-        subject, text = (ugc_initial_email(variant, brand, first) if ugc
-                         else initial_email(variant, brand, first, ref, row.get("category")))
+        if ugc:
+            subject, text = ugc_initial_email(variant, brand, first)
+        else:
+            creators = creator_picks(cursor, brand_id, row.get("category"))
+            if len(creators) < CREATOR_COUNT:
+                return {"ok": False, "brand_id": brand_id, "error": "not enough matching creators"}
+            subject, text = initial_email(variant, brand, first, ref, row.get("category"), creators=creators)
         step = 0
     elif kind == "followup":
         if row.get("pipeline") not in CAMPAIGNS or stage != "contacted" or row.get("next_action") != "followup":
@@ -894,7 +920,7 @@ def send_step(cursor, brand_id: int, kind: str = "initial", dry_run: bool = Fals
             return {"ok": False, "error": "sequence finished"}
         variant = row.get("variant")
         first_subject = (ugc_initial_email(variant or "", brand, first) if ugc
-                         else initial_email(variant or "swap", brand, first))[0]
+                         else initial_email(variant or VARIANTS[0], brand, first))[0]
         subject = "Re: " + (row.get("thread_subject") or first_subject)
         text = ugc_followup_email(step, brand, first) if ugc else followup_email(step, brand, first, link, ref)
         in_reply_to = row.get("thread_message_id")
@@ -910,7 +936,8 @@ def send_step(cursor, brand_id: int, kind: str = "initial", dry_run: bool = Fals
         return {"ok": False, "error": f"unknown kind {kind}"}
 
     preview = {"ok": True, "brand_id": brand_id, "brand_name": brand, "to": to, "kind": kind, "step": step,
-               "campaign": campaign, "variant": variant, "subject": subject, "text": text_to_plain(text)}
+               "campaign": campaign, "variant": variant, "subject": subject, "text": text_to_plain(text),
+               "creator_ids": [c["creator_id"] for c in creators]}
     if dry_run:
         return {**preview, "dry_run": True}
     if test:
@@ -966,7 +993,9 @@ def send_step(cursor, brand_id: int, kind: str = "initial", dry_run: bool = Fals
             (subject, ref, brand_id),
         )
     log_activity(cursor, brand_id, "sent", variant=variant, email=to, subject=subject, body=text,
-                 message_id=mid, in_reply_to=in_reply_to, meta={"kind": kind, "step": step, "campaign": campaign})
+                 message_id=mid, in_reply_to=in_reply_to,
+                 meta={"kind": kind, "step": step, "campaign": campaign,
+                       "creator_ids": [c["creator_id"] for c in creators]})
     return {**preview, "message_id": mid}
 
 
@@ -1173,9 +1202,10 @@ def ingest_message(cursor, msg: Dict[str, Any], sender: Optional[Callable] = Non
         target = cls.get("redirect_email") or ""
         if action == "auto" and target:
             name = cls.get("redirect_name") or ""
-            referrer = first_name(msg.get("from_name")) or "Your team"
-            subject_new = row.get("thread_subject") or initial_email(row.get("variant") or "swap", brand, "")[0]
-            text = redirect_email(brand, first_name(name), referrer, link)
+            referrer = referrer_name(msg.get("from_name"), from_addr, brand)
+            subject_new = row.get("thread_subject") or initial_email(VARIANTS[0], brand, "")[0]
+            text = redirect_email(brand, first_name(name), referrer, link,
+                                  creators=creator_picks(cursor, brand_id, row.get("category")))
             new_mid = _deliver(cursor, row, target, subject_new, text, sender)
             if new_mid:
                 record_contact(cursor, brand_id, target, name, "", "redirect", {"from": from_addr})

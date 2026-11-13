@@ -10,6 +10,21 @@ def _live(monkeypatch):
     monkeypatch.setenv("BRAND_OUTREACH_LIVE", "1")
 
 
+CREATORS = [
+    {"creator_id": 11, "handle": "glowwithsam", "platform": "instagram", "followers": 21356,
+     "niches": ["skincare", "beauty"], "url": "https://newcollab.co/kit/glowwithsam"},
+    {"creator_id": 12, "handle": "ugcbyleah", "platform": "tiktok", "followers": 4274,
+     "niches": ["beauty"], "url": "https://newcollab.co/kit/ugcbyleah"},
+    {"creator_id": 13, "handle": "dewydays", "platform": "tiktok", "followers": 980,
+     "niches": ["skincare"], "url": "https://newcollab.co/kit/dewydays"},
+]
+
+
+@pytest.fixture(autouse=True)
+def _creators(monkeypatch):
+    monkeypatch.setattr(bp, "creator_picks", lambda cursor, brand_id, category: list(CREATORS))
+
+
 def _norm(sql):
     return " ".join((sql or "").split())
 
@@ -104,9 +119,10 @@ def test_strip_quoted_keeps_only_their_words():
 # --------------------------------------------------------------- decisions + reply safety
 
 
-def test_decide_hybrid_autonomy():
+def test_decide_never_auto_answers_a_reply():
     row = _row(stage="contacted", pipeline="v2")
-    assert bp.decide({"intent": "interested", "confidence": 0.85}, row) == "auto"
+    assert bp.decide({"intent": "interested", "confidence": 0.85}, row) == "hold"
+    assert bp.decide({"intent": "question", "confidence": 0.99, "rules_intent": "question"}, row) == "hold"
     assert bp.decide({"intent": "interested", "confidence": 0.5}, row) == "hold"
     assert bp.decide({"intent": "question", "confidence": 0.9, "flags": ["negotiation"]}, row) == "hold"
     assert bp.decide({"intent": "interested", "confidence": 0.9}, _row(auto_reply_count=1, pipeline="v2")) == "hold"
@@ -148,18 +164,20 @@ def test_initial_send_logs_variant_ref_and_schedules_day3():
     cur = FakeCursor([("bo.last_inbound_subject", [_row()]), ("AS positive", [])])
     sender = Sender()
     out = bp.send_step(cur, 7, "initial", sender=sender)
-    assert out["ok"] and out["variant"] == "ugc5"
+    assert out["ok"] and out["variant"] == "creators3" and out["creator_ids"] == [11, 12, 13]
     call = sender.calls[0]
     assert call["to"] == "tacy@mdaire.com"
-    assert call["subject"] == "5 UGC creators for Kappel, free"
-    assert "Newcollab (https://app.newcollab.co/for-brands)" in call["text_content"]
-    assert "Claude (https://claude.ai/directory/newcollab)" in call["text_content"]
-    assert "oref=abc123" not in call["text_content"] and "/for-brands?niche=" not in call["text_content"]
-    assert 'oref=abc123' in call["html"] and ">Newcollab</a> (<a" in call["html"]
-    assert call["text_content"].startswith("Hey Tacy,")
-    assert call["from_name"] == bp.FROM_NAME
+    assert call["subject"] == "PR + UGC swap for Kappel?"
+    text = call["text_content"]
+    assert text.startswith("Hey Tacy,\n\nWe work with over 3,000 aspiring UGC creators")
+    assert "3 profiles for Kappel:\n• @glowwithsam: skincare & beauty, 21K followers on Instagram. " \
+           "Portfolio (https://newcollab.co/kit/glowwithsam)" in text
+    assert "• @dewydays: skincare, 980 followers on TikTok." in text
+    assert "No platform fee. Just product + shipping." in text and text.endswith("Mahery\nFounder, Newcollab")
+    assert '<a href="https://newcollab.co/kit/ugcbyleah">Portfolio</a>' in call["html"]
+    assert call["from_name"] == bp.FROM_NAME == "Mahery from Newcollab"
     upd = cur.ran("SET outreach_count = COALESCE(outreach_count, 0) + 1, last_contacted_at = NOW(), last_subject = %s, pipeline")
-    assert upd and upd[0][2] == "ugc5" and upd[0][3] == "abc123" and upd[0][6] == 3
+    assert upd and upd[0][2] == "creators3" and upd[0][3] == "abc123" and upd[0][6] == 3
     kinds = [p[1] for p in cur.ran("INSERT INTO brand_activity")]
     assert kinds == ["stage_change", "sent"]
     assert cur.ran("INSERT INTO brand_outreach_log")
@@ -194,7 +212,8 @@ def test_last_followup_moves_brand_to_nurture():
     assert stages == ["nurture"]
 
 
-def test_pick_variant_balances_then_exploits_the_winner():
+def test_pick_variant_balances_then_exploits_the_winner(monkeypatch):
+    monkeypatch.setattr(bp, "VARIANTS", ("ugc5", "quick_idea"))
     few = FakeCursor([("AS positive", [{"variant": "ugc5", "sent": 90, "positive": 3},
                                        {"variant": "quick_idea", "sent": 10, "positive": 0}])])
     assert bp.pick_variant(few) == "quick_idea"
@@ -205,6 +224,14 @@ def test_pick_variant_balances_then_exploits_the_winner():
             return 0.1
 
     assert bp.pick_variant(FakeCursor([("AS positive", full)]), rng=Always()) == "quick_idea"
+
+
+def test_initial_send_needs_three_matching_creators(monkeypatch):
+    monkeypatch.setattr(bp, "creator_picks", lambda *a: CREATORS[:2])
+    cur = FakeCursor([("bo.last_inbound_subject", [_row()]), ("AS positive", [])])
+    sender = Sender()
+    out = bp.send_step(cur, 7, "initial", sender=sender)
+    assert not out["ok"] and out["error"] == "not enough matching creators" and not sender.calls
 
 
 def test_queue_new_skips_domains_already_contacted_or_customers():
@@ -233,7 +260,7 @@ def _inbound_cursor(row):
     ])
 
 
-def test_interested_reply_gets_one_auto_answer_in_thread():
+def test_interested_reply_is_held_for_mazza_not_answered():
     row = _row(pipeline="v2", stage="contacted", next_action="followup", thread_message_id="<first@newcollab.co>")
     cur = _inbound_cursor(row)
     sender = Sender()
@@ -242,15 +269,12 @@ def test_interested_reply_gets_one_auto_answer_in_thread():
     llm = lambda system, *_a: ({"intent": "interested", "confidence": 0.9, "questions": []}
                                if "triage" in system else {})
     out = bp.ingest_message(cur, msg, sender=sender, llm=llm)
-    assert out["action"] == "auto" and out["intent"] == "interested"
-    call = sender.calls[0]
-    assert call["to"] == "tacy@mdaire.com"
-    assert call["subject"] == "Re: PR + UGC swap for Kappel?"
-    assert call["in_reply_to"] == "<their1@mdaire.com>"
-    assert "ref=abc123" in call["text_content"]
+    assert out["action"] == "hold" and out["intent"] == "interested" and not sender.calls
+    assert out["draft"]["to"] == "tacy@mdaire.com" and out["draft"]["subject"] == "Re: PR + UGC swap for Kappel?"
+    assert out["draft"]["in_reply_to"] == "<their1@mdaire.com>"
     kinds = [p[1] for p in cur.ran("INSERT INTO brand_activity")]
-    assert kinds[0] == "reply_in" and "auto_reply_sent" in kinds
-    assert cur.ran("SET auto_reply_count = COALESCE(auto_reply_count, 0) + 1")
+    assert kinds[0] == "reply_in" and "auto_reply_sent" not in kinds and kinds[-1] == "draft_held"
+    assert cur.ran("SET next_action = 'mazza_review'")
 
 
 def test_unusual_reply_is_held_as_draft():
@@ -279,8 +303,17 @@ def test_redirect_mails_the_new_contact_and_restarts_the_sequence():
     out = bp.ingest_message(cur, msg, sender=sender, llm=no_llm)
     assert out["action"] == "auto" and out["sent_to"] == "anna@doreandrose.com"
     assert sender.calls[0]["to"] == "anna@doreandrose.com"
-    assert sender.calls[0]["text_content"].startswith("Hi,\n\nEmma pointed me your way")
+    text = sender.calls[0]["text_content"]
+    assert text.startswith("Hi,\n\nEmma pointed me your way for creator partnerships at Dore & Rose.\n\nWe work with")
+    assert "3 profiles for Dore & Rose:" in text and "@glowwithsam" in text
     assert cur.ran("SET contact_email = %s")
+
+
+def test_redirect_never_names_the_brand_as_a_person():
+    assert bp.referrer_name("Aura House", "support@aurahouse.com", "Aurahouse") == ""
+    assert bp.referrer_name("Aura", "support@aurahouse.com", "Aura House") == ""
+    assert bp.referrer_name("Eryn Palmer", "epalmer@forcefactor.com", "Force Factor") == "Eryn"
+    assert bp.referrer_name("Emma from Dore & Rose", "hello@doreandrose.com", "Dore & Rose") == "Emma"
 
 
 PIPI = ("Hi Mazza,\n\nThank you for reaching out and for thinking of PiPi Tea. We appreciate you sharing your idea with us.\n\n"
@@ -327,7 +360,7 @@ def test_left_the_company_redirect_beats_llm_auto_reply():
 def test_llm_enthusiasm_alone_does_not_auto_send():
     row = _row(stage="contacted", pipeline="v2")
     assert bp.decide({"intent": "interested", "confidence": 0.95, "rules_intent": "other"}, row) == "hold"
-    assert bp.decide({"intent": "interested", "confidence": 0.95, "rules_intent": "interested"}, row) == "auto"
+    assert bp.decide({"intent": "interested", "confidence": 0.95, "rules_intent": "interested"}, row) == "hold"
 
 
 def test_fallback_reply_answers_each_question_once():
@@ -420,14 +453,11 @@ def test_label_only_links_show_just_the_name():
     )
 
 
-def test_every_join_email_offers_newcollab_chatgpt_and_claude():
-    texts = [bp.initial_email(v, "Kappel", "Tacy", "r1")[1] for v in bp.VARIANTS]
-    texts += [bp.followup_email(n, "Kappel", "Tacy", "https://newcollab.co/for-brands?oref=r1") for n in (1, 2)]
-    texts += [bp.redirect_email("Kappel", "Tacy", "", "https://newcollab.co/for-brands?oref=r1")]
-    for t in texts:
-        html_body = bp.text_to_html(t)
-        assert bp.CHATGPT_PLUGIN_URL in html_body and bp.CLAUDE_CONNECTOR_URL in html_body
-        assert ">Newcollab</a> (<a" in html_body and ">ChatGPT</a>" in html_body and ">Claude</a>" in html_body
+def test_followups_keep_the_gifting_offer_and_sign_mahery():
+    bodies = [bp.followup_email(n, "Kappel", "Tacy", bp.brief_link("skincare", "r1"), "r1") for n in (1, 2, 3)]
+    assert all(b.startswith("Hey Tacy,") and b.endswith("\n\nMahery") for b in bodies)
+    assert "product + shipping" in bodies[0] and "oref=r1" in bp.text_to_html(bodies[1])
+    assert all("5 creators" not in b and "$299" not in b for b in bodies)
 
 
 def test_brief_link_maps_category_to_niche():
@@ -438,17 +468,16 @@ def test_brief_link_maps_category_to_niche():
 def test_cold_copy_has_no_unverified_numbers_or_em_dashes():
     import re
 
-    texts = [bp.initial_email(v, "Kappel", "Tacy", "r1") for v in bp.VARIANTS]
+    texts = [bp.initial_email(v, "Kappel", "Tacy", "r1", creators=CREATORS) for v in bp.VARIANTS]
     bodies = [t for _, t in texts] + [bp.followup_email(n, "Kappel", "Tacy", bp.brief_link("skincare", "r1"), "r1") for n in (1, 2, 3)]
-    bodies += [bp.nudge_email("Kappel", "Tacy", "L"), bp.redirect_email("Kappel", "Tacy", "", "L")]
+    bodies += [bp.nudge_email("Kappel", "Tacy", "L"), bp.redirect_email("Kappel", "Tacy", "", "L", creators=CREATORS)]
     for subject, _ in texts:
         assert "\u2014" not in subject
     for body in bodies:
         assert "\u2014" not in body
-        prose = re.sub(r"https?://\S+", "", body)
-        assert set(re.findall(r"\d[\d,.]*", prose)) <= {"5", "299", "15"}, prose
-    assert all("oref=r1" in b for b in bodies[:5])
-    assert "$299/mo" in bodies[3]
+        prose = re.sub(r"https?://\S+|@\w+: [^\n]*", "", body)
+        # 3,000 approved creators (3,113 on 2026-11-13), 500-50K followers, 3 creators/posts, 15 min call
+        assert set(re.findall(r"\d[\d,.]*", prose)) <= {"3,000", "500", "50", "3", "15"}, prose
 
 
 def test_not_live_sends_the_exact_email_to_the_team_inbox_only(monkeypatch):
@@ -458,7 +487,7 @@ def test_not_live_sends_the_exact_email_to_the_team_inbox_only(monkeypatch):
     out = bp.send_step(cur, 7, "initial", sender=sender)
     call = sender.calls[0]
     assert out["ok"] and out["test"] and call["to"] == "team@newcollab.co"
-    assert call["subject"] == "[TEST to tacy@mdaire.com] 5 UGC creators for Kappel, free"
+    assert call["subject"] == "[TEST to tacy@mdaire.com] PR + UGC swap for Kappel?"
     assert not cur.ran("SET outreach_count = COALESCE(outreach_count, 0) + 1, last_contacted_at = NOW()")
     assert [p[1] for p in cur.ran("INSERT INTO brand_activity")] == ["test_sent"]
 
