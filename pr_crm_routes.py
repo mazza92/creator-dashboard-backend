@@ -3450,39 +3450,47 @@ def save_brand_to_pipeline():
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        data = request.json
+        data = request.get_json(silent=True) or {}
         brand_id = data.get('brand_id')
-        brand_slug = data.get('slug')
+        brand_slug = (data.get('slug') or '').strip()
+        # Some pages send the slug as brand_id when they have no numeric id: accept either.
+        if brand_id is not None and not str(brand_id).strip().isdigit():
+            brand_slug = brand_slug or str(brand_id).strip()
+            brand_id = None
+        brand_id = int(brand_id) if brand_id is not None else None
 
-        # Resolve brand_id from slug if not provided
-        if not brand_id and brand_slug:
+        if brand_id:
+            cursor.execute('SELECT id FROM pr_brands WHERE id = %s', (brand_id,))
+        elif brand_slug:
             cursor.execute('SELECT id FROM pr_brands WHERE slug = %s', (brand_slug,))
-            brand_row = cursor.fetchone()
-            if brand_row:
-                brand_id = brand_row['id']
-
-        if not brand_id:
+        brand_row = cursor.fetchone() if (brand_id or brand_slug) else None
+        if not brand_row:
             cursor.close()
             conn.close()
-            return jsonify({'success': False, 'error': 'brand_id or slug required'}), 400
+            return jsonify({'success': False, 'error': 'brand not found'}), 404
+        brand_id = brand_row['id']
 
-        # Insert or update - saving is unlimited (no quota check)
+        # Saving never moves a brand back: one already pitched / replied / in a deal keeps its stage.
         cursor.execute('''
             INSERT INTO creator_pipeline (creator_id, brand_id, stage, created_at, updated_at)
             VALUES (%s, %s, 'saved', NOW(), NOW())
-            ON CONFLICT (creator_id, brand_id) DO UPDATE
-            SET stage = 'saved', updated_at = NOW()
+            ON CONFLICT (creator_id, brand_id) DO NOTHING
             RETURNING id
         ''', (creator_id, brand_id))
-
-        pipeline_id = cursor.fetchone()['id']
-
-        # Update creator's brands_saved_count (no daily limit tracking for saves)
-        cursor.execute('''
-            UPDATE creators
-            SET brands_saved_count = COALESCE(brands_saved_count, 0) + 1
-            WHERE id = %s
-        ''', (creator_id,))
+        inserted = cursor.fetchone()
+        if inserted:
+            pipeline_id = inserted['id']
+            cursor.execute('''
+                UPDATE creators
+                SET brands_saved_count = COALESCE(brands_saved_count, 0) + 1
+                WHERE id = %s
+            ''', (creator_id,))
+        else:
+            # An archived brand saved again comes back to "saved"; anything further along stays where it is.
+            cursor.execute("""UPDATE creator_pipeline SET stage = CASE WHEN stage = 'archived' THEN 'saved' ELSE stage END,
+                                     updated_at = NOW()
+                              WHERE creator_id = %s AND brand_id = %s RETURNING id""", (creator_id, brand_id))
+            pipeline_id = cursor.fetchone()['id']
 
         conn.commit()
         cursor.close()
@@ -3495,9 +3503,10 @@ def save_brand_to_pipeline():
         })
 
     except Exception as e:
+        print(f"[pipeline/save] failed for creator {creator_id}: {e}")
         if conn:
             conn.rollback()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Could not save this brand'}), 500
 
 
 @pr_crm.route('/pipeline/<int:pipeline_id>/update-stage', methods=['PATCH'])
