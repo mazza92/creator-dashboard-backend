@@ -41,3 +41,13 @@ def test_creator_line():
     assert picks.creator_line(c) == ("• @glowwithsam: skincare & beauty, 21K followers on Instagram. "
                                      "[Portfolio](https://newcollab.co/kit/glowwithsam)")
     assert picks.followers_label(4100) == "4.1K" and picks.followers_label(980) == "980"
+
+
+def test_portfolio_hub_groups_by_niche_and_hides_unsafe_avatars():
+    pool = [dict(r, image_profile="https://x.supabase.co/storage/v1/a.png" if r["id"] == 1 else "https://cdn.ig/x.jpg") for r in POOL]
+    got = picks.portfolio_hub(None, "beauty-skincare", pool=pool)
+    assert [c["handle"] for c in got["creators"]] == ["glowwithsam", "beautybyana", "dewydays"]
+    assert got["creators"][0]["avatar"].startswith("https://x.supabase.co") and got["creators"][1]["avatar"] is None
+    counts = {h["slug"]: h["count"] for h in got["hubs"]}
+    assert counts["beauty-skincare"] == 3 and counts["fitness-wellness"] == 1 and counts["home-lifestyle"] == 1
+    assert got["total"] == 6 and len(picks.portfolio_hub(None, None, pool=pool)["creators"]) == 6

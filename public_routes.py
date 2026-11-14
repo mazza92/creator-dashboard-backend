@@ -1117,6 +1117,29 @@ def get_hot_brand_ids():
         return jsonify({'ids': []}), 200
 
 
+@public_bp.route('/ugc-portfolios', methods=['GET'])
+@scraper_rate_limit
+def get_public_ugc_portfolios():
+    """Recently approved creators' public UGC portfolios, grouped by niche, for the examples hub on newcollab.co.
+    Same quality pool as the brand cold emails (services/brand_creator_picks.py). ?hub=<slug> for one niche."""
+    from services.brand_creator_picks import PORTFOLIO_HUBS, portfolio_hub
+    hub = (request.args.get('hub') or '').strip().lower() or None
+    if hub and hub not in PORTFOLIO_HUBS:
+        return jsonify({'error': 'unknown hub'}), 404
+    try:
+        conn = get_db_connection()
+        try:
+            data = portfolio_hub(conn.cursor(cursor_factory=RealDictCursor), hub)
+        finally:
+            conn.close()
+        resp = jsonify(data)
+        resp.headers['Cache-Control'] = 'public, max-age=1800'
+        return resp, 200
+    except Exception as e:
+        print(f"Error building UGC portfolio hub: {e}")
+        return jsonify({'hubs': [], 'hub': hub, 'creators': [], 'total': 0}), 200
+
+
 @public_bp.route('/categories', methods=['GET'])
 def get_categories():
     """

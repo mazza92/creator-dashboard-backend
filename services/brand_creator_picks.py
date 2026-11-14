@@ -42,7 +42,7 @@ FALLBACK_NICHES = ("lifestyle", "beauty", "skincare")
 _POOL: Dict[str, Any] = {"at": 0.0, "rows": []}
 
 POOL_SQL = f"""
-    SELECT c.id, c.username, c.kit_slug, c.niche, c.social_platform,
+    SELECT c.id, c.username, c.kit_slug, c.niche, c.social_platform, c.image_profile,
            COALESCE(NULLIF(c.social_follower_count, 0), c.followers_count, 0) AS followers
     FROM creators c
     WHERE c.approval_status = 'approved'
@@ -143,3 +143,57 @@ def creator_line(c: Dict[str, Any]) -> str:
     where = PLATFORM_NAMES.get(c.get("platform") or "", "")
     reach = f"{followers_label(c['followers'])} followers" + (f" on {where}" if where else "")
     return f"• @{c['handle']}: {niche}, {reach}. [Portfolio]({c['url']})"
+
+
+# --- Public UGC portfolio examples hub (newcollab.co/ugc-portfolio-examples) -------------------------------
+# Same quality pool as the brand emails: approved in the last 30 days, posts on the kit, 500-50K followers.
+
+PORTFOLIO_HUBS = {
+    "beauty-skincare": ("Beauty & skincare", ("beauty", "skincare", "makeup", "hair", "haircare")),
+    "fashion": ("Fashion & accessories", ("fashion", "style", "accessories", "jewelry", "jewellery")),
+    "fitness-wellness": ("Fitness & wellness", ("fitness", "wellness", "health", "gym", "activewear", "yoga", "supplements")),
+    "food-drink": ("Food & drink", ("food", "cooking", "drinks", "recipes")),
+    "home-lifestyle": ("Home & lifestyle", ("home", "home decor", "lifestyle", "cleaning", "kitchen")),
+    "family-parenting": ("Family & parenting", ("baby", "mom", "parenting", "family", "kids")),
+    "pets": ("Pets", ("pet", "pets", "dog", "cat")),
+    "tech-gaming": ("Tech & gaming", ("tech", "gaming", "gadgets")),
+}
+SAFE_AVATAR_HOSTS = ("supabase.co/storage/",)
+
+
+def _hub_card(r: Dict[str, Any], niches: List[str]) -> Dict[str, Any]:
+    slug = (r.get("kit_slug") or r.get("username") or "").strip()
+    avatar = str(r.get("image_profile") or "")
+    return {
+        "handle": (r.get("username") or slug).lstrip("@"),
+        "slug": slug,
+        "url": f"{KIT_BASE}/{slug}",
+        "platform": PLATFORM_NAMES.get((r.get("social_platform") or "").strip().lower(), ""),
+        "followers": int(r.get("followers") or 0),
+        "followers_label": followers_label(int(r.get("followers") or 0)),
+        "niches": niches[:3],
+        "avatar": avatar if any(h in avatar for h in SAFE_AVATAR_HOSTS) else None,
+    }
+
+
+def portfolio_hub(cursor, hub: Optional[str] = None, pool: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """Counts per niche hub, plus the creators of one hub (or a mixed sample when hub is None)."""
+    rows = pool if pool is not None else load_pool(cursor)
+    members: Dict[str, List[Dict[str, Any]]] = {k: [] for k in PORTFOLIO_HUBS}
+    everyone = []
+    for r in rows:
+        niches = parse_niches(r.get("niche"))
+        if not (r.get("kit_slug") or r.get("username")):
+            continue
+        card = _hub_card(r, niches)
+        everyone.append((r["id"], card))
+        for key, (_, words) in PORTFOLIO_HUBS.items():
+            if any(w == n or w in n for n in niches for w in words):
+                members[key].append(card)
+    order = lambda c: (-c["followers"], c["handle"])  # noqa: E731
+    hubs = [{"slug": k, "label": PORTFOLIO_HUBS[k][0], "count": len(v)} for k, v in members.items()]
+    if hub:
+        creators = sorted(members.get(hub, []), key=order)
+    else:
+        creators = [c for _, c in sorted(everyone, key=lambda x: _shuffle_key(0, x[0]))][:24]
+    return {"hubs": hubs, "hub": hub, "creators": creators, "total": len(everyone)}
