@@ -184,6 +184,11 @@ def generate(tool: str, inp: Dict[str, str], use_ai: bool = True, llm: Callable 
         if _valid(tool, out):
             if tool == "hooks":
                 out = {"hooks": [clean(h, 160) for h in out["hooks"] if isinstance(h, str) and h.strip()][:10]}
+            if tool == "script":
+                # The proof must come from the creator's real use, never from the model.
+                for b in out["beats"]:
+                    if "proof" in str(b.get("beat", "")).lower() and "[" not in str(b.get("line", "")):
+                        b["line"] = "After [X days], [what you honestly noticed]."
             return {**out, "source": "ai"}
     return {**template_output(tool, inp), "source": "template"}
 

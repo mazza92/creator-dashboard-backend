@@ -32,3 +32,12 @@ def test_pitch_keeps_placeholders():
     inp = t.parse_input("pitch", {"product": "protein bar", "brand": "Barbell", "niche": "fitness"})
     out = t.generate("pitch", inp, use_ai=False)
     assert "[portfolio link]" in out["body"] and "[first name]" in out["body"] and "Barbell" in out["body"]
+
+
+def test_script_proof_is_always_a_fill_in():
+    inp = t.parse_input("script", {"product": "dog bowl"})
+    beats = [{"time": "0-3s", "beat": "Hook", "line": "h", "shot": "s"}, {"time": "3-8s", "beat": "Problem", "line": "p", "shot": "s"},
+             {"time": "8-20s", "beat": "Product + demo", "line": "d", "shot": "s"}, {"time": "20-26s", "beat": "Proof", "line": "It cured him.", "shot": "s"},
+             {"time": "26-30s", "beat": "Call to action", "line": "c", "shot": "s"}]
+    out = t.generate("script", inp, llm=lambda s, u: {"beats": beats, "alt_hooks": []})
+    assert out["source"] == "ai" and "[" in out["beats"][3]["line"]
