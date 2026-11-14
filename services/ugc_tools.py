@@ -18,7 +18,9 @@ PER_IP_PER_HOUR = 12
 DAILY_AI_CAP = 2000
 
 _RULES = (
-    "Never invent statistics, results, follower counts, prices, awards or medical claims. No hashtags. "
+    "Never invent statistics, results, follower counts, prices, awards or medical claims. Never say a professional "
+    "(vet, doctor, dermatologist, trainer) recommended it, and never promise health, weight or medical outcomes "
+    "(no 'cures', 'fixes acne', 'goodbye indigestion'). No hashtags. "
     "Plain, natural English a creator would actually say on camera. Keep the product name exactly as given."
 )
 
