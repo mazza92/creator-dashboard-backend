@@ -1140,6 +1140,41 @@ def get_public_ugc_portfolios():
         return jsonify({'hubs': [], 'hub': hub, 'creators': [], 'total': 0}), 200
 
 
+@public_bp.route('/ugc-tools/<tool>', methods=['POST'])
+@scraper_rate_limit
+def run_public_ugc_tool(tool):
+    """Free UGC tools on newcollab.co/tools (hooks, script, pitch). Unauthenticated: inputs are validated, each IP
+    gets PER_IP_PER_HOUR runs, and AI runs stop at DAILY_AI_CAP (template output after that)."""
+    from services import ugc_tools
+    from services.public_brand_guard import _ip_bucket
+    if tool not in ugc_tools.TOOLS:
+        return jsonify({'error': 'unknown tool'}), 404
+    try:
+        inp = ugc_tools.parse_input(tool, request.get_json(silent=True) or {})
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    ip_hash = _ip_bucket()
+    try:
+        conn = get_db_connection()
+    except Exception as e:
+        print(f"[ugc_tools] db unavailable: {e}")
+        return jsonify({**ugc_tools.template_output(tool, inp), 'source': 'template'}), 200
+    try:
+        cur = conn.cursor()
+        gate = ugc_tools.allowed(cur, ip_hash)
+        if not gate['ok']:
+            return jsonify({'error': 'You have used the free tools a lot this hour. Try again in a little while.'}), 429
+        out = ugc_tools.generate(tool, inp, use_ai=gate['ai'])
+        ugc_tools.record(cur, tool, ip_hash, inp, out.get('source') or 'template')
+        conn.commit()
+        return jsonify(out), 200
+    except Exception as e:
+        print(f"[ugc_tools] {tool} failed: {e}")
+        return jsonify({**ugc_tools.template_output(tool, inp), 'source': 'template'}), 200
+    finally:
+        conn.close()
+
+
 @public_bp.route('/categories', methods=['GET'])
 def get_categories():
     """
