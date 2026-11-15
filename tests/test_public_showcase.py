@@ -23,6 +23,17 @@ class CleanText(unittest.TestCase):
         self.assertTrue(sc._clean("word " * 100, 20).endswith("…"))
 
 
+class Tidy(unittest.TestCase):
+    def test_titles_quotes_pay_and_names(self):
+        self.assertEqual(sc._tidy_title("Weight Loss UGC | Hearty ($500"), "Weight Loss UGC | Hearty")
+        self.assertEqual(sc._tidy_title("Vembit Creators · USA · Reels,"), "Vembit Creators · USA · Reels")
+        self.assertEqual(sc._unquote("“The protein bar that tastes like dessert.”"), "The protein bar that tastes like dessert.")
+        self.assertEqual(sc._pay_value("$1,200/mo"), 1200.0)
+        self.assertEqual(sc._pay_value("$0.75"), 0.75)
+        self.assertTrue(sc._named_like_a_brand("Ruby Hammer", "ruby-hammer"))
+        self.assertFalse(sc._named_like_a_brand("Chosensupps", "chosensupps"))
+
+
 class Showcase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -51,8 +62,9 @@ class Showcase(unittest.TestCase):
                        published_at, listing_brief, brand_email) VALUES
             ('Clyper', 'Clyper Creator Campaign', 'live', '{TikTok,Reel}', '{US,UK}', %s, '{"pay": "$600"}', 'x@c.com'),
             ('Unknown brand', 'Mystery gig', 'live', '{}', '{}', %s, '{"pay": "$50"}', NULL),
+            ('Brain Rush', 'Installs push', 'live', '{}', '{US}', %s, '{"pay": "$0.75"}', NULL),
             ('Old Co', 'Closed one', 'paused', '{}', '{}', %s, '{"pay": "$5"}', NULL)""",
-                    (now, now, now))
+                    (now, now, now - timedelta(minutes=1), now))
         today = date.today()
         cur.execute("""INSERT INTO ugc_pulse_items (day, niche, kind, pattern, text, score) VALUES
             (%s, 'skincare', 'hook', 'Problem first', 'My skin was a mess until this', 90),
@@ -79,14 +91,16 @@ class Showcase(unittest.TestCase):
 
     def test_showcase_is_safe_and_fresh(self):
         data = sc.showcase(self.conn)
-        self.assertEqual([g["brand"] for g in data["gigs"]], ["Clyper"])  # unknown brand + paused skipped
+        # unknown brand + paused skipped; a real fee leads, a CPM figure is not shown as pay
+        self.assertEqual([g["brand"] for g in data["gigs"]], ["Clyper", "Brain Rush"])
         self.assertEqual(data["gigs"][0]["pay"], "$600")
+        self.assertIsNone(data["gigs"][1]["pay"])
         self.assertNotIn("brand_email", data["gigs"][0])
         hooks = {h["niche"]: h["hook"] for h in data["hooks"]}
         self.assertEqual(hooks, {"skincare": "My skin was a mess until this", "fitness": "I tried it for 30 days"})
         self.assertEqual([b["slug"] for b in data["hot_brands"]], ["glowco"])
         self.assertNotIn("ad_library_url", data["hot_brands"][0])
-        self.assertEqual(data["counts"], {"live_gigs": 2, "hot_brands": 1, "brands": 2})
+        self.assertEqual(data["counts"], {"live_gigs": 3, "hot_brands": 1, "brands": 2})
 
 
 if __name__ == "__main__":
