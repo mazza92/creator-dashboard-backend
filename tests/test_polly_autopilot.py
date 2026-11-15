@@ -75,7 +75,16 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(sends_per_day(60, weekdays), 3)
         self.assertEqual(sends_per_day(100, weekdays), 5)
         self.assertEqual(sends_per_day(150, weekdays), 8)
-        self.assertEqual(sends_per_day(150, [0, 2]), MAX_SENDS_PER_DAY)
+        self.assertEqual(sends_per_day(150, [0, 2]), 8)  # standard volumes keep their old ceiling
+        self.assertEqual(sends_per_day(400, weekdays), 20)
+        self.assertEqual(sends_per_day(400, [0, 2]), MAX_SENDS_PER_DAY)
+
+    def test_high_volume_ramps_with_real_sending(self):
+        from services.polly_autopilot import ramp_cap
+        self.assertEqual(ramp_cap(0), 8)
+        self.assertEqual(ramp_cap(8), 12)
+        self.assertEqual(ramp_cap(12), 18)
+        self.assertEqual(min(20, ramp_cap(18)), 20)
 
 
 class BatchTests(unittest.TestCase):

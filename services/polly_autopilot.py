@@ -12,14 +12,24 @@ from typing import Any, Callable, Dict, List, Optional
 
 from psycopg2.extras import RealDictCursor
 
-TARGET_OPTIONS = (30, 60, 100, 150)
+# 400 a month = 20 personal pitches every weekday (the 'up to 20 a day' plan).
+TARGET_OPTIONS = (30, 60, 100, 150, 400)
 DEFAULT_MONTHLY_TARGET = 60
 # Rows saved before the volume options still hold the old default; they never chose it.
 LEGACY_DEFAULT_TARGET = 24
 WEEK_BATCH = 15
 TARGET_MIN = TARGET_OPTIONS[0]
 TARGET_MAX = TARGET_OPTIONS[-1]
-MAX_SENDS_PER_DAY = 8
+MAX_SENDS_PER_DAY = 20
+# The volume options that existed before 400 keep their old ceiling, so nobody's sending changes unless they
+# pick the 20-a-day plan themselves.
+STANDARD_MAX_PER_DAY = 8
+STANDARD_TARGET_MAX = 150
+# Above this many a day, volume ramps with the Gmail's real sending history (deliverability):
+# each day may send at most RAMP_GROWTH x the best day of the last RAMP_LOOKBACK, never less than RAMP_FLOOR.
+RAMP_FLOOR = 8
+RAMP_GROWTH = 1.5
+RAMP_LOOKBACK = timedelta(days=7)
 # The browser writes about 20 seconds a pitch, so "start now" writes a few and the cron does the rest.
 MANUAL_BATCH = 6
 SEND_WINDOW_UTC = (13, 21)
@@ -281,8 +291,10 @@ def refill_size(counts: Dict[str, int], target: int) -> int:
 
 
 def sends_per_day(target: int, days: List[int]) -> int:
-    """Enough per send day to fit the week's batch, never more than MAX_SENDS_PER_DAY."""
-    return min(MAX_SENDS_PER_DAY, max(1, -(-per_week(target) // len(days or WEEKDAYS))))
+    """Enough per send day to fit the week's batch: at most STANDARD_MAX_PER_DAY on the standard volumes, and at
+    most MAX_SENDS_PER_DAY on the 20-a-day plan."""
+    ceiling = MAX_SENDS_PER_DAY if int(target) > STANDARD_TARGET_MAX else STANDARD_MAX_PER_DAY
+    return min(ceiling, max(1, -(-per_week(target) // len(days or WEEKDAYS))))
 
 
 def add_draft(conn, creator_id: int, brand_id: int, brand_name: str, to_email: str,
@@ -464,7 +476,28 @@ def daily_sends(conn, creator_id: int, prefs: Dict[str, Any], now: datetime) -> 
     connected = gmail_connected_at(conn, creator_id)
     if connected and now - connected < WARMUP_DAYS:
         return min(per_day, WARMUP_PER_DAY)
+    if per_day > RAMP_FLOOR:
+        return min(per_day, ramp_cap(best_recent_day(conn, creator_id, now)))
     return per_day
+
+
+def ramp_cap(best_day: int) -> int:
+    """High-volume plans grow with what the Gmail actually sent: 8 -> 12 -> 18 -> 20 over a few send days."""
+    return max(RAMP_FLOOR, int(-(-int(best_day or 0) * RAMP_GROWTH // 1)))
+
+
+def best_recent_day(conn, creator_id: int, now: datetime) -> int:
+    """Most pitches sent on one day in the last RAMP_LOOKBACK (0 when none)."""
+    cur = _cursor(conn)
+    cur.execute("""
+        SELECT COALESCE(MAX(n), 0) AS best FROM (
+            SELECT COUNT(*) AS n FROM polly_autopilot_queue
+            WHERE creator_id = %s AND sent_at IS NOT NULL AND sent_at >= %s
+            GROUP BY (sent_at AT TIME ZONE 'UTC')::date
+        ) d
+    """, (creator_id, now - RAMP_LOOKBACK))
+    row = cur.fetchone() or {}
+    return int((row.get("best") if isinstance(row, dict) else row[0]) or 0)
 
 
 def _never_sent(conn, creator_id: int) -> bool:
@@ -861,6 +894,20 @@ def fill_candidates(conn, now: Optional[datetime] = None, limit: int = 20) -> Li
         else:
             mark_filled(conn, row["creator_id"], now, None)
     return out
+
+
+def claim_fill(conn, creator_id: int, now: datetime) -> bool:
+    """Atomically take this creator's fill turn, so the 5-minute fill cron and the alerts run never draft the
+    same creator at once. False when another run already has it."""
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE polly_autopilot SET filled_at = %s
+        WHERE creator_id = %s AND (filled_at IS NULL OR filled_at <= %s)
+        RETURNING creator_id
+    """, (now, creator_id, now - AUTO_FILL_EVERY))
+    ok = cur.fetchone() is not None
+    conn.commit()
+    return ok
 
 
 def claim_unannounced_drafts(conn, creator_id: int, now: datetime) -> List[str]:

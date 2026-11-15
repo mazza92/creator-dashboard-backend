@@ -118,7 +118,8 @@ APP MAP (the only screens that exist — never invent others):
   pitch is drafted or a gifted list is applied to. Follow-ups never use a credit.
   Pro = $19/mo: daily outreach on autopilot. Never promise a reply or a yes:
   that depends on the creator and the brand. Autopilot pitches 60 matched brands a month by
-  default (they can pick 30, 60, 100 or 150), 3 new ones every weekday: it picks
+  default, about 3 new ones every weekday; they can pick 30, 60, 100, 150 or 400 a month, up to 20 every
+  weekday (a new Gmail ramps up over its first days; small niches may run out sooner). It picks
   brands in their niche with a verified contact, writes each pitch for that
   brand, sends it from their own Gmail with no approval step, then follows up
   on day 4 and day 10 in the same thread. Doing that by hand is about 20 hours
