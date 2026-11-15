@@ -1117,6 +1117,26 @@ def get_hot_brand_ids():
         return jsonify({'ids': []}), 200
 
 
+@public_bp.route('/showcase', methods=['GET'])
+@scraper_rate_limit
+def get_public_showcase():
+    """Live teasers for the newcollab.co feature pages: latest paid UGC gigs, this week's UGC Pulse hooks and
+    brands running ads with UGC creators. No contacts or apply links. Cached for an hour."""
+    from services.public_showcase import showcase
+    try:
+        conn = get_db_connection()
+        try:
+            data = showcase(conn)
+        finally:
+            conn.close()
+        resp = jsonify(data)
+        resp.headers['Cache-Control'] = 'public, max-age=900, s-maxage=3600'
+        return resp, 200
+    except Exception as e:
+        print(f"Error building public showcase: {e}")
+        return jsonify({'gigs': [], 'hooks': [], 'hot_brands': [], 'counts': {}}), 200
+
+
 @public_bp.route('/ugc-portfolios', methods=['GET'])
 @scraper_rate_limit
 def get_public_ugc_portfolios():
