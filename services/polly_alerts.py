@@ -736,7 +736,7 @@ def unsent_brief_email(first_name: str, drafts: List[Dict[str, Any]], career: Op
     if progress:
         lines.append(progress)
     lines.append('<span style="color:#6B7280;">Rather not do this part? On <strong>Pro ($19/mo)</strong> I send '
-                 'every pitch for you, plus 3 new brands every weekday.</span>')
+                 'every pitch for you, plus new brands every weekday, up to 20 a day.</span>')
     buttons = [{
         "label": f"Send my {name} pitch" if len(drafts) == 1 else "Send them from my Gmail",
         "href": chip_link("send_draft", brand_id=top.get("brand_id"), brand_name=name, kind="polly_brief"),

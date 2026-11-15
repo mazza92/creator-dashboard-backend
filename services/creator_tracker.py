@@ -252,10 +252,12 @@ def set_goal(conn, creator_id: int, amount_cents: int, source: str = "custom", m
 def sync_autopilot_target(conn, creator_id: int, goal_cents: int) -> Optional[int]:
     """Autopilot's monthly pitch count follows the goal's pitch math, unless the creator set it by hand."""
     try:
-        from services.polly_autopilot import clamp_target, ensure_autopilot_tables
+        from services.polly_autopilot import STANDARD_TARGET_MAX, clamp_target, ensure_autopilot_tables
         ensure_autopilot_tables(conn)
         prof = creator_profile(conn, creator_id)
-        target = clamp_target(pitch_math(goal_cents, prof["followers"], own_rates(conn, creator_id))["pitches"])
+        # A goal never switches anyone onto the 20-a-day plan: that one is picked by hand.
+        target = min(STANDARD_TARGET_MAX,
+                     clamp_target(pitch_math(goal_cents, prof["followers"], own_rates(conn, creator_id))["pitches"]))
         cur = conn.cursor()
         cur.execute("""UPDATE polly_autopilot SET monthly_target = %s, target_source = 'goal', updated_at = NOW()
                        WHERE creator_id = %s AND COALESCE(target_source, '') <> 'manual'""", (target, creator_id))

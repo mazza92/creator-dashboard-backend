@@ -16,6 +16,7 @@ from services.polly_autopilot import (
     add_draft,
     approve,
     batch_size,
+    claim_fill,
     claim_unannounced_drafts,
     daily_sends,
     fill_candidates,
@@ -732,19 +733,26 @@ def _fill_creator(conn, row, creator, budget):
     return names, None, attempts, failed
 
 
-def auto_fill(conn, now=None, budget=AUTO_DRAFTS_PER_RUN, note_fn=None, daily_fn=None):
+def auto_fill(conn, now=None, budget=AUTO_DRAFTS_PER_RUN, note_fn=None, daily_fn=None, seconds=None,
+              gigs=True):
     """Cron: keep each enabled creator a week of scheduled pitches ahead, so the monthly target is
-    reached without anyone coming back to plan or approve."""
+    reached without anyone coming back to plan or approve. ``seconds`` stops starting new creators once the
+    run has used that much wall-clock time (each pitch takes ~20s to write)."""
+    import time as _time
     from flask import current_app, session
+
+    started = _time.monotonic()
 
     now = now or utc_now()
     note = note_fn or post_thread_note
     daily = daily_fn or post_daily_line
     out = {"drafted": 0, "creators": 0, "blocked": 0}
     for row in fill_candidates(conn, now):
-        if budget <= 0:
+        if budget <= 0 or (seconds and _time.monotonic() - started > seconds):
             break
         creator_id = row["creator_id"]
+        if not claim_fill(conn, creator_id, now):
+            continue
         creator = _load_creator(conn, creator_id) if _is_pro(creator_id, conn) else None
         if not creator:
             mark_filled(conn, creator_id, now + FILL_BLOCKED_WAIT, "not_pro")
@@ -786,7 +794,8 @@ def auto_fill(conn, now=None, budget=AUTO_DRAFTS_PER_RUN, note_fn=None, daily_fn
                 conn.rollback()
             except Exception:
                 pass
-    out["gigs"] = _fill_gigs(conn, now)
+    if gigs:
+        out["gigs"] = _fill_gigs(conn, now)
     return out
 
 

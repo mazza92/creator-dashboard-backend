@@ -2155,7 +2155,7 @@ def _pitch_targets_call(state, prior):
         state.final_say = (
             f"Here are your **{_saved_label(n)}**, ready to pitch.\n\n"
             "Your free pitches are used this month. On **Pro ($19/mo)** I pitch all of them first, from your "
-            "Gmail, then keep going with 3 new brands every weekday.")
+            "Gmail, then keep going with new brands every weekday, up to 20 a day.")
         state.add_chips([{"id": "unlock_pro", "action": "unlock_pro",
                           "label": f"Pitch my {_saved_label(n)} · $19/mo"}])
         return None
@@ -2963,6 +2963,32 @@ def pitch_handoff():
     finally:
         if conn:
             conn.close()
+
+
+@polly_bp.route("/cron/autopilot-fill", methods=["GET", "POST"])
+def cron_autopilot_fill():
+    """Every 5 minutes: write Autopilot pitches ahead for Pro creators (up to 20 a weekday each). The 15-minute
+    alerts run fills too; this one adds the capacity high-volume plans need, within a time budget."""
+    if not _cron_authorized():
+        return jsonify({"success": False, "error": "unauthorized"}), 401
+    from pr_crm_routes import get_db_connection
+    from routes.polly_autopilot import auto_fill
+    from services.polly_gmail import gmail_configured
+    if not gmail_configured():
+        return jsonify({"success": True, "skipped": "gmail_not_configured"})
+    try:
+        budget = max(1, min(12, int(request.args.get("budget") or 6)))
+    except (TypeError, ValueError):
+        budget = 6
+    conn = get_db_connection()
+    try:
+        result = auto_fill(conn, budget=budget, seconds=150, gigs=False)
+        return jsonify({"success": True, **json_safe(result)})
+    except Exception as err:
+        print(f"[Polly] cron autopilot fill error: {err}")
+        return jsonify({"success": False, "error": "fill run failed"}), 500
+    finally:
+        conn.close()
 
 
 @polly_bp.route("/cron/alerts", methods=["GET", "POST"])

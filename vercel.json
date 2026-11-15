@@ -32,6 +32,10 @@
       "schedule": "*/15 * * * *"
     },
     {
+      "path": "/api/polly/cron/autopilot-fill",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/polly/cron/refresh-profiles",
       "schedule": "20 * * * *"
     },

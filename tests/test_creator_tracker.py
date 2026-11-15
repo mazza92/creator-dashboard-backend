@@ -382,7 +382,8 @@ class TrackerDb(unittest.TestCase):
         pa.set_enabled(self.conn, 7, True)
         ct.set_goal(self.conn, 7, 60000, "suggested")
         s = pa.settings(self.conn, 7)
-        self.assertEqual(s["monthly_target"], pa.clamp_target(167))
+        # The goal needs ~167 pitches: it lands on the top standard volume, never the hand-picked 20-a-day plan.
+        self.assertEqual(s["monthly_target"], pa.STANDARD_TARGET_MAX)
         pa.update_settings(self.conn, 7, {"monthly_target": 40})
         ct.set_goal(self.conn, 7, 200000, "custom")
         self.assertEqual(pa.settings(self.conn, 7)["monthly_target"], pa.clamp_target(40))
