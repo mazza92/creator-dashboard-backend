@@ -16,6 +16,16 @@ _SCRAPER_UA_MARKERS = (
     'libwww-perl',
     'aiohttp',
     'httpx',
+    'headlesschrome',
+    'puppeteer',
+    'playwright',
+    'node-fetch',
+    'axios/',
+    'okhttp',
+    'java/',
+    'gptbot',
+    'ccbot',
+    'bytespider',
 )
 _SEARCH_ENGINE_MARKERS = (
     'googlebot',
