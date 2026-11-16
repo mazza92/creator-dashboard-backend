@@ -521,12 +521,8 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         if pitch.get("email"):
             pitch["mailto"] = build_mailto(pitch["email"], pitch.get("subject") or "", pitch["body"])
     state.pitch = pitch
-    if pitch.get("email") and brand_id and not pitch.get("is_reply"):
-        # Kept server-side so 'Send for me' sends exactly this text to this inbox (the client can't redirect it).
-        outbox = dict(state.notes.get("pitch_outbox") or {})
-        outbox.pop(str(brand_id), None)
-        outbox[str(brand_id)] = {k: pitch.get(k) for k in ("brand_id", "brand_name", "email", "subject", "body")}
-        state.notes["pitch_outbox"] = dict(list(outbox.items())[-10:])
+    if not pitch.get("is_reply"):
+        remember_outbox(state, pitch, brand_id, fresh=True)
     state.brands = []
     state.add_chips(pitch_confirm_chips({"id": brand_id, "name": brand_name}))
     state.balance = R._unlock_balance(state.creator_id)
@@ -1210,6 +1206,7 @@ def save_profile_facts(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]
             updated = apply_location_to_pitch(card, city, country)
             state.pitch_update = updated
             state.pitch = updated
+            remember_outbox(state, updated)
             draft_updated = True
             state.add_chips(pitch_confirm_chips({
                 "id": updated.get("brand_id"), "name": updated.get("brand_name"),
@@ -1273,8 +1270,30 @@ def fix_draft_handle(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     updated = apply_handle_revision_to_pitch(card, keep, drop)
     state.pitch_update = updated
     state.pitch = updated
+    remember_outbox(state, updated)
     state.add_chips(pitch_confirm_chips({"id": updated.get("brand_id"), "name": updated.get("brand_name")}))
     return {"ok": True, "status": "draft_updated", "brand": updated.get("brand_name")}
+
+
+def remember_outbox(state: TurnState, pitch: Dict[str, Any], brand_id: Any = None, fresh: bool = False) -> None:
+    """Keep the pitch on screen server-side, so 'Send for me' sends exactly this text to this inbox (the client
+    can't redirect it). Called on every draft AND every edit: an edit that only changed the card used to send the
+    original draft. An edit never reopens a pitch already sent; a fresh draft (fresh=True) replaces it."""
+    bid = str(brand_id or (pitch or {}).get("brand_id") or "")
+    if not pitch or not pitch.get("email") or not bid:
+        return
+    outbox = dict(state.notes.get("pitch_outbox") or {})
+    current = outbox.get(bid)
+    if isinstance(current, dict) and current.get("sent_at") and not fresh:
+        return
+    outbox.pop(bid, None)
+    outbox[bid] = {k: pitch.get(k) for k in ("brand_id", "brand_name", "email", "subject", "body")}
+    state.notes["pitch_outbox"] = dict(list(outbox.items())[-10:])
+
+
+def _sent_at(state: TurnState, card: Dict[str, Any]) -> str:
+    entry = (state.notes.get("pitch_outbox") or {}).get(str(card.get("brand_id") or ""))
+    return str(entry.get("sent_at") or "") if isinstance(entry, dict) else ""
 
 
 def edit_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -1290,6 +1309,11 @@ def edit_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
                 "explain": f"The pitch on screen is for {brand}. Offer to draft {named} first."}
     if not instruction:
         return {"ok": False, "error": "instruction required"}
+    sent_at = _sent_at(state, card)
+    if sent_at:
+        return {"ok": False, "status": "already_sent", "brand": brand, "sent_at": sent_at,
+                "explain": "This pitch was already sent, so an edit can't reach the brand. Say so plainly, and "
+                           "offer to put the new angle in the follow-up or in their next pitches."}
     result = revise_pitch(card, instruction)
     saved_pref = bool(result.get("pref"))
     if saved_pref:
@@ -1301,6 +1325,7 @@ def edit_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     updated = apply_pitch_prefs(result["pitch"], state.notes, rewrite=False)
     state.pitch_update = updated
     state.pitch = updated
+    remember_outbox(state, updated)
     state.add_chips(pitch_confirm_chips({"id": updated.get("brand_id"), "name": updated.get("brand_name")}))
     return {"ok": True, "status": "pitch_updated", "brand": brand, "version": updated.get("version"),
             "saved_for_future_pitches": saved_pref, "card_shows": "Updated just now"}

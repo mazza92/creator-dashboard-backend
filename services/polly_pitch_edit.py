@@ -302,10 +302,45 @@ def _llm_edit(pitch: Dict[str, Any], instruction: str) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {"changed": False, "why_not": ""}
 
 
+_NEW_IDEA_RE = re.compile(
+    r"(?i)\b(change|switch|swap|different|new|another|other|fresh|same)\b.{0,40}\b(video\s+)?idea"
+    r"|\bidea\b.{0,30}\b(change|switch|swap|different|new|another|fresh|same|again|every time)\b")
+
+
+def asks_for_new_idea(instruction: str) -> bool:
+    """'Change the video idea up, it's the same every time': a new idea without saying which one."""
+    text = (instruction or "").strip()
+    return bool(_NEW_IDEA_RE.search(text)) and len(text.split()) <= 16 and ":" not in text
+
+
+def next_idea(pitch: Dict[str, Any]) -> str:
+    """An idea from this pitch's own list (or its category) that the body doesn't already use."""
+    from services.pitch_writer import DEFAULT_IDEAS, ideas_for
+
+    meta = pitch.get("pitch_meta") if isinstance(pitch.get("pitch_meta"), dict) else {}
+    body = _norm(pitch.get("body") or "")
+    pool = list(meta.get("ideas") or []) + ideas_for(str(meta.get("niche") or pitch.get("category") or ""))
+    pool += DEFAULT_IDEAS
+
+    def core(idea: str) -> str:
+        m = re.search(r"'([^']+)'", idea)
+        return _norm(m.group(1) if m else re.sub(r"^an? ", "", idea))[:40]
+
+    for idea in dict.fromkeys(pool):
+        if core(idea) and core(idea) not in body:
+            return idea
+    return ""
+
+
 def revise_pitch(pitch: Dict[str, Any], instruction: str) -> Dict[str, Any]:
     """{"changed": bool, "pitch": new version | None, "why_not": str, "pref": prefs patch}."""
     old_subject = str(pitch.get("subject") or "")
     old_body = str(pitch.get("body") or "")
+    if asks_for_new_idea(instruction):
+        alt = next_idea(pitch)
+        if alt:
+            instruction = (f"Replace the video idea with this one: {alt}. Describe it in one natural sentence for "
+                           f"this product and keep everything else.")
     pref: Dict[str, Any] = {}
     if _GENERAL_RE.search(instruction or ""):
         from services.polly_prefs import parse_pitch_preferences

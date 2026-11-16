@@ -249,7 +249,8 @@ def gemini_json(system: str, user: str, max_tokens: int = 400) -> Dict[str, Any]
 OPENER_SYSTEM = (
     "You write the first 1-2 sentences of a cold pitch email from a UGC creator to a brand. "
     "Return JSON {\"opener\": \"...\"}. Rules: at most 45 words. Name the product exactly as given and propose ONE "
-    "concrete short-form video idea for it (the format and what the viewer sees). First person, in the tone given. "
+    "concrete short-form video idea for it (the format and what the viewer sees), built on the video_idea given "
+    "(not a different one). First person, in the tone given. "
     "Follow the creator's style rules if any, but keep it clear to a stranger at a brand (proper capitalisation, "
     "no slang a brand could misread). NEVER use stats, view or follower counts, percentages or past results (a video length like 15-second is fine). Do not claim you "
     "already use or own the product. No greeting, no sign-off, no links, no hashtags, at most one emoji. "
@@ -283,7 +284,9 @@ def write_opener(facts: Dict[str, Any], profile: Dict[str, Any], llm: Callable =
         }[facts["structure"]],
         "tone": tone["label"], "tone_guide": tone["guide"], "tone_example": tone["example"],
         "style_rules": profile.get("style_rules") or [],
-        "idea_suggestions": facts.get("ideas") or [],
+        # One idea, picked per brand by the seeded rotation: given a list, the model picks its favourite every
+        # time and a creator's pitches all pitch the same video.
+        "video_idea": (facts.get("ideas") or DEFAULT_IDEAS)[0],
     }
     if feedback:
         payload["fix_these_issues"] = feedback
