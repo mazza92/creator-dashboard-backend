@@ -5,6 +5,7 @@
   do we show their opening lines as UGC ad examples. Promo copy ("Buy 1 Get 1") is not a UGC example.
 - liveBriefs: paid UGC briefs from this brand that are open on Newcollab right now (title + pay, no apply links).
 """
+import re
 from typing import Any, Dict, List, Optional
 
 from services.meta_ads_signal import HOT_FRESH_DAYS, strip_internal
@@ -14,8 +15,21 @@ MAX_EXAMPLES = 2
 MAX_BRIEFS = 3
 
 
-def _first_line(text: str, limit: int = 160) -> str:
-    s = strip_internal(text)
+# Ad Library labels around the ad's own words when a sample was saved as one line: "Brand Sponsored I used to..."
+_SPONSORED = re.compile(r"^(?:sponsored|sponsoris[ée]|gesponsert|patrocinado|sponsorizzato|gesponsord)\b[\s:·-]*",
+                        re.IGNORECASE)
+
+
+def _without_labels(text: str, brand_name: str = "") -> str:
+    s = text.strip()
+    name = (brand_name or "").strip()
+    if name and s.lower().startswith(name.lower()):
+        s = s[len(name):].lstrip(" :·-")
+    return _SPONSORED.sub("", s).strip()
+
+
+def _first_line(text: str, limit: int = 160, brand_name: str = "") -> str:
+    s = _without_labels(strip_internal(text), brand_name)
     for stop in (". ", "! ", "? "):
         i = s.find(stop)
         if 20 <= i <= limit:
@@ -50,7 +64,7 @@ def brand_ugc(cur, brand: Dict[str, Any]) -> Dict[str, Any]:
                     samples = row.get("ad_samples") or []
                     examples: List[str] = []
                     for s in samples if isinstance(samples, list) else []:
-                        line = _first_line(str(s or ""))
+                        line = _first_line(str(s or ""), brand_name=brand.get("brand_name") or "")
                         if len(line) >= 20 and line not in examples:
                             examples.append(line)
                     out["adExamples"] = examples[:MAX_EXAMPLES]

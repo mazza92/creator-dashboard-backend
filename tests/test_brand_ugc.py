@@ -23,6 +23,13 @@ class FirstLine(unittest.TestCase):
                          "I tried this serum for 30 days.")
 
 
+    def test_drops_brand_name_and_sponsored_label(self):
+        self.assertEqual(_first_line("Solent Beard Co Sponsored I used to hate my own beard. Not anymore.",
+                                     brand_name="Solent Beard Co"), "I used to hate my own beard.")
+        self.assertEqual(_first_line("Sponsorisé Mon rituel du matin a changé grâce à ce sérum."),
+                         "Mon rituel du matin a changé grâce à ce sérum.")
+
+
 class BrandUgc(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
