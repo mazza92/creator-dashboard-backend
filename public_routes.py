@@ -1098,14 +1098,15 @@ def unlock_brand_access(slug):
 
 @public_bp.route('/hot-brand-ids', methods=['GET'])
 def get_hot_brand_ids():
-    """Ids of 🔥 brands (found running ads with UGC creators by our Meta Ads Library crawl), so every brand card in
-    the app can show the tag without each endpoint carrying it. Small, public, cached for an hour."""
+    """Ids of 🔥 brands (found or re-seen running ads by our Meta Ads Library crawl in the last 30 days), so every
+    brand card in the app can show the tag without each endpoint carrying it. Small, public, cached for an hour."""
     try:
         conn = get_db_connection()
         try:
             cur = conn.cursor()
-            cur.execute("""SELECT id FROM pr_brands
-                           WHERE source = 'meta_ads_library' AND COALESCE(status, 'published') = 'published'""")
+            from services.meta_ads_signal import HOT_SQL
+            cur.execute(f"""SELECT b.id FROM pr_brands b LEFT JOIN brand_ad_signals s ON s.brand_id = b.id
+                            WHERE {HOT_SQL}""")
             ids = [int(r[0]) for r in cur.fetchall()]
         finally:
             conn.close()

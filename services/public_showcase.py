@@ -102,14 +102,14 @@ def latest_hooks(cur, limit: int = HOOK_LIMIT) -> List[Dict[str, Any]]:
 
 
 def hot_brands(cur, limit: int = HOT_LIMIT) -> List[Dict[str, Any]]:
-    cur.execute("""
+    from services.meta_ads_signal import HOT_SEEN_ON_SQL, HOT_SQL
+    cur.execute(f"""
         SELECT b.brand_name, b.slug, LOWER(COALESCE(b.category, '')) AS category, b.logo_url,
-               s.ads_last_seen
+               {HOT_SEEN_ON_SQL} AS seen_on
         FROM pr_brands b
         LEFT JOIN brand_ad_signals s ON s.brand_id = b.id
-        WHERE b.source = 'meta_ads_library' AND COALESCE(b.status, 'published') = 'published'
-          AND NULLIF(TRIM(b.slug), '') IS NOT NULL
-        ORDER BY s.ads_last_seen DESC NULLS LAST, b.id DESC
+        WHERE {HOT_SQL} AND NULLIF(TRIM(b.slug), '') IS NOT NULL
+        ORDER BY seen_on DESC, b.id DESC
         LIMIT %s
     """, (limit * 6,))
     rows = _rows(cur)
@@ -119,18 +119,19 @@ def hot_brands(cur, limit: int = HOT_LIMIT) -> List[Dict[str, Any]]:
         "slug": r.get("slug"),
         "category": r.get("category") or None,
         "logo": r.get("logo_url") or None,
-        "ads_last_seen": r["ads_last_seen"].isoformat() if r.get("ads_last_seen") else None,
+        "seen_on": r["seen_on"].isoformat() if r.get("seen_on") else None,
     } for r in rows[:limit]]
 
 
 def counts(cur) -> Dict[str, int]:
+    from services.meta_ads_signal import HOT_SQL
     cur.execute("""
         SELECT (SELECT COUNT(*) FROM opportunities WHERE status = 'live'
                   AND (closes_at IS NULL OR closes_at > NOW())) AS live_gigs,
-               (SELECT COUNT(*) FROM pr_brands WHERE source = 'meta_ads_library'
-                  AND COALESCE(status, 'published') = 'published') AS hot_brands,
+               (SELECT COUNT(*) FROM pr_brands b LEFT JOIN brand_ad_signals s ON s.brand_id = b.id
+                  WHERE {hot}) AS hot_brands,
                (SELECT COUNT(*) FROM pr_brands WHERE status = 'published') AS brands
-    """)
+    """.format(hot=HOT_SQL))
     row = cur.fetchone()
     return {"live_gigs": int(row[0] or 0), "hot_brands": int(row[1] or 0), "brands": int(row[2] or 0)}
 
