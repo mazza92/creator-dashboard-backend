@@ -62,6 +62,10 @@
     {
       "path": "/api/brief/cron/send",
       "schedule": "2 * * * *"
+    },
+    {
+      "path": "/api/public/cron/tiktok-media",
+      "schedule": "*/10 * * * *"
     }
   ],
   "git": {

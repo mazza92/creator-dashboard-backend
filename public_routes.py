@@ -1146,6 +1146,49 @@ def get_public_ugc_brands():
         return jsonify({'error': 'Failed to load UGC brands'}), 500
 
 
+@public_bp.route('/tiktok-media', methods=['GET'])
+@scraper_rate_limit
+def get_public_tiktok_media():
+    """Our stored copy (MP4 + cover) of TikTok videos a page shows: ?ids=1,2&handles=a,b (same order, up to 24).
+    Unknown ids are queued for the media cron; the page shows its own placeholder until they are stored."""
+    from services.tiktok_media import clean_ids, lookup
+    ids = [x for x in (request.args.get('ids') or '').split(',') if x]
+    handles = (request.args.get('handles') or '').split(',')
+    pairs = clean_ids(ids, handles)
+    if not pairs:
+        return jsonify({'media': {}}), 200
+    try:
+        conn = get_db_connection()
+        try:
+            media = lookup(conn, pairs)
+        finally:
+            conn.close()
+        resp = jsonify({'media': media})
+        ready = all((m.get('video') or m.get('cover')) for m in media.values()) and len(media) == len(pairs)
+        resp.headers['Cache-Control'] = 'public, max-age=3600, s-maxage=86400' if ready else 'public, max-age=60'
+        return resp, 200
+    except Exception as e:
+        print(f"Error looking up TikTok media: {e}")
+        return jsonify({'media': {}}), 200
+
+
+@public_bp.route('/cron/tiktok-media', methods=['GET', 'POST'])
+def cron_tiktok_media():
+    """Every 10 minutes: store finished downloads and start one Apify run for queued videos."""
+    from services.admin_auth import cron_request_ok
+    from services.tiktok_media import collect
+    if not cron_request_ok():
+        return jsonify({'success': False, 'error': 'unauthorized'}), 401
+    conn = get_db_connection()
+    try:
+        return jsonify({'success': True, **collect(conn)}), 200
+    except Exception as e:
+        print(f"[tiktok_media] cron failed: {e}")
+        return jsonify({'success': False, 'error': 'media run failed'}), 500
+    finally:
+        conn.close()
+
+
 @public_bp.route('/showcase', methods=['GET'])
 @scraper_rate_limit
 def get_public_showcase():
