@@ -803,6 +803,8 @@ def get_public_brand(slug):
                 b.pr_example_posts,
                 b.updated_at,
                 b.last_verified_at,
+                b.source,
+                b.created_at,
                 CASE
                     WHEN b.application_form_url IS NOT NULL THEN TRUE
                     ELSE FALSE
@@ -827,9 +829,12 @@ def get_public_brand(slug):
 
         brand = cursor.fetchone()
         reply_signal = None
+        ugc = None
         if brand and brand.get('id'):
             from services.brand_reply_signal import brand_signal
+            from services.brand_ugc import brand_ugc
             reply_signal = brand_signal(cursor, brand['id'])
+            ugc = brand_ugc(cursor, brand)
         cursor.close()
         conn.close()
 
@@ -894,6 +899,7 @@ def get_public_brand(slug):
         response.update(public_seo_fields(
             brand, estimated_value=_estimate_package_value(brand['category'], brand['brand_name'])
         ))
+        response['ugc'] = ugc
 
         return jsonify(response), 200
 
