@@ -70,6 +70,30 @@ def start_posts_run(post_urls: List[str]) -> str:
     return str(resp.json()["data"]["id"])
 
 
+def start_media_run(post_urls: List[str]) -> str:
+    """Re-fetch specific videos and download the video file and cover into the run's key-value store, so
+    services.tiktok_media can copy them into our own storage. Returns the Apify run id."""
+    body = {**run_input([], [], 1), "postURLs": list(post_urls), "shouldDownloadVideos": True,
+            "shouldDownloadCovers": True}
+    body.pop("searchQueries", None)
+    body.pop("hashtags", None)
+    resp = requests.post(f"{_API}/acts/{ACTOR}/runs", headers=_headers(), json=body, timeout=30)
+    if resp.status_code >= 300:
+        raise SourceUnavailable(f"apify start failed: HTTP {resp.status_code}")
+    return str(resp.json()["data"]["id"])
+
+
+def download(url: str, timeout: int = 60) -> Optional[bytes]:
+    """Bytes of a file the actor stored (Apify key-value record) or a public URL; None on failure."""
+    headers = _headers() if url.startswith(_API) else {}
+    try:
+        resp = requests.get(url, headers=headers, timeout=timeout)
+    except Exception as err:
+        print(f"[radar] download failed {url[:80]}: {err}")
+        return None
+    return resp.content if resp.status_code == 200 and resp.content else None
+
+
 def run_state(run_id: str) -> Dict[str, Any]:
     """{status, cost_usd, dataset_id, finished}."""
     resp = requests.get(f"{_API}/actor-runs/{run_id}", headers=_headers(), timeout=20)
