@@ -113,7 +113,7 @@ class Tools(unittest.TestCase):
         self.cur().execute("UPDATE pr_brands SET accepting_pr = true WHERE slug = 'quiet'")
         topped = t.find_brands(self.cur(), {"niche": "skincare", "limit": 8})
         self.assertEqual(topped["brands"][-1], {**topped["brands"][-1], "name": "Quiet Brand",
-                                                "why_now": ["Listed as accepting PR requests"]})
+                                                "why_now": ["Listed as open to creator collabs"]})
         self.conn.rollback()
         us = t.find_brands(self.cur(), {"niche": "skincare", "country": "US"}, source="claude")
         self.assertEqual([b["name"] for b in us["brands"]], ["Glow Co", "Dew Labs"])
@@ -127,18 +127,19 @@ class Tools(unittest.TestCase):
             t.find_brands(self.cur(), {})
 
     def test_brand_info(self):
-        out = t.get_brand_pr_info(self.cur(), {"brand": "glow co"})
+        out = t.get_brand_ugc_info(self.cur(), {"brand": "glow co"})
         self.assertTrue(out["found"])
         self.assertEqual(out["socials"], {"instagram": "glowco"})
-        self.assertTrue(out["running_ads"]["seen_in_last_30_days"])
-        self.assertEqual(out["running_ads"]["ad_opening_lines"], ["I tried this serum for 30 days and my skin changed."])
-        self.assertTrue(out["contact"]["pr_email_on_newcollab"])
+        self.assertTrue(out["ugc_signals"]["seen_running_ads_in_last_30_days"])
+        self.assertEqual(out["ugc_signals"]["creator_ad_opening_lines"],
+                         ["I tried this serum for 30 days and my skin changed."])
+        self.assertTrue(out["contact"]["creator_contact_on_newcollab"])
         self.assertNotIn("pr@glow.co", json.dumps(out))
-        self.assertTrue(t.get_brand_pr_info(self.cur(), {"brand": "Dew"})["gifting_confirmed"])
-        self.assertEqual(t.get_brand_pr_info(self.cur(), {"brand": "Brief Co"})["open_paid_briefs"],
+        self.assertTrue(t.get_brand_ugc_info(self.cur(), {"brand": "Dew"})["works_with_creators"]["confirmed_gifted_collabs"])
+        self.assertEqual(t.get_brand_ugc_info(self.cur(), {"brand": "Brief Co"})["ugc_signals"]["open_paid_ugc_briefs"],
                          [{"title": "Summer SPF UGC", "pay": "$150"}])
-        self.assertFalse(t.get_brand_pr_info(self.cur(), {"brand": "Draft Skin"})["found"])
-        self.assertFalse(t.get_brand_pr_info(self.cur(), {"brand": "Nope Inc"})["found"])
+        self.assertFalse(t.get_brand_ugc_info(self.cur(), {"brand": "Draft Skin"})["found"])
+        self.assertFalse(t.get_brand_ugc_info(self.cur(), {"brand": "Nope Inc"})["found"])
 
 
 class Mcp(unittest.TestCase):
@@ -158,7 +159,7 @@ class Mcp(unittest.TestCase):
     def test_tools_listed_on_every_variant(self):
         for path in ("/api/v1/integrations/mcp", "/api/v1/integrations/claude/mcp", "/api/v1/integrations/gemini/mcp"):
             names = [x["name"] for x in self.rpc(path, "tools/list")["result"]["tools"]]
-            self.assertEqual(names, ["search_ugc_creators", "find_brands_to_pitch", "get_brand_pr_info"])
+            self.assertEqual(names, ["search_ugc_creators", "find_brands_to_pitch", "get_brand_ugc_info"])
         claude = self.rpc("/api/v1/integrations/claude/mcp", "tools/list")["result"]["tools"]
         for tool in claude:
             self.assertNotIn("Link each", tool["description"])
@@ -173,13 +174,21 @@ class Mcp(unittest.TestCase):
         self.assertEqual(out["result"]["structuredContent"], fake)
         self.assertEqual(run.call_args[0][2], "claude")
         log.assert_called_once_with("claude", "find_brands_to_pitch", {"niche": "skincare"}, 1)
+        with patch.object(self.integ, "_run_creator_tool", return_value={"found": True}) as run, \
+                patch.object(self.integ, "log_tool_call"):
+            legacy = self.rpc("/api/v1/integrations/mcp", "tools/call",
+                              {"name": "get_brand_pr_info", "arguments": {"brand": "Glossier"}})
+        self.assertFalse(legacy["result"]["isError"])
+        self.assertEqual(run.call_args[0][0].__name__, "get_brand_ugc_info")
+        for tool in self.rpc("/api/v1/integrations/claude/mcp", "tools/list")["result"]["tools"]:
+            self.assertNotIn(" PR ", f" {tool['description']} ")
         bad = self.rpc("/api/v1/integrations/mcp", "tools/call", {"name": "nope", "arguments": {}})
         self.assertEqual(bad["error"]["code"], -32602)
 
     def test_value_error_is_tool_error(self):
         with patch.object(self.integ, "_run_creator_tool", side_effect=ValueError("brand is required")), \
                 patch.object(self.integ, "log_tool_call"):
-            out = self.rpc("/api/v1/integrations/mcp", "tools/call", {"name": "get_brand_pr_info", "arguments": {}})
+            out = self.rpc("/api/v1/integrations/mcp", "tools/call", {"name": "get_brand_ugc_info", "arguments": {}})
         self.assertTrue(out["result"]["isError"])
 
 

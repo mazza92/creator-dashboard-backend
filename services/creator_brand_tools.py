@@ -1,9 +1,9 @@
 """Creator-side tools for the AI-assistant connectors (ChatGPT, Claude, Gemini).
 
-- find_brands: brands in a niche worth pitching now, strongest real signal first (open paid brief, creator-style
-  ads, found running ads in the last 30 days, confirmed gifting).
-- get_brand_pr_info: what we know about one brand: does it send PR packages / gift creators, is it running ads,
-  open briefs, public socials, and where to see its contact on Newcollab.
+- find_brands: brands in a niche worth pitching for UGC now, strongest real signal first (open paid UGC brief,
+  creator-style ads, found running ads in the last 30 days, confirmed work with creators).
+- get_brand_ugc_info: one brand's UGC picture: does it run creator-style ads, is it running ads now, open paid
+  UGC briefs, does it work with creators, public socials, and where to see its contact on Newcollab.
 
 Read-only and zero-auth, like the creator search. Contact emails and application links never leave Newcollab:
 results point to the public brand page and to the creator signup, where Polly can pitch for them.
@@ -120,9 +120,9 @@ def _why(row: Dict) -> List[str]:
     if row.get("hot") and row.get("seen_on"):
         out.append(f"Seen running ads on {row['seen_on'].isoformat()}")
     if row.get("gifting"):
-        out.append("Confirmed gifting products to creators")
+        out.append("Confirmed working with creators (gifted collabs)")
     if row.get("accepting") and not out:
-        out.append("Listed as accepting PR requests")
+        out.append("Listed as open to creator collabs")
     return out
 
 
@@ -194,7 +194,7 @@ def _handle(raw: Any) -> Optional[str]:
     return text or None
 
 
-def get_brand_pr_info(cur, params: Dict, source: str = "chatgpt") -> Dict:
+def get_brand_ugc_info(cur, params: Dict, source: str = "chatgpt") -> Dict:
     query = _clean(params.get("brand"), 80)
     if not query:
         raise ValueError("brand is required")
@@ -209,24 +209,30 @@ def get_brand_pr_info(cur, params: Dict, source: str = "chatgpt") -> Dict:
         "brand": _clean(row.get("brand_name"), 60),
         "found": True,
         "category": (row.get("category") or "").lower() or None,
-        "about": _clean(row.get("pr_description") or row.get("description"), 300) or None,
+        "about": _clean(row.get("description") or row.get("pr_description"), 300) or None,
         "website": row.get("website") or None,
         "socials": socials,
-        "gifting_confirmed": bool(row.get("gifting_confirmed_at")),
-        "listed_as_accepting_pr": bool(row.get("accepting_pr")),
-        "running_ads": {
-            "seen_in_last_30_days": ugc["hot"],
-            "last_seen_on": ugc["seenRunningAdsOn"],
-            "creator_style_ads": ugc["creatorStyleAds"],
-            "ad_opening_lines": ugc["adExamples"],
+        "ugc_signals": {
+            "open_paid_ugc_briefs": ugc["liveBriefs"],
+            "runs_creator_style_ads": ugc["creatorStyleAds"],
+            "creator_ad_opening_lines": ugc["adExamples"],
+            "seen_running_ads_in_last_30_days": ugc["hot"],
+            "last_seen_running_ads_on": ugc["seenRunningAdsOn"],
         },
-        "open_paid_briefs": ugc["liveBriefs"],
+        "works_with_creators": {
+            "confirmed_gifted_collabs": bool(row.get("gifting_confirmed_at")),
+            "listed_as_open_to_creators": bool(row.get("accepting_pr")),
+        },
         "ships_to": [str(x) for x in row.get("regions")] if isinstance(row.get("regions"), list) else [],
         "contact": {
-            "pr_email_on_newcollab": bool(row.get("has_email")),
+            "creator_contact_on_newcollab": bool(row.get("has_email")),
             "application_form_on_newcollab": bool(row.get("has_form")),
             "where": "Available to creators on Newcollab (brand_page).",
         },
         "brand_page": brand_page_url(row["slug"], source),
         "creator_cta": creator_cta(source, (row.get("category") or "").lower() or None),
     }
+
+
+# Name the tool had at launch (Nov 16); still answered for clients that cached it.
+get_brand_pr_info = get_brand_ugc_info
