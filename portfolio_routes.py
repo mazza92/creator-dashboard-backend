@@ -78,6 +78,7 @@ def get_creator_id_from_session():
 
 
 from media_proxy_routes import fetch_post_preview_bytes, to_proxied_media_url
+from services.public_brand_guard import scraper_rate_limit
 from services.public_kit import (
     apply_live_followers,
     build_public_socials,
@@ -1636,6 +1637,7 @@ def publish_free_portfolio():
 
 
 @portfolio_bp.route('/public/<slug>', methods=['GET'])
+@scraper_rate_limit
 def get_public_kit(slug):
     """
     GET /api/portfolio/public/:slug
