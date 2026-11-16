@@ -36,7 +36,9 @@ _ALIASES = {
     "kitchen": "home", "decor": "home", "home decor": "home", "cleaning": "home", "interior": "home",
     "gym": "fitness", "workout": "fitness", "sports": "fitness", "yoga": "activewear", "athleisure": "activewear",
     "gadgets": "tech", "electronics": "tech", "apps": "tech", "dog": "pet", "dogs": "pet", "cat": "pet",
-    "cats": "pet", "pets": "pet", "mom": "baby", "parenting": "baby", "kids": "baby", "family": "baby",
+    "cats": "pet", "pets": "pet", "mom": "baby", "mum": "baby", "mums": "baby", "moms": "baby", "mama": "baby",
+    "mummy": "baby", "mommy": "baby", "motherhood": "baby", "postpartum": "baby", "pregnancy": "baby",
+    "toddler": "baby", "parenting": "baby", "kids": "baby", "family": "baby",
     "eco": "sustainable", "sustainability": "sustainable", "games": "gaming", "jewellery": "jewelry",
 }
 _COUNTRY_NAMES = {
@@ -57,9 +59,11 @@ def niche_category(raw: Any) -> Optional[str]:
         return text
     if text in _ALIASES:
         return _ALIASES[text]
-    for word in re.split(r"[^a-z]+", text):
+    words = [w for w in re.split(r"[^a-z]+", text) if w]
+    for word in words:  # a category named outright wins over a looser alias ("postpartum fashion")
         if word in CATEGORIES:
             return word
+    for word in words:
         if word in _ALIASES:
             return _ALIASES[word]
     for alias, cat in _ALIASES.items():

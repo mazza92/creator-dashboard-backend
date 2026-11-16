@@ -20,6 +20,8 @@ class Helpers(unittest.TestCase):
         self.assertEqual(t.niche_category("makeup"), "beauty")
         self.assertEqual(t.niche_category("dog mom content"), "pet")
         self.assertEqual(t.niche_category("home decor"), "home")
+        self.assertEqual(t.niche_category("mum life"), "baby")
+        self.assertEqual(t.niche_category("postpartum fashion"), "fashion")
         self.assertIsNone(t.niche_category("crypto"))
         self.assertIsNone(t.niche_category(""))
 
@@ -79,7 +81,8 @@ class Tools(unittest.TestCase):
             ('Brief Co', 'brief-co', 'skincare', 'manual', 'published', '["AU"]', true, NULL, NULL, NULL, NULL, %s)
         """, (now, now, now - timedelta(days=200), now, now, now))
         cur.execute("""INSERT INTO brand_ad_signals VALUES
-            (1, %s, true, '["Glow Co Sponsored I tried this serum for 30 days and my skin changed."]')""",
+            (1, %s, true, '["Glow Co Sponsored I tried this serum for 30 days and my skin changed.",
+                           "\u200b \u200b \u2728 BLACK FRIDAY SALE! 40%% off everything this week"]')""",
                     (now.date(),))
         cur.execute("""INSERT INTO opportunities (pr_brand_id, product_name, status, listing_brief, published_at)
                        VALUES (5, 'Summer SPF UGC', 'live', '{"pay": "$150"}', %s)""", (now,))

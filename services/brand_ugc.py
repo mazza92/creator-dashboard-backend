@@ -28,8 +28,16 @@ def _without_labels(text: str, brand_name: str = "") -> str:
     return _SPONSORED.sub("", s).strip()
 
 
+# Zero-width and other invisible characters some ads pad their text with.
+_INVISIBLE = re.compile(r"[\u200b-\u200f\u2060-\u2064\ufeff\u00ad]")
+# Promo copy is not a UGC example: sales, discounts, launches.
+_PROMO = re.compile(r"(?i)\b(sale|% ?off|discount|promo code|use code|free shipping|shop now|black friday|"
+                    r"cyber monday|limited time|meet our new|introducing|new arrival|buy \d|bogo)\b")
+
+
 def _first_line(text: str, limit: int = 160, brand_name: str = "") -> str:
-    s = _without_labels(strip_internal(text), brand_name)
+    s = " ".join(_INVISIBLE.sub("", str(text or "")).split())
+    s = _without_labels(strip_internal(s), brand_name)
     for stop in (". ", "! ", "? "):
         i = s.find(stop)
         if 20 <= i <= limit:
@@ -65,7 +73,7 @@ def brand_ugc(cur, brand: Dict[str, Any]) -> Dict[str, Any]:
                     examples: List[str] = []
                     for s in samples if isinstance(samples, list) else []:
                         line = _first_line(str(s or ""), brand_name=brand.get("brand_name") or "")
-                        if len(line) >= 20 and line not in examples:
+                        if len(line) >= 20 and line not in examples and not _PROMO.search(line):
                             examples.append(line)
                     out["adExamples"] = examples[:MAX_EXAMPLES]
         cur.execute("""
