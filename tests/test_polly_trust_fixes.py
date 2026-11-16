@@ -256,3 +256,81 @@ class DedupeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+FASHION_PITCH = {
+    "brand_name": "Princess Polly", "brand_id": 13, "subject": "UGC for Princess Polly?",
+    "email": "influencers@princesspolly.example",
+    "body": "Hi Princess Polly team,\n\nFor your Women's Dresses, I picture a 'one piece, three outfits' video "
+            "showing how to style one dress for different occasions.\n\nNo fee. Just product + shipping.\n\n"
+            "Worth a try?\nLiv",
+    "pitch_meta": {"ideas": ["a 'one piece, three outfits' video", "a try-on haul with it as the hero piece",
+                             "a 'how I style it for the week' video"]},
+}
+
+
+class EditThenSendTests(_Patched):
+    """Nov 16: a creator edited her pitch in chat, pressed Send, and the brand got the original draft."""
+
+    def _state(self, text, outbox_entry=None):
+        notes = {"pitch_outbox": {"13": outbox_entry or {k: FASHION_PITCH[k] for k in
+                                                         ("brand_id", "brand_name", "email", "subject", "body")}}}
+        return make_state(user_text=text, notes=notes,
+                          messages=[{"role": "assistant", "content": "Here.", "pitch": dict(FASHION_PITCH)},
+                                    {"role": "user", "content": text}])
+
+    def test_edit_updates_what_send_will_send(self):
+        new_body = FASHION_PITCH["body"].replace("a 'one piece, three outfits' video showing how to style one dress "
+                                                 "for different occasions", "a try-on haul for my Vanuatu trip")
+        state = self._state("try on haul for my Vanuatu trip")
+        with patch("services.polly_pitch_edit._llm_edit",
+                   return_value={"subject": FASHION_PITCH["subject"], "body": new_body, "changed": True}):
+            res = tools.run_tool(state, "edit_pitch", {"instruction": "try on haul for my Vanuatu trip"})
+        self.assertEqual(res["status"], "pitch_updated")
+        self.assertIn("Vanuatu", state.notes["pitch_outbox"]["13"]["body"])
+
+    def test_vague_new_idea_swaps_in_another_idea(self):
+        from services.polly_pitch_edit import asks_for_new_idea, next_idea
+        self.assertTrue(asks_for_new_idea("Can you change the video idea up ??? It's the same one every time."))
+        self.assertFalse(asks_for_new_idea("Try on haul, or even I'm heading to Vanuatu at the end of the year"))
+        self.assertEqual(next_idea(FASHION_PITCH), "a try-on haul with it as the hero piece")
+        seen = {}
+
+        def fake(pitch, instruction):
+            seen["instruction"] = instruction
+            return {"subject": pitch["subject"], "body": pitch["body"].replace("'one piece, three outfits'", "try-on haul"),
+                    "changed": True}
+        state = self._state("change the video idea up, it's the same one every time")
+        with patch("services.polly_pitch_edit._llm_edit", side_effect=fake):
+            res = tools.run_tool(state, "edit_pitch", {"instruction": "change the video idea up, same one every time"})
+        self.assertEqual(res["status"], "pitch_updated")
+        self.assertIn("try-on haul with it as the hero piece", seen["instruction"])
+
+    def test_edit_after_send_is_refused_honestly(self):
+        sent = {k: FASHION_PITCH[k] for k in ("brand_id", "brand_name", "email", "subject", "body")}
+        sent["sent_at"] = "2026-11-16T16:22:47+00:00"
+        state = self._state("add that I'm a mum of two", outbox_entry=sent)
+        with patch("services.polly_pitch_edit._llm_edit") as llm:
+            res = tools.run_tool(state, "edit_pitch", {"instruction": "add that I'm a mum of two"})
+        llm.assert_not_called()
+        self.assertEqual(res["status"], "already_sent")
+        self.assertEqual(state.notes["pitch_outbox"]["13"]["body"], FASHION_PITCH["body"])
+        self.assertIn("already gone out", template_reply(state))
+
+
+class OneIdeaPerPitchTests(unittest.TestCase):
+    def test_writer_gets_one_rotating_idea(self):
+        from services import pitch_writer as pw
+        payloads = []
+
+        def llm(system, user, max_tokens=0):
+            payloads.append(__import__("json").loads(user))
+            return {"opener": "x"}
+        profile = {"tone": "brief", "style_rules": []}
+        firsts = set()
+        for seed in ("brand-1", "brand-2", "brand-3", "brand-4", "brand-5", "brand-6"):
+            ideas = [pw._pick(pw.IDEA_BANK["fashion"], seed, i) for i in range(3)]
+            pw.write_opener({"brand": "B", "product": "Dress", "structure": "idea_first", "ideas": ideas}, profile, llm=llm)
+            firsts.add(payloads[-1]["video_idea"])
+        self.assertNotIn("idea_suggestions", payloads[-1])
+        self.assertGreater(len(firsts), 1)

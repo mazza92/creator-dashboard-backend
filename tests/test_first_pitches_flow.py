@@ -232,5 +232,8 @@ class SinglePitchSendTests(unittest.TestCase):
     def test_draft_stores_the_pitch_for_send_for_me(self):
         import inspect
         import services.polly_tools as pt
-        src = inspect.getsource(pt.draft_pitch)
-        self.assertIn('state.notes["pitch_outbox"]', src)
+        self.assertIn("remember_outbox(state, pitch, brand_id, fresh=True)", inspect.getsource(pt.draft_pitch))
+        # Every edit path keeps what 'Send for me' sends in step with the card.
+        for fn in (pt.edit_pitch, pt.fix_draft_handle):
+            self.assertIn("remember_outbox(state, updated)", inspect.getsource(fn))
+        self.assertIn('state.notes["pitch_outbox"]', inspect.getsource(pt.remember_outbox))

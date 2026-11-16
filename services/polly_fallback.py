@@ -156,6 +156,9 @@ def template_reply(state: TurnState) -> str:
             return f"Done, the **{brand or 'pitch'}** card above is updated.{future}"
         if status == "no_draft_on_screen":
             return "There's no pitch on screen to change yet. Which brand should I write one for?"
+        if status == "already_sent":
+            return (f"Your **{brand or 'pitch'}** pitch has already gone out, so this edit can't reach them. "
+                    "Want me to use the new angle in the follow-up instead?")
         why = res.get("why_not") or "I couldn't make that change."
         return f"The pitch hasn't changed: {why[:1].lower() + why[1:]}{future}"
     if name == "browse_brands":
