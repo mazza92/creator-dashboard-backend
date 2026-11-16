@@ -983,6 +983,11 @@ def run_autopilot(
             _set(conn, item["id"], status="skipped", error="already_pitched")
             out["skipped"] += 1
             continue
+        from services.gig_autopilot import gig_closed
+        if gig_closed(conn, item.get("pitch_meta")):
+            _set(conn, item["id"], status="skipped", error="gig_closed")
+            out["skipped"] += 1
+            continue
         # One gate for every send (services.deliverability): live domain, verified inbox, never fail open.
         from services.deliverability import MAX_DEFERS, defer_count, gate
         check = gate(conn, bid, item["to_email"], creator_id=cid, verify_fn=verify_fn)

@@ -3037,6 +3037,27 @@ def cron_gifting_sweep():
         conn.close()
 
 
+@polly_bp.route("/cron/close-expired-gigs", methods=["GET", "POST"])
+def cron_close_expired_gigs():
+    """Daily: live briefs (paid UGC gigs / PR offers) past their closes_at become 'closed'."""
+    if not _cron_authorized():
+        return jsonify({"success": False, "error": "unauthorized"}), 401
+    from pr_crm_routes import get_db_connection
+    from services.gig_freshness import close_expired_opportunities
+    dry_run = str(request.args.get("dry_run") or "").lower() in ("1", "true", "yes")
+    conn = get_db_connection()
+    try:
+        ids = close_expired_opportunities(conn, dry_run=dry_run)
+        print(f"[Polly] close-expired-gigs dry_run={dry_run} n={len(ids)} ids={ids[:50]}")
+        return jsonify({"success": True, "dry_run": dry_run, "closed": len(ids), "ids": ids})
+    except Exception as err:
+        conn.rollback()
+        print(f"[Polly] cron close-expired-gigs error: {err}")
+        return jsonify({"success": False, "error": "close run failed"}), 500
+    finally:
+        conn.close()
+
+
 @polly_bp.route("/cron/refresh-profiles", methods=["GET", "POST"])
 def cron_refresh_profiles():
     """Re-scrape a few active creators whose Instagram/TikTok data has gone stale."""

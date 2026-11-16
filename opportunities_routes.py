@@ -994,7 +994,8 @@ def apply_opportunity(opp_id):
         # Get opportunity
         cursor.execute('''
             SELECT id, brand_name, brand_email, brand_website, product_name, status,
-                   spots_total, spots_filled, additional_notes
+                   spots_total, spots_filled, additional_notes,
+                   (closes_at IS NOT NULL AND closes_at <= NOW()) AS expired
             FROM opportunities
             WHERE id = %s
         ''', (opp_id,))
@@ -1005,7 +1006,7 @@ def apply_opportunity(opp_id):
             conn.close()
             return jsonify({'success': False, 'error': 'Opportunity not found'}), 404
 
-        if opp['status'] != 'live':
+        if opp['status'] != 'live' or opp.get('expired'):
             cursor.close()
             conn.close()
             return jsonify({'success': False, 'error': 'This opportunity is no longer active'}), 400

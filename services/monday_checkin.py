@@ -117,6 +117,7 @@ def paid_gig(cur, niches: List[str]) -> Optional[Dict[str, Any]]:
         SELECT id, brand_name, pr_value_usd
         FROM opportunities
         WHERE status = 'live' AND COALESCE(pr_value_usd, 0) > 0
+          AND (closes_at IS NULL OR closes_at > NOW())
           AND COALESCE(published_at, created_at) > NOW() - INTERVAL '14 days'
         ORDER BY (LOWER(COALESCE(brand_category, '')) = ANY(%s)) DESC, COALESCE(published_at, created_at) DESC
         LIMIT 1

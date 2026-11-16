@@ -107,6 +107,28 @@ def pause_stale_paid_gigs(conn, days: int = FRESH_DAYS) -> int:
     return len(rows)
 
 
+def close_expired_opportunities(conn, dry_run: bool = False) -> list:
+    """Live briefs whose closes_at has passed become 'closed'. Returns the ids. Commits unless dry_run."""
+    cursor = conn.cursor()
+    try:
+        if dry_run:
+            cursor.execute(
+                "SELECT id FROM opportunities WHERE status = 'live' AND closes_at IS NOT NULL "
+                "AND closes_at <= NOW() ORDER BY id"
+            )
+        else:
+            cursor.execute(
+                "UPDATE opportunities SET status = 'closed' WHERE status = 'live' AND closes_at IS NOT NULL "
+                "AND closes_at <= NOW() RETURNING id"
+            )
+        ids = sorted(row[0] if not isinstance(row, dict) else row["id"] for row in (cursor.fetchall() or []))
+        if not dry_run:
+            conn.commit()
+        return ids
+    finally:
+        cursor.close()
+
+
 def parse_gig_deadline(value: Any, now: Optional[datetime] = None):
     """Scanner deadline -> date, or None for text like 'ASAP', 'Rolling', 'Ongoing' or a past date.
     Postgres rejects the whole row on a bad date, so anything unclear is dropped, not guessed."""

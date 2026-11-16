@@ -60,6 +60,10 @@
       "schedule": "40 4 * * *"
     },
     {
+      "path": "/api/polly/cron/close-expired-gigs",
+      "schedule": "15 3 * * *"
+    },
+    {
       "path": "/api/brief/cron/send",
       "schedule": "2 * * * *"
     }

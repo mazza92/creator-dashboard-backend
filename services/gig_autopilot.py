@@ -90,6 +90,7 @@ def candidates(conn, creator_id: int, limit: int = 40, now: Optional[datetime] =
                o.pr_brand_id, o.published_at, o.product_name
         FROM opportunities o
         WHERE o.status = 'live'
+          AND (o.closes_at IS NULL OR o.closes_at > NOW())
           AND o.additional_notes LIKE '%%[scanner:%%'
           AND o.additional_notes ~ '\\|\\s*contact=[a-z_]+'
           AND o.brand_email LIKE '%%@%%'
@@ -254,6 +255,18 @@ def queue_gigs(conn, creator_id: int, now: Optional[datetime] = None, per_week: 
             except Exception:
                 pass
     return names
+
+
+def gig_closed(conn, meta: Optional[Dict[str, Any]]) -> bool:
+    """A queued gig pitch whose brief is no longer open (closed, paused, past closes_at, or gone).
+    False for pitches that aren't from a paid gig."""
+    meta = meta if isinstance(meta, dict) else {}
+    if meta.get("origin") != GIG_ORIGIN or not meta.get("gig_id"):
+        return False
+    cur = conn.cursor()
+    cur.execute("""SELECT 1 FROM opportunities WHERE id = %s AND status = 'live'
+                   AND (closes_at IS NULL OR closes_at > NOW())""", (int(meta["gig_id"]),))
+    return cur.fetchone() is None
 
 
 def mark_applied(conn, creator_id: int, meta: Optional[Dict[str, Any]]) -> None:
