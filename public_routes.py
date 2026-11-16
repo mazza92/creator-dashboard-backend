@@ -1124,6 +1124,28 @@ def get_hot_brand_ids():
         return jsonify({'ids': []}), 200
 
 
+@public_bp.route('/ugc-brands', methods=['GET'])
+@scraper_rate_limit
+def get_public_ugc_brands():
+    """Brands with real UGC signals (open brief, creator-style ads, seen running ads in 30 days, confirmed gifting).
+    ?category=<cat> for one hub (best signals first); without it, the categories with enough brands for a hub."""
+    from services.brand_ugc import ugc_hub, ugc_hub_index
+    category = (request.args.get('category') or '').strip().lower()
+    try:
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            data = ugc_hub(cur, category) if category else {'categories': ugc_hub_index(cur)}
+        finally:
+            conn.close()
+        resp = jsonify(data)
+        resp.headers['Cache-Control'] = 'public, max-age=900, s-maxage=3600'
+        return resp, 200
+    except Exception as e:
+        print(f"Error building UGC brands hub: {e}")
+        return jsonify({'error': 'Failed to load UGC brands'}), 500
+
+
 @public_bp.route('/showcase', methods=['GET'])
 @scraper_rate_limit
 def get_public_showcase():

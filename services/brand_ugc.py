@@ -90,3 +90,74 @@ def brand_ugc(cur, brand: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
     return out
+
+
+# --- Category hubs: "<category> brands looking for UGC creators" -------------------------------------------------
+
+HUB_MIN_BRANDS = 10
+HUB_LIMIT = 60
+
+_SIGNALS_SQL = """
+    SELECT b.id, b.brand_name, b.slug, b.logo_url, LOWER(COALESCE(b.category, '')) AS category,
+           (b.source = 'meta_ads_library'
+              AND GREATEST(b.created_at::date, COALESCE(s.ads_last_seen, DATE '1900-01-01')) >= CURRENT_DATE - %(fresh)s)
+              AS hot,
+           CASE WHEN b.source = 'meta_ads_library'
+                THEN GREATEST(b.created_at::date, COALESCE(s.ads_last_seen, DATE '1900-01-01')) END AS seen_on,
+           COALESCE(s.ugc_style, FALSE) AS creator_ads,
+           (to_jsonb(b) ->> 'gifting_confirmed_at') IS NOT NULL AS gifting,
+           EXISTS (SELECT 1 FROM opportunities o WHERE o.pr_brand_id = b.id AND o.status = 'live'
+                     AND (o.closes_at IS NULL OR o.closes_at > NOW())) AS brief
+    FROM pr_brands b LEFT JOIN brand_ad_signals s ON s.brand_id = b.id
+    WHERE COALESCE(b.status, 'published') = 'published' AND NULLIF(TRIM(b.slug), '') IS NOT NULL
+"""
+
+
+def _signal_rows(cur, category: Optional[str] = None) -> List[Dict[str, Any]]:
+    sql = f"SELECT * FROM ({_SIGNALS_SQL}) x WHERE (hot OR creator_ads OR gifting OR brief)"
+    params: Dict[str, Any] = {"fresh": HOT_FRESH_DAYS}
+    if category:
+        sql += " AND category = %(cat)s"
+        params["cat"] = category.lower()
+    cur.execute(sql, params)
+    cols = [d[0] for d in cur.description]
+    return [r if isinstance(r, dict) else dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def _strength(r: Dict[str, Any]):
+    """Open brief > creator-style ads > seen running ads (newest first) > confirmed gifting."""
+    seen = r.get("seen_on")
+    return (not r.get("brief"), not r.get("creator_ads"), not r.get("hot"),
+            -(seen.toordinal() if seen and r.get("hot") else 0), not r.get("gifting"), str(r.get("brand_name") or ""))
+
+
+def ugc_hub(cur, category: str, limit: int = HUB_LIMIT) -> Dict[str, Any]:
+    rows = sorted(_signal_rows(cur, category), key=_strength)
+    brands = [{
+        "name": _clean(r.get("brand_name"), 60),
+        "slug": r.get("slug"),
+        "logo": r.get("logo_url") or None,
+        "hot": bool(r.get("hot")),
+        "seenOn": r["seen_on"].isoformat() if r.get("seen_on") and r.get("hot") else None,
+        "creatorAds": bool(r.get("creator_ads")),
+        "gifting": bool(r.get("gifting")),
+        "brief": bool(r.get("brief")),
+    } for r in rows[:limit]]
+    return {
+        "category": category.lower(),
+        "total": len(rows),
+        "counts": {k: sum(1 for r in rows if r.get(f)) for k, f in
+                   (("hot", "hot"), ("creatorAds", "creator_ads"), ("gifting", "gifting"), ("briefs", "brief"))},
+        "indexable": len(rows) >= HUB_MIN_BRANDS,
+        "brands": brands,
+    }
+
+
+def ugc_hub_index(cur) -> List[Dict[str, Any]]:
+    counts: Dict[str, int] = {}
+    for r in _signal_rows(cur):
+        cat = r.get("category") or ""
+        if cat and cat != "other":
+            counts[cat] = counts.get(cat, 0) + 1
+    return [{"category": c, "total": n} for c, n in sorted(counts.items(), key=lambda kv: -kv[1])
+            if n >= HUB_MIN_BRANDS]
