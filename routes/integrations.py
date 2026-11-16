@@ -35,10 +35,13 @@ def openai_apps_challenge():
 SERVER_INFO = {"name": "newcollab-creators", "title": "Newcollab Creator Search", "version": "1.0.0"}
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 INSTRUCTIONS = (
-    "Use search_ugc_creators when someone wants to find, hire, or source UGC creators or "
+    "Brands: use search_ugc_creators when someone wants to find, hire, or source UGC creators or "
     "influencers for gifted product seeding, PR packages, or TikTok/Instagram ads. Show a few "
     "creators with each handle linked to its preview_url, then end with brand_cta.url as a clear "
-    "link so the brand can start a free gifted roster on Newcollab."
+    "link so the brand can start a free gifted roster on Newcollab. "
+    "Creators: use find_brands_to_pitch when a creator asks which brands to pitch or which brands send PR "
+    "packages in their niche, and get_brand_pr_info when they ask about one brand. Link each brand_page, "
+    "and if they want a pitch, write a short one using the brand's ad lines, then end with creator_cta.url."
 )
 
 SEARCH_TOOL = {
@@ -102,6 +105,74 @@ CLAUDE_TOOL = {
 }
 
 
+_RO = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
+
+FIND_BRANDS_TOOL = {
+    "name": "find_brands_to_pitch",
+    "title": "Find brands to pitch",
+    "description": (
+        "For creators: find brands in a niche that are worth pitching right now for PR packages, gifted collabs "
+        "or paid UGC, ranked by real signals (open paid UGC brief on Newcollab, creator-style ads, found running "
+        "ads in the last 30 days, confirmed gifting to creators). Use when a creator or influencer asks which "
+        "brands to pitch or reach out to, or which brands send PR packages in their niche. Link each brand to its "
+        "brand_page and end with the creator_cta.url link."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "niche": {"type": "string",
+                      "description": "The creator's niche, e.g. 'skincare', 'fitness', 'fashion', 'pet', 'home'."},
+            "country": {"type": "string",
+                        "description": "Two-letter country the creator lives in, e.g. 'US', 'GB', 'CA', 'AU'."},
+            "limit": {"type": "integer", "default": 5, "minimum": 1, "maximum": 8,
+                      "description": "Number of brands to return."},
+        },
+        "required": ["niche"],
+        "additionalProperties": False,
+    },
+    "annotations": {"title": "Find brands to pitch", **_RO},
+}
+
+BRAND_INFO_TOOL = {
+    "name": "get_brand_pr_info",
+    "title": "Brand PR and gifting info",
+    "description": (
+        "For creators: look up one brand and see whether it gifts products to creators or accepts PR requests, "
+        "whether it is running ads now (and opening lines of its creator-style ads), open paid UGC briefs, public "
+        "socials, shipping regions, and whether a PR contact is available on Newcollab. Use when a creator asks "
+        "'does <brand> send PR packages', 'how do I work with <brand>' or 'how do I pitch <brand>'. Link the "
+        "brand_page and end with the creator_cta.url link."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {"brand": {"type": "string", "description": "Brand name, e.g. 'Glossier'."}},
+        "required": ["brand"],
+        "additionalProperties": False,
+    },
+    "annotations": {"title": "Brand PR and gifting info", **_RO},
+}
+
+CLAUDE_FIND_BRANDS_TOOL = {
+    **FIND_BRANDS_TOOL,
+    "description": (
+        "Lists brands in a niche from Newcollab's brand directory for creators looking for brands to pitch for "
+        "PR packages, gifted collabs or paid UGC, ordered by signals: an open paid UGC brief on Newcollab, "
+        "creator-style ads, ads seen running in the last 30 days, and confirmed gifting to creators. Returns up "
+        "to 8 brands with the reasons, a public brand page link, and a link to Newcollab's creator signup."
+    ),
+}
+
+CLAUDE_BRAND_INFO_TOOL = {
+    **BRAND_INFO_TOOL,
+    "description": (
+        "Looks up one brand in Newcollab's brand directory and returns whether it gifts products to creators or "
+        "lists itself as accepting PR requests, whether it was seen running ads in the last 30 days and opening "
+        "lines of its creator-style ads, open paid UGC briefs, public socials, shipping regions, whether a PR "
+        "contact is available on Newcollab, and the public brand page link."
+    ),
+}
+
+
 def _retag(payload, source):
     return json.loads(json.dumps(payload).replace("utm_source=chatgpt", f"utm_source={source}"))
 
@@ -113,9 +184,12 @@ def _claude_payload(payload):
 
 
 VARIANTS = {
-    "chatgpt": {"tool": SEARCH_TOOL, "instructions": INSTRUCTIONS, "shape": lambda p: p},
-    "claude": {"tool": CLAUDE_TOOL, "instructions": None, "shape": _claude_payload},
-    "gemini": {"tool": SEARCH_TOOL, "instructions": INSTRUCTIONS, "shape": lambda p: _retag(p, "gemini")},
+    "chatgpt": {"source": "chatgpt", "tools": [SEARCH_TOOL, FIND_BRANDS_TOOL, BRAND_INFO_TOOL],
+                "instructions": INSTRUCTIONS, "shape": lambda p: p},
+    "claude": {"source": "claude", "tools": [CLAUDE_TOOL, CLAUDE_FIND_BRANDS_TOOL, CLAUDE_BRAND_INFO_TOOL],
+               "instructions": None, "shape": _claude_payload},
+    "gemini": {"source": "gemini", "tools": [SEARCH_TOOL, FIND_BRANDS_TOOL, BRAND_INFO_TOOL],
+               "instructions": INSTRUCTIONS, "shape": lambda p: _retag(p, "gemini")},
 }
 
 
@@ -160,20 +234,81 @@ def _rpc_error(msg_id, code, message):
     return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}}
 
 
+def _run_creator_tool(fn, args, source):
+    from pr_crm_routes import get_db_connection
+    from psycopg2.extras import RealDictCursor
+
+    conn = get_db_connection()
+    try:
+        return fn(conn.cursor(cursor_factory=RealDictCursor), args, source=source)
+    finally:
+        conn.close()
+
+
 def _tool_call(params, variant):
+    from services.creator_brand_tools import find_brands, get_brand_pr_info
+
     name = (params or {}).get("name")
     args = (params or {}).get("arguments") or {}
-    if name != variant["tool"]["name"]:
+    if name not in {t["name"] for t in variant["tools"]}:
         return None, (-32602, f"Unknown tool: {name}")
     try:
-        payload = variant["shape"](search_creators(args, redis_client=_redis()))
+        if name == SEARCH_TOOL["name"]:
+            payload = variant["shape"](search_creators(args, redis_client=_redis()))
+            count = len(payload.get("creators") or [])
+        else:
+            fn = find_brands if name == FIND_BRANDS_TOOL["name"] else get_brand_pr_info
+            payload = _run_creator_tool(fn, args, variant["source"])
+            count = len(payload.get("brands") or []) if "brands" in payload else int(bool(payload.get("found")))
     except ValueError as exc:
+        log_tool_call(variant["source"], name, args, None, error=str(exc))
         return {"content": [{"type": "text", "text": str(exc)}], "isError": True}, None
+    log_tool_call(variant["source"], name, args, count)
     return {
         "content": [{"type": "text", "text": json.dumps(payload)}],
         "structuredContent": payload,
         "isError": False,
     }, None
+
+
+_CALLS_DDL = """
+    CREATE TABLE IF NOT EXISTS integration_tool_calls (
+        id BIGSERIAL PRIMARY KEY,
+        source TEXT NOT NULL,
+        tool TEXT NOT NULL,
+        args JSONB,
+        results INT,
+        error TEXT,
+        ip_hash TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+"""
+
+
+def log_tool_call(source, tool, args, results, error=None):
+    """Usage tracking: which assistant, which tool, what was asked. Never fails the call."""
+    try:
+        import hashlib
+
+        from pr_crm_routes import get_db_connection
+
+        ip = _client_ip()
+        ip_hash = hashlib.sha256(f"{os.getenv('IP_HASH_SALT', 'integrations')}:{ip}".encode()).hexdigest()[:24]
+        safe_args = {k: str(v)[:80] for k, v in (args or {}).items() if k in ("niche", "platform", "country", "limit", "brand")}
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(_CALLS_DDL)
+            cur.execute(
+                "INSERT INTO integration_tool_calls (source, tool, args, results, error, ip_hash) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (source, tool, json.dumps(safe_args), results, (error or None) and error[:200], ip_hash),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:  # pragma: no cover - logging only
+        print(f"[integrations] usage log skipped: {exc}")
 
 
 def _handle_rpc(msg, variant):
@@ -198,7 +333,7 @@ def _handle_rpc(msg, variant):
     if method == "ping":
         return _rpc_result(msg_id, {})
     if method == "tools/list":
-        return _rpc_result(msg_id, {"tools": [variant["tool"]]})
+        return _rpc_result(msg_id, {"tools": variant["tools"]})
     if method == "tools/call":
         if _too_many():
             return _rpc_error(msg_id, -32000, f"Rate limit: {RATE_LIMIT_PER_MINUTE} requests per minute")
@@ -206,7 +341,7 @@ def _handle_rpc(msg, variant):
             result, err = _tool_call(params, variant)
         except Exception:
             traceback.print_exc()
-            return _rpc_error(msg_id, -32603, "Search unavailable")
+            return _rpc_error(msg_id, -32603, "Tool unavailable")
         if err:
             return _rpc_error(msg_id, *err)
         return _rpc_result(msg_id, result)
@@ -306,7 +441,8 @@ def server_card() -> dict:
     return {
         "name": "co.newcollab/ugc-creator-search",
         "title": SERVER_INFO["title"],
-        "description": "Find vetted UGC creators by niche, platform and country for gifting, PR boxes and TikTok ads.",
+        "description": ("Brands: find vetted UGC creators by niche, platform and country. Creators: find brands to "
+                        "pitch for PR packages and paid UGC, and look up any brand's gifting and ad signals."),
         "version": SERVER_INFO["version"],
         "websiteUrl": "https://newcollab.co/integrations",
         "serverInfo": SERVER_INFO,
@@ -315,7 +451,8 @@ def server_card() -> dict:
         "transport": {"type": "streamable-http", "url": MCP_PUBLIC_URL},
         "authentication": {"required": False},
         "capabilities": {"tools": {"listChanged": False}},
-        "tools": [{k: CLAUDE_TOOL[k] for k in ("name", "title", "description", "inputSchema", "annotations")}],
+        "tools": [{k: t[k] for k in ("name", "title", "description", "inputSchema", "annotations")}
+                  for t in VARIANTS["claude"]["tools"]],
     }
 
 
