@@ -40,6 +40,14 @@ def _domain(website):
     return (urlparse(url).hostname or "").lower().removeprefix("www.")
 
 
+def _fresh_page(context, page):
+    try:
+        page.close()
+    except Exception:
+        pass
+    return context.new_page()
+
+
 def main():
     ap = argparse.ArgumentParser(description="Backfill Meta Ad Library signals for meta_ads_library brands")
     ap.add_argument("--limit", type=int, default=100)
@@ -76,11 +84,15 @@ def main():
     from services.meta_ads_library_scraper import _open_browser, _save_browser_state, fetch_brand_ads
 
     done = []
+    crashes = 0
     with sync_playwright() as p:
         browser, context, owns = _open_browser(p, headless=not args.headful, cdp_url=args.cdp)
         page = context.new_page()
         try:
             for i, brand in enumerate(todo, 1):
+                # Ad Library pages are heavy: a fresh tab every 25 brands keeps memory down on small boxes.
+                if i > 1 and (i - 1) % 25 == 0:
+                    page = _fresh_page(context, page)
                 domain = _domain(brand.get("website"))
                 name = brand.get("brand_name") or domain
                 if not domain:
@@ -91,6 +103,13 @@ def main():
                                           max_scroll=args.max_scroll)
                 except Exception as err:
                     print(f"[backfill] {i}/{len(todo)} {name}: fetch failed: {err}")
+                    if "crash" in str(err).lower() or "closed" in str(err).lower():
+                        # A crashed tab stays dead: without a new one every later brand fails too.
+                        crashes += 1
+                        if crashes > 20:
+                            print("[backfill] too many tab crashes, stopping")
+                            break
+                        page = _fresh_page(context, page)
                     continue
                 cards = sig.normalize_cards(got["cards"])
                 if got.get("page_id") is None:
