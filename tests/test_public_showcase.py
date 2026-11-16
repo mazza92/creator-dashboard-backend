@@ -23,6 +23,14 @@ class CleanText(unittest.TestCase):
         self.assertTrue(sc._clean("word " * 100, 20).endswith("…"))
 
 
+class Markers(unittest.TestCase):
+    def test_internal_markers_stripped_from_ad_text(self):
+        from services.meta_ads_signal import ad_body, strip_internal
+        self.assertEqual(strip_internal("Buy 1 Get 1 Free [OUTREACH_SENT 2026-09-08 19:04 UTC]"), "Buy 1 Get 1 Free")
+        self.assertEqual(ad_body("I tried this for 30 days [OUTREACH_SENT 2026-09-08 19:04 UTC]"),
+                         "I tried this for 30 days")
+
+
 class Tidy(unittest.TestCase):
     def test_titles_quotes_pay_and_names(self):
         self.assertEqual(sc._tidy_title("Weight Loss UGC | Hearty ($500"), "Weight Loss UGC | Hearty")
@@ -54,7 +62,7 @@ class Showcase(unittest.TestCase):
             CREATE TABLE ugc_pulse_items (id serial PRIMARY KEY, day date, niche text, kind text, pattern text,
                 text text, why text, score int);
             CREATE TABLE pr_brands (id serial PRIMARY KEY, brand_name text, slug text, category text, logo_url text,
-                source text, status text, contact_email text);
+                source text, status text, contact_email text, created_at timestamp DEFAULT NOW());
             CREATE TABLE brand_ad_signals (brand_id int, ads_last_seen date, ad_library_url text);
         """)
         now = datetime.utcnow()
@@ -76,6 +84,10 @@ class Showcase(unittest.TestCase):
             ('GlowCo', 'glowco', 'Skincare', 'meta_ads_library', 'published', 'pr@glowco.com'),
             ('Draft Co', 'draftco', 'skincare', 'meta_ads_library', 'draft', NULL),
             ('Plain Co', 'plainco', 'fashion', 'manual', 'published', NULL)""")
+        # Found months ago and never re-seen: keeps its page, loses the 🔥.
+        cur.execute("""INSERT INTO pr_brands (brand_name, slug, category, source, status, contact_email, created_at)
+                       VALUES ('Old Find', 'old-find', 'skincare', 'meta_ads_library', 'published', 'x@o.com',
+                               NOW() - INTERVAL '90 days')""")
         cur.execute("INSERT INTO brand_ad_signals (brand_id, ads_last_seen, ad_library_url) VALUES (1, %s, 'https://x')",
                     (today,))
         cls.conn.commit()
@@ -100,7 +112,8 @@ class Showcase(unittest.TestCase):
         self.assertEqual(hooks, {"skincare": "My skin was a mess until this", "fitness": "I tried it for 30 days"})
         self.assertEqual([b["slug"] for b in data["hot_brands"]], ["glowco"])
         self.assertNotIn("ad_library_url", data["hot_brands"][0])
-        self.assertEqual(data["counts"], {"live_gigs": 3, "hot_brands": 1, "brands": 2})
+        self.assertEqual(data["hot_brands"][0]["seen_on"], date.today().isoformat())
+        self.assertEqual(data["counts"], {"live_gigs": 3, "hot_brands": 1, "brands": 3})
 
 
 if __name__ == "__main__":

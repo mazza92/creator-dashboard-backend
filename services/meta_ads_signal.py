@@ -123,8 +123,24 @@ def parse_started(text: Optional[str]) -> Optional[date]:
         return None
 
 
+# Our own bookkeeping that leaked into stored samples via outreach notes ("[OUTREACH_SENT 2026-09-08 19:02 UTC]").
+_INTERNAL_MARKER = re.compile(r"\s*\[[A-Z][A-Z_]{3,}[^\]]*\]")
+
+# 🔥 hot = a Meta-ads brand found, or re-seen, running ads within this many days. Older finds keep their pages but
+# lose the tag until a re-check (scripts/backfill_meta_ad_signals.py) sees their ads again.
+HOT_FRESH_DAYS = 30
+HOT_SEEN_ON_SQL = "GREATEST(b.created_at::date, COALESCE(s.ads_last_seen, DATE '1900-01-01'))"
+HOT_SQL = (f"b.source = 'meta_ads_library' AND COALESCE(b.status, 'published') = 'published' "
+           f"AND {HOT_SEEN_ON_SQL} >= CURRENT_DATE - {HOT_FRESH_DAYS}")
+
+
+def strip_internal(text: Optional[str]) -> str:
+    return re.sub(r"\s+", " ", _INTERNAL_MARKER.sub("", text or "")).strip()
+
+
 def ad_body(text: Optional[str], advertiser: Optional[str] = None) -> str:
     """The ad's own words from a card's innerText, without the Ad Library chrome around them."""
+    text = strip_internal(text) if "[" in (text or "") else text
     lines = []
     for raw in (text or "").splitlines():
         line = raw.strip()
