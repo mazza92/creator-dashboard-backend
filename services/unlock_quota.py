@@ -179,6 +179,17 @@ def count_delivered_unlocks_this_month(cursor, creator_id):
     return max(0, n - pending_send_count(cursor, creator_id))
 
 
+def count_reserved_this_month(cursor, creator_id):
+    """Credits taken this month for the write gate: sent ones plus pitches written in the last 7 days and still
+    waiting to go out. A written pitch holds its credit until it's sent (it's only *spent* then), so 3 unsent
+    first pitches can't open room for 3 more. Pitches left unsent for over a week give their credit back."""
+    cursor.execute(DELIVERED_THIS_MONTH_SQL, (creator_id, creator_id, creator_id))
+    row = cursor.fetchone() or {}
+    n = int(row.get('n') or 0) if isinstance(row, dict) else int(row[0] if row else 0)
+    stale = pending_send_count(cursor, creator_id) - pending_send_count(cursor, creator_id, fresh_only=True)
+    return max(0, n - max(0, stale))
+
+
 # --- Written, not sent yet -------------------------------------------------------------------------------------
 # Free creators: Polly writes a batch of pitches (which creates the unlock / package rows that count as credits),
 # but the credit is only spent when a pitch is sent (Gmail) or taken out (Open email / Copy). Until then the row

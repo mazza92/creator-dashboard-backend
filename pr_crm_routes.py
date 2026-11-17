@@ -4071,6 +4071,7 @@ def generate_pitch():
                     'success': False,
                     'paywall': True,
                     'remaining': 0,
+                    'waiting': unlock_result.get('waiting') or 0,
                     'reset_at': unlock_result.get('reset_at'),
                     'message': "You've used all 3 unlocks this month."
                 }), 402  # Payment Required
@@ -4504,6 +4505,7 @@ def generate_pr_package():
                 'error': 'No PR Packages remaining this month',
                 'paywall': True,
                 'remaining': 0,
+                'waiting': unlock_result.get('waiting') or 0,
             }), 402
         if unlock_result.get('status') == 'error':
             return jsonify({
@@ -7233,6 +7235,7 @@ from services.unlock_quota import (
     FREE_UNLOCK_LIMIT,
     brand_already_delivered,
     count_delivered_unlocks_this_month,
+    count_reserved_this_month,
     free_limit,
     free_unlock_usage,
     sync_free_unlock_remaining,
@@ -7301,7 +7304,9 @@ def attempt_unlock(creator_id, brand_id, conn=None):
             conn.commit()
             return {"status": "unlocked", "credits_used": 0, "remaining": None, "tier": "pro"}
 
-        delivered = count_delivered_unlocks_this_month(cursor, creator_id)
+        # Written-but-unsent pitches hold their credit here (count_reserved_this_month): without that, a free
+        # creator with 3 unsent first pitches could write 3 more, and send all 6.
+        delivered = count_reserved_this_month(cursor, creator_id)
         limit = free_limit(cursor, creator_id)
 
         if delivered >= limit:
@@ -7310,10 +7315,16 @@ def attempt_unlock(creator_id, brand_id, conn=None):
                 f"delivered={delivered}/{limit} this month"
             )
             conn.rollback()
+            try:
+                from services.unlock_quota import pending_send_count
+                waiting = pending_send_count(cursor, creator_id, fresh_only=True)
+            except Exception:
+                waiting = 0
             return {
                 "status": "paywall",
                 "credits_used": 0,
                 "remaining": 0,
+                "waiting": waiting,  # written pitches still holding credits: "send those first", not a paywall
                 "reset_at": None,
                 "debug_db_value": creator.get('unlocks_remaining')
             }

@@ -454,6 +454,16 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     if status == 401:
         state.auth_failed = True
         return {"ok": False, "error": "not authenticated"}
+    if (status == 402 or pkg.get("paywall")) and not followup:
+        # Out of credits only because written pitches are still waiting to go out: send those, no paywall.
+        try:
+            waiting = int(pkg.get("waiting") or 0)
+        except (TypeError, ValueError):
+            waiting = 0
+        if waiting:
+            state.final_say = (f"You have **{waiting} pitch{'es' if waiting != 1 else ''}** written and waiting. "
+                               "Send them first: your free pitches are only used when a pitch goes out.")
+            return {"ok": True, "status": "pitches_waiting", "count": waiting, "brand": brand_name}
     if status == 402 or pkg.get("paywall"):
         state.paywall = True
         state.notes["paywall_brand"] = {"id": brand_id, "name": brand_name}
