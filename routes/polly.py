@@ -2965,6 +2965,48 @@ def pitch_handoff():
             conn.close()
 
 
+@polly_bp.route("/pitch/sent-check", methods=["POST"])
+def pitch_sent_check():
+    """'Did it send?' after Open email / Copy on a pitch card. Yes logs the send (Open email already did, so it's
+    a confirmation) and schedules the day-4/10 follow-ups; Not yet un-logs it, so Polly keeps it as a draft and
+    reminds them instead of asking a brand that never got the email whether they replied."""
+    creator_id, conn, _creator = _creator_auth()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    try:
+        body = request.get_json(silent=True) or {}
+        try:
+            brand_id = int(body.get("brand_id") or 0)
+        except (TypeError, ValueError):
+            brand_id = 0
+        if not brand_id or not isinstance(body.get("sent"), bool):
+            return jsonify({"success": False, "error": "brand_id and sent are required"}), 400
+        sent = body["sent"]
+        name = str(body.get("brand_name") or "").strip()[:120] or None
+        from services.polly_usage import log_usage
+        if sent:
+            newly = _log_send_on_open(conn, creator_id, brand_id, name)
+            outcome = "logged" if newly else "confirmed"
+        else:
+            from services.polly_tracker import apply_lifecycle_intent
+            apply_lifecycle_intent(conn, creator_id, {"intent": "pitch_not_sent", "brand_id": brand_id,
+                                                      "brand": name}, {"id": brand_id, "name": name})
+            stored = load_thread(conn, creator_id)
+            notes = unmark_pitched(dict(stored.get("notes") or {}), {"id": brand_id, "name": name})
+            save_thread(conn, creator_id, messages=stored.get("messages") or [],
+                        suggested=stored.get("suggested_brands") or [], notes=notes)
+            outcome = "not_sent"
+        log_usage(conn, creator_id, "pitch_sent_check", intent="sent" if sent else "not_sent",
+                  meta={"brand_id": brand_id, "method": str(body.get("method") or "")[:20]})
+        return jsonify({"success": True, "outcome": outcome})
+    except Exception as err:
+        print(f"[Polly] sent check failed: {err}")
+        return jsonify({"success": False, "error": "could not save"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
 @polly_bp.route("/cron/autopilot-fill", methods=["GET", "POST"])
 def cron_autopilot_fill():
     """Every 5 minutes: write Autopilot pitches ahead for Pro creators (up to 20 a weekday each). The 15-minute
