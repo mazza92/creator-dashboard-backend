@@ -16,7 +16,7 @@
             <tr><td style="padding:30px 30px 6px;">
               <span style="display:inline-block;background-color:#ff3d8b;background-image:linear-gradient(90deg,#ff3d8b,#ff5a5f);color:#ffffff;font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;padding:6px 12px;border-radius:999px;">&#9733; Pro</span>
               <h1 style="margin:16px 0 8px;font-size:30px;line-height:1.15;font-weight:800;letter-spacing:-.02em;color:#ffffff;">You're Pro, {{ first_name | e }}. Polly's on it. &#128640;</h1>
-              <p style="margin:0;font-size:16px;line-height:1.5;color:#c9ced8;">From today she runs your brand outreach while you make content.</p>
+              <p style="margin:0;font-size:16px;line-height:1.5;color:#c9ced8;">From today she runs everything on autopilot, so you can focus on creating content.</p>
             </td></tr>
 
             {% if picks %}
@@ -41,10 +41,12 @@
             </td></tr>
             {% endif %}
 
-            <tr><td style="padding:24px 30px 0;">
+            {% for section, items in perks %}
+            <tr><td style="padding:{{ '24px' if loop.first else '12px' }} 30px 0;">
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#1f2229;border-radius:16px;">
-                {% for icon, bold, rest in perks %}
-                <tr><td style="padding:{{ '16px' if loop.first else '0' }} 16px {{ '16px' if loop.last else '12px' }};">
+                <tr><td style="padding:14px 16px 4px;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#8a909c;">{{ section }}</td></tr>
+                {% for icon, bold, rest in items %}
+                <tr><td style="padding:8px 16px {{ '16px' if loop.last else '4px' }};">
                   <table role="presentation" cellspacing="0" cellpadding="0"><tr>
                     <td valign="top" style="padding-right:12px;"><span style="display:inline-block;width:30px;height:30px;line-height:30px;text-align:center;border-radius:9px;background-color:#2a2e37;font-size:15px;">{{ icon }}</span></td>
                     <td style="font-size:14.5px;line-height:1.45;color:#c9ced8;padding-top:5px;"><b style="color:#ffffff;">{{ bold }}</b>{{ rest }}</td>
@@ -53,6 +55,7 @@
                 {% endfor %}
               </table>
             </td></tr>
+            {% endfor %}
 
             <tr><td align="center" style="padding:24px 30px 6px;">
               {% if not gmail_connected %}

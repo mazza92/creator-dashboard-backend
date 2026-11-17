@@ -210,9 +210,17 @@ def action_required_email_html(name, amount_label=None, pay_url=None):
 
 
 PRO_PERKS = (
-    ("\U0001F4E8", "New brands pitched every weekday", ", from your own Gmail"),
-    ("\U0001F501", "Follow-ups on day 4 and day 10", ", sent for you"),
-    ("\U0001F4AC", "Replies answered", ": Polly drafts your answer, rates included"),
+    # (section, [(icon, bold, rest)]): everything Polly now runs on autopilot.
+    ("Outreach on autopilot", (
+        ("\U0001F4E8", "Brands pitched every weekday", ", from your own Gmail"),
+        ("\U0001F501", "Follow-ups on day 4 and day 10", ", sent for you"),
+        ("\U0001F4AC", "Replies answered", ": Polly drafts your answer, rates included"),
+    )),
+    ("Scanned for you every day", (
+        ("\U0001F525", "Hot brands", ": brands running UGC ads right now, added to your pitches"),
+        ("\U0001F4B8", "Paid UGC gigs", ": every new paid gig, gathered in one place"),
+        ("\u2600\ufe0f", "Your daily brief", ": what got done, what's next, and how close you are to your goal"),
+    )),
 )
 
 
