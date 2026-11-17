@@ -229,12 +229,12 @@ def activation_email_context(name, picks=None, gmail_connected=False):
     first = (name or "there").strip() or "there"
     picks = (picks or [])[:3]
     if gmail_connected:
-        subject = "You're Pro \U0001F680 Polly starts pitching today"
-        preheader = "Your first brands are lined up. Follow-ups and replies are on Polly now."
+        subject = "You're Pro \U0001F680 Polly's on it"
+        preheader = "Pitches, follow-ups, hot brands, paid gigs. You just create."
         action_text = "See this week's pitches \u2192"
     else:
-        subject = "You're Pro \U0001F680 One step and Polly starts pitching"
-        preheader = "Connect Gmail and Polly sends your first pitches today."
+        subject = "You're Pro \U0001F680 One tap to go live"
+        preheader = "Connect Gmail and Polly starts pitching today."
         action_text = "Connect Gmail \u2192"
     return {
         "subject": subject, "preheader": preheader, "first_name": first, "picks": picks,
