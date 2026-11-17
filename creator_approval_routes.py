@@ -24,6 +24,15 @@ def init_approval_routes(db_connection_func):
 # USER ENDPOINTS - Creator Approval Status
 # =============================================================================
 
+def mask_email(email):
+    """liv.g@gmail.com -> liv***@gmail.com: enough to recognise, not to copy."""
+    email = (email or '').strip()
+    if '@' not in email:
+        return None
+    local, domain = email.split('@', 1)
+    return f"{local[:3]}***@{domain}" if local else None
+
+
 @creator_approval_bp.route('/api/user/approval-status', methods=['GET'])
 def get_approval_status():
     """
@@ -41,8 +50,9 @@ def get_approval_status():
         # Get creator's approval data
         cursor.execute("""
             SELECT c.id, c.approval_status, c.approval_queue_position, c.waitlist_joined_at,
-                   c.rejection_reason, c.created_at
+                   c.rejection_reason, c.created_at, u.first_name, u.email
             FROM creators c
+            LEFT JOIN users u ON u.id = c.user_id
             WHERE c.user_id = %s
         """, (user_id,))
 
@@ -89,7 +99,13 @@ def get_approval_status():
         if queue_position:
             estimated_days = max(1, queue_position // 20)
 
+        applied = creator.get('waitlist_joined_at') or creator.get('created_at')
         return jsonify({
+            # The waitlist page shows a review tracker, not a queue number: approvals go by profile quality,
+            # not sign-up order. queue_position / estimated_wait_days stay for older clients.
+            "first_name": (creator.get('first_name') or '').strip() or None,
+            "email_masked": mask_email(creator.get('email')),
+            "applied_at": applied.isoformat() if applied else None,
             "post_nudge": post_nudge,
             "status": creator['approval_status'],
             "queue_position": queue_position,
