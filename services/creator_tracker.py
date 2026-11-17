@@ -676,6 +676,18 @@ def has_pitched(conn, creator_id: int) -> bool:
     return bool(row and row[0])
 
 
+def has_drafted(conn, creator_id: int) -> bool:
+    """Polly has written at least one pitch for this creator (polly_drafts)."""
+    cur = conn.cursor()
+    cur.execute("SELECT to_regclass('polly_drafts') IS NOT NULL")
+    row = cur.fetchone()
+    if not (row and row[0]):
+        return False
+    cur.execute("SELECT EXISTS (SELECT 1 FROM polly_drafts WHERE creator_id = %s)", (creator_id,))
+    row = cur.fetchone()
+    return bool(row and row[0])
+
+
 def in_first_run(conn, creator_id: int, notes: Optional[Dict[str, Any]] = None) -> bool:
     """Until the creator picks how to start (or sends a pitch), Polly shows the welcome instead of notes."""
     try:
@@ -684,6 +696,11 @@ def in_first_run(conn, creator_id: int, notes: Optional[Dict[str, Any]] = None) 
         # Stored as a milestone (not only in thread notes): the pitch-writing turn that starts right after the
         # choice saves the thread with its own copy of the notes, which would drop a notes-only flag.
         if "first_run_done" in milestones(conn, creator_id):
+            return False
+        # A creator who already has a pitch drafted is past the welcome, even if it went out through their mail
+        # app (not counted by has_pitched) or hasn't gone out yet. Treating them as new hid their pitches behind
+        # the welcome and dropped every email link ("Send my <brand> pitch") on arrival.
+        if has_drafted(conn, creator_id):
             return False
         return not has_pitched(conn, creator_id)
     except Exception:
