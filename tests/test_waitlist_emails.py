@@ -52,5 +52,38 @@ class TestWaitlistEmails(unittest.TestCase):
         self.assertIn('&lt;script&gt;', ctx['message'])
 
 
+class TestEmailLogo(unittest.TestCase):
+    def _resp(self, status=200, ctype='image/png', length='5000'):
+        from unittest.mock import MagicMock
+        r = MagicMock(status_code=status)
+        r.headers = {'Content-Type': ctype, 'Content-Length': length}
+        return r
+
+    def test_logo_checks(self):
+        from unittest.mock import patch
+        from waitlist_emails import email_logo
+        self.assertIsNone(email_logo(None))
+        self.assertIsNone(email_logo('http://x.test/a.png'))
+        self.assertIsNone(email_logo('https://x.test/logo.svg?v=1'))
+        with patch('requests.get', return_value=self._resp()):
+            self.assertEqual(email_logo('https://x.test/a.png'), 'https://x.test/a.png')
+        for bad in (self._resp(status=404), self._resp(ctype='text/html'), self._resp(ctype='image/svg+xml'),
+                    self._resp(length='120')):
+            with patch('requests.get', return_value=bad):
+                self.assertIsNone(email_logo('https://x.test/a.png'))
+        with patch('requests.get', side_effect=TimeoutError()):
+            self.assertIsNone(email_logo('https://x.test/a.png'))
+
+    def test_no_header_logo_and_initials_fallback(self):
+        from email_cron_routes import render_email_template
+        picks = {'brands': [{'brand_id': 1, 'brand_name': 'Rare Beauty', 'logo': None, 'initials': 'RB',
+                             'color': '#1f2937'}]}
+        html, _ = render_email_template('a@example.com', 'approved_email.html',
+                                        waitlist_email_context('approved', 'Ana', picks=picks, extra=picks))
+        self.assertNotIn('newcollab-logo', html)
+        self.assertIn('>RB<', html)
+        self.assertNotIn('<img', html)
+
+
 if __name__ == '__main__':
     unittest.main()

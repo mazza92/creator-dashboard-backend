@@ -21,6 +21,31 @@ def _initials(name):
     return ((words[0][0] + words[1][0]) if len(words) > 1 else (words[0][:2] if words else '?')).upper()
 
 
+def email_logo(url, timeout=3):
+    """A brand logo an inbox will actually show, or None (the email then shows the brand's initials).
+    Email clients can't fall back on a broken image, so check it at send time: https, a raster image
+    (Gmail and Outlook don't render SVG), served with a 200, and not a tiny favicon-sized file."""
+    url = str(url or '').strip()
+    if not url.startswith('https://') or '.svg' in url.lower().split('?')[0]:
+        return None
+    try:
+        import requests
+        resp = requests.get(url, timeout=timeout, stream=True, allow_redirects=True,
+                            headers={'User-Agent': 'Mozilla/5.0 (compatible; NewcollabMailer/1.0)'})
+        try:
+            ctype = (resp.headers.get('Content-Type') or '').split(';')[0].strip().lower()
+            if resp.status_code != 200 or not ctype.startswith('image/') or 'svg' in ctype or 'icon' in ctype:
+                return None
+            size = int(resp.headers.get('Content-Length') or 0)
+            if size and size < 400:
+                return None
+        finally:
+            resp.close()
+        return url
+    except Exception:
+        return None
+
+
 def approved_pick_url(pick):
     """The approval email's button. With a pick it opens Polly on that brand: a creator still on the first-run
     welcome sees the welcome with that brand leading it (the frontend never posts a pitch over the welcome);
@@ -58,10 +83,14 @@ def approved_picks(user_id=None, creator_id=None, limit=3):
             _plan(conn, cid, dict(creator))
         payload = first_run_payload(conn, cid) or {}
         conn.commit()
+        top = (payload.get('brands') or [])[:limit]
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=max(1, len(top))) as pool:  # checked side by side: ~3s worst case
+            logos = list(pool.map(lambda b: email_logo(b.get('logo')), top))
         brands = [{
-            'brand_id': int(b['brand_id']), 'brand_name': b.get('brand_name') or 'Brand', 'logo': b.get('logo') or None,
+            'brand_id': int(b['brand_id']), 'brand_name': b.get('brand_name') or 'Brand', 'logo': logos[i],
             'initials': _initials(b.get('brand_name')), 'color': _MONO_COLORS[i % len(_MONO_COLORS)],
-        } for i, b in enumerate((payload.get('brands') or [])[:limit])]
+        } for i, b in enumerate(top)]
         niches = [str(n).replace('_', ' ').lower() for n in (payload.get('niches') or [])][:2]
         return {'first_name': (creator.get('first_name') or '').strip(), 'brands': brands,
                 'niche': ' and '.join(niches)}
