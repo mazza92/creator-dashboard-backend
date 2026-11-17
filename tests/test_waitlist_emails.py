@@ -34,13 +34,14 @@ class TestWaitlistEmails(unittest.TestCase):
 
     def test_approved_template_renders(self):
         from email_cron_routes import render_email_template
-        picks = {'brands': [{'brand_id': 1, 'brand_name': 'Alpha', 'logo': 'https://x.test/a.png', 'initials': 'AL',
+        picks = {'brands': [{'brand_id': 1, 'brand_name': 'Alpha', 'logo': {'url': 'https://x.test/a.png', 'width': 90,
+                                                                       'height': 30}, 'initials': 'AL',
                              'color': '#1f2937'},
                             {'brand_id': 2, 'brand_name': 'Beta', 'logo': None, 'initials': 'BE', 'color': '#b4436c'}]}
         ctx = waitlist_email_context('approved', '<b>Ana</b>', picks=picks, extra=picks)
         html, _ = render_email_template('a@example.com', 'approved_email.html', ctx)
         self.assertIn("You're in, &lt;b&gt;Ana&lt;/b&gt;!", html)
-        self.assertIn('https://x.test/a.png', html)
+        self.assertIn('src="https://x.test/a.png" alt="" width="90" height="30"', html)
         self.assertIn('>BE<', html)
         self.assertIn('Send my first pitch', html)
         bare, _ = render_email_template('a@example.com', 'approved_email.html', waitlist_email_context('approved', 'Ana'))
@@ -53,11 +54,25 @@ class TestWaitlistEmails(unittest.TestCase):
 
 
 class TestEmailLogo(unittest.TestCase):
-    def _resp(self, status=200, ctype='image/png', length='5000'):
+    @staticmethod
+    def _png(w, h):
+        import struct
+        return b'\x89PNG\r\n\x1a\n' + b'\x00\x00\x00\rIHDR' + struct.pack('>II', w, h) + b'\x08\x06\x00\x00\x00'
+
+    def _resp(self, status=200, ctype='image/png', body=None):
         from unittest.mock import MagicMock
         r = MagicMock(status_code=status)
-        r.headers = {'Content-Type': ctype, 'Content-Length': length}
+        r.headers = {'Content-Type': ctype}
+        r.iter_content.return_value = [body if body is not None else self._png(400, 120)]
         return r
+
+    def test_logo_fit_never_upscales(self):
+        from waitlist_emails import logo_fit
+        self.assertEqual(logo_fit((400, 120)), (96, 29))   # wide wordmark: fits the width
+        self.assertEqual(logo_fit((300, 300)), (36, 36))   # square: fits the height
+        self.assertEqual(logo_fit((60, 30)), (60, 30))     # small: natural size, not stretched
+        self.assertIsNone(logo_fit((32, 16)))              # too small to read
+        self.assertIsNone(logo_fit(None))
 
     def test_logo_checks(self):
         from unittest.mock import patch
@@ -66,9 +81,9 @@ class TestEmailLogo(unittest.TestCase):
         self.assertIsNone(email_logo('http://x.test/a.png'))
         self.assertIsNone(email_logo('https://x.test/logo.svg?v=1'))
         with patch('requests.get', return_value=self._resp()):
-            self.assertEqual(email_logo('https://x.test/a.png'), 'https://x.test/a.png')
+            self.assertEqual(email_logo('https://x.test/a.png'), {'url': 'https://x.test/a.png', 'width': 96, 'height': 29})
         for bad in (self._resp(status=404), self._resp(ctype='text/html'), self._resp(ctype='image/svg+xml'),
-                    self._resp(length='120')):
+                    self._resp(body=self._png(20, 20)), self._resp(body=b'not an image')):
             with patch('requests.get', return_value=bad):
                 self.assertIsNone(email_logo('https://x.test/a.png'))
         with patch('requests.get', side_effect=TimeoutError()):
