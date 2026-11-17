@@ -21,10 +21,67 @@ def _initials(name):
     return ((words[0][0] + words[1][0]) if len(words) > 1 else (words[0][:2] if words else '?')).upper()
 
 
+LOGO_BOX = (96, 36)      # the tile's logo area, in CSS px
+LOGO_MIN = (48, 24)      # smaller than this on both sides blurs or vanishes: show initials instead
+
+
+def image_size(head):
+    """(width, height) from the first bytes of a PNG, GIF, JPEG or WebP; None when unknown."""
+    import struct
+    try:
+        if head[:8] == b'\x89PNG\r\n\x1a\n':
+            return struct.unpack('>II', head[16:24])
+        if head[:6] in (b'GIF87a', b'GIF89a'):
+            return struct.unpack('<HH', head[6:10])
+        if head[:4] == b'RIFF' and head[8:12] == b'WEBP':
+            kind = head[12:16]
+            if kind == b'VP8X':
+                return (1 + int.from_bytes(head[24:27], 'little'), 1 + int.from_bytes(head[27:30], 'little'))
+            if kind == b'VP8 ':
+                w, h = struct.unpack('<HH', head[26:30])
+                return (w & 0x3fff, h & 0x3fff)
+            if kind == b'VP8L':
+                b = int.from_bytes(head[21:25], 'little')
+                return ((b & 0x3fff) + 1, ((b >> 14) & 0x3fff) + 1)
+        if head[:2] == b'\xff\xd8':
+            i = 2
+            while i + 9 < len(head):
+                if head[i] != 0xFF:
+                    i += 1
+                    continue
+                marker = head[i + 1]
+                if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+                    i += 2
+                    continue
+                length = struct.unpack('>H', head[i + 2:i + 4])[0]
+                if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+                    h, w = struct.unpack('>HH', head[i + 5:i + 9])
+                    return (w, h)
+                i += 2 + length
+    except Exception:
+        return None
+    return None
+
+
+def logo_fit(size):
+    """Display size inside LOGO_BOX that keeps the aspect ratio and never scales a logo up (upscaling is
+    what made small logos blurry). None when the logo is too small to read: initials then."""
+    if not size or not size[0] or not size[1]:
+        return None
+    w, h = size
+    if w < LOGO_MIN[0] and h < LOGO_MIN[1]:
+        return None
+    scale = min(LOGO_BOX[0] / w, LOGO_BOX[1] / h, 1.0)
+    dw, dh = max(1, round(w * scale)), max(1, round(h * scale))
+    if dw < 28 and dh < 16:
+        return None
+    return dw, dh
+
+
 def email_logo(url, timeout=3):
-    """A brand logo an inbox will actually show, or None (the email then shows the brand's initials).
-    Email clients can't fall back on a broken image, so check it at send time: https, a raster image
-    (Gmail and Outlook don't render SVG), served with a 200, and not a tiny favicon-sized file."""
+    """A brand logo an inbox will show cleanly: {'url', 'width', 'height'} or None (initials instead).
+    Email clients can't fall back on a broken image, so it's checked at send time: https, a 200, a raster
+    image (Gmail and Outlook don't render SVG), and big enough to stay sharp at its display size."""
     url = str(url or '').strip()
     if not url.startswith('https://') or '.svg' in url.lower().split('?')[0]:
         return None
@@ -36,12 +93,17 @@ def email_logo(url, timeout=3):
             ctype = (resp.headers.get('Content-Type') or '').split(';')[0].strip().lower()
             if resp.status_code != 200 or not ctype.startswith('image/') or 'svg' in ctype or 'icon' in ctype:
                 return None
-            size = int(resp.headers.get('Content-Length') or 0)
-            if size and size < 400:
-                return None
+            head = b''
+            for chunk in resp.iter_content(8192):
+                head += chunk
+                if len(head) >= 65536 or image_size(head):
+                    break
         finally:
             resp.close()
-        return url
+        fit = logo_fit(image_size(head))
+        if not fit:
+            return None
+        return {'url': url, 'width': fit[0], 'height': fit[1]}
     except Exception:
         return None
 

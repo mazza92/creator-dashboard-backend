@@ -32,7 +32,7 @@
                       <td width="{{ (100 / picks|length)|int }}%" align="center" valign="top" style="padding:0 4px;">
                         <div style="background-color:#ffffff;border-radius:12px;height:56px;line-height:56px;text-align:center;">
                           {% if b.logo %}
-                          <img src="{{ b.logo | e }}" alt="" width="80" style="max-width:80px;max-height:40px;vertical-align:middle;">
+                          <img src="{{ b.logo.url | e }}" alt="" width="{{ b.logo.width }}" height="{{ b.logo.height }}" style="display:inline-block;width:{{ b.logo.width }}px;height:{{ b.logo.height }}px;border:0;vertical-align:middle;">
                           {% else %}
                           <span style="display:inline-block;width:36px;height:36px;line-height:36px;border-radius:50%;background-color:{{ b.color }};color:#ffffff;font-size:13px;font-weight:800;vertical-align:middle;">{{ b.initials }}</span>
                           {% endif %}
