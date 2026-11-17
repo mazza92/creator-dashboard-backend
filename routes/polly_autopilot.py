@@ -468,12 +468,61 @@ def _pick_brands(conn, creator_id, creator, notes, scrape, limit=POOL_SIZE):
     )
     brands = filter_brands_by_prefs(drop_pitched(brands, notes, extra_ids=exclude), notes)
     brands = [b for b in brands if _fit(b) >= MIN_FIT]
+    brands = _rank_by_reach(conn, brands, (creator or {}).get("followers_count"))
     # Country is not a matching signal: Autopilot pitches every niche brand, whatever its shipping regions.
     emailable = _brands_with_email(conn, [int(b["id"]) for b in brands if b.get("id")])
     matched = [b for b in brands if b.get("id") and int(b["id"]) in emailable]
     matched = _targets_first(conn, creator_id, matched, exclude, notes)
     matched = _planned_first(conn, creator_id, matched)
     return matched, None if matched else "no_matches"
+
+
+IN_REACH = 1.25   # a brand asking for 2,000 followers is still in reach of a creator with 1,600
+STRETCH = 5.0     # up to 5x the creator's size: worth a try once in-reach brands are used up
+SMALL_CREATOR = 10000
+
+
+def _rank_by_reach(conn, brands, followers):
+    """Order matches so the brands most likely to reply to THIS creator go first, without dropping any (the pool
+    keeps its size; out-of-reach brands just wait at the back):
+      1. in reach: no minimum follower ask, or one within 1.25x the creator's followers;
+      2. stretch: asks up to 5x their size;
+      3. out of reach: Lancome asking 50k pitched by a 1.9k creator.
+    Within a tier, for creators under 10k, brands seen working with creators (confirmed gifting or
+    creator-style ads) go first; otherwise the match order is kept."""
+    try:
+        followers = int(followers or 0)
+    except (TypeError, ValueError):
+        followers = 0
+    ids = [int(b["id"]) for b in brands if b.get("id")]
+    if followers <= 0 or not ids:
+        return brands
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT b.id, b.min_followers,
+                   (b.gifting_confirmed_at IS NOT NULL OR COALESCE(s.ugc_style, FALSE)) AS works_with_creators
+            FROM pr_brands b LEFT JOIN brand_ad_signals s ON s.brand_id = b.id
+            WHERE b.id = ANY(%s)
+        """, (ids,))
+        facts = {int(r[0]): (r[1], bool(r[2])) for r in cur.fetchall()}
+    except Exception as err:
+        print(f"[Polly autopilot] reach ranking skipped: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return brands
+
+    def key(item):
+        i, b = item
+        min_f, works = facts.get(int(b["id"]) if b.get("id") else -1, (None, False))
+        need = int(min_f or 0)
+        tier = 0 if need <= followers * IN_REACH else 1 if need <= followers * STRETCH else 2
+        proven = 0 if (works and followers < SMALL_CREATOR) else 1
+        return (tier, proven, i)
+
+    return [b for _, b in sorted(enumerate(brands), key=key)]
 
 
 def _planned_first(conn, creator_id, matched):
@@ -651,7 +700,7 @@ def _load_creator(conn, creator_id):
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute(
         """
-        SELECT c.id, c.user_id, c.niche, c.creator_niches,
+        SELECT c.id, c.user_id, c.niche, c.creator_niches, c.followers_count,
                to_jsonb(c) -> 'shipping_address' AS shipping_address, to_jsonb(c) -> 'regions' AS regions,
                u.first_name, u.last_name, u.country
         FROM creators c
