@@ -12,9 +12,6 @@
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#faf7f2;">
     <tr><td align="center" style="padding:28px 14px;">
       <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:520px;">
-        <tr><td style="padding:0 4px 18px;">
-          <img src="https://newcollab.co/newcollab-logo-dark.png" alt="Newcollab" width="112" style="max-width:112px;">
-        </td></tr>
         <tr><td style="background-color:#ffffff;border:1px solid #efe9df;border-radius:22px;overflow:hidden;">
           <div style="height:6px;line-height:6px;font-size:6px;background-color:#ff3d8b;background-image:linear-gradient(90deg,#72e1d7,#ff3d8b,#ff5a5f);">&nbsp;</div>
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
@@ -35,7 +32,7 @@
                       <td width="{{ (100 / picks|length)|int }}%" align="center" valign="top" style="padding:0 4px;">
                         <div style="background-color:#ffffff;border-radius:12px;height:56px;line-height:56px;text-align:center;">
                           {% if b.logo %}
-                          <img src="{{ b.logo | e }}" alt="{{ b.brand_name | e }}" width="80" style="max-width:80px;max-height:40px;vertical-align:middle;">
+                          <img src="{{ b.logo | e }}" alt="" width="80" style="max-width:80px;max-height:40px;vertical-align:middle;">
                           {% else %}
                           <span style="display:inline-block;width:36px;height:36px;line-height:36px;border-radius:50%;background-color:{{ b.color }};color:#ffffff;font-size:13px;font-weight:800;vertical-align:middle;">{{ b.initials }}</span>
                           {% endif %}
