@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ subject }}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#faf7f2;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;color:#12141a;">
+  {% if preheader %}
+  <div style="display:none;font-size:1px;color:#faf7f2;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;">{{ preheader | e }}</div>
+  {% endif %}
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#faf7f2;">
+    <tr><td align="center" style="padding:28px 14px;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:520px;">
+        <tr><td style="padding:0 4px 18px;">
+          <img src="https://newcollab.co/newcollab-logo-dark.png" alt="Newcollab" width="112" style="max-width:112px;">
+        </td></tr>
+        <tr><td style="background-color:#ffffff;border:1px solid #efe9df;border-radius:22px;overflow:hidden;">
+          <div style="height:6px;line-height:6px;font-size:6px;background-color:#ff3d8b;background-image:linear-gradient(90deg,#72e1d7,#ff3d8b,#ff5a5f);">&nbsp;</div>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+            <tr><td style="padding:30px 30px 8px;">
+              <span style="display:inline-block;background-color:#e9fbf8;color:#0f766e;font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:6px 11px;border-radius:999px;">&#10003; {{ badge }}</span>
+              <h1 style="margin:16px 0 8px;font-size:30px;line-height:1.15;font-weight:800;letter-spacing:-.02em;color:#12141a;">You're in, {{ first_name | safe }}! &#127881;</h1>
+              <p style="margin:0;font-size:16px;line-height:1.5;color:#3a3f4b;">Brands pay creators like you for UGC. Let's land your first one.</p>
+            </td></tr>
+
+            {% if picks %}
+            <tr><td style="padding:20px 30px 4px;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#15171c;border-radius:16px;">
+                <tr><td style="padding:18px 14px 16px;">
+                  <div style="padding:0 4px;font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#72e1d7;">Polly's first picks for you</div>
+                  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:12px;">
+                    <tr>
+                      {% for b in picks %}
+                      <td width="{{ (100 / picks|length)|int }}%" align="center" valign="top" style="padding:0 4px;">
+                        <div style="background-color:#ffffff;border-radius:12px;height:56px;line-height:56px;text-align:center;">
+                          {% if b.logo %}
+                          <img src="{{ b.logo | e }}" alt="{{ b.brand_name | e }}" width="80" style="max-width:80px;max-height:40px;vertical-align:middle;">
+                          {% else %}
+                          <span style="display:inline-block;width:36px;height:36px;line-height:36px;border-radius:50%;background-color:{{ b.color }};color:#ffffff;font-size:13px;font-weight:800;vertical-align:middle;">{{ b.initials }}</span>
+                          {% endif %}
+                        </div>
+                        <div style="color:#ffffff;font-size:12.5px;font-weight:600;margin-top:7px;line-height:1.3;">{{ b.brand_name | e }}</div>
+                      </td>
+                      {% endfor %}
+                    </tr>
+                  </table>
+                  <div style="padding:0 4px;color:#a7adb8;font-size:12.5px;margin-top:12px;">{{ picks_note }}</div>
+                </td></tr>
+              </table>
+            </td></tr>
+            {% endif %}
+
+            <tr><td style="padding:20px 30px 0;">
+              <table role="presentation" cellspacing="0" cellpadding="0" style="font-size:15px;line-height:1.4;color:#12141a;">
+                {% for n, bold, rest in [('1', 'Pick a brand', " you'd love to work with"), ('2', 'Polly writes your pitch', ' in your voice'), ('3', 'Send it', ', and Polly follows up for you')] %}
+                <tr>
+                  <td valign="top" style="padding:0 12px {{ '0' if loop.last else '10px' }} 0;"><span style="display:inline-block;width:24px;height:24px;line-height:24px;text-align:center;border-radius:50%;background-color:#ffe3ee;color:#ff3d8b;font-weight:800;font-size:13px;">{{ n }}</span></td>
+                  <td style="padding:2px 0 {{ '0' if loop.last else '10px' }};"><b>{{ bold }}</b>{{ rest }}</td>
+                </tr>
+                {% endfor %}
+              </table>
+            </td></tr>
+
+            <tr><td align="center" style="padding:26px 30px 8px;">
+              <a href="{{ action_url }}" style="display:block;background-color:#ff3d8b;background-image:linear-gradient(90deg,#ff3d8b,#ff5a5f);color:#ffffff;text-decoration:none;font-weight:800;font-size:16px;padding:16px 20px;border-radius:14px;">{{ action_text }}</a>
+              <div style="font-size:13px;color:#6b7280;margin-top:10px;">{{ fine_print }}</div>
+            </td></tr>
+
+            <tr><td style="padding:18px 30px 26px;">
+              <div style="border-top:1px solid #f0ebe3;padding-top:16px;font-size:14px;line-height:1.5;color:#3a3f4b;">Can't wait to see your first collab &#128140;<br><b style="color:#12141a;">Polly</b>, your Newcollab manager</div>
+            </td></tr>
+          </table>
+        </td></tr>
+        <tr><td align="center" style="padding:18px 10px;font-size:12px;line-height:1.6;color:#8a8f99;">
+          <a href="mailto:team@newcollab.co" style="color:#8a8f99;text-decoration:underline;">Help</a>
+          {% if unsubscribe_url %}&nbsp;&middot;&nbsp;<a href="{{ unsubscribe_url }}" style="color:#8a8f99;text-decoration:underline;">Unsubscribe</a>{% endif %}
+          <br>&copy; 2026 Newcollab Ltd &middot; <a href="https://newcollab.co/privacy-policy" style="color:#8a8f99;text-decoration:underline;">Privacy Policy</a>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>

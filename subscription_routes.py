@@ -1309,6 +1309,7 @@ def stripe_webhook():
                             email=user_row.get('email'),
                             name=updated_creator.get('username') if updated_creator else 'there',
                             as_pro=True,
+                            creator_id=creator_id,
                         )
 
             conn.commit()

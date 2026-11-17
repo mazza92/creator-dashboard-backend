@@ -62,9 +62,14 @@ class TestSendTemplateEmail(unittest.TestCase):
 class TestWaitlistEmails(unittest.TestCase):
     def test_approved_copy_is_polly_first(self):
         ctx = waitlist_emails.waitlist_email_context('approved', 'Ema')
-        self.assertIn('Polly', ctx['subject'])
-        self.assertNotIn('chip=', ctx['action_url'])  # a chip would skip the new creator's first-run welcome
+        self.assertIn('first brands', ctx['subject'])
+        self.assertNotIn('chip=', ctx['action_url'])  # no pick: plain Polly, the first-run welcome runs
         self.assertNotIn('browse', ctx['message'])
+        picks = {'brands': [{'brand_id': 7, 'brand_name': 'Dew'}]}
+        linked = waitlist_emails.waitlist_email_context('approved', 'Ema', picks=picks)['action_url']
+        # Only pitch_brand: during first run the frontend keeps the welcome and leads its deck with this brand
+        # (PollyFirstRun.test.js); any other chip is dropped there too.
+        self.assertIn('chip=pitch_brand&brand_id=7', linked)
 
     def test_status_emails_reach_waitlisted_creators_with_tags(self):
         with patch('email_cron_routes.send_template_email', return_value=(True, None)) as send:
