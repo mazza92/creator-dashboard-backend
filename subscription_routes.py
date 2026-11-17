@@ -1350,14 +1350,12 @@ def stripe_webhook():
             send_pro_subscriber_notification(creator_data, tier, amount_total, interval)
 
             if user_row and user_row.get('email') and not is_trial:
-                from services.subscription_retention import activation_email_html
-                _send_creator_resend(
-                    user_row.get('email'),
-                    'Pro is on — send 5 applications this week',
-                    activation_email_html(
-                        updated_creator.get('username') if updated_creator else None
-                    ),
+                from services.subscription_retention import activation_email
+                welcome_subject, welcome_html = activation_email(
+                    creator_id=creator_id,
+                    name=updated_creator.get('username') if updated_creator else None,
                 )
+                _send_creator_resend(user_row.get('email'), welcome_subject, welcome_html)
 
         elif event['type'] == 'checkout.session.expired':
             from services.checkout_recovery import handle_expired_session
