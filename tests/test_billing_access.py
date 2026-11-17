@@ -123,3 +123,55 @@ class OnPaymentFailedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CancelledTrialTests(unittest.TestCase):
+    """A free trial cancelled before its end date ends now: no Pro for the rest of the trial."""
+
+    def setUp(self):
+        self.conn = MagicMock()
+        self.creator = {"id": 7, "subscription_tier": "pro", "unlocks_tier": "free", "subscription_status": "trialing",
+                        "past_due_since": None, "pro_locked_at": None}
+
+    def test_detects_cancelled_trial_only(self):
+        self.assertTrue(ba.cancelled_trial({"status": "trialing", "cancel_at_period_end": True}))
+        self.assertTrue(ba.cancelled_trial({"status": "trialing", "cancel_at": 1795397654}))
+        self.assertFalse(ba.cancelled_trial({"status": "trialing", "cancel_at_period_end": False}))
+        self.assertFalse(ba.cancelled_trial({"status": "active", "cancel_at_period_end": True}))
+
+    def test_reconcile_ends_the_trial_in_stripe_and_downgrades(self):
+        stripe = MagicMock()
+        sub = {"id": "sub_9", "status": "trialing", "cancel_at_period_end": True}
+        self.assertEqual(ba.apply_status(self.conn, stripe, self.creator, sub, NOW), "trial_ended")
+        stripe.Subscription.cancel.assert_called_once_with("sub_9")
+        sql, args = self.conn.cursor.return_value.execute.call_args[0]
+        self.assertIn("subscription_tier = 'free'", sql)
+        self.assertIn("cancel_at_period_end = FALSE", sql)
+        self.assertEqual(args, (7,))
+
+    def test_live_trial_is_untouched(self):
+        stripe = MagicMock()
+        with patch.object(ba, "restore") as restore:
+            self.assertEqual(ba.apply_status(self.conn, stripe, self.creator,
+                                             {"id": "sub_9", "status": "trialing", "cancel_at_period_end": False}, NOW), "ok")
+        stripe.Subscription.cancel.assert_not_called()
+        restore.assert_not_called()
+
+    def test_paying_member_who_cancels_keeps_pro_to_period_end(self):
+        stripe = MagicMock()
+        self.creator["subscription_status"] = "active"
+        self.assertEqual(ba.apply_status(self.conn, stripe, self.creator,
+                                         {"id": "sub_9", "status": "active", "cancel_at_period_end": True}, NOW), "ok")
+        stripe.Subscription.cancel.assert_not_called()
+
+    def test_stripe_failure_leaves_the_account_alone(self):
+        stripe = MagicMock()
+        stripe.Subscription.cancel.side_effect = RuntimeError("stripe down")
+        self.assertFalse(ba.end_cancelled_trial(self.conn, stripe, "sub_9", 7))
+        self.conn.cursor.return_value.execute.assert_not_called()
+
+    def test_already_cancelled_in_stripe_still_downgrades(self):
+        stripe = MagicMock()
+        stripe.Subscription.cancel.side_effect = RuntimeError("No such subscription: 'sub_9'")
+        self.assertTrue(ba.end_cancelled_trial(self.conn, stripe, "sub_9", 7))
+        self.conn.cursor.return_value.execute.assert_called_once()
