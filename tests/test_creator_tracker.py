@@ -337,6 +337,15 @@ class TrackerDb(unittest.TestCase):
         self.assertTrue(all(b["offer"] in ("paid", "gifted") for b in fr["brands"]))
         gs = ct.getting_started(self.conn, 7)
         self.assertEqual((gs["goal"], gs["pitched"], gs["calendar"], gs["show"]), (True, False, False, True))
+        from services.polly_alerts import ensure_alert_tables
+        ensure_alert_tables(self.conn)
+        self.assertTrue(ct.in_first_run(self.conn, 7, {}))
+        cur.execute("INSERT INTO polly_drafts (creator_id, brand_id, brand_name, drafted_at) VALUES (7, 1, 'Glow', NOW())")
+        self.conn.commit()
+        self.assertFalse(ct.in_first_run(self.conn, 7, {}))                  # a pitch was drafted: past the welcome
+        cur.execute("DELETE FROM polly_drafts WHERE creator_id = 7")
+        self.conn.commit()
+        self.assertTrue(ct.in_first_run(self.conn, 7, {}))
         self._queue(1, "sent", sent_days_ago=1)
         self.assertFalse(ct.in_first_run(self.conn, 7, {}))                  # a pitch went out
         ct.mark_milestone(self.conn, 7, "calendar_seen")
