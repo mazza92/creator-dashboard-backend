@@ -8,10 +8,10 @@ from services import subscription_retention as sr
 class ProWelcome(unittest.TestCase):
     def test_context_by_gmail_state(self):
         off = sr.activation_email_context('Ana', [], gmail_connected=False)
-        self.assertIn('One tap to go live', off['subject'])
+        self.assertIn('connect Gmail', off['subject'])
         self.assertIn('Connect Gmail', off['action_text'])
         on = sr.activation_email_context('Ana', [], gmail_connected=True)
-        self.assertIn("Polly's on it", on['subject'])
+        self.assertIn('now working for you', on['subject'])
         self.assertTrue(on['action_url'].endswith('/creator/dashboard/for-you'))
 
     def test_render_escapes_and_shows_picks(self):
