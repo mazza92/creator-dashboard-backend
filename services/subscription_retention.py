@@ -209,18 +209,74 @@ def action_required_email_html(name, amount_label=None, pay_url=None):
     """
 
 
+PRO_PERKS = (
+    # (section, [(icon, bold, rest)]): everything Polly now runs on autopilot.
+    ("Outreach on autopilot", (
+        ("\U0001F4E8", "Brands pitched every weekday", ", from your own Gmail"),
+        ("\U0001F501", "Follow-ups on day 4 and day 10", ", sent for you"),
+        ("\U0001F4AC", "Replies answered", ": Polly drafts your answer, rates included"),
+    )),
+    ("Scanned for you every day", (
+        ("\U0001F525", "Hot brands", ": brands running UGC ads right now, added to your pitches"),
+        ("\U0001F4B8", "Paid UGC gigs", ": every new paid gig, gathered in one place"),
+        ("\u2600\ufe0f", "Your daily brief", ": what got done, what's next, and how close you are to your goal"),
+    )),
+)
+
+
+def activation_email_context(name, picks=None, gmail_connected=False):
+    """The Pro welcome: who they are now, this week's first brands, what Polly does, one next step."""
+    first = (name or "there").strip() or "there"
+    picks = (picks or [])[:3]
+    if gmail_connected:
+        subject = "\u2705 Pro is set: Polly is now working for you"
+        preheader = "Pitches, follow-ups, hot brands, paid gigs. You just create."
+        action_text = "See this week's pitches \u2192"
+    else:
+        subject = "\u2705 Pro is set: connect Gmail so Polly starts working for you"
+        preheader = "Connect Gmail and Polly starts pitching today."
+        action_text = "Connect Gmail \u2192"
+    return {
+        "subject": subject, "preheader": preheader, "first_name": first, "picks": picks,
+        "perks": PRO_PERKS, "gmail_connected": bool(gmail_connected),
+        "action_url": discover_url(), "action_text": action_text, "billing_url": settings_url(),
+    }
+
+
+def activation_email(creator_id=None, name=None):
+    """(subject, html) for the Pro welcome, with this creator's first name, first brands and Gmail state.
+    Every lookup is best effort: the email still renders with just a name."""
+    picks, gmail = {}, False
+    try:
+        from waitlist_emails import approved_picks
+        picks = approved_picks(creator_id=creator_id) if creator_id else {}
+    except Exception as err:
+        print(f"[retention] pro welcome picks skipped: {err}")
+    if creator_id:
+        conn = None
+        try:
+            from pr_crm_routes import get_db_connection
+            from services import polly_autopilot as pa
+            conn = get_db_connection()
+            gmail = bool(pa.gmail_connected_at(conn, int(creator_id)))
+        except Exception as err:
+            print(f"[retention] pro welcome gmail check skipped: {err}")
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    ctx = activation_email_context(picks.get("first_name") or name, picks.get("brands"), gmail)
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+    templates = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates")
+    env = Environment(loader=FileSystemLoader(templates), autoescape=select_autoescape(["html"]))
+    return ctx["subject"], env.get_template("pro_welcome_email.html").render(**ctx)
+
+
 def activation_email_html(name):
-    who = name or "there"
-    url = discover_url()
-    return f"""
-    <p style="margin:0 0 16px;">Hey {who},</p>
-    <p style="margin:0 0 16px;">Pro is on. From now on Polly pitches <strong>3 new brands for you every weekday</strong>, from your Gmail, with follow-ups on day 4 and day 10.</p>
-    <p style="margin:0 0 16px;">To start today: open Polly, <strong>connect Gmail</strong> and publish your kit. She sends the first pitches as soon as Gmail is connected. When a brand replies, she writes your answer, with your ad usage rate.</p>
-    <p style="margin:0 0 16px;">Roster applications are unlimited too.</p>
-    <p style="margin:0 0 16px;">Brands usually take <strong>2–4 weeks</strong> to reply — silence in week one is normal, not a sign it failed.</p>
-    <p style="margin:0 0 16px;"><a href="{url}">Open my Monday board</a></p>
-    <p style="margin:0;">If a card fails later, we will email you before Pro turns off.</p>
-    """
+    """Kept for older callers: the Pro welcome without picks or Gmail state."""
+    return activation_email(name=name)[1]
 
 
 def _feature_get(obj, key):
