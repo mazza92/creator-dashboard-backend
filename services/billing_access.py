@@ -175,6 +175,39 @@ def on_payment_succeeded(conn, creator_id: int, ends_at: Optional[datetime] = No
     restore(conn, creator_id, "active", ends_at)
 
 
+def cancelled_trial(sub: Any) -> bool:
+    """A free trial the creator cancelled: Stripe keeps it 'trialing' until the trial date, we end it now."""
+    return (_get(sub, "status") == "trialing") and stripe_cancel_scheduled(sub)
+
+
+def end_cancelled_trial(conn, stripe_client, subscription_id: Optional[str], creator_id: Optional[int] = None) -> bool:
+    """End a cancelled free trial today: cancel it in Stripe (nothing was paid, nothing to refund) and switch the
+    creator back to Free. Without this, a creator who cancels on day 1 keeps Pro for the rest of the trial."""
+    if not subscription_id and not creator_id:
+        return False
+    if subscription_id:
+        try:
+            try:
+                stripe_client.Subscription.cancel(subscription_id)
+            except AttributeError:  # older stripe-python
+                stripe_client.Subscription.delete(subscription_id)
+        except Exception as err:
+            if "no such subscription" not in str(err).lower() and "canceled" not in str(err).lower():
+                print(f"[billing] could not end trial {subscription_id}: {err}")
+                return False
+    cur = conn.cursor()
+    where, arg = ("id = %s", creator_id) if creator_id else ("stripe_subscription_id = %s", subscription_id)
+    cur.execute(
+        f"""UPDATE creators SET subscription_tier = 'free', unlocks_tier = 'free', subscription_status = 'canceled',
+                   subscription_ends_at = NOW(), cancel_at_period_end = FALSE
+            WHERE {where}""",
+        (arg,),
+    )
+    conn.commit()
+    print(f"[billing] cancelled trial ended now: sub={subscription_id} creator={creator_id}")
+    return True
+
+
 def apply_status(conn, stripe_client, creator: Dict[str, Any], sub: Any, now: Optional[datetime] = None) -> str:
     """Bring one creator in line with their Stripe subscription. Returns the action taken."""
     from services.subscription_retention import period_end_datetime
@@ -183,6 +216,9 @@ def apply_status(conn, stripe_client, creator: Dict[str, Any], sub: Any, now: Op
     status = _get(sub, "status") or "canceled"
     ends_at = period_end_datetime(sub) if sub is not None else None
     is_pro = (creator.get("subscription_tier") or "").lower() == "pro" or creator.get("unlocks_tier") == "pro"
+    if cancelled_trial(sub):
+        if end_cancelled_trial(conn, stripe_client, _get(sub, "id"), cid):
+            return "trial_ended"
     if status in LIVE:
         if _get(sub, "pause_collection") or creator.get("subscription_status") == "paused":
             return "paused"  # a retention pause switches Pro off on purpose; retention_context owns it
@@ -242,7 +278,7 @@ def reconcile(conn, stripe_client, limit: int = 200, now: Optional[datetime] = N
         else:
             action = apply_status(conn, stripe_client, row, sub, now)
         out["actions"][action] = out["actions"].get(action, 0) + 1
-        if action in ("locked", "restored"):
+        if action in ("locked", "restored", "trial_ended"):
             out["changed"].append({"creator_id": row["id"], "action": action})
     return out
 

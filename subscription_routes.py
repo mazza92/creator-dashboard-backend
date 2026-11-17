@@ -1157,6 +1157,21 @@ def cancel_flow_confirm():
                 'ends_at': None,
                 'message': 'Your subscription is cancelled. We won\'t try your card again.',
             })
+        if (creator.get('subscription_status') or '') == 'trialing':
+            # A free trial: nothing paid, so it ends today instead of keeping Pro until the trial date.
+            from services.billing_access import end_cancelled_trial
+            if not end_cancelled_trial(conn, stripe, creator['stripe_subscription_id'], creator['id']):
+                return jsonify({'error': 'Could not cancel your trial. Try again.'}), 500
+            log_retention_event(cursor, creator['id'], reason, None, 'canceled',
+                                context={**(ctx or {}), 'trial_cancel': True})
+            conn.commit()
+            return jsonify({
+                'success': True,
+                'cancel_scheduled': False,
+                'canceled_now': True,
+                'ends_at': None,
+                'message': 'Your free trial is cancelled and you won\'t be charged. You\'re back on the Free plan.',
+            })
         sub = stripe.Subscription.modify(
             creator['stripe_subscription_id'],
             cancel_at_period_end=True,
@@ -1398,7 +1413,11 @@ def stripe_webhook():
                 print(f"[billing] cancel flag sync skipped: {err}")
                 conn.rollback()
             cursor = conn.cursor()
-            if should_downgrade_on_status(status):
+            from services.billing_access import cancelled_trial, end_cancelled_trial
+            if cancelled_trial(subscription):
+                # Cancelled during the free trial (here or in Stripe's portal): end it now, back to Free.
+                end_cancelled_trial(conn, stripe, subscription_id)
+            elif should_downgrade_on_status(status):
                 cursor.execute('''
                     UPDATE creators
                     SET subscription_tier = 'free',
