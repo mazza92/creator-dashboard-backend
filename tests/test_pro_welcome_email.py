@@ -19,7 +19,7 @@ class ProWelcome(unittest.TestCase):
             {'brand_id': 1, 'brand_name': 'Glow & Co', 'logo': None, 'initials': 'GC', 'color': '#1f2937'}]}
         with patch('waitlist_emails.approved_picks', return_value=picks):
             subject, html = sr.activation_email(creator_id=None, name='fallback')
-        self.assertIn("You're Pro", subject)
+        self.assertIn('Pro is set', subject)
         self.assertIn('fallback', html)  # no creator id: no lookup, the given name
         with patch('waitlist_emails.approved_picks', return_value=picks), \
                 patch('pr_crm_routes.get_db_connection', side_effect=RuntimeError('no db')):
