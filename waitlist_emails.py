@@ -82,14 +82,14 @@ def waitlist_email_context(kind, name, reason=None, as_pro=False, picks=None, ex
     if kind == 'joined':
         return {
             'subject': "You're on the Newcollab waitlist",
-            'preheader': 'We review every profile by hand. You will get an email when you are in.',
+            'preheader': 'Most approvals happen within 24 hours. We will email you the moment you are in.',
             'action_url': f'{WAITLIST_APP_URL}/creator/waitlist',
             'action_text': 'Check your waitlist',
             'message': (
                 f'<p>Hi {safe_name},</p>'
                 f'<p>Your creator profile is in the review queue. We look at every application by hand '
                 f'so brands only hear from real, active creators.</p>'
-                f'<p>Approvals go in order, a few days on average. We will email you the moment you are in, '
+                f'<p>Most approvals happen within 24 hours. We will email you the moment you are in, '
                 f'and in the meantime show you the brands already lined up for your niche.</p>'
                 f'<p>Pro members skip the line and get in today.</p>'
             ),
