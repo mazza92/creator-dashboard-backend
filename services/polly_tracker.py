@@ -637,6 +637,29 @@ def has_open_followups(conn, creator_id: int, brand_id: Optional[int]) -> bool:
     return bool(_open_tasks(conn, creator_id, ["follow_up_due", "pitch_sent"], brand_id))
 
 
+def mark_pipeline_pitched(conn, creator_id: int, brand_id: int) -> None:
+    """A sent pitch shows as pitched on the Tracker (it reads creator_pipeline): set pitched_at and
+    send_confirmed, and move a 'saved' row to 'pitched'. Never moves a brand back from a later stage."""
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO creator_pipeline (creator_id, brand_id, stage, pitched_at, send_confirmed, created_at, updated_at)
+            VALUES (%(c)s, %(b)s, 'pitched', NOW(), TRUE, NOW(), NOW())
+            ON CONFLICT (creator_id, brand_id) DO UPDATE SET
+                pitched_at = COALESCE(creator_pipeline.pitched_at, NOW()),
+                send_confirmed = TRUE,
+                stage = CASE WHEN COALESCE(creator_pipeline.stage, 'saved') = 'saved' THEN 'pitched'
+                             ELSE creator_pipeline.stage END,
+                updated_at = NOW()
+        """, {"c": creator_id, "b": int(brand_id)})
+    except Exception as err:
+        print(f"[Polly tracker] pipeline mark skipped creator={creator_id} brand={brand_id}: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
 def record_pitch_sent(
     conn,
     creator_id: int,
@@ -652,6 +675,8 @@ def record_pitch_sent(
         brand_id = _int(brand.get("id") or brand.get("brand_id"))
         name = str(brand.get("name") or brand.get("brand_name") or "this brand").strip()
     print(f"[Polly tracker] pitch_sent creator={creator_id} brand_id={brand_id} name={name!r} drafted={drafted}")
+    if brand_id and not drafted:
+        mark_pipeline_pitched(conn, creator_id, brand_id)
     existing = _open_tasks(conn, creator_id, ["follow_up_due"], brand_id) if brand_id else []
     parent = create_task(
         conn, creator_id, "pitch_sent", brand_id=brand_id,

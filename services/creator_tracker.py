@@ -869,7 +869,18 @@ def _manual_pitches(conn, creator_id: int) -> List[Dict[str, Any]]:
                    FROM creator_pipeline cp JOIN pr_brands b ON b.id = cp.brand_id
                    WHERE cp.creator_id = %s AND (cp.pitched_at IS NOT NULL OR cp.send_confirmed IS TRUE)
                    ORDER BY cp.brand_id, cp.id DESC""", (creator_id,))
-    return [dict(r) for r in cur.fetchall()]
+    rows = [dict(r) for r in cur.fetchall()]
+    # Pitches sent before sends marked the pipeline (Polly's Gmail send, "Did it send? Yes"): the pitch_sent event
+    # is the record, so they show as pitched too.
+    have = {int(r["brand_id"]) for r in rows}
+    cur.execute("""SELECT DISTINCT ON (e.brand_id) e.brand_id, b.brand_name, b.logo_url AS logo, b.category,
+                          e.occurred_at AS pitched_at, 0 AS follow_up_count, 0 AS followup_count,
+                          NULL::timestamp AS expected_delivery, NULL::timestamp AS content_deadline
+                   FROM polly_timeline_events e JOIN pr_brands b ON b.id = e.brand_id
+                   WHERE e.creator_id = %s AND e.event_type = 'pitch_sent' AND e.brand_id IS NOT NULL
+                   ORDER BY e.brand_id, e.occurred_at""", (creator_id,))
+    rows += [dict(r) for r in cur.fetchall() if int(r["brand_id"]) not in have]
+    return rows
 
 
 def _reply_events(conn, creator_id: int) -> Dict[int, Dict[str, Any]]:
