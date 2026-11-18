@@ -659,6 +659,27 @@ def draft_pitch_batch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "status": "no_brands",
                 "explain": "Those brands are already pitched or gone. Offer new matches."}
 
+    # Swap (first-pitches review): one unsent pitch in the stored batch is replaced by a pitch for a new brand. The
+    # old pitch's credit comes back first, the other pitches (and the creator's edits) stay as they are.
+    replace = _int(args.get("replace"))
+    swap_from: Optional[Dict[str, Any]] = None
+    if replace:
+        stored_items = [i for i in ((state.notes.get("pitch_batch") or {}).get("items") or []) if isinstance(i, dict)]
+        swap_from = next((i for i in stored_items if _int(i.get("brand_id")) == replace and not i.get("sent_at")), None)
+        if not swap_from:
+            return {"ok": False, "status": "swap_missing", "explain": "That pitch is already sent or gone."}
+        rows = rows[:1]
+        try:
+            from services.unlock_quota import release_unsent
+            release_unsent(state.db().cursor(), state.creator_id, replace)
+            state.db().commit()
+        except Exception as err:
+            print(f"[Polly] swap release skipped: {err}")
+            try:
+                state.db().rollback()
+            except Exception:
+                pass
+
     # Free: a pitch's credit is spent when it's sent, not when it's written (unlock_quota credit_pending_send).
     # So write at most as many new pitches as credits left, minus pitches already written and waiting.
     free = not (R._unlock_balance(state.creator_id) or {}).get("is_unlimited")
@@ -751,6 +772,25 @@ def draft_pitch_batch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
             i["meta_ads"] = i["brand_id"] in meta
     except Exception as err:
         print(f"[Polly] meta tag skipped: {err}")
+    if swap_from is not None:
+        new_item = items[0]
+        stored = state.notes.get("pitch_batch") or {}
+        merged = [_stored_batch_item(new_item) if _int(i.get("brand_id")) == replace else i
+                  for i in (stored.get("items") or []) if isinstance(i, dict)]
+        state.notes["pitch_batch"] = {**stored, "items": merged}
+        shown = []
+        for i in merged:
+            if i.get("sent_at"):
+                continue
+            row = batch_item({**i, "mailto": build_mailto(i.get("email"), i.get("subject") or "", i.get("body") or "")
+                              if i.get("email") else None})
+            row["meta_ads"] = bool(i.get("meta_ads"))
+            shown.append(row)
+        state.pitch_batch = shown
+        state.final_say = (f"Swapped **{swap_from.get('brand_name') or 'that brand'}** for "
+                           f"**{new_item['brand_name']}**. Here's the new pitch.")
+        return {"ok": True, "status": "swapped", "brand": new_item["brand_name"]}
+
     state.pitch_batch = items
     state.notes["pitch_batch"] = {
         "at": datetime.now(timezone.utc).isoformat(),
