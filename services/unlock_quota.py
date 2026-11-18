@@ -236,6 +236,22 @@ def mark_pending_send(cursor, creator_id, brand_ids):
                        "ON CONFLICT (creator_id, brand_id) DO UPDATE SET created_at = NOW()", (creator_id, int(bid)))
 
 
+def release_unsent(cursor, creator_id, brand_id):
+    """Swap on the first pitches: a written-but-unsent pitch is dropped, so its credit comes back (its unlock and
+    package rows this month go, with the pending mark). Only for pitches still pending: never undoes a sent one."""
+    if not _pending_ready(cursor):
+        return False
+    cursor.execute("DELETE FROM credit_pending_send WHERE creator_id = %s AND brand_id = %s",
+                   (creator_id, int(brand_id)))
+    if not cursor.rowcount:
+        return False
+    cursor.execute("DELETE FROM brand_unlocks WHERE creator_id = %s AND brand_id = %s "
+                   "AND unlocked_at >= date_trunc('month', NOW())", (creator_id, int(brand_id)))
+    cursor.execute("DELETE FROM pr_packages WHERE creator_id = %s AND brand_id = %s "
+                   "AND generated_at >= date_trunc('month', NOW())", (creator_id, int(brand_id)))
+    return True
+
+
 def charge_pending(cursor, creator_id, brand_ids):
     """The pitch left Polly (sent or taken out): its credit now counts."""
     if not brand_ids or not _pending_ready(cursor):

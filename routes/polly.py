@@ -2286,7 +2286,8 @@ def _run_chip(state, action, chip_id, data):
         state.final_say = _apply_suggested_rates(state)
         return prior
     elif action == "pitch_batch":
-        call = ("draft_pitch_batch", {"brand_ids": list(data.get("brand_ids") or [])[:3]})
+        call = ("draft_pitch_batch", {"brand_ids": list(data.get("brand_ids") or [])[:3],
+                                      **({"replace": data["replace_brand_id"]} if data.get("replace_brand_id") else {})})
     elif action == "show_brands":
         call = ("show_brands", {"brand_ids": list(data.get("brand_ids") or [])[:6]})
     elif action == "pitch_targets":
@@ -2822,6 +2823,39 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
     finally:
         if conn:
             conn.close()
+
+
+@polly_bp.route("/pitch-batch/edit", methods=["POST"])
+def pitch_batch_edit():
+    """Inline edit on a written, unsent batch pitch (first-pitches review): saved server-side, so the send (and a
+    Gmail connect round trip) uses the creator's words."""
+    from services.polly_memory import load_thread, save_notes
+    creator_id, conn, _creator = _creator_auth()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    try:
+        body = request.get_json(silent=True) or {}
+        brand_id = str(body.get("brand_id") or "")
+        text = str(body.get("body") or "").strip()
+        subject = body.get("subject")
+        if not brand_id.isdigit() or not text:
+            return jsonify({"success": False, "error": "brand_id and body required"}), 400
+        if len(text) > 5000 or (subject is not None and len(str(subject)) > 200):
+            return jsonify({"success": False, "error": "too long"}), 400
+        notes = load_thread(conn, creator_id).get("notes") or {}
+        batch = notes.get("pitch_batch") if isinstance(notes.get("pitch_batch"), dict) else {}
+        items = [i for i in (batch.get("items") or []) if isinstance(i, dict)]
+        hit = next((i for i in items if str(i.get("brand_id")) == brand_id and not i.get("sent_at")), None)
+        if not hit:
+            return jsonify({"success": False, "error": "not_found"}), 404
+        hit["body"] = text
+        if subject is not None and str(subject).strip():
+            hit["subject"] = str(subject).strip()
+        notes["pitch_batch"] = {**batch, "items": items}
+        save_notes(conn, creator_id, notes)
+        return jsonify({"success": True})
+    finally:
+        conn.close()
 
 
 @polly_bp.route("/pitch-batch/send", methods=["POST"])
