@@ -461,6 +461,27 @@ def approve(conn, creator_id: int, item_ids: List[int], now: Optional[datetime] 
     return out
 
 
+def sent_last_24h(conn, creator_id: int, now: Optional[datetime] = None) -> int:
+    """Pitches that went out from this creator's Gmail in the last 24 hours (Autopilot and chat sends alike)."""
+    now = now or utc_now()
+    cur = _cursor(conn)
+    cur.execute("SELECT COUNT(*) AS n FROM polly_autopilot_queue WHERE creator_id = %s AND sent_at >= %s",
+                (creator_id, now - timedelta(hours=24)))
+    row = cur.fetchone() or {}
+    return int((row.get("n") if isinstance(row, dict) else row[0]) or 0)
+
+
+def send_room_today(conn, creator_id: int, now: Optional[datetime] = None) -> int:
+    """How many more new pitches may leave this Gmail in the next send: MAX_SENDS_PER_DAY in any 24 hours, the
+    same ceiling Autopilot uses, so tapping send in chat can't push 160 pitches out of a personal Gmail in a day."""
+    return max(0, MAX_SENDS_PER_DAY - sent_last_24h(conn, creator_id, now))
+
+
+# A follow-up that fails this many times in a row is cancelled instead of retried on every cron run.
+FOLLOWUP_MAX_FAILS = 3
+_FU_FAIL_RE = re.compile(r"^followup_failed:(\d+)")
+
+
 def gmail_connected_at(conn, creator_id: int) -> Optional[datetime]:
     cur = _cursor(conn)
     cur.execute("SELECT connected_at FROM polly_gmail_accounts WHERE creator_id = %s AND revoked_at IS NULL",
@@ -1095,10 +1116,29 @@ def run_autopilot(
         else:
             mail = compose_followup(names["first"], name, item["subject"], wave=wave)
         try:
-            send(conn, cid, item["to_email"], mail["subject"], mail["body"], from_name=names["full"],
-                 thread_id=item.get("thread_id") or "", in_reply_to=item.get("message_id") or "")
+            try:
+                send(conn, cid, item["to_email"], mail["subject"], mail["body"], from_name=names["full"],
+                     thread_id=item.get("thread_id") or "", in_reply_to=item.get("message_id") or "")
+            except GmailError as err:
+                # The original thread is gone from their Gmail (deleted / archived away): Gmail answers "Requested
+                # entity was not found". Send it as a fresh message rather than retrying the dead thread forever.
+                if item.get("thread_id") and "not found" in str(err).lower() and not err.revoked:
+                    send(conn, cid, item["to_email"], mail["subject"], mail["body"], from_name=names["full"])
+                else:
+                    raise
         except GmailError as err:
-            _set(conn, item["id"], error=str(err)[:300])
+            if err.revoked:  # reconnecting Gmail picks these back up
+                _set(conn, item["id"], error=str(err)[:300], followup_due_at=now + timedelta(hours=20))
+                out["failed"] += 1
+                continue
+            m = _FU_FAIL_RE.match(item.get("error") or "")
+            fails = (int(m.group(1)) if m else 0) + 1
+            fields: Dict[str, Any] = {"error": f"followup_failed:{fails} {err}"[:300]}
+            if fails >= FOLLOWUP_MAX_FAILS:
+                fields["followup_status"] = "cancelled"
+            else:
+                fields["followup_due_at"] = now + timedelta(hours=20)
+            _set(conn, item["id"], **fields)
             out["failed"] += 1
             continue
         allowed = item.get("followups") if item.get("followups") is not None else DEFAULT_FOLLOWUPS

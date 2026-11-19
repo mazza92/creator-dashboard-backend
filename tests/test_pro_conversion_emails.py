@@ -276,7 +276,7 @@ class TestTrialOfferInApp(unittest.TestCase):
         self.assertEqual(trial["task_chips"][0]["label"], "Start my free week")
         control = credits_out_offer_message("Ana", balance, None, {})
         self.assertIn("**Pro ($19/mo)**", control["content"])
-        self.assertIn("**3 new brands pitched for you every weekday**", control["content"])
+        self.assertIn("**Up to 20 brand pitches daily**", control["content"])
         self.assertNotIn("free for 7 days", control["content"])
         self.assertEqual(control["task_chips"][0]["label"], "Keep pitching for me · $19/mo")
 

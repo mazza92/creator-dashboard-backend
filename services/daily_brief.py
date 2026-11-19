@@ -645,7 +645,7 @@ def done_block(c: Dict[str, Any]) -> str:
         locked = int(free.get("locked") or 0)
         upsell = (f'<div style="font-size:13.5px;color:{MUTED};line-height:1.5;">{_plural(locked, "more brand is", "more brands are")} '
                   f'lined up for you. On <a href="{escape(upgrade_link("brief_locked"), quote=True)}" style="color:{INK};'
-                  f'font-weight:700;">Pro ($19/mo)</a> Polly pitches them from your Gmail every weekday.</div>') if locked else ""
+                  f'font-weight:700;">Pro ($19/mo)</a> Polly pitches them from your Gmail: up to 20 brand pitches daily.</div>') if locked else ""
         if not (rows or upsell):
             return ""
         return _section((_kicker("✉️ Ready to send") + rows if rows else "") + upsell)

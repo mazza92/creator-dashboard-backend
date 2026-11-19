@@ -2155,7 +2155,7 @@ def _pitch_targets_call(state, prior):
         state.final_say = (
             f"Here are your **{_saved_label(n)}**, ready to pitch.\n\n"
             "Your free pitches are used this month. On **Pro ($19/mo)** I pitch all of them first, from your "
-            "Gmail, then keep going with new brands every weekday, up to 20 a day.")
+            "Gmail, then keep going: up to 20 brand pitches daily.")
         state.add_chips([{"id": "unlock_pro", "action": "unlock_pro",
                           "label": f"Pitch my {_saved_label(n)} · $19/mo"}])
         return None
@@ -2653,6 +2653,14 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
         creator = creator or {}
         from_name = " ".join(p for p in (creator.get("first_name"), creator.get("last_name")) if p).strip()
         results, revoked = [], False
+        # One daily ceiling for everything that leaves their Gmail (Autopilot uses the same one).
+        try:
+            from services.polly_autopilot import send_room_today
+            room = send_room_today(conn, creator_id)
+        except Exception as err:
+            print(f"[Polly] send cap check skipped: {err}")
+            conn.rollback()
+            room = None
         # Free: pitches written but not sent yet cost their credit now, when they go out.
         pending_ids, charged, limit = set(), 0, 0
         if not _creator_is_pro(conn, creator_id):
@@ -2676,6 +2684,8 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
                 status = "needs_pro"
             elif not item.get("email"):
                 status = "no_inbox"
+            elif room is not None and room <= 0:
+                status = "daily_cap"
             elif False:
                 status = "needs_location"
             elif revoked:
@@ -2694,6 +2704,8 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
                                           item.get("body") or "", from_name=from_name)
                     item["sent_at"] = utc_iso_now()
                     item["thread_id"] = (sent_ids or {}).get("thread_id") or ""
+                    if room is not None:
+                        room -= 1
                     if bid_int in pending_ids:
                         try:
                             from services.unlock_quota import charge_pending
@@ -2755,6 +2767,13 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
         if held:
             lines.append(f"{', '.join(held[:3])} {'is' if len(held) == 1 else 'are'} written and waiting: your free "
                          "pitches are used this month. Pro sends them for you.")
+        capped = [r["brand_name"] for r in results if r["status"] == "daily_cap"]
+        if capped:
+            from services.polly_autopilot import MAX_SENDS_PER_DAY
+            lines.append(f"{', '.join(capped[:3])}{' and more' if len(capped) > 3 else ''} "
+                         f"{'is' if len(capped) == 1 else 'are'} written and waiting: {MAX_SENDS_PER_DAY} pitches a "
+                         "day from your Gmail is the limit that keeps it out of spam folders. Tap send again "
+                         "tomorrow and they'll go out.")
         if any(r["status"] == "needs_location" for r in results):
             lines.append("Tell me your city and country so I can finish the rest.")
         followers, has_rates = _kit_rates(conn, creator_id)

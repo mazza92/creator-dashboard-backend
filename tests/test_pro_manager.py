@@ -192,28 +192,45 @@ def _conn():
 class DraftBrandReplyToolTests(_Patched):
     PRO = {"remaining": None, "limit": None, "is_unlimited": True}
 
-    def test_free_gets_the_teaser_and_upgrade_chip(self):
-        state = make_state(scrape={"follower_count": 5000}, conn=_conn())
+    def test_free_gets_the_real_reply_when_a_brand_says_yes(self):
+        # Nov 2026 audit: locking the reply to a brand that answered stranded free creators at their best moment.
+        state = make_state(scrape={"follower_count": 5000}, conn=_conn(),
+                           creator={"id": 7, "first_name": "Ana", "last_name": "Ruiz", "country": "US"})
         with patch.object(tools.tracker, "add_event") as add:
             res = tools.run_tool(state, "draft_brand_reply", {"brand_name": "NordVPN"})
-        self.assertEqual(res["status"], "pro_only")
-        self.assertIsNone(state.pitch)
-        self.assertIn("$200", state.final_say)
-        self.assertTrue(any(c["id"] == "unlock_pro" for c in state.task_chips))
-        add.assert_not_called()
+        self.assertEqual(res["status"], "reply_drafted")
+        self.assertIsNone(state.paywall_payload)
+        self.assertTrue(state.pitch["is_reply"])
+        self.assertEqual(state.pitch["reply_kind"], "interested")
+        self.assertIn("$200", state.pitch["body"])
+        self.assertIn("up to 20 brand pitches daily", state.final_say)
+        add.assert_called_once()
 
-    def test_free_sees_the_start_of_the_real_reply_with_the_rate_locked(self):
+    def test_paid_offer_gets_a_paid_reply_not_the_gifted_template(self):
         state = make_state(scrape={"follower_count": 5000}, conn=_conn(),
                            creator={"id": 7, "first_name": "Ana", "last_name": "Ruiz", "country": "US"})
         with patch.object(tools.tracker, "add_event"):
-            tools.run_tool(state, "draft_brand_reply", {"brand_name": "NordVPN"})
-        card = state.paywall_payload
-        self.assertEqual(card["kind"], "reply")
-        self.assertEqual(card["brand_name"], "NordVPN")
-        self.assertEqual(card["preview"][0], "Hi NordVPN team,")
-        self.assertTrue(card["preview"][1].startswith("Thank you, I'd love to!"))
-        self.assertFalse(any("$" in line for line in card["preview"]))
-        self.assertEqual(state.paywall_moment["moment"], "paid_reply")
+            tools.run_tool(state, "draft_brand_reply", {"brand_name": "NordVPN", "reply_type": "paid_offer",
+                                                        "offer_amount": "$150"})
+        self.assertEqual(state.pitch["reply_kind"], "paid_offer")
+        self.assertIn("$150", state.pitch["body"])
+        self.assertIn("brief", state.pitch["body"])
+        self.assertNotIn("Here's where to send it", state.pitch["body"])
+
+    def test_a_question_is_answered_in_chat_without_a_template(self):
+        state = make_state(scrape={"follower_count": 5000}, conn=_conn())
+        res = tools.run_tool(state, "draft_brand_reply", {"brand_name": "NordVPN", "reply_type": "question"})
+        self.assertEqual(res["status"], "answer_in_chat")
+        self.assertIsNone(state.pitch)
+        self.assertIsNone(state.paywall_payload)
+
+    def test_free_posted_ad_usage_ask_stays_on_pro(self):
+        state = make_state(scrape={"follower_count": 5000}, conn=_conn())
+        with patch.object(tools.tracker, "add_event") as add:
+            res = tools.run_tool(state, "draft_brand_reply", {"brand_name": "NordVPN", "moment": "posted"})
+        self.assertEqual(res["status"], "pro_only")
+        self.assertIsNone(state.pitch)
+        add.assert_not_called()
 
     def test_pro_gets_a_reply_card_to_the_pitched_inbox(self):
         stored = [{"role": "assistant", "pitch": {"brand_id": 4, "brand_name": "NordVPN",

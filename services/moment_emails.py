@@ -24,9 +24,9 @@ NICHE_WINDOW = timedelta(days=7)
 PRO_LINE_REPLY = ('<span style="color:#6B7280;">On <strong>Pro ($19/mo)</strong> I draft every brand reply with '
                   'your rate, and keep following up the brands that haven\'t answered yet.</span>')
 PRO_LINE_SAVED = ('<span style="color:#6B7280;">On <strong>Pro ($19/mo)</strong> I pitch every brand you save, '
-                  'first, from your Gmail, then new ones every weekday, up to 20 a day.</span>')
+                  'first, from your Gmail: up to 20 brand pitches daily.</span>')
 PRO_LINE_NICHE = ('<span style="color:#6B7280;">On <strong>Pro ($19/mo)</strong> I pitch brands like these for '
-                  'you every weekday.</span>')
+                  'you: up to 20 brand pitches daily.</span>')
 
 
 def _pa():

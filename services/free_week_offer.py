@@ -31,7 +31,7 @@ def free_week_email(first_name: str, facts: Dict[str, Any], unsubscribe_url: str
         tail = f" and {more} more brands" if more > 0 else ""
         lines.append(f"{shown}{tail} are matched to you and waiting.")
     lines += [
-        "For 7 days I pitch <strong>new brands every weekday</strong> for you, up to 20 a day: each pitch written for that "
+        "For 7 days I send <strong>up to 20 brand pitches daily</strong> for you: each pitch written for that "
         "brand, sent from your Gmail, followed up on day 4 and day 10. Replies land in your own inbox.",
         "Free for 7 days, then $19/mo. Cancel before day 7 and you pay nothing.",
     ]

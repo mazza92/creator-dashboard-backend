@@ -67,6 +67,25 @@ def interested_reply(brand_name: str, first: str = "", full_name: str = "", ship
     return {"subject": _re(subject, brand), "body": body}
 
 
+def paid_offer_reply(brand_name: str, first: str = "", amount: str = "", subject: str = "") -> Dict[str, str]:
+    """A brand offered paid work: say yes, pin down what's being paid for, and ask for the brief and usage terms
+    before filming (never the gifted 'here's my address' reply)."""
+    brand = (brand_name or "").strip() or "there"
+    sign = (first or "").strip()
+    amt = (amount or "").strip()
+    confirm = (f"Just to confirm the details: {amt} for the video(s)." if amt
+               else "Could you confirm the budget and the deliverables you have in mind?")
+    body = "\n\n".join([
+        f"Hi {brand} team,",
+        "Thank you, I'd love to work on this with you!",
+        confirm + " Could you also send over the brief, your timeline, and the usage terms (where the video "
+                  "will run and for how long)?",
+        "Once that's confirmed I'll get started and send an invoice for the agreed amount.",
+        "Thanks," + (f"\n{sign}" if sign else ""),
+    ])
+    return {"subject": _re(subject, brand), "body": body}
+
+
 def ad_usage_ask(brand_name: str, first: str = "", followers: Optional[int] = None,
                  subject: str = "") -> Dict[str, str]:
     """After they post: ask whether the brand wants to run the video as an ad."""

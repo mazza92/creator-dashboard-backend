@@ -4073,7 +4073,7 @@ def generate_pitch():
                     'remaining': 0,
                     'waiting': unlock_result.get('waiting') or 0,
                     'reset_at': unlock_result.get('reset_at'),
-                    'message': "You've used all 3 unlocks this month."
+                    'message': "You've used your 3 free pitches this month."
                 }), 402  # Payment Required
 
             if unlock_result['status'] == 'error':
@@ -8713,7 +8713,7 @@ def reveal_contact():
             return jsonify({
                 'success': False,
                 'error': 'Free tier limit reached',
-                'message': f'You\'ve used all {FREE_LIMIT} free brand contacts. Go Pro and Polly runs your week: pitches from your Gmail, follow-ups, and the reply that turns a yes into paid. Applications are unlimited.',
+                'message': f'You\'ve used your {FREE_LIMIT} free pitches this month. Go Pro and Polly runs your outreach: up to 20 brand pitches daily from your Gmail, follow-ups, and the reply that turns a yes into paid.',
                 'current_count': current_count,
                 'limit': FREE_LIMIT,
                 'tier': tier

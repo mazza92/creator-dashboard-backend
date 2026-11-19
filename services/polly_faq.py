@@ -46,7 +46,7 @@ _FAQ: List[Tuple[str, str, str]] = [
     (
         "pro_automation",
         r"what (exactly )?is automated|copy each pitch|what does pro (do|automate|include)|what do i get (with|on) pro",
-        "On Pro, **Autopilot** sends pitches from your own Gmail, about 3 every weekday, and follows "
+        "On Pro, **Autopilot** sends up to 20 brand pitches daily from your own Gmail, and follows "
         "up on day 4 and day 10 in the same thread. It needs your Gmail connected. Until then, "
         "pitches stay on the card for you to send yourself.",
     ),
@@ -66,8 +66,8 @@ _FAQ: List[Tuple[str, str, str]] = [
     (
         "remove_application",
         r"remove (an |my |the )?application|withdraw|(get|give) (my |the |a )?credits? back|refund (a |my |the )?credit|undo (an |my |the )?appl",
-        "Applications can't be withdrawn once they're in, and that credit stays used. Pitch drafts "
-        "are different: if one sits unsent for 7 days, the credit comes back automatically.",
+        "Applications can't be withdrawn once they're in, and that free pitch stays used. Pitch drafts "
+        "are different: if one sits unsent for 7 days, the free pitch comes back automatically.",
     ),
     (
         "cancel",
@@ -98,8 +98,9 @@ _FAQ: List[Tuple[str, str, str]] = [
     (
         "credits",
         r"how many credits|what (is|are) (a )?credits?|credits? (reset|renew|come back)|when do (my )?credits",
-        "Free accounts get 3 credits a month. A credit is used when I draft a pitch to a new brand or "
-        "you apply to a gifted list. Follow-ups never use a credit. Pro removes the limit.",
+        "Free accounts get 3 free pitches a month, back on the 1st. One is used when a pitch to a new brand "
+        "goes out or you apply to a gifted list; a pitch left unsent for 7 days gives it back. Follow-ups never "
+        "use one. Pro sends up to 20 brand pitches daily for you.",
     ),
 ]
 

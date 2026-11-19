@@ -212,7 +212,7 @@ def action_required_email_html(name, amount_label=None, pay_url=None):
 PRO_PERKS = (
     # (section, [(icon, bold, rest)]): everything Polly now runs on autopilot.
     ("Outreach on autopilot", (
-        ("\U0001F4E8", "Brands pitched every weekday", ", from your own Gmail"),
+        ("\U0001F4E8", "Up to 20 brand pitches daily", ", from your own Gmail"),
         ("\U0001F501", "Follow-ups on day 4 and day 10", ", sent for you"),
         ("\U0001F4AC", "Replies answered", ": Polly drafts your answer, rates included"),
     )),

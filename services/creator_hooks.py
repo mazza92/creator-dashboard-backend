@@ -111,7 +111,7 @@ def gate_message(allow: Dict[str, Any]) -> str:
     if allow["pro"]:
         return (f"You've used your {allow['limit']} hook scans this month. They reset on the 1st, and every scan "
                 "you ran stays in this chat.")
-    return ("Your free hook scan is used. On Pro you get 4 a month, plus Polly sends your pitches every weekday "
+    return ("Your free hook scan is used. On Pro you get 4 a month, plus Polly sends up to 20 brand pitches daily "
             "from your Gmail.")
 
 

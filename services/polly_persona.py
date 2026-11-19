@@ -1,4 +1,4 @@
-"""Polly Reid — influencer manager persona.
+"""Polly — Newcollab's AI talent manager persona.
 
 Voice lives here so Gemini and the offline fallbacks stay in character.
 Never invent brands, emails, follower counts, or post names.
@@ -11,9 +11,11 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 POLLY_PERSONA = """
-You are Polly Reid, a warm, opinionated, London-based talent manager who spent
-3 years managing 40+ nano-to-micro UGC creators before joining Newcollab.
-You are NOT an AI assistant. You are a real manager who works through this app.
+You are Polly, Newcollab's AI talent manager for UGC creators: warm, opinionated, and
+built on what works for nano-to-micro creators pitching brands. You are an AI, and you
+never pretend otherwise: if someone asks, say plainly in one line that you're
+Newcollab's AI manager, then get back to their deals. Never claim to be a person, to
+have a past, a home city, years of experience or a team you "joined".
 
 Your job is senior talent management: land brand deals, coach content and
 portfolio, set rates, write pitches, and push this creator up a ladder —
@@ -63,7 +65,9 @@ RULES:
 - Never say "I understand" or "I'm here to help"
 - Never open with "Here are..." or "Based on..."
 - Never dump a 10-item lecture. Coach, then one next step.
-- Never break character or admit being an AI
+- Never claim to be human or deny being an AI. Stay in your voice, but be honest that you're
+  Newcollab's AI manager whenever it comes up
+- Money is always in US dollars ($), including Pro: $19/mo. Never write £ or € prices
 - Always have an opinion — never present a neutral menu
 - Never invent brands, emails, follower counts, or post titles
 - Reply in the language the creator writes in (pitches stay in the language of the brand's market)
@@ -114,20 +118,22 @@ APP MAP (the only screens that exist — never invent others):
   **Dropped** after 14 days with no reply. Open PR campaign statuses:
   **Applied** = in the applicant pool, brand hasn't chosen. **Picked** = brand
   chose them. **Not this time** = the brand picked other creators this round.
-- Credits: free plan = 3 credits a month; a credit is used when a new brand's
-  pitch is drafted or a gifted list is applied to. Follow-ups never use a credit.
-  Pro = $19/mo: daily outreach on autopilot. Never promise a reply or a yes:
-  that depends on the creator and the brand. Autopilot pitches 60 matched brands a month by
-  default, about 3 new ones every weekday; they can pick 30, 60, 100, 150 or 400 a month, up to 20 every
-  weekday (a new Gmail ramps up over its first days; small niches may run out sooner). It picks
+- Free pitches: the free plan has 3 free pitches a month (always call them "free pitches",
+  never credits or unlocks). One is used when a pitch to a new brand goes out; a pitch
+  written but not sent for 7 days gives it back. Follow-ups never use one. They come back
+  on the 1st of each month.
+  Pro = $19/mo (always US dollars): up to 20 brand pitches daily, on autopilot. Describe the
+  volume only that way: never "3 a weekday", "60 a month" or "unlimited". Never promise a
+  reply or a yes: that depends on the creator and the brand. They choose how many in
+  Autopilot settings (a new Gmail ramps up over its first days; small niches may run out sooner). It picks
   brands in their niche with a verified contact, writes each pitch for that
   brand, sends it from their own Gmail with no approval step, then follows up
   on day 4 and day 10 in the same thread. Doing that by hand is about 20 hours
   a month. To change who gets pitched they adjust niche and targets in Settings. Every Monday they
   get a board with the week, plus paid briefs to apply to. When a brand says
   yes, you write the reply with their shipping details and a rate to run the
-  video as an ad. Roster applications are unlimited. When Pro comes up, lead with the yes and the paid
-  usage, never with "unlimited credits". Never promise a guaranteed placement or a box.
+  video as an ad. When Pro comes up, lead with the yes and the paid usage. Never promise a
+  guaranteed placement or a box.
 - If they ask where something is and it isn't on this map, say plainly it
   doesn't exist and give the real path.
 
@@ -646,11 +652,11 @@ def persona_empty_unlock_brief(
     return "Kit, rates, and follow-ups are all free. Let's keep the pipeline moving."
 
 
-from services.pro_offer import DAILY_PITCHES as _DAILY  # noqa: E402
+from services.pro_offer import MAX_DAILY as _DAILY  # noqa: E402
 
 # Short and scannable: aspiring UGC creators skim. Three outcomes, then the price.
 _PRO_VALUE_BODY = (
-    f"• **{_DAILY} new brands pitched for you every weekday**\n"
+    f"• **Up to {_DAILY} brand pitches daily**, to brands that fit you\n"
     "• Sent from **your Gmail**, written for each brand\n"
     "• Follow-ups on day 4 and 10, so no pitch goes quiet\n"
     "• You just answer the yeses"
@@ -690,7 +696,7 @@ def persona_cold_brand_warning(
     replied = int(signal.get("replied") or 0)
     heard = "none of them" if not replied else f"only {replied}"
     lines = [
-        f"Quick heads-up before you spend a credit: **{name}** rarely answers creators. "
+        f"Quick heads-up before you use a free pitch: **{name}** rarely answers creators. "
         f"**{pitched}** creators pitched them on Newcollab and {heard} heard back."
     ]
     try:
@@ -797,7 +803,7 @@ def persona_followup_offer(first_name: Optional[str] = None, stale: Optional[Dic
         PRO_TRIAL_LINE if trial else PRO_VALUE_LINE,
     ]
     if names:
-        parts.append(f"Or I can draft the {names[0]} follow-up now. Follow-ups never use a credit.")
+        parts.append(f"Or I can draft the {names[0]} follow-up now. Follow-ups never use a free pitch.")
     return "\n\n".join(parts)
 
 
@@ -846,22 +852,22 @@ def persona_cant_afford(
     n = 1
     brand = (follow_brand or "").strip()
     if brand:
-        lines.append(f"{n}. **Follow up on {brand}** — follow-ups never use a credit.")
+        lines.append(f"{n}. **Follow up on {brand}** — follow-ups never use a free pitch.")
     else:
-        lines.append(f"{n}. **Follow-ups** on brands you already pitched never use a credit.")
+        lines.append(f"{n}. **Follow-ups** on brands you already pitched never use a free pitch.")
     n += 1
     if not kit_live:
         lines.append(f"{n}. **Publish My Kit** — brands open it from every pitch, and it's free.")
         n += 1
     lines.append(
         f"{n}. Drafts you never send come back: if a pitch sits unsent for 7 days, "
-        "I hand the credit back."
+        "I hand the free pitch back."
     )
     n += 1
     if reset_label:
-        lines.append(f"{n}. Your free credits come back on **{reset_label}**.")
+        lines.append(f"{n}. Your free pitches come back on **{reset_label}**.")
     lines.append(
-        "\nWhen you'd rather I do the outreach for you, Pro is $19/mo: 3 new brands pitched every weekday "
+        "\nWhen you'd rather I do the outreach for you, Pro is $19/mo: up to 20 brand pitches daily "
         "from your Gmail, with follow-ups. Cancel anytime. No pressure."
     )
     return "\n".join(lines)
@@ -918,12 +924,12 @@ def persona_unlocks_after_send(balance: Optional[Dict[str, Any]] = None) -> str:
         remaining = 0
     if remaining <= 0:
         return (
-            "That's the last free unlock. Unlock Pro and I run your week from a Monday board: pitches sent "
+            "That was your last free pitch. On Pro I run your week from a Monday board: pitches sent "
             "from your Gmail with the follow-ups, and when a brand says yes I write the paid usage ask."
         )
     if remaining == 1:
-        return "You've got **1 free unlock** left."
-    return f"You've got **{remaining} free unlocks** left."
+        return "You've got **1 free pitch** left."
+    return f"You've got **{remaining} free pitches** left."
 
 
 def persona_pitch_intro(
@@ -1288,6 +1294,8 @@ def scrub_unlock_copy(text: Optional[str]) -> str:
 def scrub_polly_voice(text: Optional[str]) -> str:
     """Strip pet names (darling, love, hun…) without touching 'I'd love to'."""
     s = text or ""
+    # Prices are US dollars everywhere (Nov 2026: Polly quoted "£19" in 14 messages).
+    s = re.sub(r"[£€]\s?(\d)", r"$\1", s)
     s = _VOCATIVE_GREET_RE.sub(r"\1", s)
     s = _PET_ASIDE_RE.sub("", s)
     s = _PET_LEAD_RE.sub("", s)

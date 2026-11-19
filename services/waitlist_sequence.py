@@ -92,7 +92,7 @@ def waitlist_email(conn, kind: str, first: str, position: int, niche: str, brand
                  "Polly already has brands lined up for you once you're in.",
                  cards,
                  f"Don't want to wait? <strong>Pro ({PRO_PRICE})</strong> skips the line: you're in today, "
-                 "and Polly pitches 3 brands for you every weekday."]
+                 "and Polly sends up to 20 brand pitches daily for you."]
         button = "Skip the line with Pro"
     elif kind == "waitlist_2":
         subject = f"{label.capitalize()} brands are gifting creators your size this month"
@@ -109,7 +109,7 @@ def waitlist_email(conn, kind: str, first: str, position: int, niche: str, brand
                  "<strong>1. Post this week.</strong> We approve creators with recent posts first: brands want "
                  "active accounts.",
                  f"<strong>2. Skip the line with Pro ({PRO_PRICE}).</strong> You're in today, Polly pitches "
-                 "3 brands for you every weekday and follows up. Cancel anytime."]
+                 "up to 20 brand pitches daily for you and follows up. Cancel anytime."]
         button = "Skip the line with Pro"
     buttons = [{"label": button, "href": skip}]
     links = [{"label": "Check my place in line", "href": f"{pa.frontend_url()}/creator/waitlist"}]

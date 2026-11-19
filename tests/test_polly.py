@@ -856,15 +856,16 @@ class PersonaTests(unittest.TestCase):
     def test_unlocks_after_send_and_scrubs_fake_pitches_ui(self):
         from services.polly_persona import persona_unlocks_after_send, scrub_polly_voice
         two = persona_unlocks_after_send({"remaining": 2, "is_unlimited": False})
-        self.assertIn("2 free unlocks", two)
+        self.assertIn("2 free pitches", two)
         self.assertNotIn("this month", two.lower())
         self.assertNotRegex(two.lower(), r"reset|1st|first of")
         one = persona_unlocks_after_send({"remaining": 1, "is_unlimited": False})
-        self.assertIn("1 free unlock", one)
+        self.assertIn("1 free pitch", one)
         self.assertNotIn("this month", one.lower())
         self.assertNotIn("last free", one.lower())
         last = persona_unlocks_after_send({"remaining": 0, "is_unlimited": False})
-        self.assertIn("unlock pro", last.lower())
+        self.assertIn("last free pitch", last.lower())
+        self.assertIn("on pro", last.lower())
         self.assertNotIn("this month", last.lower())
         self.assertNotRegex(last.lower(), r"reset|1st|wait until")
         stacked = scrub_polly_voice(
@@ -1011,7 +1012,7 @@ class PaywallCopyTests(unittest.TestCase):
         text = persona_paywall_say("Grace & Stella")
         self.assertIn("Grace & Stella", text)
         self.assertIn("$19/mo", text)
-        self.assertIn("3 new brands pitched for you every weekday", text)
+        self.assertIn("Up to 20 brand pitches daily", text)
         self.assertNotIn("one yes", text)
         self.assertIn("your Gmail", text)
         self.assertLess(len(text), 520)

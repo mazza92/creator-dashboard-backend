@@ -67,7 +67,7 @@ def _followup_chip(brand_id: Any, name: str) -> Dict[str, Any]:
     return {
         "id": "draft_followup",
         "label": f"Draft {name} follow-up",
-        "hint": "Follow-ups never use a credit",
+        "hint": "Follow-ups never use a free pitch",
         "action": "generate_pitch",
         "brand_id": brand_id,
         "brand_name": name,
