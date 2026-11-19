@@ -468,6 +468,19 @@ def _pick_brands(conn, creator_id, creator, notes, scrape, limit=POOL_SIZE):
     )
     brands = filter_brands_by_prefs(drop_pitched(brands, notes, extra_ids=exclude), notes)
     brands = [b for b in brands if _fit(b) >= MIN_FIT]
+    if len(brands) < TOPUP_BELOW:
+        # The matched pool runs dry for creators in small niches (luxury, travel...) once its best brands are
+        # pitched, while the directory still has unpitched brands in their niches. Top up from there.
+        cat_list = cats or stated_niches(notes) or (creator or {}).get("creator_niches") or []
+        extra = _directory_topup(conn, cat_list, exclude + [int(b["id"]) for b in brands if b.get("id")],
+                                 limit - len(brands))
+        try:
+            from services.audience_fit import audience_mismatch
+            niche_list = cats or stated_niches(notes) or (creator or {}).get("creator_niches")
+            extra = [b for b in extra if not audience_mismatch(b, match_scrape, niche_list)]
+        except Exception as err:
+            print(f"[Polly autopilot] top-up fit check skipped: {err}")
+        brands += filter_brands_by_prefs(drop_pitched(extra, notes, extra_ids=exclude), notes)
     brands = _rank_by_reach(conn, brands, (creator or {}).get("followers_count"))
     # Country is not a matching signal: Autopilot pitches every niche brand, whatever its shipping regions.
     emailable = _brands_with_email(conn, [int(b["id"]) for b in brands if b.get("id")])
@@ -475,6 +488,56 @@ def _pick_brands(conn, creator_id, creator, notes, scrape, limit=POOL_SIZE):
     matched = _targets_first(conn, creator_id, matched, exclude, notes)
     matched = _planned_first(conn, creator_id, matched)
     return matched, None if matched else "no_matches"
+
+
+TOPUP_BELOW = 20
+# Neighbouring categories for niches with few brands of their own (their own niche always comes first).
+NEIGHBOUR_CATEGORIES = {
+    "luxury": ["fashion", "jewelry", "beauty"],
+    "travel": ["lifestyle", "luxury", "fashion"],
+    "lifestyle": ["fashion", "home"],
+    "home": ["lifestyle"],
+    "jewelry": ["fashion", "luxury"],
+}
+
+
+def _directory_topup(conn, categories, exclude_ids, need):
+    """Unpitched directory brands in the creator's categories (then neighbouring ones) with a deliverable inbox,
+    brands seen working with creators first. Cards shaped like For You's, match_score at the floor."""
+    own = [str(c).strip().lower() for c in categories or [] if str(c).strip()]
+    if not own or need <= 0:
+        return []
+    near = [c for o in own for c in NEIGHBOUR_CATEGORIES.get(o, []) if c not in own]
+    wanted = own + list(dict.fromkeys(near))
+    try:
+        from psycopg2.extras import RealDictCursor
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT b.id, b.brand_name, b.slug, b.category, b.logo_url, b.min_followers
+            FROM pr_brands b LEFT JOIN brand_ad_signals s ON s.brand_id = b.id
+            WHERE COALESCE(b.status, 'published') = 'published'
+              AND LOWER(COALESCE(b.category, '')) = ANY(%(cats)s)
+              AND NULLIF(TRIM(b.contact_email), '') IS NOT NULL
+              AND COALESCE(LOWER(b.email_status), '') NOT IN ('bounced', 'invalid', 'undeliverable', 'risky')
+              AND COALESCE(b.email_bounce_count, 0) = 0
+              AND COALESCE(b.accepting_pr, TRUE)
+              AND NOT (b.id = ANY(%(skip)s))
+            ORDER BY (LOWER(b.category) = ANY(%(own)s)) DESC,
+                     (b.gifting_confirmed_at IS NOT NULL OR COALESCE(s.ugc_style, FALSE)) DESC,
+                     COALESCE(b.response_rate, 0) DESC, b.updated_at DESC NULLS LAST
+            LIMIT %(n)s
+        """, {"cats": wanted, "own": own, "skip": [int(i) for i in exclude_ids or []] or [0], "n": int(need) * 2})
+        rows = cur.fetchall()
+    except Exception as err:
+        print(f"[Polly autopilot] directory top-up skipped: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return []
+    return [{"id": int(r["id"]), "name": r.get("brand_name"), "brand_name": r.get("brand_name"), "slug": r.get("slug"),
+             "category": r.get("category"), "logo": r.get("logo_url"), "logo_url": r.get("logo_url"),
+             "match_score": MIN_FIT, "source": "directory", "min_followers": r.get("min_followers")} for r in rows]
 
 
 IN_REACH = 1.25   # a brand asking for 2,000 followers is still in reach of a creator with 1,600
