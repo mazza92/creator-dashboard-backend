@@ -522,11 +522,10 @@ def _directory_topup(conn, categories, exclude_ids, need):
               AND COALESCE(b.email_bounce_count, 0) = 0
               AND COALESCE(b.accepting_pr, TRUE)
               AND NOT (b.id = ANY(%(skip)s))
-            ORDER BY (LOWER(b.category) = ANY(%(own)s)) DESC,
-                     (b.gifting_confirmed_at IS NOT NULL OR COALESCE(s.ugc_style, FALSE)) DESC,
+            ORDER BY (b.gifting_confirmed_at IS NOT NULL OR COALESCE(s.ugc_style, FALSE)) DESC,
                      COALESCE(b.response_rate, 0) DESC, b.updated_at DESC NULLS LAST
             LIMIT %(n)s
-        """, {"cats": wanted, "own": own, "skip": [int(i) for i in exclude_ids or []] or [0], "n": int(need) * 2})
+        """, {"cats": wanted, "skip": [int(i) for i in exclude_ids or []] or [0], "n": max(int(need) * 4, 40)})
         rows = cur.fetchall()
     except Exception as err:
         print(f"[Polly autopilot] directory top-up skipped: {err}")
@@ -535,9 +534,20 @@ def _directory_topup(conn, categories, exclude_ids, need):
         except Exception:
             pass
         return []
+    # Rotate across categories in the creator's order (luxury, travel, lifestyle, then neighbours) so one large
+    # category (home) doesn't fill the whole week.
+    by_cat: Dict[str, List[Dict[str, Any]]] = {}
+    for r in rows:
+        by_cat.setdefault(str(r.get("category") or "").lower(), []).append(r)
+    order = [c for c in wanted if c in by_cat] + [c for c in by_cat if c not in wanted]
+    mixed: List[Dict[str, Any]] = []
+    while len(mixed) < len(rows):
+        for c in order:
+            if by_cat[c]:
+                mixed.append(by_cat[c].pop(0))
     return [{"id": int(r["id"]), "name": r.get("brand_name"), "brand_name": r.get("brand_name"), "slug": r.get("slug"),
              "category": r.get("category"), "logo": r.get("logo_url"), "logo_url": r.get("logo_url"),
-             "match_score": MIN_FIT, "source": "directory", "min_followers": r.get("min_followers")} for r in rows]
+             "match_score": MIN_FIT, "source": "directory", "min_followers": r.get("min_followers")} for r in mixed]
 
 
 IN_REACH = 1.25   # a brand asking for 2,000 followers is still in reach of a creator with 1,600
