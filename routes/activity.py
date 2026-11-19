@@ -1,9 +1,10 @@
 """Creator activity feed (the bell in the header).
 
 GET  /api/activity        {items: [...], unread, seen_at, pulse: {day, niche, count} | null}
-POST /api/activity/seen   opening the bell: everything up to now is read
+POST /api/activity/seen   opening the bell: everything up to now is read ({"what": "gigs"}: the UGC gigs page was
+                          opened, which clears its tab badge)
 """
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 
 activity_bp = Blueprint("activity", __name__, url_prefix="/api/activity")
 
@@ -28,13 +29,16 @@ def get_activity():
 
 @activity_bp.route("/seen", methods=["POST"])
 def post_seen():
-    from services.creator_activity import mark_seen
+    from services.creator_activity import mark_gigs_seen, mark_seen
 
     creator_id, conn, _c = _creator()
     if not creator_id:
         return jsonify({"success": False, "error": "Authentication required"}), 401
     try:
-        mark_seen(conn, creator_id)
+        if (request.get_json(silent=True) or {}).get("what") == "gigs":
+            mark_gigs_seen(conn, creator_id)
+        else:
+            mark_seen(conn, creator_id)
         return jsonify({"success": True})
     finally:
         conn.close()
