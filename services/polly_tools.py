@@ -570,7 +570,9 @@ BATCH_MAX = 3
 
 
 def batch_item(pitch: Dict[str, Any]) -> Dict[str, Any]:
+    from services.brand_names import clean_names_in_pitch
     from services.polly import drop_location_placeholder
+    pitch = clean_names_in_pitch(pitch, pitch.get("brand_name"))
     body = drop_location_placeholder(str(pitch.get("body") or ""))
     return {
         "brand_id": _int(pitch.get("brand_id")),
@@ -822,11 +824,24 @@ def _dress_pitch(state: TurnState, pitch: Dict[str, Any], shipping: Dict[str, An
         and not gifted_only(state.notes)
         and paid_first(state.notes)
     )
+    # The weekly plan decides paid vs gifted per brand (what the Tracker and Autopilot show): follow it, so a
+    # brand planned as a paid ask gets a paid pitch here too, and a gifted one a gifted pitch.
+    planned = None
+    if not followup and pitch.get("brand_id"):
+        try:
+            from services.creator_tracker import planned_offer
+            planned = planned_offer(state.db(), state.creator_id, int(pitch["brand_id"]))
+        except Exception:
+            planned = None
+    if planned == "paid" and not gifted_only(state.notes):
+        pitch_paid = True
+    elif planned == "gifted":
+        pitch_paid = False
     if not followup:
         if pitch_paid:
             pitch = apply_paid_ask_to_pitch(pitch, kit=state.kit, scrape=state.scrape,
                                             location_display=loc_display or None)
-        elif state.notes.get("deal_intent") == "gifted":
+        elif planned == "gifted" or state.notes.get("deal_intent") == "gifted":
             pitch = apply_gifted_ask_to_pitch(pitch, location_display=loc_display or None)
         if loc_display:
             pitch = apply_location_to_pitch(pitch, shipping.get("city") or "",

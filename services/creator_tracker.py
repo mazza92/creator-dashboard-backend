@@ -724,14 +724,29 @@ def first_run_payload(conn, creator_id: int, now: Optional[datetime] = None) -> 
     hot_id = int(hot["brand_id"]) if hot.get("brand_id") else None
     week_end = now.date() + timedelta(days=7)
     this_week = [r for r in rows if r["planned_for"] < week_end]
-    ordered = sorted(rows, key=lambda r: (int(r["brand_id"]) != hot_id, r["planned_for"]))
+    # First brands = the most likely to answer THIS creator: the hot pick, then brands within reach of their size
+    # and seen working with creators, then the plan's order (same reach logic as Autopilot).
+    signals = _brand_signals(conn, [int(r["brand_id"]) for r in rows])
+    followers = int(prof.get("followers") or 0)
+
+    def reach_key(r):
+        bid = int(r["brand_id"])
+        sig = signals.get(bid, {})
+        need = int(sig.get("min_followers") or 0)
+        tier = 0 if not followers or need <= followers * 1.25 else 1 if need <= followers * 5 else 2
+        return (bid != hot_id, tier, not (sig.get("works_with_creators") or r.get("meta_ads")), r["planned_for"])
+
+    ordered = sorted(rows, key=reach_key)
+    from services.brand_names import clean_brand_name
     brands = []
     for r in ordered[:6]:
         bid = int(r["brand_id"])
         cat = (r.get("category") or "").replace("_", " ")
         brands.append({
-            "brand_id": bid, "brand_name": r.get("brand_name") or "Brand", "logo": r.get("logo"),
+            "brand_id": bid, "brand_name": clean_brand_name(r.get("brand_name")) or "Brand", "logo": r.get("logo"),
             "offer": r.get("offer") or "gifted", "hot": bid == hot_id, "meta_ads": bool(r.get("meta_ads")),
+            "works_with_creators": bool(signals.get(bid, {}).get("works_with_creators")),
+            "category": cat or None,
             "reason": hot.get("reason") if bid == hot_id else (f"Fits your {cat} content" if cat else "Fits your content"),
         })
     balance = free_balance(conn, creator_id, prof)
@@ -745,7 +760,43 @@ def first_run_payload(conn, creator_id: int, now: Optional[datetime] = None) -> 
         "brands": brands,
         "free_left": None if balance is None else balance["left"],
         "is_pro": bool(prof.get("is_pro")),
+        "first_name": _first_name(conn, creator_id),
     }
+
+
+def _brand_signals(conn, ids: List[int]) -> Dict[int, Dict[str, Any]]:
+    """Minimum follower ask, and whether the brand is seen working with creators (confirmed gifting or
+    creator-style ads), for the welcome's brand order and tags. {} on any failure."""
+    if not ids:
+        return {}
+    try:
+        cur = _cur(conn)
+        cur.execute("""SELECT b.id, b.min_followers,
+                              (b.gifting_confirmed_at IS NOT NULL OR COALESCE(s.ugc_style, FALSE)) AS works
+                       FROM pr_brands b LEFT JOIN brand_ad_signals s ON s.brand_id = b.id
+                       WHERE b.id = ANY(%s)""", (ids,))
+        return {int(r["id"]): {"min_followers": r.get("min_followers"), "works_with_creators": bool(r.get("works"))}
+                for r in cur.fetchall()}
+    except Exception:
+        conn.rollback()
+        return {}
+
+
+def _first_name(conn, creator_id: int) -> str:
+    """The creator's first name for 'Hi Ana': their account's first name, else the first word of their kit's
+    display name. Never the handle."""
+    try:
+        cur = _cur(conn)
+        cur.execute("""SELECT u.first_name, c.kit_theme->>'display_name' AS display_name
+                       FROM creators c JOIN users u ON u.id = c.user_id WHERE c.id = %s""", (creator_id,))
+        row = cur.fetchone() or {}
+        for raw in (row.get("first_name"), row.get("display_name")):
+            name = str(raw or "").strip().split(" ")[0]
+            if name and any(ch.isalpha() for ch in name) and "@" not in name:
+                return name[:30]
+    except Exception:
+        conn.rollback()
+    return ""
 
 
 def getting_started(conn, creator_id: int) -> Dict[str, Any]:
