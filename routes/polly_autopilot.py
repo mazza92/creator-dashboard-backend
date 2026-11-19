@@ -2,6 +2,7 @@
 ``auto_fill`` runs the same plan + draft from the cron."""
 
 import os
+import re
 
 from flask import Blueprint, jsonify, redirect, request
 
@@ -555,14 +556,40 @@ STRETCH = 5.0     # up to 5x the creator's size: worth a try once in-reach brand
 SMALL_CREATOR = 10000
 
 
+# Inboxes that reach someone who handles creators, vs customer service (Nov 2026 audit: 144 Pro sends went to
+# support@ / help@ inboxes; one brand answered that the pitch had landed with customer service).
+_CREATOR_INBOX = re.compile(r"^(pr|press|media|influencers?|creators?|collabs?|collaborations?|partnerships?|partners?|"
+                            r"marketing|social|brand|brands|ambassadors?|affiliates?|ugc|community)([._-].*)?$")
+_SERVICE_INBOX = re.compile(r"^(support|customerservice|customer[._-]?service|customercare|customer[._-]?care|care|"
+                            r"help|service|cs|orders?|returns|shipping|billing|noreply|no-reply)([._-].*)?$")
+_COMPANY_NAME = re.compile(r"(?i)(\b(co\.?,?\s*ltd|trading co|holdings?|group plc|gmbh|"
+                           r"power station|shopping cent(re|er)|shopping mall|outlet village)\b|\blimited\.?\s*$)")
+
+
+def inbox_rank(email):
+    """0 = an inbox for PR / partnerships / marketing, 1 = generic (hello@, info@, a person), 2 = customer service."""
+    local = str(email or "").split("@")[0].strip().lower()
+    if _CREATOR_INBOX.match(local):
+        return 0
+    if _SERVICE_INBOX.match(local):
+        return 2
+    return 1
+
+
+def looks_like_company(name):
+    """A holding company, trading entity or a place rather than a consumer brand: kept, but pitched last."""
+    return bool(_COMPANY_NAME.search(str(name or "")))
+
+
 def _rank_by_reach(conn, brands, followers):
     """Order matches so the brands most likely to reply to THIS creator go first, without dropping any (the pool
     keeps its size; out-of-reach brands just wait at the back):
       1. in reach: no minimum follower ask, or one within 1.25x the creator's followers;
       2. stretch: asks up to 5x their size;
       3. out of reach: Lancome asking 50k pitched by a 1.9k creator.
-    Within a tier, for creators under 10k, brands seen working with creators (confirmed gifting or
-    creator-style ads) go first; otherwise the match order is kept."""
+    Within a tier: consumer brands before company / place entries; for creators under 10k, brands seen working
+    with creators (confirmed gifting or creator-style ads) first; then PR / partnership inboxes before generic
+    ones, and customer-service inboxes last; otherwise the match order is kept."""
     try:
         followers = int(followers or 0)
     except (TypeError, ValueError):
@@ -574,11 +601,13 @@ def _rank_by_reach(conn, brands, followers):
         cur = conn.cursor()
         cur.execute("""
             SELECT b.id, b.min_followers,
-                   (b.gifting_confirmed_at IS NOT NULL OR COALESCE(s.ugc_style, FALSE)) AS works_with_creators
+                   (b.gifting_confirmed_at IS NOT NULL OR COALESCE(s.ugc_style, FALSE)) AS works_with_creators,
+                   b.contact_email, b.brand_name
             FROM pr_brands b LEFT JOIN brand_ad_signals s ON s.brand_id = b.id
             WHERE b.id = ANY(%s)
         """, (ids,))
-        facts = {int(r[0]): (r[1], bool(r[2])) for r in cur.fetchall()}
+        facts = {int(r[0]): (r[1], bool(r[2]), inbox_rank(r[3] if len(r) > 3 else None),
+                             looks_like_company(r[4] if len(r) > 4 else None)) for r in cur.fetchall()}
     except Exception as err:
         print(f"[Polly autopilot] reach ranking skipped: {err}")
         try:
@@ -589,11 +618,11 @@ def _rank_by_reach(conn, brands, followers):
 
     def key(item):
         i, b = item
-        min_f, works = facts.get(int(b["id"]) if b.get("id") else -1, (None, False))
+        min_f, works, inbox, company = facts.get(int(b["id"]) if b.get("id") else -1, (None, False, 1, False))
         need = int(min_f or 0)
         tier = 0 if need <= followers * IN_REACH else 1 if need <= followers * STRETCH else 2
         proven = 0 if (works and followers < SMALL_CREATOR) else 1
-        return (tier, proven, i)
+        return (tier, int(company), proven, inbox, i)
 
     return [b for _, b in sorted(enumerate(brands), key=key)]
 
