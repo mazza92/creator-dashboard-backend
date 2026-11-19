@@ -37,7 +37,7 @@ def pro_week_email(first_name: str, facts: Dict[str, Any], trial: bool = False,
     names = [n for n in (facts.get("brand_names") or []) if n][:2]
     matched = int(facts.get("matched") or 0)
 
-    subject = "Try a week of me pitching for you, free" if trial else "Want me to pitch 3 brands for you every day?"
+    subject = "Try a week of me pitching for you, free" if trial else "Want me to send up to 20 brand pitches a day for you?"
     if pitched:
         lines = [f"You've had me write {_plural(pitched, 'pitch')} so far. On the free plan that's "
                  f"{FREE_PITCHES} a month, and you send each one yourself."]
@@ -50,7 +50,7 @@ def pro_week_email(first_name: str, facts: Dict[str, Any], trial: bool = False,
         tail = f", plus {_plural(more, 'other brand')}," if more > 0 else ""
         lines.append(f"I already have {shown}{tail} matched to you and waiting.")
     lines += [
-        "On Pro I run it for you on <strong>Autopilot</strong>: <strong>3 new matched brands every weekday</strong>. "
+        "On Pro I run it for you on <strong>Autopilot</strong>: <strong>up to 20 brand pitches daily</strong>. "
         "Each one fits your niche and has a verified contact, each pitch is written for "
         "that brand, sent from your Gmail and followed up on day 4 and day 10. Nothing to approve.",
         "Doing that yourself is about 20 hours a month of finding brands, hunting contacts and writing pitches. "

@@ -65,8 +65,10 @@ How to work:
   "keep it professional", "I don't do UGC", "use my own template: ...") = save_profile_facts with the pitch
   preference fields. If a card is on screen and they want it changed too, also call edit_pitch. You may
   advise against a preference once (e.g. brands often look for engagement), but save it if they insist.
-- A brand said yes and they want help replying, or they posted and want to get paid for it =
-  draft_brand_reply (moment interested or posted). It writes the reply with the usage rate.
+- A brand answered and they want help replying = draft_brand_reply, with reply_type read from what the brand
+  actually said: gifted_yes (sending product), paid_offer (offered money; pass offer_amount), question,
+  redirect (forward / other inbox), problem (delivery issue), other. They posted and want to get paid =
+  moment posted. Free creators get their reply too; never tell them replying needs Pro.
 - Who's gifting / sending PR right now, brands that gift small creators, "who's gifting in skincare" =
   find_gifting_brands (live TikTok evidence). The server writes that reply and the cards; never add brands,
   numbers or creators of your own, and never suggest contacting the creators in the example videos.
@@ -99,6 +101,9 @@ How to work:
 - Never promise views, followers or virality. Say what tends to work and why, from their own posts.
 - They tell you their city/country, preferences, goal, niche or challenge = save_profile_facts.
   Only a real place counts as a city; a button label or status ("They replied") is not a location.
+- They want sending to stop or pause ("stop sending", "don't send emails now", "pause", "stop following up")
+  or to start again = pause_outreach. Never say anything is paused, stopped, switched off or back on unless
+  pause_outreach returned it this turn; then say its say line.
 - Out of free pitches, Pro, credits reset, can't afford = offer_pro. No calendar dates for resets.
 - Questions about how Newcollab works (gifted lists, statuses, replies, credits, Pro, cancelling): answer
   directly from HOW NEWCOLLAB WORKS below. Never answer a real question with a menu of options.
@@ -356,6 +361,19 @@ _EDIT_CLAIM_RE = re.compile(
     r"(?i)\b(updated|changed|rewr(o|i)te|rewritten|edited|removed|took out|taken out|tweaked|revised|"
     r"new version|fresh version|drafted a new)\b"
 )
+_PAUSE_CLAIM_RE = re.compile(
+    r"(?i)\b(i('ve| have)|i'?ll|is|are|now|all)\s+(paused|stopped|switched off|turned off|cancelled|resumed|"
+    r"switched (it |everything )?back on|turned (it |everything )?back on)\b|"
+    r"\bnothing (will|'?ll) (be sent|go out|send)\b|\bkeep everything paused\b"
+)
+_HUMAN_CLAIM_RE = re.compile(
+    r"(?i)\b(i'?m|i am)\s+(not an? ai|a real (person|human|manager)|human)\b|\bnot an ai\b|"
+    r"\bi joined newcollab\b"
+)
+_OUT_OF_FREE_RE = re.compile(
+    r"(?i)\b(out of (your )?free pitches|no free pitches left|0 free pitch(es)?|zero free pitches|"
+    r"used (up )?(all )?(of )?your (3 )?free pitches)\b"
+)
 _PITCH_WORD_RE = re.compile(r"(?i)\b(pitch|draft|email|card|version|subject|engagement)\b")
 _CREDIT_LINE_RE = re.compile(
     r"(?i)[^.!?\n]*\b(\d+|no|zero|one|two|three)\s+(free\s+)?(pitch(es)?|unlocks?|credits?)\s+(left|remaining)\b[^.!?\n]*[.!?]?"
@@ -410,6 +428,21 @@ def reply_problems(state: TurnState, reply: str) -> List[str]:
     ):
         problems.append("The reply says the pitch was changed, but edit_pitch did not change it this turn. "
                         "Say it hasn't changed yet, or call edit_pitch.")
+    if _PAUSE_CLAIM_RE.search(text) and not state.tools_ran("pause_outreach") and not tracker_turn:
+        problems.append("The reply says sending was paused, stopped or resumed, but pause_outreach did not run "
+                        "this turn. Say nothing has been paused yet and ask if they want Autopilot paused.")
+    if _HUMAN_CLAIM_RE.search(text):
+        problems.append("Polly is Newcollab's AI manager. Never claim to be human or deny being an AI; if asked, "
+                        "say plainly you're Newcollab's AI talent manager.")
+    bal = state.balance or {}
+    try:
+        left = int(bal.get("remaining")) if bal.get("remaining") is not None else None
+    except (TypeError, ValueError):
+        left = None
+    if _OUT_OF_FREE_RE.search(text) and not state.paywall and (
+            bal.get("is_unlimited") or (left is not None and left > 0)):
+        problems.append("They are not out of free pitches" + (" (they're on Pro)" if bal.get("is_unlimited") else
+                        f" ({left} left)") + ". Don't say they're out, and don't count free pitches yourself.")
     known = state.known_brand_names()
     typed = (state.user_text or "").lower()
     for name in _bold_names(text):

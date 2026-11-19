@@ -470,7 +470,7 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         state.paywall_payload = {
             "remaining": pkg.get("remaining", 0),
             "reset_at": pkg.get("reset_at"),
-            "message": pkg.get("message") or "You've used all 3 unlocks this month.",
+            "message": pkg.get("message") or "You've used your 3 free pitches this month.",
             "brand_name": brand_name,
             "brand_id": brand_id,
             "preview": paywall_preview_lines(brand_name, state.first, _niche(state)),
@@ -1423,12 +1423,19 @@ def _reply_thread(state: TurnState, brand_id: Optional[int], name: str) -> Dict[
 
 def draft_brand_reply(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     from services.paid_ask import (
-        ADDRESS_LINE, USAGE_DAYS, ad_usage_ask, free_teaser, interested_reply, mailto, reply_preview,
-        usage_rate,
+        ADDRESS_LINE, USAGE_DAYS, ad_usage_ask, free_teaser, interested_reply, mailto, paid_offer_reply,
+        reply_preview, usage_rate,
     )
     from services.polly_gigs import creator_followers
 
     posted = str(args.get("moment") or "").strip().lower() == "posted"
+    reply_type = str(args.get("reply_type") or "gifted_yes").strip().lower()
+    if not posted and reply_type in ("question", "redirect", "problem", "other"):
+        # Not a yes: no template card. Polly answers what the brand actually said, in chat, free.
+        return {"ok": True, "status": "answer_in_chat", "reply_type": reply_type,
+                "how": "Help them answer what the brand actually said, in 2-4 lines they can paste: answer the "
+                       "question, forward to the person named, or sort the delivery problem with the brand. No "
+                       "template, no placeholders, and use the real brand name."}
     name = str(args.get("brand_name") or "").strip()
     row = find_brand(state, brand_id=args.get("brand_id"), brand_name=name)
     brand_id = _int((row or {}).get("id") or args.get("brand_id"))
@@ -1439,8 +1446,11 @@ def draft_brand_reply(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     rate = usage_rate(followers)
     thread = _reply_thread(state, brand_id, brand_name)
     first = state.first or ""
+    paid_offer = not posted and reply_type == "paid_offer"
     if posted:
         mail = ad_usage_ask(brand_name, first, followers, subject=thread["subject"])
+    elif paid_offer:
+        mail = paid_offer_reply(brand_name, first, str(args.get("offer_amount") or ""), subject=thread["subject"])
     else:
         creator = state.creator or {}
         full = " ".join(p for p in (creator.get("first_name"), creator.get("last_name")) if p).strip()
@@ -1449,7 +1459,10 @@ def draft_brand_reply(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         address = creator.get("shipping_address")
         mail = interested_reply(brand_name, first, full, ship_to, followers,
                                 subject=thread["subject"], address=address if isinstance(address, dict) else None)
-    if not state.balance.get("is_unlimited"):
+    free = not state.balance.get("is_unlimited")
+    # A brand answering is the moment that matters most: free creators get their reply written too. Only the
+    # post-content ad-usage ask stays on Pro.
+    if free and posted:
         state.final_say = free_teaser(brand_name, followers, posted=posted)
         state.paywall_payload = {
             "brand_name": brand_name,
@@ -1468,7 +1481,7 @@ def draft_brand_reply(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         "email": thread["email"] or None,
         "mailto": mailto(thread["email"], mail["subject"], mail["body"]),
         "is_reply": True,
-        "reply_kind": "ad_usage" if posted else "interested",
+        "reply_kind": "ad_usage" if posted else ("paid_offer" if paid_offer else "interested"),
     }
     state.brands = []
     try:
@@ -1481,7 +1494,10 @@ def draft_brand_reply(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         print(f"[Polly] reply event skipped: {err}")
         state.db().rollback()
     needs_street = ADDRESS_LINE in mail["body"]
-    if posted:
+    if paid_offer:
+        say = (f"Here's your reply to **{brand_name}**: a yes that pins down the budget, deliverables and usage "
+               "before you film. **Send it as a reply in your thread with them.**")
+    elif posted:
         say = (f"Here's the ask for **{brand_name}**: {USAGE_DAYS} days of ad usage for **${rate}**, "
                "raw file included. Send it as a reply in your thread with them.")
     else:
@@ -1490,6 +1506,9 @@ def draft_brand_reply(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
                "asking now costs nothing.")
         if needs_street:
             say += " **Fill in your street address** before you send."
+    if free:
+        from services.pro_offer import SHORT
+        say += f"\n\nOn Pro I keep this going for you: {SHORT[0].lower() + SHORT[1:]}, follow-ups included."
     state.final_say = say
     return {
         "ok": True,
@@ -1518,11 +1537,38 @@ def offer_pro(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
                     "Every Monday a board with the week: setup, paid briefs to apply to, and replies to send. "
                     "When a brand says yes, "
                     "Polly writes the reply with a usage rate to run the video as an ad. To change who gets "
-                    "pitched they adjust niche and targets in Settings. Unlimited roster applications.",
+                    "pitched they adjust niche and targets in Settings.",
         "free_path": "Follow-ups are free. Publishing the kit is free. Drafts left unsent for 7 days "
-                     "give the credit back.",
+                     "give the free pitch back.",
         "button_shown_for": (target or {}).get("name"),
     }
+
+
+def pause_outreach(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Stop / pause / resume what gets sent for them. The only way Polly may say anything is paused."""
+    from services.outreach_pause import apply
+
+    action = str(args.get("action") or "").strip()
+    result = apply(state.db(), state.creator_id, action)
+    if not result.get("ok"):
+        return result
+    if not result.get("has_autopilot") and action != "stop_followups":
+        result["status"] = "nothing_running"
+        result["say"] = ("Nothing sends on its own for them: Autopilot isn't set up, and pitches only go out "
+                         "when they tap send.")
+        return result
+    if action == "pause_all":
+        result["status"] = "paused"
+        result["say"] = ("Autopilot is now off: no new pitches and no follow-ups go out until they switch it "
+                         "back on (here, or in Autopilot settings).")
+    elif action == "stop_followups":
+        result["status"] = "followups_stopped"
+        result["say"] = (f"Follow-ups are off: {result.get('followups_cancelled') or 0} scheduled follow-up(s) "
+                         "cancelled, and new pitches go out without follow-ups.")
+    else:
+        result["status"] = "resumed"
+        result["say"] = "Autopilot is back on, with follow-ups. Pitches go out on their next send day."
+    return result
 
 
 # ----- registry -------------------------------------------------------------
@@ -1849,15 +1895,19 @@ TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "draft_brand_reply",
-        "description": "Write the creator's reply to a brand that said yes to gifting (moment=interested: "
-                       "shipping address plus a paid usage rate to run the video as an ad), or the ask "
-                       "after they posted (moment=posted: 'can you run this as an ad?'). Use when they say "
-                       "a brand is interested / said yes and want help replying, or they posted and want "
-                       "to get paid. Shows it as a card on Pro; on free it returns the one-line version.",
+        "description": "Write the creator's reply to a brand that answered. moment=interested with reply_type: "
+                       "gifted_yes (they'll send product: shipping address plus a paid usage rate), "
+                       "paid_offer (they offered money: confirm budget, deliverables, brief and usage terms; "
+                       "pass offer_amount if they said it), question (the brand asked something), redirect "
+                       "(forward to someone else / another inbox), problem (delivery issue, wrong address), "
+                       "other. moment=posted: the ask after they posted ('can you run this as an ad?'). Read "
+                       "what the brand said before picking reply_type; never use gifted_yes for a paid offer.",
         "parameters": _obj({
             "brand_name": _STR,
             "brand_id": _INT,
             "moment": {**_STR, "enum": ["interested", "posted"]},
+            "reply_type": {**_STR, "enum": ["gifted_yes", "paid_offer", "question", "redirect", "problem", "other"]},
+            "offer_amount": {**_STR, "description": "The amount the brand offered, as they wrote it, e.g. $150"},
         }, ["brand_name"]),
         "handler": draft_brand_reply,
     },
@@ -1900,6 +1950,15 @@ TOOLS: List[Dict[str, Any]] = [
             "goal": {**_STR, "description": "e.g. more views, more followers, land brand deals"},
         }, ["task"]),
         "handler": content_assist,
+    },
+    {
+        "name": "pause_outreach",
+        "description": "Actually stop or restart what gets sent from their Gmail. action=pause_all when they "
+                       "want nothing sent for now ('stop sending', 'pause', 'don't send emails', 'I'm busy, "
+                       "hold off'); stop_followups when they only want follow-ups to stop; resume when they "
+                       "want it back on. Say only what it returns.",
+        "parameters": _obj({"action": {**_STR, "enum": ["pause_all", "stop_followups", "resume"]}}, ["action"]),
+        "handler": pause_outreach,
     },
     {
         "name": "offer_pro",

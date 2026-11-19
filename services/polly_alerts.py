@@ -46,7 +46,7 @@ QUOTA_EMAIL_OVERLAP = timedelta(days=3)
 CHECKOUT_RECOVERY_OVERLAP = timedelta(days=7)
 
 PRO_LINE = (
-    "On Pro ($19/mo) I pitch 3 new matched brands for you every weekday, each one written "
+    "On Pro ($19/mo) I send up to 20 brand pitches daily for you, each one written "
     "for that brand and sent from your Gmail, with follow-ups on day 4 and day 10. That's daily outreach "
     "you couldn't keep up by hand. Nothing to approve."
 )
@@ -274,7 +274,7 @@ def kit_view_email(
         }]
         links = None
         if not is_pro:
-            lines.append("On Pro the brand's name shows right here, and I pitch 3 brands like this for you every weekday.")
+            lines.append("On Pro the brand's name shows right here, and I send up to 20 brand pitches daily for you.")
             links = [{"label": "See what Pro does ($19/mo)", "href": upgrade_link("kit_view_pro")}]
         return {
             "subject": subject,
@@ -286,7 +286,7 @@ def kit_view_email(
         lines = [
             f"<strong>{escape(brand_name)}</strong> opened your Newcollab kit. That's a real look.",
             "Brands decide fast. A two-line follow-up today beats a perfect one next week — "
-            "and follow-ups never use a credit.",
+            "and follow-ups never use a free pitch.",
         ]
         buttons = [
             {"label": f"Draft {brand_name} follow-up", "href": chip_link("draft_followup", brand_id=brand_id, brand_name=brand_name, kind="kit_view")},
@@ -303,12 +303,12 @@ def kit_view_email(
         lines = [
             f"{escape(who)} opened your Newcollab kit just now.",
             "Open Polly to see who it was and send a short follow-up while you're top of mind. "
-            "Follow-ups never use a credit.",
+            "Follow-ups never use a free pitch.",
         ]
         buttons = [
             {"label": "See who & follow up", "href": chip_link("draft_followup", brand_id=brand_id, kind="kit_view")},
         ]
-        lines.append("On Pro the brand's name shows right here, and I pitch 3 brands like this for you every weekday.")
+        lines.append("On Pro the brand's name shows right here, and I send up to 20 brand pitches daily for you.")
     links = None if is_pro else [{"label": "See what Pro does ($19/mo)", "href": upgrade_link("kit_view_pro")}]
     return {
         "subject": subject,
@@ -736,7 +736,7 @@ def unsent_brief_email(first_name: str, drafts: List[Dict[str, Any]], career: Op
     if progress:
         lines.append(progress)
     lines.append('<span style="color:#6B7280;">Rather not do this part? On <strong>Pro ($19/mo)</strong> I send '
-                 'every pitch for you, plus new brands every weekday, up to 20 a day.</span>')
+                 'every pitch for you: up to 20 brand pitches daily.</span>')
     buttons = [{
         "label": f"Send my {name} pitch" if len(drafts) == 1 else "Send them from my Gmail",
         "href": chip_link("send_draft", brand_id=top.get("brand_id"), brand_name=name, kind="polly_brief"),

@@ -114,7 +114,7 @@ class ProConversionTests(unittest.TestCase):
         say = persona_paywall_say("Glow Co", kit_views=2)
         self.assertIn("Glow Co", say)
         self.assertIn("$19/mo", say)
-        self.assertIn("every weekday", say)
+        self.assertIn("Up to 20 brand pitches daily", say)
         self.assertNotIn("one yes", say)
         self.assertLess(len(say), 600)
         self.assertIn("**2** brands opened your kit", say)
