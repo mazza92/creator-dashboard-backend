@@ -637,11 +637,13 @@ def _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=F
     from services.polly_autopilot import _creator_names
     pitch = finalize_for(conn, creator_id, brand_id, pitch, notes,
                          first_name=_creator_names(conn, creator_id).get("first") or "", angle=angle) or pitch
+    from services.brand_names import clean_brand_name, clean_names_in_pitch
+    pitch = clean_names_in_pitch(pitch, brand["brand_name"])
     body = drop_location_placeholder(pitch.get("body") or "")
     if not body:
         return None, "draft_failed"
     item = add_draft(
-        conn, creator_id, brand_id, brand["brand_name"], brand["email"],
+        conn, creator_id, brand_id, clean_brand_name(brand["brand_name"]), brand["email"],
         pitch.get("subject") or f"{brand['brand_name']} collab", body, announced=announced,
         meta={**(pitch.get("pitch_meta") if isinstance(pitch.get("pitch_meta"), dict) else {}), "offer": focus},
     )
