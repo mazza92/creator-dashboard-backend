@@ -194,5 +194,26 @@ class FollowupFailureTests(unittest.TestCase):
         self.assertNotIn("followup_status", sets[-1])
 
 
+class MatchingTests(unittest.TestCase):
+    def test_creators_with_rates_or_a_big_audience_ask_for_paid_more(self):
+        from services.creator_tracker import paid_share
+        base = paid_share(20000, 1500)
+        self.assertGreaterEqual(paid_share(20000, 1500, has_rates=True), 0.5)
+        self.assertGreaterEqual(paid_share(20000, 84000), 0.6)
+        self.assertLessEqual(base, paid_share(20000, 1500, has_rates=True))
+
+    def test_spf_never_gets_a_night_routine_idea(self):
+        from services.pitch_writer import build_facts
+        facts = build_facts({"body": "Hi", "product_name": "Unseen Sunscreen SPF 40", "niche": "skincare"},
+                            brand={"brand_name": "Supergoop!", "category": "skincare"},
+                            profile={"tone": "brief"}, seed="x")
+        self.assertFalse(any("night" in i for i in facts["ideas"]))
+
+    def test_each_niche_has_six_ideas(self):
+        from services.pitch_writer import DEFAULT_IDEAS, IDEA_BANK
+        self.assertTrue(all(len(v) >= 6 for v in IDEA_BANK.values()))
+        self.assertGreaterEqual(len(DEFAULT_IDEAS), 6)
+
+
 if __name__ == "__main__":
     unittest.main()

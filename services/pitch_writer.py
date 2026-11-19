@@ -56,30 +56,44 @@ TONES: Dict[str, Dict[str, str]] = {
 }
 DEFAULT_TONE = "brief"
 
+# Six ideas a niche, rotated per brand (seeded), so a creator's pitches don't all propose the same video
+# (Nov 2026 audit: 107 of 603 Pro sends pitched "one product, three looks").
 IDEA_BANK: Dict[str, List[str]] = {
     "skincare": ["a 15-second texture + first-use video", "a 'my night routine' video with it as the first step",
-                 "a '3 products I'd actually rebuy' video with it as the pick"],
+                 "a '3 products I'd actually rebuy' video with it as the pick", "an honest 7-day skin diary",
+                 "a 'what's on my bathroom shelf' video with it front and centre",
+                 "a 'skincare I'd recommend to my sister' video"],
     "beauty": ["a get-ready-with-me video built around it", "a 'one product, three looks' video",
-               "a 15-second before/after reveal"],
+               "a 15-second before/after reveal", "a 'wear test: 8 hours later' video",
+               "an 'everyday 5-minute look' tutorial with it as the star", "a 'what's in my makeup bag' video"],
     "haircare": ["a wash-day routine video with it as the hero step", "a 15-second before/after on second-day hair",
-                 "a 'how I get this volume' tutorial"],
+                 "a 'how I get this volume' tutorial", "an honest two-week hair check-in",
+                 "a 'heatless styling' video featuring it", "a 'my hair essentials' video"],
     "wellness": ["a 'my morning reset' video with it in the routine", "an honest week-one check-in video",
-                 "a 'what's in my bag' video featuring it"],
+                 "a 'what's in my bag' video featuring it", "a 'small habits that changed my week' video",
+                 "an 'evening wind-down' routine with it in shot", "a 'what I actually use daily' video"],
     "home": ["a 15-second 'room reset' video featuring it", "a 'small upgrades that changed my space' video",
-             "a cosy evening routine video with it in shot"],
+             "a cosy evening routine video with it in shot", "a 'Sunday reset' video featuring it",
+             "a 'before/after corner makeover' video", "a 'things I'd buy again for my home' video"],
     "food": ["a quick 'what I eat in a day' video featuring it", "a 30-second recipe with it as the star",
-             "a first-taste reaction video"],
+             "a first-taste reaction video", "a 'pantry staples I always restock' video",
+             "a '5-minute lunch' video with it", "an honest taste test against what I usually buy"],
     "fashion": ["a 'one piece, three outfits' video", "a try-on haul with it as the hero piece",
-                "a 'how I style it for the week' video"],
+                "a 'how I style it for the week' video", "a 'get dressed with me' video featuring it",
+                "a 'pieces I wear on repeat' video", "a 'day-to-night' outfit switch with it"],
     "fitness": ["a 'what I take to the gym' video with it", "a workout routine video featuring it",
-                "a 15-second before/after-workout clip"],
+                "a 15-second before/after-workout clip", "a 'my training week' vlog with it in the routine",
+                "an honest 2-week test video", "a 'gym bag essentials' video"],
     "pet": ["a day-in-the-life video with my pet and it", "a first-reaction unboxing with my pet",
-            "a 'pet routine' video featuring it"],
+            "a 'pet routine' video featuring it", "a 'things my pet can't live without' video",
+            "an honest one-week test with my pet", "a 'walk with us' video featuring it"],
     "tech": ["a 30-second 'how I use it every day' video", "a desk setup video featuring it",
-             "a quick unboxing + first-impressions video"],
+             "a quick unboxing + first-impressions video", "a 'tech I actually use' video",
+             "an honest one-week review", "a 'productivity setup' video with it"],
 }
 DEFAULT_IDEAS = ["a 15-second unboxing + first-impression video", "a 'how I use it every day' video",
-                 "a '3 things I love about it' video"]
+                 "a '3 things I love about it' video", "an honest one-week review video",
+                 "a 'things I'd buy again' video featuring it", "a day-in-my-life video with it in shot"]
 
 CLOSES = {"brief": "Worth a try?", "warm": "Would love to make this for you.", "upbeat": "Want to give it a go?",
           "playful": "Up for a little test video?", "professional": "Would this be of interest?",
@@ -393,6 +407,11 @@ def build_facts(pitch: Dict[str, Any], *, brand: Dict[str, Any], profile: Dict[s
     product = clean_product(pitch.get("product_name") or brand.get("hero_product") or "")
     niche = (pitch.get("niche") or (pitch.get("creator_stats") or {}).get("niche") or "").strip()
     ideas = ideas_for(niche or brand.get("category") or "")
+    # Sunscreen isn't a night product (Nov 2026: a Supergoop pitch proposed a night-routine video).
+    if re.search(r"(?i)\b(spf|sunscreen|sun ?cream|sun ?screen|uv)\b",
+                 f"{product} {brand_name} {brand.get('hero_product') or ''} {brand.get('description') or ''}"):
+        ideas = [i.replace("night routine", "morning routine").replace("evening wind-down", "morning routine")
+                 for i in ideas]
     lead = str(prefs.get("lead_metric") or "").lower()
     engagement = pitch.get("engagement") if prefs.get("show_engagement_rate", True) is not False else ""
     posts = profile.get("proof_posts") or stats.get("top_posts") or []

@@ -162,6 +162,55 @@ def _oldest_shown_first(rows: List[Dict[str, Any]], notes: Dict[str, Any]) -> Li
     return sorted(rows or [], key=lambda b: _shown_rank(b, notes))
 
 
+def _creator_followers(state: TurnState) -> int:
+    try:
+        from services.creator_tracker import creator_profile
+        return int(creator_profile(state.db(), state.creator_id).get("followers") or 0)
+    except Exception:
+        try:
+            state.db().rollback()
+        except Exception:
+            pass
+        return 0
+
+
+def _by_reach(state: TurnState, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Same order as Autopilot (routes.polly_autopilot._rank_by_reach): brands in reach of this creator's audience
+    first, stretch next, far out of reach last. Nothing is dropped, so the pool keeps its size."""
+    try:
+        from routes.polly_autopilot import _rank_by_reach
+        keyed = [{**r, "id": r.get("id") or r.get("brand_id")} for r in rows]
+        order = {id(k): r for k, r in zip(keyed, rows)}
+        return [order[id(k)] for k in _rank_by_reach(state.db(), keyed, _creator_followers(state))]
+    except Exception as err:
+        print(f"[Polly] reach order skipped: {err}")
+        return rows
+
+
+LONG_SHOT = 5.0  # a brand asking for more than 5x the creator's audience
+
+
+def long_shot_note(state: TurnState, brand_id: Optional[int], brand_name: str) -> str:
+    """One honest line when a brand usually works with much bigger creators. The pitch still goes out."""
+    if not brand_id:
+        return ""
+    followers = _creator_followers(state)
+    if followers <= 0:
+        return ""
+    try:
+        cur = state.db().cursor()
+        cur.execute("SELECT min_followers FROM pr_brands WHERE id = %s", (int(brand_id),))
+        row = cur.fetchone()
+        need = int((row or [0])[0] or 0)
+    except Exception:
+        state.db().rollback()
+        return ""
+    if need <= followers * LONG_SHOT:
+        return ""
+    return (f"Honest heads-up: **{brand_name}** usually works with creators from about {need:,} followers, so "
+            "treat this one as a long shot. Pair it with a couple of brands in your range and your odds go up a lot.")
+
+
 def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     from services.niche_check import conflict as niche_conflict
     from services.niche_check import mark_asked, question
@@ -240,6 +289,7 @@ def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     from services.polly import balance_by_niche
     from services.polly_discovery import stated_niches as _stated
     rows = balance_by_niche(rows, recorded_niches(state.creator) or _stated(state.notes))
+    rows = _by_reach(state, rows)
     cap = 3 if (state.chip or {}).get("id") == "first_matches" else 6
     rows = rows[:cap]
     if not rows:
@@ -533,6 +583,10 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     state.pitch = pitch
     if not pitch.get("is_reply"):
         remember_outbox(state, pitch, brand_id, fresh=True)
+    if not followup:
+        note = long_shot_note(state, brand_id, brand_name)
+        if note:
+            state.say_tail.append(note)
     state.brands = []
     state.add_chips(pitch_confirm_chips({"id": brand_id, "name": brand_name}))
     state.balance = R._unlock_balance(state.creator_id)
@@ -837,6 +891,20 @@ def _dress_pitch(state: TurnState, pitch: Dict[str, Any], shipping: Dict[str, An
         pitch_paid = True
     elif planned == "gifted":
         pitch_paid = False
+    elif (not followup and planned is None and not gifted_only(state.notes)
+          and state.notes.get("deal_intent") != "gifted"):
+        # No plan for this brand: the same paid / gifted mix Autopilot uses (goal, rates on the kit, audience),
+        # instead of gifted by default (most chat pitches said "No fee").
+        # Nano creators without rates keep the gifted ask (their best odds of a first yes).
+        try:
+            from services.creator_tracker import creator_profile, kit_has_rates, next_offer
+            conn = state.db()
+            if kit_has_rates(conn, state.creator_id) or creator_profile(conn, state.creator_id)["followers"] >= 2000:
+                pitch_paid = pitch_paid or next_offer(conn, state.creator_id,
+                                                      state.notes.get("deal_intent")) == "paid"
+        except Exception as err:
+            print(f"[Polly] offer mix skipped: {err}")
+            state.db().rollback()
     if not followup:
         if pitch_paid:
             pitch = apply_paid_ask_to_pitch(pitch, kit=state.kit, scrape=state.scrape,

@@ -438,13 +438,35 @@ def pitch_offer(meta: Optional[Dict[str, Any]], body: Optional[str] = None) -> s
 PAID_SHARE_MIN, PAID_SHARE_MAX = 0.3, 0.8
 
 
-def paid_share(goal_cents: int, followers: int, deal_intent: Optional[str] = None) -> float:
+# Nov 2026 audit: 90% of pitches said "No fee", including creators with rates on their kit and 84k-546k
+# followers. Creators who've priced their work, or have the audience brands pay for, ask for paid more often.
+PAID_SHARE_WITH_RATES = 0.5
+PAID_SHARE_BIG_AUDIENCE = 0.6
+BIG_AUDIENCE = 20000
+
+
+def paid_share(goal_cents: int, followers: int, deal_intent: Optional[str] = None, has_rates: bool = False) -> float:
     low, high = rate_band(followers)
     videos = goal_cents / ((low + high) / 2)          # paid videos the goal is worth
     share = PAID_SHARE_MIN + (PAID_SHARE_MAX - PAID_SHARE_MIN) * min(1.0, max(0.0, (videos - 1) / 6))
+    if has_rates:
+        share = max(share, PAID_SHARE_WITH_RATES)
+    if followers >= BIG_AUDIENCE:
+        share = max(share, PAID_SHARE_BIG_AUDIENCE)
     if deal_intent == "paid":
         share = max(share, 0.7)
     return round(share, 2)
+
+
+def kit_has_rates(conn, creator_id: int) -> bool:
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT rates_reel, rates_tiktok, rates_photo FROM creators WHERE id = %s", (creator_id,))
+        row = cur.fetchone()
+        return bool(row) and any(v not in (None, 0, "", "0") for v in row)
+    except Exception:
+        conn.rollback()
+        return False
 
 
 def next_offer(conn, creator_id: int, deal_intent: Optional[str] = None) -> str:
@@ -453,7 +475,7 @@ def next_offer(conn, creator_id: int, deal_intent: Optional[str] = None) -> str:
     prof = creator_profile(conn, creator_id)
     cents = int(goal["amount_cents"]) if goal else next(
         o["amount_cents"] for o in suggest_goal(prof)["options"] if o["id"] == "suggested")
-    share = paid_share(cents, prof["followers"], deal_intent)
+    share = paid_share(cents, prof["followers"], deal_intent, has_rates=kit_has_rates(conn, creator_id))
     cur = conn.cursor()
     cur.execute("""SELECT pitch_meta, LEFT(body, 2000) FROM polly_autopilot_queue
                    WHERE creator_id = %s AND created_at >= date_trunc('month', NOW()) AND status <> 'skipped'""",
