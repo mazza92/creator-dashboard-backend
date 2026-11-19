@@ -2,7 +2,11 @@
 creator activity. Built from events we already store, so nothing new has to be written for it:
 
 - a brand replied / made an offer (creator_deals)
-- a brand opened the creator's kit (polly_timeline_events portfolio_viewed), grouped per brand per day
+- a brand viewed the creator's portfolio (polly_timeline_events portfolio_viewed), grouped per brand per day
+- new brands added to the directory in the creator's niches, grouped per day
+- brands newly found running UGC ads (hot brands) in the creator's niches, grouped per day
+- new paid UGC gigs matching the creator's niches, grouped per day (also the UGC gigs tab badge: new since the
+  creator last opened that page, creator_activity_seen.gigs_seen_at)
 - Polly pitched brands for them (polly_autopilot_queue sends, and pitches sent from the app), grouped per day
 - follow-ups sent, grouped per day
 - paid UGC gigs Autopilot applied to, grouped per day
@@ -32,6 +36,7 @@ def ensure_table(conn) -> None:
     cur = conn.cursor()
     cur.execute("""CREATE TABLE IF NOT EXISTS creator_activity_seen (
         creator_id INTEGER PRIMARY KEY, seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+    cur.execute("ALTER TABLE creator_activity_seen ADD COLUMN IF NOT EXISTS gigs_seen_at TIMESTAMPTZ")
     conn.commit()
     _READY = True
 
@@ -94,7 +99,7 @@ def build_items(conn, creator_id: int, now: Optional[datetime] = None) -> List[D
                             GROUP BY 1, 2, 3""", (creator_id, since)):
         n = int(v.get("n") or 1)
         items.append({"id": f"view-{v['brand_id']}-{v['day']}", "kind": "kit_view", "icon": "eye", "at": _aware(v["at"]),
-                      "text": f"{v.get('brand_name') or 'A brand'} opened your kit" + (f" {n}×" if n > 1 else ""),
+                      "text": f"{v.get('brand_name') or 'A brand'} viewed your portfolio" + (f" {n}×" if n > 1 else ""),
                       "sub": "A follow-up lands well now", "href": tracker_href(v.get("brand_id"))})
 
     sends: Dict[Any, Dict[str, Any]] = {}
@@ -141,6 +146,16 @@ def build_items(conn, creator_id: int, now: Optional[datetime] = None) -> List[D
                       "text": f"{n} follow-up{'s' if n != 1 else ''} sent", "sub": _names(g["names"]),
                       "href": "/creator/dashboard/tracker"})
 
+    niches = creator_niches(conn, creator_id)
+    cats = niche_categories(niches)
+    label = _niche_label(niches)
+    items += _brand_items(conn, cats, label, now - timedelta(days=DISCOVER_DAYS))
+    for day, g in _group_by_day(new_gigs(conn, creator_id, now - timedelta(days=DISCOVER_DAYS), niches)).items():
+        n = len(g["names"])
+        items.append({"id": f"newgig-{day}", "kind": "new_gigs", "icon": "gig", "at": g["at"],
+                      "text": f"{n} new paid UGC gig{'s' if n != 1 else ''}{f' in {label}' if label else ''}",
+                      "sub": _names(g["names"]), "href": "/creator/dashboard/paid-gigs"})
+
     pulse = pulse_today(conn, creator_id, now.date())
     if pulse:
         items.append({"id": f"pulse-{pulse['day']}", "kind": "pulse", "icon": "pulse",
@@ -158,6 +173,128 @@ def build_items(conn, creator_id: int, now: Optional[datetime] = None) -> List[D
                          "text": "Your last Pro payment didn't go through",
                          "sub": "Update your card or cancel in Settings", "href": "/creator/dashboard/settings"})
     return items
+
+
+DISCOVER_DAYS = 14  # new brands / hot brands / new gigs: only recent discoveries are news
+
+
+def niche_categories(niches: List[str]) -> List[str]:
+    try:
+        from services.polly_discovery import categories_for_niches
+        return [c.lower() for c in categories_for_niches([str(n).lower() for n in niches])]
+    except Exception:
+        return [str(n).lower() for n in niches]
+
+
+def _niche_label(niches: List[str]) -> str:
+    return str(niches[0]).replace("_", " ").lower() if niches else ""
+
+
+def _group_by_day(rows: List[Dict[str, Any]]) -> Dict[date, Dict[str, Any]]:
+    out: Dict[date, Dict[str, Any]] = {}
+    for r in rows:
+        at = _aware(r.get("at"))
+        if not at:
+            continue
+        g = out.setdefault(at.date(), {"names": [], "at": at})
+        if r.get("name") and r["name"] not in g["names"]:
+            g["names"].append(r["name"])
+        g["at"] = max(g["at"], at)
+    return out
+
+
+def _brand_items(conn, cats: List[str], label: str, since: datetime) -> List[Dict[str, Any]]:
+    """New directory brands in the creator's categories, and brands newly seen running UGC ads (the 🔥 hot ones:
+    found by the Meta Ads Library crawl, or an existing brand whose ads were first seen recently). A hot brand is
+    only counted once, as hot."""
+    if not cats:
+        return []
+    rows = _rows(conn, """
+        SELECT b.id, b.brand_name AS name, b.created_at, b.source, s.ads_first_seen, s.ugc_style
+        FROM pr_brands b LEFT JOIN brand_ad_signals s ON s.brand_id = b.id
+        WHERE b.status = 'published' AND LOWER(COALESCE(b.category, '')) = ANY(%s)
+          AND (b.created_at >= %s OR s.ads_first_seen >= %s::date)""", (cats, since, since))
+    hot, new = [], []
+    for r in rows:
+        created = _aware(r.get("created_at"))
+        first_ads = _aware(r.get("ads_first_seen"))
+        if r.get("source") == "meta_ads_library" and created and created >= since:
+            hot.append({"name": r["name"], "at": created})
+        elif first_ads and first_ads >= since and r.get("ugc_style") is not False:
+            hot.append({"name": r["name"], "at": first_ads})
+        elif created and created >= since:
+            new.append({"name": r["name"], "at": created})
+    where = f" in {label}" if label else ""
+    items: List[Dict[str, Any]] = []
+    for day, g in _group_by_day(hot).items():
+        n = len(g["names"])
+        items.append({"id": f"hot-{day}", "kind": "hot_brands", "icon": "hot", "at": g["at"],
+                      "text": (f"{g['names'][0]} started running UGC ads" if n == 1
+                               else f"{n} {label + ' ' if label else ''}brands started running UGC ads"),
+                      "sub": "Brands paying for UGC now: pitch them while it's hot" if n == 1 else _names(g["names"]),
+                      "href": "/creator/dashboard/pr-brands"})
+    for day, g in _group_by_day(new).items():
+        n = len(g["names"])
+        items.append({"id": f"newbrand-{day}", "kind": "new_brands", "icon": "brand", "at": g["at"],
+                      "text": f"{n} new brand{'s' if n != 1 else ''}{where} added",
+                      "sub": _names(g["names"]), "href": "/creator/dashboard/pr-brands"})
+    return items
+
+
+def new_gigs(conn, creator_id: int, since: datetime, niches: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """Live paid gigs published since `since` that match the creator's niches (same fit rule as the gigs page)."""
+    if niches is None:
+        niches = creator_niches(conn, creator_id)
+    if not niches:
+        return []
+    rows = _rows(conn, """
+        SELECT id, brand_name, brand_category, product_name, campaign_description, creator_niches, listing_brief,
+               COALESCE(published_at, created_at) AS at
+        FROM opportunities
+        WHERE status = 'live' AND (closes_at IS NULL OR closes_at > NOW())
+          AND COALESCE(published_at, created_at) >= %s
+          AND (additional_notes ILIKE '%%[scanner:%%'
+               OR (pr_brand_id IS NULL AND COALESCE(spots_filled, 0) < COALESCE(NULLIF(spots_total, 0), 1)))
+        ORDER BY 8 DESC LIMIT 300""", (since,))
+    if not rows:
+        return []
+    try:
+        from opportunities_routes import _score_opportunity_fit, _tokenize_niche_blob
+    except Exception as err:
+        print(f"[activity] gig matching unavailable: {err}")
+        return []
+    tokens = _tokenize_niche_blob(list(niches))
+    out = []
+    for r in rows:
+        try:
+            matched = _score_opportunity_fit(tokens, r)[1]
+        except Exception:
+            matched = False
+        if matched:
+            brief = r.get("listing_brief") if isinstance(r.get("listing_brief"), dict) else {}
+            out.append({"id": r["id"], "name": brief.get("brand") or r.get("brand_name"), "at": r["at"]})
+    return out
+
+
+def gigs_badge(conn, creator_id: int, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """New matching gigs since the creator last opened the UGC gigs page (first time: the last 3 days)."""
+    now = now or _now()
+    ensure_table(conn)
+    rows = _rows(conn, "SELECT gigs_seen_at FROM creator_activity_seen WHERE creator_id = %s", (creator_id,))
+    seen = _aware(rows[0]["gigs_seen_at"]) if rows and rows[0].get("gigs_seen_at") else None
+    fresh = new_gigs(conn, creator_id, seen or (now - timedelta(days=3)))
+    if seen:
+        fresh = [g for g in fresh if _aware(g["at"]) > seen]
+    return {"new": len(fresh), "seen_at": seen.isoformat() if seen else None}
+
+
+def mark_gigs_seen(conn, creator_id: int, at: Optional[datetime] = None) -> None:
+    ensure_table(conn)
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO creator_activity_seen (creator_id, seen_at, gigs_seen_at) VALUES (%s, %s, %s)
+                   ON CONFLICT (creator_id) DO UPDATE SET gigs_seen_at = EXCLUDED.gigs_seen_at""",
+                (creator_id, (at or _now()) - timedelta(days=2), at or _now()))
+    conn.commit()
 
 
 def creator_niches(conn, creator_id: int) -> List[str]:
@@ -226,4 +363,5 @@ def feed(conn, creator_id: int, now: Optional[datetime] = None) -> Dict[str, Any
     pulse = pulse_today(conn, creator_id, now.date())
     return {"items": items, "unread": sum(1 for i in items if i["unread"]),
             "seen_at": last.isoformat() if last else None,
-            "pulse": {"day": pulse["day"], "niche": pulse["niche"], "count": pulse["count"]} if pulse else None}
+            "pulse": {"day": pulse["day"], "niche": pulse["niche"], "count": pulse["count"]} if pulse else None,
+            "gigs": gigs_badge(conn, creator_id, now)}
