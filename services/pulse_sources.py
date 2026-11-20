@@ -34,6 +34,11 @@ _SPAM = re.compile(r"(?i)\b(wholesale|reseller|resell|dm (me )?to order|location
                    r"giveaway|link in bio to (buy|order)|₦|naira|whatsapp)\b")
 _PROFANE = re.compile(r"(?i)\b(f+u+c+k\w*|shit\w*|bitch\w*|cunt|dick|pussy|kill (you|your)|nsfw|onlyfans|"
                       r"nude\w*|sex\w*)\b")
+# A seller or brand account talking about its own product ("our versatile bracelet", "shop now"): brand copy,
+# the thing Pulse moved away from.
+_BRAND_VOICE = re.compile(r"(?i)\b(our (new |versatile |best[- ]selling )?(product|collection|jewelry|jewellery|"
+                          r"bracelet|ring|serum|cream|range|store|shop|brand)s?|shop now|available now|order yours|"
+                          r"we('re| are) (so )?(excited|proud)|our customers|free shipping|% off)\b")
 _TAG = re.compile(r"(?:^|\s)[#@][\w.\-’']+")
 _URL = re.compile(r"https?://\S+")
 _EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿️‍]+")
@@ -106,7 +111,8 @@ def niche_video_samples(pool: List[Dict[str, Any]], niche: str, limit: int = NIC
         text = clean_caption(v.get("caption"))
         handle = str(v.get("creator_handle") or "").lstrip("@")
         caption = v.get("caption") or ""
-        if len(text) < 18 or _SPAM.search(caption) or _PROFANE.search(caption) or not handle or handle in seen:
+        if (len(text) < 18 or _SPAM.search(caption) or _PROFANE.search(caption) or _BRAND_VOICE.search(caption)
+                or not handle or handle in seen):
             continue
         seen.add(handle)
         picked.append({"i": len(picked), "platform": "tiktok", "url": v.get("url"), "handle": handle,

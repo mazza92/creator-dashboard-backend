@@ -15,9 +15,9 @@ DAY = date(2026, 11, 13)
 ADS = [
     "I stopped doing this one step and my skin finally calmed down. Meet the barrier serum.",
     "I stopped double cleansing and my skin calmed down in a week.",
-    "POV: you finally found a moisturizer that doesn't pill under makeup. Shop now.",
+    "POV: you finally found a moisturizer that doesn't pill under makeup.",
     "If your skin gets tight after cleansing, watch this before you buy another cleanser.",
-    "20% off this weekend only. Free shipping.",
+    "My skin after one week of this toner, honestly shocked.",
     "Day 1 vs day 14 with the same lighting and no filter.",
     "Dermatologists don't want you to know this about retinol.",
 ]
@@ -199,6 +199,8 @@ class YouTubeShorts(unittest.TestCase):
              "views": 900000, "creator_handle": "c", "creator_followers": 1600},
             {"url": "u4", "caption": "Best leggings for squats #gym", "hashtags": ["gym"], "views": 900000,
              "creator_handle": "d", "creator_followers": 1600},
+            {"url": "u5", "caption": "Transform your style with our versatile bracelet! Shop now #skincare",
+             "hashtags": ["skincare"], "views": 26000000, "creator_handle": "e", "creator_followers": 1000},
         ]
         got = ps.niche_video_samples(pool, "skincare")
         self.assertEqual([s["handle"] for s in got], ["a"])
