@@ -74,6 +74,25 @@ class WriterTests(unittest.TestCase):
                       pw.opener_issues("I have an idea for your products: a quick video.", facts))
 
 
+class ProdCheckFixTests(unittest.TestCase):
+    def test_ideas_follow_the_product_not_the_creator(self):
+        facts = pw.build_facts({"body": "Hi", "niche": "fashion"}, brand={"brand_name": "Osea", "category": "skincare"},
+                               profile={"tone": "brief"}, seed="x")
+        self.assertFalse(any("outfit" in i for i in facts["ideas"]))
+
+    def test_envision_openers_are_rejected(self):
+        self.assertIn("don't start with 'I envision' or 'Imagine'",
+                      pw.opener_issues("I envision a quick GRWM with your products.",
+                                       {"product": "your products", "product_verified": False}))
+
+    def test_gig_subject_is_clean(self):
+        from services.gig_autopilot import compose
+        out = compose({"brand_name": "FitCommit", "product_name": "Women's Fitness Creators: Get Paid Per"},
+                      {"first_name": "Laura", "niches": ["fitness"], "followers": 553}, {})
+        self.assertEqual(out["subject"], "Your paid UGC brief: Women's Fitness Creators")
+        self.assertNotIn("553 followers", out["body"])
+
+
 class OfferAllocationTests(unittest.TestCase):
     def test_paid_asks_go_to_brands_likely_to_pay(self):
         from services import creator_tracker as ct

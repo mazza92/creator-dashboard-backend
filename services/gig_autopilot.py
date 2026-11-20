@@ -169,14 +169,18 @@ def compose(opp: Dict[str, Any], creator: Dict[str, Any], stats: Optional[Dict[s
     target = f"{product} " if product and product.lower() != brand.lower() else ""
     lines.append(f"I saw your paid UGC brief for {target or brand + ' '}and I'd love to make it for you.".replace("  ", " "))
     proof = []
-    if creator.get("followers"):
-        from services.pitch_writer import fmt_count
-        proof.append(f"{fmt_count(creator['followers'])} followers")
+    from services.pitch_writer import STRONG_AUDIENCE, fmt_count
+    try:
+        followers_n = int(creator.get("followers") or 0)
+    except (TypeError, ValueError):
+        followers_n = 0
+    if followers_n >= STRONG_AUDIENCE:  # small counts read as a weakness: say who, not how many
+        proof.append(f"{fmt_count(followers_n)} followers")
     try:
         views_n = int((stats or {}).get("avg_views_n") or 0)
     except (TypeError, ValueError):
         views_n = 0
-    if views_n >= 1000:
+    if views_n >= STRONG_AUDIENCE:
         proof.append(f"{stats['avg_views']} median views")
     who = f"I'm a {niche} creator" + (f" ({', '.join(proof)})" if proof else "")
     lines.append(f"{who}, and I film natural, hook-first videos made for TikTok and Reels.")
@@ -190,7 +194,9 @@ def compose(opp: Dict[str, Any], creator: Dict[str, Any], stats: Optional[Dict[s
     lines.append(f"I can start this week{budget} and send a first draft fast. Shall I go ahead?")
     lines += ["", "Thanks,"] + ([first] if first else [])
     body = "\n".join(lines).rstrip() + "\n"
-    subject = f"UGC for {product or brand}: your paid brief"
+    title = re.split(r"\s*[:|–—-]\s+", product or "")[0].strip() if product else ""
+    title = title if title and len(title.split()) <= 6 else brand
+    subject = f"Your paid UGC brief: {title}"
     return {"subject": subject[:120], "body": body}
 
 
