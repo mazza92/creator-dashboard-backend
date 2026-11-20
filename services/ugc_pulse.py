@@ -1,4 +1,7 @@
-"""UGC Pulse: what's working in UGC ads this week, per niche. Shown on the Pulse page and in the daily brief.
+"""UGC Pulse: what's working in UGC this week, per niche. Shown on the Pulse page and in the daily brief.
+
+Since Nov 2026 hooks come from real creator videos (services.pulse_sources: our TikTok store, and YouTube Shorts
+watched by Gemini), not brand ad copy. The Meta-ads builder below is kept for reference only.
 
 Every item points at its sources, nothing is invented:
 - hooks (daily, ours): opening lines of real ads in the niche, from the Meta Ad Library samples our scanner stores
@@ -14,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional
@@ -260,8 +264,74 @@ def active_niches(conn) -> List[str]:
     return [n for n in sorted(seen, key=lambda k: -seen[k]) if n in NICHE_IDS]
 
 
+def build_creator_items(niche: str, day: date, samples: List[Dict[str, Any]], result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Hooks, trend and tip from real creator videos (services.pulse_sources): every hook grounded in a video's own
+    words, every source a video link with its views."""
+    from services.pulse_sources import video_sources
+
+    items: List[Dict[str, Any]] = []
+    for h in result.get("hooks") or []:
+        if not isinstance(h, dict):
+            continue
+        text = " ".join(str(h.get("hook") or "").split()).strip(' "“”')
+        idx = h.get("sources") or []
+        if len(text) < 12 or not _grounded(text, idx, samples):
+            continue
+        srcs = video_sources(idx, samples)
+        if not srcs:
+            continue
+        pattern = h.get("pattern") if h.get("pattern") in PATTERNS else "Other"
+        items.append({"day": day, "niche": niche, "kind": "hook", "pattern": pattern, "text": f"“{text}”",
+                      "why": str(h.get("why") or "").strip()[:300] or None,
+                      "score": len(srcs) + int(math.log10(max(sum(s["views"] for s in srcs), 10))), "sources": srcs})
+    trend = result.get("trend") if isinstance(result.get("trend"), dict) else {}
+    if trend.get("title") and trend.get("body"):
+        items.append({"day": day, "niche": niche, "kind": "trend", "pattern": None,
+                      "text": str(trend["title"]).strip()[:120], "why": str(trend["body"]).strip()[:300],
+                      "score": 0, "sources": video_sources([s["i"] for s in samples][:8], samples, limit=3)})
+    if isinstance(result.get("tip"), str) and len(result["tip"].strip()) > 10:
+        items.append({"day": day, "niche": niche, "kind": "tip", "pattern": None, "text": result["tip"].strip()[:240],
+                      "why": None, "score": 0, "sources": []})
+    return items
+
+
+def build_creator_niche(conn, niche: str, day: date, pool: List[Dict[str, Any]], llm: Optional[Callable] = None,
+                        http: Optional[Callable] = None, gemini: Optional[Callable] = None) -> List[Dict[str, Any]]:
+    from services import pulse_sources as ps
+
+    items: List[Dict[str, Any]] = []
+    samples = ps.niche_video_samples(pool, niche)
+    if len(samples) >= MIN_SAMPLES:
+        llm = llm or _llm_default
+        payload = [{"i": s["i"], "views": s["views"], "caption": s["text"][:300]} for s in samples]
+        got = llm(ps.CREATOR_SYSTEM.replace("PATTERNS", ", ".join(PATTERNS)), json.dumps({"videos": payload}),
+                  max_tokens=1600) or {}
+        items = build_creator_items(niche, day, samples, got if isinstance(got, dict) else {})
+    try:
+        ps.refresh_youtube(conn, niche, niche.replace("_", " "), list(PATTERNS), http=http, gemini=gemini)
+        yt = ps.youtube_hook_items(conn, niche, day, list(PATTERNS))
+    except Exception as err:
+        print(f"[pulse] youtube skipped for {niche}: {err}")
+        conn.rollback()
+        yt = []
+    tiktok = sorted((i for i in items if i["kind"] == "hook"), key=lambda i: -i["score"])
+    # Interleave: the strongest TikTok hook, then a watched Short, so both sources show on the day. Scores are
+    # re-set so the page keeps this order (it sorts hooks by score).
+    order: List[Dict[str, Any]] = []
+    for k in range(max(len(tiktok), len(yt))):
+        order += ([tiktok[k]] if k < len(tiktok) else []) + ([yt[k]] if k < len(yt) else [])
+    hooks, seen = [], set()
+    for h in order:
+        key = _hash(h["text"])
+        if key not in seen:
+            seen.add(key)
+            hooks.append({**h, "score": 100 - len(hooks)})
+    return hooks + [i for i in items if i["kind"] != "hook"]
+
+
 def build_day(conn, day: Optional[date] = None, niches: Optional[List[str]] = None,
-              llm: Optional[Callable] = None, budget: float = 200.0) -> Dict[str, Any]:
+              llm: Optional[Callable] = None, budget: float = 200.0, http: Optional[Callable] = None,
+              gemini: Optional[Callable] = None) -> Dict[str, Any]:
     """Daily cron: one pulse per niche from that niche's real ads. Idempotent: a niche already built today is
     skipped. Old items (> KEEP_DAYS) are pruned, saved ones are kept."""
     ensure_tables(conn)
@@ -271,27 +341,30 @@ def build_day(conn, day: Optional[date] = None, niches: Optional[List[str]] = No
     cur = conn.cursor()
     import time
     start = time.monotonic()
+    from services.pulse_sources import video_pool
+    pool = None
     for niche in niches or active_niches(conn):
         if time.monotonic() - start > budget:
-            out["skipped"][niche] = "time_budget"  # the second cron run picks it up
+            out["skipped"][niche] = "time_budget"  # the next cron run picks it up
             continue
-        cur.execute("SELECT 1 FROM ugc_pulse_items WHERE day = %s AND niche = %s AND source_type = 'meta_ads' LIMIT 1",
+        cur.execute("SELECT 1 FROM ugc_pulse_items WHERE day = %s AND niche = %s AND source_type = 'creators' LIMIT 1",
                     (day, niche))
         if cur.fetchone():
             out["skipped"][niche] = "done"
             continue
-        samples = niche_samples(conn, niche, since)
-        if len(samples) < MIN_SAMPLES:
-            out["skipped"][niche] = f"{len(samples)} ads"
-            continue
+        if pool is None:
+            pool = video_pool(conn, since)
         try:
-            items = build_items(niche, day, samples, generate(samples, llm))
+            items = build_creator_niche(conn, niche, day, pool, llm=llm, http=http, gemini=gemini)
         except Exception as err:  # one niche failing never stops the others
             print(f"[pulse] {niche} failed: {err}")
             conn.rollback()
-            out["skipped"][niche] = "llm_failed"
+            out["skipped"][niche] = "failed"
             continue
-        out["built"][niche] = save_items(conn, items)
+        if not any(i["kind"] == "hook" for i in items):
+            out["skipped"][niche] = "no_creator_hooks"
+            continue
+        out["built"][niche] = save_items(conn, items, source_type="creators")
     cur.execute("""DELETE FROM ugc_pulse_items i WHERE day < %s
                    AND NOT EXISTS (SELECT 1 FROM creator_pulse_saves s WHERE s.item_id = i.id)""",
                 (day - timedelta(days=KEEP_DAYS),))
@@ -368,6 +441,9 @@ def day_view(conn, niche: str, creator_id: Optional[int] = None, is_pro: bool = 
     cur.execute("""SELECT * FROM ugc_pulse_items WHERE day = %s AND niche IN (%s, 'all')
                    ORDER BY (kind = 'hook') DESC, score DESC, id""", (d, niche))
     rows = [_item(r, saved) for r in cur.fetchall()]
+    if any(r["source_type"] == "creators" for r in rows):
+        # A day built from creator videos never mixes in that day's older ad-copy items.
+        rows = [r for r in rows if r["source_type"] != "meta_ads"]
     hooks = [r for r in rows if r["kind"] == "hook"]
     out["trend"] = next((r for r in rows if r["kind"] == "trend" and r["niche"] == niche), None) \
         or next((r for r in rows if r["kind"] == "trend"), None)

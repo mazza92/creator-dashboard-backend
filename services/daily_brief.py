@@ -741,8 +741,7 @@ def pulse_block(c: Dict[str, Any]) -> str:
     parts = [f'<div style="font-size:11.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:{VIOLET};">'
              f'Hook of the day</div><div style="font-size:15px;line-height:1.45;font-weight:700;margin:4px 0 2px 0;color:{INK};">'
              f'{escape(hook["text"])}</div><div style="font-size:12.5px;color:{MUTED};">'
-             + (f"Seen in {hook['score']} {escape(niche.lower())} ads this week" if int(hook.get("score") or 0) > 1
-                else f"From a live {escape(niche.lower())} ad")
+             + _hook_source_line(hook, niche)
              + (f' · <a href="{escape(href, quote=True)}" style="color:{VIOLET};font-weight:600;text-decoration:none;">'
                 f'{_plural(more, "more hook")} →</a>' if more else
                 f' · <a href="{escape(href, quote=True)}" style="color:{VIOLET};font-weight:600;text-decoration:none;">Open Pulse →</a>')
@@ -758,6 +757,16 @@ def pulse_block(c: Dict[str, Any]) -> str:
     return _section(_kicker("📈 UGC pulse", f"{niche.lower()} · 2 min read")
                     + f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F7F5FF;'
                       f'border:1px solid #ECE8FB;border-radius:14px;"><tr><td style="padding:16px;">{"".join(parts)}</td></tr></table>')
+
+
+def _hook_source_line(hook: Dict[str, Any], niche: str) -> str:
+    """Where the hook came from: the creator video and its views (creator hooks), or the ads (older days)."""
+    vids = [s for s in (hook.get("sources") or []) if isinstance(s, dict) and s.get("url") and s.get("platform")]
+    if vids:
+        s = vids[0]
+        return escape(f"From {s.get('label') or 'a creator video'}")
+    return (f"Seen in {hook['score']} {escape(niche.lower())} ads this week" if int(hook.get("score") or 0) > 1
+            else f"From a live {escape(niche.lower())} ad")
 
 
 def move_detail(card: Dict[str, Any]) -> str:
