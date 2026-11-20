@@ -371,6 +371,8 @@ def opener_issues(opener: str, facts: Dict[str, Any]) -> List[str]:
         issues.append("template text left in")
     if re.search(r"(?i)\b(i'?ve (been )?using|i use|i love using|my favou?rite)\b", opener):
         issues.append("don't claim personal use")
+    if re.match(r"(?i)\s*(i envision|imagine|picture this)\b", opener):
+        issues.append("don't start with 'I envision' or 'Imagine'")
     if not facts.get("product_verified") and invents_product(opener, facts):
         issues.append("don't name a specific product: we only know the brand's range")
     start = opening(opener)
@@ -492,7 +494,9 @@ def build_facts(pitch: Dict[str, Any], *, brand: Dict[str, Any], profile: Dict[s
         product = clean_product(pitch.get("product_name") or brand.get("hero_product") or "")
         verified = not product.startswith("your ")
     niche = (pitch.get("niche") or (pitch.get("creator_stats") or {}).get("niche") or "").strip()
-    ideas = ideas_for(niche or brand.get("category") or "")
+    # The video idea fits the product (an algae oil never gets an outfit-switch idea): brand category first,
+    # the creator's niche only when the brand has none.
+    ideas = ideas_for(brand.get("category") or niche or "")
     # Sunscreen isn't a night product (Nov 2026: a Supergoop pitch proposed a night-routine video).
     if re.search(r"(?i)\b(spf|sunscreen|sun ?cream|sun ?screen|uv)\b",
                  f"{product} {brand_name} {brand.get('hero_product') or ''} {brand.get('description') or ''}"):
@@ -693,6 +697,36 @@ def style_from_sample(sample: str, llm: Callable = gemini_json) -> Dict[str, Any
     return {"ok": True, "rules": rules, "summary": str(out.get("summary") or "")[:60]}
 
 
+def creator_intro_facts(conn, creator_id: int) -> Dict[str, Any]:
+    """Niche, main platform and followers for the 'who I am' line, from the creator's profile (the drafted pitch
+    often doesn't carry them: the intro used to appear in only 6 of 32 pitches)."""
+    try:
+        from psycopg2.extras import RealDictCursor
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""SELECT c.niche, c.creator_niches, c.followers_count, c.social_follower_count,
+                              to_jsonb(c)->>'tiktok_handle' AS tiktok, to_jsonb(c)->>'instagram_handle' AS instagram,
+                              to_jsonb(c)->>'youtube_handle' AS youtube, to_jsonb(c)->>'primary_platform' AS platform
+                       FROM creators c WHERE c.id = %s""", (creator_id,))
+        row = cur.fetchone() or {}
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {}
+    niche = ""
+    try:
+        from services.creator_niches import recorded_niches
+        niches = recorded_niches(row) or []
+        niche = str(niches[0]).replace("_", " ") if niches else ""
+    except Exception:
+        niche = ""
+    platform = row.get("platform") or ("TikTok" if row.get("tiktok") else "Instagram" if row.get("instagram")
+                                       else "YouTube" if row.get("youtube") else "")
+    followers = max(int(row.get("social_follower_count") or 0), int(row.get("followers_count") or 0))
+    return {"niche": niche, "platform": platform, "followers": fmt_count(followers) if followers else ""}
+
+
 def recent_openings(conn, creator_id: int, limit: int = 15) -> List[str]:
     """How the creator's last pitches opened, so the next one starts differently."""
     try:
@@ -722,6 +756,8 @@ def finalize_for(conn, creator_id: int, brand_id: Any, pitch: Optional[Dict[str,
                     "FROM pr_brands WHERE id = %s", (brand_id,))
         brand = dict(cur.fetchone() or {"id": brand_id, "brand_name": (pitch or {}).get("brand_name") or ""})
         stats = creator_stats(conn, creator_id)
+        pitch = {**(pitch or {}), **{k: v for k, v in creator_intro_facts(conn, creator_id).items()
+                                     if v and not (pitch or {}).get(k)}}
         if posts:
             stats = {**stats, "top_posts": [p for p in posts if str(p).startswith("http")][:2]}
         from services.product_truth import pitch_product
