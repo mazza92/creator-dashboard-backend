@@ -566,12 +566,18 @@ _COMPANY_NAME = re.compile(r"(?i)(\b(co\.?,?\s*ltd|trading co|holdings?|group pl
                            r"power station|shopping cent(re|er)|shopping mall|outlet village)\b|\blimited\.?\s*$)")
 
 
+_GENERIC_INBOX = re.compile(r"^(info|hello|hi|hey|contact|contactus|contact[._-]?us|enquiries|inquiries|enquiry|"
+                            r"inquiry|team|mail|office|general|admin|sales)([._-].*)?$")
+
+
 def inbox_rank(email):
-    """0 = an inbox for PR / partnerships / marketing, 1 = generic (hello@, info@, a person), 2 = customer service."""
+    """0 = an inbox for PR / partnerships / marketing, 1 = a named person or anything else, 2 = shared catch-alls
+    (info@, hello@, contact@) and customer service. Nov 2026, 30 days of sends: info@/hello@ 0.4% replies vs about
+    1.2% for PR inboxes and named people."""
     local = str(email or "").split("@")[0].strip().lower()
     if _CREATOR_INBOX.match(local):
         return 0
-    if _SERVICE_INBOX.match(local):
+    if _SERVICE_INBOX.match(local) or _GENERIC_INBOX.match(local):
         return 2
     return 1
 
@@ -710,7 +716,8 @@ def _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=F
         # Mix follows the creator's monthly goal (bigger goal, more paid asks); see creator_tracker.paid_share.
         try:
             from services.creator_tracker import next_offer, planned_offer
-            focus = planned_offer(conn, creator_id, brand_id) or next_offer(conn, creator_id, notes.get("deal_intent"))
+            focus = planned_offer(conn, creator_id, brand_id) or next_offer(conn, creator_id, notes.get("deal_intent"),
+                                                                            brand_id=brand_id)
         except Exception as err:
             print(f"[Polly autopilot] goal mix skipped: {err}")
             conn.rollback()

@@ -91,15 +91,17 @@ class FinalizeTests(unittest.TestCase):
         out = self.run_it(fake_llm(), notes=notes)
         self.assertEqual(out["body"], BASE["body"])
 
-    def test_no_ask_keeps_original(self):
+    def test_no_ask_falls_back_to_the_gifted_ask(self):
+        # Nov 2026: older drafts worded the ask differently, failed the check and went out as the old template.
         pitch = dict(BASE, body=BASE["body"].replace("No fee. Just product + shipping to Austin, United States.\n\n", ""))
         out = self.run_it(fake_llm(), pitch=pitch)
-        self.assertEqual(out["body"], pitch["body"])
+        self.assertEqual(out["pitch_meta"]["writer"], "v2")
+        self.assertIn("No fee. Just product + shipping.", out["body"])
 
     def test_engagement_shown_only_when_strong(self):
         facts = {"lead_metric": "engagement", "engagement": "4.2%", "niche": "skincare"}
         self.assertIn("4.2% engagement", pw.proof_line(facts))
-        self.assertEqual(pw.proof_line({**facts, "engagement": "1.1%"}), "")
+        self.assertEqual(pw.proof_line({**facts, "engagement": "1.1%"}), "I'm a skincare creator.")
 
     def test_paid_ask_kept(self):
         pitch = dict(BASE, body=BASE["body"].replace(
@@ -182,7 +184,8 @@ class NameCleanupTests(unittest.TestCase):
         self.assertEqual(clean_product("Sea Mineral Cleanser"), "Sea Mineral Cleanser")
         self.assertEqual(clean_product("Salt & Stone"), "Salt & Stone")
         self.assertEqual(clean_product(""), "your products")
-        self.assertEqual([o["id"] for o in subject_options("Schoolhouse", "your products", "Maya")], ["ugc_for_brand"])
+        ids = [o["id"] for o in subject_options("Schoolhouse", "your products", "Maya")]
+        self.assertEqual(ids, ["video_idea_brand", "brand_x_name"])  # never a product we don't know
 
     def test_review_prompt_only_blocks_real_problems(self):
         from services.pitch_writer import REVIEW_SYSTEM
