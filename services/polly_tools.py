@@ -906,8 +906,8 @@ def _dress_pitch(state: TurnState, pitch: Dict[str, Any], shipping: Dict[str, An
             from services.creator_tracker import creator_profile, kit_has_rates, next_offer
             conn = state.db()
             if kit_has_rates(conn, state.creator_id) or creator_profile(conn, state.creator_id)["followers"] >= 2000:
-                pitch_paid = pitch_paid or next_offer(conn, state.creator_id,
-                                                      state.notes.get("deal_intent")) == "paid"
+                pitch_paid = pitch_paid or next_offer(conn, state.creator_id, state.notes.get("deal_intent"),
+                                                      brand_id=_int(pitch.get("brand_id"))) == "paid"
         except Exception as err:
             print(f"[Polly] offer mix skipped: {err}")
             state.db().rollback()

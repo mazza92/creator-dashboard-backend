@@ -166,24 +166,46 @@ def _count(v: Any) -> int:
         return 0
 
 
-def proof_line(facts: Dict[str, Any]) -> str:
-    """One line of real proof. Engagement only when it's strong; nothing when stats are off."""
+STRONG_AUDIENCE = 5000  # below this, follower and view counts read as a weakness: the intro says who, not how many
+
+
+def intro_line(facts: Dict[str, Any]) -> str:
+    """Who the creator is, in one line: 'I'm a skincare creator on TikTok (12K followers).' Numbers only when
+    they help (5K+), never when the creator turned stats off. 63% of pitches used to say nothing about the
+    creator at all."""
+    niche = re.sub(r"(?i)\bcreator\b", "", str(facts.get("niche") or "")).strip(" ,&").lower()
+    platform = str(facts.get("platform") or "").strip()
+    platform = {"tiktok": "TikTok", "instagram": "Instagram", "youtube": "YouTube"}.get(platform.lower(), platform)
+    followers_n = _count(facts.get("followers"))
+    views_n = int(facts.get("avg_views_n") or 0)
+    if not niche and not platform:
+        if facts.get("lead_metric") == "none":
+            return ""
+        if views_n >= STRONG_AUDIENCE:
+            return f"My videos average {facts.get('avg_views') or fmt_count(views_n)} views."
+        if followers_n >= STRONG_AUDIENCE:
+            return f"I have {fmt_count(followers_n)} followers."
+        return ""
+    who = f"I'm a {niche} creator" if niche else "I'm a UGC creator"
+    if platform:
+        who += f" on {platform}"
     lead = facts.get("lead_metric") or ""
-    niche = facts.get("niche") or ""
-    what = f"My {niche} videos" if niche else "My videos"
-    parts = []
-    views, followers = facts.get("avg_views"), facts.get("followers")
+    followers_n = _count(facts.get("followers"))
+    views_n = int(facts.get("avg_views_n") or 0)
     eng = _engagement_pct(facts.get("engagement"))
-    if lead == "none":
-        pass
-    elif lead == "followers" and followers:
-        parts.append(f"I have {followers} followers on {facts.get('platform') or 'my page'}.")
-    elif lead == "engagement" and eng >= STRONG_ENGAGEMENT:
-        parts.append(f"{what} get {eng:g}% engagement.")
-    elif views and (facts.get("avg_views_n") or 0) >= MIN_PROOF_VIEWS:
-        parts.append(f"{what} average {views} views.")
-    elif followers and _count(followers) >= MIN_PROOF_VIEWS:
-        parts.append(f"I have {followers} followers on {facts.get('platform') or 'my page'}.")
+    if lead != "none":
+        if lead == "engagement" and eng >= STRONG_ENGAGEMENT:
+            who += f" ({eng:g}% engagement)"
+        elif views_n >= STRONG_AUDIENCE and (lead == "views" or views_n > followers_n):
+            who += f" (videos average {facts.get('avg_views') or fmt_count(views_n)} views)"
+        elif lead != "views" and followers_n >= STRONG_AUDIENCE:
+            who += f" ({fmt_count(followers_n)} followers)"
+    return who + "."
+
+
+def proof_line(facts: Dict[str, Any]) -> str:
+    """The intro (who they are) plus their win, if they gave one."""
+    parts = [p for p in [intro_line(facts)] if p]
     if facts.get("win"):
         win = facts["win"].rstrip(".")
         parts.append(win[0].upper() + win[1:] + ".")
@@ -205,20 +227,30 @@ def _pick(seq: List[str], seed: str, offset: int = 0) -> str:
     return seq[(h + offset) % len(seq)]
 
 
-def subject_options(brand: str, product: str, first: str) -> List[Dict[str, str]]:
+def subject_options(brand: str, product: str, first: str, niche: str = "") -> List[Dict[str, str]]:
+    """Subject variants. 'Video idea for <product>' replies best (Nov 2026: 1.8% vs 1.4% for the retired
+    'UGC for <brand>?' and 0% for 'Paid UGC — 1 post…'), so it's weighted in twice. A product is named only when
+    it's verified (services.product_truth); otherwise the subject is about the brand, never an invented product."""
     p = product if product and product != "PR sample" and not product.startswith("your ") else ""
+    n = str(niche or "").strip().lower()
     out = []
-    if p and first:
-        out.append({"id": "brand_x_name", "text": f"{brand} × {first}: an idea for {p}"})
     if p:
-        out.append({"id": "video_idea", "text": f"Video idea for {p}"})
-    out.append({"id": "ugc_for_brand", "text": f"UGC for {brand}?"})
-    return [o for o in out if len(o["text"].split()) <= MAX_SUBJECT_WORDS] or [{"id": "ugc_for_brand", "text": f"UGC for {brand}?"}]
+        out += [{"id": "video_idea", "text": f"Video idea for {p}"},
+                {"id": "video_idea", "text": f"Video idea for {p}"},
+                {"id": "product_idea", "text": f"{p}: a quick video idea"},
+                {"id": "idea_for_product", "text": f"An idea for {p}"}]
+    out += [{"id": "video_idea_brand", "text": f"Video idea for {brand}"}]
+    if n and len(n.split()) <= 2:
+        out.append({"id": "niche_idea_brand", "text": f"A {n} video idea for {brand}"})
+    if first:
+        out.append({"id": "brand_x_name", "text": f"{brand} × {first}: a video idea"})
+    fits = [o for o in out if len(o["text"].split()) <= MAX_SUBJECT_WORDS]
+    return fits or [{"id": "video_idea_brand", "text": f"Video idea for {brand}"}]
 
 
-def pick_subject(brand: str, product: str, first: str, seed: str) -> Dict[str, str]:
+def pick_subject(brand: str, product: str, first: str, seed: str, niche: str = "") -> Dict[str, str]:
     """Rotates subject variants per pitch so we can see which one wins (variant id goes on the meta)."""
-    return {**_pick_dict(subject_options(brand, product, first), seed)}
+    return {**_pick_dict(subject_options(brand, product, first, niche), seed)}
 
 
 def _pick_dict(seq: List[Dict[str, str]], seed: str) -> Dict[str, str]:
@@ -268,7 +300,9 @@ OPENER_SYSTEM = (
     "Follow the creator's style rules if any, but keep it clear to a stranger at a brand (proper capitalisation, "
     "no slang a brand could misread). NEVER use stats, view or follower counts, percentages or past results (a video length like 15-second is fine). Do not claim you "
     "already use or own the product. No greeting, no sign-off, no links, no hashtags, at most one emoji. "
-    "Open naturally and vary it; don't start with 'I envision' or 'Imagine'."
+    "Open naturally and vary it; don't start with 'I envision' or 'Imagine', or with any opening in avoid_openings. "
+    "If product starts with 'your ' it is the brand's range, not a product: never name or invent a specific "
+    "product, refer to it as given."
 )
 
 REVIEW_SYSTEM = (
@@ -302,6 +336,8 @@ def write_opener(facts: Dict[str, Any], profile: Dict[str, Any], llm: Callable =
         # time and a creator's pitches all pitch the same video.
         "video_idea": (facts.get("ideas") or DEFAULT_IDEAS)[0],
     }
+    if facts.get("avoid_openings"):
+        payload["avoid_openings"] = facts["avoid_openings"]
     if feedback:
         payload["fix_these_issues"] = feedback
     out = llm(OPENER_SYSTEM, json.dumps(payload), max_tokens=300) or {}
@@ -312,7 +348,8 @@ def fallback_opener(facts: Dict[str, Any]) -> str:
     idea = (facts.get("ideas") or DEFAULT_IDEAS)[0]
     product = facts["product"]
     if facts["structure"] == "fan_first":
-        return f"{product} fits right into the kind of content my audience saves. I'd love to make {idea} for it."
+        lead = product[:1].upper() + product[1:]
+        return f"{lead} fits right into the kind of content my audience saves. I'd love to make {idea} for it."
     return f"I have an idea for {product}: {idea}, short and easy to reuse in your ads."
 
 
@@ -334,7 +371,36 @@ def opener_issues(opener: str, facts: Dict[str, Any]) -> List[str]:
         issues.append("template text left in")
     if re.search(r"(?i)\b(i'?ve (been )?using|i use|i love using|my favou?rite)\b", opener):
         issues.append("don't claim personal use")
+    if not facts.get("product_verified") and invents_product(opener, facts):
+        issues.append("don't name a specific product: we only know the brand's range")
+    start = opening(opener)
+    if start and start in (facts.get("avoid_openings") or []):
+        issues.append("start differently from the creator's recent pitches")
     return issues
+
+
+_PRODUCT_NOUN = re.compile(
+    r"(?:[A-Z0-9][\w'’.-]*\s+){1,4}(?:Cream|Serum|Oil|Mask|Lotion|Cleanser|Toner|Balm|Gel|Spray|Shampoo|"
+    r"Conditioner|Foundation|Concealer|Palette|Lipstick|Lip\s?\w*|Gloss|Mascara|Eyeliner|Blush|Primer|Kit|Set|Bag|"
+    r"Tee|Hoodie|Leggings|Bra|Bar|Powder|Drops|Gummies|Supplement|Moisturi[sz]er|Sunscreen|Perfume|Candle|Bottle)\b")
+
+
+def invents_product(opener: str, facts: Dict[str, Any]) -> bool:
+    """A specific product name (or a ®/™ mark) that isn't the brand: we never know it when it's unverified."""
+    text = str(opener or "")
+    if re.search(r"[®™]", text):
+        return True
+    brand = str(facts.get("brand") or "").lower()
+    for m in _PRODUCT_NOUN.finditer(text):
+        name = m.group(0).strip()
+        if name.lower() not in brand and not name.lower().startswith(("a ", "an ", "the ", "my ", "your ")):
+            return True
+    return False
+
+
+def opening(text: str) -> str:
+    """First five words, normalised: how we tell two pitches open the same way."""
+    return " ".join(re.sub(r"[^a-z0-9' ]+", " ", str(text or "").lower()).split()[:5])
 
 
 def body_issues(subject: str, body: str, facts: Dict[str, Any]) -> List[str]:
@@ -351,6 +417,11 @@ def body_issues(subject: str, body: str, facts: Dict[str, Any]) -> List[str]:
         issues.append("missing sign-off name")
     if not facts.get("ask") or facts["ask"] not in body:
         issues.append("missing ask")
+    paid_ask = bool(re.match(r"(?i)rate:", facts.get("ask") or ""))
+    if re.search(r"(?i)\b(paid|rate|fee|\$)", subject) and not paid_ask:
+        issues.append("subject says paid but the ask is gifted")
+    if re.search(r"(?i)\b(13|14|15|16|17)\s*-\s*(17|18)\b|\bteens?\b|under ?18", body):
+        issues.append("never describe an under-18 audience")
     return issues
 
 
@@ -376,10 +447,10 @@ def assemble(opener: str, facts: Dict[str, Any]) -> str:
 
 
 def _signoff(pitch_body: str, first_name: str) -> str:
-    if first_name:
+    """The creator's first name. Never the old draft's last line: that was often a handle ('edsa.xv')."""
+    if first_name and first_name.strip():
         return first_name.strip().split()[0].capitalize()
-    last = [ln for ln in (pitch_body or "").strip().splitlines() if ln.strip()]
-    return last[-1].strip() if last else ""
+    return ""
 
 
 def clean_brand(name: str) -> str:
@@ -397,14 +468,29 @@ def clean_product(product: str) -> str:
     return f"your {p[0].lower()}{p[1:]}" if looks_category else p
 
 
+def fallback_ask(body: str) -> str:
+    """The gifted ask when an older draft words it differently ('in exchange for product shipping to X')."""
+    m = re.search(r"(?i)shipping to ([^\n.]+)", body or "")
+    place = ", ".join(_place(p.strip()) for p in m.group(1).split(",")) if m else ""
+    return f"No fee. Just product + shipping to {place}." if place else "No fee. Just product + shipping."
+
+
 def build_facts(pitch: Dict[str, Any], *, brand: Dict[str, Any], profile: Dict[str, Any],
                 first_name: str = "", stats: Optional[Dict[str, Any]] = None,
-                prefs: Optional[Dict[str, Any]] = None, seed: str = "") -> Dict[str, Any]:
+                prefs: Optional[Dict[str, Any]] = None, seed: str = "",
+                product_info: Optional[Dict[str, Any]] = None,
+                avoid_openings: Optional[List[str]] = None) -> Dict[str, Any]:
     stats = stats or {}
     prefs = prefs or {}
     body = str(pitch.get("body") or "")
     brand_name = clean_brand(brand.get("brand_name") or brand.get("name") or pitch.get("brand_name") or "")
-    product = clean_product(pitch.get("product_name") or brand.get("hero_product") or "")
+    if product_info is not None:
+        # Only a product traced to the brand (services.product_truth); otherwise its range, never a guess.
+        product = product_info.get("name") or "your products"
+        verified = bool(product_info.get("verified"))
+    else:
+        product = clean_product(pitch.get("product_name") or brand.get("hero_product") or "")
+        verified = not product.startswith("your ")
     niche = (pitch.get("niche") or (pitch.get("creator_stats") or {}).get("niche") or "").strip()
     ideas = ideas_for(niche or brand.get("category") or "")
     # Sunscreen isn't a night product (Nov 2026: a Supergoop pitch proposed a night-routine video).
@@ -420,6 +506,8 @@ def build_facts(pitch: Dict[str, Any], *, brand: Dict[str, Any], profile: Dict[s
     return {
         "brand": brand_name or "there",
         "product": product,
+        "product_verified": verified,
+        "avoid_openings": [o for o in (avoid_openings or []) if o][:20],
         "category": brand.get("category") or "",
         "niche": niche,
         "platform": pitch.get("platform") or "",
@@ -430,7 +518,7 @@ def build_facts(pitch: Dict[str, Any], *, brand: Dict[str, Any], profile: Dict[s
         "lead_metric": "none" if lead in ("none", "no_stats") else lead,
         "win": profile.get("win") or "",
         "posts": list(dict.fromkeys(posts))[:2],
-        "ask": find_ask(body),
+        "ask": find_ask(body) or fallback_ask(body),
         "kit": find_kit(body) or pitch.get("media_kit_url") or "",
         "first": _signoff(body, first_name),
         "close": CLOSES.get(profile["tone"], "Worth a try?"),
@@ -477,9 +565,27 @@ def creator_stats(conn, creator_id: int) -> Dict[str, Any]:
     return {"avg_views": fmt_count(median), "avg_views_n": median, "top_posts": top}
 
 
+_RETIRED_SUBJECT = re.compile(r"(?i)^(collaboration (proposal|opportunity)|collaboration with .+|paid ugc\b.*|ugc for .+\?|"
+                              r"1 post \+ 2 ugc files.*)$")
+_MINOR_AUDIENCE = re.compile(r"(?i)[^.\n]*\b(1[3-7]\s*-\s*1[78]|teens?|under ?18)\b[^.\n]*\.?\s*")
+
+
+def scrub_legacy(pitch: Dict[str, Any], brand_name: str) -> Dict[str, Any]:
+    """When an older draft has to be kept, it still never says the audience is under 18, and never goes out with a
+    retired subject ('Collaboration Proposal', 'Paid UGC — 1 post…' on a gifted ask)."""
+    out = dict(pitch or {})
+    body = _MINOR_AUDIENCE.sub("", str(out.get("body") or ""))
+    out["body"] = re.sub(r"\n{3,}", "\n\n", body)
+    if _RETIRED_SUBJECT.match(str(out.get("subject") or "").strip()):
+        out["subject"] = f"Video idea for {brand_name}" if brand_name else "A video idea"
+    return out
+
+
 def finalize_pitch(pitch: Optional[Dict[str, Any]], *, brand: Dict[str, Any], notes: Optional[Dict[str, Any]],
                    first_name: str = "", stats: Optional[Dict[str, Any]] = None, seed: str = "",
-                   llm: Callable = gemini_json, review: bool = True) -> Optional[Dict[str, Any]]:
+                   llm: Callable = gemini_json, review: bool = True,
+                   product_info: Optional[Dict[str, Any]] = None,
+                   avoid_openings: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
     """The send-ready version of a drafted pitch. Returns the original pitch if anything goes wrong."""
     if not pitch or not pitch.get("body") or pitch.get("is_followup") or pitch.get("is_reply"):
         return pitch
@@ -490,8 +596,10 @@ def finalize_pitch(pitch: Optional[Dict[str, Any]], *, brand: Dict[str, Any], no
             return pitch  # the creator wrote their own template: keep it
         profile = profile_from_notes(notes)
         facts = build_facts(pitch, brand=brand, profile=profile, first_name=first_name, stats=stats,
-                            prefs=get_prefs(notes or {}), seed=seed or f"{brand.get('id')}")
-        subject = pick_subject(facts["brand"], facts["product"], facts["first"], seed or str(brand.get("id")))
+                            prefs=get_prefs(notes or {}), seed=seed or f"{brand.get('id')}",
+                            product_info=product_info, avoid_openings=avoid_openings)
+        subject = pick_subject(facts["brand"], facts["product"] if facts["product_verified"] else "",
+                               facts["first"], seed or str(brand.get("id")), niche=facts.get("niche") or "")
         source = "gemini"
         opener = write_opener(facts, profile, llm)
         problems = opener_issues(opener, facts)
@@ -509,14 +617,20 @@ def finalize_pitch(pitch: Optional[Dict[str, Any]], *, brand: Dict[str, Any], no
                 opener = fallback_opener(facts)
                 body, source = assemble(opener, facts), "template"
                 issues = body_issues(subject["text"], body, facts)
+        if issues and source == "gemini":
+            opener, source = fallback_opener(facts), "template"
+            body = assemble(opener, facts)
+            issues = body_issues(subject["text"], body, facts)
         if issues:
-            return pitch
+            print(f"[pitch_writer] kept original pitch: {issues}")
+            return scrub_legacy(pitch, facts["brand"])
         out = dict(pitch)
         out["subject"] = subject["text"]
         out["body"] = body
         out["pitch_meta"] = {
             "writer": "v2", "source": source, "structure": facts["structure"], "tone": profile["tone"],
             "subject_variant": subject["id"], "product": facts["product"], "ideas": facts["ideas"],
+            "product_verified": facts["product_verified"], "opening": opening(opener),
             "words": words(body), "review": verdict.get("issues") if verdict else None,
         }
         if out.get("email"):
@@ -525,7 +639,7 @@ def finalize_pitch(pitch: Optional[Dict[str, Any]], *, brand: Dict[str, Any], no
         return out
     except Exception as err:
         print(f"[pitch_writer] kept original pitch: {err}")
-        return pitch
+        return scrub_legacy(pitch, clean_brand((brand or {}).get("brand_name") or (pitch or {}).get("brand_name") or ""))
 
 
 # ---------------------------------------------------------------------------
@@ -579,6 +693,22 @@ def style_from_sample(sample: str, llm: Callable = gemini_json) -> Dict[str, Any
     return {"ok": True, "rules": rules, "summary": str(out.get("summary") or "")[:60]}
 
 
+def recent_openings(conn, creator_id: int, limit: int = 15) -> List[str]:
+    """How the creator's last pitches opened, so the next one starts differently."""
+    try:
+        cur = conn.cursor()
+        cur.execute("""SELECT pitch_meta->>'opening' FROM polly_autopilot_queue
+                       WHERE creator_id = %s AND pitch_meta ? 'opening' ORDER BY created_at DESC LIMIT %s""",
+                    (creator_id, limit))
+        return [r[0] for r in cur.fetchall() if r and r[0]]
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return []
+
+
 def finalize_for(conn, creator_id: int, brand_id: Any, pitch: Optional[Dict[str, Any]],
                  notes: Optional[Dict[str, Any]], first_name: str = "",
                  posts: Optional[List[str]] = None, llm: Callable = gemini_json,
@@ -588,13 +718,17 @@ def finalize_for(conn, creator_id: int, brand_id: Any, pitch: Optional[Dict[str,
         from psycopg2.extras import RealDictCursor
 
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT id, brand_name, hero_product, category FROM pr_brands WHERE id = %s", (brand_id,))
+        cur.execute("SELECT id, brand_name, hero_product, category, source, description, website "
+                    "FROM pr_brands WHERE id = %s", (brand_id,))
         brand = dict(cur.fetchone() or {"id": brand_id, "brand_name": (pitch or {}).get("brand_name") or ""})
         stats = creator_stats(conn, creator_id)
         if posts:
             stats = {**stats, "top_posts": [p for p in posts if str(p).startswith("http")][:2]}
+        from services.product_truth import pitch_product
+        product_info = pitch_product(conn, brand)
         out = finalize_pitch(pitch, brand=brand, notes=notes, first_name=first_name, stats=stats,
-                             seed=f"{creator_id}:{brand_id}" + (f":{angle}" if angle else ""), llm=llm)
+                             seed=f"{creator_id}:{brand_id}" + (f":{angle}" if angle else ""), llm=llm,
+                             product_info=product_info, avoid_openings=recent_openings(conn, creator_id))
         # Drafts carry the kit too, so a pitch the creator copies and sends herself is tracked as well.
         if isinstance(out, dict) and out.get("body"):
             from services.kit_guard import with_kit

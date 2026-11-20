@@ -35,7 +35,7 @@ class Reach(unittest.TestCase):
                 (3, 500, False, "pr@three.com", "Three"),
                 (4, 500, False, "pr@four.com", "Shenzhen Four Trading Co., Ltd.")]
         out = [b["id"] for b in ap._rank_by_reach(conn_with(rows), brands, 1900)]
-        self.assertEqual(out, [3, 2, 1, 4])
+        self.assertEqual(out, [3, 1, 2, 4])  # hello@ and support@ both rank last among consumer brands
 
     def test_unknown_followers_or_error_keep_order(self):
         brands = [{"id": 2}, {"id": 1}]

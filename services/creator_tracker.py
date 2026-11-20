@@ -469,7 +469,94 @@ def kit_has_rates(conn, creator_id: int) -> bool:
         return False
 
 
-def next_offer(conn, creator_id: int, deal_intent: Optional[str] = None) -> str:
+# ---------------------------------------------------------------------------
+# Paid or gifted, per brand: the creator's settings and goal set how many paid asks; the brands most likely to
+# pay for UGC get them, and brands known for gifting get the gifted ask (their likeliest yes).
+# ---------------------------------------------------------------------------
+
+# Brands with a paid signal go first; brands we know nothing about (0) can take a paid ask after them; brands
+# that gift or work on affiliate (negative) always get the gifted ask, their likeliest yes.
+PAID_MIN_SCORE = 0
+
+
+def brand_paid_scores(conn, brand_ids: List[int], followers: int = 0) -> Dict[int, int]:
+    """How likely each brand is to pay a creator for UGC, from what we know about how it collaborates:
+    +3 says it pays creators / posts paid UGC gigs, +2 runs creator-style (UGC) ads, +1 runs ads or does both
+    gifted and paid; -2 confirmed gifting, -1 lists gifting / affiliate as its collab type, -1 far out of the
+    creator's reach (a gifted ask is their better odds there)."""
+    ids = [int(b) for b in brand_ids or [] if b]
+    if not ids:
+        return {}
+    cur = conn.cursor()
+    try:
+        cur.execute("SAVEPOINT paid_scores")
+        cur.execute("""
+            SELECT b.id,
+                   COALESCE(b.payment_offered, FALSE)
+                     OR EXISTS (SELECT 1 FROM opportunities o WHERE LOWER(o.brand_name) = LOWER(b.brand_name)
+                                AND o.pr_brand_id IS NULL AND o.created_at >= NOW() - INTERVAL '120 days') AS pays,
+                   COALESCE(s.ugc_style, FALSE) AS ugc_ads,
+                   (COALESCE(s.active_ad_count, 0) > 0 OR b.source = 'meta_ads_library') AS ads,
+                   LOWER(COALESCE(b.collaboration_type::text, '')) AS collab,
+                   b.gifting_confirmed_at IS NOT NULL AS gifts,
+                   COALESCE(b.min_followers, 0) AS min_followers
+            FROM pr_brands b LEFT JOIN brand_ad_signals s ON s.brand_id = b.id
+            WHERE b.id = ANY(%s)""", (ids,))
+        rows = cur.fetchall()
+        cur.execute("RELEASE SAVEPOINT paid_scores")
+    except Exception as err:
+        # Inside the caller's transaction (plan_week): undo only this read, never the plan written so far.
+        print(f"[tracker] paid scores skipped: {err}")
+        cur.execute("ROLLBACK TO SAVEPOINT paid_scores")
+        return {}
+    out = {}
+    for bid, pays, ugc_ads, ads, collab, gifts, min_f in rows:
+        score = 3 * bool(pays) + 2 * bool(ugc_ads) + (1 if (ads or collab == "both") else 0)
+        score -= 2 * bool(gifts) + (1 if collab in ("gifting", "gifted", "affiliate") else 0)
+        if followers and int(min_f or 0) > followers * 1.25:
+            score -= 1
+        out[int(bid)] = score
+    return out
+
+
+def offer_focus(conn, creator_id: int) -> str:
+    """The creator's own setting wins: 'paid' or 'gifted' in Autopilot settings, or gifted-only in Polly prefs."""
+    cur = conn.cursor()
+    focus = "auto"
+    try:
+        cur.execute("SAVEPOINT offer_focus")
+        cur.execute("SELECT deal_focus FROM polly_autopilot WHERE creator_id = %s", (creator_id,))
+        row = cur.fetchone()
+        focus = (row[0] if row else None) or "auto"
+        if focus == "auto":
+            cur.execute("SELECT notes FROM polly_threads WHERE creator_id = %s", (creator_id,))
+            row = cur.fetchone()
+            from services.polly_prefs import gifted_only
+            if row and isinstance(row[0], dict) and gifted_only(row[0]):
+                focus = "gifted"
+        cur.execute("RELEASE SAVEPOINT offer_focus")
+    except Exception:
+        cur.execute("ROLLBACK TO SAVEPOINT offer_focus")
+    return focus if focus in ("auto", "paid", "gifted") else "auto"
+
+
+def allocate_offers(conn, creator_id: int, brand_ids: List[int], share: float, paid_n: int = 0, total_n: int = 0,
+                    followers: int = 0) -> Dict[int, str]:
+    """Paid / gifted for each new brand. The goal's paid share sets how many paid asks; they go to the brands most
+    likely to pay (score >= PAID_MIN_SCORE), never to a brand that only gifts. Fewer paid-likely brands -> fewer paid
+    asks, so no brand gets an ask it's unlikely to say yes to."""
+    ids = [int(b) for b in brand_ids or [] if b]
+    focus = offer_focus(conn, creator_id)
+    if focus in ("paid", "gifted"):
+        return {b: focus for b in ids}
+    want = max(0, round(share * (total_n + len(ids))) - paid_n)
+    scores = brand_paid_scores(conn, ids, followers)
+    likely = sorted((b for b in ids if scores.get(b, 0) >= PAID_MIN_SCORE), key=lambda b: -scores.get(b, 0))
+    paid = set(likely[:want])
+    return {b: ("paid" if b in paid else "gifted") for b in ids}
+
+
+def next_offer(conn, creator_id: int, deal_intent: Optional[str] = None, brand_id: Optional[int] = None) -> str:
     """For Autopilot's 'auto' focus: paid or gifted for the next pitch, keeping this month's mix on the goal's share."""
     goal = get_goal(conn, creator_id)
     prof = creator_profile(conn, creator_id)
@@ -483,6 +570,14 @@ def next_offer(conn, creator_id: int, deal_intent: Optional[str] = None) -> str:
     offers = [pitch_offer(r[0], r[1]) for r in cur.fetchall()]
     offers = [o for o in offers if o != "gig"]
     paid = sum(1 for o in offers if o == "paid")
+    focus = offer_focus(conn, creator_id)
+    if focus in ("paid", "gifted"):
+        return focus
+    if brand_id:
+        # Same rule as the plan: a paid ask only to a brand likely to pay, while the month's mix has room.
+        score = brand_paid_scores(conn, [int(brand_id)], prof["followers"]).get(int(brand_id), 0)
+        if score < PAID_MIN_SCORE:
+            return "gifted"
     return "paid" if paid < share * (len(offers) + 1) else "gifted"
 
 
@@ -540,7 +635,7 @@ def plan_week(conn, creator_id: int, brands: List[Dict[str, Any]], now: Optional
     cents = int(goal["amount_cents"]) if goal else next(
         o["amount_cents"] for o in suggest_goal(prof)["options"] if o["id"] == "suggested")
     target = weekly_target(cents, prof["followers"], own_rates(conn, creator_id))
-    share = paid_share(cents, prof["followers"])
+    share = paid_share(cents, prof["followers"], has_rates=kit_has_rates(conn, creator_id))
     days = plan_days(now)
     taken = _taken_brand_ids(conn, creator_id)
     cur = conn.cursor()
@@ -601,13 +696,14 @@ def plan_week(conn, creator_id: int, brands: List[Dict[str, Any]], now: Optional
         d = slot()
         if d is None:
             break
-        offer = "paid" if paid_n < share * (total_n + 1) else "gifted"
-        paid_n += offer == "paid"
-        total_n += 1
-        adding.append(r)
+        adding.append({**r, "planned_for": d})
+    offers = allocate_offers(conn, creator_id, [r["brand_id"] for r in adding], share, paid_n, total_n,
+                             prof["followers"])
+    for r in adding:
         cur.execute("""INSERT INTO creator_pitch_plan (creator_id, brand_id, brand_name, planned_for, offer)
                        VALUES (%s, %s, %s, %s, %s) ON CONFLICT (creator_id, brand_id) DO NOTHING""",
-                    (creator_id, r["brand_id"], (r["brand_name"] or "")[:120], d, offer))
+                    (creator_id, r["brand_id"], (r["brand_name"] or "")[:120], r["planned_for"],
+                     offers.get(int(r["brand_id"]), "gifted")))
     cur.execute("UPDATE creator_goals SET planned_at = NOW() WHERE creator_id = %s AND month = %s",
                 (creator_id, month_key(now)))
     conn.commit()
