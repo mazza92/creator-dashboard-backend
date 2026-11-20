@@ -374,6 +374,10 @@ _OUT_OF_FREE_RE = re.compile(
     r"(?i)\b(out of (your )?free pitches|no free pitches left|0 free pitch(es)?|zero free pitches|"
     r"used (up )?(all )?(of )?your (3 )?free pitches)\b"
 )
+_SEND_NEEDS_PRO_RE = re.compile(
+    r"(?i)(to (send|pitch)\b[^.!?\n]{0,80}\b(upgrade|pro)\b|\b(upgrade|pro)\b[^.!?\n]{0,60}\bto send (this|it)\b|"
+    r"send this one[^.!?\n]{0,40}\b(upgrade|pro)\b)"
+)
 _PITCH_WORD_RE = re.compile(r"(?i)\b(pitch|draft|email|card|version|subject|engagement)\b")
 _CREDIT_LINE_RE = re.compile(
     r"(?i)[^.!?\n]*\b(\d+|no|zero|one|two|three)\s+(free\s+)?(pitch(es)?|unlocks?|credits?)\s+(left|remaining)\b[^.!?\n]*[.!?]?"
@@ -443,6 +447,10 @@ def reply_problems(state: TurnState, reply: str) -> List[str]:
             bal.get("is_unlimited") or (left is not None and left > 0)):
         problems.append("They are not out of free pitches" + (" (they're on Pro)" if bal.get("is_unlimited") else
                         f" ({left} left)") + ". Don't say they're out, and don't count free pitches yourself.")
+    fresh_pitch = state.pitch and not (state.pitch or {}).get("is_followup") and not state.paywall
+    if fresh_pitch and _SEND_NEEDS_PRO_RE.search(text):
+        problems.append("The pitch on the card is theirs and free to send: it used their last free pitch. Say "
+                        "that, and that the NEXT new pitch is on Pro. Never say they need Pro to send this one.")
     known = state.known_brand_names()
     typed = (state.user_text or "").lower()
     for name in _bold_names(text):
