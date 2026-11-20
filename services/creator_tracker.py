@@ -1412,9 +1412,68 @@ def build_tracker(conn, creator_id: int, now: Optional[datetime] = None) -> Dict
     }
 
 
+def plan_detail(conn, creator_id: int, brand_id: int) -> Optional[Dict[str, Any]]:
+    """For a brand on the creator's plan: when it goes out, the ask, and why Polly picked it (facts we hold, never
+    guesses). Shown on the card, also to free creators whose plan is paused: it's what Pro would send next."""
+    cur = conn.cursor()
+    try:
+        cur.execute("SAVEPOINT plan_detail")
+        cur.execute("SELECT planned_for, offer FROM creator_pitch_plan WHERE creator_id = %s AND brand_id = %s",
+                    (creator_id, brand_id))
+        row = cur.fetchone()
+        if not row:
+            cur.execute("RELEASE SAVEPOINT plan_detail")
+            return None
+        planned_for, offer = row
+        cur.execute("RELEASE SAVEPOINT plan_detail")
+    except Exception as err:
+        print(f"[tracker] plan detail skipped: {err}")
+        cur.execute("ROLLBACK TO SAVEPOINT plan_detail")
+        return None
+    facts = None
+    try:
+        cur.execute("SAVEPOINT plan_facts")
+        cur.execute("""
+            SELECT LOWER(COALESCE(b.category, '')), COALESCE(b.min_followers, 0), b.gifting_confirmed_at IS NOT NULL,
+                   COALESCE(s.ugc_style, FALSE), s.ads_last_seen
+            FROM pr_brands b LEFT JOIN brand_ad_signals s ON s.brand_id = b.id WHERE b.id = %s""", (brand_id,))
+        facts = cur.fetchone()
+        cur.execute("RELEASE SAVEPOINT plan_facts")
+    except Exception as err:
+        print(f"[tracker] plan reasons skipped: {err}")
+        cur.execute("ROLLBACK TO SAVEPOINT plan_facts")
+    reasons: List[str] = []
+    if facts:
+        category, min_f, gifts, ugc_ads, ads_last = facts
+        prof = creator_profile(conn, creator_id)
+        followers = int(prof.get("followers") or 0)
+        recent_ads = bool(ads_last) and (ads_last if isinstance(ads_last, date) else ads_last.date()) >= (
+            _now().date() - timedelta(days=30))
+        if ugc_ads and recent_ads:
+            reasons.append("🔥 Running creator-style ads right now")
+        if gifts:
+            reasons.append("🎁 Seen sending product to creators")
+        niches = [str(n).replace("_", " ").lower() for n in (prof.get("niches") or [])]
+        hit = next((n for n in niches if n and (n in category or category in n)), None)
+        if hit:
+            reasons.append(f"✨ Fits your {hit} content")
+        if followers and int(min_f or 0) and int(min_f) <= followers * 1.25:
+            reasons.append(f"✅ In your reach: works with creators from {int(min_f):,} followers")
+        elif not int(min_f or 0):
+            reasons.append("✅ No follower minimum listed")
+    if offer == "paid":
+        pays = brand_paid_scores(conn, [brand_id]).get(int(brand_id), 0) >= 2
+        reasons.append("💸 Paid ask with your rate: they pay for UGC" if pays else "💸 Paid ask with your rate, for your goal")
+    else:
+        reasons.append("🎁 Gifted ask: their most likely yes")
+    return {"planned_for": planned_for.isoformat() if planned_for else None, "offer": offer or "gifted",
+            "reasons": reasons[:4]}
+
+
 def brand_detail(conn, creator_id: int, brand_id: int) -> Dict[str, Any]:
-    """One card's history (existing timeline) plus its deal."""
-    out: Dict[str, Any] = {"brand_id": brand_id, "deal": get_deal(conn, creator_id, brand_id)}
+    """One card's history (existing timeline) plus its deal, and its plan slot if it's planned."""
+    out: Dict[str, Any] = {"brand_id": brand_id, "deal": get_deal(conn, creator_id, brand_id),
+                           "plan": plan_detail(conn, creator_id, brand_id)}
     try:
         from services.polly_tracker import brand_timeline
         out.update(brand_timeline(conn, creator_id, brand_id) or {})

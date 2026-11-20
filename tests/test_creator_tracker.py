@@ -272,6 +272,16 @@ class TrackerDb(unittest.TestCase):
         self.assertTrue(all(r["planned_for"] >= NOW.date() for r in rows))
         self.assertEqual(out["planned"], out["capacity"])
 
+    def test_planned_brand_detail_says_when_and_why(self):
+        ct.set_goal(self.conn, 7, 20000, "custom", sync_autopilot=False)
+        ct.plan_week(self.conn, 7, self._brands(10), now=NOW)
+        bid = ct.planned_rows(self.conn, 7)[0]["brand_id"]
+        plan = ct.brand_detail(self.conn, 7, bid)["plan"]
+        self.assertTrue(plan["planned_for"])
+        self.assertIn(plan["offer"], ("paid", "gifted"))
+        self.assertTrue(plan["reasons"])
+        self.assertIsNone(ct.brand_detail(self.conn, 7, 999999)["plan"])
+
     def test_needs_plan(self):
         self.assertFalse(ct.needs_plan(self.conn, 7))               # no goal yet
         ct.set_goal(self.conn, 7, 20000, "custom", sync_autopilot=False)
