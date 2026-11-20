@@ -41,6 +41,18 @@ class GuardrailTests(unittest.TestCase):
         out = make_state(balance={"remaining": 0, "limit": 3, "is_unlimited": False})
         self.assertFalse(brain.reply_problems(out, "You're out of free pitches this month."))
 
+    def test_last_free_pitch_is_never_said_to_need_pro(self):
+        # Nov 20 check: the 3rd free pitch was drafted, then Polly said Pro was needed "to send this one".
+        state = make_state(balance={"remaining": 0, "limit": 3, "is_unlimited": False})
+        state.pitch = {"brand_id": 5, "brand_name": "SKIN1004", "body": "Hi"}
+        bad = ("You're out of free pitches for the month. To pitch SKIN1004 today, you'll need to upgrade to Pro.",
+               "To send this one and keep pitching, you'll need to upgrade to Pro.")
+        for text in bad:
+            self.assertTrue(any("free to send" in p for p in brain.reply_problems(state, text)), text)
+        ok = ("Your **SKIN1004** pitch is on the card, ready to send. That was your last free pitch this month; "
+              "the next one is on Pro.")
+        self.assertFalse(brain.reply_problems(state, ok))
+
     def test_prices_are_dollars(self):
         self.assertEqual(scrub_polly_voice("Pro is £19/mo, cancel anytime."), "Pro is $19/mo, cancel anytime.")
         self.assertIn("$19", scrub_polly_voice("It's €19 a month."))

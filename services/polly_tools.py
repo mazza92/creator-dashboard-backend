@@ -590,9 +590,15 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     state.brands = []
     state.add_chips(pitch_confirm_chips({"id": brand_id, "name": brand_name}))
     state.balance = R._unlock_balance(state.creator_id)
+    bal = state.balance or {}
+    last_free = (not followup and not bal.get("is_unlimited") and bal.get("remaining") is not None
+                 and int(bal.get("remaining") or 0) <= 0)
     return {
         "ok": True,
         "status": "drafted",
+        "last_free_pitch": last_free,
+        "last_free_pitch_explain": ("This pitch used their last free pitch this month. It is theirs and free to "
+                                    "send now. Only the next new pitch is on Pro ($19/mo).") if last_free else None,
         "brand": brand_name,
         "is_followup": followup,
         "inbox": pitch.get("email") or None,
