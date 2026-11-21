@@ -197,6 +197,8 @@ ADJUSTMENT_TEXT = {
     "creator_bounce": ("a creator's pitch bounced, replaced with a verified address",
                        "a creator reported a bounce on this address"),
     "dns_dead_domain": ("domain receives no email, replaced", "domain receives no email (no MX/A record)"),
+    "creator_report": ("a creator reported this address as not working, replaced with a verified one",
+                       "a creator reported this address as not working"),
 }
 _ADJ_READY = False
 
@@ -389,6 +391,45 @@ def repair_after_bounce(conn, brand_id: Optional[int], bounced_email: Optional[s
         return out
     except Exception as err:
         print(f"[contact_repair] repair_after_bounce skipped: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return out
+
+
+def report_contact(conn, brand_id: Optional[int], email: Optional[str], *, creator_id: Optional[int] = None,
+                   http: Optional[Callable] = None) -> Dict[str, Any]:
+    """A creator flagged a brand's inbox as not working (from the pitch card).
+
+    One report never marks an address bad for everyone on its own: Hunter checks it first. Invalid (or no answer
+    while it bounced before) -> handled like a bounce (marked bad, verified alternative swapped in for everyone).
+    Hunter says it's deliverable -> kept for everyone, but we still offer this creator a verified alternative.
+    Always logged for the admin. Returns {"outcome": replaced|alternative|kept|flagged, "email": str|None}."""
+    out: Dict[str, Any] = {"outcome": "flagged", "email": None}
+    if not brand_id:
+        return out
+    try:
+        ensure_tables(conn)
+        brand = _brand(conn, int(brand_id))
+        if not brand:
+            return out
+        reported = (email or brand.get("contact_email") or "").strip().lower()
+        _log(conn, int(brand_id), reported or None, None, "creator_report", creator_id)
+        conn.commit()
+        verdict = hunter_verify(conn, reported, http=http) if reported else None
+        if verdict in BAD or (verdict is None and (brand.get("email_status") or "") in BAD):
+            fix = repair_after_bounce(conn, brand_id, reported, creator_id=creator_id, http=http)
+            if fix.get("new_email"):
+                return {"outcome": "replaced", "email": fix["new_email"]}
+            return out
+        exclude = known_bad(conn, int(brand_id)) + [reported]
+        alt = find_replacement(conn, brand, exclude, http=http)
+        if alt:
+            return {"outcome": "alternative", "email": alt["email"]}
+        return {"outcome": "kept" if verdict in ("valid", "catch-all") else "flagged", "email": None}
+    except Exception as err:
+        print(f"[contact_repair] report_contact skipped: {err}")
         try:
             conn.rollback()
         except Exception:
