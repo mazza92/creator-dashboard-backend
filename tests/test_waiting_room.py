@@ -1,0 +1,126 @@
+"""Out-of-free-pitches waiting room: momentum from real events, follow-up opens on day 4 only, drafts."""
+
+import os
+import unittest
+from datetime import date, datetime, timedelta, timezone
+from unittest import mock
+
+import psycopg2
+
+from services import waiting_room as wr
+
+NOW = datetime(2026, 11, 21, 12, 0, tzinfo=timezone.utc)
+SCHEMA = "waiting_room_t"
+
+
+def _row(bid, days_ago, followed=False, opened=False, replied=False, name=None):
+    return {"brand_id": bid, "brand_name": name or f"Brand {bid}", "sent_at": NOW - timedelta(days=days_ago),
+            "followed_up": followed, "opened": opened, "replied": replied}
+
+
+class FollowUp(unittest.TestCase):
+    def test_not_due_before_day_4(self):
+        f = wr.followup([_row(1, 2), _row(2, 1)], NOW)
+        self.assertFalse(f["due"])
+        self.assertEqual(f["brand_id"], 1)
+        self.assertEqual(f["day"], 2)
+        self.assertEqual(f["opens_on"], "Nov 23")
+
+    def test_due_from_day_4(self):
+        f = wr.followup([_row(1, 5, opened=True), _row(2, 1)], NOW)
+        self.assertTrue(f["due"])
+        self.assertEqual(f["brand_id"], 1)
+        self.assertTrue(f["opened_kit"])
+
+    def test_exactly_day_4_is_due(self):
+        self.assertTrue(wr.followup([_row(1, 4)], NOW)["due"])
+
+    def test_replied_or_followed_up_pitches_are_skipped(self):
+        self.assertIsNone(wr.followup([_row(1, 6, replied=True), _row(2, 6, followed=True)], NOW))
+        f = wr.followup([_row(1, 6, replied=True), _row(2, 3)], NOW)
+        self.assertEqual(f["brand_id"], 2)
+        self.assertFalse(f["due"])
+
+
+class Db(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        try:
+            boot = psycopg2.connect(host=os.getenv("DB_HOST"), port=os.getenv("DB_PORT"), dbname=os.getenv("DB_NAME"),
+                                    user=os.getenv("DB_USER"), password=os.getenv("DB_PASSWORD") or None)
+        except Exception as err:
+            raise unittest.SkipTest(f"no db: {err}")
+        boot.autocommit = True
+        boot.cursor().execute(f"""
+            DROP SCHEMA IF EXISTS {SCHEMA} CASCADE; CREATE SCHEMA {SCHEMA}; SET search_path TO {SCHEMA};
+            CREATE TABLE pr_brands (id int PRIMARY KEY, brand_name text, hero_product text, source text,
+                description text, website text, category text, logo_url text);
+            CREATE TABLE polly_timeline_events (id serial PRIMARY KEY, creator_id int, brand_id int, event_type text,
+                event_data jsonb, occurred_at timestamptz);
+            INSERT INTO pr_brands VALUES (1, 'Glowly', 'Dew Serum', 'meta_ads_library', '', '', 'Skincare', NULL),
+                (2, 'Kinfit', 'Mystery Bar', 'ai', 'Protein snacks', '', 'Fitness', NULL),
+                (3, 'Oldie', NULL, 'ai', '', '', 'Home', NULL);
+        """)
+        boot.close()
+
+    @classmethod
+    def tearDownClass(cls):
+        c = cls._conn()
+        c.autocommit = True
+        c.cursor().execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
+        c.close()
+
+    @staticmethod
+    def _conn():
+        return psycopg2.connect(host=os.getenv("DB_HOST"), port=os.getenv("DB_PORT"), dbname=os.getenv("DB_NAME"),
+                                user=os.getenv("DB_USER"), password=os.getenv("DB_PASSWORD") or None,
+                                options=f"-c search_path={SCHEMA}")
+
+    def test_pitched_brands_counts_opens_replies(self):
+        c = self._conn()
+        cur = c.cursor()
+        cur.execute("DELETE FROM polly_timeline_events")
+        ev = [(1, "pitch_sent", 5), (1, "pitch_sent", 5), (1, "portfolio_viewed", 3), (2, "pitch_sent", 2),
+              (2, "brand_replied_interested", 1), (3, "pitch_sent", 80), (3, "portfolio_viewed", 1)]
+        for bid, kind, ago in ev:
+            cur.execute("INSERT INTO polly_timeline_events (creator_id, brand_id, event_type, event_data, occurred_at) "
+                        "VALUES (7, %s, %s, '{}', %s)", (bid, kind, NOW - timedelta(days=ago)))
+        c.commit()
+        rows = wr.pitched_brands(c, 7, NOW)
+        # Brand 3 was pitched outside the 45-day window: a kit view alone doesn't make it a pitch.
+        self.assertEqual([r["brand_id"] for r in rows], [1, 2])
+        self.assertTrue(rows[0]["opened"])
+        self.assertTrue(rows[1]["replied"])
+        self.assertFalse(rows[0]["followed_up"])  # the duplicate send log on day 5 isn't a follow-up
+        f = wr.followup(rows, NOW)
+        self.assertEqual((f["brand_name"], f["due"]), ("Glowly", True))
+        c.close()
+
+    def test_drafts_never_name_an_unverified_product(self):
+        c = self._conn()
+        plan = [{"brand_id": 1, "brand_name": "Glowly", "planned_for": date(2026, 11, 24), "offer": "paid",
+                 "meta_ads": True},
+                {"brand_id": 2, "brand_name": "Kinfit", "planned_for": date(2026, 11, 25), "offer": "gifted",
+                 "meta_ads": False},
+                {"brand_id": 3, "brand_name": "Old", "planned_for": date(2020, 1, 1), "offer": "gifted",
+                 "meta_ads": False}]
+        with mock.patch("services.creator_tracker.planned_rows", return_value=plan), \
+             mock.patch("services.pitch_writer.creator_intro_facts", return_value={"niche": "skincare"}), \
+             mock.patch("services.waiting_room.datetime") as dt:
+            dt.now.return_value = NOW
+            dt.combine = datetime.combine
+            dt.min = datetime.min
+            out = wr.drafts(c, 7, "Ana")
+        self.assertEqual(out["plan_count"], 2)
+        glow, kin = out["items"]
+        self.assertTrue(glow["product_verified"])
+        self.assertIn("Dew Serum", glow["subject"] + glow["opener"])
+        self.assertFalse(kin["product_verified"])
+        self.assertNotIn("Mystery Bar", kin["subject"] + kin["opener"])
+        self.assertIn("your fitness range", kin["opener"])
+        self.assertEqual(glow["planned_for"], "Nov 24")
+        c.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1089,6 +1089,7 @@ def _deliver_credits_out_offer(conn, creator_id, first, balance, tracker):
         # The card carries the offer; the chat line just marks the moment.
         message["content"] = (f"{first}, your" if first else "Your") + " free pitches are out. Here's how to keep going."
         message["upsell"] = _upsell_payload(conn, creator_id, balance, trial, sent_n, views_n)
+        message["waiting_room"] = _waiting_room(conn, creator_id, first, balance)
         notes["credits_out_offer_month"] = month
         messages = list(thread.get("messages") or [])
         messages.append(json_safe(message))
@@ -1114,6 +1115,21 @@ def _quota_email(creator_id, why):
             print(f"[Polly] quota email sent ({why}) to creator {creator_id}")
     except Exception as err:
         print(f"[Polly] quota email ({why}) skipped: {err}")
+
+
+def _waiting_room(conn, creator_id, first, balance):
+    """The out-of-free-pitches view (services.waiting_room); None if it can't be built."""
+    try:
+        from services.polly import reset_label
+        from services.waiting_room import build
+        return build(conn, creator_id, first_name=first or "", reset=reset_label(balance))
+    except Exception as err:
+        print(f"[Polly] waiting room skipped: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None
 
 
 def _upsell_payload(conn, creator_id, balance, trial, sent_n, views_n):
@@ -2957,6 +2973,33 @@ def pitch_report_email():
     except Exception as err:
         print(f"[Polly] report email error: {err}")
         return jsonify({"success": False, "error": "Could not report. Try again."}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@polly_bp.route("/waiting-room", methods=["GET"])
+def waiting_room_view():
+    """The "No credits left" pill: the waiting room on demand (Pro creators get {"pro": true})."""
+    creator_id, conn, creator = _creator_auth()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    try:
+        balance = _unlock_balance(creator_id, conn=conn)
+        if balance.get("is_unlimited"):
+            return jsonify({"success": True, "pro": True})
+        trial = False
+        try:
+            from services.quota_trial_test import trial_eligible
+            trial = bool(trial_eligible(conn.cursor(), creator_id))
+        except Exception:
+            conn.rollback()
+        room = _waiting_room(conn, creator_id, creator_first_name(creator, None), balance)
+        return jsonify(json_safe({"success": True, "pro": False, "trial": trial,
+                                  "remaining": balance.get("remaining"), "waiting_room": room}))
+    except Exception as err:
+        print(f"[Polly] waiting room error: {err}")
+        return jsonify({"success": False, "error": "Could not load"}), 500
     finally:
         if conn:
             conn.close()

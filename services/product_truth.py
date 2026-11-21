@@ -93,8 +93,10 @@ def _site_text(website: str, http: Callable = requests.get) -> str:
     return " ".join(chunks)
 
 
-def verified_product(conn, brand: Dict[str, Any], http: Callable = requests.get, now: Optional[datetime] = None) -> str:
-    """The brand's hero product when we can trace it to the brand, else ''."""
+def verified_product(conn, brand: Dict[str, Any], http: Callable = requests.get, now: Optional[datetime] = None,
+                     fetch: bool = True) -> str:
+    """The brand's hero product when we can trace it to the brand, else ''. With fetch=False only the cached
+    website check counts (no network, nothing written): for previews that must stay fast."""
     name = " ".join(str(brand.get("hero_product") or "").split())
     if not name or looks_generic(name):
         return ""
@@ -113,6 +115,8 @@ def verified_product(conn, brand: Dict[str, Any], http: Callable = requests.get,
         row = cur.fetchone()
         if row and row[0] == name and row[2] and (row[2] if row[2].tzinfo else row[2].replace(tzinfo=timezone.utc)) > now - CHECK_TTL:
             return name if row[1] else ""
+        if not fetch:
+            return ""
         ok = name_in_text(name, _site_text(brand.get("website") or "", http=http))
         cur.execute("""INSERT INTO brand_product_checks (brand_id, product, ok, checked_at) VALUES (%s, %s, %s, %s)
                        ON CONFLICT (brand_id) DO UPDATE SET product = EXCLUDED.product, ok = EXCLUDED.ok,
