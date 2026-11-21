@@ -1164,6 +1164,7 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
         from services.pro_manager import email_monday_boards, email_renewal_notes
         from services.pro_trial import email_trial_journey
         from services.free_week_offer import email_free_week_offers
+        from services.followup_ready import email_followups_ready
         from services.ugc_roundup import email_ugc_roundups
         from services.moment_emails import (email_first_pitch, email_niche_gifting, email_reply_wins,
                                             email_saved_brands)
@@ -1173,7 +1174,7 @@ def run_alerts(conn, dry_run: bool = False, limit: int = 40, test_email: str = "
         # waitlist sequence off (Nov 6): pending creators are mostly ones we won't approve, so we don't email them.
         for job in (email_trial_journey, email_autopilot_blocked, email_second_recovery, email_renewal_notes,
                     email_founder_wins, email_founder_delivery,
-                    email_reply_wins, email_new_brand_pushes,
+                    email_reply_wins, email_followups_ready, email_new_brand_pushes,
                     email_first_pitch, email_unsent_briefs, email_saved_brands, email_month_reports, email_monday_boards, email_weekly_digests,
                     email_niche_gifting, email_ugc_roundups,
                     email_paywall_followups, email_free_week_offers):

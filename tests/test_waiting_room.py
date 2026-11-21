@@ -151,3 +151,25 @@ class EventRoute(unittest.TestCase):
         self.assertEqual(bad.status_code, 400)
         self.assertEqual(logged, [(7, "waiting_room", {"action": "checklist", "source": "pill", "item": "rates",
                                                         "followup_due": False})])
+
+
+class AutoFollowUp(unittest.TestCase):
+    def test_gmail_sent_pitch_says_polly_follows_up(self):
+        auto = {"followup_status": "scheduled", "followup_due_at": NOW + timedelta(days=2), "followups_sent": 0}
+        r = _row(1, 2, name="Elite Eleven")
+        r["auto"] = auto
+        f = wr.followup([r], NOW)
+        self.assertTrue(f["auto"])
+        self.assertFalse(f["due"])
+        self.assertEqual(f["opens_on"], "Nov 23")
+
+    def test_manual_pitch_wins_over_auto(self):
+        a = _row(1, 5)
+        a["auto"] = {"followup_status": "scheduled", "followup_due_at": NOW, "followups_sent": 0}
+        f = wr.followup([a, _row(2, 5)], NOW)
+        self.assertEqual((f["brand_id"], f["auto"], f["due"]), (2, False, True))
+
+    def test_auto_already_sent_shows_nothing(self):
+        a = _row(1, 5)
+        a["auto"] = {"followup_status": "scheduled", "followup_due_at": NOW + timedelta(days=5), "followups_sent": 1}
+        self.assertIsNone(wr.followup([a], NOW))

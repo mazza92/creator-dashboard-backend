@@ -37,7 +37,8 @@ TRANSACTIONAL = {
 # the daily Polly line; the week's follow-ups now sit in the Monday report with one-tap "replied" buttons.
 RETIRED = {"pro_week", "nudge", "autopilot_drafts", "autopilot_week", "autopilot_headsup", "waitlist_1", "waitlist_2",
            "waitlist_3"}
-EVENT = {"kit_view", "new_brand_push", "reply_win"}
+# followup_ready: day 4 of a hand-sent pitch (free); timely, so it skips the one-a-day cap like other events.
+EVENT = {"kit_view", "new_brand_push", "reply_win", "followup_ready"}
 # Kinds outside the budget entirely (never capped, never counted). Empty: kit views keep their pre-brief rules.
 BUDGET_EXEMPT: set = set()
 BRIEF_KIND = "daily_brief"
@@ -49,7 +50,7 @@ WEEKLY_REPORT = {"monday_board", "weekly_digest", "monday_checkin"}
 # max_quota_hit (lifecycle) and paywall_followup (Polly) fire at the same moment: one offer covers both.
 OFFER = {"paywall_followup", "free_week", "max_quota_hit"}
 FREE_ONLY = OFFER | {"polly_brief", "polly_intro", "month_report", "monday_checkin", "weekly_digest",
-                     "saved_brands", "first_pitch", "waitlist_1", "waitlist_2", "waitlist_3"}  # Pro: Autopilot pitches saved brands itself
+                     "saved_brands", "first_pitch", "followup_ready", "waitlist_1", "waitlist_2", "waitlist_3"}  # Pro: Autopilot pitches saved brands itself
 PRO_ONLY = {"autopilot_headsup", "ugc_roundup", "monday_board"}
 MIN_GAP = {
     "autopilot_headsup": timedelta(hours=72),
@@ -57,6 +58,7 @@ MIN_GAP = {
     "polly_brief": timedelta(days=2),
     "saved_brands": timedelta(days=7),
     "niche_gifting": timedelta(days=6),
+    "followup_ready": timedelta(days=3),
 }
 DAILY_GAP = timedelta(hours=20)
 BRIEF_MIN_GAP = timedelta(hours=10)

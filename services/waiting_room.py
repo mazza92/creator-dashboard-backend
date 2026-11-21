@@ -63,11 +63,21 @@ def pitched_brands(conn, creator_id: int, now: datetime) -> List[Dict[str, Any]]
         """,
         (list(REPLY_EVENTS), creator_id, now - WINDOW),
     )
+    found = cur.fetchall()
+    auto = {}
+    try:
+        # Sent through Gmail or the relay: Polly sends the follow-up itself (free creators too).
+        cur.execute("""SELECT brand_id, followup_status, followup_due_at, COALESCE(followups_sent, 0) AS followups_sent
+                       FROM polly_autopilot_queue WHERE creator_id = %s AND sent_at IS NOT NULL""", (creator_id,))
+        auto = {int(r["brand_id"]): dict(r) for r in cur.fetchall()}
+    except Exception:
+        conn.rollback()
     rows = []
-    for r in cur.fetchall():
+    for r in found:
         if not r.get("sent_at"):
             continue
         r = dict(r)
+        r["auto"] = auto.get(int(r["brand_id"]))
         r["followed_up"] = (_aware(r["last_sent_at"]) - _aware(r["sent_at"])) >= FOLLOWED_UP_GAP
         rows.append(r)
     rows.sort(key=lambda r: _aware(r["sent_at"]))
@@ -75,23 +85,43 @@ def pitched_brands(conn, creator_id: int, now: datetime) -> List[Dict[str, Any]]
 
 
 def followup(rows: List[Dict[str, Any]], now: datetime) -> Optional[Dict[str, Any]]:
-    """The pitch to follow up: the oldest one that's due (day 4+, no reply, not followed up yet), else the next
-    one to become due, with when it opens. None when every pitch got a reply or a follow-up."""
-    open_rows = [r for r in rows if not r.get("replied") and not r.get("followed_up")]
-    if not open_rows:
+    """The follow-up to show. Hand-sent pitches: the oldest one that's due (day 4+, no reply, not followed up yet),
+    else the next one to become due, with when it opens. Pitches sent through Gmail: Polly sends the follow-up
+    itself, so the card only says when (auto=True, no button). None when nothing is waiting on a follow-up."""
+    live = [r for r in rows if not r.get("replied")]
+    manual = [r for r in live if not r.get("auto") and not r.get("followed_up")]
+    if manual:
+        due = [r for r in manual if _aware(r["sent_at"]) + FOLLOWUP_AFTER <= now]
+        r = due[0] if due else min(manual, key=lambda x: _aware(x["sent_at"]))
+        sent = _aware(r["sent_at"])
+        opens = sent + FOLLOWUP_AFTER
+        return {
+            "brand_id": int(r["brand_id"]),
+            "brand_name": r.get("brand_name") or "the brand",
+            "sent_on": _label(sent),
+            "day": max(0, (now - sent).days),
+            "due": bool(due),
+            "auto": False,
+            "opens_on": _label(opens),
+            "opens_at": opens.isoformat(),
+            "opened_kit": bool(r.get("opened")),
+        }
+    pending = [r for r in live if r.get("auto") and r["auto"].get("followup_status") in ("scheduled", "headsup")
+               and not int(r["auto"].get("followups_sent") or 0) and _aware(r["auto"].get("followup_due_at"))]
+    if not pending:
         return None
-    due = [r for r in open_rows if _aware(r["sent_at"]) + FOLLOWUP_AFTER <= now]
-    r = due[0] if due else min(open_rows, key=lambda x: _aware(x["sent_at"]))
+    r = min(pending, key=lambda x: _aware(x["auto"]["followup_due_at"]))
     sent = _aware(r["sent_at"])
-    opens = sent + FOLLOWUP_AFTER
+    when = max(_aware(r["auto"]["followup_due_at"]), now)
     return {
         "brand_id": int(r["brand_id"]),
         "brand_name": r.get("brand_name") or "the brand",
         "sent_on": _label(sent),
         "day": max(0, (now - sent).days),
-        "due": bool(due),
-        "opens_on": _label(opens),
-        "opens_at": opens.isoformat(),
+        "due": False,
+        "auto": True,
+        "opens_on": _label(when),
+        "opens_at": when.isoformat(),
         "opened_kit": bool(r.get("opened")),
     }
 
