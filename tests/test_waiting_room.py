@@ -54,12 +54,16 @@ class Db(unittest.TestCase):
         boot.cursor().execute(f"""
             DROP SCHEMA IF EXISTS {SCHEMA} CASCADE; CREATE SCHEMA {SCHEMA}; SET search_path TO {SCHEMA};
             CREATE TABLE pr_brands (id int PRIMARY KEY, brand_name text, hero_product text, source text,
-                description text, website text, category text, logo_url text);
+                description text, website text, category text, logo_url text, contact_email text DEFAULT 'pr@x.co',
+                email_status text, email_bounce_count int DEFAULT 0);
             CREATE TABLE polly_timeline_events (id serial PRIMARY KEY, creator_id int, brand_id int, event_type text,
                 event_data jsonb, occurred_at timestamptz);
-            INSERT INTO pr_brands VALUES (1, 'Glowly', 'Dew Serum', 'meta_ads_library', '', '', 'Skincare', NULL),
-                (2, 'Kinfit', 'Mystery Bar', 'ai', 'Protein snacks', '', 'Fitness', NULL),
-                (3, 'Oldie', NULL, 'ai', '', '', 'Home', NULL);
+            INSERT INTO pr_brands (id, brand_name, hero_product, source, description, website, category)
+                VALUES (1, 'Glowly', 'Dew Serum', 'meta_ads_library', '', '', 'Skincare'),
+                (2, 'Kinfit', 'Mystery Bar', 'ai', 'Protein snacks', '', 'Fitness'),
+                (3, 'Oldie', NULL, 'ai', '', '', 'Home');
+            INSERT INTO pr_brands (id, brand_name, category, email_status) VALUES (4, 'Bounced', 'Fitness', 'bounced');
+            INSERT INTO pr_brands (id, brand_name, category, contact_email) VALUES (5, 'NoMail', 'Fitness', '');
         """)
         boot.close()
 
@@ -98,12 +102,16 @@ class Db(unittest.TestCase):
 
     def test_drafts_never_name_an_unverified_product(self):
         c = self._conn()
+        c.cursor().execute("DELETE FROM polly_timeline_events")
+        c.commit()
         plan = [{"brand_id": 1, "brand_name": "Glowly", "planned_for": date(2026, 11, 24), "offer": "paid",
                  "meta_ads": True},
                 {"brand_id": 2, "brand_name": "Kinfit", "planned_for": date(2026, 11, 25), "offer": "gifted",
                  "meta_ads": False},
                 {"brand_id": 3, "brand_name": "Old", "planned_for": date(2020, 1, 1), "offer": "gifted",
                  "meta_ads": False}]
+        plan += [{"brand_id": i, "brand_name": "X", "planned_for": date(2026, 11, 26), "offer": "gifted",
+                  "meta_ads": False} for i in (4, 5)]
         with mock.patch("services.creator_tracker.planned_rows", return_value=plan), \
              mock.patch("services.pitch_writer.creator_intro_facts", return_value={"niche": "skincare"}), \
              mock.patch("services.waiting_room.datetime") as dt:
@@ -111,6 +119,7 @@ class Db(unittest.TestCase):
             dt.combine = datetime.combine
             dt.min = datetime.min
             out = wr.drafts(c, 7, "Ana")
+        # Past days, bounced and email-less brands are left out: Autopilot couldn't send to them.
         self.assertEqual(out["plan_count"], 2)
         glow, kin = out["items"]
         self.assertTrue(glow["product_verified"])
@@ -124,3 +133,21 @@ class Db(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EventRoute(unittest.TestCase):
+    def test_logs_known_actions_only(self):
+        import routes.polly as R
+        from app import app
+        logged = []
+        conn = mock.MagicMock()
+        with mock.patch.object(R, "_creator_auth", return_value=(7, conn, {})), \
+             mock.patch.object(R, "_log_polly_event", side_effect=lambda *a: logged.append(a)):
+            client = app.test_client()
+            ok = client.post("/api/polly/waiting-room/event",
+                             json={"action": "checklist", "item": "rates", "source": "pill", "followup_due": False})
+            bad = client.post("/api/polly/waiting-room/event", json={"action": "drop table"})
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(bad.status_code, 400)
+        self.assertEqual(logged, [(7, "waiting_room", {"action": "checklist", "source": "pill", "item": "rates",
+                                                        "followup_due": False})])

@@ -3005,6 +3005,33 @@ def waiting_room_view():
             conn.close()
 
 
+WAITING_ROOM_ACTIONS = {"view", "followup", "checklist", "upgrade", "close"}
+WAITING_ROOM_SOURCES = {"chat", "pill"}
+
+
+@polly_bp.route("/waiting-room/event", methods=["POST"])
+def waiting_room_event():
+    """Funnel for the out-of-free-pitches view: view, follow-up, checklist item, upgrade, close (polly_usage_events
+    event 'waiting_room', meta {action, source, item, followup_due})."""
+    creator_id, conn, _creator = _creator_auth()
+    if conn:
+        conn.close()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    body = request.get_json(silent=True) or {}
+    action = str(body.get("action") or "")
+    if action not in WAITING_ROOM_ACTIONS:
+        return jsonify({"success": False, "error": "unknown action"}), 400
+    meta = {"action": action, "source": body.get("source") if body.get("source") in WAITING_ROOM_SOURCES else "chat"}
+    item = str(body.get("item") or "")[:20]
+    if item:
+        meta["item"] = item
+    if "followup_due" in body:
+        meta["followup_due"] = bool(body.get("followup_due"))
+    _log_polly_event(creator_id, "waiting_room", meta)
+    return jsonify({"success": True})
+
+
 @polly_bp.route("/timeline", methods=["GET"])
 def timeline_list():
     creator_id, conn, _creator = _creator_auth()

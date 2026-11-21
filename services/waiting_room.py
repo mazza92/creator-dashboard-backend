@@ -138,11 +138,20 @@ def drafts(conn, creator_id: int, first_name: str = "", limit: int = DRAFTS) -> 
     out: Dict[str, Any] = {"plan_count": len(plan), "items": []}
     if not plan:
         return out
-    ids = [int(r["brand_id"]) for r in plan[:limit]]
+    # Only brands Autopilot can actually send to on upgrade (routes.polly_autopilot._brands_with_email rules) and
+    # that this creator hasn't pitched yet: "Send these" has to be true.
     cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("""SELECT id, brand_name, hero_product, source, description, website, category
-                   FROM pr_brands WHERE id = ANY(%s)""", (ids,))
+    cur.execute("""SELECT b.id, b.brand_name, b.hero_product, b.source, b.description, b.website, b.category
+                   FROM pr_brands b
+                   WHERE b.id = ANY(%s) AND NULLIF(TRIM(b.contact_email), '') IS NOT NULL
+                     AND COALESCE(LOWER(b.email_status), '') NOT IN ('bounced', 'invalid', 'undeliverable', 'risky')
+                     AND COALESCE(b.email_bounce_count, 0) = 0
+                     AND NOT EXISTS (SELECT 1 FROM polly_timeline_events e WHERE e.creator_id = %s
+                                     AND e.brand_id = b.id AND e.event_type IN ('pitch_sent', 'paid_pitch_sent'))""",
+                ([int(r["brand_id"]) for r in plan], creator_id))
     brands = {int(b["id"]): dict(b) for b in cur.fetchall()}
+    plan = [r for r in plan if int(r["brand_id"]) in brands]
+    out["plan_count"] = len(plan)
     niche = (creator_intro_facts(conn, creator_id) or {}).get("niche") or ""
     for r in plan[:limit]:
         b = brands.get(int(r["brand_id"])) or {"id": r["brand_id"], "brand_name": r.get("brand_name")}
