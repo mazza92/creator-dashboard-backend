@@ -2911,6 +2911,57 @@ def pitch_single_send():
     return _gmail_send_flow(load, store, "pitch_single_send", "no_pitch")
 
 
+@polly_bp.route("/pitch/report-email", methods=["POST"])
+def pitch_report_email():
+    """'Not working?' on a pitch card: the creator flags the brand's inbox. We check it, swap in a verified
+    alternative when there is one (in the directory for everyone when the old one is dead, on this pitch either way)
+    and update this creator's stored pitch so Send / Open email use the new address."""
+    from services.contact_repair import report_contact
+    from services.polly import build_mailto
+
+    creator_id, conn, _creator = _creator_auth()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    try:
+        body = request.get_json(silent=True) or {}
+        brand_id = str(body.get("brand_id") or "")
+        if not brand_id.isdigit():
+            return jsonify({"success": False, "error": "brand_id required"}), 400
+        reported = str(body.get("email") or "").strip().lower()[:200]
+        res = report_contact(conn, int(brand_id), reported, creator_id=creator_id)
+        new = res.get("email")
+        mailto = None
+        if new:
+            thread = load_thread(conn, creator_id)
+            notes = thread.get("notes") or {}
+            outbox = dict(notes.get("pitch_outbox") or {})
+            item = outbox.get(brand_id)
+            if isinstance(item, dict) and not item.get("sent_at"):
+                outbox[brand_id] = {**item, "email": new,
+                                    "mailto": build_mailto(new, item.get("subject") or "", item.get("body") or "")}
+                notes["pitch_outbox"] = outbox
+            batch = notes.get("pitch_batch") if isinstance(notes.get("pitch_batch"), dict) else None
+            if batch:
+                notes["pitch_batch"] = {**batch, "items": [
+                    ({**i, "email": new} if str(i.get("brand_id")) == brand_id and not i.get("sent_at") else i)
+                    for i in (batch.get("items") or []) if isinstance(i, dict)]}
+            messages = thread.get("messages") or []
+            for msg in reversed(messages):
+                p = msg.get("pitch") if isinstance(msg, dict) else None
+                if isinstance(p, dict) and str(p.get("brand_id")) == brand_id and not p.get("sent_via_gmail"):
+                    p["email"] = new
+                    p["mailto"] = mailto = build_mailto(new, p.get("subject") or "", p.get("body") or "")
+                    break
+            save_thread(conn, creator_id, messages, thread.get("suggested_brands"), notes)
+        return jsonify({"success": True, "outcome": res.get("outcome"), "email": new, "mailto": mailto})
+    except Exception as err:
+        print(f"[Polly] report email error: {err}")
+        return jsonify({"success": False, "error": "Could not report. Try again."}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
 @polly_bp.route("/timeline", methods=["GET"])
 def timeline_list():
     creator_id, conn, _creator = _creator_auth()
