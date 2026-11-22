@@ -1061,19 +1061,28 @@ def _lookup_similar_brands(query_name, scrape=None, notes=None, creator=None, cr
     return [item[-1] for item in ranked[:limit]]
 
 
-def _deliver_credits_out_offer(conn, creator_id, first, balance, tracker):
-    """Once a month, post the autopilot offer when a free creator has used all 3 credits."""
+def _deliver_credits_out_offer(conn, creator_id, first, balance, tracker, want_message=False):
+    """Once a month, post the out-of-free-pitches card (upsell + waiting room) when a free creator has used all 3
+    credits and at least one pitch went out. Runs on open, and right after the last free pitch is sent or the
+    first out-of-credits ask (``tracker`` None there: the waiting room's own counts are used). Returns True, or the
+    posted message with ``want_message``; False/None when nothing was posted."""
+    nothing = None if want_message else False
     try:
         thread = load_thread(conn, creator_id)
         notes = dict(thread.get("notes") or {})
         month = month_key()
         if not credits_out_offer_due(notes, balance, month):
-            return False
-        views_n, sent_n = _pipeline_proof(tracker)
+            return nothing
+        room = _waiting_room(conn, creator_id, first, balance)
+        if tracker is not None:
+            views_n, sent_n = _pipeline_proof(tracker)
+        else:
+            mom = (room or {}).get("momentum") or {}
+            views_n, sent_n = int(mom.get("opened") or 0), int(mom.get("sent") or 0)
         if not sent_n:
             # Credits went on pitches that aren't sent yet: let the creator send them first. The send summary
             # carries its own offer; this one waits for a later open.
-            return False
+            return nothing
         trial = False
         try:
             from services.quota_trial_test import trial_eligible
@@ -1089,20 +1098,41 @@ def _deliver_credits_out_offer(conn, creator_id, first, balance, tracker):
         # The card carries the offer; the chat line just marks the moment.
         message["content"] = (f"{first}, your" if first else "Your") + " free pitches are out. Here's how to keep going."
         message["upsell"] = _upsell_payload(conn, creator_id, balance, trial, sent_n, views_n)
-        message["waiting_room"] = _waiting_room(conn, creator_id, first, balance)
+        message["waiting_room"] = room
+        message["id"] = f"credits-out-{month}"
         notes["credits_out_offer_month"] = month
         messages = list(thread.get("messages") or [])
         messages.append(json_safe(message))
         save_thread(conn, creator_id, messages, thread.get("suggested_brands") or [], notes=notes)
         _log_polly_event(creator_id, "paywall_shown", {"moment": "credits_out", "trial": trial})
-        return True
+        return json_safe(message) if want_message else True
     except Exception as err:
         print(f"[Polly] credits-out offer skipped: {err}")
         try:
             conn.rollback()
         except Exception:
             pass
-        return False
+        return nothing
+
+
+def _credits_out_followon(conn, creator_id, creator=None, first=None):
+    """The out-of-free-pitches card to show right now, in the same response, or None. Used after the last free
+    pitch is sent and after an ask the free plan can't cover, so the creator doesn't have to reload to see it."""
+    try:
+        from services.polly import out_of_free_unlocks
+        balance = _unlock_balance(creator_id, conn=conn)
+        if not out_of_free_unlocks(balance):
+            return None
+        if first is None and creator:
+            first = creator_first_name(creator, None)
+        return _deliver_credits_out_offer(conn, creator_id, first, balance, None, want_message=True)
+    except Exception as err:
+        print(f"[Polly] credits-out follow-on skipped: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None
 
 
 def _quota_email(creator_id, why):
@@ -2530,6 +2560,14 @@ def _finish_turn(state, say, brain, timer, chip_id):
     except Exception as persist_err:
         print(f"[Polly] persist skipped: {persist_err}")
     timer.mark("persist")
+    if state.paywall or (paywall_moment or {}).get("moment"):
+        # First ask the free plan can't cover this month: the waiting room follows the answer.
+        try:
+            offer = _credits_out_followon(state.db(), state.creator_id, first=state.first or None)
+            if offer:
+                payload["offer_message"] = offer
+        except Exception as err:
+            print(f"[Polly] chat follow-on offer skipped: {err}")
     tag = f"intent={intent} chip={chip_id or '-'} brain={brain} tools={tools}"
     if state.paywall:
         return timer.finish(jsonify(payload), extra=tag), 402
@@ -2842,7 +2880,10 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
                       meta={"sent": len(sent), "total": len(results)})
         except Exception:
             pass
+        # Last free pitch out: the waiting room shows under the send summary.
+        offer = _credits_out_followon(conn, creator_id, creator) if sent and not is_pro else None
         return jsonify({
+            "offer_message": json_safe(offer) if offer else None,
             "success": bool(sent) or not revoked,
             "results": results,
             "sent": len(sent),
@@ -3172,7 +3213,9 @@ def pitch_sent_check():
             outcome = "not_sent"
         log_usage(conn, creator_id, "pitch_sent_check", intent="sent" if sent else "not_sent",
                   meta={"brand_id": brand_id, "method": str(body.get("method") or "")[:20]})
-        return jsonify({"success": True, "outcome": outcome})
+        # The last free pitch just went out: the waiting room shows now, not on the next visit.
+        offer = _credits_out_followon(conn, creator_id, _creator) if sent else None
+        return jsonify(json_safe({"success": True, "outcome": outcome, "offer_message": offer}))
     except Exception as err:
         print(f"[Polly] sent check failed: {err}")
         return jsonify({"success": False, "error": "could not save"}), 500
