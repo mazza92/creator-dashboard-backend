@@ -331,6 +331,15 @@ def build_profile_context(scrape: Optional[Dict], creator: Optional[Dict] = None
         name = f"{first} {last}".strip()
     if name:
         lines.append(f"Display name: {name}")
+    # The name every scripted Polly message uses. Nov 2026: a creator signed up as Nadia whose Instagram display
+    # name is Raya got both in one thread; the model now uses this one only.
+    try:
+        from services.polly_persona import creator_first_name
+        call = creator_first_name(creator, scrape)
+    except Exception:
+        call = None
+    if call:
+        lines.append(f"Call them: {call} (always this name, never the display name or handle)")
 
     niche = scrape.get("primary_niche") or creator.get("niche")
     if niche:
