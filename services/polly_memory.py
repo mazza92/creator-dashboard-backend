@@ -131,6 +131,12 @@ def _clean_message(msg: Any) -> Optional[Dict[str, Any]]:
     up = msg.get("upsell")
     if isinstance(up, dict):
         out["upsell"] = {**up, "waiting": (up.get("waiting") or [])[:6]}
+    room = msg.get("waiting_room")
+    if isinstance(room, dict):
+        # Out-of-free-pitches card (services.waiting_room). Was dropped on save until Nov 22 2026, so the chat
+        # showed the old upsell card instead.
+        out["waiting_room"] = {**room, "drafts": (room.get("drafts") or [])[:5],
+                               "checklist": (room.get("checklist") or [])[:6]}
     hot = msg.get("hotlist")
     if isinstance(hot, dict) and isinstance(hot.get("brands"), list) and hot["brands"]:
         out["hotlist"] = {**hot, "brands": hot["brands"][:8]}

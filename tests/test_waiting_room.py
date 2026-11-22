@@ -173,3 +173,15 @@ class AutoFollowUp(unittest.TestCase):
         a = _row(1, 5)
         a["auto"] = {"followup_status": "scheduled", "followup_due_at": NOW + timedelta(days=5), "followups_sent": 1}
         self.assertIsNone(wr.followup([a], NOW))
+
+
+class SavedInThread(unittest.TestCase):
+    def test_waiting_room_survives_save(self):
+        from services.polly_memory import _clean_message
+        room = {"momentum": {"sent": 3, "opened": 1, "replied": 0}, "followup": None,
+                "checklist": [{"id": "rates"}] * 9, "drafts": [{"brand_id": i} for i in range(8)], "plan_count": 8}
+        msg = {"role": "assistant", "kind": "upsell", "content": "x", "upsell": {"trial": False}, "waiting_room": room}
+        out = _clean_message(msg)
+        self.assertEqual(out["waiting_room"]["momentum"]["sent"], 3)
+        self.assertEqual(len(out["waiting_room"]["drafts"]), 5)
+        self.assertEqual(len(out["waiting_room"]["checklist"]), 6)
