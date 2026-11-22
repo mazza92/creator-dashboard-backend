@@ -441,6 +441,25 @@ def _portfolio_views(context: Optional[Dict] = None) -> List[Dict]:
     return [e for e in recent if (e.get("event_type") or "") == "portfolio_viewed"]
 
 
+def _due_note(task: Dict) -> str:
+    """', due Nov 26, not yet' for a task that isn't due: a day-4 follow-up created at send time read as 'due'
+    (Nov 2026: 'three follow-ups due… let's get those sent out' minutes after the pitches went out)."""
+    raw = task.get("due_at")
+    due = None
+    if isinstance(raw, datetime):
+        due = raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    elif isinstance(raw, str) and raw:
+        try:
+            due = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            due = due if due.tzinfo else due.replace(tzinfo=timezone.utc)
+        except ValueError:
+            due = None
+    if not due:
+        return ""
+    label = f"{due.strftime('%b')} {due.day}"
+    return f", due {label}" if due <= utc_now() else f", due {label}, not yet: don't call it due"
+
+
 def session_context_text(context: Optional[Dict] = None) -> str:
     context = context or {}
     bits = []
@@ -461,7 +480,7 @@ def session_context_text(context: Optional[Dict] = None) -> str:
         ))
     if active:
         bits.append("Open tasks: " + "; ".join(
-            f"{t.get('type')} {t.get('brand_name') or ''} ({t.get('status')})"
+            f"{t.get('type')} {t.get('brand_name') or ''} ({t.get('status')}{_due_note(t)})"
             for t in active[:8]
         ))
     recent = context.get("recent_timeline") or []
