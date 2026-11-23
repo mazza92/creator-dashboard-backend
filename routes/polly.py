@@ -3,7 +3,7 @@
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, jsonify, request, session, current_app
 
@@ -2410,6 +2410,41 @@ def _run_chip(state, action, chip_id, data):
     return prior
 
 
+def parse_iso(raw):
+    if not raw:
+        return None
+    try:
+        at = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+
+
+REPLY_MOMENT_CHIPS = ("checkin_interested", "checkin_gifted", "checkin_paid", "checkin_question")
+REPLY_MOMENT_GAP = timedelta(days=3)
+
+
+def _reply_moment(state, say, task_chips, chip_id):
+    """Free creator logs a brand reply (yes, paid, question): after helping, one line on what Pro does and a
+    direct checkout chip. At most once every 3 days, never on top of a paywall."""
+    if not (state.reply_logged or chip_id in REPLY_MOMENT_CHIPS):
+        return say, task_chips
+    if state.paywall or (state.balance or {}).get("is_unlimited") or not say:
+        return say, task_chips
+    if any((c or {}).get("action") == "unlock_pro" for c in task_chips):
+        return say, task_chips
+    last = parse_iso((state.notes or {}).get("reply_moment_at"))
+    if last and datetime.now(timezone.utc) - last < REPLY_MOMENT_GAP:
+        return say, task_chips
+    from services.polly_persona import persona_reply_moment
+
+    brand = (state.chip or {}).get("brand_name") if isinstance(state.chip, dict) else None
+    state.notes["reply_moment_at"] = utc_iso_now()
+    state.paywall_moment = {"moment": "reply"}
+    chip = {"id": "unlock_pro", "label": "Get more replies · Pro", "action": "unlock_pro"}
+    return f"{say}\n\n{persona_reply_moment(brand)}", list(task_chips) + [chip]
+
+
 def _finish_turn(state, say, brain, timer, chip_id):
     from services.polly_discovery import remaining_fields
 
@@ -2433,6 +2468,7 @@ def _finish_turn(state, say, brain, timer, chip_id):
         _hydrate_brand_cards(drop_pitched(brands or state.suggested, notes)), notes,
     )
     task_chips = drop_early_followups(list(state.task_chips), state.early_fu)
+    say, task_chips = _reply_moment(state, say, task_chips, chip_id)
     # "I'll pitch brands myself" (first run): one pitch per Contact, never a "write all 3" that spends every credit.
     hand_pick = (getattr(state, "chip", None) or {}).get("id") == "show_brands"
     if brands and not hand_pick and not state.pitch_batch and not any(
@@ -2560,7 +2596,7 @@ def _finish_turn(state, say, brain, timer, chip_id):
     except Exception as persist_err:
         print(f"[Polly] persist skipped: {persist_err}")
     timer.mark("persist")
-    if state.paywall or (paywall_moment or {}).get("moment"):
+    if state.paywall or (paywall_moment or {}).get("moment") not in (None, "reply"):
         # First ask the free plan can't cover this month: the waiting room follows the answer.
         try:
             offer = _credits_out_followon(state.db(), state.creator_id, first=state.first or None)

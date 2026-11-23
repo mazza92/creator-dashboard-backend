@@ -653,6 +653,7 @@ def persona_empty_unlock_brief(
 
 
 from services.pro_offer import MAX_DAILY as _DAILY  # noqa: E402
+from services.pro_offer import VOLUME  # noqa: E402
 
 # Short and scannable: aspiring UGC creators skim. Three outcomes, then the price.
 _PRO_VALUE_BODY = (
@@ -745,8 +746,15 @@ def persona_paywall_say(
     brand_name: Optional[str] = None,
     kit_views: int = 0,
     sent: int = 0,
+    repeat: bool = False,
 ) -> str:
     name = (brand_name or "").strip()
+    if repeat:
+        # Second locked tap in a week: they've read the full offer already (Nov 2026: 27 of 66 creators hit the
+        # same long paywall 2+ times and ~85% never clicked through). One line, one button.
+        who = f"**{name}**" if name else "This one"
+        return (f"{who} is on Pro too. Tap below and I pitch it for you today, then keep going: "
+                f"{VOLUME}, $19/mo, cancel anytime.")
     proof = persona_pro_proof(kit_views, sent)
     tail = f"\n\n{proof}" if proof else ""
     if name:
@@ -759,6 +767,13 @@ def persona_paywall_say(
         "Free pitches are used this month, so the next one's on Pro.\n\n"
         f"{PRO_VALUE_LINE}{tail}"
     )
+
+
+def persona_reply_moment(brand_name: Optional[str] = None) -> str:
+    """A free creator just logged a brand reply: the moment Pro's value is most concrete."""
+    who = f"**{brand_name.strip()}**" if (brand_name or "").strip() else "this brand"
+    return (f"Replies like {who}'s are what Pro is for: I pitch {VOLUME} that fit you and follow up, "
+            "so more of them answer. $19/mo, cancel anytime.")
 
 
 def persona_radar_paywall_say(niche: str = "") -> str:
