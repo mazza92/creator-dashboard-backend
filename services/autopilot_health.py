@@ -140,6 +140,11 @@ def gmail_email(first_name: str, facts: Dict[str, Any], unsubscribe_url: str = "
         lines.append("Autopilot is also paused. Switch it back on in the same panel.")
     buttons = [{"label": "Connect Gmail", "href": _link("/creator/dashboard/for-you", GMAIL_KIND,
                                                         {"autopilot": "connect_gmail"})}]
+    from services.pro_trial import no_gmail_option
+    alt = no_gmail_option(GMAIL_KIND)
+    if alt:
+        lines.append(alt["line"])
+        buttons.append(alt["button"])
     return {"subject": subject, "html": render_email(first_name, subject, lines, buttons, unsubscribe_url)}
 
 

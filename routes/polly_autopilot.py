@@ -3,6 +3,7 @@
 
 import os
 import re
+from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, jsonify, redirect, request
 
@@ -488,6 +489,8 @@ def _pick_brands(conn, creator_id, creator, notes, scrape, limit=POOL_SIZE):
     matched = [b for b in brands if b.get("id") and int(b["id"]) in emailable]
     matched = _targets_first(conn, creator_id, matched, exclude, notes)
     matched = _planned_first(conn, creator_id, matched)
+    cat_list = cats or stated_niches(notes) or (creator or {}).get("creator_niches") or []
+    matched = _first_week_proven_first(conn, creator_id, creator, matched, cat_list, exclude, notes)
     return matched, None if matched else "no_matches"
 
 
@@ -649,6 +652,103 @@ def _planned_first(conn, creator_id, matched):
         return matched
     first = sorted([b for b in matched if int(b["id"]) in order], key=lambda b: order[int(b["id"])])
     return first + [b for b in matched if int(b["id"]) not in order]
+
+
+FIRST_WEEK = timedelta(days=7)
+FIRST_WEEK_PROVEN = 20
+
+
+def in_first_pro_week(conn, creator_id, now=None):
+    """True during the creator's first 7 days on Pro (subscription_started_at; trial starts count)."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT subscription_started_at FROM creators WHERE id = %s", (creator_id,))
+        row = cur.fetchone()
+    except Exception as err:
+        print(f"[Polly autopilot] first-week check skipped creator={creator_id}: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+    started = (row[0] if row and not isinstance(row, dict) else (row or {}).get("subscription_started_at")) if row else None
+    if not started:
+        return False
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return started <= now < started + FIRST_WEEK
+
+
+def proven_niche_brands(conn, categories, exclude_ids, followers, limit=FIRST_WEEK_PROVEN):
+    """Brands in the creator's own categories that creators on Newcollab have heard back from (reply tier
+    'replies' in services.brand_reply_signal), with a deliverable inbox and within reach (STRETCH), best first."""
+    own = [str(c).strip().lower() for c in categories or [] if str(c).strip()]
+    if not own:
+        return []
+    try:
+        from psycopg2.extras import RealDictCursor
+        from services.brand_reply_signal import id_sets
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        replies = [i for i in id_sets(cur)["replies"] if i]
+        if not replies:
+            return []
+        try:
+            followers = int(followers or 0)
+        except (TypeError, ValueError):
+            followers = 0
+        cap = int(followers * STRETCH) if followers > 0 else None
+        cur.execute("""
+            SELECT b.id, b.brand_name, b.slug, b.category, b.logo_url, b.min_followers
+            FROM pr_brands b
+            WHERE b.id = ANY(%(replies)s)
+              AND COALESCE(b.status, 'published') = 'published'
+              AND LOWER(COALESCE(b.category, '')) = ANY(%(cats)s)
+              AND NULLIF(TRIM(b.contact_email), '') IS NOT NULL
+              AND COALESCE(LOWER(b.email_status), '') NOT IN ('bounced', 'invalid', 'undeliverable', 'risky')
+              AND COALESCE(b.email_bounce_count, 0) = 0
+              AND COALESCE(b.accepting_pr, TRUE)
+              AND NOT (b.id = ANY(%(skip)s))
+              AND (%(cap)s IS NULL OR b.min_followers IS NULL OR b.min_followers <= %(cap)s)
+            ORDER BY COALESCE(b.min_followers, 0), COALESCE(b.response_rate, 0) DESC, b.id DESC
+            LIMIT %(n)s
+        """, {"replies": replies, "cats": own, "skip": [int(i) for i in exclude_ids or []] or [0], "cap": cap,
+              "n": int(limit)})
+        rows = cur.fetchall()
+    except Exception as err:
+        print(f"[Polly autopilot] proven brands skipped: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return []
+    return [{"id": int(r["id"]), "name": r.get("brand_name"), "brand_name": r.get("brand_name"), "slug": r.get("slug"),
+             "category": r.get("category"), "logo": r.get("logo_url"), "logo_url": r.get("logo_url"),
+             "match_score": MIN_FIT, "source": "proven", "min_followers": r.get("min_followers"), "proven": True}
+            for r in rows]
+
+
+def _first_week_proven_first(conn, creator_id, creator, matched, categories, exclude, notes):
+    """New Pro creators' first week: brands in their niche that answer creators go out first (after brands they
+    saved themselves), including ones the match pool didn't hold. Nov 2026: 7 of 8 Pro cancellations came in the
+    first 10 days with no reply yet."""
+    if not in_first_pro_week(conn, creator_id):
+        return matched
+    try:
+        from services.polly import drop_pitched
+        proven = drop_pitched(proven_niche_brands(conn, categories, exclude, (creator or {}).get("followers_count")),
+                              notes, extra_ids=exclude)
+    except Exception as err:
+        print(f"[Polly autopilot] first-week proven skipped creator={creator_id}: {err}")
+        return matched
+    if not proven:
+        return matched
+    proven_ids = {int(b["id"]) for b in proven}
+    targets = [b for b in matched if b.get("target")]
+    target_ids = {int(b["id"]) for b in targets}
+    lead = [b for b in proven if int(b["id"]) not in target_ids]
+    rest = [b for b in matched if not b.get("target") and int(b["id"]) not in proven_ids]
+    return targets + lead + rest
 
 
 def _targets_first(conn, creator_id, matched, exclude, notes):

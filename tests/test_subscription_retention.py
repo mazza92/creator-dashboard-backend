@@ -201,3 +201,38 @@ class CancelPlanTests(unittest.TestCase):
         w = pause_window(datetime(2026, 1, 31, 9, tzinfo=timezone.utc))
         self.assertEqual(w["resumes_at"], datetime(2026, 2, 28, 9, tzinfo=timezone.utc))
         self.assertLess(w["stripe_resumes_at"], w["resumes_at"])
+
+
+class PauseFirstForEarlyNoReplies(unittest.TestCase):
+    """Nov 2026: early 'no replies' cancels get the month pause as the main offer, not the outreach review."""
+
+    def _ctx(self, **kw):
+        base = {"gmail_connected": True, "weekdays_expected": 3, "weekdays_sent": 3, "replies_30d": 0,
+                "kit_opens_30d": 0, "pitches_sent_30d": 10}
+        base.update(kw)
+        return base
+
+    def test_opens_no_replies_pause_is_main_offer(self):
+        from services import retention_context as rc
+        out = rc.plan("no_replies", self._ctx(kit_opens_30d=4), price_hold_ok=True, pause_ok=True)
+        self.assertEqual(out["offers"], ["pause"])
+        self.assertIn("4 brands opened your kit", out["headline"])
+        self.assertIn("2 to 4 weeks", out["body"])
+
+    def test_early_pause_is_main_offer(self):
+        from services import retention_context as rc
+        out = rc.plan("other", self._ctx(pitches_sent_30d=5), price_hold_ok=True, pause_ok=True)
+        self.assertEqual(out["situation"], "early")
+        self.assertEqual(out["offers"], ["pause"])
+
+    def test_trial_without_pause_keeps_review(self):
+        from services import retention_context as rc
+        out = rc.plan("no_replies", self._ctx(kit_opens_30d=4), price_hold_ok=False, pause_ok=False)
+        self.assertEqual(out["offers"], ["outreach_review"])
+
+    def test_no_opens_and_price_unchanged(self):
+        from services import retention_context as rc
+        no_opens = rc.plan("no_replies", self._ctx(pitches_sent_30d=40), price_hold_ok=True, pause_ok=True)
+        self.assertEqual(no_opens["offers"], ["outreach_review", "pause"])
+        price = rc.plan("too_expensive", self._ctx(kit_opens_30d=4), price_hold_ok=True, pause_ok=True)
+        self.assertEqual(price["offers"], ["price_hold", "pause"])

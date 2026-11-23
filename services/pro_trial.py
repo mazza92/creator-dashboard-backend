@@ -47,6 +47,23 @@ def connect_gmail_link(campaign: str) -> str:
     return _link("/creator/dashboard/for-you", campaign, {"autopilot": "pro_started"})
 
 
+def no_gmail_option(campaign: str) -> Optional[Dict[str, Any]]:
+    """The 'no Gmail' alternative for the Gmail nudges: Polly sends as "Name via Newcollab" and brands reply to the
+    creator's own inbox (services.pitch_relay). None until the relay domain is configured, so no email ever points
+    to an option the app doesn't show. Nov 2026: Pro creators who never connected Gmail cancel without a single
+    pitch sent."""
+    from services.pitch_relay import relay_available
+
+    if not relay_available():
+        return None
+    return {
+        "line": ("No Gmail, or you'd rather not connect it? I can send your pitches as <strong>you via "
+                 "Newcollab</strong> instead, and brands reply straight to your own inbox."),
+        "button": {"label": "Send without Gmail", "href": _link("/creator/dashboard/for-you", campaign,
+                                                                {"autopilot": "no_gmail"})},
+    }
+
+
 def settings_link(campaign: str) -> str:
     return _link("/creator/dashboard/settings", campaign)
 
@@ -80,6 +97,10 @@ def trial_gmail_email(first_name: str, ends_at: datetime, unsubscribe_url: str =
         f"<strong>{escape(_date_label(ends_at))}</strong>.",
     ]
     buttons = [{"label": "Connect Gmail", "href": connect_gmail_link("trial_gmail")}]
+    alt = no_gmail_option("trial_gmail")
+    if alt:
+        lines.append(alt["line"])
+        buttons.append(alt["button"])
     return {"subject": subject, "html": render_email(first_name, subject, lines, buttons, unsubscribe_url)}
 
 

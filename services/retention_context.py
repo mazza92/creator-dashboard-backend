@@ -155,6 +155,18 @@ def plan(reason: str, ctx: Dict[str, Any], price_hold_ok: bool, pause_ok: bool) 
                 if nxt else "She picks your brands, sends from your Gmail and follows up on her own.")
         if not ctx.get("autopilot_enabled"):
             offers.append("autopilot_on")
+    elif where in ("early", "opens_no_replies") and pause_ok:
+        # Nov 2026: 7 of 8 cancels came in the first 10 days with no reply yet, and the review offer saved none of
+        # them. Replies take 2 to 4 weeks, so the main offer is a pause: no charge, the plan and brands stay, and
+        # replies to pitches already sent still reach their inbox.
+        if where == "early":
+            headline = f"It's early: Polly has sent {_plural(pitched, 'pitch', 'pitches')} so far."
+        else:
+            headline = f"{_plural(opens, 'brand')} opened your kit. Replies usually take 2 to 4 weeks."
+        body = ("Brands usually reply 2 to 4 weeks after a pitch. Instead of starting over later, pause for a month: "
+                "no charge, your plan and brands stay, and replies to the pitches already sent still reach your inbox.")
+        offers.append("pause")
+        pause_ok = False  # already the main offer
     else:
         if where == "early":
             headline = f"It's early: Polly has sent {_plural(pitched, 'pitch', 'pitches')} so far."
