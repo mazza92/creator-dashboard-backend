@@ -78,6 +78,7 @@ class TurnState:
     sent_now: bool = False
     after_send_empty: bool = False
     paywall_moment: Optional[Dict[str, Any]] = None
+    reply_logged: bool = False  # a brand reply (yes, paid, question) was logged this turn
     tool_log: List[Dict[str, Any]] = field(default_factory=list)
     intent: str = "chat"
     auth_failed: bool = False

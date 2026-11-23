@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from services.polly import (
@@ -511,6 +511,13 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         except (TypeError, ValueError):
             waiting = 0
         if waiting:
+            swaps = _waiting_swap_chips(state, brand_id, brand_name)
+            if swaps:
+                olds = [c["old_name"] for c in swaps]
+                state.final_say = (f"Your free pitches are already written for {_and_list(olds)}, waiting to go out. "
+                                   f"Want **{brand_name}** instead of one of them? Swapping doesn't use a pitch.")
+                state.add_chips([{k: v for k, v in c.items() if k != "old_name"} for c in swaps])
+                return {"ok": True, "status": "pitches_waiting_swap_offered", "count": waiting, "brand": brand_name}
             state.final_say = (f"You have **{waiting} pitch{'es' if waiting != 1 else ''}** written and waiting. "
                                "Send them first: your free pitches are only used when a pitch goes out.")
             return {"ok": True, "status": "pitches_waiting", "count": waiting, "brand": brand_name}
@@ -525,9 +532,11 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
             "brand_id": brand_id,
             "preview": paywall_preview_lines(brand_name, state.first, _niche(state)),
         }
-        state.paywall_moment = {"brand_id": brand_id, "moment": "pitch", "followup": followup}
+        repeat = _paywall_seen_recently(state.notes)
+        state.notes["paywall_at"] = datetime.now(timezone.utc).isoformat()
+        state.paywall_moment = {"brand_id": brand_id, "moment": "pitch", "followup": followup, "repeat": repeat}
         views_n, sent_n = R._pipeline_proof(state.tracker_ctx)
-        state.final_say = persona_paywall_say(brand_name, kit_views=views_n, sent=sent_n)
+        state.final_say = persona_paywall_say(brand_name, kit_views=views_n, sent=sent_n, repeat=repeat)
         state.add_chips(paywall_unlock_chips({"id": brand_id, "name": brand_name}))
         state.balance = R._unlock_balance(state.creator_id)
         return {"ok": True, "status": "locked_out_of_free_pitches", "brand": brand_name}
@@ -648,6 +657,45 @@ def batch_item(pitch: Dict[str, Any]) -> Dict[str, Any]:
 
 def _stored_batch_item(item: Dict[str, Any]) -> Dict[str, Any]:
     return {k: item.get(k) for k in ("brand_id", "brand_name", "brand_logo", "email", "subject", "body", "meta_ads")}
+
+
+def _paywall_seen_recently(notes: Optional[Dict[str, Any]], days: int = 7) -> bool:
+    raw = (notes or {}).get("paywall_at")
+    if not raw:
+        return False
+    try:
+        at = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - at < timedelta(days=days)
+
+
+def _and_list(names: List[str]) -> str:
+    names = [f"**{n}**" for n in names if n]
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _waiting_swap_chips(state: TurnState, brand_id: Any, brand_name: str) -> List[Dict[str, Any]]:
+    """Free creator with every credit held by written, unsent pitches asks for a new brand: offer to swap it in
+    for one of them (Nov 2026: 'Pitch The Good Patch' was refused twice with 'send them first'). Uses the batch
+    swap, which gives the old pitch's credit back first."""
+    new_id = _int(brand_id)
+    if not new_id:
+        return []
+    items = [i for i in ((state.notes.get("pitch_batch") or {}).get("items") or [])
+             if isinstance(i, dict) and not i.get("sent_at") and _int(i.get("brand_id"))
+             and _int(i.get("brand_id")) != new_id]
+    chips = []
+    for item in items[:3]:
+        old = str(item.get("brand_name") or "").strip() or "that brand"
+        chips.append({"id": "swap_pitch", "label": f"Swap out {old}", "action": "pitch_batch",
+                      "brand_ids": [new_id], "replace_brand_id": _int(item.get("brand_id")),
+                      "brand_name": brand_name, "old_name": old})
+    return chips
 
 
 def batch_waits_on_location(notes: Dict[str, Any]) -> bool:
@@ -1174,6 +1222,19 @@ def get_pitch_status(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
             "relationships": [_status_row(r) for r in rows[:10]]}
 
 
+_REPLY_KINDS = ("brand_replied_interested", "brand_replied_question", "brand_replied_rejected")
+_VAGUE_REPLY_RE = re.compile(
+    r"^\s*(yes,?\s*|yeah,?\s*|so\s+)?([\w&'.\- ]{1,40}?\s+)?(has\s+|have\s+|just\s+)?"
+    r"(replied|answered|responded|got back( to me)?|wrote back|emailed (me )?back)( to me)?( already)?[\s.!]*$",
+    re.I,
+)
+
+
+def vague_reply_text(text: Optional[str]) -> bool:
+    """True for a bare 'They replied' / 'Rhode Skin replied!' that doesn't say what the brand said."""
+    return bool(_VAGUE_REPLY_RE.match(str(text or "").strip()))
+
+
 def log_brand_update(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     event = str(args.get("event") or "").strip().lower()
     intent = _EVENTS.get(event)
@@ -1192,6 +1253,19 @@ def log_brand_update(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
             brand = {"id": draft.get("id"), "name": draft.get("name")} if draft else None
         if not brand:
             return {"ok": False, "error": "Which brand? Pass brand_name."}
+    if intent in _REPLY_KINDS and vague_reply_text(state.user_text):
+        # "They replied" / "Rhode Skin replied" says nothing about what the brand said: logging interested or a
+        # question from it was a guess (Nov 2026: a bare "They replied" became "Rare Beauty asked something").
+        from services.polly_pain import reply_kind_chips
+        state.add_chips(reply_kind_chips(brand))
+        return {
+            "ok": False,
+            "status": "needs_reply_kind",
+            "brand": (brand or {}).get("name"),
+            "explain": "They only said the brand replied, not what it said. Nothing is logged. Ask in one line "
+                       "what the brand said (gifted offer, paid offer, question, or a pass); the buttons are on "
+                       "screen. Don't guess or say the brand is interested.",
+        }
     life = {"intent": intent, "confidence": 1.0,
             "brand": (brand or {}).get("name"), "brand_id": (brand or {}).get("id")}
     try:
@@ -1214,6 +1288,8 @@ def log_brand_update(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
                        "brand replied, is interested or shipped until then.",
         }
     state.notes.pop("pending_brand_update", None)
+    if intent in ("brand_replied_interested", "brand_replied_question"):
+        state.reply_logged = True
     if intent == "pitch_not_sent" and brand:
         state.notes = unmark_pitched(state.notes, brand)
     state.add_chips(result.get("chips") or [])
