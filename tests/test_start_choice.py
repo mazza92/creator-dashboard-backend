@@ -4,7 +4,7 @@ from unittest import mock
 from services import start_choice as sc
 from services.pro_trial import trial_days_left
 
-APPROVED = datetime(2026, 11, 26, tzinfo=timezone.utc)
+APPROVED = datetime(2026, 11, 24, 18, 3, tzinfo=timezone.utc)
 
 
 class FakeCursor:
@@ -59,11 +59,8 @@ def ids_in(arm, n=40):
     return [i for i in range(1, 400) if sc.arm_for(i) == arm][:n]
 
 
-def test_split_is_roughly_half_and_stable():
-    arms = [sc.arm_for(i) for i in range(1, 2001)]
-    share = arms.count('choice') / len(arms)
-    assert 0.45 < share < 0.55
-    assert sc.arm_for(123) == sc.arm_for(123)
+def test_everyone_eligible_gets_the_choice():
+    assert {sc.arm_for(i) for i in range(1, 500)} == {'choice'}
 
 
 def test_choice_arm_sees_screen_once_then_choice_sticks():
@@ -77,20 +74,18 @@ def test_choice_arm_sees_screen_once_then_choice_sticks():
     assert sc.trial_eligible(cur, cid) is True
 
 
-def test_control_arm_is_recorded_but_never_shown_or_offered_the_trial():
-    cid = ids_in('control', 1)[0]
-    cur = FakeCursor({cid: creator()})
+def test_old_control_rows_stay_hidden():
+    """Creators recorded as 'control' during the first hour of the split keep today's dashboard."""
+    cur = FakeCursor({7: creator()}, table={7: {'arm': 'control', 'choice': None}})
     conn = FakeConn(cur)
-    assert sc.status(conn, cid, flag=True) == {'show': False, 'arm': 'control'}
-    assert cur.table[cid]['arm'] == 'control'
-    assert sc.record_choice(conn, cid, 'trial') is False
-    assert sc.trial_eligible(cur, cid) is False
+    assert sc.status(conn, 7, flag=True) == {'show': False, 'arm': 'control'}
+    assert sc.record_choice(conn, 7, 'trial') is False
 
 
 def test_outside_the_test_nothing_is_recorded():
     cid = ids_in('choice', 1)[0]
     for c, flag in ((creator(), False),
-                    (creator(approved=datetime(2026, 11, 20, tzinfo=timezone.utc)), True),
+                    (creator(approved=datetime(2026, 11, 24, 17, 0, tzinfo=timezone.utc)), True),
                     (creator(paid=True), True),
                     (creator(status='pending'), True)):
         cur = FakeCursor({cid: c})
