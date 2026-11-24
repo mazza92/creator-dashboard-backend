@@ -1289,7 +1289,16 @@ def setup_save():
             _schedule_waiting_drafts(conn, creator_id)  # the first pitch they just saw goes out now, no OK needed
             prioritize_fill(conn, creator_id)
         notes, _scrape = _creator_context(conn, creator)
-        return jsonify(_setup_payload(conn, creator_id, creator, notes))
+        payload = _setup_payload(conn, creator_id, creator, notes)
+        if body.get("done"):
+            # Polly's recap of what happens next replaces the first-run welcome (which reappeared after setup).
+            try:
+                from services.autopilot_recap import post_setup_recap
+                payload["recap"] = post_setup_recap(conn, creator_id, _creator_names(conn, creator_id).get("first") or "")
+            except Exception as e:  # noqa: BLE001
+                conn.rollback()
+                print(f"[autopilot] setup recap skipped creator={creator_id}: {e}")
+        return jsonify(payload)
     finally:
         conn.close()
 
