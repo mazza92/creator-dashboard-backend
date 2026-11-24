@@ -289,7 +289,8 @@ class TestTrialJourney(unittest.TestCase):
         html = trial_started_email("Ana", self.ENDS)["html"]
         self.assertIn("Connect Gmail", html)
         self.assertIn("Nothing to approve", html)
-        self.assertIn("Wednesday, Oct 21", html)
+        self.assertIn("20 brands a day", html)
+        self.assertNotIn("Oct 21", html)  # no email announces the trial's end date
         self.assertIn("autopilot=pro_started", html)
 
     def test_ending_email_recaps_and_states_charge(self):
@@ -321,7 +322,7 @@ class TestTrialJourney(unittest.TestCase):
         self.assertIn("sent 2 pitches from your Gmail to <strong>Glossier</strong>, <strong>Tower 28</strong>",
                       mail["html"])
         self.assertIn("4 more pitches are lined up, the next one on Friday, Oct 16", mail["html"])
-        self.assertIn("Wednesday, Oct 21", mail["html"])
+        self.assertNotIn("Oct 21", mail["html"])
         one = trial_first_sent_email("Ana", self.ENDS, {"names": ["Rhode"]})
         self.assertEqual(one["subject"], "Your first pitch is out: Rhode")
 
@@ -370,10 +371,10 @@ class TestTrialJourney(unittest.TestCase):
         self.assertEqual(self._journey(timedelta(hours=30), nudged=True)[0], [])
         self.assertEqual(self._journey(timedelta(hours=10))[0], [])
 
-    def test_ending_reminder_day_five_once(self):
+    def test_no_end_of_trial_email(self):
         from datetime import timedelta
-        self.assertEqual(self._journey(timedelta(days=5, hours=2), gmail=True)[0], ["trial_ending"])
-        self.assertEqual(self._journey(timedelta(days=5, hours=2), reminded=True)[0], [])
+        self.assertEqual(self._journey(timedelta(days=5, hours=2), gmail=True)[0], [])
+        self.assertEqual(self._journey(timedelta(days=6, hours=2), gmail=True)[0], [])
         self.assertEqual(self._journey(timedelta(days=7, hours=1))[0], [])
 
     def test_first_sent_once_after_window_and_not_after_recap(self):
@@ -384,15 +385,15 @@ class TestTrialJourney(unittest.TestCase):
         self.assertEqual(self._journey(day2, gmail=True, first_sent_ago=timedelta(minutes=10))[0], [])
         self.assertEqual(self._journey(day2, gmail=True, first_sent_ago=timedelta(hours=20), told_sent=True)[0], [])
         self.assertEqual(self._journey(timedelta(days=5, hours=2), gmail=True,
-                                       first_sent_ago=timedelta(hours=20))[0], ["trial_ending"])
+                                       first_sent_ago=timedelta(hours=20))[0], ["trial_first_sent"])
         self.assertEqual(self._journey(day2, gmail=True, first_sent_ago=timedelta(hours=20),
                                        recipient=False)[0], [])
 
-    def test_ending_reminder_reaches_unsubscribed(self):
+    def test_unsubscribed_trialists_get_nothing(self):
         from datetime import timedelta
         kinds, billing = self._journey(timedelta(days=5, hours=2), recipient=False)
-        self.assertEqual(kinds, ["trial_ending"])
-        billing.assert_called_once()
+        self.assertEqual(kinds, [])
+        billing.assert_not_called()
         self.assertEqual(self._journey(timedelta(hours=30), recipient=False)[0], [])
 
     def test_in_alert_cron(self):

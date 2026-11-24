@@ -52,6 +52,11 @@ FILL_BLOCKED_WAIT = timedelta(hours=5)
 WARMUP_DAYS = timedelta(days=3)
 WARMUP_PER_DAY = 2
 FIRST_SEND_GAP = timedelta(minutes=10)
+# 7-day trial (start choice test, Nov 2026): the trial has to show results inside a week, so trialists get the
+# 20-a-day plan on all 7 days with a faster ramp than the 2-a-day warmup (pitches on day 1, 2, 3, 4, 5+).
+# Their saved plan applies again once the trial converts.
+TRIAL_RAMP = (5, 8, 12, 18, 20)
+ALL_DAYS = (0, 1, 2, 3, 4, 5, 6)
 
 REPLIED_EVENTS = ("brand_replied_interested", "brand_replied_question", "brand_replied_rejected")
 REPLY_EVENTS = REPLIED_EVENTS + ("dropped", "email_bounced", "pitch_not_sent")
@@ -180,14 +185,31 @@ def settings(conn, creator_id: int) -> Dict[str, Any]:
     row = cur.fetchone() or {}
     focus = row.get("deal_focus") if row.get("deal_focus") in DEAL_FOCUS else "auto"
     followups = row.get("followups")
-    return {
+    out = {
         "enabled": bool(row["enabled"]) if row else True,
         "monthly_target": effective_target(row.get("monthly_target")),
         "deal_focus": focus,
         "send_days": parse_send_days(row.get("send_days")),
         "followups": int(followups) if followups is not None else DEFAULT_FOLLOWUPS,
         "send_via": row.get("send_via") or "gmail",
+        "trial_started_at": None,
     }
+    started = trial_started_at(conn, creator_id)
+    if started:
+        out.update(monthly_target=TARGET_MAX, send_days=list(ALL_DAYS), trial_started_at=started)
+    return out
+
+
+def trial_started_at(conn, creator_id: int) -> Optional[datetime]:
+    """When the creator's 7-day trial began, while it runs (None otherwise)."""
+    cur = _cursor(conn)
+    cur.execute("SELECT subscription_status, subscription_started_at FROM creators WHERE id = %s", (creator_id,))
+    row = cur.fetchone() or {}
+    started = row.get("subscription_started_at")
+    if row.get("subscription_status") != "trialing" or not started:
+        return None
+    started = started if started.tzinfo else started.replace(tzinfo=timezone.utc)
+    return started if utc_now() - started < timedelta(days=7) else None
 
 
 def update_settings(conn, creator_id: int, patch: Dict[str, Any]) -> Dict[str, Any]:
@@ -493,13 +515,22 @@ def gmail_connected_at(conn, creator_id: int) -> Optional[datetime]:
 
 def daily_sends(conn, creator_id: int, prefs: Dict[str, Any], now: datetime) -> int:
     """Pitches per send day: the creator's plan, held to WARMUP_PER_DAY for a freshly connected Gmail."""
-    per_day = sends_per_day(prefs["monthly_target"], prefs["send_days"])
     connected = gmail_connected_at(conn, creator_id)
+    if prefs.get("trial_started_at"):
+        return trial_daily_sends(connected or prefs["trial_started_at"], now)
+    per_day = sends_per_day(prefs["monthly_target"], prefs["send_days"])
     if connected and now - connected < WARMUP_DAYS:
         return min(per_day, WARMUP_PER_DAY)
     if per_day > RAMP_FLOOR:
         return min(per_day, ramp_cap(best_recent_day(conn, creator_id, now)))
     return per_day
+
+
+def trial_daily_sends(since: datetime, now: datetime) -> int:
+    """Trial ramp by day since Gmail was connected (or the trial began): 5, 8, 12, 18, then 20."""
+    since = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
+    day = max(0, (now - since).days)
+    return TRIAL_RAMP[min(day, len(TRIAL_RAMP) - 1)]
 
 
 def ramp_cap(best_day: int) -> int:

@@ -4,7 +4,7 @@ Trials convert when the creator sees Polly working before day 7, so the journey 
 - day 0 (checkout webhook): welcome, connect Gmail so pitches start this week;
 - day 1+ (Polly cron): one nudge if Gmail still isn't connected;
 - first send day, after the send window: which pitches went out from their Gmail;
-- day 5 (Polly cron): what Polly did this week, what stops if they cancel, the charge date and how to cancel.
+- (no end-of-trial email since Nov 2026: the charge date is shown at checkout only).
 """
 
 from __future__ import annotations
@@ -73,14 +73,12 @@ def trial_started_email(first_name: str, ends_at: datetime, unsubscribe_url: str
 
     subject = "Your free week of Pro has started"
     lines = [
-        "I'm on it. Connect Gmail and I start pitching for you: 3 new matched brands every "
-        "weekday, each pitch written for that brand and sent from your own address, with follow-ups. "
-        "Nothing to approve.",
-        "By the end of your free week that's up to 15 brands pitched, about 5 hours of research and writing "
-        "you didn't have to do.",
+        "I'm on it. Connect Gmail and I start pitching for you every day: the brands that fit you, including "
+        "brands running UGC ads right now, each pitch written for that brand and sent from your own address, "
+        "with follow-ups. Nothing to approve.",
+        "I start with a few pitches on day one and build up to 20 brands a day, so your Gmail stays out of "
+        "spam folders.",
         "Want different brands? Change your niche and targets in Settings and I'll adjust.",
-        f"Your free week ends on <strong>{escape(_date_label(ends_at))}</strong>. "
-        "I'll email you 2 days before with what I did, so you can decide.",
     ]
     buttons = [{"label": "Connect Gmail", "href": connect_gmail_link("trial_started")}]
     return {"subject": subject, "html": render_email(first_name, subject, lines, buttons, unsubscribe_url)}
@@ -93,8 +91,7 @@ def trial_gmail_email(first_name: str, ends_at: datetime, unsubscribe_url: str =
     lines = [
         "Your free week of Pro is running, but I haven't sent a single pitch yet: "
         "Gmail isn't connected, so I have no way to send from your address.",
-        f"It takes 30 seconds. Connect it now and this week's brands go out before your trial ends on "
-        f"<strong>{escape(_date_label(ends_at))}</strong>.",
+        "It takes 30 seconds. Connect it now and your first pitches go out today.",
     ]
     buttons = [{"label": "Connect Gmail", "href": connect_gmail_link("trial_gmail")}]
     alt = no_gmail_option("trial_gmail")
@@ -155,8 +152,6 @@ def trial_first_sent_email(first_name: str, ends_at: datetime, facts: Dict[str, 
     if facts.get("lined_up") and facts.get("next_at"):
         lines.append(f"{_plural(facts['lined_up'], 'more pitch')} {'is' if facts['lined_up'] == 1 else 'are'} "
                      f"lined up, the next one on {escape(_date_label(_aware(facts['next_at'])))}.")
-    lines.append(f"Your free week ends on <strong>{escape(_date_label(ends_at))}</strong>. "
-                 "I'll send you a recap 2 days before.")
     buttons = [{"label": "See what I sent", "href": _link("/creator/dashboard/for-you", "trial_first_sent",
                                                           {"chip": "line_up"})}]
     return {"subject": subject, "html": render_email(first_name, subject, lines, buttons, unsubscribe_url)}
@@ -327,9 +322,9 @@ def email_trial_journey(conn, limit: int = 40, dry_run: bool = False, send_fn: O
             continue
         age = now - started
         first_sent = row.get("first_sent")
-        if age >= ENDING_NOTICE_AFTER and not row["reminded"]:
-            kind = "trial_ending"
-        elif (first_sent and not row.get("told_sent") and not row["reminded"]
+        # No email announces the trial's end date (Nov 2026 decision, to lift trial conversion). The date and the
+        # $19/mo are shown at checkout; trial_ending_email stays only for reading old logs.
+        if (first_sent and not row.get("told_sent") and not row["reminded"]
               and now >= first_sent_ready_at(first_sent)):
             kind = "trial_first_sent"
         elif age >= GMAIL_NUDGE_AFTER and not row["gmail"] and not row["nudged"] and not row["reminded"]:

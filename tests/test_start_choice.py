@@ -121,3 +121,29 @@ def test_trial_days_left():
     assert trial_days_left('trialing', now - timedelta(days=6, hours=20), now) == 1
     assert trial_days_left('trialing', now - timedelta(days=8), now) is None
     assert trial_days_left('active', now, now) is None
+
+
+def test_trial_ramp_and_weekends():
+    from services import polly_autopilot as pa
+    start = datetime(2026, 11, 27, 14, tzinfo=timezone.utc)  # a Friday
+    assert [pa.trial_daily_sends(start, start + timedelta(days=d, hours=1)) for d in range(7)] == \
+        [5, 8, 12, 18, 20, 20, 20]
+    slots = pa.next_slots(6, start, days=list(pa.ALL_DAYS), per_day=2)
+    assert {s.weekday() for s in slots} & {5, 6}  # Saturday and Sunday get sends during the trial
+
+
+def test_trial_settings_use_20_a_day_on_all_days():
+    from services import polly_autopilot as pa
+    started = datetime.now(timezone.utc) - timedelta(days=1)
+    with mock.patch.object(pa, 'ensure_autopilot_tables'), \
+            mock.patch.object(pa, 'trial_started_at', return_value=started):
+        cur = mock.MagicMock()
+        cur.fetchone.return_value = {'enabled': True, 'monthly_target': 60, 'deal_focus': 'auto',
+                                     'send_days': '01234', 'followups': 2, 'send_via': 'gmail'}
+        conn = mock.MagicMock()
+        conn.cursor.return_value = cur
+        prefs = pa.settings(conn, 5)
+    assert prefs['monthly_target'] == pa.TARGET_MAX
+    assert prefs['send_days'] == list(pa.ALL_DAYS)
+    with mock.patch.object(pa, 'gmail_connected_at', return_value=started):
+        assert pa.daily_sends(conn, 5, prefs, started + timedelta(hours=2)) == 5
