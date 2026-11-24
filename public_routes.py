@@ -1217,16 +1217,9 @@ def cron_tiktok_media():
     from services.tiktok_media import collect
     if not cron_request_ok():
         return jsonify({'success': False, 'error': 'unauthorized'}), 401
-    kit_links = {}
-    try:
-        # Kits saved with TikTok share links: expand a few per run (no DB connection held during the requests).
-        from services.kit_links import fix_kit_share_links
-        kit_links = fix_kit_share_links(get_db_connection)
-    except Exception as e:  # noqa: BLE001
-        print(f"[kit_links] share-link fix failed: {e}")
     conn = get_db_connection()
     try:
-        return jsonify({'success': True, 'kit_links': kit_links, **collect(conn)}), 200
+        return jsonify({'success': True, **collect(conn)}), 200
     except Exception as e:
         print(f"[tiktok_media] cron failed: {e}")
         return jsonify({'success': False, 'error': 'media run failed'}), 500
