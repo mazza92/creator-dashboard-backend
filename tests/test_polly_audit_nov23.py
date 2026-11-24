@@ -84,3 +84,17 @@ class ReplyMoment(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OneProLinePerReply(unittest.TestCase):
+    def test_reply_moment_skips_when_turn_already_sells_pro(self):
+        from routes.polly import _reply_moment
+
+        state = SimpleNamespace(reply_logged=True, paywall=False, balance={"is_unlimited": False}, notes={},
+                                chip=None, paywall_moment=None)
+        say = "Here's your reply.\n\nOn Pro I keep this going for you: up to 20 brand pitches daily."
+        self.assertEqual(_reply_moment(state, say, [], "")[0], say)
+        self.assertIsNone(state.paywall_moment)
+
+    def test_reply_moment_reads_well(self):
+        self.assertIn("I send up to 20 brand pitches daily to brands that fit you", persona_reply_moment("X"))

@@ -772,7 +772,7 @@ def persona_paywall_say(
 def persona_reply_moment(brand_name: Optional[str] = None) -> str:
     """A free creator just logged a brand reply: the moment Pro's value is most concrete."""
     who = f"**{brand_name.strip()}**" if (brand_name or "").strip() else "this brand"
-    return (f"Replies like {who}'s are what Pro is for: I pitch {VOLUME} that fit you and follow up, "
+    return (f"Replies like {who}'s are what Pro is for: I send {VOLUME} to brands that fit you and follow up, "
             "so more of them answer. $19/mo, cancel anytime.")
 
 

@@ -2431,6 +2431,8 @@ def _reply_moment(state, say, task_chips, chip_id):
         return say, task_chips
     if state.paywall or (state.balance or {}).get("is_unlimited") or not say:
         return say, task_chips
+    if "$19" in say or "On Pro" in say:  # the turn already sells Pro (e.g. a drafted brand reply)
+        return say, task_chips
     if any((c or {}).get("action") == "unlock_pro" for c in task_chips):
         return say, task_chips
     last = parse_iso((state.notes or {}).get("reply_moment_at"))

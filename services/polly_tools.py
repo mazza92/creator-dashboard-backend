@@ -1656,7 +1656,9 @@ def draft_brand_reply(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
                "asking now costs nothing.")
         if needs_street:
             say += " **Fill in your street address** before you send."
-    if free:
+    if free and not _paywall_seen_recently({"paywall_at": state.notes.get("reply_moment_at")}, days=3):
+        # One Pro line per reply: the reply moment (routes/polly._reply_moment) may already have sold it.
+        state.notes["reply_moment_at"] = datetime.now(timezone.utc).isoformat()
         from services.pro_offer import SHORT
         say += f"\n\nOn Pro I keep this going for you: {SHORT[0].lower() + SHORT[1:]}, follow-ups included."
     state.final_say = say
