@@ -169,3 +169,89 @@ def ugc_hub_index(cur) -> List[Dict[str, Any]]:
             counts[cat] = counts.get(cat, 0) + 1
     return [{"category": c, "total": n} for c, n in sorted(counts.items(), key=lambda kv: -kv[1])
             if n >= HUB_MIN_BRANDS]
+
+
+# --- Monthly data pages (Nov 2026 UGC pivot) ---------------------------------------------------------------------
+
+def _hub_item(r: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "name": _clean(r.get("brand_name"), 60),
+        "slug": r.get("slug"),
+        "logo": r.get("logo_url") or None,
+        "category": r.get("category") or None,
+        "hot": bool(r.get("hot")),
+        "seenOn": r["seen_on"].isoformat() if r.get("seen_on") and r.get("hot") else None,
+        "creatorAds": bool(r.get("creator_ads")),
+        "gifting": bool(r.get("gifting")),
+        "brief": bool(r.get("brief")),
+    }
+
+
+def brands_running_ads(cur, limit: int = HUB_LIMIT) -> Dict[str, Any]:
+    """'Brands running UGC ads right now': every category, brands seen running ads in the last 30 days or running
+    creator-style ads, strongest and freshest first."""
+    rows = sorted([r for r in _signal_rows(cur) if r.get("hot") or r.get("creator_ads")], key=_strength)
+    cats: Dict[str, int] = {}
+    for r in rows:
+        c = r.get("category") or ""
+        if c and c != "other":
+            cats[c] = cats.get(c, 0) + 1
+    return {
+        "total": len(rows),
+        "counts": {"hot": sum(1 for r in rows if r.get("hot")),
+                   "creatorAds": sum(1 for r in rows if r.get("creator_ads")),
+                   "briefs": sum(1 for r in rows if r.get("brief"))},
+        "categories": [{"category": c, "total": n} for c, n in sorted(cats.items(), key=lambda kv: -kv[1])],
+        "brands": [_hub_item(r) for r in rows[:limit]],
+    }
+
+
+REPLYING_MIN_REPLIES = 2  # one reply is an anecdote; quote brands from 2 creator replies (or a roster pick) up
+
+
+def brands_replying(cur, limit: int = HUB_LIMIT) -> Dict[str, Any]:
+    """'Brands replying to UGC creators': brands that answered creators who pitched them on Newcollab, from what
+    creators logged (services/brand_reply_signal). Counts of creators only, never who."""
+    from services.brand_reply_signal import classify, load_stats
+
+    stats = load_stats(cur)
+    keep = {bid: s for bid, s in stats.items()
+            if classify(s) == "replies"
+            and (int(s.get("replied") or 0) >= REPLYING_MIN_REPLIES or int(s.get("selected") or 0) >= 1)}
+    if not keep:
+        return {"total": 0, "brands": [], "categories": []}
+    cur.execute(
+        """
+        SELECT id, brand_name, slug, logo_url, LOWER(COALESCE(category, '')) AS category
+        FROM pr_brands
+        WHERE id = ANY(%s) AND COALESCE(status, 'published') = 'published' AND NULLIF(TRIM(slug), '') IS NOT NULL
+        """,
+        (list(keep.keys()),),
+    )
+    cols = [d[0] for d in cur.description]
+    rows = [r if isinstance(r, dict) else dict(zip(cols, r)) for r in cur.fetchall()]
+    items = []
+    for r in rows:
+        s = keep.get(int(r["id"])) or {}
+        pitched, replied, selected = (int(s.get(k) or 0) for k in ("pitched", "replied", "selected"))
+        items.append({
+            "name": _clean(r.get("brand_name"), 60),
+            "slug": r.get("slug"),
+            "logo": r.get("logo_url") or None,
+            "category": r.get("category") or None,
+            "replied": replied,
+            "pitched": pitched,
+            "selected": selected,
+            "replyRate": round(100 * replied / pitched) if pitched else None,
+        })
+    items.sort(key=lambda i: (-(i["selected"] > 0), -i["replied"], -(i["replyRate"] or 0), str(i["name"])))
+    cats: Dict[str, int] = {}
+    for i in items:
+        c = i.get("category") or ""
+        if c and c != "other":
+            cats[c] = cats.get(c, 0) + 1
+    return {
+        "total": len(items),
+        "categories": [{"category": c, "total": n} for c, n in sorted(cats.items(), key=lambda kv: -kv[1])],
+        "brands": items[:limit],
+    }
