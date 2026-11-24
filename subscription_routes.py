@@ -478,28 +478,55 @@ def create_checkout_session():
             trial_kwargs = {'subscription_data': {'trial_period_days': TRIAL_DAYS}}
 
         promo_kwargs = stripe_checkout_promo_kwargs(offer if apply_winback else None, creator, coupon_id)
+        from services.checkout_page import checkout_submit_text, embedded_ready, publishable_key, trial_end_date
+
+        # On-site checkout (Nov 2026): the same session, mounted in our own page instead of a redirect to stripe.com.
+        # Only when the frontend asks and a publishable key is configured; otherwise the hosted page as before.
+        embedded = bool(body.get('embedded')) and embedded_ready()
+        success = f"{frontend_url}/creator/dashboard/subscription/success?session_id={{CHECKOUT_SESSION_ID}}"
+        if embedded:
+            metadata['ui'] = 'embedded'
+            mode_kwargs = {
+                'ui_mode': 'embedded',
+                'return_url': success,
+                'expires_at': checkout_recovery_kwargs()['expires_at'],
+            }
+        else:
+            mode_kwargs = {
+                **checkout_recovery_kwargs(promo_codes='discounts' not in promo_kwargs),
+                'success_url': success,
+                'cancel_url': f"{frontend_url}/creator/dashboard/subscription/cancel",
+            }
+        trial_days = TRIAL_DAYS if trial_kwargs else 0
         checkout_session = stripe.checkout.Session.create(
-            **checkout_recovery_kwargs(promo_codes='discounts' not in promo_kwargs),
             line_items=[{
                 'price': price_id,
                 'quantity': 1,
             }],
             mode='subscription',
-            success_url=f"{frontend_url}/creator/dashboard/subscription/success?session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"{frontend_url}/creator/dashboard/subscription/cancel",
             metadata=metadata,
+            custom_text={'submit': {'message': checkout_submit_text(trial_days)}},
+            **mode_kwargs,
             **stripe_checkout_customer_kwargs(offer if apply_winback else None, creator),
             **promo_kwargs,
             **trial_kwargs,
         )
 
-        print(f"✅ Created checkout session for creator {creator_id} - {tier} tier")
+        print(f"✅ Created checkout session for creator {creator_id} - {tier} tier"
+              f"{' (embedded)' if embedded else ''}")
 
-        return jsonify({
+        out = {
             'checkout_url': checkout_session.url,
             'session_id': checkout_session.id,
-            'trial_days': TRIAL_DAYS if trial_kwargs else 0,
-        })
+            'trial_days': trial_days,
+        }
+        if embedded:
+            out.update({
+                'client_secret': checkout_session.client_secret,
+                'publishable_key': publishable_key(),
+                'trial_ends_on': trial_end_date(trial_days),
+            })
+        return jsonify(out)
 
     except stripe.error.InvalidRequestError as e:
         print(f"❌ Stripe InvalidRequestError: {e}")
