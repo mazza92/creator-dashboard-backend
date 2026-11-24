@@ -1,4 +1,4 @@
-"""Keep the paid-gig feed to offers posted in the last 20 days.
+"""Keep the paid-gig feed to offers posted in the last 10 days (Nov 2026: was 20; a clean, current board).
 
 A listing's own post date is what counts. When a scraper does not send one, the
 day we published it is the clock. Older live scanner gigs are paused, not deleted,
@@ -11,7 +11,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-FRESH_DAYS = 20
+FRESH_DAYS = 10
 
 _RELATIVE = re.compile(
     r"(\d+)\s*(minutes?|hours?|days?|weeks?|months?)\s+ago",
@@ -90,21 +90,29 @@ def pause_stale_paid_gigs(conn, days: int = FRESH_DAYS) -> int:
         SET status = 'paused',
             closes_at = NOW(),
             additional_notes = CASE
-                WHEN COALESCE(additional_notes, '') ILIKE '%%recycled=stale_20d%%'
+                WHEN COALESCE(additional_notes, '') ILIKE '%%recycled=stale_%%'
                     THEN additional_notes
-                ELSE COALESCE(additional_notes, '') || ' | recycled=stale_20d'
+                ELSE COALESCE(additional_notes, '') || ' | recycled=stale_' || %s || 'd'
             END
         WHERE status = 'live'
           AND additional_notes ILIKE '%%[scanner:%%'
           AND COALESCE(published_at, created_at) < NOW() - (%s * INTERVAL '1 day')
         RETURNING id
         """,
-        (int(days),),
+        (str(int(days)), int(days)),
     )
     rows = cursor.fetchall() or []
     conn.commit()
     cursor.close()
     return len(rows)
+
+
+def fresh_gig_sql(alias: str = "") -> str:
+    """SQL condition for listings: scanner gigs only while published in the last FRESH_DAYS days (the daily
+    pause job closes them too; this keeps the board clean between runs). Other listings are unaffected."""
+    a = f"{alias}." if alias else ""
+    return (f"({a}additional_notes NOT ILIKE '%%[scanner:%%' "
+            f"OR COALESCE({a}published_at, {a}created_at) > NOW() - INTERVAL '{int(FRESH_DAYS)} days')")
 
 
 def parse_gig_deadline(value: Any, now: Optional[datetime] = None):
