@@ -368,6 +368,40 @@ def trial_offer():
             conn.close()
 
 
+@subscription_bp.route('/start-choice', methods=['GET', 'POST'])
+def start_choice():
+    """Newly approved creators in the test choose a 7-day Autopilot trial or 3 free pitches
+    (services/start_choice.py). GET: whether to show the screen. POST {choice: 'trial'|'free'}: record it."""
+    from services import start_choice as sc
+    from services.quota_trial_test import TRIAL_DAYS
+
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({'show': False}), 401 if request.method == 'POST' else 200
+    conn = None
+    try:
+        conn = get_db_connection()
+        if request.method == 'POST':
+            choice = str((request.get_json(silent=True) or {}).get('choice') or '').strip().lower()
+            return jsonify({'ok': sc.record_choice(conn, creator_id, choice)})
+        out = sc.status(conn, creator_id)
+        first_name = ''
+        if out['show']:
+            cur = conn.cursor()
+            cur.execute("SELECT u.first_name FROM creators c JOIN users u ON u.id = c.user_id WHERE c.id = %s",
+                        (creator_id,))
+            row = cur.fetchone()
+            first_name = str((row[0] if row else '') or '').strip().split(' ')[0][:40]
+        return jsonify({'show': bool(out['show']), 'trial_days': TRIAL_DAYS if out['show'] else 0,
+                        'first_name': first_name})
+    except Exception as e:
+        print(f"⚠️ start choice failed for creator {creator_id}: {e}")
+        return jsonify({'show': False, 'ok': False})
+    finally:
+        if conn:
+            conn.close()
+
+
 @subscription_bp.route('/create-checkout', methods=['POST'])
 def create_checkout_session():
     """Create Stripe Checkout session for subscription"""

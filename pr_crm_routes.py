@@ -3257,6 +3257,7 @@ def dashboard_init():
             SELECT
                 c.id, c.subscription_tier, c.unlocks_tier, c.unlocks_remaining,
                 c.unlocks_reset_at, c.creator_niches, c.niche,
+                c.subscription_status, c.subscription_started_at,
                 u.first_name, u.email
             FROM creators c
             JOIN users u ON c.user_id = u.id
@@ -3272,13 +3273,17 @@ def dashboard_init():
         is_pro = tier == 'pro'
 
         if is_pro:
+            from services.pro_trial import trial_days_left
             unlock_balance = {
                 'tier': tier,
                 'remaining': None,
                 'used': 0,
                 'limit': None,
                 'is_unlimited': True,
-                'reset_at': None
+                'reset_at': None,
+                # Header pill shows "Free trial · N days left" while the 7-day trial runs.
+                'trial_days_left': trial_days_left(creator.get('subscription_status'),
+                                                   creator.get('subscription_started_at')),
             }
         else:
             used, remaining = sync_free_unlock_remaining(cursor, creator_id)
