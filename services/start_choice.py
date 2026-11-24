@@ -1,24 +1,23 @@
-"""Start choice test: newly approved creators choose between a 7-day Autopilot trial and 3 free pitches.
+"""Start choice: newly approved creators choose between a 7-day Autopilot trial and 3 free pitches.
 
 Nov 2026: 29% of approved creators sent a pitch and 7.2% went Pro; 3 free pitches give about a 7% chance of a brand
-reply, while trials that ended converted 10 of 20. So half of new approvals ('choice' arm) see a screen on their
-first dashboard visit: "Polly runs your brand outreach for you, free for 7 days" (card up front, $0 today) or
-"Do it yourself" (3 free pitches). The other half ('control') get today's dashboard. Primary metric: paid Pro by
-day 14 per approved creator, by arm.
+reply, while trials that ended converted 10 of 20. So every new approval sees a screen on their first dashboard
+visit: "Polly runs your brand outreach for you, free for 7 days" (card up front, $0 today) or "Do it yourself"
+(3 free pitches). This is the production flow, not a split test: the comparison is the two choices (paid Pro by
+day 14 for trial pickers vs free pickers), recorded in creator_start_choice.
 
-- Only creators approved on or after LAUNCH_AT (Nov 24 2026, 18:00 UTC), never paid, with the FLAG on.
-- The arm is a hash of the creator id, recorded on their first eligible visit so both arms can be counted.
-- A 'choice' creator may start the trial at checkout whatever they picked (the free path keeps pointing there).
+- Creators approved on or after LAUNCH_AT (Nov 24 2026, 18:00 UTC), never paid, with the FLAG on (kill switch).
+- Recorded on their first eligible visit; the choice is saved when they pick.
+- They may start the trial at checkout whatever they picked (the free path keeps pointing there).
 """
 
-import hashlib
 from datetime import datetime, timezone
 
-EXPERIMENT = 'start_choice_v1'
 FLAG = 'start_choice_v1'
-CHOICE_PCT = 50
 LAUNCH_AT = datetime(2026, 11, 24, 18, 0, tzinfo=timezone.utc)  # went live at the 18:03 UTC deploy
 CHOICES = ('trial', 'free')
+# Everyone eligible is in the 'choice' group; the column stays so the table reads the same if a holdout returns.
+ARM = 'choice'
 
 _TABLE_SQL = """
     CREATE TABLE IF NOT EXISTS creator_start_choice (
@@ -32,8 +31,8 @@ _TABLE_SQL = """
 
 
 def arm_for(creator_id) -> str:
-    bucket = int(hashlib.sha256(f'{EXPERIMENT}:{int(creator_id)}'.encode()).hexdigest(), 16) % 100
-    return 'choice' if bucket < CHOICE_PCT else 'control'
+    """Every eligible creator gets the choice screen (no split since Nov 24 2026)."""
+    return ARM
 
 
 def flag_on() -> bool:
