@@ -719,6 +719,15 @@ def release_db_connection(conn):
 # Initialize creator approval routes with database connection
 init_approval_routes(get_db_connection)
 
+
+@app.after_request
+def _stamp_last_seen(response):
+    # users.last_seen_at for activation tracking: any successful signed-in request, at most once an hour.
+    if request.method != 'OPTIONS' and response.status_code < 400:
+        from services.last_seen import touch_last_seen
+        touch_last_seen(session, get_db_connection, app.logger)
+    return response
+
 # Global error handler
 @app.errorhandler(Exception)
 def handle_error(error):
