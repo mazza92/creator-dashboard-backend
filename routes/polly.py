@@ -1741,8 +1741,9 @@ def bootstrap():
                     }]
                     _log_polly_event(creator_id, "paywall_shown", {"moment": "kit_view"})
                 _log_polly_event(creator_id, "state_opener", {"state": opened.get("state")})
-            if not opened or opened.get("state") == "kit_not_live":
-                # Message one is three matched gifted brands, written from the survey.
+            if (not opened or opened.get("state") == "kit_not_live") and not balance.get("is_unlimited"):
+                # Message one is three matched gifted brands, written from the survey. Free creators only: Pro and
+                # trial creators run on Autopilot, and its setup and Polly's recap replace this opener (Nov 2026).
                 _prefetch_for_you(creator_id)
                 auto_action = {
                     "action": "suggest_brands",
