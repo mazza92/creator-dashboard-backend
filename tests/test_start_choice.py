@@ -142,3 +142,16 @@ def test_trial_settings_use_20_a_day_on_all_days():
     assert prefs['send_days'] == list(pa.ALL_DAYS)
     with mock.patch.object(pa, 'gmail_connected_at', return_value=started):
         assert pa.daily_sends(conn, 5, prefs, started + timedelta(hours=2)) == 5
+
+
+def test_pro_balance_carries_trial_days_left():
+    import pr_crm_routes
+    started = datetime.now(timezone.utc) - timedelta(hours=2)
+    cur = mock.MagicMock()
+    cur.fetchone.return_value = {'unlocks_tier': None, 'unlocks_remaining': 0, 'unlocks_reset_at': None,
+                                 'subscription_tier': 'pro', 'subscription_status': 'trialing',
+                                 'subscription_started_at': started}
+    conn = mock.MagicMock()
+    conn.cursor.return_value = cur
+    bal = pr_crm_routes.get_creator_unlock_balance(5, conn=conn)
+    assert bal['is_unlimited'] is True and bal['trial_days_left'] == 7

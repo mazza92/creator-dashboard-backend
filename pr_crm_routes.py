@@ -7519,7 +7519,8 @@ def get_creator_unlock_balance(creator_id, conn=None):
 
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute('''
-        SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier
+        SELECT unlocks_tier, unlocks_remaining, unlocks_reset_at, subscription_tier,
+               subscription_status, subscription_started_at
         FROM creators WHERE id = %s
     ''', (creator_id,))
     creator = cursor.fetchone()
@@ -7535,11 +7536,15 @@ def get_creator_unlock_balance(creator_id, conn=None):
         cursor.close()
         if close_conn:
             conn.close()
+        from services.pro_trial import trial_days_left
         return {
             "tier": "pro",
             "remaining": None,  # unlimited
             "reset_at": None,
             "is_unlimited": True,
+            # Every balance carries it (dashboard-init, Polly turns), so the header pill stays "Free trial · N days".
+            "trial_days_left": trial_days_left(creator.get('subscription_status'),
+                                               creator.get('subscription_started_at')),
         }
 
     unlocks_remaining = creator.get('unlocks_remaining') or 0
