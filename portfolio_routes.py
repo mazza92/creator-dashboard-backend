@@ -3,6 +3,7 @@ Portfolio Builder Routes for Creator Dashboard
 API endpoints for the new media kit portfolio builder - posts CRUD, settings, public kit, views tracking
 """
 
+from services.kit_links import expand_kit_examples, has_short_links
 from services.db_ddl import ensure_index
 from io import BytesIO
 from urllib.parse import parse_qs, urlparse, quote
@@ -878,6 +879,8 @@ def update_kit_settings():
             _ensure_kit_theme_column(cursor, conn)
             incoming = data.get('kit_theme') if isinstance(data.get('kit_theme'), dict) else {}
             theme = _sanitize_kit_theme(incoming)
+            # TikTok share links (tiktok.com/t/...) have no video id, so the kit can't show them: store the full URL.
+            theme, _ = expand_kit_examples(theme)
             cursor.execute(
                 '''
                 SELECT c.kit_theme, c.username, c.social_handle, u.first_name, u.last_name,
@@ -1893,6 +1896,19 @@ def get_public_kit(slug):
             username=creator.get('username'),
         )
         theme = _sanitize_kit_theme(creator.get('kit_theme'))
+        if has_short_links(theme):
+            # Kits saved before share links were expanded: fix them on first view and keep the fix.
+            theme, changed = expand_kit_examples(theme)
+            if changed:
+                try:
+                    cursor.execute(
+                        "UPDATE creators SET kit_theme = COALESCE(kit_theme, '{}'::jsonb) || %s::jsonb WHERE id = %s",
+                        (Json({'example_posts': theme['example_posts'], 'examples': theme['examples']}), creator['id']),
+                    )
+                    conn.commit()
+                except Exception as fix_err:  # noqa: BLE001
+                    conn.rollback()
+                    print(f"kit share-link fix not saved for creator {creator.get('id')}: {fix_err}")
         public_theme = theme
         theme_profiles, theme_socials, theme_counts = _public_social_profiles(theme.get('social_profiles'))
         if theme_profiles:
