@@ -385,7 +385,15 @@ def start_choice():
             choice = str((request.get_json(silent=True) or {}).get('choice') or '').strip().lower()
             return jsonify({'ok': sc.record_choice(conn, creator_id, choice)})
         out = sc.status(conn, creator_id)
-        return jsonify({'show': bool(out['show']), 'trial_days': TRIAL_DAYS if out['show'] else 0})
+        first_name = ''
+        if out['show']:
+            cur = conn.cursor()
+            cur.execute("SELECT u.first_name FROM creators c JOIN users u ON u.id = c.user_id WHERE c.id = %s",
+                        (creator_id,))
+            row = cur.fetchone()
+            first_name = str((row[0] if row else '') or '').strip().split(' ')[0][:40]
+        return jsonify({'show': bool(out['show']), 'trial_days': TRIAL_DAYS if out['show'] else 0,
+                        'first_name': first_name})
     except Exception as e:
         print(f"⚠️ start choice failed for creator {creator_id}: {e}")
         return jsonify({'show': False, 'ok': False})
