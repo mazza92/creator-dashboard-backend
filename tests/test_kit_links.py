@@ -108,3 +108,11 @@ def test_cron_fix_resolves_with_no_connection_open():
     assert updates and updates[0][1] == 283
     assert updates[0][0].adapted['examples'] == ['https://www.tiktok.com/@mamatlynne/video/7400000000000000001']
     assert all(not c.open for c in conns)
+
+
+def test_public_kit_route_makes_no_tiktok_requests():
+    """The public kit page must never resolve links inline (that held its DB connection and caused 500s)."""
+    import inspect
+    import portfolio_routes
+    src = inspect.getsource(portfolio_routes.get_public_kit)
+    assert 'expand_kit_examples' not in src and 'has_short_links' not in src
