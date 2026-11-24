@@ -28,3 +28,13 @@ def test_post_setup_recap_closes_first_run_and_posts_once():
     assert post.call_args.kwargs['dedupe_key'] == ar.RECAP_KEY
     assert msg['task_chips'][0]['href'] == ar.TRACKER_HREF
     assert 'weekends included' in msg['content']
+
+
+def test_setup_route_posts_recap_without_name_errors():
+    """Nov 24 2026: the route called _creator_names without importing it, so every recap was skipped."""
+    import inspect
+    import routes.polly_autopilot as rpa
+    src = inspect.getsource(rpa)
+    i = src.index('post_setup_recap(conn, creator_id')
+    block = src[src.rfind('if body.get("done"):', 0, i):i]
+    assert 'from services.polly_autopilot import _creator_names' in block
