@@ -1294,6 +1294,7 @@ def setup_save():
             # Polly's recap of what happens next replaces the first-run welcome (which reappeared after setup).
             try:
                 from services.autopilot_recap import post_setup_recap
+                from services.polly_autopilot import _creator_names
                 payload["recap"] = post_setup_recap(conn, creator_id, _creator_names(conn, creator_id).get("first") or "")
             except Exception as e:  # noqa: BLE001
                 conn.rollback()
