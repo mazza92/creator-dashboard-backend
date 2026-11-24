@@ -3,7 +3,6 @@ Portfolio Builder Routes for Creator Dashboard
 API endpoints for the new media kit portfolio builder - posts CRUD, settings, public kit, views tracking
 """
 
-from services.kit_links import expand_kit_examples, has_short_links
 from services.db_ddl import ensure_index
 from io import BytesIO
 from urllib.parse import parse_qs, urlparse, quote
@@ -839,10 +838,6 @@ def update_kit_settings():
     data = request.get_json()
     if not data:
         return jsonify({'error': 'No data provided'}), 400
-    if isinstance(data.get('kit_theme'), dict) and has_short_links(data['kit_theme']):
-        # TikTok share links (tiktok.com/t/...) have no video id, so the kit can't show them: store the full URL.
-        # Resolved before the database connection opens; a connection held open during these requests gets closed.
-        data['kit_theme'], _ = expand_kit_examples(data['kit_theme'])
 
     conn = None
     try:
