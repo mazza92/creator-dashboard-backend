@@ -6,7 +6,7 @@ first dashboard visit: "Polly runs your brand outreach for you, free for 7 days"
 "Do it yourself" (3 free pitches). The other half ('control') get today's dashboard. Primary metric: paid Pro by
 day 14 per approved creator, by arm.
 
-- Only creators approved on or after LAUNCH_AT, never paid, with the FLAG on.
+- Only creators approved on or after LAUNCH_AT (Nov 24 2026, 18:00 UTC), never paid, with the FLAG on.
 - The arm is a hash of the creator id, recorded on their first eligible visit so both arms can be counted.
 - A 'choice' creator may start the trial at checkout whatever they picked (the free path keeps pointing there).
 """
@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 EXPERIMENT = 'start_choice_v1'
 FLAG = 'start_choice_v1'
 CHOICE_PCT = 50
-LAUNCH_AT = datetime(2026, 11, 25, tzinfo=timezone.utc)
+LAUNCH_AT = datetime(2026, 11, 24, 18, 0, tzinfo=timezone.utc)  # went live at the 18:03 UTC deploy
 CHOICES = ('trial', 'free')
 
 _TABLE_SQL = """

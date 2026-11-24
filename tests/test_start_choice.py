@@ -4,7 +4,7 @@ from unittest import mock
 from services import start_choice as sc
 from services.pro_trial import trial_days_left
 
-APPROVED = datetime(2026, 11, 26, tzinfo=timezone.utc)
+APPROVED = datetime(2026, 11, 24, 18, 3, tzinfo=timezone.utc)
 
 
 class FakeCursor:
@@ -90,7 +90,7 @@ def test_control_arm_is_recorded_but_never_shown_or_offered_the_trial():
 def test_outside_the_test_nothing_is_recorded():
     cid = ids_in('choice', 1)[0]
     for c, flag in ((creator(), False),
-                    (creator(approved=datetime(2026, 11, 20, tzinfo=timezone.utc)), True),
+                    (creator(approved=datetime(2026, 11, 24, 17, 0, tzinfo=timezone.utc)), True),
                     (creator(paid=True), True),
                     (creator(status='pending'), True)):
         cur = FakeCursor({cid: c})
