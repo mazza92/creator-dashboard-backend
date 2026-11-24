@@ -48,8 +48,8 @@ class Replying(unittest.TestCase):
         with mock.patch("services.brand_reply_signal.load_stats", return_value=stats):
             out = bu.brands_replying(cur)
         self.assertEqual(sorted(cur.params[0]), [1, 3])
-        self.assertEqual([b["slug"] for b in out["brands"]], ["c", "a"])
-        self.assertEqual(out["brands"][1]["replyRate"], 20)
+        self.assertEqual([b["slug"] for b in out["brands"]], ["a", "c"])  # 4 replies before a roster pick
+        self.assertEqual(out["brands"][0]["replyRate"], 20)
         self.assertEqual(set(out["brands"][0]), {"name", "slug", "logo", "category", "replied", "pitched", "selected",
                                                  "replyRate"})
 

@@ -244,7 +244,8 @@ def brands_replying(cur, limit: int = HUB_LIMIT) -> Dict[str, Any]:
             "selected": selected,
             "replyRate": round(100 * replied / pitched) if pitched else None,
         })
-    items.sort(key=lambda i: (-(i["selected"] > 0), -i["replied"], -(i["replyRate"] or 0), str(i["name"])))
+    # Most creator replies first (the proof a creator cares about); roster picks and reply rate break ties.
+    items.sort(key=lambda i: (-i["replied"], -i["selected"], -(i["replyRate"] or 0), str(i["name"])))
     cats: Dict[str, int] = {}
     for i in items:
         c = i.get("category") or ""
