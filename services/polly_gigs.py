@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from services.gig_freshness import fresh_gig_sql
 from typing import Any, Dict, List, Optional
 
 from services.gig_listing import polish_gig_cards, prefer_amount_pay, structure_gig_card, format_pay_label
@@ -484,6 +485,7 @@ def _scanner_fallback_cards(creator_id) -> List[Dict[str, Any]]:
             WHERE status = 'live'
               AND additional_notes ILIKE %s
               AND (closes_at IS NULL OR closes_at > NOW())
+              AND """ + fresh_gig_sql() + """
             ORDER BY created_at DESC
             LIMIT 80
             """,

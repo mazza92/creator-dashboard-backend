@@ -15,6 +15,7 @@ import json
 from datetime import datetime, timedelta, date
 import re
 import requests
+from services.gig_freshness import fresh_gig_sql
 from html import escape as html_escape
 
 from services.opportunity_gifted_pr import (
@@ -396,7 +397,7 @@ def ensure_scanner_feed_live(cursor) -> int:
         UPDATE opportunities
         SET status = 'live',
             published_at = COALESCE(published_at, NOW()),
-            closes_at = COALESCE(closes_at, NOW() + INTERVAL '20 days')
+            closes_at = COALESCE(closes_at, NOW() + INTERVAL '10 days')
         WHERE status = 'pending'
           AND additional_notes ILIKE %s
           AND (
@@ -905,6 +906,7 @@ def fetch_live_opportunity_cards(creator_id, extra_tokens=None):
         FROM opportunities
         WHERE status = 'live'
           AND (closes_at IS NULL OR closes_at > NOW())
+          AND ''' + fresh_gig_sql() + '''
           AND (
                 additional_notes ILIKE '%[scanner:%'
                 OR (
@@ -1817,9 +1819,9 @@ def admin_ingest():
                     deliverable,
                     [raw.get('niche_required'), raw.get('category')],
                 )
-                from services.gig_freshness import gig_posted_too_old
+                from services.gig_freshness import FRESH_DAYS, gig_posted_too_old
                 if is_ugc and gig_posted_too_old(raw):
-                    is_ugc, ugc_reason = False, 'stale_20d'
+                    is_ugc, ugc_reason = False, f'stale_{FRESH_DAYS}d'
                 cleaned = clean_scanner_gig(raw)
                 campaign_description = cleaned["campaign_description"]
                 buyer = cleaned["brand_name"] or buyer
