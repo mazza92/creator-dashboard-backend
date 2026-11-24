@@ -815,6 +815,13 @@ def in_first_run(conn, creator_id: int, notes: Optional[Dict[str, Any]] = None) 
         # choice saves the thread with its own copy of the notes, which would drop a notes-only flag.
         if "first_run_done" in milestones(conn, creator_id):
             return False
+        # Pro and trial creators run on Autopilot: its setup and Polly's recap replace the welcome's two choices.
+        cur = conn.cursor()
+        cur.execute("SELECT subscription_tier FROM creators WHERE id = %s", (creator_id,))
+        row = cur.fetchone()
+        tier = (row.get("subscription_tier") if isinstance(row, dict) else row[0]) if row else None
+        if tier == "pro":
+            return False
         # A creator who already has a pitch drafted is past the welcome, even if it went out through their mail
         # app (not counted by has_pitched) or hasn't gone out yet. Treating them as new hid their pitches behind
         # the welcome and dropped every email link ("Send my <brand> pitch") on arrival.
