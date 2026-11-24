@@ -183,6 +183,23 @@ def _reply_to(conn, creator_id):
         return None
 
 
+def _trial_days_left(conn, creator_id):
+    """Days left in the 7-day trial (None when not trialing): Polly words her first message for the trial."""
+    try:
+        from services.pro_trial import trial_days_left
+        cur = conn.cursor()
+        cur.execute("SELECT subscription_status, subscription_started_at FROM creators WHERE id = %s", (creator_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        status_value = row.get("subscription_status") if isinstance(row, dict) else row[0]
+        started = row.get("subscription_started_at") if isinstance(row, dict) else row[1]
+        return trial_days_left(status_value, started)
+    except Exception:  # noqa: BLE001
+        conn.rollback()
+        return None
+
+
 def _status_payload(conn, creator_id, is_pro):
     account = load_account(conn, creator_id) if gmail_configured() else None
     prefs = settings(conn, creator_id)
@@ -193,6 +210,7 @@ def _status_payload(conn, creator_id, is_pro):
         "available": gmail_configured(),
         "app_verified": os.getenv("POLLY_GMAIL_APP_VERIFIED", "").strip().lower() in ("1", "true", "yes"),
         "is_pro": is_pro,
+        "trial_days_left": _trial_days_left(conn, creator_id) if is_pro else None,
         "gmail": {
             "connected": bool(account and not account.get("revoked_at")),
             "email": (account or {}).get("email"),

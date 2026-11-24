@@ -78,8 +78,9 @@ def checkout_trial_eligible(cursor, creator_id):
     """What the paywall offers and checkout honours: a trial-offer link at signup, the cold-email address
     match, else the experiment's rule."""
     from services.creator_offers import has_trial_offer
+    from services.start_choice import trial_eligible as start_choice_trial
     return (has_trial_offer(cursor, creator_id) or outreach_trial_eligible(cursor, creator_id)
-            or trial_eligible(cursor, creator_id))
+            or start_choice_trial(cursor, creator_id) or trial_eligible(cursor, creator_id))
 
 
 def limit_hit_at(cursor, creator_id):

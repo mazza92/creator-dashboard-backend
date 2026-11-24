@@ -357,3 +357,13 @@ def email_trial_journey(conn, limit: int = 40, dry_run: bool = False, send_fn: O
         item["ok"] = bool(result.get("success"))
         out.append(item)
     return out
+
+
+def trial_days_left(subscription_status, started_at, now: Optional[datetime] = None) -> Optional[int]:
+    """Days until the first charge for a trialing creator (1 on the last day), else None."""
+    if (subscription_status or '') != 'trialing' or not started_at:
+        return None
+    left = _aware(started_at) + TRIAL_LENGTH - (now or _now())
+    if left.total_seconds() <= 0:
+        return None
+    return max(1, -(-int(left.total_seconds()) // 86400))
