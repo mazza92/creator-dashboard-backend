@@ -1146,6 +1146,44 @@ def get_public_ugc_brands():
         return jsonify({'error': 'Failed to load UGC brands'}), 500
 
 
+@public_bp.route('/brands-running-ugc-ads', methods=['GET'])
+@scraper_rate_limit
+def get_public_brands_running_ads():
+    """Brands running UGC ads right now (all categories): the monthly SEO page."""
+    from services.brand_ugc import brands_running_ads
+    try:
+        conn = get_db_connection()
+        try:
+            data = brands_running_ads(conn.cursor(cursor_factory=RealDictCursor))
+        finally:
+            conn.close()
+        resp = jsonify(data)
+        resp.headers['Cache-Control'] = 'public, max-age=900, s-maxage=3600'
+        return resp, 200
+    except Exception as e:
+        print(f"Error building brands-running-ugc-ads: {e}")
+        return jsonify({'error': 'Failed to load brands'}), 500
+
+
+@public_bp.route('/brands-replying', methods=['GET'])
+@scraper_rate_limit
+def get_public_brands_replying():
+    """Brands that answered creators who pitched them on Newcollab (creator counts only): the monthly SEO page."""
+    from services.brand_ugc import brands_replying
+    try:
+        conn = get_db_connection()
+        try:
+            data = brands_replying(conn.cursor(cursor_factory=RealDictCursor))
+        finally:
+            conn.close()
+        resp = jsonify(data)
+        resp.headers['Cache-Control'] = 'public, max-age=900, s-maxage=3600'
+        return resp, 200
+    except Exception as e:
+        print(f"Error building brands-replying: {e}")
+        return jsonify({'error': 'Failed to load brands'}), 500
+
+
 @public_bp.route('/tiktok-media', methods=['GET'])
 @scraper_rate_limit
 def get_public_tiktok_media():
