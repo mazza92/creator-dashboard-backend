@@ -39,6 +39,7 @@ import hashlib
 import logging
 import jwt as pyjwt
 import jwt.exceptions
+from services.login_help import GOOGLE_PASSWORD_PREFIX, GOOGLE_ACCOUNT_LOGIN_ERROR, is_google_only_password
 from flask_jwt_extended import JWTManager, create_access_token, set_access_cookies, jwt_required, get_jwt_identity, decode_token
 import smtplib
 from email.mime.text import MIMEText
@@ -131,7 +132,10 @@ app.config['SESSION_PERMANENT'] = True
 app.config['SESSION_USE_SIGNER'] = False
 # Must outlast onboarding drop-off. 1 hour caused Redis to expire while the
 # browser still sent the cookie, so later /profile + scrape saw an empty SID.
-app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
+# Flask-Session 0.5 re-saves the session (and its Redis TTL + cookie expiry) on every request, so this is how long a
+# creator stays signed in after their LAST visit. 7 days logged out anyone who checked in less than weekly;
+# consumer apps keep people signed in 30-90 days.
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
 app.config['SESSION_REFRESH_EACH_REQUEST'] = False  # CRITICAL: Don't refresh TTL on every request (saves Redis ops)
 # Production uses HTTPS with Secure cookies, development uses HTTP without
 app.config['SESSION_COOKIE_SECURE'] = is_production
@@ -1240,7 +1244,7 @@ def google_signup():
 
             # Generate unusable password for Google-only accounts (DB requires non-null)
             import uuid
-            google_placeholder_password = f"GOOGLE_AUTH_{uuid.uuid4().hex}"
+            google_placeholder_password = f"{GOOGLE_PASSWORD_PREFIX}{uuid.uuid4().hex}"
 
             # Create user (already verified via Google)
             cursor.execute(
@@ -1668,7 +1672,7 @@ def login():
 
         user, password_ok = (candidates[0] if candidates else None), False
         for candidate in candidates:
-            if not candidate.get('password'):
+            if not candidate.get('password') or is_google_only_password(candidate.get('password')):
                 continue
             try:
                 stored = candidate['password']
@@ -1684,6 +1688,14 @@ def login():
                 )
 
         if not user or not password_ok:
+            if candidates and all(is_google_only_password(c.get('password')) for c in candidates):
+                # Signed up with Google, so there is no password to match. Point them at the Google button instead of
+                # a dead-end error. Sign-up already reveals whether an email is taken, so this leaks nothing new.
+                app.logger.info(f"Login: Google-only account tried a password user_id={user.get('id')}")
+                response = jsonify({'error': GOOGLE_ACCOUNT_LOGIN_ERROR, 'code': 'google_account'})
+                response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
+                response.headers['Access-Control-Allow-Credentials'] = 'true'
+                return response, 401
             app.logger.error("🔥 Invalid email or password")
             response = jsonify({'error': 'Invalid email or password'})
             response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', 'https://www.newcollab.co')
