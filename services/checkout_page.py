@@ -12,13 +12,19 @@ from typing import Optional
 
 
 def publishable_key() -> str:
-    return (os.getenv("STRIPE_PUBLISHABLE_KEY") or "").strip()
+    """STRIPE_PUBLISHABLE_KEY, else STRIPE_API_KEY (where production keeps it). Only a pk_ value is ever
+    returned: this goes to the browser, so a secret key stored under either name is never used."""
+    for name in ("STRIPE_PUBLISHABLE_KEY", "STRIPE_API_KEY"):
+        value = (os.getenv(name) or "").strip()
+        if value.startswith("pk_"):
+            return value
+    return ""
 
 
 def embedded_ready() -> bool:
     """Embedded Checkout needs the publishable key in the browser; without it the hosted page is used."""
     key = publishable_key()
-    secret = (os.getenv("STRIPE_SECRET_KEY") or os.getenv("STRIPE_API_KEY") or "").strip()
+    secret = (os.getenv("STRIPE_SECRET_KEY") or "").strip()
     if not key.startswith("pk_"):
         return False
     # A test key with a live secret (or the reverse) would mount a checkout that can't load the session.

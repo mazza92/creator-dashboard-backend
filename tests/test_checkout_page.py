@@ -32,6 +32,16 @@ class Ready(unittest.TestCase):
         with mock.patch.dict(os.environ, {"STRIPE_PUBLISHABLE_KEY": "pk_test_x", "STRIPE_SECRET_KEY": "sk_live_x"}):
             self.assertFalse(embedded_ready())
 
+    def test_reads_the_key_from_stripe_api_key_but_never_a_secret(self):
+        from services.checkout_page import publishable_key
+        with mock.patch.dict(os.environ, {"STRIPE_PUBLISHABLE_KEY": "", "STRIPE_API_KEY": "pk_live_abc",
+                                          "STRIPE_SECRET_KEY": "sk_live_x"}):
+            self.assertEqual(publishable_key(), "pk_live_abc")
+            self.assertTrue(embedded_ready())
+        with mock.patch.dict(os.environ, {"STRIPE_PUBLISHABLE_KEY": "", "STRIPE_API_KEY": "sk_live_secret"}):
+            self.assertEqual(publishable_key(), "")
+            self.assertFalse(embedded_ready())
+
 
 if __name__ == "__main__":
     unittest.main()
