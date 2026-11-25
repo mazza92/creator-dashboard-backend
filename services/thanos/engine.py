@@ -54,6 +54,8 @@ WIDE_MIN_FIT = 25       # fit floor once the ladder goes wide
 PER_LEVEL = 300         # candidates read per level
 FRESH_DAYS = 14
 
+LANE_RANK = {"core": 0, "related": 1, "wide": 2}
+
 LEVEL_NOTES = {
     0: "",
     1: "close to your niche",
@@ -341,6 +343,15 @@ def rank(conn, creator_id: int, surface: str = "polly", n: int = 6, *,
             skip |= prof.saved_ids
     core = [str(c).lower() for c in (categories or prof.categories or [])]
     near = neighbours(core)
+    core_set, near_set = set(core), set(near)
+
+    def lane_of(brand: Dict[str, Any]) -> str:
+        """The creator's own niches first, then neighbouring ones, then everything else, at every level."""
+        cat = str(brand.get("category") or "").lower()
+        if not core_set or cat in core_set:
+            return "core"
+        return "related" if cat in near_set else "wide"
+
     proven = [bid for bid, ev in stats.brand.items() if ev.positive + ev.selected > 0]
     cap = int(prof.followers * M.STRETCH) if prof.followers else 0
     seed = _seed(prof.creator_id, surface)
@@ -356,6 +367,7 @@ def rank(conn, creator_id: int, surface: str = "polly", n: int = 6, *,
         ladder = [(0, dict(categories=False, reach_cap=False, only_ids=True, fresh=False), None)]
 
     picked: Dict[int, Dict[str, Any]] = {}
+    group: Dict[int, tuple] = {}  # brand id -> (level, lane rank): mixing never crosses these
     for level, shape, cats in ladder:
         if level > max_level or len(picked) >= n:
             break
@@ -370,7 +382,6 @@ def rank(conn, creator_id: int, surface: str = "polly", n: int = 6, *,
             "seed": seed, "limit": PER_LEVEL,
         })
         out.considered += len(rows)
-        lane = "core" if level == 0 else ("related" if level in (1, 2) else "wide")
         floor = MIN_FIT if level <= 2 else WIDE_MIN_FIT
         scored = []
         for brand in rows:
@@ -395,6 +406,7 @@ def rank(conn, creator_id: int, surface: str = "polly", n: int = 6, *,
             except Exception:  # noqa: BLE001
                 too_big = False
             band_ev = stats.for_brand_band(bid, prof.band)
+            lane = lane_of(brand)
             facts = M.Facts(
                 min_followers=brand.get("min_followers"), email=brand.get("contact_email") or "",
                 name=brand.get("brand_name") or "",
@@ -407,12 +419,15 @@ def rank(conn, creator_id: int, surface: str = "polly", n: int = 6, *,
             sc = M.score(facts, prof.followers, stats.total,
                          stats.for_category_band(brand.get("category"), prof.band), ev, band_ev,
                          explore_seed=f"{seed}:{bid}" if explore else None)
-            scored.append((sc.rank_value, _card(brand, sc, fit, level, _reason(brand, sc, ev, band_ev, prof))))
-        scored.sort(key=lambda x: -x[0])
-        for _, card in scored:
+            card = _card(brand, sc, fit, level, _reason(brand, sc, ev, band_ev, prof))
+            card["thanos_lane"] = lane
+            scored.append((LANE_RANK[lane], -sc.rank_value, card))
+        scored.sort(key=lambda x: (x[0], x[1]))
+        for lane_rank, _, card in scored:
             if len(picked) >= n:
                 break
             picked[card["id"]] = card
+            group[card["id"]] = (level, lane_rank)
             out.level = max(out.level, level)
 
     if len(picked) < n and max_level >= 5 and prof.repitch_ids and only_ids is None:
@@ -430,9 +445,14 @@ def rank(conn, creator_id: int, surface: str = "polly", n: int = 6, *,
                                  lane="wide"), prof.followers, stats.total,
                          stats.for_category_band(brand.get("category"), prof.band), ev, None)
             picked[bid] = _card(brand, sc, {}, 5, "Pitched a while ago, worth a follow-up")
+            group[bid] = (5, LANE_RANK["wide"])
             out.level = 5
 
-    out.brands = _mix(list(picked.values()))[:n]
+    # Ladder order is kept: categories are mixed only inside one level and lane, never pulled up from a wider one.
+    ordered: List[Dict[str, Any]] = []
+    for key in sorted(set(group.values())):
+        ordered += _mix([c for c in picked.values() if group[c["id"]] == key])
+    out.brands = ordered[:n]
     out.note = LEVEL_NOTES.get(out.level, "")
     return out
 
