@@ -886,7 +886,26 @@ def first_run_payload(conn, creator_id: int, now: Optional[datetime] = None) -> 
         "free_left": None if balance is None else balance["left"],
         "is_pro": bool(prof.get("is_pro")),
         "first_name": _first_name(conn, creator_id),
+        # 'free' when they picked "Do it yourself" on the start choice screen: the welcome leads with their matches.
+        "start_choice": _start_choice(conn, creator_id),
     }
+
+
+def _start_choice(conn, creator_id: int) -> Optional[str]:
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT to_regclass('public.creator_start_choice')")
+        row = cur.fetchone()
+        if not row or not (row[0] if not isinstance(row, dict) else list(row.values())[0]):
+            return None
+        cur.execute("SELECT choice FROM creator_start_choice WHERE creator_id = %s", (creator_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return row["choice"] if isinstance(row, dict) else row[0]
+    except Exception:  # noqa: BLE001
+        conn.rollback()
+        return None
 
 
 def _brand_signals(conn, ids: List[int]) -> Dict[int, Dict[str, Any]]:
