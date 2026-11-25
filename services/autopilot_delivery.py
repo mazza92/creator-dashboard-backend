@@ -38,6 +38,14 @@ def _cause(conn, creator_id: int, day: date, fill_blocked: Optional[str]) -> Dic
                    FROM polly_autopilot_queue WHERE creator_id = %s""", (end, creator_id))
     row = cur.fetchone() or {}
     if int(row.get("queued") or 0) == 0:
+        from services.polly_autopilot import effective_target, month_counts
+        cur.execute("SELECT monthly_target FROM polly_autopilot WHERE creator_id = %s", (creator_id,))
+        target = effective_target((cur.fetchone() or {}).get("monthly_target"))
+        sent = int(month_counts(conn, creator_id).get("sent") or 0)
+        if sent >= target:
+            # Not a miss: the month's target is reached, so Autopilot stops writing until the 1st (Nov 2026:
+            # two creators at 60 and 181 sent on a 24 target were reported as "no_brands").
+            return {"cause": "target_reached", "detail": f"{sent} of {target} sent this month"}
         return {"cause": "no_brands", "detail": fill_blocked or "no pitches written or queued"}
     if int(row.get("later") or 0):
         return {"cause": "scheduled_later", "detail": f"{row['later']} queued for later days"}
@@ -66,6 +74,8 @@ def record_misses(conn, day: date) -> List[Dict[str, Any]]:
         if connected and (connected if connected.tzinfo else connected.replace(tzinfo=timezone.utc)) >= start:
             continue  # connected that day: the first-send path covers it
         c = _cause(conn, r["creator_id"], day, r.get("fill_blocked"))
+        if c["cause"] == "target_reached":
+            continue
         misses.append({"creator_id": r["creator_id"], **c})
     wc = conn.cursor()
     for m in misses:
