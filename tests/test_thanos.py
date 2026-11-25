@@ -267,3 +267,45 @@ class SavepointTests(unittest.TestCase):
         log.clear()
         self.assertEqual(fetch(Conn(), "SELECT 1"), [(1,)])
         self.assertEqual(log, ["SAVEPOINT", "QUERY", "RELEASE"])
+
+
+class NicheFirstTests(unittest.TestCase):
+    """Creator 4823 (travel, lifestyle, tech) saw beauty brands first: proven beauty brands from the neighbour
+    level were mixed up into the plan, and scoring a fixed list treated every brand as a niche match."""
+
+    def setUp(self):
+        self.prof = CreatorProfile(creator_id=4823, followers=562, interests=["travel", "lifestyle", "tech"],
+                                   categories=["travel", "lifestyle", "tech"])
+        self.stats = S.Stats(total=M.Evidence(sends=5000, positive=150))
+        for bid in (101, 102, 103):  # beauty brands that answer a lot
+            self.stats.brand[bid] = M.Evidence(sends=20, positive=6)
+        for p in (patch.object(E, "load_profile", return_value=self.prof),
+                  patch.object(E.S, "load", return_value=self.stats),
+                  patch.object(E, "_fit", return_value={"overall_score": 60}),
+                  patch.object(E, "_blocked", return_value=False)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_plan_keeps_their_niches_ahead_of_proven_neighbours(self):
+        own = [_brand(i, "lifestyle") for i in range(1, 7)]  # one category dominates their own niches
+        beauty = [_brand(101, "beauty"), _brand(102, "skincare"), _brand(103, "beauty")]
+
+        def fetch(conn, sql, params):
+            cats = params["cats"]
+            if "travel" in cats and "beauty" not in cats:
+                return own
+            if "beauty" in cats or "skincare" in cats:
+                return [b for b in beauty if b["id"] not in params["skip"]]
+            return []
+
+        with patch.object(E, "_fetch", side_effect=fetch):
+            r = E.rank(None, 4823, surface="plan", n=9)
+        self.assertEqual(set(r.ids()[:6]), set(range(1, 7)))
+        self.assertEqual([b["thanos_lane"] for b in r.brands[:6]], ["core"] * 6)
+        self.assertEqual({b["thanos_lane"] for b in r.brands[6:]}, {"related"})
+
+    def test_scoring_a_list_puts_their_niches_first(self):
+        rows = [_brand(101, "beauty"), _brand(1, "travel"), _brand(102, "skincare"), _brand(2, "tech")]
+        with patch.object(E, "_fetch", return_value=rows):
+            r = E.score_brands(None, 4823, [101, 1, 102, 2], surface="plan")
+        self.assertEqual(set(r.ids()[:2]), {1, 2})
