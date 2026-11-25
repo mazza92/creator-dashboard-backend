@@ -73,7 +73,8 @@ class DiscoveryTests(unittest.TestCase):
         })
         ids = [c["id"] for c in chips]
         self.assertEqual(ids[0], "i_sent_it")
-        self.assertIn("more_brands", ids)
+        self.assertNotIn("more_brands", ids)  # merged into Find brands to contact
+        self.assertIn("gifted_lists", ids)
         self.assertNotIn("line_up", ids)
 
     def test_second_setup_chip_skips_discovery(self):

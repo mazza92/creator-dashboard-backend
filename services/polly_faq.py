@@ -40,8 +40,8 @@ _FAQ: List[Tuple[str, str, str]] = [
         "auto_apply",
         r"sent automatically|(need|have) to email the brand|(also|still) (need to )?email (them|the brand)|is my application sent",
         "Gifted list applications go to the brand automatically, with your kit. No email needed. "
-        "Direct pitches are different: on the free plan you send them from your own email, then tap "
-        "**I sent it**.",
+        "Direct pitches are different: on the free plan you tap **Send email** on the pitch card and send "
+        "it from your own email.",
     ),
     (
         "pro_automation",
@@ -53,9 +53,9 @@ _FAQ: List[Tuple[str, str, str]] = [
     (
         "not_sent",
         r"(don'?t|dont|do not) think (it|this|that|they|these|u|you) (sent|went)|(did|didn'?t|didnt) (it|u|you) send|not sure (it|if it) (sent|went)|did u send",
-        "Check your Sent folder first: if the email is there, it went out, so tap **I sent it**. "
-        "If it isn't, open the pitch card, tap **Open email** (or **Copy email** and **Copy pitch**), "
-        "send it from your inbox, then tap **I sent it**. On the free plan I never send for you.",
+        "Check your Sent folder first: if the email is there, it went out. "
+        "If it isn't, tap **Send email** on the pitch card and press send in your mail app "
+        "(or **Undo** on the card so I keep it as a draft). On the free plan I never send for you.",
     ),
     (
         "replies",

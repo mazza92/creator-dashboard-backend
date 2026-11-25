@@ -2246,23 +2246,9 @@ def empty_unlock_open(
 
 
 def pitch_confirm_chips(brand: Optional[Dict] = None) -> List[Dict[str, Any]]:
-    brand = brand or {}
-    bid = brand.get("id") or brand.get("brand_id")
-    name = brand.get("name") or brand.get("brand_name")
-    return [
-        {
-            "id": "i_sent_it",
-            "label": "I sent it",
-            "action": "chat",
-            "brand_id": bid,
-            "brand_name": name,
-        },
-        {
-            "id": "more_brands",
-            "label": "More brands",
-            "action": "suggest_brands",
-        },
-    ]
+    """Chips under a drafted pitch: none since Nov 2026. The card has Send email (which logs the send, with Undo)
+    and Use autopilot; 'I sent it' was rarely tapped and 'More brands' is the 'Find brands to contact' prompt."""
+    return []
 
 
 def drop_pending_draft(
