@@ -21,3 +21,14 @@ def _no_live_dns(request, monkeypatch):
         return
     from services import deliverability
     monkeypatch.setattr(deliverability, "domain_receives_mail", lambda *a, **k: True)
+
+
+@pytest.fixture(autouse=True)
+def _creators_are_approved_unless_tested(request, monkeypatch):
+    """Most tests script fake DB rows query by query; the directory-access lookup (approval status) would consume
+    them. tests/test_directory_tier.py exercises directory access itself."""
+    if request.node.fspath.basename == "test_directory_tier.py":
+        return
+    from services import directory_tier
+    monkeypatch.setattr(directory_tier, "is_directory", lambda *a, **k: False)
+    monkeypatch.setattr(directory_tier, "is_directory_id", lambda *a, **k: False)

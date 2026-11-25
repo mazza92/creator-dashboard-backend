@@ -50,6 +50,14 @@ from services.polly_gmail import (
 
 autopilot_bp = Blueprint("polly_autopilot", __name__, url_prefix="/api/polly/autopilot")
 
+
+def _directory_block():
+    from routes.polly import directory_block
+    return directory_block()
+
+
+autopilot_bp.before_request(_directory_block)
+
 POLLY_PATH = "/creator/dashboard/for-you"
 PLAN_ALTERNATES = 4
 

@@ -146,8 +146,15 @@ def _next_step(row: Dict[str, Any], now) -> Optional[str]:
     return None
 
 
+# Paused Nov 2026: these emails sell "skip the line with Pro" and Polly pitching, but not-approved creators now
+# get directory access (services/directory_tier.py) and paying no longer approves anyone. New copy pending review.
+PAUSED = True
+
+
 def email_waitlist_sequence(conn, limit: int = 40, dry_run: bool = False, send_fn: Optional[Callable] = None,
                             test_email: str = "") -> List[Dict[str, Any]]:
+    if PAUSED and not test_email:
+        return []
     pa = _pa()
     from services.email_policy import allowed
     pa.ensure_alert_tables(conn)

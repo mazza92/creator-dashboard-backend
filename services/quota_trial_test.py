@@ -82,6 +82,9 @@ def checkout_trial_eligible(cursor, creator_id):
     from services.start_choice import trial_eligible as start_choice_trial
     if picked_free(cursor, creator_id):
         return False
+    from services.directory_tier import is_directory
+    if is_directory(cursor, creator_id):
+        return False  # directory access: Pro is $19/mo from day one
     return (has_trial_offer(cursor, creator_id) or outreach_trial_eligible(cursor, creator_id)
             or start_choice_trial(cursor, creator_id) or trial_eligible(cursor, creator_id))
 

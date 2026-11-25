@@ -162,6 +162,29 @@ except ImportError as e:
 
 pr_crm = Blueprint('pr_crm', __name__, url_prefix='/api/pr-crm')
 
+# Pitch text that leaves these endpoints. For creators Newcollab hasn't approved (directory access) every line
+# that mentions Newcollab is removed, whatever template or cache produced it (services/directory_tier.py).
+DIRECTORY_SCRUBBED_PATHS = frozenset({
+    '/api/pr-crm/generate-pitch',
+    '/api/pr-crm/generate-pr-package',
+})
+
+
+@pr_crm.after_request
+def _scrub_directory_pitches(response):
+    if request.path not in DIRECTORY_SCRUBBED_PATHS or not response.is_json:
+        return response
+    try:
+        creator_id = get_creator_id_from_session()
+        from services.directory_tier import is_directory_id, scrub_payload
+        if creator_id and is_directory_id(creator_id):
+            data = response.get_json(silent=True)
+            if data is not None:
+                response.set_data(json.dumps(scrub_payload(data), default=str))
+    except Exception as err:  # never break a pitch over the scrub
+        print(f"[directory] pitch scrub skipped: {err}")
+    return response
+
 
 from services.thanos.niches import (  # noqa: F401  (moved to Thanos, Nov 2026)
     get_min_follower_cap,
@@ -307,6 +330,17 @@ def resolve_creator_social(creator: dict) -> dict:
     }
 
 
+def directory_tier_status(status) -> bool:
+    from services.directory_tier import is_directory_status
+    return is_directory_status(status)
+
+
+def _directory_creator(creator_id) -> bool:
+    """Not approved: pitches use their social profile, never the Newcollab kit link."""
+    from services.directory_tier import is_directory_id
+    return is_directory_id(creator_id)
+
+
 def build_pitch_proof(creator: dict, *, creator_id=None, brand_id=None) -> dict:
     """
     Proof line for pitches: published media kit URL, else social profile URL/handle.
@@ -317,7 +351,11 @@ def build_pitch_proof(creator: dict, *, creator_id=None, brand_id=None) -> dict:
     cid = creator_id or creator.get('id') or creator.get('creator_id')
     bid = brand_id or creator.get('_pitch_brand_id')
 
-    if kit_published and username:
+    directory = (
+        directory_tier_status(creator.get('approval_status')) if 'approval_status' in creator
+        else _directory_creator(cid)
+    )
+    if kit_published and username and not directory:
         if cid and bid:
             kit_token = generate_kit_token(cid, bid)
             url = f"https://newcollab.co/kit/{username}?ref={kit_token}"
@@ -6643,8 +6681,32 @@ def attempt_unlock(creator_id, brand_id, conn=None):
             print(f"[attempt_unlock] Brand {brand_id} already delivered for creator {creator_id}")
             return {"status": "already_unlocked", "credits_used": 0, "remaining": remaining}
 
+        is_pro_creator = creator.get('unlocks_tier') == 'pro' or creator.get('subscription_tier') == 'pro'
+        from services import directory_tier
+        if directory_tier.is_directory(cursor, creator_id):
+            # Not approved: directory access. 10 unlocks in total free, 500 a month on Pro.
+            if directory_tier.at_limit(cursor, creator_id, is_pro_creator):
+                conn.rollback()
+                return {"status": "paywall", "credits_used": 0, "remaining": 0, "waiting": 0,
+                        "reset_at": None, "access": "directory",
+                        "limit": directory_tier.PRO_MONTHLY if is_pro_creator else directory_tier.FREE_TOTAL}
+            cursor.execute('''
+                INSERT INTO brand_unlocks (creator_id, brand_id, unlocked_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (creator_id, brand_id) DO NOTHING
+            ''', (creator_id, brand_id))
+            cursor.execute('''
+                INSERT INTO creator_pipeline (creator_id, brand_id, stage, created_at, updated_at)
+                VALUES (%s, %s, 'saved', NOW(), NOW())
+                ON CONFLICT (creator_id, brand_id) DO NOTHING
+            ''', (creator_id, brand_id))
+            conn.commit()
+            left = directory_tier.balance(cursor, creator_id, is_pro_creator)["remaining"]
+            return {"status": "unlocked", "credits_used": 1, "remaining": left, "access": "directory",
+                    "tier": "pro" if is_pro_creator else "free"}
+
         # Pro users get unlimited unlocks
-        if creator.get('unlocks_tier') == 'pro' or creator.get('subscription_tier') == 'pro':
+        if is_pro_creator:
             cursor.execute('''
                 INSERT INTO brand_unlocks (creator_id, brand_id, unlocked_at)
                 VALUES (%s, %s, NOW())
@@ -6879,6 +6941,15 @@ def get_creator_unlock_balance(creator_id, conn=None):
         if close_conn:
             conn.close()
         return None
+
+    from services import directory_tier
+    if directory_tier.is_directory(cursor, creator_id):
+        out = directory_tier.balance(
+            cursor, creator_id, creator.get('unlocks_tier') == 'pro' or creator.get('subscription_tier') == 'pro')
+        cursor.close()
+        if close_conn:
+            conn.close()
+        return out
 
     # Pro = unlimited
     if creator.get('unlocks_tier') == 'pro' or creator.get('subscription_tier') == 'pro':

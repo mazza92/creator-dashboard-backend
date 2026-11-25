@@ -1334,8 +1334,9 @@ def stripe_webhook():
             ''', (creator_id,))
             user_row = cursor.fetchone()
 
-            # AUTO-APPROVE PRO SUBSCRIBERS (Skip the waitlist)
-            if tier == 'pro':
+            # Paying no longer approves a pending creator (Nov 2026): approval is a quality decision. Not-approved
+            # Pro creators get directory access with 500 unlocks a month (services/directory_tier.py).
+            if False:
                 cursor.execute("""
                     UPDATE creators
                     SET approval_status = 'pro_approved',

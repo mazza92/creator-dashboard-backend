@@ -113,6 +113,27 @@ from services.polly_tracker import (
 polly_bp = Blueprint("polly", __name__, url_prefix="/api/polly")
 
 
+def directory_block():
+    """Creators Newcollab hasn't approved have directory access only: no Polly, Autopilot or relay sending
+    (services/directory_tier.py). Crons and signed-out calls pass through."""
+    from flask import jsonify, request as _req
+    if _req.method == "OPTIONS" or "/cron/" in _req.path:
+        return None
+    try:
+        from pr_crm_routes import get_creator_id_from_session
+        from services.directory_tier import is_directory_id
+        creator_id = get_creator_id_from_session()
+        if creator_id and is_directory_id(creator_id):
+            return jsonify({"success": False, "error": "directory_access",
+                            "message": "Polly is for approved creators. Use the brand directory."}), 403
+    except Exception as err:  # noqa: BLE001
+        print(f"[directory] guard skipped: {err}")
+    return None
+
+
+polly_bp.before_request(directory_block)
+
+
 class _StepTimer:
     """Per-request step timings, logged and sent as Server-Timing."""
 
