@@ -1,4 +1,12 @@
+import pytest
+
 from services import quota_trial_test as qt
+
+
+@pytest.fixture(autouse=True)
+def _no_start_choice(monkeypatch):
+    """These creators never saw the start choice (the fake cursor answers only the offer queries)."""
+    monkeypatch.setattr("services.start_choice.picked_free", lambda cur, cid: False)
 
 
 class Cur:

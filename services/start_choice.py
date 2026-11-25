@@ -8,7 +8,8 @@ day 14 for trial pickers vs free pickers), recorded in creator_start_choice.
 
 - Creators approved on or after LAUNCH_AT (Nov 24 2026, 18:00 UTC), never paid, with the FLAG on (kill switch).
 - Recorded on their first eligible visit; the choice is saved when they pick.
-- They may start the trial at checkout whatever they picked (the free path keeps pointing there).
+- The free week is for creators who picked it. "Do it yourself" creators get the normal paid upgrade at every
+  paywall (no trial), so the comparison stays clean and the 3 free pitches are the free offer they chose.
 """
 
 from datetime import datetime, timezone
@@ -123,6 +124,12 @@ def record_choice(conn, creator_id, choice) -> bool:
 
 
 def trial_eligible(cursor, creator_id) -> bool:
-    """Checkout offers the free week to creators in the choice arm who never paid."""
+    """Checkout offers the free week to creators in the choice arm who never paid, unless they picked free."""
     rec = _recorded(cursor, creator_id)
-    return bool(rec and rec['arm'] == 'choice' and _in_test(cursor, creator_id))
+    return bool(rec and rec['arm'] == 'choice' and rec['choice'] != 'free' and _in_test(cursor, creator_id))
+
+
+def picked_free(cursor, creator_id) -> bool:
+    """Chose "Do it yourself" (3 free pitches): every paywall offers the paid upgrade, never the free week."""
+    rec = _recorded(cursor, creator_id)
+    return bool(rec and rec['choice'] == 'free')
