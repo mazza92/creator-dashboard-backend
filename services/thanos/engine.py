@@ -391,11 +391,17 @@ def rank(conn, creator_id: int, surface: str = "polly", n: int = 6, *,
             ev = stats.for_brand(bid)
             if M.is_cold(ev) and surface != "search":
                 continue
+            lane = lane_of(brand)
             fit = _fit(brand, prof)
             fit_score = fit.get("overall_score") if fit else None
-            if fit.get("deal_breaker") and only_ids is None:
+            # A niche the creator picked is never thrown out because their past posts are about something
+            # else (new creators, niche changes, vague scrapes): the fit score just ranks it lower. Outside
+            # their niches a deal-breaker still excludes the brand. (Nov 2026: a pet/baby creator lost every
+            # pet and baby brand to "No pet content found in recent posts".)
+            own_niche = lane == "core" and bool(core_set)
+            if fit.get("deal_breaker") and only_ids is None and not own_niche:
                 continue
-            if fit_score is not None and fit_score < floor and only_ids is None:
+            if fit_score is not None and fit_score < (WIDE_MIN_FIT if own_niche else floor) and only_ids is None:
                 continue
             try:
                 from services.audience_fit import audience_mismatch, too_big_to_reply
@@ -406,7 +412,6 @@ def rank(conn, creator_id: int, surface: str = "polly", n: int = 6, *,
             except Exception:  # noqa: BLE001
                 too_big = False
             band_ev = stats.for_brand_band(bid, prof.band)
-            lane = lane_of(brand)
             facts = M.Facts(
                 min_followers=brand.get("min_followers"), email=brand.get("contact_email") or "",
                 name=brand.get("brand_name") or "",
