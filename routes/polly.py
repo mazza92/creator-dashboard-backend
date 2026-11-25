@@ -2736,9 +2736,21 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
     try:
         if not gmail_configured():
             return jsonify({"success": False, "error": "gmail_unavailable"}), 503
+        from services.polly_gmail import NO_INBOX
+        from services.pitch_relay import SEND_VIA_NEWCOLLAB, relay_available, send_via
+        from services.pitch_relay import send_email as relay_send
         account = load_account(conn, creator_id)
+        # A Google account with no Gmail inbox (made with an @aol/@icloud address) can never send from Gmail, and
+        # asking it to reconnect loops. It sends via Newcollab instead (replies go to their own email), as do
+        # creators who chose Send without Gmail (Nov 2026: these were most of the "chat errors").
+        relay_mode = False
         if not account or account.get("revoked_at"):
-            return jsonify({"success": False, "error": "gmail_not_connected"}), 409
+            no_inbox = bool(account and account.get("last_error") == NO_INBOX)
+            if relay_available() and (no_inbox or send_via(conn, creator_id) == SEND_VIA_NEWCOLLAB):
+                relay_mode = True
+            else:
+                return jsonify({"success": False, "error": "gmail_not_connected"}), 409
+        account = account or {}
         notes = load_thread(conn, creator_id).get("notes") or {}
         items = load_items(notes)
         if not items:
@@ -2793,8 +2805,19 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
                     from services.kit_guard import with_kit
                     item["body"] = track_kit_links(with_kit(conn, creator_id, item.get("body") or ""), creator_id,
                                                    item.get("brand_id"))
-                    sent_ids = send_email(conn, creator_id, item["email"], item.get("subject") or "",
-                                          item.get("body") or "", from_name=from_name)
+                    if relay_mode:
+                        sent_ids = relay_send(conn, creator_id, item["email"], item.get("subject") or "",
+                                              item.get("body") or "", from_name=from_name)
+                    else:
+                        try:
+                            sent_ids = send_email(conn, creator_id, item["email"], item.get("subject") or "",
+                                                  item.get("body") or "", from_name=from_name)
+                        except GmailError as gerr:
+                            if not ("no gmail inbox" in str(gerr).lower() and relay_available()):
+                                raise
+                            relay_mode = True  # this one and the rest go via Newcollab
+                            sent_ids = relay_send(conn, creator_id, item["email"], item.get("subject") or "",
+                                                  item.get("body") or "", from_name=from_name)
                     item["sent_at"] = utc_iso_now()
                     item["thread_id"] = (sent_ids or {}).get("thread_id") or ""
                     if room is not None:
@@ -2837,7 +2860,10 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
                 from services.polly_activity import gmail_thread_url
                 result["sent_at"] = item.get("sent_at")
                 result["to"] = item.get("email")
-                result["gmail_url"] = gmail_thread_url(account.get("email") or "", item.get("thread_id") or "")
+                if not relay_mode:
+                    result["gmail_url"] = gmail_thread_url(account.get("email") or "", item.get("thread_id") or "")
+                else:
+                    result["via"] = "newcollab"
             results.append(result)
         notes = store_items(notes, items)
         save_notes(conn, creator_id, notes)
@@ -2848,6 +2874,12 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
             n = len(sent)
             lines.append(f"Done: {'your ' + str(n) + ' pitches are' if n > 1 else 'your pitch is'} out. "
                          "Your part is finished, I'll take it from here.")
+            if relay_mode:
+                from services.pitch_relay import creator_reply_to
+                reply_to = creator_reply_to(conn, creator_id)
+                lines.append("Your Google account has no Gmail inbox, so I sent "
+                             f"{'them' if n > 1 else 'it'} as you via Newcollab. Brands reply straight to "
+                             f"{reply_to or 'your email'}.")
         if revoked:
             lines.append("Gmail stopped letting me send. Reconnect it and tap send again.")
         elif any(r["status"] == "failed" for r in results):
@@ -2915,8 +2947,15 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
                 print(f"[Polly] quota_hit after send skipped: {err}")
         try:
             from services.polly_usage import log_usage
-            log_usage(conn, creator_id, usage_event, ok=bool(sent),
-                      meta={"sent": len(sent), "total": len(results)})
+            # An error is a send that broke (Gmail refused it). Held pitches (free pitches used, daily limit,
+            # already sent, dead inbox) are the product working, not errors.
+            statuses = {}
+            for r in results:
+                statuses[r["status"]] = statuses.get(r["status"], 0) + 1
+            log_usage(conn, creator_id, usage_event, ok=not statuses.get("failed"),
+                      error=("send_failed" if statuses.get("failed") else None),
+                      meta={"sent": len(sent), "total": len(results), "statuses": statuses,
+                            "via": "newcollab" if relay_mode else "gmail"})
         except Exception:
             pass
         # Last free pitch out: the waiting room shows under the send summary.
