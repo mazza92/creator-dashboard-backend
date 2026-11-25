@@ -309,3 +309,37 @@ class NicheFirstTests(unittest.TestCase):
         with patch.object(E, "_fetch", return_value=rows):
             r = E.score_brands(None, 4823, [101, 1, 102, 2], surface="plan")
         self.assertEqual(set(r.ids()[:2]), {1, 2})
+
+
+class PickedNicheTests(unittest.TestCase):
+    """Creator 4824 picked pet, baby, travel; their TikTok was about UGC, so the fit calculator flagged every pet
+    and baby brand "No pet content found in recent posts" and they all disappeared."""
+
+    def setUp(self):
+        self.prof = CreatorProfile(creator_id=4824, followers=562, interests=["pet", "baby", "travel"],
+                                   categories=["pet", "baby", "travel"])
+        for p in (patch.object(E, "load_profile", return_value=self.prof),
+                  patch.object(E.S, "load", return_value=S.Stats()),
+                  patch.object(E, "_blocked", return_value=False)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _fit(self, brand, prof):
+        if brand["category"] in ("pet", "baby"):
+            return {"overall_score": 30, "deal_breaker": "No pet content found in recent posts"}
+        if brand["category"] == "supplements":
+            return {"overall_score": 40, "deal_breaker": "Brand product type does not fit this creator"}
+        return {"overall_score": 64}
+
+    def test_picked_niches_survive_a_content_deal_breaker(self):
+        rows = [_brand(1, "pet"), _brand(2, "baby"), _brand(3, "travel")]
+        with patch.object(E, "_fit", side_effect=self._fit), patch.object(E, "_fetch", return_value=rows):
+            r = E.rank(None, 4824, surface="polly", n=3, max_level=0)
+        self.assertEqual(set(r.ids()), {1, 2, 3})
+
+    def test_outside_their_niches_a_deal_breaker_still_excludes(self):
+        with patch.object(E, "_fit", side_effect=self._fit), \
+                patch.object(E, "_fetch", side_effect=lambda c, sql, p: [_brand(9, "supplements")]
+                             if "discovered_at" in sql else []):
+            r = E.rank(None, 4824, surface="polly", n=3)
+        self.assertEqual(r.ids(), [])

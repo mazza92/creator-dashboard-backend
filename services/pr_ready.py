@@ -1929,7 +1929,9 @@ def auto_fill_kit_from_scrape(
             bio = COALESCE(NULLIF(%s, ''), bio),
             kit_tagline = COALESCE(%s, kit_tagline),
             followers_count = CASE WHEN %s > 0 THEN %s ELSE followers_count END,
-            niche = COALESCE(NULLIF(%s, ''), niche),
+            -- The niches a creator picked are the record; the scrape only fills an empty one.
+            niche = CASE WHEN COALESCE(cardinality(creator_niches), 0) > 0 THEN niche
+                         ELSE COALESCE(NULLIF(NULLIF(%s, ''), 'other'), niche) END,
             kit_published = CASE WHEN %s THEN TRUE ELSE kit_published END
         WHERE id = %s
         """,
