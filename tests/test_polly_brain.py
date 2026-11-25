@@ -165,42 +165,86 @@ class OrchestratorLoopTests(_Patched):
                 brain.run_turn(state)
 
 
-class SuggestAlwaysReturnsTests(_Patched):
-    NORD = {"id": 4, "name": "NordVPN", "slug": "nordvpn", "category": "tech", "source": "recruiting"}
-    SECRET = {"id": 47, "name": "Secretlab", "slug": "secretlab", "category": "tech", "source": "matched"}
+def _ranking(cards, note="", level=0):
+    from services.thanos import Ranking
+    return Ranking(brands=[dict(c) for c in cards], level=level, note=note)
 
-    def test_already_shown_brands_come_back_instead_of_an_empty_roster(self):
-        state = make_state(notes={"shown_brand_ids": [4, 47], "deal_intent": "gifted"})
-        with patch.object(routes_polly, "_suggest_payload", return_value=(200, [self.NORD, self.SECRET], None)), \
-                patch.object(routes_polly, "_fallback_brand_pool", return_value=[self.NORD]):
+
+class SuggestUsesThanosTests(_Patched):
+    """suggest_brands shows Thanos picks: no other pool, reach order or reply-tier sort."""
+    NORD = {"id": 4, "name": "NordVPN", "slug": "nordvpn", "category": "tech", "roster_is_open": 0,
+            "reply_band": "high", "reply_reason": "3 creators heard back", "thanos_level": 0}
+    SECRET = {"id": 47, "name": "Secretlab", "slug": "secretlab", "category": "tech", "roster_is_open": 1,
+              "reply_band": "medium", "reply_reason": "Recruiting creators right now", "thanos_level": 0}
+
+    def test_cards_come_from_thanos_and_live_rosters_lead(self):
+        state = make_state(notes={"shown_brand_ids": [90]})
+        with patch("services.thanos.rank", return_value=_ranking([self.NORD, self.SECRET])) as rank:
             res = tools.run_tool(state, "suggest_brands", {"deal": "gifted"})
-        self.assertEqual([b["name"] for b in state.brands], ["NordVPN", "Secretlab"])
-        self.assertTrue(res["repeated"])
+        kw = rank.call_args.kwargs
+        self.assertEqual(kw["surface"], "polly")
+        self.assertIn(90, kw["exclude_ids"])                       # shown brands stay out
+        self.assertEqual([b["name"] for b in state.brands], ["Secretlab", "NordVPN"])
+        self.assertEqual(state.brands[0]["source"], "recruiting")
+        self.assertEqual(state.brands[1]["reply_band"], "high")
+        self.assertEqual(res["live_rosters"], 1)
         self.assertTrue(res["cards_shown"])
+        self.assertEqual(state.notes["shown_brand_ids"][-2:], [47, 4])
 
-    def test_other_brands_widen_to_the_directory_before_repeating(self):
-        glow = {"id": 90, "name": "Glow Recipe", "slug": "glow-recipe", "category": "skincare"}
-        state = make_state(notes={"shown_brand_ids": [4, 47]})
-        with patch.object(routes_polly, "_suggest_payload", return_value=(200, [self.NORD, self.SECRET], None)), \
-                patch.object(routes_polly, "_fallback_brand_pool", return_value=[self.NORD, glow]):
+    def test_first_matches_use_their_surface_and_cap_at_three(self):
+        cards = [dict(self.NORD, id=i, name=f"B{i}", roster_is_open=0) for i in range(1, 7)]
+        state = make_state(chip={"id": "first_matches"})
+        with patch("services.thanos.rank", return_value=_ranking(cards)) as rank:
+            tools.run_tool(state, "suggest_brands", {"deal": "gifted"})
+        self.assertEqual(rank.call_args.kwargs["surface"], "first_matches")
+        self.assertEqual([b["id"] for b in state.brands], [1, 2, 3])
+
+    def test_widened_ladder_is_said_honestly(self):
+        state = make_state()
+        with patch("services.thanos.rank", return_value=_ranking([self.NORD], note="close to your niche", level=1)):
             res = tools.run_tool(state, "suggest_brands", {})
+        self.assertEqual(res["match_note"], "close to your niche")
+        self.assertIn("close to your niche", res["note"])
+
+    def test_already_shown_brands_come_back_oldest_first(self):
+        state = make_state(notes={"shown_brand_ids": [47, 4]})
+        with patch("services.thanos.rank", side_effect=[_ranking([]), _ranking([self.NORD, self.SECRET])]) as rank:
+            res = tools.run_tool(state, "suggest_brands", {})
+        self.assertNotIn(47, rank.call_args.kwargs["exclude_ids"])
+        self.assertTrue(res["repeated"])
+        self.assertEqual([b["name"] for b in state.brands], ["Secretlab", "NordVPN"])
+
+    def test_pitched_by_name_and_pending_draft_stay_out(self):
+        state = make_state(notes={"pitched_brand_names": ["NordVPN"], "pending_pitch": {"id": 47, "name": "Secretlab"}})
+        glow = dict(self.NORD, id=90, name="Glow Recipe")
+        with patch("services.thanos.rank", return_value=_ranking([self.NORD, self.SECRET, glow])) as rank:
+            tools.run_tool(state, "suggest_brands", {})
+        self.assertIn(47, rank.call_args.kwargs["exclude_ids"])
         self.assertEqual([b["name"] for b in state.brands], ["Glow Recipe"])
-        self.assertNotIn("repeated", res)
 
-    def test_fresh_brands_still_win_over_ones_already_shown(self):
-        state = make_state(notes={"shown_brand_ids": [4]})
-        with patch.object(routes_polly, "_suggest_payload", return_value=(200, [self.NORD, self.SECRET], None)):
+    def test_nothing_left_says_so(self):
+        state = make_state()
+        with patch("services.thanos.rank", return_value=_ranking([])):
             res = tools.run_tool(state, "suggest_brands", {})
-        self.assertEqual([b["name"] for b in state.brands], ["Secretlab"])
-        self.assertNotIn("repeated", res)
+        self.assertEqual(res["brands"], [])
+        self.assertIn("never invent", res["note"])
 
-    def test_pitched_brands_stay_out_and_the_directory_fills_the_gap(self):
-        state = make_state(notes={"pitched_brand_ids": [4], "pitched_brand_names": ["NordVPN"]})
-        with patch.object(routes_polly, "_suggest_payload", return_value=(200, [], "Could not load matches")), \
-                patch.object(routes_polly, "_fallback_brand_pool", return_value=[self.SECRET, self.NORD]):
-            res = tools.run_tool(state, "suggest_brands", {"deal": "gifted"})
-        self.assertEqual([b["name"] for b in state.brands], ["Secretlab"])
-        self.assertTrue(res["widened"])
+
+class SimilarBrandsUseThanosOrderTests(unittest.TestCase):
+    ROWS = [
+        {"id": 1, "slug": "a", "name": "Keyboard Co", "category": "tech", "description": "keyboard maker"},
+        {"id": 2, "slug": "b", "name": "Laptop Stands", "category": "tech", "description": "laptop risers"},
+        {"id": 3, "slug": "c", "name": "Glow", "category": "skincare", "description": "serum"},
+    ]
+
+    def test_token_matches_in_thanos_order(self):
+        scored = [{"id": 2, "reply_band": "high", "match_score": 70}, {"id": 1, "reply_band": "low"}]
+        with patch.object(routes_polly, "_fetch_brands_by_tokens", return_value=[dict(r) for r in self.ROWS]), \
+                patch.object(routes_polly, "_thanos_order", return_value=scored) as order:
+            out = routes_polly._lookup_similar_brands("Dell laptop", creator_id=7)
+        self.assertEqual(sorted(order.call_args[0][1]), [1, 2])     # only brands that matched the name
+        self.assertEqual([b["id"] for b in out], [2, 1])
+        self.assertEqual(out[0]["reply_band"], "high")
 
 
 class ToolRuleTests(_Patched):

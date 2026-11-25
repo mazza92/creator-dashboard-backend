@@ -746,196 +746,40 @@ def _get_low_follower_ugc_response(brand_name, follower_count):
 
 
 def get_better_brand_matches(creator, current_brand_id, cursor, limit=3):
-    """
-    Get better brand alternatives when current brand is a poor fit.
-
-    Returns brands where creator is more likely to succeed based on:
-    - Creator's niche matching brand category
-    - Follower count within brand's typical range
-    - Not already unlocked by this creator
-
-    Args:
-        creator: Creator dict with niche, follower_count, social_links
-        current_brand_id: Brand to exclude
-        cursor: DB cursor
-        limit: Max brands to return
-
-    Returns:
-        List of brand dicts with estimated fit status
-    """
-    # Parse creator's niche
-    creator_niche = creator.get('niche') or ''
-    if isinstance(creator_niche, list):
-        creator_niche = creator_niche[0] if creator_niche else ''
-    creator_niche = creator_niche.lower().strip()
-
-    # Get follower count from social_links
-    social_links_raw = creator.get('social_links') or []
-    if isinstance(social_links_raw, str):
-        try:
-            social_links_raw = json.loads(social_links_raw)
-        except:
-            social_links_raw = []
-
-    follower_count = 0
-    for link in social_links_raw:
-        link_followers = int(link.get('followersCount') or link.get('followers_count') or 0)
-        if link_followers > follower_count:
-            follower_count = link_followers
-
-    if follower_count == 0:
-        follower_count = creator.get('follower_count') or creator.get('followers_count') or 0
-
-    # Map niches to brand categories
-    niche_to_categories = {
-        'beauty': ['beauty', 'skincare', 'haircare', 'cosmetics'],
-        'skincare': ['skincare', 'beauty'],
-        'haircare': ['haircare', 'beauty'],
-        'fashion': ['fashion', 'apparel', 'clothing', 'accessories'],
-        'fitness': ['fitness', 'activewear', 'sports', 'health'],
-        'wellness': ['wellness', 'health', 'supplements'],
-        'food': ['food', 'beverage', 'restaurant', 'snacks'],
-        'tech': ['tech', 'electronics', 'gaming', 'software', 'saas'],
-        'gaming': ['gaming', 'tech', 'electronics'],
-        'lifestyle': ['lifestyle', 'home', 'wellness'],
-        'travel': ['travel', 'hospitality', 'luggage'],
-        'pet': ['pet', 'animals'],
-        'home': ['home', 'furniture', 'decor', 'lifestyle'],
-        # Creator/business niches
-        'social_media_marketing': ['tech', 'software', 'saas', 'marketing', 'business'],
-        'video_production': ['tech', 'software', 'electronics', 'marketing'],
-        'creator': ['tech', 'software', 'electronics', 'creator tools'],
-        'business': ['business', 'software', 'saas', 'finance'],
-        'marketing': ['marketing', 'software', 'tech', 'business'],
-        'other': [],  # Will use fallback query
-    }
-
-    matching_categories = niche_to_categories.get(creator_niche, [creator_niche]) if creator_niche else []
-
-    print(f"[BetterMatches] Creator niche: '{creator_niche}', matching categories: {matching_categories}, followers: {follower_count}")
-
+    """Brands to unlock instead of a poor fit: Thanos's alternatives for this creator, in the unlock modal's
+    shape (id, brand_name, slug, logo, category, fit_status, fit_emoji, fit_label)."""
+    from services.thanos import rank
+    creator_id = creator.get('id')
+    if not creator_id:
+        return []
     try:
-        # Get creator_id for excluding already unlocked brands
-        creator_id = creator.get('id')
-
-        # Query for matching brands - ONLY from published pr_brands
-        if matching_categories:
-            # Use category matching
-            placeholders = ','.join(['%s'] * len(matching_categories))
-            query = f'''
-                SELECT b.id, b.brand_name, b.slug, b.category,
-                       b.logo_url, b.website, b.contact_email, b.application_form_url
-                FROM pr_brands b
-                WHERE b.id != %s
-                AND COALESCE(b.status, 'published') = 'published'
-                AND LOWER(b.category) IN ({placeholders})
-                AND b.contact_email IS NOT NULL
-                AND NOT EXISTS (
-                    SELECT 1 FROM pr_packages pp
-                    WHERE pp.brand_id = b.id AND pp.creator_id = %s
-                )
-                ORDER BY RANDOM()
-                LIMIT %s
-            '''
-            params = [current_brand_id] + matching_categories + [creator_id, limit * 2]
-        else:
-            # Fallback: get any popular brands - ONLY from published pr_brands
-            query = '''
-                SELECT b.id, b.brand_name, b.slug, b.category,
-                       b.logo_url, b.website, b.contact_email, b.application_form_url
-                FROM pr_brands b
-                WHERE b.id != %s
-                AND COALESCE(b.status, 'published') = 'published'
-                AND b.contact_email IS NOT NULL
-                AND NOT EXISTS (
-                    SELECT 1 FROM pr_packages pp
-                    WHERE pp.brand_id = b.id AND pp.creator_id = %s
-                )
-                ORDER BY RANDOM()
-                LIMIT %s
-            '''
-            params = [current_brand_id, creator_id, limit * 2]
-
-        cursor.execute(query, params)
-        brands = cursor.fetchall()
-
-        # Estimate fit for each brand
-        alternatives = []
-        for brand in brands:
-            brand_dict = dict(brand)
-            brand_category = (brand_dict.get('category') or '').lower()
-
-            # Simple fit estimation based on niche match and follower count
-            # Labels are consistent with colors: green=Strong, yellow=Good, orange=Building
-            if creator_niche and brand_category in matching_categories[:2]:
-                # Strong niche match
-                if follower_count >= 5000:
-                    fit_status = 'ready'
-                    fit_emoji = '🟢'
-                    fit_label = 'Strong fit'
-                elif follower_count >= 1000:
-                    fit_status = 'almost'
-                    fit_emoji = '🟡'
-                    fit_label = 'Good fit'
-                else:
-                    fit_status = 'not_yet'
-                    fit_emoji = '🟠'
-                    fit_label = 'Building'
-            elif creator_niche and brand_category in matching_categories:
-                # Moderate niche match
-                if follower_count >= 10000:
-                    fit_status = 'ready'
-                    fit_emoji = '🟢'
-                    fit_label = 'Strong fit'
-                elif follower_count >= 3000:
-                    fit_status = 'almost'
-                    fit_emoji = '🟡'
-                    fit_label = 'Good fit'
-                else:
-                    fit_status = 'not_yet'
-                    fit_emoji = '🟠'
-                    fit_label = 'Building'
-            else:
-                # No strong niche match but could work
-                fit_status = 'almost'
-                fit_emoji = '🟡'
-                fit_label = 'Worth trying'
-
-            # Generate logo URL with Clearbit fallback
-            logo_url = brand_dict.get('logo_url')
-            if not logo_url and brand_dict.get('website'):
-                try:
-                    from urllib.parse import urlparse
-                    website = brand_dict['website']
-                    if not website.startswith('http'):
-                        website = f'https://{website}'
-                    domain = urlparse(website).hostname
-                    if domain:
-                        domain = domain.replace('www.', '')
-                        logo_url = f'https://logo.clearbit.com/{domain}'
-                except:
-                    pass
-
-            alternatives.append({
-                'id': brand_dict['id'],
-                'brand_name': brand_dict['brand_name'],
-                'slug': brand_dict['slug'],
-                'logo': logo_url,
-                'category': brand_dict.get('category'),
-                'fit_status': fit_status,
-                'fit_emoji': fit_emoji,
-                'fit_label': fit_label
-            })
-
-        # Sort by fit (ready first, then almost, then not_yet)
-        fit_order = {'ready': 0, 'almost': 1, 'not_yet': 2}
-        alternatives.sort(key=lambda x: fit_order.get(x['fit_status'], 3))
-
-        return alternatives[:limit]
-
+        ranking = rank(cursor.connection, creator_id, surface='alternatives', n=limit,
+                       exclude_ids=[current_brand_id])
     except Exception as e:
         print(f"[BetterMatches] Error getting alternatives: {e}")
         return []
+    out = []
+    for card in ranking.brands:
+        score = int(card.get('match_score') or 0)
+        if score >= 70:
+            status, emoji, label = 'ready', '🟢', 'Strong fit'
+        elif score >= 50:
+            status, emoji, label = 'almost', '🟡', 'Good fit'
+        else:
+            status, emoji, label = 'not_yet', '🟠', 'Building'
+        out.append({
+            'id': card['id'],
+            'brand_name': card.get('brand_name'),
+            'slug': card.get('slug'),
+            'logo': card.get('logo'),
+            'category': card.get('category'),
+            'fit_status': status,
+            'fit_emoji': emoji,
+            'fit_label': label,
+            'reply_band': card.get('reply_band'),
+            'reply_reason': card.get('reply_reason'),
+        })
+    return out
 
 
 def compute_fit_with_ai_depth(creator, brand, user_id, cursor, conn, is_for_you_match=False):

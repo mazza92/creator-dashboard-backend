@@ -62,17 +62,5 @@ def save_creator_niches(conn, creator_id: int, niches: Iterable[Any], commit: bo
                    WHERE creator_id = %s AND notes ? 'niche'""", (json.dumps(cleaned), creator_id))
     if commit:
         conn.commit()
-    _forget_matches(creator_id)
     return cleaned
 
-
-def _forget_matches(creator_id: int) -> None:
-    try:
-        from routes.polly import _FOR_YOU_CACHE, _FOR_YOU_LOCK
-        from services.mentor_matchmaker import invalidate_mentor_matches
-
-        with _FOR_YOU_LOCK:
-            _FOR_YOU_CACHE.pop(int(creator_id), None)
-        invalidate_mentor_matches(creator_id)
-    except Exception as err:
-        print(f"[niches] match cache reset skipped for {creator_id}: {err}")

@@ -19,6 +19,33 @@ def _conn():
                             options=f"-c search_path={SCHEMA}")
 
 
+class WelcomeOrderTests(unittest.TestCase):
+    """The welcome's brands: today's hot pick first, then Thanos order (no reach tiers of its own)."""
+
+    def test_hot_pick_then_thanos_order(self):
+        from datetime import date
+        day = date(2026, 11, 12)
+        rows = [{"brand_id": i, "brand_name": f"B{i}", "planned_for": day, "offer": "gifted", "category": "beauty"}
+                for i in (1, 2, 3, 4)]
+        from services.thanos import Ranking
+        cards = [{"id": 3, "reply_band": "high", "ugc_style": True}, {"id": 1, "reply_band": "low"}]
+        with patch.object(ct, "planned_rows", return_value=rows), \
+                patch.object(ct, "creator_profile", return_value={"followers": 900, "niches": ["beauty"]}), \
+                patch.object(ct, "get_goal", return_value={"amount_cents": 20000}), \
+                patch.object(ct, "own_rates", return_value={"reply_rate": 0.08, "deal_rate": 0.3, "source": "default"}), \
+                patch.object(ct, "_hot_today", return_value={"brand_id": 4, "reason": "Hot today"}), \
+                patch.object(ct, "free_balance", return_value=None), \
+                patch.object(ct, "_first_name", return_value="Ana"), \
+                patch.object(ct, "_start_choice", return_value=None), \
+                patch("services.thanos.score_brands", return_value=Ranking(brands=cards)) as score:
+            fr = ct.first_run_payload(MagicMock(), 7, now=NOW)
+        self.assertEqual(score.call_args.kwargs["surface"], "plan")
+        self.assertEqual([b["brand_id"] for b in fr["brands"]], [4, 3, 1, 2])
+        self.assertTrue(fr["brands"][0]["hot"])
+        self.assertTrue(fr["brands"][1]["works_with_creators"])
+        self.assertEqual(fr["brands"][1]["reply_band"], "high")
+
+
 class PureMath(unittest.TestCase):
     def test_rate_bands(self):
         self.assertEqual(ct.rate_band(800), (8000, 15000))

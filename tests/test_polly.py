@@ -12,7 +12,6 @@ from services.polly import (
     build_profile_context,
     classify_intent_heuristic,
     empty_unlock_open,
-    flatten_for_you,
     out_of_free_unlocks,
     paywall_unlock_chips,
     pitch_from_package_response,
@@ -66,34 +65,12 @@ class BrandPoolTests(unittest.TestCase):
         self.assertEqual(card["id"], 7)
         self.assertNotIn("contact_email", card)
 
-    def test_flatten_prefers_matched_and_caps(self):
-        payload = {
-            "matched": [{"id": 1, "name": "A"}, {"id": 2, "name": "B"}],
-            "hot": [{"id": 1, "name": "A"}, {"id": 3, "name": "C"}],
-            "newest": [{"id": i, "name": str(i)} for i in range(4, 20)],
-        }
-        brands = flatten_for_you(payload, limit=6)
-        ids = [b["id"] for b in brands]
-        self.assertEqual(ids[0], 1)
-        self.assertEqual(len(ids), 6)
-        self.assertEqual(len(set(ids)), 6)
-
-    def test_flatten_prefers_open_campaigns(self):
-        payload = {
-            "matched": [{"id": 1, "name": "Pool Fit", "category": "skincare", "match_score": 95, "description": "A generic pool match."}],
-            "recruiting": [{
-                "id": 2,
-                "name": "Live Roster",
-                "category": "skincare",
-                "match_score": 40,
-                "roster_is_open": 1,
-                "description": "Plant-first body care made in small batches.",
-            }],
-        }
-        brands = flatten_for_you(payload, limit=3, scrape={"primary_niche": "skincare"})
-        self.assertEqual(brands[0]["id"], 2)
-        self.assertEqual(brands[0]["why"], "Plant-first body care made in small batches.")
-        self.assertNotIn("already sit", (brands[0].get("why") or "").lower())
+    def test_sanitize_keeps_thanos_reply_odds(self):
+        card = sanitize_brand_card({"id": 7, "name": "Glow Co", "reply_band": "high",
+                                    "reply_reason": "3 creators your size heard back", "reply_chance": 0.4})
+        self.assertEqual(card["reply_band"], "high")
+        self.assertEqual(card["reply_reason"], "3 creators your size heard back")
+        self.assertNotIn("reply_chance", card)
 
     def test_card_blurb_is_description_not_overlap_why(self):
         payload = {
@@ -105,47 +82,9 @@ class BrandPoolTests(unittest.TestCase):
                 "why": "Your skincare posts already sit in beauty, free, skincare.",
             }],
         }
-        brands = flatten_for_you(payload, limit=1)
+        brands = [sanitize_brand_card(payload["matched"][0])]
         self.assertEqual(brands[0]["why"], "Small-batch plant skincare from Portland.")
         self.assertNotIn("already sit", brands[0]["why"])
-
-    def test_flatten_drops_mens_brand_for_lifestyle_scrape(self):
-        payload = {
-            "matched": [
-                {
-                    "id": 1,
-                    "name": "Benji Mens",
-                    "category": "skincare",
-                    "match_score": 82,
-                    "description": "We're looking for men 35-55 to talk about our face wash & moisturizer.",
-                },
-                {
-                    "id": 2,
-                    "name": "Beauty Pie",
-                    "category": "beauty",
-                    "match_score": 85,
-                    "description": "Treat yourself better. Join hundreds of thousands of beauty insiders.",
-                },
-                {
-                    "id": 3,
-                    "name": "The Good Mineral",
-                    "category": "beauty",
-                    "match_score": 85,
-                    "description": "We are a super clean makeup brand with prices per unit ranging between $25 to $45.",
-                },
-            ],
-        }
-        scrape = {
-            "primary_niche": "lifestyle",
-            "raw_bio": "UGC lifestyle and self-care",
-            "content_themes": ["lifestyle", "daily routine"],
-            "recent_captions": ["sunday reset in the kitchen", "self care evening"],
-        }
-        brands = flatten_for_you(payload, limit=6, scrape=scrape)
-        names = [b["name"] for b in brands]
-        self.assertNotIn("Benji Mens", names)
-        self.assertEqual(names[0], "Beauty Pie")
-        self.assertTrue(brands[0].get("why"))
 
     def test_resolve_brand_by_name(self):
         suggested = [{"id": 9, "name": "Rhode", "slug": "rhode"}]
@@ -221,73 +160,6 @@ class HeuristicIntentTests(unittest.TestCase):
     def test_suggest(self):
         d = classify_intent_heuristic("Suggest brands I should reach out to")
         self.assertEqual(d["intent"], "suggest_brands")
-
-    def test_flatten_drops_fashion_when_skincare_required(self):
-        payload = {
-            "matched": [
-                {"id": 1, "name": "Clementine Sleepwear", "category": "fashion", "match_score": 90},
-                {"id": 2, "name": "SHENZHEN SREC TECHNOLOGY CO., LTD", "category": "tech", "match_score": 80},
-                {"id": 3, "name": "Beauty Pie", "category": "beauty", "match_score": 70},
-                {"id": 4, "name": "The Inkey List", "category": "skincare", "match_score": 65},
-            ],
-        }
-        scrape = {"primary_niche": "skincare", "raw_bio": "skincare and texture"}
-        brands = flatten_for_you(
-            payload,
-            scrape=scrape,
-            niches=["skincare", "beauty"],
-            required_categories=["skincare", "beauty"],
-        )
-        names = [b["name"] for b in brands]
-        self.assertNotIn("Clementine Sleepwear", names)
-        self.assertNotIn("SHENZHEN SREC TECHNOLOGY CO., LTD", names)
-        self.assertLessEqual(len(names), 3)
-        self.assertTrue({"Beauty Pie", "The Inkey List"} & set(names))
-
-    def test_flatten_drops_on_running_for_skincare_micro(self):
-        payload = {
-            "recruiting": [{
-                "id": 9,
-                "name": "On Running",
-                "category": "fitness",
-                "match_score": 66,
-                "roster_is_open": 1,
-                "description": "Born in the Swiss Alps, On running shoes.",
-            }],
-            "matched": [
-                {
-                    "id": 1,
-                    "name": "Sentix Cosmetics (US)",
-                    "category": "skincare",
-                    "match_score": 70,
-                    "description": "Clean, vegan, cruelty-free beauty products.",
-                    "micro_friendly": True,
-                },
-                {
-                    "id": 2,
-                    "name": "GLO",
-                    "category": "beauty",
-                    "match_score": 62,
-                    "description": "Show how the product works on day one, then keep using it.",
-                },
-            ],
-        }
-        scrape = {
-            "primary_niche": "skincare",
-            "secondary_niches": ["wellness"],
-            "follower_count": 202,
-            "raw_bio": "skincare and wellness",
-        }
-        brands = flatten_for_you(
-            payload,
-            scrape=scrape,
-            niches=["skincare", "wellness"],
-            required_categories=["skincare", "beauty"],
-        )
-        names = [b["name"] for b in brands]
-        self.assertNotIn("On Running", names)
-        self.assertIn("Sentix Cosmetics (US)", names)
-        self.assertEqual(names[0], "Sentix Cosmetics (US)")
 
     def test_done_after_pitch_is_chat_not_suggest(self):
         d = classify_intent_heuristic(
@@ -366,7 +238,7 @@ class HeuristicIntentTests(unittest.TestCase):
         self.assertEqual(back["pending_pitch"]["name"], "Nuria Beauty")
 
     def test_shown_brands_are_skipped_next_time(self):
-        from services.polly import drop_shown, mark_shown_brands
+        from services.polly import mark_shown_brands
         pool = [
             {"id": 1, "name": "Taima Titanium"},
             {"id": 2, "name": "Medjet"},
@@ -377,9 +249,6 @@ class HeuristicIntentTests(unittest.TestCase):
         self.assertEqual(notes["shown_brand_ids"], [1, 2, 3])
         notes = mark_shown_brands(notes, pool[:3])
         self.assertEqual(notes["shown_brand_ids"], [1, 2, 3])
-        left = drop_shown(pool, notes)
-        self.assertEqual([b["name"] for b in left], ["Away"])
-        self.assertEqual(drop_shown(pool, {}), pool)
 
     def test_drop_pitched_moves_queue(self):
         from services.polly import drop_pitched, mark_pitched

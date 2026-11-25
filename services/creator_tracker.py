@@ -849,19 +849,11 @@ def first_run_payload(conn, creator_id: int, now: Optional[datetime] = None) -> 
     hot_id = int(hot["brand_id"]) if hot.get("brand_id") else None
     week_end = now.date() + timedelta(days=7)
     this_week = [r for r in rows if r["planned_for"] < week_end]
-    # First brands = the most likely to answer THIS creator: the hot pick, then brands within reach of their size
-    # and seen working with creators, then the plan's order (same reach logic as Autopilot).
-    signals = _brand_signals(conn, [int(r["brand_id"]) for r in rows])
-    followers = int(prof.get("followers") or 0)
-
-    def reach_key(r):
-        bid = int(r["brand_id"])
-        sig = signals.get(bid, {})
-        need = int(sig.get("min_followers") or 0)
-        tier = 0 if not followers or need <= followers * 1.25 else 1 if need <= followers * 5 else 2
-        return (bid != hot_id, tier, not (sig.get("works_with_creators") or r.get("meta_ads")), r["planned_for"])
-
-    ordered = sorted(rows, key=reach_key)
+    # The hot pick leads (its own product section), then Thanos order for this creator; planned brands Thanos
+    # would no longer pick keep their plan order at the end.
+    cards = _thanos_cards(conn, creator_id, [int(r["brand_id"]) for r in rows])
+    order = {bid: i for i, bid in enumerate(cards)}
+    ordered = sorted(rows, key=lambda r: (int(r["brand_id"]) != hot_id, order.get(int(r["brand_id"]), len(order))))
     from services.brand_names import clean_brand_name
     brands = []
     for r in ordered[:6]:
@@ -870,7 +862,8 @@ def first_run_payload(conn, creator_id: int, now: Optional[datetime] = None) -> 
         brands.append({
             "brand_id": bid, "brand_name": clean_brand_name(r.get("brand_name")) or "Brand", "logo": r.get("logo"),
             "offer": r.get("offer") or "gifted", "hot": bid == hot_id, "meta_ads": bool(r.get("meta_ads")),
-            "works_with_creators": bool(signals.get(bid, {}).get("works_with_creators")),
+            "works_with_creators": _works_with_creators(cards.get(bid)),
+            "reply_band": (cards.get(bid) or {}).get("reply_band"),
             "category": cat or None,
             "reason": hot.get("reason") if bid == hot_id else (f"Fits your {cat} content" if cat else "Fits your content"),
         })
@@ -908,22 +901,22 @@ def _start_choice(conn, creator_id: int) -> Optional[str]:
         return None
 
 
-def _brand_signals(conn, ids: List[int]) -> Dict[int, Dict[str, Any]]:
-    """Minimum follower ask, and whether the brand is seen working with creators (confirmed gifting or
-    creator-style ads), for the welcome's brand order and tags. {} on any failure."""
+def _thanos_cards(conn, creator_id: int, ids: List[int]) -> Dict[int, Dict[str, Any]]:
+    """Thanos cards for the planned brands, best first (dict keeps the order). {} on any failure."""
     if not ids:
         return {}
     try:
-        cur = _cur(conn)
-        cur.execute("""SELECT b.id, b.min_followers,
-                              (b.gifting_confirmed_at IS NOT NULL OR COALESCE(s.ugc_style, FALSE)) AS works
-                       FROM pr_brands b LEFT JOIN brand_ad_signals s ON s.brand_id = b.id
-                       WHERE b.id = ANY(%s)""", (ids,))
-        return {int(r["id"]): {"min_followers": r.get("min_followers"), "works_with_creators": bool(r.get("works"))}
-                for r in cur.fetchall()}
-    except Exception:
-        conn.rollback()
+        from services.thanos import score_brands
+        return {int(c["id"]): c for c in score_brands(conn, creator_id, ids, surface="plan").brands}
+    except Exception as err:  # noqa: BLE001
+        print(f"[tracker] welcome order skipped creator={creator_id}: {err}")
         return {}
+
+
+def _works_with_creators(card: Optional[Dict[str, Any]]) -> bool:
+    """Seen working with creators: confirmed gifting or creator-style ads."""
+    card = card or {}
+    return bool(card.get("gifting_confirmed") or card.get("ugc_style"))
 
 
 def _first_name(conn, creator_id: int) -> str:

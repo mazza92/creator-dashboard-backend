@@ -2,8 +2,8 @@
 Deterministic Fit Score Calculator
 
 Unlock coaching uses this BEFORE Gemini explains (LLM never decides unlock score).
-For You uses mentor_matchmaker (Gemini ranks with scraped social data); this
-calculator prefilters candidates and serves as fallback + brand-context gates
+Thanos (services/thanos) uses the brand-aware score as one factor of a brand's reply
+chance, and as a fit floor; the brand-context gates live here too
 (e.g. lifestyle-labeled luxury handbags vs affordable mom finds).
 """
 

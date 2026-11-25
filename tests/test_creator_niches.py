@@ -45,14 +45,12 @@ def test_record_overrides_stale_polly_copy():
 
 def test_save_writes_both_columns_and_polly_copy():
     conn = _Conn()
-    with mock.patch.object(cn, "_forget_matches") as forget:
-        out = cn.save_creator_niches(conn, 7, ["Makeup", "gaming"])
+    out = cn.save_creator_niches(conn, 7, ["Makeup", "gaming"])
     assert out == ["beauty", "gaming"]
     (creators_sql, p1), (notes_sql, p2) = conn.log
     assert "creator_niches = %s, niche = %s" in creators_sql and p1 == (["beauty", "gaming"], json.dumps(out), 7)
     assert "polly_threads" in notes_sql and p2 == (json.dumps(out), 7)
-    assert conn.commits == 1
-    forget.assert_called_once_with(7)
+    assert conn.commits == 1  # Thanos reads niches on every ranking: no match cache to reset
 
 
 def test_save_ignores_empty_or_unknown():
@@ -63,6 +61,5 @@ def test_save_ignores_empty_or_unknown():
 
 def test_save_keeps_top_three():
     conn = _Conn()
-    with mock.patch.object(cn, "_forget_matches"):
-        out = cn.save_creator_niches(conn, 7, ["beauty", "skincare", "fashion", "travel", "pet"])
+    out = cn.save_creator_niches(conn, 7, ["beauty", "skincare", "fashion", "travel", "pet"])
     assert out == ["beauty", "skincare", "fashion"]

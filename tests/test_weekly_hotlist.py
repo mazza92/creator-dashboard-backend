@@ -1,4 +1,5 @@
-"""Weekly Brand Hotlist: niche brands from the hot pool (topped up), no repeats for 4 weeks, >= 3 or no post."""
+"""Weekly Brand Hotlist: Thanos-ranked hot brands (services.hot_brands.hot_picks), no repeats for 4 weeks, >= 3 or
+no post."""
 
 import os
 import unittest
@@ -53,26 +54,24 @@ class Hotlist(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
 
-    def run_msg(self, pool_ids, fallback_ids=(), is_pro=False):
-        calls = {"n": 0}
+    def run_msg(self, ids, is_pro=False):
+        seen = {}
 
-        def rank(creator, pool, excluded, gifted, limit=30, today=None):
-            calls["n"] += 1
-            ids = pool_ids if calls["n"] == 1 else fallback_ids
+        def picks(conn, creator_id, excluded, limit, **kw):
+            seen["excluded"] = set(excluded)
             return ranked([i for i in ids if i not in excluded][:limit])
 
         with patch("services.hot_brands.load_creators", return_value={7: {"id": 7, "creator_niches": ["skincare"]}}), \
                 patch("services.creator_niches.recorded_niches", return_value=["skincare"]), \
                 patch("services.hot_brands.exclusions", return_value={7: {99}}), \
-                patch("services.hot_brands.passing_pool", return_value=[{"id": 1}]), \
-                patch("services.hot_brands.gifted_followers", return_value={}), \
-                patch("services.hot_brands.fallback_pool", return_value=[{"id": 2}]), \
-                patch("services.hot_brands.rank_for_creator", side_effect=rank), \
+                patch("services.hot_brands.hot_picks", side_effect=picks), \
                 patch("services.pro_manager.last_week_facts", return_value={"pitched": 5, "reply_names": ["X"], "kit_names": []}):
-            return wh.hotlist_message(self.conn, 7, "Maya", is_pro=is_pro)
+            msg = wh.hotlist_message(self.conn, 7, "Maya", is_pro=is_pro)
+        self.assertIn(99, seen.get("excluded", {99}))
+        return msg
 
-    def test_pool_topped_up_from_fallback(self):
-        msg = self.run_msg([1, 2, 3, 4], fallback_ids=[10, 11, 12])
+    def test_hot_picks_in_order(self):
+        msg = self.run_msg([1, 2, 3, 4, 10, 11, 12])
         ids = [b["brand_id"] for b in msg["hotlist"]["brands"]]
         self.assertEqual(ids, [1, 2, 3, 4, 10, 11])
         self.assertEqual(msg["kind"], "hotlist")
@@ -81,11 +80,11 @@ class Hotlist(unittest.TestCase):
 
     def test_no_repeats_within_four_weeks(self):
         self.run_msg([1, 2, 3, 4, 5, 6])
-        msg = self.run_msg([1, 2, 3, 4, 5, 6, 7, 8, 9], fallback_ids=[])
+        msg = self.run_msg([1, 2, 3, 4, 5, 6, 7, 8, 9])
         self.assertEqual([b["brand_id"] for b in msg["hotlist"]["brands"]], [7, 8, 9])
 
     def test_too_few_brands_no_post(self):
-        self.assertIsNone(self.run_msg([1, 2], fallback_ids=[]))
+        self.assertIsNone(self.run_msg([1, 2]))
 
     def test_pro_gets_autopilot_line_and_batch(self):
         msg = self.run_msg([1, 2, 3, 4], is_pro=True)

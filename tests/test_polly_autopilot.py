@@ -223,21 +223,6 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(pick.call_args.kwargs, {"limit": rct.PLAN_POOL, "surface": "plan"})
         week.assert_called_once_with(mock.ANY, 7, [{"id": 5}])
 
-    def test_deep_rank_keeps_for_you_cutoffs_past_eight(self):
-        from services import mentor_matchmaker as mm
-
-        rows = [{"id": i, "name": f"Brand{i}", "category": "skincare" if i % 2 else "haircare"} for i in range(1, 25)]
-
-        def score(brand, profile, niches):
-            s = 30 if brand["id"] == 1 else 90 - brand["id"]
-            return dict(brand, match_score=s), {"overall_score": s, "tier": "good_match"}
-
-        with mock.patch.object(mm, "_apply_brand_score", side_effect=score):
-            ranked = mm.rank_matches_deep({}, rows, limit=20)
-        self.assertGreater(len(ranked), 8)
-        self.assertNotIn(1, [b["id"] for b in ranked])
-        self.assertEqual(ranked[0]["id"], 2)
-
 
 class TargetingTests(unittest.TestCase):
     def _save(self, notes, body, recorded=("skincare",)):

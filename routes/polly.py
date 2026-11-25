@@ -33,7 +33,6 @@ from services.polly import (
     drop_pitched,
     empty_unlock_open,
     follow_brand_from_tracker,
-    flatten_for_you,
     json_safe,
     llm_available,
     brand_lookup_names,
@@ -65,7 +64,6 @@ from services.creator_niches import with_recorded_niches
 from services.polly_discovery import (
     assign_track,
     bump_setup_continues,
-    required_categories_for_match,
     discovery_brief,
     discovery_complete,
     discovery_started,
@@ -376,115 +374,6 @@ def _match_scrape(scrape, notes, creator=None):
     return overlay
 
 
-def _fetch_brands_by_category(categories, limit=40, exclude_ids=None):
-    cats = [str(c).lower().strip() for c in (categories or []) if c]
-    if not cats:
-        return []
-    skip = []
-    for item in exclude_ids or []:
-        try:
-            skip.append(int(item))
-        except (TypeError, ValueError):
-            continue
-    from pr_crm_routes import get_db_connection
-    from psycopg2.extras import RealDictCursor
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        like_sql = " OR ".join(["LOWER(COALESCE(category, '')) LIKE %s"] * len(cats))
-        params = [f"%{c}%" for c in cats]
-        exclude_sql = ""
-        if skip:
-            exclude_sql = " AND NOT (id = ANY(%s))"
-            params.append(skip)
-        params.append(limit)
-        cursor.execute(
-            f"""
-            SELECT id, slug, brand_name AS name, logo_url AS logo, description, category,
-                   website, application_form_url, hero_product, target_audience
-            FROM pr_brands
-            WHERE slug IS NOT NULL
-              AND COALESCE(status, 'published') = 'published'
-              AND ({like_sql})
-              {exclude_sql}
-            ORDER BY COALESCE(response_rate, 0) DESC NULLS LAST, id DESC
-            LIMIT %s
-            """,
-            params,
-        )
-        from services.brand_reply_signal import annotate_and_sort
-        return annotate_and_sort(cursor, [dict(row) for row in cursor.fetchall()])
-    except Exception as err:
-        print(f"[Polly] category pool skipped: {err}")
-        return []
-    finally:
-        conn.close()
-
-
-def _fetch_any_published(limit=24, exclude_ids=None):
-    """Published directory brands, best reply rate first. The last net when the niche pool is empty."""
-    skip = []
-    for item in exclude_ids or []:
-        try:
-            skip.append(int(item))
-        except (TypeError, ValueError):
-            continue
-    from pr_crm_routes import get_db_connection
-    from psycopg2.extras import RealDictCursor
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        params = []
-        exclude_sql = ""
-        if skip:
-            exclude_sql = " AND NOT (id = ANY(%s))"
-            params.append(skip)
-        params.append(limit)
-        cursor.execute(
-            f"""
-            SELECT id, slug, brand_name AS name, logo_url AS logo, description, category,
-                   website, application_form_url, hero_product, target_audience
-            FROM pr_brands
-            WHERE slug IS NOT NULL
-              AND COALESCE(status, 'published') = 'published'
-              {exclude_sql}
-            ORDER BY COALESCE(response_rate, 0) DESC NULLS LAST, id DESC
-            LIMIT %s
-            """,
-            params,
-        )
-        from services.brand_reply_signal import annotate_and_sort
-        return annotate_and_sort(cursor, [dict(row) for row in cursor.fetchall()])
-    except Exception as err:
-        print(f"[Polly] directory pool skipped: {err}")
-        return []
-    finally:
-        conn.close()
-
-
-def _fallback_brand_pool(notes, scrape, creator, creator_id, limit=12):
-    """Brands to show when the curated For You pool has nothing left to offer: the creator's niches only."""
-    from services.creator_niches import with_recorded_niches
-    from services.polly import drop_pitched, pitched_id_set
-    notes = with_recorded_niches(notes, creator)
-    exclude = list(pitched_id_set(notes)) + _pipeline_pitched_ids(creator_id)
-    match_scrape = _match_scrape(scrape, notes, creator)
-    cats = list(required_categories_for_match(notes, match_scrape) or stated_niches(notes) or [])
-    niche = match_scrape.get("primary_niche")
-    if niche and not is_weak_niche(niche) and str(niche).lower() not in {str(c).lower() for c in cats}:
-        cats.append(niche)
-    rows = _fetch_brands_by_category(cats, limit=40, exclude_ids=exclude) if cats else []
-    # Off-niche brands only when we know nothing about the creator: a short list beats a wrong one.
-    if not cats and len(rows) < 6:
-        seen = {int(r.get("id") or 0) for r in rows}
-        for row in _fetch_any_published(limit=24, exclude_ids=exclude):
-            bid = int(row.get("id") or 0)
-            if bid and bid not in seen:
-                rows.append(row)
-                seen.add(bid)
-    return drop_pitched(rows, notes, extra_ids=exclude)[:limit]
-
-
 def _hydrate_brand_cards(brands):
     """Fill logo/category/description when the client sent id/name/slug only."""
     rows = [dict(b) for b in (brands or []) if isinstance(b, dict)]
@@ -579,58 +468,6 @@ def _pipeline_pitched_ids(creator_id):
         conn.close()
 
 
-def _suggest_payload(scrape, creator, notes=None, creator_id=None):
-    from services.creator_niches import with_recorded_niches
-    # The niches on record (signup, Settings, Polly) beat a stale chat copy and anything scraped.
-    notes = with_recorded_niches(notes or {}, creator)
-    stated = stated_niches(notes)
-    match_scrape = _match_scrape(scrape, notes, creator)
-    cats = required_categories_for_match(notes, match_scrape)
-    niches = cats or stated or (creator or {}).get("creator_niches") or (creator or {}).get("niche")
-    cid = creator_id or (creator or {}).get("id")
-    noted = list(notes.get("pitched_brand_ids") or [])
-    from concurrent.futures import ThreadPoolExecutor
-    from flask import copy_current_request_context
-
-    @copy_current_request_context
-    def _for_you():
-        try:
-            return _cached_for_you(cid)
-        except Exception as err:
-            print(f"[Polly] for_you skipped: {err}")
-            return 200, {}
-
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        f_pitched = pool.submit(_pipeline_pitched_ids, cid)
-        f_pooled = pool.submit(_fetch_brands_by_category, cats, exclude_ids=noted) if cats else None
-        f_for_you = pool.submit(_for_you)
-        exclude = noted + f_pitched.result()
-        pooled = f_pooled.result() if f_pooled else []
-        status, for_you = f_for_you.result()
-    skip = {str(x) for x in exclude}
-    pooled = [b for b in pooled if str(b.get("id")) not in skip]
-    if status == 401:
-        return status, [], "Not authenticated"
-    payload = dict(for_you or {}) if (for_you or {}).get("success") else {}
-    if pooled:
-        payload["matched"] = list(payload.get("matched") or []) + pooled
-    has_pool = any(payload.get(key) for key in ("recruiting", "open_lists", "matched", "hot", "newest"))
-    if not has_pool:
-        return status, [], (for_you or {}).get("error") or "Could not load matches"
-    brands = flatten_for_you(
-        payload,
-        scrape=match_scrape,
-        niches=niches,
-        required_categories=cats,
-        exclude_ids=exclude,
-    )
-    from services.polly import drop_shown
-    fresh = drop_shown(brands, notes)
-    if not fresh and brands:
-        fresh = brands
-    return 200, filter_brands_by_prefs(drop_pitched(fresh, notes, extra_ids=exclude), notes), None
-
-
 def _coach_say(intent, profile_context, notes, scrape, kit=None, coach_moves=None):
     if intent == "explain_newcollab":
         return explain_newcollab()
@@ -653,56 +490,6 @@ def _coach_say(intent, profile_context, notes, scrape, kit=None, coach_moves=Non
         return persona_week_plan(profile_context, notes, coaching=coach_moves)
     return None
 
-
-def _invoke_for_you():
-    from pr_crm_routes import get_for_you
-    return unpack_view_result(get_for_you())
-
-
-_FOR_YOU_TTL_SEC = 180
-_FOR_YOU_CACHE = {}
-_FOR_YOU_LOCK = threading.Lock()
-_FOR_YOU_KEY_LOCKS = {}
-
-
-def _cached_for_you(creator_id):
-    """The For You feed is ~20 queries; reuse it for a few minutes per creator.
-    Pitched/excluded brands are filtered after, so a warm copy stays correct."""
-    import copy
-
-    key = int(creator_id or 0)
-    if not key:
-        return _invoke_for_you()
-    with _FOR_YOU_LOCK:
-        key_lock = _FOR_YOU_KEY_LOCKS.setdefault(key, threading.Lock())
-    # A bootstrap prefetch may already be running: wait for it instead of doubling the work.
-    with key_lock:
-        with _FOR_YOU_LOCK:
-            hit = _FOR_YOU_CACHE.get(key)
-        if hit and time.time() - hit[0] < _FOR_YOU_TTL_SEC:
-            return hit[1], copy.deepcopy(hit[2])
-        status, data = _invoke_for_you()
-        if status == 200 and (data or {}).get("success"):
-            with _FOR_YOU_LOCK:
-                if len(_FOR_YOU_CACHE) > 500:
-                    _FOR_YOU_CACHE.clear()
-                    _FOR_YOU_KEY_LOCKS.clear()
-                _FOR_YOU_CACHE[key] = (time.time(), status, copy.deepcopy(data))
-        return status, data
-
-
-def _prefetch_for_you(creator_id):
-    """Warm the feed while the client renders bootstrap and fires first matches."""
-    from flask import copy_current_request_context
-
-    @copy_current_request_context
-    def _run():
-        try:
-            _cached_for_you(creator_id)
-        except Exception as err:
-            print(f"[Polly] for_you prefetch skipped: {err}")
-
-    threading.Thread(target=_run, daemon=True).start()
 
 
 def _invoke_generate_pr_package(brand_id, slug=None, city="", country=""):
@@ -963,7 +750,9 @@ def _product_tokens(query_name: str) -> list:
     return list(dict.fromkeys(toks + extra))
 
 
-def _fetch_brands_by_tokens(tokens, limit=24, exclude_ids=None):
+def _fetch_brands_by_tokens(tokens, limit=60, exclude_ids=None):
+    """Directory brands whose name, blurb, hero product or category contains one of the tokens (search only:
+    the order the creator sees comes from Thanos in _lookup_similar_brands)."""
     toks = [str(t).lower().strip() for t in (tokens or []) if t and len(str(t)) >= 3]
     if not toks:
         return []
@@ -1000,13 +789,11 @@ def _fetch_brands_by_tokens(tokens, limit=24, exclude_ids=None):
               AND COALESCE(status, 'published') = 'published'
               AND ({clauses})
               {exclude_sql}
-            ORDER BY COALESCE(response_rate, 0) DESC NULLS LAST, id DESC
             LIMIT %s
             """,
             params,
         )
-        from services.brand_reply_signal import annotate_and_sort
-        return annotate_and_sort(cursor, [dict(row) for row in cursor.fetchall()])
+        return [dict(row) for row in cursor.fetchall()]
     except Exception as err:
         print(f"[Polly] token pool skipped: {err}")
         return []
@@ -1014,8 +801,25 @@ def _fetch_brands_by_tokens(tokens, limit=24, exclude_ids=None):
         conn.close()
 
 
+def _thanos_order(creator_id, ids):
+    """Thanos cards for these brands, best first. Brands Thanos would never show this creator are left out."""
+    if not creator_id or not ids:
+        return []
+    from pr_crm_routes import get_db_connection
+    from services.thanos import score_brands
+    conn = get_db_connection()
+    try:
+        return score_brands(conn, int(creator_id), list(ids), surface="search").brands
+    except Exception as err:
+        print(f"[Polly] similar brands order skipped: {err}")
+        return []
+    finally:
+        conn.close()
+
+
 def _lookup_similar_brands(query_name, scrape=None, notes=None, creator=None, creator_id=None, exclude_ids=None, limit=3):
-    """Same-product directory brands for an asked name that is not in the DB."""
+    """Same-product directory brands for an asked name that is not in the DB. Which brands match the name is
+    search (tokens); which of them the creator sees first is Thanos."""
     if (
         leftover_is_prompt(query_name)
         or is_casual_ack(query_name)
@@ -1027,22 +831,13 @@ def _lookup_similar_brands(query_name, scrape=None, notes=None, creator=None, cr
     tokens = _product_tokens(query_name)
     if not tokens:
         return []
-    pooled = _fetch_brands_by_tokens(tokens, limit=max(24, limit * 8), exclude_ids=skip)
-    cats = required_categories_for_match(notes, scrape) or stated_niches(notes)
-    if not cats:
-        niche = (scrape or {}).get("primary_niche") or (creator or {}).get("niche")
-        if niche:
-            cats = [niche]
-    if cats:
-        pooled.extend(_fetch_brands_by_category(cats, limit=max(12, limit * 4), exclude_ids=skip))
+    pooled = _fetch_brands_by_tokens(tokens, limit=max(60, limit * 20), exclude_ids=skip)
     computerish = bool(_COMPUTERISH.search(query_name or "") or any(t in {"dell", "laptop", "computer"} for t in tokens))
-    ranked = []
-    seen = set()
+    matched = {}
     for row in pooled:
         card = sanitize_brand_card(row, source="matched")
-        if not card or card["id"] in seen:
+        if not card or card["id"] in matched:
             continue
-        seen.add(card["id"])
         blob = " ".join([
             str(card.get("name") or ""),
             str(card.get("category") or ""),
@@ -1051,14 +846,19 @@ def _lookup_similar_brands(query_name, scrape=None, notes=None, creator=None, cr
         ]).lower()
         if computerish and _CROSS_FAMILY_SKIP.search(blob):
             continue
-        token_hits = sum(1 for tok in tokens if tok in blob)
-        if tokens and token_hits <= 0:
+        if not any(tok in blob for tok in tokens):
             continue
-        tier = (card.get("reply_signal") or {}).get("tier")
-        reply_rank = 0 if tier == "replies" else 2 if tier == "cold" else 1
-        ranked.append((reply_rank, -token_hits, -int(card.get("match_score") or 0), len(ranked), card))
-    ranked.sort()
-    return [item[-1] for item in ranked[:limit]]
+        matched[card["id"]] = card
+    cid = creator_id or (creator or {}).get("id")
+    out = []
+    for scored in _thanos_order(cid, list(matched)):
+        card = matched.get(int(scored["id"]))
+        if card:
+            out.append({**card, "match_score": scored.get("match_score"), "fit_tier": scored.get("fit_tier"),
+                        "reply_band": scored.get("reply_band"), "reply_reason": scored.get("reply_reason")})
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _deliver_credits_out_offer(conn, creator_id, first, balance, tracker, want_message=False):
@@ -1744,7 +1544,7 @@ def bootstrap():
             if (not opened or opened.get("state") == "kit_not_live") and not balance.get("is_unlimited"):
                 # Message one is three matched gifted brands, written from the survey. Free creators only: Pro and
                 # trial creators run on Autopilot, and its setup and Polly's recap replace this opener (Nov 2026).
-                _prefetch_for_you(creator_id)
+                # The brands come from Thanos (surface "first_matches") when the client runs this action.
                 auto_action = {
                     "action": "suggest_brands",
                     "starter": "first_matches",
