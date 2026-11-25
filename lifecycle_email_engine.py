@@ -1189,27 +1189,6 @@ def _get_weekly_themes() -> List[Dict[str, str]]:
     ]
 
 
-def _get_niche_to_category_map() -> Dict[str, List[str]]:
-    """Map creator niches to brand categories for matching."""
-    return {
-        'beauty': ['Beauty', 'Skincare', 'Makeup', 'Haircare'],
-        'skincare': ['Skincare', 'Beauty'],
-        'fashion': ['Fashion', 'Clothing', 'Accessories', 'Jewelry'],
-        'lifestyle': ['Lifestyle', 'Home', 'Food & Beverage'],
-        'fitness': ['Fitness', 'Activewear', 'Health'],
-        'food': ['Food & Beverage', 'Kitchen', 'Home'],
-        'parenting': ['Baby', 'Kids', 'Family', 'Home'],
-        'mom': ['Baby', 'Kids', 'Family', 'Lifestyle'],
-        'travel': ['Travel', 'Lifestyle', 'Fashion'],
-        'tech': ['Tech', 'Gaming', 'Gadgets'],
-        'pet': ['Pet', 'Animals'],
-        'wellness': ['Wellness', 'Health', 'Skincare'],
-        'home': ['Home', 'Kitchen', 'Lifestyle'],
-        'haircare': ['Haircare', 'Beauty'],
-        'makeup': ['Makeup', 'Beauty', 'Skincare'],
-    }
-
-
 def get_live_campaigns_for_email(cursor, limit: int = 3) -> List[Dict]:
     """Active gifted-PR rosters creators can apply to this week."""
     try:
@@ -1260,177 +1239,21 @@ def get_live_campaigns_for_email(cursor, limit: int = 3) -> List[Dict]:
         return []
 
 
-def get_for_you_brands_for_email(creator_id: int, cursor, limit: int = 3) -> List[Dict]:
-    """
-    Get For You brand recommendations for email.
-    Returns brands matching creator's niches, excluding already unlocked brands.
-    Simple format: brand name + short description only.
-
-    Uses creator_id + week for rotation so each creator sees different brands.
-    Matches on creator's actual niches directly (no expansion to avoid over-broad matching).
-    """
-    from datetime import datetime
-
-    # Get creator's niches
-    cursor.execute("""
-        SELECT c.niche, c.creator_niches
-        FROM creators c WHERE c.id = %s
-    """, (creator_id,))
-    creator = cursor.fetchone()
-
-    if not creator:
+def reengagement_brands(conn, creator_id: int) -> List[Dict]:
+    """Three brands for an inactive creator to come back to: Thanos's picks (surface "email")."""
+    try:
+        from services.thanos import rank
+        ranking = rank(conn, int(creator_id), surface="email", n=3)
+    except Exception as e:
+        print(f"[REENGAGEMENT] Error fetching top brands: {e}")
         return []
-
-    # Parse niches - use creator_niches as primary source (cleaner array)
-    creator_niches = creator.get('creator_niches') or []
-
-    if isinstance(creator_niches, str):
-        try:
-            creator_niches = json.loads(creator_niches)
-        except:
-            creator_niches = []
-
-    # Deduplicate and normalize
-    unique_niches = list(set(n.strip().lower() for n in creator_niches if n and isinstance(n, str)))
-
-    logging.info(f"[FOR YOU BRANDS] Creator {creator_id} niches: {unique_niches}")
-
-    # Get already unlocked brands to exclude
-    cursor.execute("SELECT brand_id FROM brand_unlocks WHERE creator_id = %s", (creator_id,))
-    unlocked_ids = [r['brand_id'] for r in cursor.fetchall()]
-
-    from services.brand_reply_signal import id_sets as reply_id_sets
-    reply_ids = reply_id_sets(cursor)
-    unlocked_ids = list(unlocked_ids) + [i for i in reply_ids['cold'] if i]
-    replies_array = "ARRAY[" + ",".join(str(int(i)) for i in reply_ids['replies']) + "]::int[]"
-
-    # Use creator_id + week for unique rotation per creator
-    week_number = datetime.now().isocalendar()[1]
-    rotation_offset = ((creator_id * 17) + (week_number * 7)) % 1000
-
-    logging.info(f"[FOR YOU BRANDS] Creator {creator_id} rotation offset: {rotation_offset}")
-
-    # Build query - match on creator's actual niches directly
-    exclude_clause = "AND b.id != ALL(%s)" if unlocked_ids else ""
-
-    if unique_niches:
-        # Match category directly against creator's niches (case-insensitive)
-        query_params = [unique_niches]
-        if unlocked_ids:
-            query_params.append(unlocked_ids)
-        query_params.append(rotation_offset)
-
-        cursor.execute(f"""
-            SELECT b.brand_name AS name, b.description
-            FROM pr_brands b
-            WHERE LOWER(b.category) = ANY(%s)
-              AND b.status = 'published'
-              AND b.accepting_pr = true
-              {exclude_clause}
-            ORDER BY (b.id = ANY({replies_array})) DESC, (b.id + %s) %% 1000, b.created_at DESC
-            LIMIT %s
-        """, tuple(query_params) + (limit,))
-
-        brands = cursor.fetchall()
-        logging.info(f"[FOR YOU BRANDS] Creator {creator_id} matched {len(brands)} brands on exact niches")
-
-        # If no exact matches, try broader search without category filter
-        if not brands:
-            logging.info(f"[FOR YOU BRANDS] Creator {creator_id} no exact matches, using popular brands")
-            query_params = []
-            if unlocked_ids:
-                query_params.append(unlocked_ids)
-            query_params.append(rotation_offset)
-
-            cursor.execute(f"""
-                SELECT b.brand_name AS name, b.description
-                FROM pr_brands b
-                WHERE b.status = 'published'
-                  AND b.accepting_pr = true
-                  {exclude_clause}
-                ORDER BY (b.id = ANY({replies_array})) DESC, (b.id + %s) %% 1000, b.created_at DESC
-                LIMIT %s
-            """, tuple(query_params) + (limit,))
-            brands = cursor.fetchall()
-    else:
-        # No niche - show popular accepting brands
-        query_params = []
-        if unlocked_ids:
-            query_params.append(unlocked_ids)
-        query_params.append(rotation_offset)
-
-        cursor.execute(f"""
-            SELECT b.brand_name AS name, b.description
-            FROM pr_brands b
-            WHERE b.status = 'published'
-              AND b.accepting_pr = true
-              {exclude_clause}
-            ORDER BY (b.id = ANY({replies_array})) DESC, (b.id + %s) %% 1000, b.created_at DESC
-            LIMIT %s
-        """, tuple(query_params) + (limit,))
-        brands = cursor.fetchall()
-
-    # Simple format: name + truncated description
-    result = []
-    for b in brands:
-        desc = b.get('description') or ''
-        # Truncate description to ~60 chars
-        if len(desc) > 60:
-            desc = desc[:57].rsplit(' ', 1)[0] + '...'
-
-        result.append({
-            'name': b['name'],
-            'description': desc
-        })
-
-    logging.info(f"[FOR YOU BRANDS] Creator {creator_id} returning: {[b['name'] for b in result]}")
-
-    return result
-
-
-def _get_matching_categories(creator: Dict) -> set:
-    """Get brand categories that match a creator's niches (lowercase for DB matching)."""
-    creator_niche = creator.get('niche') or ''
-    creator_niches = creator.get('creator_niches') or []
-
-    # Parse niche if it's a JSON string
-    if isinstance(creator_niche, str) and creator_niche.startswith('['):
-        try:
-            creator_niche = json.loads(creator_niche)
-        except:
-            pass
-
-    if isinstance(creator_niches, str):
-        try:
-            creator_niches = json.loads(creator_niches)
-        except:
-            creator_niches = []
-
-    # Normalize to list
-    if isinstance(creator_niche, list):
-        niche_list = creator_niche
-    elif creator_niche:
-        niche_list = [creator_niche]
-    else:
-        niche_list = []
-
-    all_niches = niche_list + (creator_niches if isinstance(creator_niches, list) else [])
-    all_niches = [n.strip().lower() for n in all_niches if n and isinstance(n, str)]
-
-    niche_to_category = _get_niche_to_category_map()
-    matching_categories = set()
-
-    for niche in all_niches:
-        for key, categories in niche_to_category.items():
-            if key in niche:
-                # Lowercase categories to match database
-                matching_categories.update(c.lower() for c in categories)
-
-    # Fallback to broad categories if no matches (lowercase)
-    if not matching_categories:
-        matching_categories = {'lifestyle', 'beauty', 'fashion'}
-
-    return matching_categories
+    return [
+        {
+            'name': b.get('brand_name') or b.get('name'),
+            'category': b.get('category') or 'Lifestyle',
+            'fit_label': "Great fit" if b.get('thanos_lane') == 'core' else (b.get('reply_reason') or "New opportunity"),
+        } for b in ranking.brands
+    ] or [{'name': 'Explore new brands', 'category': 'Various', 'fit_label': 'Browse the directory'}]
 
 
 def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
@@ -1619,63 +1442,7 @@ def build_email_context(creator_id: int, template_slug: str) -> Dict[str, Any]:
                 context['days_inactive'] = 14
                 context['weeks_inactive'] = 2
 
-            # Get top 3 new brands matching creator's niche for reengagement email
-            try:
-                matching_categories = _get_matching_categories(creator)
-
-                if matching_categories:
-                    placeholders = ','.join(['%s'] * len(matching_categories))
-                    cursor.execute(f"""
-                        SELECT brand_name AS name, category
-                        FROM pr_brands
-                        WHERE LOWER(category) IN ({placeholders})
-                          AND status = 'published'
-                          AND accepting_pr = true
-                        ORDER BY created_at DESC
-                        LIMIT 3
-                    """, tuple(matching_categories))
-                    brands = cursor.fetchall()
-
-                    # Fallback if no niche matches
-                    if not brands:
-                        cursor.execute("""
-                            SELECT brand_name AS name, category
-                            FROM pr_brands
-                            WHERE status = 'published'
-                              AND accepting_pr = true
-                            ORDER BY created_at DESC
-                            LIMIT 3
-                        """)
-                        brands = cursor.fetchall()
-                else:
-                    cursor.execute("""
-                        SELECT brand_name AS name, category
-                        FROM pr_brands
-                        WHERE status = 'published'
-                          AND accepting_pr = true
-                        ORDER BY created_at DESC
-                        LIMIT 3
-                    """)
-                    brands = cursor.fetchall()
-
-                # Calculate personalized fit indication based on niche match
-                def get_fit_label(brand_category: str) -> str:
-                    if (brand_category or '').lower() in matching_categories:
-                        return "Great fit"
-                    return "New opportunity"
-
-                context['top_new_brands'] = [
-                    {
-                        'name': b['name'],
-                        'category': b.get('category') or 'Lifestyle',
-                        'fit_label': get_fit_label(b.get('category') or '')
-                    } for b in brands
-                ] if brands else [
-                    {'name': 'Explore new brands', 'category': 'Various', 'fit_label': 'Browse the directory'}
-                ]
-            except Exception as e:
-                print(f"[REENGAGEMENT] Error fetching top brands: {e}")
-                context['top_new_brands'] = []
+            context['top_new_brands'] = reengagement_brands(conn, creator_id)
             context['N_new_brands'] = context.get('new_brands_count') or ''
             context['cta_url'] = f"{FRONTEND_URL}{POLLY_LINE_UP_PATH}"
 

@@ -155,18 +155,16 @@ def load(conn, force: bool = False) -> Stats:
         cached = _CACHE.get("stats")
         if cached and not force and now - cached.loaded_at < CACHE_SECONDS:
             return cached
+    from services.thanos.db import fetch
     try:
-        cur = conn.cursor()
-        cur.execute(STATS_SQL)
-        stats = build(cur.fetchall())
-    except Exception as err:  # noqa: BLE001
+        rows = fetch(conn, STATS_SQL)
+    except Exception as err:  # noqa: BLE001  (no usable connection)
         print(f"[Thanos] signals load failed, using priors: {err}")
-        try:
-            conn.rollback()
-        except Exception:  # noqa: BLE001
-            pass
+        rows = None
+    if rows is None:
         with _LOCK:
             return _CACHE.get("stats") or Stats(loaded_at=now)
+    stats = build(rows)
     with _LOCK:
         _CACHE["stats"] = stats
     return stats

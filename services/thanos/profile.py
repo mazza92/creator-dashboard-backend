@@ -37,16 +37,11 @@ class CreatorProfile:
 
 
 def _rows(conn, sql: str, params) -> List[Any]:
+    from services.thanos.db import fetch
     try:
-        cur = conn.cursor()
-        cur.execute(sql, params)
-        return cur.fetchall() or []
+        return fetch(conn, sql, params) or []
     except Exception as err:  # noqa: BLE001
         print(f"[Thanos] profile query skipped: {err}")
-        try:
-            conn.rollback()
-        except Exception:  # noqa: BLE001
-            pass
         return []
 
 

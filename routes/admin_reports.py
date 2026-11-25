@@ -2350,6 +2350,27 @@ def get_founder_dashboard():
 # SEND NUDGE EMAIL - For at-limit users
 # ============================================================================
 
+
+TEASER_COLORS = ['#E85D75', '#6D28D9', '#1D4ED8', '#C8102E']
+
+
+def upgrade_teaser_brands(conn, creator_id, n=2):
+    """Two locked brands for the upgrade nudge email: Thanos's picks for this creator (surface "email")."""
+    try:
+        from services.thanos import rank
+        cards = rank(conn, int(creator_id), surface="email", n=n).brands
+    except Exception as err:
+        print(f"[NUDGE] teaser brands skipped: {err}")
+        return []
+    return [{
+        'name': c.get('brand_name'),
+        'initial': (c.get('brand_name') or 'BR')[:2].upper(),
+        'logo_color': TEASER_COLORS[j % len(TEASER_COLORS)],
+        'reply_rate': int(c['response_rate']) if c.get('response_rate') else None,
+        'reply_reason': c.get('reply_reason'),
+    } for j, c in enumerate(cards[:n])]
+
+
 @admin_reports_bp.route('/send-nudge', methods=['POST'])
 @admin_required
 def send_nudge_email():
@@ -2523,37 +2544,8 @@ def send_nudge_email():
         user_niche = niche_row.get('niche') if niche_row else None
         niche_label = user_niche.replace('_', ' ').title() if user_niche else 'your niche'
 
-        # ── Fetch teaser brands (from user's niche, not yet pitched) ──
-        teaser_brands = []
-        if user_niche:
-            pitched_brand_ids = [row.get('id') for row in pitch_rows if row.get('id')]
-            from services.brand_reply_signal import id_sets as reply_id_sets
-            reply_ids = reply_id_sets(cursor)
-            cursor.execute("""
-                SELECT
-                    brand_name,
-                    category,
-                    COALESCE(response_rate, 0) AS response_rate
-                FROM pr_brands
-                WHERE category = %s
-                  AND id NOT IN (
-                      SELECT brand_id FROM creator_pipeline WHERE creator_id = %s
-                  )
-                  AND id != ALL(%s)
-                  AND COALESCE(status, 'published') = 'published'
-                ORDER BY (id = ANY(%s)) DESC, response_rate DESC NULLS LAST
-                LIMIT 2
-            """, (user_niche, creator_id, reply_ids['cold'], reply_ids['replies']))
-            teaser_rows = cursor.fetchall()
-
-            teaser_colors = ['#E85D75', '#6D28D9', '#1D4ED8', '#C8102E']
-            for j, tr in enumerate(teaser_rows):
-                teaser_brands.append({
-                    'name': tr.get('brand_name'),
-                    'initial': (tr.get('brand_name') or 'BR')[:2].upper(),
-                    'logo_color': teaser_colors[j % len(teaser_colors)],
-                    'reply_rate': int(tr.get('response_rate') or 0) if tr.get('response_rate') else None,
-                })
+        # ── Teaser brands: Thanos's next picks for them (never one they already pitched) ──
+        teaser_brands = upgrade_teaser_brands(conn, creator_id) if user_niche else []
 
         templates_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'templates')
         jinja_env = Environment(loader=FileSystemLoader(templates_dir))

@@ -163,16 +163,11 @@ def candidates_sql(require: str, *, categories: bool, reach_cap: bool, only_ids:
 
 def _fetch(conn, sql: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
     from psycopg2.extras import RealDictCursor
+    from services.thanos.db import fetch
     try:
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute(sql, params)
-        return [dict(r) for r in cur.fetchall() or []]
+        return [dict(r) for r in fetch(conn, sql, params, cursor_factory=RealDictCursor) or []]
     except Exception as err:  # noqa: BLE001
         print(f"[Thanos] candidate query failed: {err}")
-        try:
-            conn.rollback()
-        except Exception:  # noqa: BLE001
-            pass
         return []
 
 

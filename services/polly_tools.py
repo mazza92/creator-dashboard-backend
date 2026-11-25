@@ -323,7 +323,7 @@ def browse_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
                            "yes, call save_profile_facts with allow_categories, then browse again."}
     exclude = list(state.notes.get("pitched_brand_ids") or [])
     try:
-        found = search(state.db(), query, exclude_ids=exclude, limit=12)
+        found = search(state.db(), query, exclude_ids=exclude, limit=12, creator_id=state.creator_id)
     except Exception as err:
         print(f"[Polly] browse failed: {err}")
         state.db().rollback()

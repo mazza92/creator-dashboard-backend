@@ -58,14 +58,9 @@ def assess(rows) -> List[Dict[str, Any]]:
 
 
 def pool_health(conn) -> List[Dict[str, Any]]:
+    from services.thanos.db import fetch
     try:
-        cur = conn.cursor()
-        cur.execute(HEALTH_SQL)
-        return assess(cur.fetchall())
+        return assess(fetch(conn, HEALTH_SQL) or [])
     except Exception as err:  # noqa: BLE001
         print(f"[Thanos] pool health failed: {err}")
-        try:
-            conn.rollback()
-        except Exception:  # noqa: BLE001
-            pass
         return []

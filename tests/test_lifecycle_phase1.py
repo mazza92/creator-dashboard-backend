@@ -186,6 +186,25 @@ class TestReengagementOncePerDormancy(unittest.TestCase):
         self.assertTrue(engine.evaluate_trigger(self._creator(), self.TEMPLATE, cursor))
 
 
+class TestReengagementBrands(unittest.TestCase):
+    def test_brands_come_from_thanos(self):
+        from services.thanos import Ranking
+        cards = [{'id': 1, 'brand_name': 'Glowly', 'category': 'skincare', 'thanos_lane': 'core'},
+                 {'id': 2, 'brand_name': 'Homey', 'category': 'home', 'thanos_lane': 'related',
+                  'reply_reason': '2 creators heard back'}]
+        with patch('services.thanos.rank', return_value=Ranking(brands=cards)) as rank:
+            out = engine.reengagement_brands('conn', 9)
+        self.assertEqual(rank.call_args.args[:2], ('conn', 9))
+        self.assertEqual((rank.call_args.kwargs['surface'], rank.call_args.kwargs['n']), ('email', 3))
+        self.assertEqual(out, [{'name': 'Glowly', 'category': 'skincare', 'fit_label': 'Great fit'},
+                               {'name': 'Homey', 'category': 'home', 'fit_label': '2 creators heard back'}])
+
+    def test_empty_ranking_points_to_directory(self):
+        from services.thanos import Ranking
+        with patch('services.thanos.rank', return_value=Ranking()):
+            self.assertEqual(engine.reengagement_brands('conn', 9)[0]['fit_label'], 'Browse the directory')
+
+
 class TestWeeklyDigestPicks(unittest.TestCase):
     def test_skips_handled_and_prioritises_active(self):
         cursor = MagicMock()

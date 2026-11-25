@@ -236,3 +236,34 @@ class NicheRankingTests(unittest.TestCase):
         self.assertEqual(r.profile.creator_id, 0)
         self.assertEqual(f.call_args_list[0][0][2]["cats"], ["skincare"])
         self.assertNotIn("contact_email), '') IS NOT NULL", f.call_args_list[0][0][1])
+
+
+class SavepointTests(unittest.TestCase):
+    def test_failed_read_rolls_back_only_its_savepoint(self):
+        from services.thanos.db import fetch
+        log = []
+
+        class Cur:
+            def execute(self, sql, params=None):
+                log.append(sql.split()[0] if sql.strip().upper().startswith(("SAVEPOINT", "ROLLBACK", "RELEASE"))
+                           else "QUERY")
+                if sql == "BAD":
+                    raise RuntimeError("boom")
+
+            def fetchall(self):
+                return [(1,)]
+
+        class Conn:
+            autocommit = False
+
+            def cursor(self, cursor_factory=None):
+                return Cur()
+
+            def rollback(self):
+                log.append("FULL_ROLLBACK")
+
+        self.assertIsNone(fetch(Conn(), "BAD"))
+        self.assertEqual(log, ["SAVEPOINT", "QUERY", "ROLLBACK"])
+        log.clear()
+        self.assertEqual(fetch(Conn(), "SELECT 1"), [(1,)])
+        self.assertEqual(log, ["SAVEPOINT", "QUERY", "RELEASE"])
