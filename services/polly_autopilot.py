@@ -1066,9 +1066,19 @@ def run_autopilot(
             _set(conn, item["id"], error=str(err)[:300], **({} if err.revoked else {"status": "failed"}))
             if err.revoked:
                 if "no Gmail inbox" in str(err):
-                    note(conn, cid, "I can't send from that Google account: it has no Gmail inbox (it was made "
-                                    "with a non-Gmail address). Reconnect **Autopilot** with a Gmail address and "
-                                    "I'll send your waiting pitches.", [])
+                    from services.pitch_relay import relay_available
+                    if relay_available():
+                        # School and work Google accounts often have no Gmail: offer the no-Gmail sender so a
+                        # trial or Pro creator isn't stuck with nothing going out (Nov 2026).
+                        note(conn, cid, "I can't send from that Google account: it has no Gmail inbox (it was "
+                                        "made with a non-Gmail address). Reconnect with a Gmail address, or tap "
+                                        "**Send without Gmail**: I send as you via Newcollab and brands reply to "
+                                        "your own inbox.",
+                             [{"id": "autopilot", "label": "Send without Gmail", "action": "autopilot"}])
+                    else:
+                        note(conn, cid, "I can't send from that Google account: it has no Gmail inbox (it was "
+                                        "made with a non-Gmail address). Reconnect **Autopilot** with a Gmail "
+                                        "address and I'll send your waiting pitches.", [])
                 else:
                     note(conn, cid, "I couldn't send from your Gmail: access was removed. Reconnect it in "
                                     "**Autopilot** and I'll pick up where I left off.", [])
