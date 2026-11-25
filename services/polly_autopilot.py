@@ -466,7 +466,13 @@ def approve(conn, creator_id: int, item_ids: List[int], now: Optional[datetime] 
         (creator_id, ids),
     )
     rows = [r["id"] for r in cur.fetchall()]
-    slots = schedule_slots(conn, creator_id, len(rows), start, now, days, per_day, first=not last)
+    if prefs.get("trial_started_at"):
+        # Trial: each day follows the ramp (5, 8, 12, 18, then 20), counting what that day already holds.
+        since = gmail_connected_at(conn, creator_id) or prefs["trial_started_at"]
+        slots = trial_slots(len(rows), now, since, booked_per_day(conn, creator_id, now),
+                            first=_never_sent(conn, creator_id))
+    else:
+        slots = schedule_slots(conn, creator_id, len(rows), start, now, days, per_day, first=not last)
     out = []
     for item_id, slot in zip(rows, slots):
         cur.execute(
@@ -570,6 +576,56 @@ def schedule_slots(conn, creator_id: int, count: int, start: datetime, now: date
         tomorrow = now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
         return today + next_slots(count - len(today), tomorrow, days=days, per_day=per_day)
     return next_slots(count, start, days=days, per_day=per_day)
+
+
+def booked_per_day(conn, creator_id: int, now: datetime) -> Dict[Any, int]:
+    """Pitches already sent or scheduled per UTC day, from today on."""
+    cur = _cursor(conn)
+    cur.execute(
+        """
+        SELECT (COALESCE(sent_at, scheduled_for) AT TIME ZONE 'UTC')::date AS d, COUNT(*) AS n
+        FROM polly_autopilot_queue
+        WHERE creator_id = %s AND status IN ('approved', 'sent') AND COALESCE(sent_at, scheduled_for) >= %s
+        GROUP BY 1
+        """,
+        (creator_id, now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)),
+    )
+    return {r["d"]: int(r["n"]) for r in cur.fetchall()}
+
+
+def trial_slots(count: int, now: datetime, since: datetime, booked: Dict[Any, int], first: bool = False,
+                rng: Optional[random.Random] = None, horizon_days: int = 30) -> List[datetime]:
+    """Send slots for a trialing creator, every day of the week, each day capped by the trial ramp
+    (trial_daily_sends for that day) minus what it already holds. The very first pitches go out minutes from now;
+    the rest land in the afternoon UTC send window. Replaces batch scheduling, which stacked a full day's quota on
+    top of each previous batch (Nov 2026: one trialist got 9, 5, 6, 4, 10, 2 instead of 5, 8, 12, 18, 20)."""
+    rng = rng or random.Random()
+    now = now.astimezone(timezone.utc)
+    since = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
+    booked = dict(booked or {})
+    slots: List[datetime] = []
+    day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if first:
+        room = max(0, trial_daily_sends(since, now) - booked.get(day.date(), 0))
+        for i in range(min(room, count)):
+            slots.append(now + FIRST_SEND_GAP * (i + 1))
+        booked[day.date()] = booked.get(day.date(), 0) + len(slots)
+    for _ in range(horizon_days):
+        if len(slots) >= count:
+            break
+        window_start = day.replace(hour=SEND_WINDOW_UTC[0])
+        window_end = day.replace(hour=SEND_WINDOW_UTC[1])
+        earliest = max(window_start, now + timedelta(minutes=5))
+        if earliest < window_end:
+            cap = trial_daily_sends(since, max(earliest, window_start + (window_end - window_start) / 2))
+            room = max(0, cap - booked.get(day.date(), 0))
+            span = int((window_end - earliest).total_seconds() // 60)
+            picked = sorted({earliest + timedelta(minutes=rng.randint(0, max(0, span - 1)))
+                             for _ in range(min(room, count - len(slots)))})
+            slots.extend(picked)
+            booked[day.date()] = booked.get(day.date(), 0) + len(picked)
+        day += timedelta(days=1)
+    return slots[:count]
 
 
 def prioritize_fill(conn, creator_id: int) -> None:

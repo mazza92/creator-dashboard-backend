@@ -155,3 +155,32 @@ def test_pro_balance_carries_trial_days_left():
     conn.cursor.return_value = cur
     bal = pr_crm_routes.get_creator_unlock_balance(5, conn=conn)
     assert bal['is_unlimited'] is True and bal['trial_days_left'] == 7
+
+
+def test_trial_slots_follow_the_ramp_day_by_day():
+    import random
+    from collections import Counter
+    from services import polly_autopilot as pa
+    since = datetime(2026, 11, 25, 0, 27, tzinfo=timezone.utc)
+    now = datetime(2026, 11, 25, 0, 30, tzinfo=timezone.utc)
+    slots = pa.trial_slots(70, now, since, {}, first=True, rng=random.Random(1))
+    per_day = Counter(s.date() for s in slots)
+    days = sorted(per_day)
+    assert [per_day[d] for d in days[:6]] == [5, 8, 12, 18, 20, 7]
+    # The first pitches go out minutes after connecting.
+    assert slots[0] - now <= pa.FIRST_SEND_GAP
+
+
+def test_trial_slots_count_what_a_day_already_holds():
+    import random
+    from collections import Counter
+    from services import polly_autopilot as pa
+    since = datetime(2026, 11, 25, 0, 27, tzinfo=timezone.utc)
+    now = datetime(2026, 11, 25, 9, 0, tzinfo=timezone.utc)
+    booked = {now.date(): 5, (now + timedelta(days=1)).date(): 6}
+    slots = pa.trial_slots(10, now, since, booked, rng=random.Random(2))
+    per_day = Counter(s.date() for s in slots)
+    assert now.date() not in per_day            # day 1 already has its 5
+    assert per_day[(now + timedelta(days=1)).date()] == 2   # day 2 cap 8, 6 booked
+    assert per_day[(now + timedelta(days=2)).date()] == 8   # day 3: rest of this batch (cap 12)
+    assert all(pa.SEND_WINDOW_UTC[0] <= s.hour < pa.SEND_WINDOW_UTC[1] for s in slots)
