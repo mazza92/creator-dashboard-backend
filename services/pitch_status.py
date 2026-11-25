@@ -20,7 +20,7 @@ PICK_WINDOW = "Most brands pick within 2 to 3 weeks of opening their roster."
 
 # stage: (label, who acts next, copy). {brand} and {date} are filled in.
 STAGES: Dict[str, tuple] = {
-    "drafted": ("Drafted", "You", "Written, not sent yet. Send it from your email, then tap I sent it."),
+    "drafted": ("Drafted", "You", "Written, not sent yet. Tap Send email on its pitch card in Polly."),
     "sent": ("Sent", "Brand", "It's in their inbox. I'll check in on day 4 and day 10."),
     "replied_interested": ("Replied · interested", "You",
                            "They said yes. Reply with your address and a usage rate."),

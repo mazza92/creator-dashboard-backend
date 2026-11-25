@@ -197,8 +197,8 @@ def state_opener(
             "state": "unsent_draft",
             "greeting": (
                 f"{hello} — your **{pending_name}** pitch is written but not sent yet.\n\n"
-                "Tap **Show my pitch**, then **Copy email** and **Copy pitch**, paste into "
-                "your email and send. Tap **I sent it** after and I'll track the reply."
+                "Tap **Show my pitch**, then **Send email**: it opens in your mail app, ready to go, "
+                "and I track the reply on Timeline."
             ),
             "starters": [
                 {
@@ -215,7 +215,6 @@ def state_opener(
                     "brand_id": (pending or {}).get("id") or (pending or {}).get("brand_id"),
                     "brand_name": pending_name,
                 },
-                {"id": "more_brands", "label": "More brands", "action": "suggest_brands", "deal": "gifted"},
                 dict(GIFTED_LISTS_CHIP),
             ],
         }

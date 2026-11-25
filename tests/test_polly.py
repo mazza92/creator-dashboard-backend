@@ -885,7 +885,8 @@ class PersonaTests(unittest.TestCase):
         from services.polly_persona import persona_thanks_after_draft
         say = persona_thanks_after_draft("GLO")
         self.assertIn("GLO", say)
-        self.assertIn("I sent it", say)
+        self.assertIn("Send email", say)
+        self.assertNotIn("I sent it", say)
         self.assertNotIn("isn't in our directory", say.lower())
         self.assertNotIn("Abracadabra", say)
 

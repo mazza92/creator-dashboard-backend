@@ -106,11 +106,12 @@ APP MAP (the only screens that exist — never invent others):
   "Send Pitch" button, no in-app inbox. On free, Newcollab never sends a pitch
   for them. On Pro, **Autopilot** (in this chat) sends the pitches they approve
   from their own Gmail.
-- A pitch lives only on the pitch card in this chat. The card has **Open email**
-  (opens their mail app), **Copy email** (the brand address), and **Copy pitch**.
-  They send it from their own email, then tap **I sent it** so it lands on Timeline.
-- If Open email does nothing on their phone: tell them to tap Copy email and
-  Copy pitch, then paste into Gmail / Mail themselves.
+- A pitch lives only on the pitch card in this chat. The card has **Send email**
+  (opens their mail app with the pitch ready; tapping it logs the pitch as sent on
+  Timeline, with an Undo) and **Use autopilot** (Pro). Never ask them to confirm a
+  send or tap "I sent it".
+- If Send email does nothing on their phone: the card shows **Copy the pitch**; they
+  paste it into Gmail / Mail themselves.
 - Gifted PR lists are applied to in **Directory** (one credit each). The brand
   picks who gets a box.
 - Pitch statuses (as shown on Timeline): **Drafted**, **Sent** (waiting on
@@ -614,8 +615,8 @@ def persona_more_brands_intro(
     intro = persona_brand_intro(brands, profile_context)
     if pending:
         return (
-            f"**{pending}** is still a draft — not sent, not logged. "
-            f"Tap **I sent it** when it's actually out. Meanwhile, more options.\n\n{intro}"
+            f"**{pending}** is still a draft: tap **Send email** on its card when you're ready. "
+            f"Meanwhile, more options.\n\n{intro}"
         )
     return intro
 
@@ -971,8 +972,8 @@ def persona_pitch_intro(
             lead = (
                 f"Right, here's your {kind} for **{name}**.{loc_bit}\n\n"
                 "Read it once like a brand would: city, rate, and sign-off. "
-                "If anything looks off, tell me and I'll fix it — then open your mail and send it. "
-                "Tap **I sent it** when it's actually out. I won't log it until you do."
+                "If anything looks off, tell me and I'll fix it. Then tap **Send email**: "
+                "it opens in your mail app, and I log it on Timeline."
             )
         else:
             lead = (
@@ -1004,16 +1005,15 @@ def persona_location_filled(brand_name: Optional[str] = None, location: Optional
     loc_bit = f"**{loc}**" if loc else "your city"
     return (
         f"Done — I put {loc_bit} on the **{name}** pitch. Here's the updated version, ready to go.\n\n"
-        "Read the sign-off once more. If it's right, open mail and send it. "
-        "Tap **I sent it** when it's out."
+        "Read the sign-off once more. If it's right, tap **Send email**."
     )
 
 
 def persona_thanks_after_draft(brand_name: str) -> str:
     name = (brand_name or "that brand").strip() or "that brand"
     return (
-        f"Anytime. **{name}** is still the draft on the card — tap **I sent it** "
-        "when it's actually out, or **More brands** if you want another."
+        f"Anytime. **{name}** is on the card: tap **Send email** when you're ready, "
+        "or **Find brands to contact** if you want another."
     )
 
 
@@ -1051,7 +1051,7 @@ def persona_sent_wrong_detail(brand_name: Optional[str], keep: str = "", drop: s
     return (
         f"Send a short correction to **{name}** — same inbox, same thread.{extra} "
         "Don't wait for a yes/no on the first email; brands rarely confirm receipt. "
-        "Tap **I sent it** if you haven't logged the original yet."
+        "If the original isn't on Timeline yet, tell me and I'll log it."
     )
 
 
@@ -1059,7 +1059,7 @@ def persona_approval_timing(brand_name: Optional[str] = None) -> str:
     name = (brand_name or "a brand").strip() or "a brand"
     return (
         f"Not instantly. **{name}** usually takes a few days, sometimes a week. "
-        "If you already mailed it, tap **I sent it** so I can log it. "
+        "If you mailed it outside the card, tell me and I'll log it. "
         "If they say yes, reply the same day with your kit — don't wait."
     )
 
@@ -1268,7 +1268,7 @@ def persona_followup(
             r"(?i)^(thanks|thank you|thx|ty|cheers|cool|nice|great|awesome|perfect)[\s!.]*$",
             (text or "").strip(),
         ):
-            return "Anytime. Tap **I sent it** when it's actually out, or **More brands** if you want another."
+            return "Anytime. Tap **Send email** on the card when you're ready, or **Find brands to contact** for another."
         return "Which brand from that list — say the name and I'll draft the next one."
     if "which one feels right" in last or "pull them up" in last or "go after this week" in last:
         if declined:

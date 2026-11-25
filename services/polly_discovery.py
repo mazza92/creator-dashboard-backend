@@ -764,8 +764,8 @@ def starters_for(notes: Optional[Dict] = None, top_brand: Optional[str] = None) 
                 "brand_id": pending.get("id") or pending.get("brand_id"),
                 "brand_name": pending_name,
             },
-            {"id": "more_brands", "label": "More brands", "action": "suggest_brands"},
-            lead_chip,
+            gifted_chip,
+            *([lead_chip] if lead_chip is not gifted_chip else []),
             {"id": "portfolio", "label": "Review my kit", "action": "coach_portfolio"},
         ]
         return chips

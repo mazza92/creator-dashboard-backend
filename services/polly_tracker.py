@@ -1316,7 +1316,7 @@ def apply_lifecycle_intent(
         action = "not_sent"
         say_hint = (
             f"**{name}** is still a draft — I won't log it as sent. "
-            "Open mail when you're ready, then tap **I sent it**."
+            "Tap **Send email** on its card when you're ready."
         )
         chips = [
             {
