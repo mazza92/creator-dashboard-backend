@@ -174,26 +174,54 @@ class AutoApproveTests(unittest.TestCase):
 
 
 class PoolTests(unittest.TestCase):
-    def test_pool_is_for_you_matches_minus_queued_blocked_and_unemailable(self):
-        feed = {
-            "success": True,
-            "matched": [
-                {"id": 1, "name": "Glow", "category": "skincare", "match_score": 80},
-                {"id": 2, "name": "Kind", "category": "skincare", "match_score": 70},
-                {"id": 3, "name": "Lash", "category": "makeup", "match_score": 75},
-            ],
-            "open_lists": [{"id": 5, "name": "Unscored", "category": "skincare", "roster_is_open": 1}],
-            "hot": [{"id": 9, "name": "Random", "category": "skincare"}],
-        }
+    def _ranking(self, cards, pitched=()):
+        from types import SimpleNamespace
+        return SimpleNamespace(brands=cards, profile=SimpleNamespace(pitched_ids=set(pitched)), level=0, note="")
+
+    def test_pool_comes_from_thanos_with_queued_excluded(self):
+        cards = [{"id": 1, "name": "Glow", "match_score": 80, "reply_band": "high", "source": "thanos"},
+                 {"id": 4, "name": "Kind", "match_score": 70, "reply_band": "new", "source": "thanos"}]
         notes = {"prefs": {"avoid_categories": ["makeup"]}}
         with mock.patch.object(rpa, "queued_brand_ids", return_value=[2]), \
-                mock.patch.object(rpa, "_for_you_pool", return_value=(200, feed)) as pool, \
-                mock.patch("routes.polly._pipeline_pitched_ids", return_value=[]), \
-                mock.patch.object(rpa, "_brands_with_email", side_effect=lambda c, ids: {i: {} for i in ids if i != 4}):
-            brands, error = rpa._pick_brands(object(), 7, {"id": 7}, notes, None)
-        pool.assert_called_once_with([2])
-        self.assertEqual([b["id"] for b in brands], [1])
+                mock.patch("services.thanos.rank", return_value=self._ranking(cards)) as rank, \
+                mock.patch("services.brand_feed.target_brands", return_value=[]), \
+                mock.patch("services.creator_tracker.planned_rows", return_value=[]):
+            brands, error = rpa._pick_brands(object(), 7, {"id": 7}, notes, {"bio": "x"})
+        rank.assert_called_once_with(mock.ANY, 7, surface="autopilot", n=rpa.POOL_SIZE, exclude_ids=[2],
+                                     notes=notes, scrape={"bio": "x"})
+        self.assertEqual([b["id"] for b in brands], [1, 4])
+        self.assertEqual(brands[0]["reply_band"], "high")
         self.assertIsNone(error)
+
+    def test_targets_then_plan_lead_thanos_order(self):
+        cards = [{"id": 1, "name": "A"}, {"id": 2, "name": "B"}, {"id": 3, "name": "C", "reply_band": "high"}]
+        targets = [{"id": 3, "name": "C"}, {"id": 8, "name": "Pitched"}, {"id": 9, "name": "Saved"}]
+        with mock.patch.object(rpa, "queued_brand_ids", return_value=[]), \
+                mock.patch("services.thanos.rank", return_value=self._ranking(cards, pitched=[8])), \
+                mock.patch("services.brand_feed.target_brands", return_value=targets), \
+                mock.patch.object(rpa, "_brands_with_email", side_effect=lambda c, ids: {i: {} for i in ids}), \
+                mock.patch("services.creator_tracker.planned_rows",
+                           return_value=[{"brand_id": 2, "planned_for": "2026-11-26"}]):
+            brands, _ = rpa._pick_brands(object(), 7, {"id": 7}, {}, None, limit=10, surface="plan")
+        self.assertEqual([b["id"] for b in brands], [2, 3, 9, 1])
+        self.assertTrue(brands[1]["target"])
+        self.assertEqual(brands[1]["reply_band"], "high")  # target keeps its Thanos card
+
+    def test_no_matches_when_thanos_is_empty(self):
+        with mock.patch.object(rpa, "queued_brand_ids", return_value=[]), \
+                mock.patch("services.thanos.rank", return_value=self._ranking([])), \
+                mock.patch("services.brand_feed.target_brands", return_value=[]), \
+                mock.patch("services.creator_tracker.planned_rows", return_value=[]):
+            self.assertEqual(rpa._pick_brands(object(), 7, {"id": 7}, {}, None), ([], "no_matches"))
+
+    def test_tracker_plan_uses_plan_surface(self):
+        import routes.creator_tracker as rct
+        with mock.patch.object(rpa, "_creator_context", return_value=({}, {})), \
+                mock.patch.object(rpa, "_pick_brands", return_value=([{"id": 5}], None)) as pick, \
+                mock.patch.object(rct, "plan_week", return_value={"ok": 1}) as week:
+            self.assertEqual(rct._plan(object(), 7, {"id": 7}), {"ok": 1})
+        self.assertEqual(pick.call_args.kwargs, {"limit": rct.PLAN_POOL, "surface": "plan"})
+        week.assert_called_once_with(mock.ANY, 7, [{"id": 5}])
 
     def test_deep_rank_keeps_for_you_cutoffs_past_eight(self):
         from services import mentor_matchmaker as mm

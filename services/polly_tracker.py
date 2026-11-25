@@ -567,7 +567,16 @@ def add_event(
     )
     row = cur.fetchone()
     conn.commit()
+    if brand_id and event_type in THANOS_SIGNAL_EVENTS:
+        from services.thanos import signals_changed
+        signals_changed()  # the next ranking reads this pitch / reply / kit open
     return int(row["id"]) if row else 0
+
+
+THANOS_SIGNAL_EVENTS = frozenset({
+    "pitch_sent", "brand_replied_interested", "brand_replied_question", "brand_replied_rejected",
+    "portfolio_viewed", "email_bounced",
+})
 
 
 def create_task(

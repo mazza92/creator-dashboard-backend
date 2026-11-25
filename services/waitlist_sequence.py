@@ -48,25 +48,15 @@ def queue_position(conn, creator_id: int) -> int:
     return int(row.get("pos") or 1)
 
 
-def niche_brands(conn, niche: str, limit: int = 3) -> List[Dict[str, Any]]:
-    """Brands we know are giving out boxes in their categories, logo first."""
-    cats = list(NICHE_CATEGORIES.get(niche) or [])
-    cur = _pa()._cursor(conn)
-    try:
-        cur.execute(f"""
-            SELECT b.id AS brand_id, b.brand_name
-            FROM pr_brands b
-            WHERE COALESCE(b.status, 'published') = 'published'
-              AND to_jsonb(b) ->> 'gifting_signal' IS NOT NULL
-              {"AND LOWER(b.category) = ANY(%s)" if cats else ""}
-            ORDER BY (b.logo_url IS NOT NULL) DESC, (to_jsonb(b) ->> 'gifting_confirmed_at') DESC NULLS LAST
-            LIMIT %s
-        """, ((cats, limit) if cats else (limit,)))
-        return [dict(r) for r in cur.fetchall()]
-    except Exception as err:
-        conn.rollback()
-        print(f"[waitlist] niche brands skipped: {err}")
-        return []
+def niche_brands(conn, niche: str, limit: int = 3, creator_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Brands lined up for this creator (Thanos: their niche, reply evidence and gifting proof first)."""
+    from services.thanos import rank, rank_for_niche
+    if creator_id:
+        ranking = rank(conn, creator_id, surface="email", n=limit)
+    else:
+        cats = list(NICHE_CATEGORIES.get(niche) or [])
+        ranking = rank_for_niche(conn, cats[0] if cats else niche, n=limit)
+    return [{"brand_id": c["id"], "brand_name": c["brand_name"]} for c in ranking.brands]
 
 
 def _niche(row: Dict[str, Any]) -> str:
@@ -177,7 +167,7 @@ def email_waitlist_sequence(conn, limit: int = 40, dry_run: bool = False, send_f
         if not kind or not allowed(conn, row["creator_id"], kind, False):
             continue
         niche = _niche(row)
-        brands = niche_brands(conn, niche) if kind != "waitlist_3" else []
+        brands = niche_brands(conn, niche, creator_id=row["creator_id"]) if kind != "waitlist_3" else []
         first = (row.get("first_name") or "").strip().split(" ")[0].capitalize()
         unsub = pa._unsubscribe_url(row["user_id"])
         mail = waitlist_email(conn, kind, first, queue_position(conn, row["creator_id"]), niche, brands, unsub)

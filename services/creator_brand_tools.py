@@ -14,7 +14,7 @@ import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
-from services.brand_ugc import _signal_rows, _strength, brand_ugc
+from services.brand_ugc import _signal_rows, brand_ugc
 from services.creator_directory_search import clean_country, frontend_base, kit_base
 from services.public_showcase import _clean
 
@@ -138,33 +138,19 @@ def find_brands(cur, params: Dict, source: str = "chatgpt") -> Dict:
         return {**base, "brands": [], "total_matches": 0,
                 "note": "No brand category matches this niche. Categories: " + ", ".join(CATEGORIES) + "."}
 
-    rows = sorted(_signal_rows(cur, category), key=_strength)
-    if len(rows) < limit:
-        # Thin niches: top up with brands that list themselves as accepting PR requests (labelled as such).
-        seen = [r["id"] for r in rows] or [0]
-        cur.execute("""
-            SELECT id, brand_name, slug FROM pr_brands
-            WHERE COALESCE(status, 'published') = 'published' AND NULLIF(TRIM(slug), '') IS NOT NULL
-              AND LOWER(COALESCE(category, '')) = %s AND accepting_pr IS TRUE AND NOT (id = ANY(%s))
-            ORDER BY COALESCE(response_rate, 0) DESC, updated_at DESC NULLS LAST
-            LIMIT %s
-        """, (category, seen, (limit - len(rows)) * 3))
-        for r in cur.fetchall():
-            r = r if isinstance(r, dict) else dict(zip([d[0] for d in cur.description], r))
-            rows.append({**r, "accepting": True})
-    if country and rows:
-        cur.execute("SELECT id, regions FROM pr_brands WHERE id = ANY(%s)", ([r["id"] for r in rows],))
-        regions = {}
-        for r in cur.fetchall():
-            r = r if isinstance(r, dict) else dict(zip([d[0] for d in cur.description], r))
-            regions[r["id"]] = r.get("regions")
-        rows = [r for r in rows if ships_to(regions.get(r["id"]), country)]
+    # Order and eligibility come from Thanos (the app's one matching engine); the UGC signals only explain why.
+    from services.thanos import rank_for_niche
+    ranking = rank_for_niche(cur.connection, category, n=limit * 3, country=country or "")
+    signals = {int(r["id"]): r for r in _signal_rows(cur, category)}
+    rows = [c for c in ranking.brands if c.get("slug")]
+    if country:
+        rows = [c for c in rows if ships_to(c.get("regions"), country)]
     brands = [{
-        "name": _clean(r.get("brand_name"), 60),
+        "name": _clean(c.get("brand_name"), 60),
         "category": category,
-        "why_now": _why(r),
-        "brand_page": brand_page_url(r["slug"], source),
-    } for r in rows[:limit]]
+        "why_now": _why(signals.get(int(c["id"]), {"accepting": True})) or [c.get("reply_reason")],
+        "brand_page": brand_page_url(c["slug"], source),
+    } for c in rows[:limit]]
     return {**base, "brands": brands, "total_matches": len(rows)}
 
 

@@ -152,22 +152,26 @@ def posts(cursor, niche: str, targets: set, limit: int = POSTS_LIMIT) -> List[Di
 
 
 def directory_brands(cursor, niche: str, exclude: List[int], targets: set,
-                     limit: int = BRANDS_LIMIT) -> List[Dict[str, Any]]:
-    """Brands without a fresh post: gifting-confirmed first, in the creator's categories, pitchable."""
+                     limit: int = BRANDS_LIMIT, creator_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Brands without a fresh post, chosen and ordered by Thanos for this creator (or for the niche tab they
+    picked). Cards keep the feed's shape; the reply-chance band and reason ride along."""
+    from services.thanos import rank, rank_for_niche
     cats = NICHE_CATEGORIES.get(niche) or []
-    cat_sql = "AND LOWER(b.category) = ANY(%(cats)s)" if cats else ""
-    cursor.execute(f"""
-        SELECT {_BRAND_COLS}, 0 AS creators_30d
-        FROM pr_brands b
-        WHERE COALESCE(b.status, 'published') = 'published'
-          AND b.id <> ALL(%(exclude)s) {cat_sql}
-          AND (NULLIF(TRIM(b.contact_email), '') IS NOT NULL OR to_jsonb(b) ->> 'gifting_signal' IS NOT NULL)
-        ORDER BY (to_jsonb(b) ->> 'gifting_signal' IS NOT NULL) DESC,
-                 (b.logo_url IS NOT NULL) DESC, b.is_featured DESC NULLS LAST, md5(b.id::text || CURRENT_DATE::text)
-        LIMIT %(limit)s
-    """, {"cats": cats, "exclude": list(exclude) or [0], "limit": limit})
-    return [{"type": "brand", "key": f"brand-{r['id']}", "brand": _brand_card(dict(r), targets)}
-            for r in cursor.fetchall()]
+    conn = cursor.connection
+    if creator_id:
+        ranking = rank(conn, creator_id, surface="for_you", n=limit, exclude_ids=list(exclude),
+                       categories=list(cats) or None)
+    else:
+        ranking = rank_for_niche(conn, cats[0] if cats else niche, n=limit)
+    skip = set(exclude or [])
+    out = []
+    for c in ranking.brands:
+        if c["id"] in skip:
+            continue
+        card = _brand_card({**c, "has_email": c.get("has_email_contact"), "creators_30d": 0}, targets)
+        card.update({"reply_band": c.get("reply_band"), "reply_reason": c.get("reply_reason")})
+        out.append({"type": "brand", "key": f"brand-{c['id']}", "brand": card})
+    return out
 
 
 def interleave(post_items: List[Dict], brand_items: List[Dict]) -> List[Dict]:
@@ -192,10 +196,11 @@ def build(conn, creator_id: int, niche: Optional[str] = None) -> Dict[str, Any]:
     post_items = posts(cur, niche, targets) if niche else []
     seen = {p["brand"]["id"] for p in post_items}
     post_items += [p for p in posts(cur, "", targets, limit=POSTS_LIMIT * 2) if p["brand"]["id"] not in seen]
-    brand_items = directory_brands(cur, niche, [p["brand"]["id"] for p in post_items], targets)
+    brand_items = directory_brands(cur, niche, [p["brand"]["id"] for p in post_items], targets,
+                                   creator_id=creator_id)
     if niche:
         taken = [p["brand"]["id"] for p in post_items] + [b["brand"]["id"] for b in brand_items]
-        brand_items += directory_brands(cur, "", taken, targets, limit=BRANDS_LIMIT // 2)
+        brand_items += directory_brands(cur, "", taken, targets, limit=BRANDS_LIMIT // 2, creator_id=creator_id)
     return {"niche": niche, "niches": NICHES, "items": interleave(post_items, brand_items),
             "targets": len(targets)}
 

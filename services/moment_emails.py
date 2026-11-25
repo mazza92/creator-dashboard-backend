@@ -224,10 +224,13 @@ def email_niche_gifting(conn, limit: int = 60, dry_run: bool = False, send_fn: O
         mine = [b for b in fresh if b.get("category") in cats]
         if not mine:
             continue
-        cur.execute("""SELECT brand_id FROM polly_drafts WHERE creator_id = %s AND brand_id = ANY(%s)""",
-                    (c["creator_id"], [b["brand_id"] for b in mine]))
-        pitched = {r["brand_id"] for r in cur.fetchall()}
-        mine = [dict(b) for b in mine if b["brand_id"] not in pitched][:3]
+        # Thanos decides which of this week's gifting brands fit this creator and in what order (it drops
+        # brands they already pitched, brands that never fit them, and cold inboxes).
+        from services.thanos import rank
+        by_id = {int(b["brand_id"]): b for b in mine}
+        ranking = rank(conn, c["creator_id"], surface="email", n=3, only_ids=list(by_id))
+        pitched = ranking.profile.pitched_ids if ranking.profile else set()
+        mine = [dict(by_id[i]) for i in ranking.ids() if i in by_id and i not in pitched][:3]
         if not mine:
             continue
         who = pa._recipient(conn, c["creator_id"], kind="niche_gifting")
