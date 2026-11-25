@@ -70,8 +70,8 @@ def test_choice_arm_sees_screen_once_then_choice_sticks():
     assert sc.status(conn, cid, flag=True) == {'show': True, 'arm': 'choice'}
     assert sc.record_choice(conn, cid, 'free') is True
     assert sc.status(conn, cid, flag=True) == {'show': False, 'arm': 'choice'}
-    # Free path keeps the trial open at checkout while they never paid.
-    assert sc.trial_eligible(cur, cid) is True
+    # "Do it yourself" gets the normal paid upgrade at checkout, not the free week.
+    assert sc.trial_eligible(cur, cid) is False
 
 
 def test_old_control_rows_stay_hidden():
@@ -106,8 +106,27 @@ def test_checkout_offers_trial_to_choice_arm():
     with mock.patch('services.creator_offers.has_trial_offer', return_value=False), \
             mock.patch.object(qt, 'outreach_trial_eligible', return_value=False), \
             mock.patch.object(qt, 'trial_eligible', return_value=False), \
+            mock.patch('services.start_choice.picked_free', return_value=False), \
             mock.patch('services.start_choice.trial_eligible', return_value=True):
         assert qt.checkout_trial_eligible(object(), 1) is True
+
+
+def test_do_it_yourself_gets_the_paid_upgrade_not_the_free_week():
+    """Picking 3 free pitches turns off every trial path, even a signup trial link or the older experiment."""
+    from services import quota_trial_test as qt
+    with mock.patch('services.creator_offers.has_trial_offer', return_value=True), \
+            mock.patch.object(qt, 'outreach_trial_eligible', return_value=True), \
+            mock.patch.object(qt, 'trial_eligible', return_value=True), \
+            mock.patch('services.start_choice.picked_free', return_value=True):
+        assert qt.checkout_trial_eligible(object(), 1) is False
+
+
+def test_choice_decides_start_choice_trial():
+    creators = {1: ('approved', APPROVED, None, None, None)}
+    for choice, expected in (('trial', True), ('free', False), (None, True)):
+        cur = FakeCursor(creators, {1: {'arm': 'choice', 'choice': choice}})
+        assert sc.trial_eligible(cur, 1) is expected
+        assert sc.picked_free(cur, 1) is (choice == 'free')
 
 
 def test_trial_days_left():
