@@ -24,7 +24,6 @@ from services.polly import (
     cold_brand_chips,
     drop_pending_draft,
     drop_pitched,
-    drop_shown,
     last_thread_pitch,
     mark_draft_pending,
     mark_pitched,
@@ -158,10 +157,6 @@ def _shown_rank(brand: Dict[str, Any], notes: Dict[str, Any]) -> int:
     return shown.index(bid) if bid in shown else 10 ** 9
 
 
-def _oldest_shown_first(rows: List[Dict[str, Any]], notes: Dict[str, Any]) -> List[Dict[str, Any]]:
-    return sorted(rows or [], key=lambda b: _shown_rank(b, notes))
-
-
 def _creator_followers(state: TurnState) -> int:
     try:
         from services.creator_tracker import creator_profile
@@ -172,19 +167,6 @@ def _creator_followers(state: TurnState) -> int:
         except Exception:
             pass
         return 0
-
-
-def _by_reach(state: TurnState, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Same order as Autopilot (routes.polly_autopilot._rank_by_reach): brands in reach of this creator's audience
-    first, stretch next, far out of reach last. Nothing is dropped, so the pool keeps its size."""
-    try:
-        from routes.polly_autopilot import _rank_by_reach
-        keyed = [{**r, "id": r.get("id") or r.get("brand_id")} for r in rows]
-        order = {id(k): r for k, r in zip(keyed, rows)}
-        return [order[id(k)] for k in _rank_by_reach(state.db(), keyed, _creator_followers(state))]
-    except Exception as err:
-        print(f"[Polly] reach order skipped: {err}")
-        return rows
 
 
 LONG_SHOT = 5.0  # a brand asking for more than 5x the creator's audience
@@ -211,9 +193,31 @@ def long_shot_note(state: TurnState, brand_id: Optional[int], brand_name: str) -
             "treat this one as a long shot. Pair it with a couple of brands in your range and your odds go up a lot.")
 
 
+_LIVE_SOURCES = ("recruiting", "open_lists")
+
+
+def _is_live(card: Dict[str, Any]) -> bool:
+    try:
+        return bool(int(card.get("roster_is_open") or 0) or int(card.get("roster_spotlighted") or 0))
+    except (TypeError, ValueError):
+        return False
+
+
+def _thanos_cards(state: TurnState, surface: str, n: int, exclude: set):
+    """Thanos picks, as Polly cards. Live rosters keep the 'recruiting' source the chat UI badges."""
+    from services.thanos import rank
+
+    ranking = rank(state.db(), state.creator_id, surface=surface, n=n, exclude_ids=sorted(exclude),
+                   notes=state.notes, scrape=state.scrape)
+    rows = [{**c, "source": "recruiting" if _is_live(c) else "matched"} for c in ranking.brands]
+    rows = drop_pending_draft(drop_pitched(rows, state.notes), state.notes)
+    return ranking, rows
+
+
 def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     from services.niche_check import conflict as niche_conflict
     from services.niche_check import mark_asked, question
+    from services.polly import drafted_brand_ids
 
     clash = niche_conflict(state.scrape, state.creator, state.notes)
     if clash:
@@ -227,78 +231,29 @@ def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     if deal in ("gifted", "paid") and not (deal == "paid" and gifted_only(state.notes)):
         state.notes["deal_intent"] = deal
         state.notes = add_deal_intent(state.notes, deal)
-    R = _routes()
-    try:
-        status, rows, err = R._suggest_payload(
-            state.scrape, state.creator, notes=state.notes, creator_id=state.creator_id,
-        )
-    except Exception as exc:
-        print(f"[Polly] suggest failed: {exc}")
-        status, rows, err = 200, [], str(exc)[:180]
-    if status == 401:
-        state.auth_failed = True
-        return {"ok": False, "error": "not authenticated"}
-    pool = drop_pending_draft(rows, state.notes)
-    fresh = drop_shown(pool, state.notes)
+    first = (state.chip or {}).get("id") == "first_matches"
+    surface = "first_matches" if first else "polly"
+    cap = 3 if first else 6
+    pending = (state.notes.get("pending_pitch") or {}) if isinstance(state.notes.get("pending_pitch"), dict) else {}
+    held = set(drafted_brand_ids(state.notes)) | ({_int(pending.get("id"))} - {None})
+    # Brands already shown stay out, so "show me other brands" always brings new ones.
+    ranking, rows = _thanos_cards(state, surface, cap + 2, held | set(shown_brand_ids(state.notes)))
     repeated = False
-    widened = False
-    queued = drop_pending_draft(drop_pitched(state.suggested, state.notes), state.notes)
-    if fresh:
-        picked = fresh
-    elif drop_shown(queued, state.notes):
-        picked = drop_shown(queued, state.notes)
-    else:
-        # Every match was already shown: widen to the rest of the directory in their niche before repeating
-        # anyone ("Show me other brands" must never answer with the same three).
-        try:
-            wide = R._fallback_brand_pool(state.notes, state.scrape, state.creator, state.creator_id, limit=40)
-        except Exception as exc:
-            print(f"[Polly] directory fallback skipped: {exc}")
-            wide = []
-        wide = drop_shown(drop_pending_draft(drop_pitched(wide, state.notes), state.notes), state.notes)
-        if wide:
-            picked, widened = wide, True
-        elif pool:
-            picked = _oldest_shown_first(pool, state.notes)
-            repeated = True
-        else:
-            picked = _oldest_shown_first(queued, state.notes)
-            repeated = bool(picked)
-    if not picked:
-        try:
-            picked = R._fallback_brand_pool(state.notes, state.scrape, state.creator, state.creator_id)
-        except Exception as exc:
-            print(f"[Polly] directory fallback skipped: {exc}")
-            picked = []
-        picked = drop_pending_draft(drop_pitched(picked, state.notes), state.notes)
-        unseen = drop_shown(picked, state.notes)
-        if unseen:
-            picked = unseen
-        else:
-            repeated = bool(picked)
-        widened = bool(picked)
-    hydrated = R._hydrate_brand_cards(picked)
-    rows = filter_brands_by_prefs(hydrated, state.notes) or hydrated
-    # Country is not a matching signal for creators (it only lets brands filter creators): every niche brand
-    # stays in, whatever its shipping regions.
-    rows = sorted(rows, key=lambda b: (
-        0 if (b or {}).get("source") in ("recruiting", "open_lists") else 1,
-        _shown_rank(b, state.notes),
-    ))
-    from services.creator_niches import recorded_niches
-    from services.polly import balance_by_niche
-    from services.polly_discovery import stated_niches as _stated
-    rows = balance_by_niche(rows, recorded_niches(state.creator) or _stated(state.notes))
-    rows = _by_reach(state, rows)
-    cap = 3 if (state.chip or {}).get("id") == "first_matches" else 6
-    rows = rows[:cap]
     if not rows:
-        if err:
-            state.error = err
+        # Every brand Thanos can find was already shown: bring back the unpitched ones, oldest shown first.
+        ranking, rows = _thanos_cards(state, surface, cap + 2, held)
+        rows = sorted(rows, key=lambda b: _shown_rank(b, state.notes))
+        repeated = bool(rows)
+    hydrated = _routes()._hydrate_brand_cards(rows)
+    rows = filter_brands_by_prefs(hydrated, state.notes) or hydrated
+    # Live rosters lead (a product section, not matching); Thanos order holds inside each group.
+    rows = sorted(rows, key=lambda b: 0 if (b or {}).get("source") in _LIVE_SOURCES else 1)[:cap]
+    if not rows:
         return {
             "ok": True,
             "brands": [],
-            "note": "The directory could not be loaded. Ask again in a moment.",
+            "note": "No new brands could be lined up right now. Say so and offer to look again later; "
+                    "never invent brands.",
         }
     state.brands = rows
     state.notes = mark_shown_brands(state.notes, rows)
@@ -306,14 +261,16 @@ def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         "ok": True,
         "brands": [brand_card(r) for r in rows],
         "cards_shown": True,
-        "live_rosters": sum(1 for r in rows if r.get("source") in ("recruiting", "open_lists")),
+        "live_rosters": sum(1 for r in rows if r.get("source") in _LIVE_SOURCES),
     }
     if repeated:
         out["repeated"] = True
         out["note"] = "These brands were shown before and are still unpitched. The cards are on screen."
-    if widened:
-        out["widened"] = True
-        out["note"] = "The niche pool was used up, so these are the next directory brands. The cards are on screen."
+    elif ranking.note:
+        # Thanos went past the creator's own niche: say so plainly instead of calling these niche matches.
+        out["match_note"] = ranking.note
+        out["note"] = (f"Fewer exact niche matches were left, so these are: {ranking.note}. Say that honestly "
+                       "in one short line. The cards are on screen.")
     return out
 
 
@@ -366,7 +323,7 @@ def browse_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
                            "yes, call save_profile_facts with allow_categories, then browse again."}
     exclude = list(state.notes.get("pitched_brand_ids") or [])
     try:
-        found = search(state.db(), query, exclude_ids=exclude, limit=12)
+        found = search(state.db(), query, exclude_ids=exclude, limit=12, creator_id=state.creator_id)
     except Exception as err:
         print(f"[Polly] browse failed: {err}")
         state.db().rollback()

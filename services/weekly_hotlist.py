@@ -5,8 +5,9 @@ recap gives them no reason to act. Fresh brands in their niche that are advertis
 do: every card has Contact, free creators spend a free pitch per brand, and the footer sells Pro (Polly pitches
 every hot brand, every week). Pro creators see last week's Autopilot numbers in one line, then the brands.
 
-Brands: the gate-passed Meta-ads pool (services.hot_brands), niche-strict, minus anything queued, pitched or shown
-in the last few hotlists; topped up from verified published brands when the pool is thin. Fewer than 3: no post.
+Brands: the gate-passed Meta-ads pool (services.hot_brands), minus anything queued, pitched or shown in the last few
+hotlists, chosen and ordered by Thanos (surface "hotlist"); topped up with Thanos's picks in the creator's exact niche
+when the pool is thin. Fewer than 3: no post.
 """
 
 from __future__ import annotations
@@ -64,28 +65,22 @@ def _card(b: Dict[str, Any]) -> Dict[str, Any]:
         "gifted_your_size": int(b.get("gifted_your_size") or 0),
         "creator_style": b.get("ugc_style") is True,
         "fresh": bool(found and isinstance(found, date) and (date.today() - found).days <= 14),
+        "reply_band": b.get("reply_band"),
+        "reply_reason": b.get("reply_reason") or "",
     }
 
 
 def weekly_hotlist(conn, creator_id: int, now: Optional[datetime] = None, limit: int = HOTLIST_SIZE
                    ) -> List[Dict[str, Any]]:
     from services.creator_niches import recorded_niches
-    from services.hot_brands import (exclusions, fallback_pool, gifted_followers, load_creators, passing_pool,
-                                     rank_for_creator)
+    from services.hot_brands import exclusions, hot_picks, load_creators
 
     creator = load_creators(conn, [int(creator_id)]).get(int(creator_id))
     if not creator or not recorded_niches(creator):
         return []
     excluded = set(exclusions(conn, [int(creator_id)]).get(int(creator_id), set()))
     excluded |= recently_shown(conn, creator_id, now)
-    picks: List[Dict[str, Any]] = []
-    pool = passing_pool(conn)
-    if pool:
-        gifted = gifted_followers(conn, [int(b["id"]) for b in pool])
-        picks = rank_for_creator(creator, pool, excluded, gifted, limit=limit)
-    if len(picks) < limit:
-        taken = excluded | {int(p["brand_id"]) for p in picks}
-        picks += rank_for_creator(creator, fallback_pool(conn), taken, {}, limit=limit - len(picks))
+    picks = hot_picks(conn, int(creator_id), excluded, limit)
     return [_card(p) for p in picks[:limit]]
 
 

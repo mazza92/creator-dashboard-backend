@@ -57,3 +57,26 @@ def test_no_gig_three_brands():
     ctx = _ctx(checks=False, gig=False)
     assert len(ctx["picks"]) == 3 and all(p["cta"] == "Open my pitch" for p in ctx["picks"])
     assert ctx["subject_override"] == "3 skincare brands to pitch this week"
+
+
+def test_brand_picks_come_from_thanos():
+    from services.thanos import Ranking
+
+    cur = mock.MagicMock()
+    cur.fetchall.side_effect = [[{"brand_id": 5}], [{"id": 2}]]  # unlocked brands, then brands that pay
+    cards = [{"id": 1, "brand_name": "Glowly", "reply_band": "high", "reply_reason": "3 creators your size heard back",
+              "thanos_level": 0},
+             {"id": 2, "brand_name": "Payco", "reply_band": "new", "thanos_level": 0}]
+    with mock.patch("services.thanos.rank", return_value=Ranking(brands=cards)) as rank:
+        picks = mc.brand_picks(cur, 7, ["skincare"], limit=2)
+    args, kwargs = rank.call_args
+    assert args[1] == 7 and kwargs["surface"] == "checkin" and kwargs["n"] == 2 and kwargs["exclude_ids"] == [5]
+    assert [p["id"] for p in picks] == [1, 2]
+    assert (picks[0]["badge"], picks[0]["line"]) == ("REPLIES", "3 creators your size heard back")
+    assert picks[1]["badge"] == "GIFTS + PAYS"
+
+
+def test_brand_picks_need_niches():
+    with mock.patch("services.thanos.rank") as rank:
+        assert mc.brand_picks(mock.MagicMock(), 7, [], limit=2) == []
+    rank.assert_not_called()

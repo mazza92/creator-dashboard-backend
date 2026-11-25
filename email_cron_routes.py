@@ -1539,12 +1539,26 @@ def pipeline_status_check():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+def discover_alternatives(conn, creator_id, category=None, seed_brand_id=None, n=3):
+    """Brands to pitch instead of a slow one: Thanos's "alternatives" for this creator, starting from the slow
+    brand's category (its ladder widens from there when that category runs out)."""
+    from services.thanos import rank
+
+    try:
+        return rank(conn, int(creator_id), surface="alternatives", n=n,
+                    exclude_ids=[int(seed_brand_id)] if seed_brand_id else [],
+                    categories=[str(category).lower()] if category else None).brands[:n]
+    except Exception as err:
+        print(f"[discover nudge] alternatives skipped for creator {creator_id}: {err}")
+        return []
+
+
 @email_cron_bp.route('/pipeline-discover-nudge', methods=['POST'])
 def pipeline_discover_nudge():
     """
     Day 21 - Discover New Brands (Pro only)
     Sends to Pro users 21 days after pitching with no response.
-    Suggests 3 similar brands with higher response rates -> drives back to Discover.
+    Suggests 3 brands Thanos expects to answer them (services.thanos, surface "alternatives") -> Discover.
     Cron: Daily at 09:00
     """
     test_mode = request.args.get('test', '').lower() == 'true'
@@ -1555,11 +1569,11 @@ def pipeline_discover_nudge():
         context = {
             'message': """
                 <p style="margin: 0 0 16px;">Hey there,</p>
-                <p style="margin: 0 0 16px;">It's been 3 weeks since your <strong>Test Brand</strong> pitch. Some brands are just slow - but here are 3 in the same category with higher response rates:</p>
+                <p style="margin: 0 0 16px;">It's been 3 weeks since your <strong>Test Brand</strong> pitch. Some brands are just slow - but here are 3 brands more likely to answer you:</p>
                 <ul style="margin: 0 0 16px; padding-left: 20px;">
-                    <li><strong>Brand A</strong> - 65% response rate</li>
-                    <li><strong>Brand B</strong> - 55% response rate</li>
-                    <li><strong>Brand C</strong> - 50% response rate</li>
+                    <li><strong>Brand A</strong> - 3 creators your size heard back</li>
+                    <li><strong>Brand B</strong> - Recruiting creators right now</li>
+                    <li><strong>Brand C</strong> - Fits your skincare content</li>
                 </ul>
                 <p style="margin: 0;">Check them out and keep the momentum going!</p>
             """,
@@ -1586,7 +1600,7 @@ def pipeline_discover_nudge():
 
         cursor.execute("""
             SELECT
-                cp.id AS pipeline_id, c.id AS creator_id, u.email, c.username,
+                cp.id AS pipeline_id, cp.brand_id, c.id AS creator_id, u.email, c.username,
                 pb.brand_name, pb.category
             FROM creator_pipeline cp
             JOIN creators c ON c.id = cp.creator_id
@@ -1610,23 +1624,10 @@ def pipeline_discover_nudge():
         errors = []
 
         for row in rows:
-            from services.brand_reply_signal import responsive_alternatives
-            cursor.execute("SELECT brand_id FROM creator_pipeline WHERE id = %s", (row['pipeline_id'],))
-            seed = cursor.fetchone() or {}
-            alternatives = responsive_alternatives(
-                cursor, row['category'] or "", exclude_ids=[seed.get('brand_id')], limit=3,
-            )
-
             alt_html = ""
-            for alt in alternatives:
-                signal = alt.get('reply_signal') or {}
-                if signal.get('tier') == 'replies':
-                    why = signal.get('detail')
-                elif alt.get('response_rate'):
-                    why = f"{alt['response_rate']}% response rate"
-                else:
-                    why = "Works with micro-creators" if alt.get('micro_friendly') else ""
-                alt_html += f"<li><strong>{alt['name']}</strong>{' - ' + why if why else ''}</li>"
+            for alt in discover_alternatives(conn, row['creator_id'], row.get('category'), row.get('brand_id')):
+                why = alt.get('reply_reason') or ""
+                alt_html += f"<li><strong>{alt['brand_name']}</strong>{' - ' + why if why else ''}</li>"
 
             if not alt_html:
                 alt_html = "<li>Check Discover for new options in your niche</li>"
@@ -1635,7 +1636,7 @@ def pipeline_discover_nudge():
             context = {
                 'message': f"""
                     <p style="margin: 0 0 16px;">Hey {name},</p>
-                    <p style="margin: 0 0 16px;">It's been 3 weeks since your <strong>{row['brand_name']}</strong> pitch. Some brands are just slow - but here are 3 in the same category with higher response rates:</p>
+                    <p style="margin: 0 0 16px;">It's been 3 weeks since your <strong>{row['brand_name']}</strong> pitch. Some brands are just slow - but here are 3 brands more likely to answer you:</p>
                     <ul style="margin: 0 0 16px; padding-left: 20px;">{alt_html}</ul>
                     <p style="margin: 0;">Check them out and keep the momentum going!</p>
                 """,

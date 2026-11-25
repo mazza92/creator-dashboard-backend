@@ -23,7 +23,6 @@ from services.irresistible_pitch import (
 )
 
 POLLY_BCC = "creators@newcollab.co"
-MAX_SUGGESTED_BRANDS = 3
 MAX_LLM_TURNS = 8
 DEFAULT_POLLY_MODEL = "gemini-2.5-flash"
 _LLM_TIMEOUT_SEC = 18
@@ -268,6 +267,8 @@ _BRAND_CARD_KEYS = (
     "source",
     "why",
     "reply_signal",
+    "reply_band",
+    "reply_reason",
     "ships_to_you",
     "shipping_note",
     "meta_ads",
@@ -600,6 +601,11 @@ def sanitize_brand_card(row: Any, source: str = "matched") -> Optional[Dict[str,
         card["ships_to_you"] = True
     elif brand.get("shipping_note"):
         card["shipping_note"] = str(brand["shipping_note"])[:60]
+    # Thanos reply odds (additive: older cards may not have them).
+    if brand.get("reply_band"):
+        card["reply_band"] = str(brand["reply_band"])
+    if brand.get("reply_reason"):
+        card["reply_reason"] = str(brand["reply_reason"])[:120]
     signal = brand.get("reply_signal")
     if isinstance(signal, dict) and signal.get("tier"):
         card["reply_signal"] = {
@@ -619,91 +625,6 @@ def brand_card_blurb(brand: Optional[Dict] = None) -> str:
     if len(desc) > 160:
         return desc[:157].rstrip() + "…"
     return desc
-
-
-def flatten_for_you(
-    payload: Optional[Dict],
-    limit: int = MAX_SUGGESTED_BRANDS,
-    scrape: Optional[Dict] = None,
-    niches: Optional[List] = None,
-    required_categories: Optional[List] = None,
-    exclude_ids: Optional[List] = None,
-) -> List[Dict[str, Any]]:
-    """Live PR rosters first, then niche/follower/location matches."""
-    payload = payload or {}
-    required = [str(c).lower().strip() for c in (required_categories or []) if c]
-    skip_ids = set()
-    for item in exclude_ids or []:
-        try:
-            skip_ids.add(int(item))
-        except (TypeError, ValueError):
-            continue
-    sections = (
-        ("recruiting", 0, payload.get("recruiting") or []),
-        ("open_lists", 0, payload.get("open_lists") or []),
-        ("matched", 2, payload.get("matched") or []),
-        ("hot", 3, payload.get("hot") or []),
-        ("newest", 4, payload.get("newest") or []),
-        ("seasonal", 5, payload.get("seasonal") or []),
-    )
-    from services.audience_fit import (
-        audience_mismatch,
-        creator_follower_count,
-        opportunity_mismatch,
-        scrape_overlap_score,
-    )
-
-    ranked = []
-    seen = set()
-    for source, source_rank, rows in sections:
-        for row in rows:
-            try:
-                rid = int((row or {}).get("id") or (row or {}).get("brand_id") or 0)
-            except (TypeError, ValueError):
-                rid = 0
-            if rid and rid in skip_ids:
-                continue
-            cat = str((row or {}).get("category") or "").lower()
-            try:
-                live = source in ("recruiting", "open_lists") or int((row or {}).get("roster_is_open") or (row or {}).get("roster_spotlighted") or 0)
-            except (TypeError, ValueError):
-                live = source in ("recruiting", "open_lists")
-            # A brand with no category can't be shown as a niche match.
-            if required and not (cat and any(req in cat or cat in req for req in required)):
-                continue
-            if opportunity_mismatch(row, scrape, niches, required):
-                continue
-            if scrape is not None and audience_mismatch(row, scrape, niches):
-                continue
-            card = sanitize_brand_card(row, source=source)
-            if not card or card["id"] in seen:
-                continue
-            seen.add(card["id"])
-            overlap = scrape_overlap_score(row, scrape, niches) if scrape is not None else 0
-            try:
-                score = int(card.get("match_score") or 0)
-            except (TypeError, ValueError):
-                score = 0
-            campaign_rank = 0 if live else source_rank
-            reach_rank = 1
-            if (row or {}).get("micro_friendly"):
-                reach_rank = 0
-            try:
-                min_followers = int((row or {}).get("min_followers") or 0)
-            except (TypeError, ValueError):
-                min_followers = 0
-            followers = creator_follower_count(scrape)
-            if followers and min_followers and followers >= min_followers:
-                reach_rank = 0
-            elif min_followers and followers and min_followers > followers:
-                reach_rank = 2
-            tier = (card.get("reply_signal") or {}).get("tier")
-            reply_rank = 0 if tier == "replies" else 2 if tier == "cold" else 1
-            ranked.append((campaign_rank, reply_rank, reach_rank, -overlap, -score, len(ranked), card))
-            if scrape is None and not required and not skip_ids and len(ranked) >= limit:
-                return [item[-1] for item in ranked]
-    ranked.sort()
-    return [item[-1] for item in ranked[:limit]]
 
 
 def resolve_brand(
@@ -2349,58 +2270,6 @@ def matched_waiting(thread: Optional[Dict], limit: int = 2) -> Dict[str, Any]:
         if name and name not in names:
             names.append(name)
     return {"names": names[:limit], "count": len(names)}
-
-
-def balance_by_niche(rows: List[Dict[str, Any]], niches: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-    """Order matches so each niche the creator picked gets its turn (wellness, supplements, fitness → one of
-    each first), keeping the existing order inside each niche. A brand in the niche's own category beats a
-    synonym's. Brands that fit no picked niche stay at the end."""
-    from services.polly_discovery import NICHE_CATEGORIES
-
-    picks = [str(n).strip().lower() for n in (niches or []) if str(n or "").strip()]
-    if len(picks) < 2 or not rows:
-        return list(rows or [])
-    used: set = set()
-    out: List[Dict[str, Any]] = []
-
-    def take(match) -> bool:
-        for i, row in enumerate(rows):
-            if i not in used and match(str((row or {}).get("category") or "").strip().lower()):
-                used.add(i)
-                out.append(row)
-                return True
-        return False
-
-    while len(used) < len(rows):
-        progressed = False
-        for niche in picks:
-            synonyms = set(NICHE_CATEGORIES.get(niche, [niche]))
-            if take(lambda cat, n=niche: cat == n) or take(lambda cat, s=synonyms: cat in s):
-                progressed = True
-        if not progressed:
-            break
-    out.extend(row for i, row in enumerate(rows) if i not in used)
-    return out
-
-
-def drop_shown(
-    brands: Optional[List[Dict]],
-    notes: Optional[Dict] = None,
-) -> List[Dict[str, Any]]:
-    """Brands not already shown as cards, so a repeat ask brings a fresh batch."""
-    skip = set(shown_brand_ids(notes))
-    if not skip:
-        return list(brands or [])
-    kept = []
-    for brand in brands or []:
-        try:
-            bid = int((brand or {}).get("id") or (brand or {}).get("brand_id") or 0)
-        except (TypeError, ValueError):
-            bid = 0
-        if bid and bid in skip:
-            continue
-        kept.append(brand)
-    return kept
 
 
 def classify_intent_heuristic(

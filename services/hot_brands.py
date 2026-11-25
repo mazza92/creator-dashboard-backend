@@ -1,11 +1,12 @@
 """Hotlist + one daily "hot brand" per creator, from Meta-ads brands that passed the quality gate.
 
-- ``hotlist_for_creator``: gate-passed meta_ads_library brands (plus admin approvals) in the creator's niches, strict
-  (services.polly_discovery.categories_for_niches: only true synonyms are added), not pitched, queued or avoided by
-  the creator, each with a reason a creator can read ("Running 9 UGC-style ads since Oct 28 · Gifted 4 creators
-  your size").
+- ``hotlist_for_creator``: gate-passed meta_ads_library brands (plus admin approvals) in the creator's core
+  categories, not pitched, queued or avoided by the creator, each with a reason a creator can read ("Running 9
+  UGC-style ads since Oct 28 · Gifted 4 creators your size"). The pool only decides who is eligible: which of those
+  brands fit the creator, and in what order, is Thanos's call (services.thanos.rank, surface "hotlist").
 - ``assign_hot_brands``: once a day, ONE brand per active creator with recorded niches (and every Pro creator with
-  niches). Nothing passes -> nothing stored (never padded). Pro creators with Autopilot on and a working sender get
+  niches). When the pool has nothing left for them, Thanos's own pick in their exact niche (ladder level 0); nothing
+  there either -> nothing stored (never padded). Pro creators with Autopilot on and a working sender get
   the pitch written by Autopilot's own path (routes.polly_autopilot._write_draft) and queued; it takes the
   creator's next free send slot by swapping with the earliest scheduled pitch, so daily send caps don't move.
 - ``hot_brand_today``: what the Tracker / daily brief shows.
@@ -99,28 +100,10 @@ def passing_pool(conn) -> List[Dict[str, Any]]:
     """, label="pool")
 
 
-def fallback_pool(conn) -> List[Dict[str, Any]]:
-    """Published brands with a verified inbox, used only when a creator's niches have no gate-passed brand left.
-    Gate-failed brands (and admin rejects) never come back this way."""
-    from services.brand_quality_gate import _ready
-
-    _ready(conn)
-    rows = _rows(conn, """
-        SELECT b.id, b.brand_name, LOWER(COALESCE(b.category, '')) AS category, b.description, b.hero_product,
-               b.logo_url, b.website, NULL::int AS active_ad_count, NULL::date AS ads_first_seen,
-               NULL::date AS ads_last_seen, NULL::text AS ad_library_url, NULL::boolean AS ugc_style,
-               NULL::date AS found_on, TRUE AS fallback
-        FROM pr_brands b
-        LEFT JOIN brand_quality_checks q ON q.brand_id = b.id
-        WHERE b.status = 'published' AND NULLIF(TRIM(b.contact_email), '') IS NOT NULL
-          AND LOWER(COALESCE(b.email_status, '')) = 'valid'
-          AND COALESCE(b.source, '') <> 'meta_ads_library'
-          AND COALESCE(q.override, '') <> 'rejected'
-        ORDER BY b.id DESC LIMIT 5000
-    """, label="fallback")
-    from services.brand_quality_gate import safety_flags
-    return [r for r in rows if not safety_flags(r.get("brand_name"), r.get("category"), r.get("description"),
-                                                r.get("hero_product"), website=r.get("website"))]
+def rejected_ids(conn) -> Set[int]:
+    """Brands an admin rejected in the quality gate: never a hot brand, whoever ranks them."""
+    return _ids(_rows(conn, "SELECT brand_id FROM brand_quality_checks WHERE override = 'rejected'",
+                      label="rejected"))
 
 
 def meta_brand_ids(conn, brand_ids) -> Set[int]:
@@ -234,8 +217,6 @@ def reason_for(brand: Dict[str, Any], gifted: int = 0, today: Optional[date] = N
             text += f" since {_day_label(first, today)}"
     elif found:
         text = f"Running {style}Meta ads (spotted {_day_label(found, today)})"
-    elif brand.get("fallback"):
-        text = f"Fresh {brand.get('category') or 'niche'} pick · verified inbox"
     else:
         text = "Hand-picked by the Newcollab team"
     if gifted:
@@ -243,81 +224,119 @@ def reason_for(brand: Dict[str, Any], gifted: int = 0, today: Optional[date] = N
     return text
 
 
-def _notes(raw: Any) -> Dict[str, Any]:
-    if isinstance(raw, str):
-        try:
-            raw = json.loads(raw)
-        except ValueError:
-            raw = {}
-    return raw if isinstance(raw, dict) else {}
+def _hot_row(brand: Dict[str, Any], card: Dict[str, Any], gifted: int, today: date) -> Dict[str, Any]:
+    """One hotlist entry: the pool's ad facts plus Thanos's card (fit, reply chance)."""
+    return {
+        "brand_id": int(card["id"]), "brand_name": brand.get("brand_name") or card.get("brand_name"),
+        "logo": brand.get("logo_url") or card.get("logo_url"),
+        "category": brand.get("category") or str(card.get("category") or "").lower(),
+        "website": brand.get("website") or card.get("website"), "active_ad_count": brand.get("active_ad_count"),
+        "ads_first_seen": brand.get("ads_first_seen"), "ads_last_seen": brand.get("ads_last_seen"),
+        "ad_library_url": brand.get("ad_library_url"), "gifted_your_size": gifted,
+        "ugc_style": brand.get("ugc_style"), "found_on": brand.get("found_on"),
+        "reason": reason_for(brand, gifted, today) if brand else (card.get("reply_reason") or ""),
+        "match_score": card.get("match_score"), "reply_band": card.get("reply_band"),
+        "reply_reason": card.get("reply_reason"), "thanos_level": card.get("thanos_level"),
+    }
 
 
-def rank_for_creator(creator: Dict[str, Any], pool: List[Dict[str, Any]], excluded: Set[int],
-                     gifted: Dict[int, List[int]], today: Optional[date] = None, limit: int = 30
-                     ) -> List[Dict[str, Any]]:
-    """Pure: the creator's hotlist from the pool. Strict niches, exclusions, avoid-preferences, reasons."""
-    from services.creator_niches import recorded_niches
-    from services.polly_discovery import categories_for_niches
-    from services.polly_prefs import filter_brands_by_prefs
+def _profile(conn, creator_id: int, profile=None):
+    if profile is not None:
+        return profile
+    from services.thanos import load_profile
+    return load_profile(conn, int(creator_id))
 
-    niches = recorded_niches(creator)
-    if not niches:
+
+def _skip(prof, excluded: Set[int]) -> Tuple[Set[int], Set[str]]:
+    """Ids and names this creator must not see: the caller's exclusions plus everything Thanos knows they pitched
+    or saved (scoring named brands with only_ids does not drop those on its own)."""
+    names = {str(n).strip().lower() for n in (prof.notes or {}).get("pitched_brand_names") or [] if n}
+    return set(excluded) | set(prof.pitched_ids) | set(prof.saved_ids), names
+
+
+def pick_for_creator(conn, creator_id: int, pool: List[Dict[str, Any]], excluded: Set[int],
+                     gifted: Dict[int, List[int]], today: Optional[date] = None, limit: int = 30,
+                     profile=None) -> List[Dict[str, Any]]:
+    """The creator's hot brands from the pool. The pool and the exclusions only say who may be shown; Thanos
+    decides fit and order (its core categories for this creator, its fit floor, its reply chance)."""
+    from services.thanos import rank
+    from services.thanos.engine import MIN_FIT
+
+    prof = _profile(conn, creator_id, profile)
+    cats = {str(c).lower() for c in prof.categories or []}
+    if not cats or not pool:
         return []
-    cats = set(categories_for_niches(niches))
-    notes = _notes(creator.get("notes"))
-    pitched = set()
-    try:
-        from services.polly import pitched_id_set
-        pitched = pitched_id_set(notes)
-    except Exception:
-        pass
-    pitched_names = {str(n).strip().lower() for n in notes.get("pitched_brand_names") or [] if n}
+    skip, names = _skip(prof, excluded)
+    by_id = {int(b["id"]): b for b in pool}
+    ids = [bid for bid, b in by_id.items()
+           if bid not in skip and str(b.get("category") or "").lower() in cats
+           and str(b.get("brand_name") or "").strip().lower() not in names]
+    if not ids:
+        return []
+    ranking = rank(conn, int(creator_id), surface="hotlist", n=len(ids), only_ids=ids, exclude_ids=sorted(skip),
+                   profile=prof)
     today = today or _today()
-    followers = int(creator.get("followers") or 0)
-    picks = []
-    for b in pool:
-        bid = int(b["id"])
-        if b.get("category") not in cats or bid in excluded or bid in pitched:
-            continue
-        if str(b.get("brand_name") or "").strip().lower() in pitched_names:
-            continue
-        picks.append({**b, "name": b.get("brand_name")})
-    picks = filter_brands_by_prefs(picks, notes)
     out = []
-    for b in picks:
-        g = your_size(followers, gifted.get(int(b["id"]), []))
-        out.append({
-            "brand_id": int(b["id"]), "brand_name": b.get("brand_name"), "logo": b.get("logo_url"),
-            "category": b.get("category"), "website": b.get("website"), "active_ad_count": b.get("active_ad_count"),
-            "ads_first_seen": b.get("ads_first_seen"), "ads_last_seen": b.get("ads_last_seen"),
-            "ad_library_url": b.get("ad_library_url"), "gifted_your_size": g,
-            "ugc_style": b.get("ugc_style"), "found_on": b.get("found_on"),
-            "reason": reason_for(b, g, today),
-        })
+    for card in ranking.brands:
+        # Named-brand scoring has no fit floor; the hotlist keeps Thanos's.
+        if card.get("fit_tier") is not None and int(card.get("match_score") or 0) < MIN_FIT:
+            continue
+        brand = by_id.get(int(card["id"]))
+        if not brand:
+            continue
+        g = your_size(prof.followers, gifted.get(int(card["id"]), []))
+        out.append(_hot_row(brand, card, g, today))
+        if len(out) >= limit:
+            break
+    return out
 
-    def key(r):
-        last = r.get("ads_last_seen")
-        seen = last if isinstance(last, date) else r.get("found_on")
-        return (-(r["gifted_your_size"] > 0), -(r.get("ugc_style") is True), -int(r.get("active_ad_count") or 0),
-                -(seen.toordinal() if isinstance(seen, date) else 0), r["brand_id"])
 
-    out.sort(key=key)
+def niche_picks(conn, creator_id: int, excluded: Set[int], limit: int, today: Optional[date] = None,
+                profile=None) -> List[Dict[str, Any]]:
+    """Top-up when the pool has nothing left: Thanos's own best brands in the creator's exact niche."""
+    from services.thanos import rank
+
+    prof = _profile(conn, creator_id, profile)
+    skip, names = _skip(prof, excluded)
+    skip |= rejected_ids(conn)
+    ranking = rank(conn, int(creator_id), surface="hotlist", n=limit + len(names), exclude_ids=sorted(skip),
+                   max_level=0, profile=prof)
+    today = today or _today()
+    out = [_hot_row({}, card, 0, today) for card in ranking.brands
+           if str(card.get("brand_name") or "").strip().lower() not in names]
     return out[:limit]
 
 
+def hot_picks(conn, creator_id: int, excluded: Set[int], limit: int, *, pool: Optional[List[Dict[str, Any]]] = None,
+              gifted: Optional[Dict[int, List[int]]] = None, today: Optional[date] = None,
+              profile=None) -> List[Dict[str, Any]]:
+    """Pool brands first (they are advertising, so hiring creators), topped up with Thanos's niche picks."""
+    prof = _profile(conn, creator_id, profile)
+    pool = passing_pool(conn) if pool is None else pool
+    if gifted is None:
+        gifted = gifted_followers(conn, [int(b["id"]) for b in pool])
+    picks = pick_for_creator(conn, creator_id, pool, excluded, gifted, today=today, limit=limit, profile=prof)
+    if len(picks) < limit:
+        taken = set(excluded) | {int(p["brand_id"]) for p in picks}
+        picks += niche_picks(conn, creator_id, taken, limit - len(picks), today=today, profile=prof)
+    return picks[:limit]
+
+
 def hotlist_for_creator(conn, creator_id: int, limit: int = 30) -> List[Dict[str, Any]]:
-    """Gate-passed Meta-ads brands for this creator, best first:
+    """Gate-passed Meta-ads brands for this creator, Thanos's order:
     [{brand_id, brand_name, logo, category, website, active_ad_count, ads_first_seen, ads_last_seen,
-      ad_library_url, gifted_your_size, reason}]."""
+      ad_library_url, gifted_your_size, reason, match_score, reply_band, reply_reason}]."""
+    from services.creator_niches import recorded_niches
+
     creator = load_creators(conn, [int(creator_id)]).get(int(creator_id))
-    if not creator:
+    if not creator or not recorded_niches(creator):
         return []
     pool = passing_pool(conn)
     if not pool:
         return []
     excluded = exclusions(conn, [int(creator_id)]).get(int(creator_id), set())
     gifted = gifted_followers(conn, [int(b["id"]) for b in pool])
-    return rank_for_creator(creator, pool, excluded, gifted, limit=limit)
+    return pick_for_creator(conn, creator_id, pool, excluded, gifted, limit=limit)
 
 
 # ----- daily assignment -------------------------------------------------------------------------------------------
@@ -350,36 +369,37 @@ def assign_hot_brands(conn, day: Optional[date] = None, creator_ids: Optional[Li
     out = {"day": day.isoformat(), "candidates": len(ids), "already": len(have), "assigned": 0, "none": 0,
            "no_niche": 0, "drafted": 0, "draft_failed": 0}
     pool = passing_pool(conn) if todo else []
-    fallback = None
     if todo:
+        from services.creator_niches import recorded_niches
+
         gifted = gifted_followers(conn, [int(b["id"]) for b in pool])
-        cur = conn.cursor()
         for start in range(0, len(todo), 200):
             chunk = todo[start:start + 200]
             creators = load_creators(conn, chunk)
             excluded = exclusions(conn, chunk, include_recent_hot=True, day=day)
             for cid in chunk:
                 creator = creators.get(cid)
-                from services.creator_niches import recorded_niches
                 if not creator or not recorded_niches(creator):
                     out["no_niche"] += 1
                     continue
-                picks = rank_for_creator(creator, pool, excluded.get(cid, set()), gifted, today=day, limit=1)
-                if not picks:
-                    # At least one hot brand a day: verified published brands in the creator's exact niches.
-                    if fallback is None:
-                        fallback = fallback_pool(conn)
-                    picks = rank_for_creator(creator, fallback, excluded.get(cid, set()), {}, today=day, limit=1)
+                try:
+                    picks = hot_picks(conn, cid, excluded.get(cid, set()), 1, pool=pool, gifted=gifted, today=day)
+                except Exception as err:  # noqa: BLE001 - one creator never stops the daily run
+                    print(f"[hot brands] pick failed creator={cid}: {type(err).__name__}: {err}")
+                    conn.rollback()
+                    picks = []
                 if not picks:
                     out["none"] += 1
                     continue
                 pick = picks[0]
+                cur = conn.cursor()
                 cur.execute(
                     """INSERT INTO creator_hot_brands (creator_id, day, brand_id, reason) VALUES (%s, %s, %s, %s)
                        ON CONFLICT (creator_id, day) DO NOTHING""",
                     (cid, day, pick["brand_id"], pick["reason"]))
                 out["assigned"] += cur.rowcount
-            conn.commit()
+                # Commit per creator: Thanos rolls back its own failed reads, which must not undo earlier picks.
+                conn.commit()
     if draft:
         left = max(0.0, time_budget - (time.monotonic() - started))
         got = draft_pending(conn, day, draft_fn=draft_fn, time_budget=left)

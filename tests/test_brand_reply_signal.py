@@ -5,31 +5,56 @@ from services.polly import cold_brand_chips
 from services.polly_persona import persona_cold_brand_warning
 
 
-class BuildStatsTests(unittest.TestCase):
-    def test_merges_sources_per_brand(self):
-        stats = rs.build_stats(
-            [{"brand_id": 1, "pitched": 20, "replied": 1}, {"brand_id": "x", "pitched": 5, "replied": 0}],
-            [{"brand_id": 1, "replied": 3}, {"brand_id": 2, "replied": 1}],
-            [{"brand_id": 3, "selected": 2}],
-        )
-        self.assertEqual(stats[1], {"pitched": 20, "replied": 3, "selected": 0})
-        self.assertEqual(stats[2], {"pitched": 0, "replied": 1, "selected": 0})
-        self.assertEqual(stats[3], {"pitched": 0, "replied": 0, "selected": 2})
-        self.assertNotIn("x", stats)
+class ThanosEvidenceTests(unittest.TestCase):
+    def test_load_stats_reads_thanos_signals(self):
+        from unittest import mock
+        from services.thanos.model import Evidence
+        from services.thanos.signals import Stats
 
-    def test_tuple_rows(self):
-        stats = rs.build_stats([(7, 10, 2)], [], [(7, 1)])
-        self.assertEqual(stats[7], {"pitched": 10, "replied": 2, "selected": 1})
+        stats = Stats(brand={1: Evidence(sends=20, positive=2, rejected=1, selected=0),
+                             3: Evidence(selected=2)})
+        cursor = mock.MagicMock()
+        with mock.patch("services.thanos.signals.load", return_value=stats) as load:
+            out = rs.load_stats(cursor)
+        self.assertIs(load.call_args.args[0], cursor.connection)
+        self.assertEqual(out[1], {"pitched": 20, "replied": 3, "positive": 2, "selected": 0})
+        self.assertEqual(out[3], {"pitched": 0, "replied": 0, "positive": 0, "selected": 2})
+
+    def test_cold_is_thanos_cold(self):
+        from services.thanos.model import Evidence, is_cold
+
+        for stat in ({"pitched": 40, "replied": 1}, {"pitched": 14, "replied": 0}, {"pitched": 100, "replied": 0,
+                                                                                    "selected": 1}):
+            ev = Evidence(sends=stat["pitched"], positive=stat["replied"], selected=stat.get("selected", 0))
+            self.assertEqual(rs.classify(stat) == "cold", is_cold(ev))
+
+
+class PublicDirectoryEvidenceTests(unittest.TestCase):
+    def test_public_pages_read_thanos_signals(self):
+        from unittest import mock
+        from public_routes import reply_evidence
+        from services.thanos.model import Evidence
+        from services.thanos.signals import Stats
+
+        stats = Stats(brand={1: Evidence(sends=30), 2: Evidence(sends=5, positive=1), 3: Evidence(sends=4)})
+        with mock.patch("services.thanos.signals.load", return_value=stats) as load:
+            badge_stats, tiers = reply_evidence("conn")
+        load.assert_called_once_with("conn")
+        self.assertEqual(tiers, {"replies": [2], "cold": [1]})
+        self.assertEqual(rs.signal_for(badge_stats[1])["tier"], "cold")
 
 
 class ClassifyTests(unittest.TestCase):
     def test_selected_beats_everything(self):
         self.assertEqual(rs.classify({"pitched": 200, "replied": 0, "selected": 1}), "replies")
 
-    def test_reply_rate_threshold(self):
+    def test_replies_means_heard_back_unless_cold(self):
         self.assertEqual(rs.classify({"pitched": 20, "replied": 1}), "replies")
-        self.assertIsNone(rs.classify({"pitched": 25, "replied": 1}))
+        self.assertEqual(rs.classify({"pitched": 25, "replied": 1}), "replies")
         self.assertEqual(rs.classify({"pitched": 40, "replied": 1}), "cold")
+
+    def test_a_no_thanks_is_not_replies(self):
+        self.assertIsNone(rs.classify({"pitched": 10, "replied": 1, "positive": 0}))
 
     def test_cold_needs_volume(self):
         self.assertEqual(rs.classify({"pitched": 159, "replied": 0}), "cold")
@@ -76,22 +101,6 @@ class OrderingTests(unittest.TestCase):
         self.assertEqual(rows[0]["reply_signal"]["tier"], "cold")
         self.assertEqual(rows[1]["reply_signal"]["tier"], "replies")
         self.assertNotIn("reply_signal", rows[2])
-
-    def test_sort_is_stable(self):
-        rows = rs.annotate([{"id": 1}, {"id": 4}, {"id": 2}, {"id": 5}], self.STATS)
-        self.assertEqual([b["id"] for b in rs.sort_by_signal(rows)], [2, 4, 5, 1])
-
-    def test_rerank_blends_fit(self):
-        rows = rs.annotate([
-            {"id": 1, "match_score": 95},
-            {"id": 4, "match_score": 80},
-            {"id": 2, "match_score": 70},
-        ], self.STATS)
-        self.assertEqual([b["id"] for b in rs.rerank_by_fit(rows)], [2, 4, 1])
-
-    def test_strong_unknown_fit_can_beat_replies(self):
-        rows = rs.annotate([{"id": 2, "match_score": 60}, {"id": 4, "match_score": 90}], self.STATS)
-        self.assertEqual([b["id"] for b in rs.rerank_by_fit(rows)], [4, 2])
 
 
 class ColdBrandChipsTests(unittest.TestCase):

@@ -101,8 +101,10 @@ def browse_ask(text: str) -> Optional[str]:
     return phrase if (plan["strict"] or plan["cats"]) else None
 
 
-def browse_brands(conn, query: str, exclude_ids: Optional[List[int]] = None, limit: int = 12) -> Dict[str, Any]:
-    """Directory brands for a category / sub-niche / keyword, best reply signal first."""
+def browse_brands(conn, query: str, exclude_ids: Optional[List[int]] = None, limit: int = 12,
+                  creator_id: Optional[int] = None) -> Dict[str, Any]:
+    """Directory brands for a category / sub-niche / keyword. The query decides which brands match; for a
+    creator, Thanos (surface "search") decides their order and drops ones that never fit them."""
     from psycopg2.extras import RealDictCursor
 
     plan = parse_query(query)
@@ -137,7 +139,6 @@ def browse_brands(conn, query: str, exclude_ids: Optional[List[int]] = None, lim
             params.extend(params_words)
     where = " OR ".join(conds)
     skip = [int(i) for i in (exclude_ids or []) if str(i).isdigit()]
-    rank_params: List[Any] = [cats or [""]]
     sql = f"""
         SELECT id, slug, brand_name AS name, logo_url AS logo, description, category, website,
                application_form_url, hero_product, target_audience, regions
@@ -146,20 +147,48 @@ def browse_brands(conn, query: str, exclude_ids: Optional[List[int]] = None, lim
           AND COALESCE(status, 'published') = 'published'
           AND ({where})
           {"AND NOT (id = ANY(%s))" if skip else ""}
-        ORDER BY (LOWER(COALESCE(category, '')) = ANY(%s)) DESC,
-                 COALESCE(response_rate, 0) DESC NULLS LAST, id DESC
+        ORDER BY (LOWER(COALESCE(category, '')) = ANY(%s)) DESC, id DESC
         LIMIT %s
     """
-    all_params = params + ([skip] if skip else []) + rank_params + [limit * 2]
+    all_params = params + ([skip] if skip else []) + [cats or [""], SEARCH_POOL]
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute(sql, all_params)
     rows = [dict(r) for r in cur.fetchall()]
     from services.new_brand_push import looks_like_test_brand
     rows = [r for r in rows if not looks_like_test_brand({"brand_name": r.get("name"), "slug": r.get("slug")})]
+    if creator_id and rows:
+        rows = _thanos_order(conn, int(creator_id), rows)
+    return {"plan": plan, "brands": _with_badges(cur, rows)[:limit]}
+
+
+SEARCH_POOL = 60  # keyword matches handed to Thanos to order
+
+
+def _thanos_order(conn, creator_id: int, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Matches in Thanos's order for this creator, with its fit and reply chance on each row."""
+    from services.thanos import score_brands
+
+    by_id = {int(r["id"]): r for r in rows}
     try:
-        from services.brand_reply_signal import annotate_and_sort
-        rows = annotate_and_sort(cur, rows)
+        cards = score_brands(conn, creator_id, list(by_id), surface="search").brands
     except Exception as err:
-        print(f"[browse] reply signal skipped: {err}")
+        print(f"[browse] Thanos order skipped: {err}")
         conn.rollback()
-    return {"plan": plan, "brands": rows[:limit]}
+        return rows
+    out = []
+    for c in cards:
+        row = by_id.get(int(c["id"]))
+        if row is not None:
+            out.append({**row, "match_score": c.get("match_score"), "reply_chance": c.get("reply_chance"),
+                        "reply_band": c.get("reply_band"), "reply_reason": c.get("reply_reason")})
+    return out
+
+
+def _with_badges(cur, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The reply badge cards show (Thanos evidence). Order is left as it is."""
+    try:
+        from services.brand_reply_signal import annotate, load_stats
+        return annotate(rows, load_stats(cur))
+    except Exception as err:
+        print(f"[browse] reply badge skipped: {err}")
+        return rows

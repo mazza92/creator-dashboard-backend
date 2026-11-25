@@ -65,8 +65,8 @@ class SuggestBrandsAsksFirstTests(unittest.TestCase):
     def test_not_asked_twice(self):
         state = _state(notes={"niche_check": {"asked_at": "x"}})
         state.conn = MagicMock(closed=0)
-        with patch.object(pt, "_routes") as routes:
-            routes.return_value._suggest_payload.return_value = (200, [], None)
+        from services.thanos import Ranking
+        with patch.object(pt, "_routes"), patch("services.thanos.rank", return_value=Ranking()):
             out = pt.suggest_brands(state, {})
         self.assertNotEqual(out.get("status"), "niche_question")
 

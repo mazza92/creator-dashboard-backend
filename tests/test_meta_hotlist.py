@@ -3,9 +3,11 @@
 import json
 import os
 import unittest
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 
 import psycopg2
+from unittest import mock
 
 from services import brand_quality_gate as gate
 from services import hot_brands as hot
@@ -170,6 +172,87 @@ class SafetyFilter(unittest.TestCase):
         self.assertIn("safety", out["reasons"][0])
 
 
+# ----- Thanos picks the hot brands --------------------------------------------------------------------------------
+
+def _card(bid, score=60, category="skincare"):
+    return {"id": bid, "brand_name": f"B{bid}", "logo_url": None, "category": category, "website": None,
+            "match_score": score, "fit_tier": "good", "reply_band": "new", "reply_reason": f"why {bid}",
+            "thanos_level": 0}
+
+
+@contextmanager
+def fake_thanos(cats_by_creator, order=None, niche=(), calls=None):
+    """Thanos stand-in: profile categories per creator; named brands come back in `order` (default: by id)."""
+    from services.thanos import CreatorProfile, Ranking
+
+    def load(conn, creator_id, notes=None, scrape=None):
+        return CreatorProfile(creator_id=int(creator_id), categories=list(cats_by_creator.get(int(creator_id), [])),
+                              followers=5000)
+
+    def rank(conn, creator_id, surface="polly", n=6, *, only_ids=None, exclude_ids=(), **kw):
+        if calls is not None:
+            calls.append({"surface": surface, "only_ids": only_ids, "exclude_ids": set(exclude_ids), **kw})
+        skip = set(exclude_ids)
+        if only_ids is None:
+            return Ranking(brands=[_card(i) for i in niche if i not in skip][:n])
+        ids = [i for i in (order or sorted(only_ids)) if i in set(only_ids) and i not in skip]
+        return Ranking(brands=[_card(i) for i in ids][:n])
+
+    with mock.patch("services.thanos.load_profile", side_effect=load), \
+            mock.patch("services.thanos.rank", side_effect=rank), \
+            mock.patch.object(hot, "rejected_ids", return_value=set()):
+        yield
+
+
+def _pool(*rows):
+    return [{"id": i, "brand_name": f"B{i}", "category": c, "logo_url": None, "website": None,
+             "active_ad_count": 3, "ugc_style": True} for i, c in rows]
+
+
+class HotPicksUseThanos(unittest.TestCase):
+    def test_pool_is_eligibility_thanos_orders_and_filters_by_its_categories(self):
+        calls = []
+        pool = _pool((1, "skincare"), (2, "skincare"), (3, "pet"), (4, "skincare"))
+        with fake_thanos({7: ["skincare"]}, order=[4, 1, 2], calls=calls):
+            out = hot.pick_for_creator(None, 7, pool, {2}, {}, limit=5)
+        self.assertEqual([r["brand_id"] for r in out], [4, 1])     # Thanos order, 2 excluded, pet not their lane
+        self.assertEqual(calls[0]["surface"], "hotlist")
+        self.assertEqual(sorted(calls[0]["only_ids"]), [1, 4])
+        self.assertEqual(out[0]["reason"], "Running 3 creator-style ads")
+        self.assertEqual((out[0]["reply_reason"], out[0]["match_score"]), ("why 4", 60))
+
+    def test_pitched_and_low_fit_dropped(self):
+        from services.thanos import CreatorProfile, Ranking
+
+        prof = CreatorProfile(creator_id=7, categories=["skincare"], pitched_ids={1})
+        pool = _pool((1, "skincare"), (2, "skincare"), (3, "skincare"))
+        seen = {}
+
+        def rank(conn, creator_id, surface="polly", n=6, *, only_ids=None, exclude_ids=(), **kw):
+            seen["only_ids"], seen["exclude_ids"] = only_ids, set(exclude_ids)
+            return Ranking(brands=[_card(i, score=10 if i == 3 else 60) for i in only_ids])
+
+        with mock.patch("services.thanos.rank", side_effect=rank):
+            out = hot.pick_for_creator(None, 7, pool, set(), {}, limit=5, profile=prof)
+        self.assertEqual(sorted(seen["only_ids"]), [2, 3])         # pitched never offered to Thanos
+        self.assertIn(1, seen["exclude_ids"])
+        self.assertEqual([r["brand_id"] for r in out], [2])         # under Thanos's fit floor
+
+    def test_no_categories_no_picks(self):
+        with fake_thanos({}):
+            self.assertEqual(hot.pick_for_creator(None, 7, _pool((1, "skincare")), set(), {}), [])
+
+    def test_hot_picks_top_up_with_thanos_niche_picks(self):
+        calls = []
+        with fake_thanos({7: ["skincare"]}, niche=[20, 21, 1], calls=calls):
+            out = hot.hot_picks(None, 7, set(), 3, pool=_pool((1, "skincare")), gifted={})
+        self.assertEqual([r["brand_id"] for r in out], [1, 20, 21])
+        top_up = calls[-1]
+        self.assertEqual((top_up["only_ids"], top_up["max_level"]), (None, 0))
+        self.assertIn(1, top_up["exclude_ids"])
+        self.assertEqual(out[1]["reason"], "why 20")
+
+
 # ----- database ----------------------------------------------------------------------------------------------------
 
 def _conn():
@@ -318,40 +401,6 @@ class HotlistDB(unittest.TestCase):
 
     # --- hotlist ---
 
-    def test_niche_strictness(self):
-        skin = self.brand("Skin", "skincare")
-        supp = self.brand("Supp", "supplements")
-        home = self.brand("Homey", "home")
-        life = self.brand("Life", "lifestyle")
-        self.brand("Fit", "fitness")
-        gate.run_gate(self.conn)
-        self.creator(1, ["wellness"])
-        self.creator(2, ["lifestyle"])
-        self.creator(3, ["home"])
-        self.creator(4, ["beauty"])
-        self.creator(5, [])
-        ids = lambda cid: {b["brand_id"] for b in hot.hotlist_for_creator(self.conn, cid)}
-        self.assertEqual(ids(1), {supp})            # wellness <-> supplements, never skincare
-        self.assertEqual(ids(2), {life, home})      # lifestyle -> home
-        self.assertEqual(ids(3), {home})            # but home does not widen to lifestyle
-        self.assertEqual(ids(4), {skin})            # beauty <-> skincare
-        self.assertEqual(ids(5), set())             # no recorded niche, nothing
-
-    def test_hotlist_excludes_queued_pitched_avoided_and_has_reason(self):
-        a = self.brand("Alpha", "skincare", ads=9)
-        b = self.brand("Beta", "skincare")
-        c = self.brand("Gamma", "skincare")
-        d = self.brand("Delta", "skincare")
-        gate.run_gate(self.conn)
-        self.creator(1, ["skincare"], notes={"pitched_brand_ids": [d]})
-        cur = self.conn.cursor()
-        cur.execute("INSERT INTO polly_autopilot_queue (creator_id, brand_id, status) VALUES (1, %s, 'skipped')", (b,))
-        cur.execute("INSERT INTO creator_pipeline VALUES (1, %s, NOW(), NULL)", (c,))
-        self.conn.commit()
-        out = hot.hotlist_for_creator(self.conn, 1)
-        self.assertEqual([r["brand_id"] for r in out], [a])
-        self.assertEqual(out[0]["reason"], f"Running 9 creator-style ads since Oct 28{'' if TODAY.year == 2026 else ', 2026'}")
-
     def test_reason_strings(self):
         today = date(2026, 11, 11)
         self.assertEqual(hot.reason_for({"active_ad_count": 9, "ugc_style": True, "ads_first_seen": date(2026, 10, 28)}, 0, today),
@@ -360,8 +409,6 @@ class HotlistDB(unittest.TestCase):
                          "Running 2 ads since Dec 1, 2025 · Gifted 3 creators your size")
         self.assertEqual(hot.reason_for({"found_on": date(2026, 11, 2)}, 0, today),
                          "Running Meta ads (spotted Nov 2)")
-        self.assertEqual(hot.reason_for({"fallback": True, "category": "skincare"}, 0, today),
-                         "Fresh skincare pick · verified inbox")
         self.assertEqual(hot.your_size(5000, [1000, 2000, 15000, 16000, 400000]), 2)  # 1.7k-15k
 
     # --- daily pick ---
@@ -375,15 +422,17 @@ class HotlistDB(unittest.TestCase):
         self.creator(2, ["fashion"])            # only a failing brand in the niche -> no pick
         self.creator(3, ["skincare"], active=False)  # inactive, free -> not a candidate
         self.creator(4, ["skincare"], active=False, pro=True)  # inactive but Pro -> candidate
-        out = hot.assign_hot_brands(self.conn, day=TODAY, draft=False)
+        with fake_thanos({1: ["skincare"], 2: ["fashion"], 4: ["skincare"]}):
+            out = hot.assign_hot_brands(self.conn, day=TODAY, draft=False)
+            again = hot.assign_hot_brands(self.conn, day=TODAY, draft=False)
         self.assertEqual((out["assigned"], out["none"]), (2, 1))
-        again = hot.assign_hot_brands(self.conn, day=TODAY, draft=False)
         self.assertEqual((again["assigned"], again["already"]), (0, 2))
         cur = self.conn.cursor()
         cur.execute("SELECT creator_id, brand_id FROM creator_hot_brands WHERE day = %s ORDER BY creator_id", (TODAY,))
         self.assertEqual(cur.fetchall(), [(1, a), (4, a)])
-        hot.assign_hot_brands(self.conn, day=TODAY + timedelta(days=1), creator_ids=[1], draft=False)
-        hot.assign_hot_brands(self.conn, day=TODAY + timedelta(days=2), creator_ids=[1], draft=False)
+        with fake_thanos({1: ["skincare"]}):
+            hot.assign_hot_brands(self.conn, day=TODAY + timedelta(days=1), creator_ids=[1], draft=False)
+            hot.assign_hot_brands(self.conn, day=TODAY + timedelta(days=2), creator_ids=[1], draft=False)
         cur.execute("SELECT day, brand_id FROM creator_hot_brands WHERE creator_id = 1 ORDER BY day")
         self.assertEqual([r[1] for r in cur.fetchall()], [a, b])  # day 2 gets Beta, day 3 has nothing left: no row
 
@@ -392,7 +441,8 @@ class HotlistDB(unittest.TestCase):
         gate.run_gate(self.conn)
         self.creator(1, ["skincare"])
         self.assertIsNone(hot.hot_brand_today(self.conn, 1))
-        hot.assign_hot_brands(self.conn, day=TODAY, draft=False)
+        with fake_thanos({1: ["skincare"]}):
+            hot.assign_hot_brands(self.conn, day=TODAY, draft=False)
         got = hot.hot_brand_today(self.conn, 1)
         self.assertEqual(set(got), {"brand_id", "brand_name", "logo", "reason", "queued_item_id"})
         self.assertEqual((got["brand_id"], got["brand_name"], got["logo"], got["queued_item_id"]),
@@ -401,17 +451,6 @@ class HotlistDB(unittest.TestCase):
         self.assertIsNone(hot.hot_brand_today(self.conn, 1, day=TODAY - timedelta(days=1)))
         gate.set_override(self.conn, a, "rejected")
         self.assertIsNone(hot.hot_brand_today(self.conn, 1))
-
-    def test_fallback_keeps_one_hot_brand_a_day(self):
-        self.brand("Bad", "fashion", email_status="invalid")             # gate fails: never comes back
-        self.brand("Loom", "fashion", ads=None, source="manual")          # verified, not from Meta
-        self.brand("Shady", "fashion", ads=None, source="manual", email_status="unverified")
-        gate.run_gate(self.conn)
-        self.creator(2, ["fashion"])
-        hot.assign_hot_brands(self.conn, draft=False)
-        got = hot.hot_brand_today(self.conn, 2)
-        self.assertEqual(got["brand_name"], "Loom")
-        self.assertEqual(got["reason"], "Fresh fashion pick · verified inbox")
 
     def test_pro_autopilot_pitch_is_queued_free_is_not(self):
         a = self.brand("Alpha", "skincare", ads=9)
@@ -435,7 +474,8 @@ class HotlistDB(unittest.TestCase):
             hot.tag_hot(conn, item, reason)
             return item, None
 
-        out = hot.assign_hot_brands(self.conn, day=TODAY, draft_fn=fake_draft)
+        with fake_thanos({1: ["skincare"], 2: ["skincare"], 3: ["skincare"]}):
+            out = hot.assign_hot_brands(self.conn, day=TODAY, draft_fn=fake_draft)
         self.assertEqual((out["assigned"], out["drafted"]), (3, 1))
         self.assertEqual([c[:2] for c in calls], [(1, a)])
         got = hot.hot_brand_today(self.conn, 1)

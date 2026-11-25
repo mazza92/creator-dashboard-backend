@@ -471,6 +471,7 @@ def build_card(row: Dict[str, Any], directory: Dict[str, Any], videos: List[Dict
     contact = ("pitch" if directory.get("contact_email") else
                "apply" if directory.get("application_form_url") else "find_contact")
     examples = pick_examples(videos, followers)
+    thanos = directory.get("thanos") or {}
     return {
         "id": f"radar-{row['id']}",
         "discovered_brand_id": int(row["id"]),
@@ -490,6 +491,9 @@ def build_card(row: Dict[str, Any], directory: Dict[str, Any], videos: List[Dict
         "contact": contact,
         "application_form_url": directory.get("application_form_url") if contact == "apply" else None,
         "in_directory": bool(directory),
+        "match_score": thanos.get("match_score"),
+        "reply_band": thanos.get("reply_band"),
+        "reply_reason": thanos.get("reply_reason"),
         "evidence_data": {
             "creators_30d": int(row.get("creators_30d") or 0),
             "creators_60d": int(row.get("creators_60d") or 0),
@@ -504,8 +508,24 @@ def build_card(row: Dict[str, Any], directory: Dict[str, Any], videos: List[Dict
     }
 
 
+def _thanos_order(conn, creator_id, brand_ids: List[int]) -> Optional[Dict[int, Dict[str, Any]]]:
+    """Thanos's verdict on the directory brands the radar found: {id: card}, best first. Brands it leaves out
+    don't fit this creator (wrong lane, cold inbox, no way to reach them). None when there is no creator."""
+    if not creator_id or not brand_ids:
+        return None
+    from services.thanos import score_brands
+
+    ranking = score_brands(conn, int(creator_id), brand_ids, surface="for_you")
+    return {int(c["id"]): c for c in ranking.brands}
+
+
 def ranked(conn, ctx: Dict[str, Any], now: Optional[datetime] = None) -> List[Dict[str, Any]]:
-    """Every qualifying brand for this creator, best first (cards)."""
+    """Every qualifying brand for this creator, best first (cards).
+
+    Discovery (who is gifting creators this size on TikTok) is the radar's own data. Which directory brands the
+    creator is shown, and in what order, is Thanos's: those come first in its order. Brands not in the directory
+    yet (or with no inbox or form to score) can't be ranked by Thanos, so they follow, strongest gifting evidence
+    first."""
     from services.brand_shipping import ships_to_country
 
     now = now or _now()
@@ -515,7 +535,7 @@ def ranked(conn, ctx: Dict[str, Any], now: Optional[datetime] = None) -> List[Di
     avoid = {str(c).lower() for c in ctx.get("avoid_categories") or []}
     followers = int(ctx.get("followers") or 0)
     country = ctx.get("country")
-    scored = []
+    listed, unlisted = [], []
     for r in rows:
         d = directory.get(int(r["brand_id"])) if r.get("brand_id") else {}
         d = d or {}
@@ -526,12 +546,33 @@ def ranked(conn, ctx: Dict[str, Any], now: Optional[datetime] = None) -> List[Di
         ships = ships_to_country(d.get("regions"), country) if d and country else None
         if ships is False:
             continue
-        scored.append((score(r, followers, bool(ships), bool(d.get("contact_email"))), r, d))
-    scored.sort(key=lambda x: (int(x[1].get("creators_60d") or 0) < MIN_CREATORS, -x[0],
-                               -(x[1]["last_signal_at"] or now).timestamp()))
-    videos = _examples(conn, [int(r["id"]) for _, r, _ in scored[:40]], ctx["niche"])
+        # Thanos only scores brands a creator can reach (inbox or form); one with neither stays a radar find
+        # ("find contact") and is ordered with the brands not in the directory yet.
+        reachable = d.get("id") and (d.get("contact_email") or d.get("application_form_url"))
+        (listed if reachable else unlisted).append((r, d))
+    # One row per directory brand: several discovered names can link to it; keep the strongest evidence.
+    best: Dict[int, tuple] = {}
+    for r, d in listed:
+        bid = int(d["id"])
+        if bid not in best or score(r, followers, False, False) > score(best[bid][0], followers, False, False):
+            best[bid] = (r, d)
+    try:
+        cards = _thanos_order(conn, ctx.get("creator_id"), list(best))
+    except Exception as err:  # noqa: BLE001
+        print(f"[radar] Thanos scoring skipped: {type(err).__name__}: {err}")
+        conn.rollback()
+        cards = None
+    if cards is None:  # no creator to rank for: evidence order
+        ordered = sorted(best.values(), key=lambda x: -score(x[0], followers, False, bool(x[1].get("contact_email"))))
+    else:
+        ordered = [(best[bid][0], {**best[bid][1], "thanos": card}) for bid, card in cards.items() if bid in best]
+    unlisted.sort(key=lambda x: (int(x[0].get("creators_60d") or 0) < MIN_CREATORS,
+                                 -score(x[0], followers, False, False),
+                                 -(x[0]["last_signal_at"] or now).timestamp()))
+    picked = (ordered + unlisted)[:40]
+    videos = _examples(conn, [int(r["id"]) for r, _ in picked], ctx["niche"])
     return [build_card(r, d, videos.get(int(r["id"]), []), followers=followers, country=country, now=now)
-            for _, r, d in scored[:40]]
+            for r, d in picked]
 
 
 def envelope(cards: List[Dict[str, Any]], ctx: Dict[str, Any], *, run_id: Optional[int], served_from: str,
@@ -543,8 +584,8 @@ def envelope(cards: List[Dict[str, Any]], ctx: Dict[str, Any], *, run_id: Option
         status = "found"
         biggest = max(int((b.get("evidence_data") or {}).get("max_followers") or 0) for b in page)
         intro = (f"I found {len(page)} brands that sent PR to {niche} creators under {size_label(biggest)} "
-                 f"followers in the last {WINDOW_DAYS} days. They're ranked by how often they work with creators "
-                 "your size, not by brand size.")
+                 f"followers in the last {WINDOW_DAYS} days. They're ranked by how well they fit you and how "
+                 "likely they are to answer you, not by brand size.")
     elif page:
         status = "weak"
         intro = (f"Only {len(page)} brand{'s' if len(page) != 1 else ''} came up for {niche} this week. "

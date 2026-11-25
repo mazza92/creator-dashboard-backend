@@ -69,44 +69,34 @@ def pitches_to_check(cur, creator_id: int, now: datetime) -> List[Dict[str, Any]
 
 
 def brand_picks(cur, creator_id: int, niches: List[str], limit: int = 2) -> List[Dict[str, Any]]:
-    """Matched, emailable brands they haven't pitched or unlocked, the ones that reply to creators first."""
-    if not niches:
+    """Brands ready to pitch, chosen and ordered by Thanos (surface "checkin"), minus brands they unlocked."""
+    if not niches or limit <= 0:
         return []
-    try:
-        from services.brand_reply_signal import id_sets
-        replies = [int(i) for i in id_sets(cur).get("replies") or [] if i]
-    except Exception:
-        replies = []
-    week = datetime.now().isocalendar()[1]
-    cur.execute(
-        """
-        SELECT b.id, b.brand_name, COALESCE(b.payment_offered, FALSE) AS pays, (b.id = ANY(%(replies)s)) AS replies,
-               (b.created_at > NOW() - INTERVAL '30 days') AS fresh
-        FROM pr_brands b
-        WHERE LOWER(b.category) = ANY(%(niches)s) AND b.status = 'published' AND b.accepting_pr
-          AND COALESCE(b.contact_email, '') <> ''
-          AND NOT EXISTS (SELECT 1 FROM brand_unlocks u WHERE u.creator_id = %(cid)s AND u.brand_id = b.id)
-          AND NOT EXISTS (SELECT 1 FROM polly_timeline_events e
-                          WHERE e.creator_id = %(cid)s AND e.brand_id = b.id AND e.event_type = 'pitch_sent')
-        ORDER BY (b.id = ANY(%(replies)s)) DESC, (b.id + %(rot)s) %% 997
-        LIMIT %(limit)s
-        """,
-        {"niches": niches, "cid": creator_id, "replies": replies, "rot": (creator_id * 17 + week * 7) % 997,
-         "limit": limit},
-    )
+    from services.pitch_writer import clean_brand
+    from services.thanos import rank
+
+    cur.execute("SELECT brand_id FROM brand_unlocks WHERE creator_id = %s", (creator_id,))
+    unlocked = [int(r["brand_id"] if isinstance(r, dict) else r[0]) for r in cur.fetchall()
+                if (r["brand_id"] if isinstance(r, dict) else r[0]) is not None]
+    ranking = rank(cur.connection, int(creator_id), surface="checkin", n=limit, exclude_ids=unlocked)
+    cards = ranking.brands[:limit]
+    pays = set()
+    if cards:
+        cur.execute("SELECT id FROM pr_brands WHERE id = ANY(%s) AND COALESCE(payment_offered, FALSE)",
+                    ([int(c["id"]) for c in cards],))
+        pays = {int(r["id"] if isinstance(r, dict) else r[0]) for r in cur.fetchall()}
     out = []
-    for r in cur.fetchall():
-        r = dict(r)
-        if r["pays"]:
+    for c in cards:
+        if int(c["id"]) in pays:
             badge, kind, line = "GIFTS + PAYS", "green", "Pays creators as well as gifting"
-        elif r["replies"]:
-            badge, kind, line = "REPLIES", "green", "Has replied to creators on Newcollab"
-        elif r["fresh"]:
+        elif c.get("reply_band") == "high":
+            badge, kind, line = "REPLIES", "green", c.get("reply_reason") or "Has replied to creators on Newcollab"
+        elif c.get("thanos_level") == 4:
             badge, kind, line = "NEW THIS WEEK", "grey", "Just added to your matches"
         else:
-            badge, kind, line = "GIFTED PR", "grey", "Sends product to creators in your niche"
-        from services.pitch_writer import clean_brand
-        out.append({"id": r["id"], "name": clean_brand(r["brand_name"]), "badge": badge, "badge_kind": kind, "line": line})
+            badge, kind, line = "GIFTED PR", "grey", c.get("reply_reason") or "Sends product to creators in your niche"
+        out.append({"id": c["id"], "name": clean_brand(c.get("brand_name") or c.get("name")), "badge": badge,
+                    "badge_kind": kind, "line": line})
     return out
 
 

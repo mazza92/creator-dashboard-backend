@@ -454,3 +454,50 @@ def test_radar_niche_arg_only_when_the_creator_typed_it(monkeypatch):
         state.notes = {}
         polly_tools.find_gifting_brands(state, {"niche": arg})
         assert seen["niche"] == want, typed
+
+
+def _radar_row(i, brand_id=None, creators=3):
+    return {"id": i, "name": f"brand{i}", "brand_id": brand_id, "signal_types": ["gifted"], "creators_14d": 1,
+            "creators_30d": creators, "creators_60d": creators, "median_followers": 3000, "max_followers": 6000,
+            "last_signal_at": NOW}
+
+
+def test_ranked_directory_brands_in_thanos_order(monkeypatch):
+    from services.thanos import Ranking
+
+    rows = [_radar_row(1, 10, creators=9), _radar_row(2, 20), _radar_row(3, 30), _radar_row(4, None, creators=5),
+            _radar_row(5, 50)]
+    directory = {10: {"id": 10, "name": "Ten", "contact_email": "pr@ten.com"},
+                 20: {"id": 20, "name": "Twenty", "contact_email": "pr@twenty.com"},
+                 30: {"id": 30, "name": "Thirty", "application_form_url": "https://thirty.com/apply"},
+                 50: {"id": 50, "name": "Fifty"}}  # no inbox or form: Thanos can't score it
+    seen = {}
+
+    def score_brands(conn, creator_id, ids, surface="search", notes=None):
+        seen.update(creator_id=creator_id, ids=sorted(ids), surface=surface)
+        return Ranking(brands=[{"id": 30, "match_score": 70, "reply_band": "high", "reply_reason": "Answers"},
+                               {"id": 20, "match_score": 50, "reply_band": "new", "reply_reason": "Fits"}])
+
+    monkeypatch.setattr(radar, "_stats_rows", lambda conn, niche, kind: rows)
+    monkeypatch.setattr(radar, "_directory_rows", lambda conn, ids: {i: directory[i] for i in ids if i in directory})
+    monkeypatch.setattr(radar, "_examples", lambda conn, ids, niche: {})
+    monkeypatch.setattr("services.thanos.score_brands", score_brands)
+    cards = radar.ranked(None, {"creator_id": 7, "niche": "skincare", "followers": 3000}, now=NOW)
+    assert seen == {"creator_id": 7, "ids": [10, 20, 30], "surface": "for_you"}
+    # Thanos's order for directory brands; 10 left out (doesn't fit); then radar-only finds by evidence.
+    assert [c["brand_id"] for c in cards] == [30, 20, None, 50]
+    assert (cards[0]["reply_band"], cards[0]["reply_reason"], cards[0]["match_score"]) == ("high", "Answers", 70)
+    assert cards[2]["contact"] == "find_contact" and cards[3]["contact"] == "find_contact"
+
+
+def test_ranked_keeps_weak_state_when_thanos_drops_most(monkeypatch):
+    from services.thanos import Ranking
+
+    monkeypatch.setattr(radar, "_stats_rows", lambda conn, niche, kind: [_radar_row(1, 10)])
+    monkeypatch.setattr(radar, "_directory_rows", lambda conn, ids: {10: {"id": 10, "contact_email": "pr@x.com"}})
+    monkeypatch.setattr(radar, "_examples", lambda conn, ids, niche: {})
+    monkeypatch.setattr("services.thanos.score_brands", lambda *a, **k: Ranking(brands=[]))
+    ctx = {"creator_id": 7, "niche": "skincare", "followers": 3000}
+    cards = radar.ranked(None, ctx, now=NOW)
+    assert cards == []
+    assert radar.envelope(cards, ctx, run_id=1, served_from="database")["status"] == "none"

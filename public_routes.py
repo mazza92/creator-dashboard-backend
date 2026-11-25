@@ -380,6 +380,20 @@ def directory_shuffle_seed(now=None):
     return f"{now:%Y%m%d}-{now.hour // DIRECTORY_SHUFFLE_HOURS}"
 
 
+def reply_evidence(conn):
+    """What creators heard back from each brand, from Thanos's signals (services.thanos.signals), as badge stats
+    plus the "replies" / "cold" id sets the public directory shows first / last. No creator here, so this is
+    display order only; cold is Thanos's model.is_cold (via brand_reply_signal.classify)."""
+    from services.brand_reply_signal import classify, from_thanos
+    from services.thanos import signals
+
+    stats = from_thanos(signals.load(conn))
+    tiers = {bid: classify(stat) for bid, stat in stats.items()}
+    replies = [bid for bid, tier in tiers.items() if tier == "replies"]
+    cold = [bid for bid, tier in tiers.items() if tier == "cold"]
+    return stats, {"replies": replies or [0], "cold": cold or [0]}
+
+
 @public_bp.route('/brands', methods=['GET'])
 @scraper_rate_limit
 def get_public_brands():
@@ -452,8 +466,8 @@ def get_public_brands():
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         from services.roster_demand import ensure_campaign_spotlight_column
         ensure_campaign_spotlight_column(cursor, conn)
-        from services.brand_reply_signal import annotate as annotate_reply, id_sets as reply_id_sets, load_stats as load_reply_stats
-        reply_ids = reply_id_sets(cursor)
+        from services.brand_reply_signal import annotate as annotate_reply
+        reply_stats, reply_ids = reply_evidence(conn)
         reply_order = "(b.id = ANY(%s)) DESC, (b.id = ANY(%s)) ASC,"
 
         # Build query with filters (includes pitch stats from creator_pipeline)
@@ -610,7 +624,7 @@ def get_public_brands():
             params.extend([directory_shuffle_seed(), limit, offset])
 
         cursor.execute(query, params)
-        brands = annotate_reply([dict(b) for b in cursor.fetchall()], load_reply_stats(cursor))
+        brands = annotate_reply([dict(b) for b in cursor.fetchall()], reply_stats)
 
         # Get total count for pagination
         count_query = """
@@ -831,9 +845,9 @@ def get_public_brand(slug):
         reply_signal = None
         ugc = None
         if brand and brand.get('id'):
-            from services.brand_reply_signal import brand_signal
+            from services.brand_reply_signal import signal_for
             from services.brand_ugc import brand_ugc
-            reply_signal = brand_signal(cursor, brand['id'])
+            reply_signal = signal_for(reply_evidence(conn)[0].get(int(brand['id'])))
             ugc = brand_ugc(cursor, brand)
         cursor.close()
         conn.close()

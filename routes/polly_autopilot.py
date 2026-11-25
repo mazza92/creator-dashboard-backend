@@ -2,8 +2,6 @@
 ``auto_fill`` runs the same plan + draft from the cron."""
 
 import os
-import re
-from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, jsonify, redirect, request
 
@@ -432,226 +430,22 @@ def _creator_context(conn, creator):
     return notes, _load_scrape(conn, creator.get("user_id"))
 
 
-POOL_SECTIONS = ("recruiting", "open_lists", "matched")
 POOL_SIZE = 60
-# For You's growth_match floor. Live rosters For You didn't score stay out of the pipeline.
-MIN_FIT = 35
 
 
-def _fit(brand):
-    try:
-        return int(brand.get("match_score") or 0)
-    except (TypeError, ValueError):
-        return 0
+def _pick_brands(conn, creator_id, creator, notes, scrape, limit=POOL_SIZE, surface="autopilot"):
+    """Brands to pitch next, best first: Thanos's ranking (deliverable inbox, reach, reply record, niche and
+    pref rules, never pitched or queued), with the creator's saved targets and weekly plan put first.
+    (brands, error)."""
+    from services.thanos import rank
 
-
-def _for_you_pool(exclude_ids):
-    """The creator's For You matches (same scoring and cutoffs), deeper than the 8 cards shown."""
-    from flask import current_app, session as flask_session
-    from pr_crm_routes import get_for_you
-    from routes.polly import _copy_session, unpack_view_result
-
-    saved = _copy_session()
-    headers = {}
-    for key in ("Authorization", "Cookie"):
-        if request.headers.get(key):
-            headers[key] = request.headers.get(key)
-    query = {"pool": "autopilot", "exclude": ",".join(str(int(i)) for i in exclude_ids)}
-    with current_app.test_request_context("/api/pr-crm/for-you", query_string=query, headers=headers):
-        flask_session.update(saved)
-        return unpack_view_result(get_for_you())
-
-
-def _pick_brands(conn, creator_id, creator, notes, scrape, limit=POOL_SIZE):
-    """For You matches that are emailable and not pitched, queued or blocked, best first. (brands, error)."""
-    from routes.polly import _match_scrape, _pipeline_pitched_ids
-    from services.polly import drop_pitched, flatten_for_you
-    from services.polly_discovery import required_categories_for_match, stated_niches
-    from services.creator_niches import with_recorded_niches
-    from services.polly_prefs import filter_brands_by_prefs
-
-    notes = with_recorded_niches(notes, creator)
     queued = queued_brand_ids(conn, creator_id)
-    status, data = _for_you_pool(queued)
-    if status != 200 or not (data or {}).get("success"):
-        return [], (data or {}).get("error") or "Could not load matches"
-    match_scrape = _match_scrape(scrape, notes, creator)
-    cats = required_categories_for_match(notes, match_scrape)
-    exclude = list(queued) + list(_pipeline_pitched_ids(creator_id) or [])
-    brands = flatten_for_you(
-        {key: data.get(key) for key in POOL_SECTIONS},
-        limit=limit,
-        scrape=match_scrape,
-        niches=cats or stated_niches(notes) or (creator or {}).get("creator_niches"),
-        required_categories=cats,
-        exclude_ids=exclude,
-    )
-    brands = filter_brands_by_prefs(drop_pitched(brands, notes, extra_ids=exclude), notes)
-    brands = [b for b in brands if _fit(b) >= MIN_FIT]
-    if len(brands) < TOPUP_BELOW:
-        # The matched pool runs dry for creators in small niches (luxury, travel...) once its best brands are
-        # pitched, while the directory still has unpitched brands in their niches. Top up from there.
-        cat_list = cats or stated_niches(notes) or (creator or {}).get("creator_niches") or []
-        extra = _directory_topup(conn, cat_list, exclude + [int(b["id"]) for b in brands if b.get("id")],
-                                 limit - len(brands))
-        try:
-            from services.audience_fit import audience_mismatch
-            niche_list = cats or stated_niches(notes) or (creator or {}).get("creator_niches")
-            extra = [b for b in extra if not audience_mismatch(b, match_scrape, niche_list)]
-        except Exception as err:
-            print(f"[Polly autopilot] top-up fit check skipped: {err}")
-        brands += filter_brands_by_prefs(drop_pitched(extra, notes, extra_ids=exclude), notes)
-    brands = _rank_by_reach(conn, brands, (creator or {}).get("followers_count"))
-    # Country is not a matching signal: Autopilot pitches every niche brand, whatever its shipping regions.
-    emailable = _brands_with_email(conn, [int(b["id"]) for b in brands if b.get("id")])
-    matched = [b for b in brands if b.get("id") and int(b["id"]) in emailable]
-    matched = _targets_first(conn, creator_id, matched, exclude, notes)
+    ranking = rank(conn, creator_id, surface=surface, n=limit, exclude_ids=queued, notes=notes, scrape=scrape)
+    exclude = set(queued) | set(getattr(ranking.profile, "pitched_ids", None) or ())
+    matched = _targets_first(conn, creator_id, list(ranking.brands), exclude, notes)
     matched = _planned_first(conn, creator_id, matched)
-    cat_list = cats or stated_niches(notes) or (creator or {}).get("creator_niches") or []
-    matched = _first_week_proven_first(conn, creator_id, creator, matched, cat_list, exclude, notes)
+    # Rare: the ladder only comes back empty once the directory has nothing pitchable left for this creator.
     return matched, None if matched else "no_matches"
-
-
-TOPUP_BELOW = 20
-# Neighbouring categories for niches with few brands of their own (their own niche always comes first).
-NEIGHBOUR_CATEGORIES = {
-    "luxury": ["fashion", "jewelry", "beauty"],
-    "travel": ["lifestyle", "luxury", "fashion"],
-    "lifestyle": ["fashion", "home"],
-    "home": ["lifestyle"],
-    "jewelry": ["fashion", "luxury"],
-}
-
-
-def _directory_topup(conn, categories, exclude_ids, need):
-    """Unpitched directory brands in the creator's categories (then neighbouring ones) with a deliverable inbox,
-    brands seen working with creators first. Cards shaped like For You's, match_score at the floor."""
-    own = [str(c).strip().lower() for c in categories or [] if str(c).strip()]
-    if not own or need <= 0:
-        return []
-    near = [c for o in own for c in NEIGHBOUR_CATEGORIES.get(o, []) if c not in own]
-    wanted = own + list(dict.fromkeys(near))
-    try:
-        from psycopg2.extras import RealDictCursor
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("""
-            SELECT b.id, b.brand_name, b.slug, b.category, b.logo_url, b.min_followers
-            FROM pr_brands b LEFT JOIN brand_ad_signals s ON s.brand_id = b.id
-            WHERE COALESCE(b.status, 'published') = 'published'
-              AND LOWER(COALESCE(b.category, '')) = ANY(%(cats)s)
-              AND NULLIF(TRIM(b.contact_email), '') IS NOT NULL
-              AND COALESCE(LOWER(b.email_status), '') NOT IN ('bounced', 'invalid', 'undeliverable', 'risky')
-              AND COALESCE(b.email_bounce_count, 0) = 0
-              AND COALESCE(b.accepting_pr, TRUE)
-              AND NOT (b.id = ANY(%(skip)s))
-            ORDER BY (b.gifting_confirmed_at IS NOT NULL OR COALESCE(s.ugc_style, FALSE)) DESC,
-                     COALESCE(b.response_rate, 0) DESC, b.updated_at DESC NULLS LAST
-            LIMIT %(n)s
-        """, {"cats": wanted, "skip": [int(i) for i in exclude_ids or []] or [0], "n": max(int(need) * 4, 40)})
-        rows = cur.fetchall()
-    except Exception as err:
-        print(f"[Polly autopilot] directory top-up skipped: {err}")
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        return []
-    # Rotate across categories in the creator's order (luxury, travel, lifestyle, then neighbours) so one large
-    # category (home) doesn't fill the whole week.
-    by_cat: Dict[str, List[Dict[str, Any]]] = {}
-    for r in rows:
-        by_cat.setdefault(str(r.get("category") or "").lower(), []).append(r)
-    order = [c for c in wanted if c in by_cat] + [c for c in by_cat if c not in wanted]
-    mixed: List[Dict[str, Any]] = []
-    while len(mixed) < len(rows):
-        for c in order:
-            if by_cat[c]:
-                mixed.append(by_cat[c].pop(0))
-    return [{"id": int(r["id"]), "name": r.get("brand_name"), "brand_name": r.get("brand_name"), "slug": r.get("slug"),
-             "category": r.get("category"), "logo": r.get("logo_url"), "logo_url": r.get("logo_url"),
-             "match_score": MIN_FIT, "source": "directory", "min_followers": r.get("min_followers")} for r in mixed]
-
-
-IN_REACH = 1.25   # a brand asking for 2,000 followers is still in reach of a creator with 1,600
-STRETCH = 5.0     # up to 5x the creator's size: worth a try once in-reach brands are used up
-SMALL_CREATOR = 10000
-
-
-# Inboxes that reach someone who handles creators, vs customer service (Nov 2026 audit: 144 Pro sends went to
-# support@ / help@ inboxes; one brand answered that the pitch had landed with customer service).
-_CREATOR_INBOX = re.compile(r"^(pr|press|media|influencers?|creators?|collabs?|collaborations?|partnerships?|partners?|"
-                            r"marketing|social|brand|brands|ambassadors?|affiliates?|ugc|community)([._-].*)?$")
-_SERVICE_INBOX = re.compile(r"^(support|customerservice|customer[._-]?service|customercare|customer[._-]?care|care|"
-                            r"help|service|cs|orders?|returns|shipping|billing|noreply|no-reply)([._-].*)?$")
-_COMPANY_NAME = re.compile(r"(?i)(\b(co\.?,?\s*ltd|trading co|holdings?|group plc|gmbh|"
-                           r"power station|shopping cent(re|er)|shopping mall|outlet village)\b|\blimited\.?\s*$)")
-
-
-_GENERIC_INBOX = re.compile(r"^(info|hello|hi|hey|contact|contactus|contact[._-]?us|enquiries|inquiries|enquiry|"
-                            r"inquiry|team|mail|office|general|admin|sales)([._-].*)?$")
-
-
-def inbox_rank(email):
-    """0 = an inbox for PR / partnerships / marketing, 1 = a named person or anything else, 2 = shared catch-alls
-    (info@, hello@, contact@) and customer service. Nov 2026, 30 days of sends: info@/hello@ 0.4% replies vs about
-    1.2% for PR inboxes and named people."""
-    local = str(email or "").split("@")[0].strip().lower()
-    if _CREATOR_INBOX.match(local):
-        return 0
-    if _SERVICE_INBOX.match(local) or _GENERIC_INBOX.match(local):
-        return 2
-    return 1
-
-
-def looks_like_company(name):
-    """A holding company, trading entity or a place rather than a consumer brand: kept, but pitched last."""
-    return bool(_COMPANY_NAME.search(str(name or "")))
-
-
-def _rank_by_reach(conn, brands, followers):
-    """Order matches so the brands most likely to reply to THIS creator go first, without dropping any (the pool
-    keeps its size; out-of-reach brands just wait at the back):
-      1. in reach: no minimum follower ask, or one within 1.25x the creator's followers;
-      2. stretch: asks up to 5x their size;
-      3. out of reach: Lancome asking 50k pitched by a 1.9k creator.
-    Within a tier: consumer brands before company / place entries; for creators under 10k, brands seen working
-    with creators (confirmed gifting or creator-style ads) first; then PR / partnership inboxes before generic
-    ones, and customer-service inboxes last; otherwise the match order is kept."""
-    try:
-        followers = int(followers or 0)
-    except (TypeError, ValueError):
-        followers = 0
-    ids = [int(b["id"]) for b in brands if b.get("id")]
-    if followers <= 0 or not ids:
-        return brands
-    try:
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT b.id, b.min_followers,
-                   (b.gifting_confirmed_at IS NOT NULL OR COALESCE(s.ugc_style, FALSE)) AS works_with_creators,
-                   b.contact_email, b.brand_name
-            FROM pr_brands b LEFT JOIN brand_ad_signals s ON s.brand_id = b.id
-            WHERE b.id = ANY(%s)
-        """, (ids,))
-        facts = {int(r[0]): (r[1], bool(r[2]), inbox_rank(r[3] if len(r) > 3 else None),
-                             looks_like_company(r[4] if len(r) > 4 else None)) for r in cur.fetchall()}
-    except Exception as err:
-        print(f"[Polly autopilot] reach ranking skipped: {err}")
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        return brands
-
-    def key(item):
-        i, b = item
-        min_f, works, inbox, company = facts.get(int(b["id"]) if b.get("id") else -1, (None, False, 1, False))
-        need = int(min_f or 0)
-        tier = 0 if need <= followers * IN_REACH else 1 if need <= followers * STRETCH else 2
-        proven = 0 if (works and followers < SMALL_CREATOR) else 1
-        return (tier, int(company), proven, inbox, i)
-
-    return [b for _, b in sorted(enumerate(brands), key=key)]
 
 
 def _planned_first(conn, creator_id, matched):
@@ -672,109 +466,13 @@ def _planned_first(conn, creator_id, matched):
     return first + [b for b in matched if int(b["id"]) not in order]
 
 
-FIRST_WEEK = timedelta(days=7)
-FIRST_WEEK_PROVEN = 20
-
-
-def in_first_pro_week(conn, creator_id, now=None):
-    """True during the creator's first 7 days on Pro (subscription_started_at; trial starts count)."""
-    now = now or datetime.now(timezone.utc)
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT subscription_started_at FROM creators WHERE id = %s", (creator_id,))
-        row = cur.fetchone()
-    except Exception as err:
-        print(f"[Polly autopilot] first-week check skipped creator={creator_id}: {err}")
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        return False
-    started = (row[0] if row and not isinstance(row, dict) else (row or {}).get("subscription_started_at")) if row else None
-    if not started:
-        return False
-    if started.tzinfo is None:
-        started = started.replace(tzinfo=timezone.utc)
-    return started <= now < started + FIRST_WEEK
-
-
-def proven_niche_brands(conn, categories, exclude_ids, followers, limit=FIRST_WEEK_PROVEN):
-    """Brands in the creator's own categories that creators on Newcollab have heard back from (reply tier
-    'replies' in services.brand_reply_signal), with a deliverable inbox and within reach (STRETCH), best first."""
-    own = [str(c).strip().lower() for c in categories or [] if str(c).strip()]
-    if not own:
-        return []
-    try:
-        from psycopg2.extras import RealDictCursor
-        from services.brand_reply_signal import id_sets
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        replies = [i for i in id_sets(cur)["replies"] if i]
-        if not replies:
-            return []
-        try:
-            followers = int(followers or 0)
-        except (TypeError, ValueError):
-            followers = 0
-        cap = int(followers * STRETCH) if followers > 0 else None
-        cur.execute("""
-            SELECT b.id, b.brand_name, b.slug, b.category, b.logo_url, b.min_followers
-            FROM pr_brands b
-            WHERE b.id = ANY(%(replies)s)
-              AND COALESCE(b.status, 'published') = 'published'
-              AND LOWER(COALESCE(b.category, '')) = ANY(%(cats)s)
-              AND NULLIF(TRIM(b.contact_email), '') IS NOT NULL
-              AND COALESCE(LOWER(b.email_status), '') NOT IN ('bounced', 'invalid', 'undeliverable', 'risky')
-              AND COALESCE(b.email_bounce_count, 0) = 0
-              AND COALESCE(b.accepting_pr, TRUE)
-              AND NOT (b.id = ANY(%(skip)s))
-              AND (%(cap)s IS NULL OR b.min_followers IS NULL OR b.min_followers <= %(cap)s)
-            ORDER BY COALESCE(b.min_followers, 0), COALESCE(b.response_rate, 0) DESC, b.id DESC
-            LIMIT %(n)s
-        """, {"replies": replies, "cats": own, "skip": [int(i) for i in exclude_ids or []] or [0], "cap": cap,
-              "n": int(limit)})
-        rows = cur.fetchall()
-    except Exception as err:
-        print(f"[Polly autopilot] proven brands skipped: {err}")
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        return []
-    return [{"id": int(r["id"]), "name": r.get("brand_name"), "brand_name": r.get("brand_name"), "slug": r.get("slug"),
-             "category": r.get("category"), "logo": r.get("logo_url"), "logo_url": r.get("logo_url"),
-             "match_score": MIN_FIT, "source": "proven", "min_followers": r.get("min_followers"), "proven": True}
-            for r in rows]
-
-
-def _first_week_proven_first(conn, creator_id, creator, matched, categories, exclude, notes):
-    """New Pro creators' first week: brands in their niche that answer creators go out first (after brands they
-    saved themselves), including ones the match pool didn't hold. Nov 2026: 7 of 8 Pro cancellations came in the
-    first 10 days with no reply yet."""
-    if not in_first_pro_week(conn, creator_id):
-        return matched
-    try:
-        from services.polly import drop_pitched
-        proven = drop_pitched(proven_niche_brands(conn, categories, exclude, (creator or {}).get("followers_count")),
-                              notes, extra_ids=exclude)
-    except Exception as err:
-        print(f"[Polly autopilot] first-week proven skipped creator={creator_id}: {err}")
-        return matched
-    if not proven:
-        return matched
-    proven_ids = {int(b["id"]) for b in proven}
-    targets = [b for b in matched if b.get("target")]
-    target_ids = {int(b["id"]) for b in targets}
-    lead = [b for b in proven if int(b["id"]) not in target_ids]
-    rest = [b for b in matched if not b.get("target") and int(b["id"]) not in proven_ids]
-    return targets + lead + rest
-
-
 def _targets_first(conn, creator_id, matched, exclude, notes):
-    """Brands the creator saved as targets (Brands feed) go out before Polly's own picks."""
+    """Brands the creator saved as targets (Brands feed) go out before Thanos's picks. Their own choice, so they
+    are not re-ranked; they only need a deliverable inbox and no pitch yet."""
     try:
         from services.brand_feed import target_brands
         from services.polly import drop_pitched
-        targets = drop_pitched(target_brands(conn, creator_id), notes, extra_ids=exclude)
+        targets = drop_pitched(target_brands(conn, creator_id), notes, extra_ids=list(exclude))
     except Exception as err:
         try:
             conn.rollback()
@@ -785,7 +483,8 @@ def _targets_first(conn, creator_id, matched, exclude, notes):
     if not targets:
         return matched
     emailable = _brands_with_email(conn, [int(t["id"]) for t in targets])
-    first = [{**t, "target": True} for t in targets if int(t["id"]) in emailable]
+    ranked = {int(b["id"]): b for b in matched}
+    first = [{**ranked.get(int(t["id"]), {}), **t, "target": True} for t in targets if int(t["id"]) in emailable]
     ids = {int(t["id"]) for t in first}
     return first + [b for b in matched if int(b["id"]) not in ids]
 
@@ -798,8 +497,6 @@ def _write_draft(conn, creator_id, creator, brand_id, notes, scrape, announced=F
         apply_location_to_pitch,
         apply_paid_ask_to_pitch,
         pitch_from_package_response,
-        pitch_has_placeholder,
-        resolve_pitch_location,
     )
 
     brand = _brands_with_email(conn, [brand_id]).get(brand_id)

@@ -13,7 +13,6 @@ from services.fit_score_calculator import (
     scrape_agrees_with_intent,
     check_brand_context_mismatch,
 )
-from services.mentor_matchmaker import diversify_matches, _prefilter_candidates
 
 
 def _yasia_profile(**overrides):
@@ -141,34 +140,6 @@ class TestBrandAwareScores(unittest.TestCase):
         self.assertGreaterEqual(len(unique), 3)
 
 
-class TestDiversifyAndPrefilter(unittest.TestCase):
-    def test_diversify_caps_one_category(self):
-        brands = [
-            {'id': i, 'name': f'Skincare {i}', 'category': 'skincare', 'match_score': 80 - i}
-            for i in range(10)
-        ]
-        kept = diversify_matches(brands, limit=8, max_per_raw=2, max_per_family=4)
-        self.assertLessEqual(len(kept), 4)
-
-    def test_prefilter_drops_optical_and_spreads_scores(self):
-        profile = _yasia_profile()
-        brands = [
-            _brand(1, 'Tarte Cosmetics', 'beauty', 'Shape Tape concealer and Amazonian clay foundation.', hero_product='Shape Tape Concealer'),
-            _brand(2, 'Eydology', 'skincare', 'Premium eye care and prescription glasses.', hero_product='Prescription Glasses Collection'),
-            _brand(3, 'Glow Serum Co', 'skincare', 'Vitamin C serum and daily glow moisturizer for skin.', hero_product='Vitamin C Serum'),
-            _brand(4, 'Calm Rituals', 'wellness', 'Self-care wellness rituals and adaptogen blends.', hero_product='Adaptogen Blend'),
-            _brand(5, 'Kitsch Hair', 'haircare', 'Satin scrunchies and heatless hair curlers.', hero_product='Satin Scrunchie'),
-            _brand(6, 'Deweffect', 'skincare', 'Dewy skin mist and hydrating facial spray.', hero_product='Dew Mist'),
-        ]
-        kept = _prefilter_candidates(profile, brands, ['beauty', 'wellness', 'lifestyle'])
-        names = {b.get('name') for b in kept}
-        self.assertNotIn('Eydology', names)
-        scores = [b['match_score'] for b in kept]
-        self.assertTrue(all(s >= 35 for s in scores))
-        if len(scores) >= 2:
-            self.assertGreater(max(scores) - min(scores), 0)
-
-
 class TestPrepareForYouProfile(unittest.TestCase):
     def test_fashion_scrape_yields_to_beauty_interests(self):
         from pr_crm_routes import (
@@ -243,37 +214,6 @@ class TestBeautyBabyParentingFeed(unittest.TestCase):
         self.assertIn('baby', [str(s).lower() for s in prep['secondary_niches']])
         self.assertNotIn('cooking', [str(s).lower() for s in prep['secondary_niches']])
         self.assertNotIn('organization', [str(s).lower() for s in prep['secondary_niches']])
-
-    def test_dual_intent_reserves_parenting_seats(self):
-        brands = []
-        for i in range(6):
-            brands.append({
-                'id': i,
-                'name': f'Skincare {i}',
-                'category': 'skincare',
-                'match_score': 90 - i,
-            })
-        brands.append({
-            'id': 50, 'name': 'Duradry', 'category': 'wellness', 'match_score': 88,
-        })
-        brands.append({
-            'id': 51, 'name': 'Shield Your Body', 'category': 'wellness', 'match_score': 86,
-        })
-        for i in range(3):
-            brands.append({
-                'id': 80 + i,
-                'name': f'Baby Brand {i}',
-                'category': 'baby',
-                'match_score': 62 - i,
-            })
-        kept = diversify_matches(
-            brands, limit=8, max_per_raw=2, max_per_family=5,
-            interest_niches=['beauty', 'baby'],
-        )
-        cats = [b['category'] for b in kept]
-        self.assertGreaterEqual(cats.count('baby'), 2)
-        names = {b['name'] for b in kept}
-        self.assertIn('Baby Brand 0', names)
 
     def test_deodorant_loses_to_baby_brand(self):
         profile = {

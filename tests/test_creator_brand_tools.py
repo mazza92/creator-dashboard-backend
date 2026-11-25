@@ -103,20 +103,21 @@ class Tools(unittest.TestCase):
     def test_find_brands_ranked_and_filtered(self):
         out = t.find_brands(self.cur(), {"niche": "skin care", "limit": 8}, source="chatgpt")
         names = [b["name"] for b in out["brands"]]
-        # brief first, then creator-style ads, then gifting; a thin list is topped up with brands accepting PR,
-        # never with drafts or brands not accepting PR
-        self.assertEqual(names, ["Brief Co", "Glow Co", "Dew Labs"])
+        # Thanos orders them; drafts and brands not accepting PR never appear, and every brand says why
+        self.assertEqual(set(names), {"Brief Co", "Glow Co", "Dew Labs"})
         self.assertNotIn("Quiet Brand", names)
-        self.assertIn("Has an open paid UGC brief on Newcollab", out["brands"][0]["why_now"])
-        self.assertTrue(out["brands"][1]["brand_page"].startswith("https://newcollab.co/brand/glow-co?"))
+        brief = next(b for b in out["brands"] if b["name"] == "Brief Co")
+        self.assertIn("Has an open paid UGC brief on Newcollab", brief["why_now"])
+        glow = next(b for b in out["brands"] if b["name"] == "Glow Co")
+        self.assertTrue(glow["brand_page"].startswith("https://newcollab.co/brand/glow-co?"))
         self.assertNotIn("pr@glow.co", json.dumps(out))
         self.cur().execute("UPDATE pr_brands SET accepting_pr = true WHERE slug = 'quiet'")
         topped = t.find_brands(self.cur(), {"niche": "skincare", "limit": 8})
-        self.assertEqual(topped["brands"][-1], {**topped["brands"][-1], "name": "Quiet Brand",
-                                                "why_now": ["Listed as open to creator collabs"]})
+        quiet = next(b for b in topped["brands"] if b["name"] == "Quiet Brand")
+        self.assertEqual(quiet["why_now"], ["Listed as open to creator collabs"])
         self.conn.rollback()
         us = t.find_brands(self.cur(), {"niche": "skincare", "country": "US"}, source="claude")
-        self.assertEqual([b["name"] for b in us["brands"]], ["Glow Co", "Dew Labs"])
+        self.assertEqual({b["name"] for b in us["brands"]}, {"Glow Co", "Dew Labs"})
         self.assertIn("utm_source=claude", us["creator_cta"]["url"])
 
     def test_unknown_niche_and_missing(self):

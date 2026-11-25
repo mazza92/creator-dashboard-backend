@@ -146,7 +146,7 @@ try:
 except ImportError as e:
     HAS_AI_DEPTH = False
     print(f"⚠️ AI Depth generator not available: {e}")
-    # Fit calculator can still power For You mentor-gate without full AI depth
+    # Fit calculator still works without full AI depth
     try:
         from services.fit_score_calculator import (
             calculate_fit_score,
@@ -163,452 +163,37 @@ except ImportError as e:
 pr_crm = Blueprint('pr_crm', __name__, url_prefix='/api/pr-crm')
 
 
-def get_min_follower_cap(creator_followers):
-    """
-    Get max brand min_followers requirement to show based on creator size.
-    Prevents showing brands with high requirements to micro-creators.
-    Uses min_followers (brand's creator requirement) as proxy for brand accessibility.
-    """
-    if not creator_followers or creator_followers < 1000:
-        return 5000  # 200-follower micros: brands that actually accept micros
-    if creator_followers < 5000:
-        return 10000  # Show brands that accept creators under 10K
-    elif creator_followers < 20000:
-        return 50000  # Show brands that accept creators under 50K
-    elif creator_followers < 50000:
-        return 100000  # Show brands that accept creators under 100K
-    else:
-        return None  # No cap for 50K+ creators
-
-
-def normalize_niche(niche_str):
-    """
-    Normalize compound niches like "tech & gadgets" into individual components.
-    Returns a list of individual niche terms.
-    Examples:
-        "tech & gadgets" -> ["tech", "gadgets", "tech & gadgets"]
-        "food & beverage" -> ["food", "beverage", "food & beverage"]
-        "fitness" -> ["fitness"]
-    """
-    if not niche_str:
-        return []
-
-    niche_lower = niche_str.lower().strip()
-    result = [niche_lower]  # Always include the original
-
-    # Split by common separators
-    for sep in [' & ', ' and ', '/', ', ', '+']:
-        if sep in niche_lower:
-            parts = [p.strip() for p in niche_lower.split(sep) if p.strip()]
-            result.extend(parts)
-            break
-
-    return list(set(result))  # Dedupe
-
-
-# Shared related-niche map for For You + matched count.
-# Keep relationships tight — lifestyle must NOT auto-pull luxury fashion.
-FOR_YOU_RELATED_NICHES = {
-    # Beauty/skincare and wellness/supplements are separate lanes (Nov 2026: wellness creators got skincare).
-    'beauty': ['skincare', 'makeup'],
-    'skincare': ['beauty', 'makeup'],
-    'makeup': ['beauty', 'skincare'],
-    'haircare': ['beauty'],
-    # Fashion stays within style/apparel — not parenting/lifestyle mom finds
-    'fashion': ['accessories', 'activewear', 'athleisure'],
-    'luxury': ['fashion', 'accessories'],
-    # Lifestyle/parenting: adjacent product finds — NOT specialty baby carriers by default
-    'lifestyle': ['home', 'food', 'wellness', 'beauty', 'skincare'],
-    'parenting': ['family', 'home', 'lifestyle', 'beauty', 'skincare', 'wellness'],
-    'baby': ['parenting', 'kids', 'family', 'home', 'lifestyle'],
-    'kids': ['parenting', 'baby', 'family', 'home', 'lifestyle'],
-    'family': ['parenting', 'home', 'lifestyle', 'food', 'beauty'],
-    'mom': ['parenting', 'family', 'home', 'lifestyle', 'beauty', 'skincare'],
-    'fitness': ['athleisure', 'activewear', 'sports'],  # NOT wellness
-    'activewear': ['fitness', 'athleisure', 'sports'],
-    'athleisure': ['fitness', 'activewear', 'sports'],
-    'sports': ['fitness', 'activewear', 'athleisure'],
-    'wellness': ['supplements', 'self-care'],  # NOT fitness, NOT skincare
-    'supplements': ['wellness', 'self-care'],
-    'food': ['lifestyle', 'kitchen', 'beverages', 'food & beverage', 'home'],
-    'food & beverage': ['food', 'beverages', 'lifestyle', 'kitchen'],
-    'beverages': ['food', 'food & beverage', 'lifestyle'],
-    'tech': ['gaming', 'gadgets', 'electronics'],
-    'gadgets': ['tech', 'gaming', 'electronics'],
-    'gaming': ['tech', 'entertainment'],
-    'home': ['lifestyle', 'decor', 'kitchen', 'food'],
-}
-
-
-# Mentor tiers for For You:
-# - Keep Good Match + Growth Match (unlock still useful: Pitch + tips)
-# - Drop Stretch / Not Recommended (Theory EU-style mismatches)
-FOR_YOU_MIN_FIT_SCORE = 35  # growth_match floor
-FOR_YOU_DEEP_LIMIT = 30  # ?pool=autopilot: Autopilot's pipeline pool
-FOR_YOU_EXCLUDE_TIERS = frozenset({'stretch_match', 'not_recommended'})
-# Hard-block categories that are never right for parenting/mom-finds creators
-FOR_YOU_PARENTING_BLOCKED_CATEGORIES = frozenset({
-    'fashion', 'luxury', 'apparel', 'clothing', 'streetwear',
-    'cbd', 'cannabis', 'hemp',
-})
-_PARENTING_BLOCKED_NAME_RE = re.compile(
-    r'\b(cbd|thc|cannabis|hemp|delta-?8|delta-?9)\b',
-    re.I,
+from services.thanos.niches import (  # noqa: F401  (moved to Thanos, Nov 2026)
+    get_min_follower_cap,
+    normalize_niche,
+    FOR_YOU_RELATED_NICHES,
+    FOR_YOU_MIN_FIT_SCORE,
+    FOR_YOU_DEEP_LIMIT,
+    FOR_YOU_EXCLUDE_TIERS,
+    FOR_YOU_PARENTING_BLOCKED_CATEGORIES,
+    _PARENTING_BLOCKED_NAME_RE,
+    _OPTICAL_BRAND_RE,
+    _WIG_BRAND_RE,
+    _HAIR_CREATOR_RE,
+    CONCRETE_FOR_YOU_NICHES,
+    _creator_is_parenting_focused,
+    WEAK_SCRAPE_NICHES,
+    VAGUE_SCRAPE_WHEN_INTERESTS,
+    _INFER_PRIMARY_PREFERRED,
+    _NOISY_SCRAPE_NICHES,
+    _minimal_fit_profile_from_niches,
+    _infer_primary_from_signals,
+    _has_concrete_interests,
+    _apply_inferred_primary,
+    _merge_interest_secondaries,
+    _prepare_for_you_profile,
+    _attach_match_lanes,
+    _build_for_you_category_pool,
+    _roster_category_pool,
+    _creator_is_eyewear_focused,
+    _creator_is_hair_focused,
+    _for_you_should_skip_brand,
 )
-_OPTICAL_BRAND_RE = re.compile(
-    r'\b(glasses|eyewear|optical|spectacles|frames|contact lenses?|eye care|eyecare)\b',
-    re.I,
-)
-_WIG_BRAND_RE = re.compile(
-    r'wig|hairpieces?|hair pieces?|hair extensions?|lace front|glueless',
-    re.I,
-)
-_HAIR_CREATOR_RE = re.compile(
-    r'\b(hair|haircare|wig|wigs|curl|curly|scalp|blowout|extensions?)\b',
-    re.I,
-)
-
-# Onboarding niches that should drive For You when scrape is vague (lifestyle/home)
-CONCRETE_FOR_YOU_NICHES = frozenset({
-    'beauty', 'skincare', 'makeup', 'haircare', 'cosmetics',
-    'parenting', 'baby', 'kids', 'family', 'mom', 'mum', 'maternity',
-    'fitness', 'food', 'fashion', 'tech', 'gaming', 'pet', 'wellness',
-})
-
-
-def _creator_is_parenting_focused(niches, profile=None) -> bool:
-    tokens = set()
-    for n in (niches or []):
-        tokens.update(normalize_niche(n))
-    if profile:
-        for key in ('primary_niche',):
-            val = profile.get(key)
-            if val:
-                tokens.update(normalize_niche(str(val)))
-        for n in (profile.get('secondary_niches') or []):
-            tokens.update(normalize_niche(str(n)))
-    parenting_markers = {
-        'parenting', 'baby', 'kids', 'family', 'mom', 'mum', 'dad', 'maternity', 'toddler',
-    }
-    return bool(tokens & parenting_markers)
-
-
-# Scrape labels that are too vague to drive For You lane matching
-WEAK_SCRAPE_NICHES = frozenset({
-    'other', 'unknown', 'general', 'misc', 'miscellaneous', 'n/a', 'na', 'none', '',
-})
-VAGUE_SCRAPE_WHEN_INTERESTS = frozenset({'lifestyle', 'home'}) | WEAK_SCRAPE_NICHES
-
-# Prefer concrete creator niches when inferring from interests/themes
-_INFER_PRIMARY_PREFERRED = [
-    'haircare', 'skincare', 'beauty', 'makeup', 'fitness', 'activewear',
-    'wellness', 'fashion', 'food', 'parenting', 'baby', 'home', 'lifestyle',
-]
-_NOISY_SCRAPE_NICHES = frozenset({
-    'home decor', 'organization', 'cooking', 'ugc_creator', 'ugc',
-    'content creator', 'creator', 'other', 'unknown', 'general',
-})
-
-
-def _minimal_fit_profile_from_niches(niches, followers=0):
-    """Build a calculator-compatible profile when scrape data is missing."""
-    niche_list = []
-    for n in (niches or []):
-        niche_list.extend(normalize_niche(n))
-    # Prefer a concrete primary (parenting over compound blobs)
-    preferred = _INFER_PRIMARY_PREFERRED + ['family', 'food', 'home']
-    primary = next((p for p in preferred if p in niche_list), None)
-    if not primary:
-        primary = niche_list[0] if niche_list else 'lifestyle'
-    secondary = [n for n in niche_list if n != primary]
-    return {
-        'primary_niche': primary,
-        'secondary_niches': secondary,
-        'content_themes': niche_list + ['finds', 'product', 'routine'],
-        'engagement_rate': 2.5,
-        'posting_cadence_per_week': 3,
-        'latest_post_days_ago': 7,
-        'follower_count': followers or 0,
-        'has_collab_email': False,
-        'aesthetic_descriptors': [],
-    }
-
-
-def _infer_primary_from_signals(profile, niches=None):
-    """
-    When scrape primary is 'other'/weak, infer a usable primary from
-    onboarding interests first. Themes must not steal the lane (e.g. skincare
-    in posts should not replace Beauty + Baby).
-    """
-    interest_tokens = set()
-    for n in (niches or []):
-        interest_tokens.update(t.lower().strip() for t in normalize_niche(n) if t)
-    concrete = interest_tokens & CONCRETE_FOR_YOU_NICHES
-    if concrete:
-        for pref in _INFER_PRIMARY_PREFERRED:
-            if pref in concrete:
-                return pref
-        return next(iter(concrete))
-
-    tokens = []
-    for s in (profile.get('secondary_niches') or []):
-        tokens.extend(normalize_niche(str(s)))
-    themes = profile.get('content_themes') or []
-    if isinstance(themes, str):
-        try:
-            import json as _json
-            themes = _json.loads(themes)
-        except Exception:
-            themes = [themes]
-    for t in themes:
-        tokens.extend(normalize_niche(str(t)))
-
-    token_set = {t.lower().strip() for t in tokens if t}
-    if not token_set:
-        return None
-
-    for pref in _INFER_PRIMARY_PREFERRED:
-        if pref in token_set:
-            return pref
-    return next(iter(token_set), None)
-
-
-def _has_concrete_interests(niches) -> bool:
-    tokens = set()
-    for n in (niches or []):
-        tokens.update(normalize_niche(n))
-    return bool(tokens & CONCRETE_FOR_YOU_NICHES)
-
-
-def _apply_inferred_primary(profile, inferred, niches, keep_scrape_primary=None):
-    secondary = []
-    for n in (niches or []):
-        for part in normalize_niche(n):
-            if part != inferred and part not in secondary:
-                secondary.append(part)
-    if keep_scrape_primary:
-        for part in normalize_niche(str(keep_scrape_primary)):
-            if (
-                part != inferred
-                and part not in secondary
-                and part not in _NOISY_SCRAPE_NICHES
-            ):
-                secondary.append(part)
-    profile['primary_niche'] = inferred
-    profile['secondary_niches'] = secondary
-    return profile
-
-
-def _merge_interest_secondaries(profile, niches):
-    """Keep onboarding niches on the profile so adjacency includes Beauty + Parenting."""
-    primary = str(profile.get('primary_niche') or '').lower().strip()
-    secondary = []
-    for n in (niches or []):
-        for part in normalize_niche(n):
-            if part != primary and part not in secondary:
-                secondary.append(part)
-    for s in (profile.get('secondary_niches') or []):
-        for part in normalize_niche(str(s)):
-            if (
-                part != primary
-                and part not in secondary
-                and part not in _NOISY_SCRAPE_NICHES
-            ):
-                secondary.append(part)
-    profile['secondary_niches'] = secondary
-    return profile
-
-
-def _prepare_for_you_profile(creator_profile_dict, niches=None, followers=0):
-    """
-    Scoring profile blends scrape (content proof) with onboarding (pitch intent).
-    When scrape is vague OR conflicts with concrete interests (fashion scrape vs
-    Beauty/Wellness), interests win as primary so cards match what the creator
-    actually wants to pitch.
-    """
-    if not creator_profile_dict or not creator_profile_dict.get('primary_niche'):
-        profile = _minimal_fit_profile_from_niches(niches, followers)
-        return _attach_match_lanes(profile, niches, scrape_primary=None)
-
-    profile = dict(creator_profile_dict)
-    primary = str(profile.get('primary_niche') or '').lower().strip()
-    scrape_primary = primary
-    confidence = int(profile.get('primary_niche_confidence') or 0)
-    concrete = _has_concrete_interests(niches)
-    agrees = True
-    if scrape_agrees_with_intent:
-        agrees = scrape_agrees_with_intent(primary, list(niches or []))
-    vague_vs_interests = concrete and primary in VAGUE_SCRAPE_WHEN_INTERESTS
-    conflict_vs_interests = concrete and not agrees and primary not in WEAK_SCRAPE_NICHES
-
-    if (
-        primary in WEAK_SCRAPE_NICHES
-        or confidence < 40
-        or vague_vs_interests
-        or conflict_vs_interests
-    ):
-        inferred = _infer_primary_from_signals(profile, niches)
-        if inferred and inferred not in VAGUE_SCRAPE_WHEN_INTERESTS:
-            reason = 'conflict' if conflict_vs_interests else 'vague'
-            print(
-                f"[ForYou] Scrape niche={primary!r} (conf={confidence}, {reason}) "
-                f"-> inferred primary={inferred!r} from interests/themes"
-            )
-            profile = _apply_inferred_primary(
-                profile, inferred, niches, keep_scrape_primary=scrape_primary
-            )
-        elif primary in WEAK_SCRAPE_NICHES or confidence < 40:
-            fallback = _minimal_fit_profile_from_niches(niches, followers or profile.get('follower_count') or 0)
-            for key in ('follower_count', 'engagement_rate', 'posting_cadence_per_week',
-                        'raw_bio', 'handle', 'aesthetic', 'content_themes'):
-                if profile.get(key) is not None:
-                    fallback[key] = profile.get(key)
-            return _attach_match_lanes(fallback, niches, scrape_primary=scrape_primary)
-
-    profile = _merge_interest_secondaries(profile, niches)
-    if followers and not profile.get('follower_count'):
-        profile['follower_count'] = followers
-    return _attach_match_lanes(profile, niches, scrape_primary=scrape_primary)
-
-
-def _attach_match_lanes(profile, niches, scrape_primary=None):
-    intent = []
-    for n in (niches or []):
-        for part in normalize_niche(n):
-            if part and part not in intent and part not in WEAK_SCRAPE_NICHES:
-                intent.append(part)
-    proof = []
-    if scrape_primary:
-        for part in normalize_niche(str(scrape_primary)):
-            if part and part not in proof and part not in WEAK_SCRAPE_NICHES:
-                proof.append(part)
-    for s in (profile.get('secondary_niches') or []):
-        for part in normalize_niche(str(s)):
-            if part and part not in proof and part not in WEAK_SCRAPE_NICHES:
-                proof.append(part)
-    profile['match_intent_lanes'] = intent
-    profile['match_proof_lanes'] = proof
-    return profile
-
-
-def _build_for_you_category_pool(scrape_profile, interest_niches):
-    """
-    Candidate SQL categories:
-    - Core: onboarding interests when they are concrete (Beauty, Parenting, etc.)
-    - Soft: scrape lane, only when scrape agrees with interests
-    Conflicting scrape (fashion vs Beauty/Wellness) must not explode the pool
-    into apparel. Vague lifestyle interests must not pull coffee/food when
-    concrete interests already exist.
-    """
-    related = FOR_YOU_RELATED_NICHES
-    core = set()
-    soft = set()
-    concrete = _has_concrete_interests(interest_niches)
-
-    for n in (interest_niches or []):
-        for part in normalize_niche(n):
-            if part in WEAK_SCRAPE_NICHES:
-                continue
-            core.add(part)
-            if part in VAGUE_SCRAPE_WHEN_INTERESTS and concrete:
-                continue
-            core.update(related.get(part, []))
-
-    scrape_vague = True
-    scrape_conflicts = False
-    if scrape_profile and scrape_profile.get('primary_niche'):
-        primary = str(scrape_profile.get('primary_niche')).lower().strip()
-        scrape_vague = (
-            primary in WEAK_SCRAPE_NICHES
-            or (primary in VAGUE_SCRAPE_WHEN_INTERESTS and bool(core))
-        )
-        if core and scrape_agrees_with_intent:
-            scrape_conflicts = not scrape_agrees_with_intent(primary, list(interest_niches or []))
-        if not scrape_vague and not scrape_conflicts:
-            for part in normalize_niche(primary):
-                soft.add(part)
-                soft.update(related.get(part, []))
-            for s in (scrape_profile.get('secondary_niches') or []):
-                for part in normalize_niche(str(s)):
-                    if part in WEAK_SCRAPE_NICHES:
-                        continue
-                    soft.add(part)
-                    soft.update(related.get(part, []))
-        elif scrape_conflicts:
-            for part in normalize_niche(primary):
-                if part not in WEAK_SCRAPE_NICHES:
-                    soft.add(part)
-
-    if core:
-        labels = core if scrape_vague else (core | soft)
-        expanded = set(labels)
-        for part in list(labels):
-            if part in ('baby', 'parenting', 'kids', 'family', 'maternity'):
-                expanded.update({
-                    'baby & parenting', 'baby and parenting', 'parenting & baby',
-                    'mom & baby', 'beauty & parenting',
-                })
-        return list(expanded)
-    return list(soft)
-
-
-def _roster_category_pool(scrape_profile, interest_niches):
-    """Live rosters jump the queue, so they must fit the niche the creator picked, not a scrape lane."""
-    if _has_concrete_interests(interest_niches):
-        pool = _build_for_you_category_pool(None, interest_niches)
-    else:
-        pool = _build_for_you_category_pool(scrape_profile, interest_niches)
-    return {str(c).lower() for c in (pool or [])}
-
-
-def _creator_is_eyewear_focused(niches, profile=None) -> bool:
-    blob = ' '.join(str(n) for n in (niches or []))
-    if profile:
-        blob += ' ' + str(profile.get('primary_niche') or '')
-        blob += ' ' + str(profile.get('raw_bio') or '')
-        themes = profile.get('content_themes') or []
-        if isinstance(themes, (list, tuple)):
-            blob += ' ' + ' '.join(str(t) for t in themes)
-    return bool(re.search(r'\b(glasses|eyewear|optical|frames|vision|spectacles)\b', blob, re.I))
-
-
-def _creator_is_hair_focused(niches, profile=None) -> bool:
-    blob = ' '.join(str(n) for n in (niches or []))
-    if profile:
-        blob += ' ' + str(profile.get('primary_niche') or '')
-        blob += ' ' + ' '.join(str(s) for s in (profile.get('secondary_niches') or []))
-        blob += ' ' + str(profile.get('raw_bio') or '')
-        themes = profile.get('content_themes') or []
-        if isinstance(themes, (list, tuple)):
-            blob += ' ' + ' '.join(str(t) for t in themes)
-    return bool(_HAIR_CREATOR_RE.search(blob))
-
-
-def _for_you_should_skip_brand(brand, niches, profile=None) -> bool:
-    """Drop fashion/CBD for parenting creators, optical, wig/haircare, and gender-mismatched brands."""
-    cat = (brand.get('category') or '').lower().strip()
-    name = ' '.join(str(brand.get(k) or '') for k in ('name', 'brand_name', 'description', 'hero_product'))
-    if _creator_is_parenting_focused(niches, profile):
-        if cat in FOR_YOU_PARENTING_BLOCKED_CATEGORIES:
-            return True
-        if _PARENTING_BLOCKED_NAME_RE.search(name):
-            return True
-    if _OPTICAL_BRAND_RE.search(name) and not _creator_is_eyewear_focused(niches, profile):
-        return True
-    hair_focused = _creator_is_hair_focused(niches, profile)
-    if cat == 'haircare' and not hair_focused:
-        return True
-    if _WIG_BRAND_RE.search(name) and not hair_focused:
-        return True
-    try:
-        from services.audience_fit import audience_mismatch
-        if audience_mismatch(brand, profile, niches):
-            return True
-    except Exception:
-        pass
-    return False
-
-
 def pack_contact_email(brand):
     """Return the brand inbox as stored. Form URLs are extra, not a replacement."""
     if not brand:
@@ -616,86 +201,6 @@ def pack_contact_email(brand):
     email = (brand.get('contact_email') or brand.get('pr_contact_email') or '').strip() or None
     generic = is_generic_inbox(email) if email else False
     return email, generic
-
-
-def _apply_mentor_fit_to_for_you(matched_rows, creator_profile_dict, niches=None, followers=0):
-    """
-    Calculator-only fallback when mentor LLM is unavailable.
-    Uses brand-aware scoring so cards do not share one percentage.
-    """
-    if not matched_rows:
-        return []
-    scorer = score_brand_for_creator or calculate_fit_score
-    if scorer is None:
-        print("[ForYou] fit scorer unavailable — skipping mentor gate")
-        return [dict(r) for r in matched_rows][:8]
-
-    profile = _prepare_for_you_profile(creator_profile_dict, niches, followers)
-
-    scored = []
-    for brand_row in matched_rows:
-        brand = dict(brand_row)
-        if _for_you_should_skip_brand(brand, niches, profile):
-            continue
-        if score_brand_for_creator:
-            fit_result = score_brand_for_creator(profile, brand, interest_niches=list(niches or []))
-        else:
-            fit_result = calculate_fit_score(profile, (brand.get('category') or ''), brand=brand)
-        fit_score_val = fit_result.get('overall_score', 0)
-        tier = fit_result.get('tier', 'growth_match')
-        status = fit_result.get('status', 'not_yet')
-
-        brand['match_score'] = fit_score_val
-        brand['fit_tier'] = tier
-        brand['fit_status'] = status
-        brand['fit_label'] = fit_result.get('label')
-        brand['match_source'] = 'calculator_fallback'
-
-        if fit_score_val < FOR_YOU_MIN_FIT_SCORE or tier in FOR_YOU_EXCLUDE_TIERS:
-            continue
-        scored.append(brand)
-
-    scored.sort(key=lambda x: x.get('match_score') or 0, reverse=True)
-    try:
-        from services.mentor_matchmaker import diversify_matches
-        return diversify_matches(
-            scored, limit=8, max_per_raw=2, max_per_family=5,
-            interest_niches=list(niches or []),
-        )
-    except Exception:
-        return scored[:8]
-
-
-def _rank_for_you_with_mentor(matched_rows, creator_profile_dict, niches=None, followers=0, creator_id=None):
-    """
-    Mentor LLM ranks; scrape profile scores (same as unlock).
-    `niches` = user interests only (soft preference).
-    """
-    if not matched_rows:
-        return []
-
-    profile = _prepare_for_you_profile(creator_profile_dict, niches, followers)
-
-    try:
-        from services.mentor_matchmaker import rank_matches_with_mentor
-        ranked = rank_matches_with_mentor(
-            creator_profile=profile,
-            candidate_brands=[dict(r) for r in matched_rows],
-            niches=list(niches or []),
-            creator_id=creator_id,
-        )
-        if ranked:
-            for brand in ranked:
-                print(
-                    f"[ForYou] Mentor LLM: {brand.get('name')} — "
-                    f"{brand.get('match_score')}% ({brand.get('fit_status')}) "
-                    f"src={brand.get('match_source')}"
-                )
-            return ranked
-    except Exception as e:
-        print(f"[ForYou] Mentor LLM rank failed: {e}")
-
-    return _apply_mentor_fit_to_for_you(matched_rows, profile, niches=niches, followers=followers)
 
 
 def generate_kit_token(creator_id, brand_id):
@@ -1241,196 +746,40 @@ def _get_low_follower_ugc_response(brand_name, follower_count):
 
 
 def get_better_brand_matches(creator, current_brand_id, cursor, limit=3):
-    """
-    Get better brand alternatives when current brand is a poor fit.
-
-    Returns brands where creator is more likely to succeed based on:
-    - Creator's niche matching brand category
-    - Follower count within brand's typical range
-    - Not already unlocked by this creator
-
-    Args:
-        creator: Creator dict with niche, follower_count, social_links
-        current_brand_id: Brand to exclude
-        cursor: DB cursor
-        limit: Max brands to return
-
-    Returns:
-        List of brand dicts with estimated fit status
-    """
-    # Parse creator's niche
-    creator_niche = creator.get('niche') or ''
-    if isinstance(creator_niche, list):
-        creator_niche = creator_niche[0] if creator_niche else ''
-    creator_niche = creator_niche.lower().strip()
-
-    # Get follower count from social_links
-    social_links_raw = creator.get('social_links') or []
-    if isinstance(social_links_raw, str):
-        try:
-            social_links_raw = json.loads(social_links_raw)
-        except:
-            social_links_raw = []
-
-    follower_count = 0
-    for link in social_links_raw:
-        link_followers = int(link.get('followersCount') or link.get('followers_count') or 0)
-        if link_followers > follower_count:
-            follower_count = link_followers
-
-    if follower_count == 0:
-        follower_count = creator.get('follower_count') or creator.get('followers_count') or 0
-
-    # Map niches to brand categories
-    niche_to_categories = {
-        'beauty': ['beauty', 'skincare', 'haircare', 'cosmetics'],
-        'skincare': ['skincare', 'beauty'],
-        'haircare': ['haircare', 'beauty'],
-        'fashion': ['fashion', 'apparel', 'clothing', 'accessories'],
-        'fitness': ['fitness', 'activewear', 'sports', 'health'],
-        'wellness': ['wellness', 'health', 'supplements'],
-        'food': ['food', 'beverage', 'restaurant', 'snacks'],
-        'tech': ['tech', 'electronics', 'gaming', 'software', 'saas'],
-        'gaming': ['gaming', 'tech', 'electronics'],
-        'lifestyle': ['lifestyle', 'home', 'wellness'],
-        'travel': ['travel', 'hospitality', 'luggage'],
-        'pet': ['pet', 'animals'],
-        'home': ['home', 'furniture', 'decor', 'lifestyle'],
-        # Creator/business niches
-        'social_media_marketing': ['tech', 'software', 'saas', 'marketing', 'business'],
-        'video_production': ['tech', 'software', 'electronics', 'marketing'],
-        'creator': ['tech', 'software', 'electronics', 'creator tools'],
-        'business': ['business', 'software', 'saas', 'finance'],
-        'marketing': ['marketing', 'software', 'tech', 'business'],
-        'other': [],  # Will use fallback query
-    }
-
-    matching_categories = niche_to_categories.get(creator_niche, [creator_niche]) if creator_niche else []
-
-    print(f"[BetterMatches] Creator niche: '{creator_niche}', matching categories: {matching_categories}, followers: {follower_count}")
-
+    """Brands to unlock instead of a poor fit: Thanos's alternatives for this creator, in the unlock modal's
+    shape (id, brand_name, slug, logo, category, fit_status, fit_emoji, fit_label)."""
+    from services.thanos import rank
+    creator_id = creator.get('id')
+    if not creator_id:
+        return []
     try:
-        # Get creator_id for excluding already unlocked brands
-        creator_id = creator.get('id')
-
-        # Query for matching brands - ONLY from published pr_brands
-        if matching_categories:
-            # Use category matching
-            placeholders = ','.join(['%s'] * len(matching_categories))
-            query = f'''
-                SELECT b.id, b.brand_name, b.slug, b.category,
-                       b.logo_url, b.website, b.contact_email, b.application_form_url
-                FROM pr_brands b
-                WHERE b.id != %s
-                AND COALESCE(b.status, 'published') = 'published'
-                AND LOWER(b.category) IN ({placeholders})
-                AND b.contact_email IS NOT NULL
-                AND NOT EXISTS (
-                    SELECT 1 FROM pr_packages pp
-                    WHERE pp.brand_id = b.id AND pp.creator_id = %s
-                )
-                ORDER BY RANDOM()
-                LIMIT %s
-            '''
-            params = [current_brand_id] + matching_categories + [creator_id, limit * 2]
-        else:
-            # Fallback: get any popular brands - ONLY from published pr_brands
-            query = '''
-                SELECT b.id, b.brand_name, b.slug, b.category,
-                       b.logo_url, b.website, b.contact_email, b.application_form_url
-                FROM pr_brands b
-                WHERE b.id != %s
-                AND COALESCE(b.status, 'published') = 'published'
-                AND b.contact_email IS NOT NULL
-                AND NOT EXISTS (
-                    SELECT 1 FROM pr_packages pp
-                    WHERE pp.brand_id = b.id AND pp.creator_id = %s
-                )
-                ORDER BY RANDOM()
-                LIMIT %s
-            '''
-            params = [current_brand_id, creator_id, limit * 2]
-
-        cursor.execute(query, params)
-        brands = cursor.fetchall()
-
-        # Estimate fit for each brand
-        alternatives = []
-        for brand in brands:
-            brand_dict = dict(brand)
-            brand_category = (brand_dict.get('category') or '').lower()
-
-            # Simple fit estimation based on niche match and follower count
-            # Labels are consistent with colors: green=Strong, yellow=Good, orange=Building
-            if creator_niche and brand_category in matching_categories[:2]:
-                # Strong niche match
-                if follower_count >= 5000:
-                    fit_status = 'ready'
-                    fit_emoji = '🟢'
-                    fit_label = 'Strong fit'
-                elif follower_count >= 1000:
-                    fit_status = 'almost'
-                    fit_emoji = '🟡'
-                    fit_label = 'Good fit'
-                else:
-                    fit_status = 'not_yet'
-                    fit_emoji = '🟠'
-                    fit_label = 'Building'
-            elif creator_niche and brand_category in matching_categories:
-                # Moderate niche match
-                if follower_count >= 10000:
-                    fit_status = 'ready'
-                    fit_emoji = '🟢'
-                    fit_label = 'Strong fit'
-                elif follower_count >= 3000:
-                    fit_status = 'almost'
-                    fit_emoji = '🟡'
-                    fit_label = 'Good fit'
-                else:
-                    fit_status = 'not_yet'
-                    fit_emoji = '🟠'
-                    fit_label = 'Building'
-            else:
-                # No strong niche match but could work
-                fit_status = 'almost'
-                fit_emoji = '🟡'
-                fit_label = 'Worth trying'
-
-            # Generate logo URL with Clearbit fallback
-            logo_url = brand_dict.get('logo_url')
-            if not logo_url and brand_dict.get('website'):
-                try:
-                    from urllib.parse import urlparse
-                    website = brand_dict['website']
-                    if not website.startswith('http'):
-                        website = f'https://{website}'
-                    domain = urlparse(website).hostname
-                    if domain:
-                        domain = domain.replace('www.', '')
-                        logo_url = f'https://logo.clearbit.com/{domain}'
-                except:
-                    pass
-
-            alternatives.append({
-                'id': brand_dict['id'],
-                'brand_name': brand_dict['brand_name'],
-                'slug': brand_dict['slug'],
-                'logo': logo_url,
-                'category': brand_dict.get('category'),
-                'fit_status': fit_status,
-                'fit_emoji': fit_emoji,
-                'fit_label': fit_label
-            })
-
-        # Sort by fit (ready first, then almost, then not_yet)
-        fit_order = {'ready': 0, 'almost': 1, 'not_yet': 2}
-        alternatives.sort(key=lambda x: fit_order.get(x['fit_status'], 3))
-
-        return alternatives[:limit]
-
+        ranking = rank(cursor.connection, creator_id, surface='alternatives', n=limit,
+                       exclude_ids=[current_brand_id])
     except Exception as e:
         print(f"[BetterMatches] Error getting alternatives: {e}")
         return []
+    out = []
+    for card in ranking.brands:
+        score = int(card.get('match_score') or 0)
+        if score >= 70:
+            status, emoji, label = 'ready', '🟢', 'Strong fit'
+        elif score >= 50:
+            status, emoji, label = 'almost', '🟡', 'Good fit'
+        else:
+            status, emoji, label = 'not_yet', '🟠', 'Building'
+        out.append({
+            'id': card['id'],
+            'brand_name': card.get('brand_name'),
+            'slug': card.get('slug'),
+            'logo': card.get('logo'),
+            'category': card.get('category'),
+            'fit_status': status,
+            'fit_emoji': emoji,
+            'fit_label': label,
+            'reply_band': card.get('reply_band'),
+            'reply_reason': card.get('reply_reason'),
+        })
+    return out
 
 
 def compute_fit_with_ai_depth(creator, brand, user_id, cursor, conn, is_for_you_match=False):
@@ -7590,7 +6939,8 @@ def cold_spend_warning(creator_id, brand_id, conn=None):
     Returns {"warn": bool, "signal": {...}|None, "alternatives": [...]}. Pro users,
     already-unlocked brands, and brands without a cold signal never warn.
     """
-    from services.brand_reply_signal import brand_signal, responsive_alternatives
+    from services.brand_reply_signal import brand_signal
+    from services.thanos import rank
 
     close_conn = False
     if not conn:
@@ -7611,19 +6961,15 @@ def cold_spend_warning(creator_id, brand_id, conn=None):
         remaining = int(balance.get("remaining") or 0)
         if remaining <= 0:
             return out
-        cursor.execute(
-            "SELECT category, min_followers FROM pr_brands WHERE id = %s",
-            (brand_id,),
-        )
-        brand = cursor.fetchone() or {}
-        cursor.execute("SELECT followers_count FROM creators WHERE id = %s", (creator_id,))
-        creator = cursor.fetchone() or {}
-        cap = get_min_follower_cap(creator.get("followers_count") or 0) if creator.get("followers_count") else None
+        cursor.execute("SELECT category FROM pr_brands WHERE id = %s", (brand_id,))
+        category = ((cursor.fetchone() or {}).get("category") or "").strip()
         out["warn"] = True
         out["remaining"] = remaining
-        out["alternatives"] = responsive_alternatives(
-            cursor, brand.get("category") or "", exclude_ids=[brand_id], limit=3, min_follower_cap=cap,
-        )
+        # Same-category brands Thanos expects to answer (no exploration on this surface).
+        out["alternatives"] = rank(
+            conn, creator_id, surface="alternatives", n=3,
+            categories=[category] if category else None, exclude_ids=[brand_id],
+        ).brands
         return out
     except Exception as err:
         print(f"[cold_spend_warning] skipped: {err}")
@@ -8758,753 +8104,197 @@ def reveal_contact():
 # FOR YOU - PERSONALIZED RECOMMENDATIONS
 # ============================================
 
+FOR_YOU_SEASONAL_CATEGORIES = {
+    1: ['fitness', 'wellness', 'lifestyle'],
+    2: ['beauty', 'jewelry', 'fashion', 'skincare'],
+    3: ['beauty', 'fashion', 'skincare'],
+    4: ['fashion', 'lifestyle', 'beauty'],
+    5: ['fashion', 'lifestyle', 'skincare'],
+    6: ['lifestyle', 'beauty', 'skincare', 'fashion'],
+    7: ['lifestyle', 'beauty', 'fashion'],
+    8: ['beauty', 'lifestyle', 'fashion'],
+    9: ['fashion', 'beauty', 'lifestyle'],
+    10: ['fashion', 'beauty', 'lifestyle', 'home'],
+    11: ['beauty', 'fashion', 'home', 'jewelry'],
+    12: ['beauty', 'fashion', 'home', 'jewelry', 'lifestyle'],
+}
+
+FOR_YOU_SEASONAL_REASONS = {
+    1: "New Year reset: wellness brands gifting heavily in January",
+    2: "Valentine's season: beauty and jewelry brands seeking creators",
+    3: "Spring launch season: skincare brands partnering with creators",
+    4: "Spring fashion drops: brands seeking fresh campaign content",
+    5: "Pre-summer prep: lifestyle and skincare brands gifting now",
+    6: "Summer campaigns: SPF and fashion brands need content now",
+    7: "Peak summer: lifestyle brands seeking authentic summer content",
+    8: "Late summer push: fashion and beauty brands preparing for fall",
+    9: "Back to school/fall: fashion brands refreshing their creator roster",
+    10: "Pre-holiday: beauty and home brands building gifting lists",
+    11: "Holiday gifting season: brands most active for PR partnerships",
+    12: "Year-end gifting: brands clearing PR budgets before January",
+}
+
+FOR_YOU_MATCHED = 8       # cards in "Matched for You"
+FOR_YOU_BROWSE_POOL = 30  # extra Thanos cards the other sections are cut from
+
+
+def _recently_pitched_ids(cursor, brand_ids, days=30):
+    """Which of these brands other creators pitched lately (the "hot" view)."""
+    if not brand_ids:
+        return set()
+    try:
+        cursor.execute(f"""
+            SELECT DISTINCT brand_id FROM creator_pipeline
+            WHERE brand_id = ANY(%s) AND stage = 'pitched'
+              AND created_at > NOW() - INTERVAL '{int(days)} days'
+        """, (list(brand_ids),))
+        return {int(r['brand_id']) for r in cursor.fetchall() or []}
+    except Exception as err:
+        print(f"[ForYou] hot activity skipped: {err}")
+        cursor.connection.rollback()
+        return set()
+
+
+def _added_at(cursor, brand_ids):
+    """When each brand joined the directory (the "newest" view)."""
+    if not brand_ids:
+        return {}
+    try:
+        cursor.execute("""
+            SELECT id, COALESCE(discovered_at, created_at) AS added_at
+            FROM pr_brands WHERE id = ANY(%s)
+        """, (list(brand_ids),))
+        return {int(r['id']): r['added_at'] for r in cursor.fetchall() or []}
+    except Exception as err:
+        print(f"[ForYou] newest skipped: {err}")
+        cursor.connection.rollback()
+        return {}
+
+
+def _for_you_recruiting(conn, cursor, creator_id, prof, exclude_ids):
+    """Admin-spotlit rosters (a product section, newest spotlight first), kept only where Thanos accepts the brand
+    for this creator. Thanos supplies the fit/reply fields."""
+    from services.roster_demand import fetch_spotlighted_brand_rows
+    from services.thanos import score_brands
+    rows = fetch_spotlighted_brand_rows(cursor, list(exclude_ids) or [0], limit=8)
+    if prof.roster_categories:
+        rows = [b for b in rows if str(b.get('category') or '').lower() in prof.roster_categories]
+    if not rows:
+        return []
+    cards = {c['id']: c for c in score_brands(conn, creator_id, [int(b['id']) for b in rows], surface='for_you').brands}
+    out = []
+    for b in rows:
+        card = cards.get(int(b['id']))
+        if card:
+            out.append({**card, 'roster_spotlighted': 1, 'roster_is_open': 1})
+    return out
+
+
 @pr_crm.route('/for-you', methods=['GET'])
 def get_for_you():
-    """
-    Get personalized brand recommendations for the For You page.
-    Returns 3 sections: Hot This Week, Matched for You, Right Season
+    """For You page. Every section's brands and order come from Thanos:
+    matched = the creator's ranking; hot / newest / open lists = views over a deeper Thanos pool;
+    seasonal = Thanos restricted to this month's categories; recruiting = admin-spotlit rosters Thanos accepts.
+    ?pool=autopilot&exclude=1,2 returns the deeper Autopilot ranking as `matched`.
     """
     creator_id = get_creator_id_from_session()
     if not creator_id:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     try:
+        from services.brand_reply_signal import annotate, load_stats
+        from services.roster_demand import ensure_campaign_spotlight_column, pick_open_lists
+        from services.thanos import load_profile, rank
+
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        from services.roster_demand import ensure_campaign_spotlight_column
         ensure_campaign_spotlight_column(cursor, conn)
-
-        # Get creator subscription status and profile
         is_pro = get_subscription_status(creator_id) == 'pro'
 
-        # Get creator's niche from signup + For You preferences + follower count
-        # Join with media_kits to get total_followers if available
-        cursor.execute("""
-            SELECT c.niche, c.creator_niches, c.creator_followers, c.followers_count,
-                   mk.total_followers AS media_kit_followers
-            FROM creators c
-            LEFT JOIN media_kits mk ON mk.creator_id = c.id
-            WHERE c.id = %s
-        """, (creator_id,))
-        creator = cursor.fetchone()
-
-        # Merge signup niche with For You niches
-        signup_niche = creator.get('niche') if creator else None
-        foryou_niches = creator.get('creator_niches') or [] if creator else []
-
-        # Parse signup niche (could be string or array)
-        parsed_signup_niches = []
-        if signup_niche:
-            if isinstance(signup_niche, list):
-                parsed_signup_niches = [n.lower().strip() for n in signup_niche if n]
-            elif isinstance(signup_niche, str):
-                # Handle JSON array string or comma-separated
-                import json
-                try:
-                    parsed = json.loads(signup_niche)
-                    if isinstance(parsed, list):
-                        parsed_signup_niches = [str(n).lower().strip() for n in parsed if n]
-                    else:
-                        parsed_signup_niches = [str(parsed).lower().strip()]
-                except:
-                    parsed_signup_niches = [n.strip().lower() for n in signup_niche.split(',') if n.strip()]
-
-        # Combine niches, preferring For You selection, falling back to signup
-        # These are USER INTERESTS — soft preference only, not scoring truth
-        interest_niches = foryou_niches if foryou_niches else parsed_signup_niches
-        niches = interest_niches  # keep var name for downstream UI/profile payload
-
-        # Use For You followers if set, else media_kit total_followers, else signup followers_count
-        followers = 0
-        if creator:
-            followers = (
-                creator.get('creator_followers') or
-                creator.get('media_kit_followers') or
-                creator.get('followers_count') or
-                0
-            )
-
-        # Load scrape early — candidate pool + scoring source of truth
-        scrape_profile = None
-        try:
-            user_id = session.get('user_id')
-            if not user_id:
-                cursor.execute("SELECT user_id FROM creators WHERE id = %s", (creator_id,))
-                creator_row = cursor.fetchone()
-                user_id = creator_row['user_id'] if creator_row else None
-            if HAS_AI_DEPTH and user_id and CreatorProfileScraper:
-                scrape_profile = CreatorProfileScraper(conn).get_creator_profile(user_id)
-                if scrape_profile and scrape_profile.get('primary_niche'):
-                    print(
-                        f"[ForYou] Scrape truth: niche={scrape_profile.get('primary_niche')}; "
-                        f"interests={interest_niches}"
-                    )
-                else:
-                    scrape_profile = None
-        except Exception as scrape_err:
-            print(f"[ForYou] Scrape load skipped: {scrape_err}")
-            scrape_profile = None
-
-        # Calculate max brand min_followers requirement based on creator size
-        # Prevents showing brands with high requirements to micro-creators
-        min_follower_cap = get_min_follower_cap(followers)
-
-        # Get IDs already in this creator's pipeline (unlocked, saved, pitched)
-        cursor.execute("""
-            SELECT DISTINCT brand_id FROM creator_pipeline
-            WHERE creator_id = %s AND brand_id IS NOT NULL
-        """, (creator_id,))
-        already_seen = cursor.fetchall()
-        exclude_ids = [r['brand_id'] for r in already_seen] if already_seen else []
-        try:
-            cursor.execute("""
-                SELECT DISTINCT brand_id FROM brand_pr_applications
-                WHERE creator_id = %s AND brand_id IS NOT NULL
-            """, (creator_id,))
-            already_applied = cursor.fetchall() or []
-            exclude_ids.extend(r['brand_id'] for r in already_applied)
-        except Exception:
-            pass
-        # pool=autopilot: same matching, deeper list, minus brands already queued for sending.
-        deep_pool = request.args.get('pool') == 'autopilot'
-        pool_limit = FOR_YOU_DEEP_LIMIT if deep_pool else 8
-        candidate_limit = 240 if deep_pool else 90
-        if deep_pool:
-            for raw_id in str(request.args.get('exclude') or '').split(','):
-                if raw_id.strip().isdigit():
-                    exclude_ids.append(int(raw_id))
-        exclude_ids = list({i for i in exclude_ids if i}) or [0]
-
-        # ── Section 1: Most Contacted Brands ─────────────────────────────
-        # Top brands by total creators who pitched (stage = 'pitched') in past 30 days
-        # IMPORTANT: Filter by user's niches to show relevant brands, not just any popular brand
-        # Also filter by min_followers requirement to avoid showing brands that won't accept small creators
-
-        # Build related niches for Section 1 (same logic as Section 2)
-        # STRICT mapping: wellness ≠ fitness, they're distinct niches
-        related_niches_map = {
-            'beauty': ['skincare', 'makeup'],
-            'skincare': ['beauty', 'wellness'],
-            'haircare': ['beauty'],
-            'fashion': ['lifestyle', 'accessories', 'activewear'],
-            'lifestyle': ['fashion', 'home'],
-            'fitness': ['athleisure', 'activewear', 'sports'],  # NOT wellness
-            'activewear': ['fitness', 'athleisure', 'sports', 'fashion'],
-            'athleisure': ['fitness', 'activewear', 'sports', 'fashion'],
-            'sports': ['fitness', 'activewear', 'athleisure'],
-            'wellness': ['skincare', 'supplements', 'self-care'],  # NOT fitness
-            'supplements': ['wellness', 'health'],
-            'food': ['lifestyle', 'kitchen', 'beverages'],
-            'tech': ['gaming', 'gadgets', 'electronics'],
-            'gadgets': ['tech', 'gaming', 'electronics'],
-            'gaming': ['tech', 'entertainment'],
-            'home': ['lifestyle', 'decor'],
+        prof = load_profile(conn, creator_id)
+        niches = prof.interests
+        followers = prof.followers
+        base = {
+            'success': True,
+            'is_pro': is_pro,
+            'has_profile': bool(niches or followers),
+            'profile': {'niches': niches, 'followers': followers},
         }
 
-        # Sensitive categories that should only show to specific niches
-        # Prevents tech/food/fitness/parenting creators seeing adult brands
-        SENSITIVE_CATEGORIES = ['intimacy', 'adult', 'sexual wellness']
-        SENSITIVE_ALLOWED_NICHES = ['beauty', 'wellness', 'lifestyle', 'self-care']
+        if request.args.get('pool') == 'autopilot':
+            queued = [int(x) for x in str(request.args.get('exclude') or '').split(',') if x.strip().isdigit()]
+            ranking = rank(conn, creator_id, surface='autopilot', n=FOR_YOU_DEEP_LIMIT,
+                           exclude_ids=queued, profile=prof)
+            cursor.close()
+            conn.close()
+            return jsonify({**base, 'matched': ranking.brands, 'note': ranking.note,
+                            'thanos_level': ranking.level, 'hot': [], 'open_lists': [], 'recruiting': [],
+                            'seasonal': [], 'newest': []})
 
-        # Build excluded categories based on creator's niches
-        creator_niches_lower = [n.lower() for n in (niches or [])]
-        # If creator is not in allowed niches, exclude sensitive categories
-        exclude_sensitive = not any(n in SENSITIVE_ALLOWED_NICHES for n in creator_niches_lower)
-        excluded_categories = SENSITIVE_CATEGORIES if exclude_sensitive else []
+        matched_rank = rank(conn, creator_id, surface='for_you', n=FOR_YOU_MATCHED, profile=prof)
+        matched = matched_rank.brands
+        matched_ids = matched_rank.ids()
+        pool = rank(conn, creator_id, surface='for_you', n=FOR_YOU_BROWSE_POOL,
+                    exclude_ids=matched_ids, profile=prof).brands
 
-        hot_related = set()
-        for n in (niches or []):
-            # Normalize compound niches like "tech & gadgets" into ["tech", "gadgets"]
-            normalized = normalize_niche(n)
-            for niche_part in normalized:
-                hot_related.add(niche_part)
-                hot_related.update(related_niches_map.get(niche_part, []))
-        hot_niches_list = list(hot_related) if hot_related else None
+        # Hot: pool brands other creators pitched in the last 30 days first, Thanos order otherwise.
+        active = _recently_pitched_ids(cursor, [c['id'] for c in pool])
+        hot = sorted(pool, key=lambda c: 0 if c['id'] in active else 1)[:6]
 
-        # Add sensitive category exclusion clause if needed
-        sensitive_clause = "AND LOWER(b.category) != ALL(%s)" if excluded_categories else ""
-        sensitive_params = [excluded_categories] if excluded_categories else []
+        # Newest: pool brands, most recently added to the directory first.
+        hot_ids = {c['id'] for c in hot}
+        rest = [c for c in pool if c['id'] not in hot_ids]
+        added = _added_at(cursor, [c['id'] for c in rest])
+        newest = sorted(
+            (c for c in rest if added.get(c['id'])), key=lambda c: added[c['id']], reverse=True,
+        )[:4]
 
-        if hot_niches_list and min_follower_cap:
-            query = f"""
-                SELECT
-                    b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                    b.description, b.category, b.response_rate, b.price_point, b.price_point,
-                    b.min_followers, b.micro_friendly, b.website, b.application_form_url
-                FROM pr_brands b
-                WHERE b.slug IS NOT NULL
-                  AND COALESCE(b.status, 'published') = 'published'
-                  AND b.id != ALL(%s)
-                  AND (b.min_followers IS NULL OR b.min_followers <= %s)
-                  AND LOWER(b.category) = ANY(%s)
-                  {sensitive_clause}
-                ORDER BY (
-                    SELECT COUNT(DISTINCT cp.creator_id) FROM creator_pipeline cp
-                    WHERE cp.brand_id = b.id
-                    AND cp.stage = 'pitched'
-                    AND cp.created_at > NOW() - INTERVAL '30 days'
-                ) DESC, b.response_rate DESC NULLS LAST
-                LIMIT 6
-            """
-            cursor.execute(query, (exclude_ids, min_follower_cap, hot_niches_list, *sensitive_params))
-        elif hot_niches_list:
-            query = f"""
-                SELECT
-                    b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                    b.description, b.category, b.response_rate, b.price_point, b.price_point,
-                    b.min_followers, b.micro_friendly, b.website, b.application_form_url
-                FROM pr_brands b
-                WHERE b.slug IS NOT NULL
-                  AND COALESCE(b.status, 'published') = 'published'
-                  AND b.id != ALL(%s)
-                  AND LOWER(b.category) = ANY(%s)
-                  {sensitive_clause}
-                ORDER BY (
-                    SELECT COUNT(DISTINCT cp.creator_id) FROM creator_pipeline cp
-                    WHERE cp.brand_id = b.id
-                    AND cp.stage = 'pitched'
-                    AND cp.created_at > NOW() - INTERVAL '30 days'
-                ) DESC, b.response_rate DESC NULLS LAST
-                LIMIT 6
-            """
-            cursor.execute(query, (exclude_ids, hot_niches_list, *sensitive_params))
-        elif min_follower_cap:
-            query = f"""
-                SELECT
-                    b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                    b.description, b.category, b.response_rate, b.price_point,
-                    b.min_followers, b.micro_friendly, b.website, b.application_form_url
-                FROM pr_brands b
-                WHERE b.slug IS NOT NULL
-                  AND COALESCE(b.status, 'published') = 'published'
-                  AND b.id != ALL(%s)
-                  AND (b.min_followers IS NULL OR b.min_followers <= %s)
-                  {sensitive_clause}
-                ORDER BY (
-                    SELECT COUNT(DISTINCT cp.creator_id) FROM creator_pipeline cp
-                    WHERE cp.brand_id = b.id
-                    AND cp.stage = 'pitched'
-                    AND cp.created_at > NOW() - INTERVAL '30 days'
-                ) DESC, b.response_rate DESC NULLS LAST
-                LIMIT 6
-            """
-            cursor.execute(query, (exclude_ids, min_follower_cap, *sensitive_params))
-        else:
-            query = f"""
-                SELECT
-                    b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                    b.description, b.category, b.response_rate, b.price_point,
-                    b.min_followers, b.micro_friendly, b.website, b.application_form_url
-                FROM pr_brands b
-                WHERE b.slug IS NOT NULL
-                  AND COALESCE(b.status, 'published') = 'published'
-                  AND b.id != ALL(%s)
-                  {sensitive_clause}
-                ORDER BY (
-                    SELECT COUNT(DISTINCT cp.creator_id) FROM creator_pipeline cp
-                    WHERE cp.brand_id = b.id
-                    AND cp.stage = 'pitched'
-                    AND cp.created_at > NOW() - INTERVAL '30 days'
-                ) DESC, b.response_rate DESC NULLS LAST
-                LIMIT 6
-            """
-            cursor.execute(query, (exclude_ids, *sensitive_params))
-        hot = cursor.fetchall()
-
-        # Fallback: if not enough brands with pitches, fill from popular brands (also filtered by niche)
-        if len(hot) < 3:
-            hot_ids = [r['id'] for r in hot] if hot else [0]
-            if hot_niches_list and min_follower_cap:
-                query = f"""
-                    SELECT
-                        b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                        b.description, b.category, b.response_rate, b.price_point,
-                        b.min_followers, b.micro_friendly, b.website, b.application_form_url
-                    FROM pr_brands b
-                    WHERE b.slug IS NOT NULL
-                      AND COALESCE(b.status, 'published') = 'published'
-                      AND b.id != ALL(%s)
-                      AND b.id != ALL(%s)
-                      AND (b.min_followers IS NULL OR b.min_followers <= %s)
-                      AND LOWER(b.category) = ANY(%s)
-                      {sensitive_clause}
-                    ORDER BY b.response_rate DESC NULLS LAST, RANDOM()
-                    LIMIT %s
-                """
-                cursor.execute(query, (exclude_ids, hot_ids, min_follower_cap, hot_niches_list, *sensitive_params, 6 - len(hot)))
-            elif hot_niches_list:
-                query = f"""
-                    SELECT
-                        b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                        b.description, b.category, b.response_rate, b.price_point,
-                        b.min_followers, b.micro_friendly, b.website, b.application_form_url
-                    FROM pr_brands b
-                    WHERE b.slug IS NOT NULL
-                      AND COALESCE(b.status, 'published') = 'published'
-                      AND b.id != ALL(%s)
-                      AND b.id != ALL(%s)
-                      AND LOWER(b.category) = ANY(%s)
-                      {sensitive_clause}
-                    ORDER BY b.response_rate DESC NULLS LAST, RANDOM()
-                    LIMIT %s
-                """
-                cursor.execute(query, (exclude_ids, hot_ids, hot_niches_list, *sensitive_params, 6 - len(hot)))
-            elif min_follower_cap:
-                query = f"""
-                    SELECT
-                        b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                        b.description, b.category, b.response_rate, b.price_point,
-                        b.min_followers, b.micro_friendly, b.website, b.application_form_url
-                    FROM pr_brands b
-                    WHERE b.slug IS NOT NULL
-                      AND COALESCE(b.status, 'published') = 'published'
-                      AND b.id != ALL(%s)
-                      AND b.id != ALL(%s)
-                      AND (b.min_followers IS NULL OR b.min_followers <= %s)
-                      {sensitive_clause}
-                    ORDER BY b.response_rate DESC NULLS LAST, RANDOM()
-                    LIMIT %s
-                """
-                cursor.execute(query, (exclude_ids, hot_ids, min_follower_cap, *sensitive_params, 6 - len(hot)))
-            else:
-                query = f"""
-                    SELECT
-                        b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                        b.description, b.category, b.response_rate, b.price_point,
-                        b.min_followers, b.micro_friendly, b.website, b.application_form_url
-                    FROM pr_brands b
-                    WHERE b.slug IS NOT NULL
-                      AND COALESCE(b.status, 'published') = 'published'
-                      AND b.id != ALL(%s)
-                      AND b.id != ALL(%s)
-                      {sensitive_clause}
-                    ORDER BY b.response_rate DESC NULLS LAST, RANDOM()
-                    LIMIT %s
-                """
-                cursor.execute(query, (exclude_ids, hot_ids, *sensitive_params, 6 - len(hot)))
-            fallback = cursor.fetchall()
-            hot = list(hot) + list(fallback)
-
-        # ── Section 2: Matched for You ───────────────────────────
-        # Candidate pool: scrape lane (truth) + user interests (soft expansion)
-        related_niches = FOR_YOU_RELATED_NICHES
-        creator_related = set(_build_for_you_category_pool(scrape_profile, interest_niches))
-
-        if niches or followers or scrape_profile:
-            rotation_salt = f"{creator_id}:{datetime.utcnow().strftime('%G-%V')}"
-            brand_filter_sql = ""
-            query_params = [exclude_ids]
-
-            if min_follower_cap:
-                brand_filter_sql = "AND (b.min_followers IS NULL OR b.min_followers <= %s)"
-                query_params.append(min_follower_cap)
-
-            if excluded_categories:
-                brand_filter_sql += " AND LOWER(b.category) != ALL(%s)"
-                query_params.append(excluded_categories)
-
-            all_relevant_niches = list(creator_related) if creator_related else []
-            if all_relevant_niches:
-                brand_filter_sql += " AND LOWER(b.category) = ANY(%s)"
-                query_params.append(all_relevant_niches)
-
-            query_params.append(rotation_salt)
-            hunger_order = (
-                "COALESCE(roster_demand.hunger, 0) DESC, "
-                if all_relevant_niches else
-                ""
-            )
-
-            from services.roster_demand import ROSTER_DEMAND_JOIN, ROSTER_DEMAND_SELECT
-            cursor.execute(f"""
-                SELECT
-                    b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                    b.description, b.category, b.response_rate, b.price_point,
-                    b.min_followers, b.max_followers, b.micro_friendly, b.website, b.application_form_url,
-                    b.has_application_form, b.hero_product, b.target_audience,
-                    (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
-                    b.niches AS brand_niches, b.regions, b.avg_product_value,
-                    0 AS match_score,
-                    {ROSTER_DEMAND_SELECT}
-                FROM pr_brands b
-                {ROSTER_DEMAND_JOIN}
-                WHERE b.slug IS NOT NULL
-                  AND COALESCE(b.status, 'published') = 'published'
-                  AND b.id != ALL(%s)
-                  {brand_filter_sql}
-                ORDER BY {hunger_order}md5(concat_ws(':', b.id::text, %s))
-                LIMIT {candidate_limit}
-            """, tuple(query_params))
-            matched = cursor.fetchall()
-        else:
-            # No profile yet — return variety of top brands with basic scoring
-            # Default to showing smaller brands (safe for any creator size)
-            default_max_followers = 50000  # Safe default for unknown creators
-            from services.roster_demand import ROSTER_DEMAND_JOIN, ROSTER_DEMAND_SELECT
-            query = f"""
-                SELECT
-                    b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                    b.description, b.category, b.response_rate, b.price_point,
-                    b.min_followers, b.max_followers, b.micro_friendly, b.website, b.application_form_url,
-                    b.has_application_form,
-                    (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
-                    b.regions, b.avg_product_value,
-                    -- Match score scaled to 55-82%% range (lower since no profile match)
-                    LEAST(82, GREATEST(55, (
-                        55 + (
-                            -- RESPONSE RATE (0-10 scaled points)
-                            CASE
-                                WHEN COALESCE(b.response_rate, 0) >= 50 THEN 10
-                                WHEN COALESCE(b.response_rate, 0) >= 30 THEN 7
-                                WHEN COALESCE(b.response_rate, 0) >= 15 THEN 5
-                                ELSE 2
-                            END
-                            -- BRAND QUALITY (0-6 scaled points)
-                            + CASE WHEN b.has_application_form = true THEN 3 ELSE 0 END
-                            + CASE WHEN COALESCE(b.price_point, 0) >= 50 THEN 3 ELSE 0 END
-                            -- DETERMINISTIC VARIANCE per brand (0-11 points)
-                            + (b.id %% 12)
-                        )
-                    )))::int AS match_score,
-                    {ROSTER_DEMAND_SELECT}
-                FROM pr_brands b
-                {ROSTER_DEMAND_JOIN}
-                WHERE b.slug IS NOT NULL
-                  AND COALESCE(b.status, 'published') = 'published'
-                  AND b.id != ALL(%s)
-                  AND (b.min_followers IS NULL OR b.min_followers <= %s)
-                  {sensitive_clause}
-                ORDER BY match_score DESC
-                LIMIT 8
-            """
-            cursor.execute(query, (exclude_ids, default_max_followers, *sensitive_params))
-            matched = cursor.fetchall()
-
-        # Fallback: if 0 matched brands, return popular brands regardless of niche
-        # Never leave user with an empty For You page
-        if len(matched) == 0:
-            from services.roster_demand import ROSTER_DEMAND_JOIN, ROSTER_DEMAND_SELECT
-            fallback_query = f"""
-                SELECT
-                    b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                    b.description, b.category, b.response_rate, b.price_point,
-                    b.min_followers, b.micro_friendly, b.website, b.application_form_url,
-                    b.has_application_form,
-                    (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
-                    b.regions, b.avg_product_value,
-                    65 AS match_score,
-                    {ROSTER_DEMAND_SELECT}
-                FROM pr_brands b
-                {ROSTER_DEMAND_JOIN}
-                WHERE b.slug IS NOT NULL
-                  AND COALESCE(b.status, 'published') = 'published'
-                  AND b.id != ALL(%s)
-                  {("AND (b.min_followers IS NULL OR b.min_followers <= %s)" if min_follower_cap else "")}
-                  {sensitive_clause}
-                ORDER BY b.response_rate DESC NULLS LAST, RANDOM()
-                LIMIT 8
-            """
-            if min_follower_cap:
-                cursor.execute(fallback_query, (exclude_ids, min_follower_cap, *sensitive_params))
-            else:
-                cursor.execute(fallback_query, (exclude_ids, *sensitive_params))
-            matched = cursor.fetchall()
-
-        # ── Section 3: Right Season ──────────────────────────────
         month = datetime.now().month
-        seasonal_map = {
-            1:  ['fitness', 'wellness', 'lifestyle'],
-            2:  ['beauty', 'jewelry', 'fashion', 'skincare'],
-            3:  ['beauty', 'fashion', 'skincare'],
-            4:  ['fashion', 'lifestyle', 'beauty'],
-            5:  ['fashion', 'lifestyle', 'skincare'],
-            6:  ['lifestyle', 'beauty', 'skincare', 'fashion'],
-            7:  ['lifestyle', 'beauty', 'fashion'],
-            8:  ['beauty', 'lifestyle', 'fashion'],
-            9:  ['fashion', 'beauty', 'lifestyle'],
-            10: ['fashion', 'beauty', 'lifestyle', 'home'],
-            11: ['beauty', 'fashion', 'home', 'jewelry'],
-            12: ['beauty', 'fashion', 'home', 'jewelry', 'lifestyle'],
-        }
-        seasonal_cats = seasonal_map.get(month, ['beauty', 'lifestyle'])
+        seasonal = rank(
+            conn, creator_id, surface='for_you', n=4, profile=prof, max_level=0,
+            categories=FOR_YOU_SEASONAL_CATEGORIES.get(month, ['beauty', 'lifestyle']),
+            exclude_ids=matched_ids,
+        ).brands
 
-        seasonal_reasons = {
-            1:  "New Year reset: wellness brands gifting heavily in January",
-            2:  "Valentine's season: beauty and jewelry brands seeking creators",
-            3:  "Spring launch season: skincare brands partnering with creators",
-            4:  "Spring fashion drops: brands seeking fresh campaign content",
-            5:  "Pre-summer prep: lifestyle and skincare brands gifting now",
-            6:  "Summer campaigns: SPF and fashion brands need content now",
-            7:  "Peak summer: lifestyle brands seeking authentic summer content",
-            8:  "Late summer push: fashion and beauty brands preparing for fall",
-            9:  "Back to school/fall: fashion brands refreshing their creator roster",
-            10: "Pre-holiday: beauty and home brands building gifting lists",
-            11: "Holiday gifting season: brands most active for PR partnerships",
-            12: "Year-end gifting: brands clearing PR budgets before January",
-        }
-
-        seasonal_query = f"""
-            SELECT
-                b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                b.description, b.category, b.response_rate, b.price_point,
-                b.min_followers, b.micro_friendly, b.website, b.application_form_url
-            FROM pr_brands b
-            WHERE b.slug IS NOT NULL
-              AND COALESCE(b.status, 'published') = 'published'
-              AND LOWER(b.category) = ANY(%s)
-              AND b.id != ALL(%s)
-              {sensitive_clause}
-            ORDER BY b.response_rate DESC NULLS LAST, RANDOM()
-            LIMIT 4
-        """
-        cursor.execute(seasonal_query, ([c.lower() for c in seasonal_cats], exclude_ids, *sensitive_params))
-        seasonal = cursor.fetchall()
-
-        # ── Section 4: New Brands on newcollab ──────────────────────────
-        # 4 most recently added brands, respecting follower cap, sensitive
-        # category exclusions and brands the creator already pitched.
-        # min_follower_cap may be None (50K+ creators) → treat as no cap.
-        newest_follower_cap = min_follower_cap if min_follower_cap else 999999999
-        newest_query = f"""
-            SELECT
-                b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                b.description, b.category, b.response_rate, b.price_point,
-                b.min_followers, b.micro_friendly, b.website, b.application_form_url, b.created_at
-            FROM pr_brands b
-            WHERE b.slug IS NOT NULL
-              AND COALESCE(b.status, 'published') = 'published'
-              AND b.id != ALL(%s)
-              AND (b.min_followers IS NULL OR b.min_followers <= %s)
-              {sensitive_clause}
-            ORDER BY b.created_at DESC NULLS LAST
-            LIMIT 4
-        """
-        cursor.execute(newest_query, (exclude_ids, newest_follower_cap, *sensitive_params))
-        newest = cursor.fetchall()
-
-        # ── Mentor LLM ranks; scrape calculator is unlock-parity gate ────
-        filtered_matched = []
-
-        if matched:
-            try:
-                creator_profile_dict = scrape_profile
-                if creator_profile_dict and creator_profile_dict.get('primary_niche'):
-                    print(
-                        f"[ForYou] Mentor ranking with scrape truth: "
-                        f"niche={creator_profile_dict.get('primary_niche')}, "
-                        f"interests={interest_niches}"
-                    )
-                else:
-                    print("[ForYou] No scrape — interests used as temporary profile only")
-
-                prep = _prepare_for_you_profile(
-                    creator_profile_dict, interest_niches, followers or 0
-                )
-                print(
-                    f"[ForYou] Effective scoring primary={prep.get('primary_niche')} "
-                    f"secondary={prep.get('secondary_niches')} "
-                    f"intent={prep.get('match_intent_lanes')}"
-                )
-
-                if deep_pool:
-                    from services.mentor_matchmaker import rank_matches_deep
-                    filtered_matched = rank_matches_deep(
-                        prep, [dict(r) for r in matched], niches=list(interest_niches or []), limit=pool_limit,
-                    )
-                else:
-                    filtered_matched = _rank_for_you_with_mentor(
-                        matched,
-                        creator_profile_dict,
-                        niches=interest_niches,
-                        followers=followers or 0,
-                        creator_id=creator_id,
-                    )
-
-                # If thin (<6), expand SQL pool from effective primary + interests and retry
-                if len(filtered_matched) < 6:
-                    related_list = _build_for_you_category_pool(prep, interest_niches)
-                    print(
-                        f"[ForYou] Thin match set ({len(filtered_matched)}) — "
-                        f"retrying with pool={related_list[:12]}"
-                    )
-                    if related_list:
-                        from services.roster_demand import ROSTER_DEMAND_JOIN, ROSTER_DEMAND_SELECT
-                        cursor.execute(f"""
-                            SELECT
-                                b.id, b.slug, b.brand_name AS name, b.logo_url AS logo,
-                                b.description, b.category, b.response_rate, b.price_point,
-                                b.min_followers, b.max_followers, b.micro_friendly, b.website, b.application_form_url,
-                                b.has_application_form, b.hero_product, b.target_audience,
-                                (b.contact_email IS NOT NULL AND TRIM(b.contact_email) != '') AS has_email_contact,
-                                b.niches AS brand_niches, b.regions, b.avg_product_value,
-                                0 AS match_score,
-                                {ROSTER_DEMAND_SELECT}
-                            FROM pr_brands b
-                            {ROSTER_DEMAND_JOIN}
-                            WHERE b.slug IS NOT NULL
-                              AND COALESCE(b.status, 'published') = 'published'
-                              AND LOWER(b.category) = ANY(%s)
-                              AND b.id != ALL(%s)
-                            ORDER BY COALESCE(roster_demand.hunger, 0) DESC, md5(concat_ws(':', b.id::text, %s))
-                            LIMIT {candidate_limit}
-                        """, (related_list, exclude_ids, f"{creator_id}:{datetime.utcnow().strftime('%G-%V')}"))
-                        retry_rows = cursor.fetchall()
-                        matched = retry_rows
-                        # Rank with prepared profile so inferred primary is used
-                        try:
-                            from services.mentor_matchmaker import (
-                                rank_matches_deep,
-                                rank_matches_with_mentor,
-                                invalidate_mentor_matches,
-                            )
-                            if deep_pool:
-                                retry_ranked = rank_matches_deep(
-                                    prep, [dict(r) for r in retry_rows],
-                                    niches=list(interest_niches or []), limit=pool_limit,
-                                )
-                            else:
-                                invalidate_mentor_matches(creator_id)
-                                retry_ranked = rank_matches_with_mentor(
-                                    creator_profile=prep,
-                                    candidate_brands=[dict(r) for r in retry_rows],
-                                    niches=list(interest_niches or []),
-                                    creator_id=creator_id,
-                                    force_refresh=True,
-                                    use_llm=False,
-                                )
-                            if len(retry_ranked) > len(filtered_matched):
-                                filtered_matched = retry_ranked
-                        except Exception as retry_err:
-                            print(f"[ForYou] Thin-set retry failed: {retry_err}")
-                            alt = _apply_mentor_fit_to_for_you(
-                                retry_rows, prep, niches=interest_niches, followers=followers or 0
-                            )
-                            if len(alt) > len(filtered_matched):
-                                filtered_matched = alt
-                        print(f"[ForYou] Category-pool retry kept {len(filtered_matched)} brands")
-            except Exception as fit_err:
-                import traceback
-                print(f"[ForYou] Mentor matchmaking error: {fit_err}")
-                traceback.print_exc()
-                try:
-                    filtered_matched = _apply_mentor_fit_to_for_you(
-                        matched, scrape_profile, niches=interest_niches, followers=followers or 0
-                    )
-                except Exception:
-                    filtered_matched = []
-
-        open_lists = []
-        if filtered_matched or matched:
-            from services.roster_demand import pick_open_lists, prefer_hungry_rosters
-            prep = _prepare_for_you_profile(scrape_profile, interest_niches, followers or 0)
-            allowed_cats = {
-                str(c).lower()
-                for c in (_build_for_you_category_pool(prep, interest_niches) or [])
-            }
-            roster_cats = _roster_category_pool(prep, interest_niches)
-            filtered_matched = [
-                b for b in (filtered_matched or [])
-                if not _for_you_should_skip_brand(b, interest_niches, prep)
-                and int(b.get('match_score') or 0) >= FOR_YOU_MIN_FIT_SCORE
-                and (b.get('fit_tier') or '') not in FOR_YOU_EXCLUDE_TIERS
-                and (
-                    not allowed_cats
-                    or str(b.get('category') or '').lower() in allowed_cats
-                )
-            ]
-            scored_by_id = {b.get('id'): b for b in filtered_matched}
-            open_pool = []
-            for row in (matched or []):
-                raw = dict(row)
-                if not int(raw.get('roster_is_open') or 0):
-                    continue
-                if _for_you_should_skip_brand(raw, interest_niches, prep):
-                    continue
-                if roster_cats and str(raw.get('category') or '').lower() not in roster_cats:
-                    continue
-                open_pool.append(scored_by_id.get(raw.get('id')) or raw)
-            open_lists = pick_open_lists(open_pool, limit=8, min_fit=0)
-            filtered_matched = prefer_hungry_rosters(
-                filtered_matched, limit=pool_limit, max_hungry=max(6, pool_limit // 2),
-                min_fit=FOR_YOU_MIN_FIT_SCORE,
-            )
+        # Open gift lists among the creator's Thanos brands (in their roster categories); live-list order.
+        open_pool = [
+            c for c in matched + pool
+            if not prof.roster_categories or str(c.get('category') or '').lower() in prof.roster_categories
+        ]
+        open_lists = pick_open_lists(open_pool, limit=8, min_fit=0)
 
         recruiting = []
         try:
-            from services.roster_demand import fetch_spotlighted_brand_rows
-            recruiting = fetch_spotlighted_brand_rows(cursor, exclude_ids, limit=8)
-            score_map = {b.get("id"): b for b in (filtered_matched or [])}
-            for b in recruiting:
-                scored = score_map.get(b.get("id"))
-                if scored and int(scored.get("match_score") or 0) > 0:
-                    b["match_score"] = scored.get("match_score")
-                    if scored.get("fit_tier"):
-                        b["fit_tier"] = scored.get("fit_tier")
-            recruit_prep = _prepare_for_you_profile(
-                scrape_profile, interest_niches, followers or 0
-            )
-            recruit_cats = _roster_category_pool(recruit_prep, interest_niches)
-            kept_recruiting = []
-            for b in recruiting:
-                cat = str(b.get("category") or "").lower()
-                if recruit_cats and cat and cat not in recruit_cats:
-                    continue
-                if _for_you_should_skip_brand(b, interest_niches, recruit_prep):
-                    continue
-                try:
-                    from services.audience_fit import opportunity_mismatch
-                    if opportunity_mismatch(
-                        b, recruit_prep, interest_niches, recruit_cats
-                    ):
-                        continue
-                except Exception:
-                    pass
-                kept_recruiting.append(b)
-            recruiting = kept_recruiting
-            recruit_ids = {b.get("id") for b in recruiting if b.get("id") is not None}
-            open_lists = [b for b in open_lists if b.get("id") not in recruit_ids]
+            recruiting = _for_you_recruiting(conn, cursor, creator_id, prof, prof.pitched_ids | prof.saved_ids)
+            recruit_ids = {b['id'] for b in recruiting}
+            open_lists = [b for b in open_lists if b.get('id') not in recruit_ids]
         except Exception as spotlight_err:
             print(f"[ForYou] Recruiting lists skipped: {spotlight_err}")
+            conn.rollback()
 
-        if filtered_matched:
-            top_score = filtered_matched[0].get('match_score', 0)
-            bottom_score = filtered_matched[-1].get('match_score', 0)
-            src = filtered_matched[0].get('match_source', '?')
-            print(
-                f"[ForYou] Showing {len(filtered_matched)} mentor-ranked brands "
-                f"(scores: {top_score}% to {bottom_score}%, source={src})"
-            )
-        else:
-            print("[ForYou] No mentor-ranked matches")
-
-        from services.brand_reply_signal import annotate, annotate_and_sort, load_stats
-        reply_stats = load_stats(cursor)
-        hot = annotate_and_sort(cursor, [dict(r) for r in hot])
-        filtered_matched = annotate_and_sort(cursor, filtered_matched or [], fit_aware=True)
-        open_lists = annotate(open_lists, reply_stats)
-        recruiting = annotate(recruiting, reply_stats)
-        seasonal = annotate_and_sort(cursor, [dict(r) for r in seasonal])
-        newest = annotate_and_sort(cursor, [dict(r) for r in newest])
+        # Reply chips only; the order stays Thanos's.
+        stats = load_stats(cursor)
+        hot, matched, open_lists, recruiting, seasonal, newest = (
+            annotate([dict(b) for b in rows], stats)
+            for rows in (hot, matched, open_lists, recruiting, seasonal, newest)
+        )
+        print(f"[ForYou] creator={creator_id} matched={len(matched)} level={matched_rank.level}")
 
         cursor.close()
         conn.close()
 
         return jsonify({
-            'success': True,
+            **base,
             'hot': hot,
-            'matched': filtered_matched,
+            'matched': matched,
+            'note': matched_rank.note,
+            'thanos_level': matched_rank.level,
             'open_lists': open_lists,
             'recruiting': recruiting,
             'seasonal': seasonal,
-            'seasonal_reason': seasonal_reasons.get(month, ''),
+            'seasonal_reason': FOR_YOU_SEASONAL_REASONS.get(month, ''),
             'seasonal_month': datetime.now().strftime('%B'),
             'newest': newest,
-            'is_pro': is_pro,
-            'has_profile': bool(niches or followers),
-            'profile': {
-                'niches': niches,
-                'followers': followers,
-            }
         })
 
     except Exception as e:
