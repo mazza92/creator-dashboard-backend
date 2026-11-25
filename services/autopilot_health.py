@@ -179,6 +179,9 @@ def chat_note(kind: str, facts: Dict[str, Any]) -> Dict[str, Any]:
                 "⚠️ I can't send your pitches yet: Gmail isn't connected.")
         text = f"{head}{tail} Connect it in **Autopilot** and I'll send on your next send day."
         label = "Connect Gmail"
+        from services.pitch_relay import relay_available
+        if relay_available():
+            text += " No Gmail? Tap **Send without Gmail** there: I send as you via Newcollab."
     else:
         text = (f"⏸️ Autopilot is paused, so no pitches or follow-ups are going out.{tail} "
                 "Turn it back on in **Autopilot** and I'll pick up on your next send day.")
