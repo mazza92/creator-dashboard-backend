@@ -2658,8 +2658,12 @@ def dashboard_init():
         # 2. Get unlock balance
         tier = creator.get('subscription_tier') or 'free'
         is_pro = tier == 'pro'
+        from services import directory_tier
 
-        if is_pro:
+        if directory_tier.is_directory(cursor, creator_id):
+            # Not approved: 10 unlocks in total free, 500 a month on Pro.
+            unlock_balance = directory_tier.balance(cursor, creator_id, is_pro)
+        elif is_pro:
             from services.pro_trial import trial_days_left
             unlock_balance = {
                 'tier': tier,

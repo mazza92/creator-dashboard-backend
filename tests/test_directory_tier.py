@@ -118,3 +118,10 @@ def test_paying_no_longer_approves():
     start = src.index("Paying no longer approves a pending creator")
     block = src[start:src.index("SET approval_status = 'pro_approved'", start)]
     assert "if False:" in block  # the auto-approval on payment never runs
+
+
+def test_dashboard_init_uses_the_directory_balance():
+    import inspect
+    import pr_crm_routes as R
+    src = inspect.getsource(R.dashboard_init) if hasattr(R, "dashboard_init") else inspect.getsource(R)
+    assert "directory_tier.balance(cursor, creator_id, is_pro)" in src
