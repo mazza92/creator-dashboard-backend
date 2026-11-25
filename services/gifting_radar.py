@@ -584,8 +584,8 @@ def envelope(cards: List[Dict[str, Any]], ctx: Dict[str, Any], *, run_id: Option
         status = "found"
         biggest = max(int((b.get("evidence_data") or {}).get("max_followers") or 0) for b in page)
         intro = (f"I found {len(page)} brands that sent PR to {niche} creators under {size_label(biggest)} "
-                 f"followers in the last {WINDOW_DAYS} days. They're ranked by how often they work with creators "
-                 "your size, not by brand size.")
+                 f"followers in the last {WINDOW_DAYS} days. They're ranked by how well they fit you and how "
+                 "likely they are to answer you, not by brand size.")
     elif page:
         status = "weak"
         intro = (f"Only {len(page)} brand{'s' if len(page) != 1 else ''} came up for {niche} this week. "
