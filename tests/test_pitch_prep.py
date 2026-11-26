@@ -83,6 +83,13 @@ class PitchPrepRouteTests(unittest.TestCase):
         resp, _, _ = self._post({"selected_posts": POSTS[:2], "shipping": SHIP})
         self.assertEqual(resp.status_code, 400)
 
+    def test_no_address_needed_for_a_direct_pitch(self):
+        resp, cursor, conn = self._post({"selected_posts": POSTS, "source": "directory"})
+        self.assertEqual(resp.status_code, 200, resp.get_json())
+        sqls = [s for s, _ in cursor.executed]
+        self.assertFalse(any(s.startswith("UPDATE creators SET shipping_address") for s in sqls))
+        self.assertTrue(any("INSERT INTO brand_pr_events" in s for s in sqls))
+
     def test_needs_full_address(self):
         resp, _, _ = self._post({"selected_posts": POSTS, "shipping": {**SHIP, "city": ""}})
         self.assertEqual(resp.status_code, 400)

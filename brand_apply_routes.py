@@ -903,7 +903,11 @@ def pitch_prep(brand_id):
     samples = clean_sample_posts(payload.get("selected_posts"))
     if len(samples) != 3:
         return jsonify({"success": False, "error": "Select 3 posts to continue."}), 400
-    addr, ship_error = _shipping_from_payload(payload.get("shipping"))
+    # A direct pitch needs no address (the pitch only names the creator's city/country, already on file), so the
+    # Brands flow no longer asks for one. An address sent anyway is still validated and saved.
+    addr, ship_error = (None, None)
+    if payload.get("shipping"):
+        addr, ship_error = _shipping_from_payload(payload.get("shipping"))
     if ship_error:
         return jsonify({"success": False, "error": ship_error}), 400
 
@@ -918,7 +922,7 @@ def pitch_prep(brand_id):
         brand = cursor.fetchone()
         if not brand:
             return jsonify({"success": False, "error": "Brand not found"}), 404
-        if payload.get("save_shipping", True):
+        if addr and payload.get("save_shipping", True):
             _save_shipping(cursor, creator_id, addr)
         _record_event(cursor, creator_id, "pitch_prepped", brand_id=brand_id,
                       source=payload.get("source"), meta={"posts": len(samples)})
