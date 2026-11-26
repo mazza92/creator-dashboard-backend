@@ -285,6 +285,7 @@ def _card(brand: Dict[str, Any], score: M.Score, fit: Dict[str, Any], level: int
         "avg_product_value": brand.get("avg_product_value"),
         "regions": brand.get("regions"),
         "brand_niches": brand.get("niches"),
+        "match_niches": list(brand.get("match_niches") or []),
         "application_form_url": brand.get("application_form_url"),
         "has_application_form": brand.get("has_application_form"),
         "has_email_contact": bool(email),

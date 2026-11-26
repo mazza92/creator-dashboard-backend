@@ -889,10 +889,15 @@ def first_run_payload(conn, creator_id: int, now: Optional[datetime] = None) -> 
     ordered = sorted(rows, key=lambda r: (int(r["brand_id"]) != hot_id, order.get(int(r["brand_id"]), len(order))))
     from services.brand_names import clean_brand_name
     brands = []
-    for r in ordered[:6]:
+    niches = [str(n).lower() for n in (prof.get("niches") or []) if n]
+    for r in ordered[:WELCOME_BRANDS]:
         bid = int(r["brand_id"])
         cat = (r.get("category") or "").replace("_", " ")
+        card = cards.get(bid) or {}
+        niche = matched_niche(r.get("category"), card.get("match_niches"), niches)
         brands.append({
+            "match_niche": niche,
+            "why": welcome_why(card, niche, hot.get("reason") if bid == hot_id else None),
             "brand_id": bid, "brand_name": clean_brand_name(r.get("brand_name")) or "Brand", "logo": r.get("logo"),
             "offer": r.get("offer") or "gifted", "hot": bid == hot_id, "meta_ads": bool(r.get("meta_ads")),
             "works_with_creators": _works_with_creators(cards.get(bid)),
@@ -925,6 +930,35 @@ def _start_choice(conn, creator_id: int) -> Optional[str]:
     except Exception:  # noqa: BLE001
         conn.rollback()
         return None
+
+
+WELCOME_BRANDS = 9  # the welcome shows 5 and "+N more matched brands" opens the rest
+
+
+def matched_niche(category: Optional[str], tags: Any, niches: List[str]) -> Optional[str]:
+    """Which of the creator's niches this brand is in: its category, else a Gemini tag (match_niches)."""
+    cat = str(category or "").lower()
+    if cat and cat in niches:
+        return cat
+    for tag in tags or []:
+        if str(tag).lower() in niches:
+            return str(tag).lower()
+    return cat or None
+
+
+def welcome_why(card: Dict[str, Any], niche: Optional[str], hot_reason: Optional[str] = None) -> str:
+    """One true line under a welcome brand card: real evidence first (replies, recruiting, gifting), then what
+    they sell, then the niche. Never invented."""
+    if hot_reason:
+        return str(hot_reason)[:70]
+    reason = str(card.get("reply_reason") or "")
+    if reason and not reason.startswith("Fits your"):
+        return reason
+    where = f"your {niche} content" if niche else "your content"
+    hero = re.sub(r"\s+", " ", str(card.get("hero_product") or "")).strip()
+    if hero and len(hero) <= 36:
+        return f"Their {hero} fits {where}"
+    return f"Fits {where}"
 
 
 def _thanos_cards(conn, creator_id: int, ids: List[int]) -> Dict[int, Dict[str, Any]]:
