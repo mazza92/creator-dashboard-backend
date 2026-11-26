@@ -645,6 +645,27 @@ def record_free_swap(notes: Dict[str, Any], now: Optional[datetime] = None) -> N
     notes["free_swaps"] = {"month": month, "n": n + 1}
 
 
+def _paywall_context(state: TurnState):
+    """(free week at checkout?, matched brands still waiting) for the paywall line. Never blocks the paywall."""
+    trial, waiting = False, 0
+    try:
+        from services.quota_trial_test import checkout_trial_eligible
+        trial = bool(checkout_trial_eligible(state.db().cursor(), state.creator_id))
+    except Exception as err:  # noqa: BLE001
+        print(f"[Polly] paywall trial check skipped: {err}")
+        try:
+            state.db().rollback()
+        except Exception:
+            pass
+    try:
+        from services.polly import matched_waiting
+        waiting = int((matched_waiting({"notes": state.notes, "suggested_brands": state.suggested or []},
+                                       limit=3) or {}).get("count") or 0)
+    except Exception as err:  # noqa: BLE001
+        print(f"[Polly] paywall waiting count skipped: {err}")
+    return trial, waiting
+
+
 def show_pitch_paywall(state: TurnState, brand_id: Any, brand_name: str, pkg: Optional[Dict[str, Any]] = None,
                        followup: bool = False) -> Dict[str, Any]:
     R = _routes()
@@ -663,7 +684,9 @@ def show_pitch_paywall(state: TurnState, brand_id: Any, brand_name: str, pkg: Op
     state.notes["paywall_at"] = datetime.now(timezone.utc).isoformat()
     state.paywall_moment = {"brand_id": brand_id, "moment": "pitch", "followup": followup, "repeat": repeat}
     views_n, sent_n = R._pipeline_proof(state.tracker_ctx)
-    state.final_say = persona_paywall_say(brand_name, kit_views=views_n, sent=sent_n, repeat=repeat)
+    trial, waiting = _paywall_context(state)
+    state.final_say = persona_paywall_say(brand_name, kit_views=views_n, sent=sent_n, repeat=repeat,
+                                          trial=trial, waiting=waiting)
     state.add_chips(paywall_unlock_chips({"id": brand_id, "name": brand_name}))
     state.balance = R._unlock_balance(state.creator_id)
     return {"ok": True, "status": "locked_out_of_free_pitches", "brand": brand_name}
