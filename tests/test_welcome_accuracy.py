@@ -48,3 +48,23 @@ class PlannedOffer(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WelcomeCardLines(unittest.TestCase):
+    """The welcome card shows which of their niches a brand is in and one true line about it."""
+
+    def test_matched_niche_from_category_or_gemini_tag(self):
+        from services.creator_tracker import matched_niche
+        self.assertEqual(matched_niche("travel", [], ["travel"]), "travel")
+        self.assertEqual(matched_niche("fashion", ["fashion", "travel"], ["travel"]), "travel")
+        self.assertEqual(matched_niche("beauty", None, ["travel"]), "beauty")
+
+    def test_why_prefers_evidence_then_product_then_niche(self):
+        from services.creator_tracker import welcome_why
+        self.assertEqual(welcome_why({"reply_reason": "3 creators your size heard back"}, "travel"),
+                         "3 creators your size heard back")
+        self.assertEqual(welcome_why({"reply_reason": "Fits your travel content", "hero_product": "neck pillow"},
+                                     "travel"), "Their neck pillow fits your travel content")
+        self.assertEqual(welcome_why({}, "travel"), "Fits your travel content")
+        self.assertEqual(welcome_why({}, "travel", hot_reason="Running 14 creator-style ads"),
+                         "Running 14 creator-style ads")
