@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import MagicMock
 from datetime import datetime, timezone
 
 from services import gig_autopilot as ga
@@ -86,3 +87,33 @@ class Reports(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GigBrandNameClash(unittest.TestCase):
+    """Nov 26: gig 2013 'Cloud Nine' (cloudnine.mn) failed every cron run for every creator because the directory
+    already has Cloud Nine (cloudnine.co.uk) and brand_name is unique."""
+
+    def _cur(self, existing):
+        cur = MagicMock()
+        cur.fetchone.side_effect = [existing, (99,)]
+        return cur
+
+    def test_other_company_same_name_gets_its_own_hidden_row(self):
+        from services.gig_autopilot import _insert_gig_brand
+        cur = self._cur((715, "hello@cloudnine.co.uk"))
+        bid = _insert_gig_brand(cur, {"id": 2013, "brand_name": "Cloud Nine", "brand_email": "hr@cloudnine.mn"})
+        self.assertEqual(bid, 99)
+        self.assertEqual(cur.execute.call_args_list[-1][0][1][0], "Cloud Nine (gig 2013)")
+
+    def test_same_company_reuses_the_directory_brand(self):
+        from services.gig_autopilot import _insert_gig_brand
+        cur = self._cur((715, "pr@cloudnine.co.uk"))
+        bid = _insert_gig_brand(cur, {"id": 7, "brand_name": "Cloud Nine", "brand_email": "ugc@cloudnine.co.uk"})
+        self.assertEqual(bid, 715)
+        self.assertEqual(cur.execute.call_count, 1)
+
+    def test_new_name_inserts_as_is(self):
+        from services.gig_autopilot import _insert_gig_brand
+        cur = self._cur(None)
+        _insert_gig_brand(cur, {"id": 8, "brand_name": "Lume", "brand_email": "a@lume.com"})
+        self.assertEqual(cur.execute.call_args_list[-1][0][1][0], "Lume")
