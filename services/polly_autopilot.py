@@ -472,7 +472,8 @@ def approve(conn, creator_id: int, item_ids: List[int], now: Optional[datetime] 
         slots = trial_slots(len(rows), now, since, booked_per_day(conn, creator_id, now),
                             first=_never_sent(conn, creator_id))
     else:
-        slots = schedule_slots(conn, creator_id, len(rows), start, now, days, per_day, first=not last)
+        slots = schedule_slots(conn, creator_id, len(rows), start, now, days, per_day, first=not last,
+                               booked=booked_per_day(conn, creator_id, now))
     out = []
     for item_id, slot in zip(rows, slots):
         cur.execute(
@@ -566,16 +567,110 @@ def _never_sent(conn, creator_id: int) -> bool:
 
 
 def schedule_slots(conn, creator_id: int, count: int, start: datetime, now: datetime, days: List[int],
-                   per_day: int, first: bool = False) -> List[datetime]:
+                   per_day: int, first: bool = False, booked: Optional[Dict[Any, int]] = None) -> List[datetime]:
     """Send slots for approved drafts. A creator's very first pitches go out minutes from now (any day or
-    hour), so Pro starts working the day Gmail connects; the rest follow on their send days."""
+    hour), so Pro starts working the day Gmail connects; the rest fill their send days, each up to the day's
+    number, earliest day first (today included while the send window is open)."""
     if count <= 0:
         return []
     if first and _never_sent(conn, creator_id):
         today = [now + FIRST_SEND_GAP * (i + 1) for i in range(min(per_day, count))]
         tomorrow = now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-        return today + next_slots(count - len(today), tomorrow, days=days, per_day=per_day)
-    return next_slots(count, start, days=days, per_day=per_day)
+        return today + capacity_slots(count - len(today), tomorrow, days, per_day, booked)
+    if booked is None:
+        booked = booked_per_day(conn, creator_id, now)
+    return capacity_slots(count, now, days, per_day, booked)
+
+
+def capacity_slots(count: int, now: datetime, days: List[int], per_day: int, booked: Optional[Dict[Any, int]],
+                   rng: Optional[random.Random] = None, horizon_days: int = 120) -> List[datetime]:
+    """Fill each send day up to ``per_day`` minus what it already holds, earliest day first, at random minutes
+    of the afternoon UTC send window (today only from 5 minutes ahead).
+
+    Replaces "after the last booking" scheduling (next_slots), which left whole send days empty: one pitch
+    approved at a time started after the latest slot, and a random time drawn earlier than it pushed the
+    pitch to the next day (Nov 25 2026: three Pro creators had nothing scheduled on a Wednesday while 55
+    pitches waited on later days)."""
+    rng = rng or random.Random()
+    allowed = set(days or WEEKDAYS)
+    booked = dict(booked or {})
+    per_day = max(1, int(per_day or 1))
+    now = now.astimezone(timezone.utc)
+    day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    slots: List[datetime] = []
+    for _ in range(horizon_days):
+        if len(slots) >= count:
+            break
+        if day.weekday() in allowed:
+            window_start = day.replace(hour=SEND_WINDOW_UTC[0])
+            window_end = day.replace(hour=SEND_WINDOW_UTC[1])
+            earliest = max(window_start, now + timedelta(minutes=5))
+            room = max(0, per_day - booked.get(day.date(), 0))
+            if room and earliest < window_end:
+                span = max(1, int((window_end - earliest).total_seconds() // 60))
+                take = min(room, count - len(slots))
+                picked = sorted(earliest + timedelta(minutes=m) for m in rng.sample(range(span), min(take, span)))
+                slots.extend(picked)
+                booked[day.date()] = booked.get(day.date(), 0) + len(picked)
+        day += timedelta(days=1)
+    return slots[:count]
+
+
+def pull_forward(conn, creator_id: int, now: Optional[datetime] = None) -> int:
+    """Self-healing: while today's send window is open and today holds fewer than the creator's daily number,
+    move the earliest pitches booked for later days into today. Returns how many moved."""
+    now = (now or utc_now()).astimezone(timezone.utc)
+    prefs = settings(conn, creator_id)
+    days = set(prefs.get("send_days") or WEEKDAYS)
+    if now.weekday() not in days:
+        return 0
+    window_end = now.replace(hour=SEND_WINDOW_UTC[1], minute=0, second=0, microsecond=0)
+    if now + timedelta(minutes=10) >= window_end:
+        return 0
+    today = now.date()
+    room = daily_sends(conn, creator_id, prefs, now) - booked_per_day(conn, creator_id, now).get(today, 0)
+    if room <= 0:
+        return 0
+    cur = _cursor(conn)
+    cur.execute("""
+        SELECT id FROM polly_autopilot_queue
+        WHERE creator_id = %s AND status = 'approved' AND scheduled_for >= %s
+          AND COALESCE(error, '') NOT LIKE 'verify_pending%%'
+        ORDER BY scheduled_for LIMIT %s
+    """, (creator_id, window_end.replace(hour=0) + timedelta(days=1), room))
+    ids = [r["id"] for r in cur.fetchall()]
+    if not ids:
+        return 0
+    slots = capacity_slots(len(ids), now, [now.weekday()], len(ids), {}, horizon_days=1)
+    for item_id, slot in zip(ids, slots):
+        cur.execute("UPDATE polly_autopilot_queue SET scheduled_for = %s WHERE id = %s", (slot, item_id))
+    conn.commit()
+    return len(slots)
+
+
+def pull_forward_all(conn, now: Optional[datetime] = None, limit: int = 200) -> int:
+    """pull_forward for every enabled creator with pitches waiting on later days (from the send cron)."""
+    now = (now or utc_now()).astimezone(timezone.utc)
+    if not (SEND_WINDOW_UTC[0] <= now.hour < SEND_WINDOW_UTC[1]):
+        return 0
+    cur = _cursor(conn)
+    cur.execute("""
+        SELECT DISTINCT q.creator_id FROM polly_autopilot_queue q
+        JOIN polly_autopilot a ON a.creator_id = q.creator_id AND a.enabled
+        WHERE q.status = 'approved' AND q.scheduled_for >= %s
+        LIMIT %s
+    """, (now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1), limit))
+    moved = 0
+    for row in cur.fetchall():
+        try:
+            moved += pull_forward(conn, int(row["creator_id"]), now)
+        except Exception as err:  # one creator never stops the send run
+            print(f"[Polly autopilot] pull forward skipped creator={row['creator_id']}: {err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+    return moved
 
 
 def booked_per_day(conn, creator_id: int, now: datetime) -> Dict[Any, int]:
@@ -1074,6 +1169,14 @@ def run_autopilot(
     touched: Dict[int, List[Dict[str, Any]]] = {}
     out = {"approved": auto_approve_due(conn, now), "pitches": 0, "headsups": 0, "followups": 0,
            "skipped": 0, "failed": 0}
+    try:
+        out["pulled_forward"] = pull_forward_all(conn, now)
+    except Exception as err:
+        print(f"[Polly autopilot] pull forward skipped: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
     pitches = _due(conn, f"""
         SELECT DISTINCT ON (q.creator_id) q.*, a.followups
