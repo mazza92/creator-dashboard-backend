@@ -117,6 +117,33 @@ def queued_this_week(conn, creator_id: int, now: Optional[datetime] = None) -> i
     return int((row[0] if not isinstance(row, dict) else list(row.values())[0]) or 0)
 
 
+def _email_domain(email: Any) -> str:
+    return str(email or "").strip().lower().rpartition("@")[2]
+
+
+def _insert_gig_brand(cur, opp: Dict[str, Any]) -> int:
+    """pr_brands.brand_name is unique. A gig from a brand already in the directory (same name, same email domain)
+    uses that brand; a different company with the same name gets the gig id in its hidden row's name. Before,
+    the insert failed on every cron run for every creator (Nov 26: gig 2013 'Cloud Nine', 15 Pro creators)."""
+    name = str(opp.get("brand_name") or "Brand").strip() or "Brand"
+    cur.execute("SELECT id, contact_email FROM pr_brands WHERE LOWER(brand_name) = LOWER(%s) LIMIT 1", (name,))
+    same = cur.fetchone()
+    if same:
+        same_email = same[1] if not isinstance(same, dict) else same.get("contact_email")
+        domain = _email_domain(opp.get("brand_email"))
+        if domain and domain == _email_domain(same_email):
+            return int(same[0] if not isinstance(same, dict) else same["id"])
+        name = f"{name} (gig {opp.get('id')})"
+    cur.execute(
+        """INSERT INTO pr_brands (brand_name, contact_email, website, category, status, description)
+           VALUES (%s, %s, %s, %s, 'gig', %s) RETURNING id""",
+        (name, opp["brand_email"], opp.get("brand_website"),
+         (gig_niches(opp) or ["other"])[0], "Paid UGC gig contact (hidden, not a directory listing)."),
+    )
+    row = cur.fetchone()
+    return int(row[0] if not isinstance(row, dict) else row["id"])
+
+
 def gig_brand_id(conn, opp: Dict[str, Any]) -> int:
     """The gig's hidden brand row (created once, linked on the gig)."""
     if opp.get("pr_brand_id"):
@@ -128,14 +155,7 @@ def gig_brand_id(conn, opp: Dict[str, Any]) -> int:
     if row:
         bid = int(row[0] if not isinstance(row, dict) else row["id"])
     else:
-        cur.execute(
-            """INSERT INTO pr_brands (brand_name, contact_email, website, category, status, description)
-               VALUES (%s, %s, %s, %s, 'gig', %s) RETURNING id""",
-            (opp.get("brand_name") or "Brand", opp["brand_email"], opp.get("brand_website"),
-             (gig_niches(opp) or ["other"])[0], "Paid UGC gig contact (hidden, not a directory listing)."),
-        )
-        row = cur.fetchone()
-        bid = int(row[0] if not isinstance(row, dict) else row["id"])
+        bid = _insert_gig_brand(cur, opp)
     cur.execute("UPDATE opportunities SET pr_brand_id = %s WHERE id = %s AND pr_brand_id IS NULL", (bid, opp["id"]))
     conn.commit()
     return bid
