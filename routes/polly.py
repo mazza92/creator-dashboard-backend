@@ -2830,11 +2830,14 @@ def pitch_batch_send():
 @polly_bp.route("/pitch/send", methods=["POST"])
 def pitch_single_send():
     """'Send for me' on a single pitch card: the pitch Polly stored for that brand, from the creator's Gmail."""
-    brand_id = str((request.get_json(silent=True) or {}).get("brand_id") or "")
+    body = request.get_json(silent=True) or {}
+    brand_id = str(body.get("brand_id") or "")
+    # The Brands flow lets the creator edit the pitch before sending: the edited text is what goes out.
+    edits = {k: str(body[k])[:20000] for k in ("subject", "body") if isinstance(body.get(k), str) and body[k].strip()}
 
     def load(notes):
         item = ((notes.get("pitch_outbox") or {}).get(brand_id)) if brand_id else None
-        return [item] if isinstance(item, dict) else []
+        return [{**item, **edits}] if isinstance(item, dict) else []
 
     def store(notes, items):
         outbox = dict(notes.get("pitch_outbox") or {})
@@ -3019,6 +3022,75 @@ def _log_send_on_open(conn, creator_id, brand_id, brand_name=None):
         notes=notes,
     )
     return True
+
+
+@polly_bp.route("/pitch/draft", methods=["POST"])
+def pitch_draft():
+    """Brands directory, last step: Polly writes the pitch right there instead of sending the creator to chat.
+    Same draft_pitch tool as the chat (same writer, credits, cold check, paywall, swap offer), and the draft is
+    stored in Polly's notes so Send / Open email / sent-check and the chat all see it."""
+    from services.polly_tools import run_tool
+    from services.polly_turn_state import TurnState
+
+    creator_id, conn, creator = _creator_auth()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    try:
+        body = request.get_json(silent=True) or {}
+        try:
+            brand_id = int(body.get("brand_id") or 0)
+        except (TypeError, ValueError):
+            brand_id = 0
+        if not brand_id:
+            return jsonify({"success": False, "error": "brand_id required"}), 400
+        thread = load_thread(conn, creator_id)
+        notes = thread.get("notes") or {}
+        scrape = _load_scrape(conn, (creator or {}).get("user_id") or session.get("user_id")) or {}
+        state = TurnState(
+            creator_id=creator_id, creator=creator or {}, first=(creator or {}).get("first_name") or "",
+            scrape=scrape, kit={}, profile_context="", coach_moves=[],
+            balance=_unlock_balance(creator_id, conn=conn), notes=notes, messages=[], stored_messages=[],
+            suggested=[], tracker_ctx={}, early_fu={}, career=None, user_text="",
+            chip={"confirm_cold": True} if body.get("confirm_cold") else {}, conn=conn,
+        )
+        args = {"brand_id": brand_id, "sample_posts": body.get("sample_posts") or []}
+        if body.get("confirm_cold"):
+            args["confirm_cold"] = True
+        result = run_tool(state, "draft_pitch", args)
+        save_thread(conn, creator_id, thread.get("messages") or [], thread.get("suggested_brands") or [],
+                    notes=state.notes)
+        gmail = False
+        try:
+            from services.polly_autopilot import gmail_connected_at
+            gmail = bool(gmail_connected_at(conn, creator_id))
+        except Exception as err:  # noqa: BLE001
+            print(f"[Polly] pitch draft gmail check skipped: {err}")
+            conn.rollback()
+        _log_polly_event(creator_id, "directory_pitch_drafted",
+                         {"brand_id": brand_id, "status": result.get("status"), "source": body.get("source")})
+        pitch = state.pitch if result.get("status") == "drafted" else None
+        return jsonify(json_safe({
+            "success": bool(result.get("ok")),
+            "status": result.get("status") or ("failed" if not result.get("ok") else ""),
+            "pitch": pitch,
+            "paywall": bool(state.paywall),
+            "cold": result.get("status") == "cold_brand_warning",
+            "alternatives": [{"id": b.get("id"), "name": b.get("name")} for b in (state.brands or [])][:3]
+            if result.get("status") == "cold_brand_warning" else [],
+            "message": state.final_say or "",
+            "gmail_connected": gmail,
+            "balance": state.balance,
+        }))
+    except Exception as err:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"[Polly] pitch draft failed: {type(err).__name__}: {err}")
+        return jsonify({"success": False, "error": "Could not write the pitch. Try again."}), 500
+    finally:
+        if conn:
+            conn.close()
 
 
 @polly_bp.route("/pitch/handoff", methods=["POST"])
