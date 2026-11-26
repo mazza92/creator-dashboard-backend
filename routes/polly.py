@@ -302,7 +302,7 @@ def _replied_chip_from_tracker(tracker):
         name = task.get("brand_name") or "They"
         return {
             "id": "checkin_replied",
-            "label": f"{name} replied",
+            "label": f"I heard back from {name}",
             "action": "task_act",
             "task_id": task.get("id"),
             "brand_id": task.get("brand_id"),

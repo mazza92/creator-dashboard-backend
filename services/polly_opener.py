@@ -78,7 +78,7 @@ def _followup_chip(brand_id: Any, name: str) -> Dict[str, Any]:
 def _replied_chip(brand_id: Any, name: str, task_id: Any = None) -> Dict[str, Any]:
     chip = {
         "id": "checkin_replied",
-        "label": f"{name} replied",
+        "label": f"I heard back from {name}",
         "action": "task_act",
         "brand_id": brand_id,
         "brand_name": name,

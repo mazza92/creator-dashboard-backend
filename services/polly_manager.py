@@ -490,7 +490,7 @@ def away_activity_message(activity: Dict[str, Any], career: Optional[Dict[str, A
             item["chip"] = send_draft_chip({"brand_id": item["brand_id"], "brand_name": name})
             item["chip"]["label"] = "Open pitch"
         elif item["type"] == "kit_view" and item.get("brand_id"):
-            item["chip"] = {"id": "checkin_replied", "label": "They replied", "action": "task_act",
+            item["chip"] = {"id": "checkin_replied", "label": "I heard back", "action": "task_act",
                             "brand_id": item["brand_id"], "brand_name": name}
     month = (career or {}).get("month") or {}
     return {

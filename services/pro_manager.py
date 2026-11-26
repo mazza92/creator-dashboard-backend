@@ -425,7 +425,7 @@ def board_email(first_name: str, board: Dict[str, Any], unsubscribe_url: str = "
         items = "".join(f"<li style=\"margin:0 0 6px 0;\">{escape(t['label'])}</li>" for t in left[:6])
         lines.append(f"For you this week:<ul style=\"margin:8px 0 0 18px;padding:0;\">{items}</ul>")
     lines.append("Every weekday I send new pitches from your Gmail and follow up in the same thread.")
-    buttons = [{"label": f"{f['brand_name']} replied", "href": chip_link(
+    buttons = [{"label": f"I heard back from {f['brand_name']}", "href": chip_link(
         "checkin_replied", brand_id=f.get("brand_id"), brand_name=f["brand_name"], kind="monday_board")}
         for f in followups[:3]]
     if open_href:

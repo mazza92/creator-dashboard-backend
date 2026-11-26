@@ -47,7 +47,7 @@ CHECKIN_AFTER = timedelta(hours=24)
 
 CHECKIN_CHIPS = [
     {"id": "checkin_quiet", "label": "Still quiet — draft follow-up", "action": "task_act"},
-    {"id": "checkin_replied", "label": "They replied", "action": "task_act"},
+    {"id": "checkin_replied", "label": "I heard back", "action": "task_act"},
     {"id": "checkin_bounced", "label": "Email bounced", "action": "task_act"},
     {"id": "checkin_passed", "label": "They passed", "action": "task_act"},
     {"id": "checkin_not_sent", "label": "I never sent it", "action": "task_act"},
@@ -55,7 +55,7 @@ CHECKIN_CHIPS = [
 
 CHECKIN_CHIPS_EARLY = [
     {"id": "checkin_quiet", "label": "Still quiet", "action": "task_act"},
-    {"id": "checkin_replied", "label": "They replied", "action": "task_act"},
+    {"id": "checkin_replied", "label": "I heard back", "action": "task_act"},
     {"id": "checkin_bounced", "label": "Email bounced", "action": "task_act"},
     {"id": "checkin_passed", "label": "They passed", "action": "task_act"},
     {"id": "checkin_not_sent", "label": "I never sent it", "action": "task_act"},

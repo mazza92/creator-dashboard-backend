@@ -17,7 +17,7 @@ FACTS = {5: {"creators_30d": 4, "avg_product_value": 45, "logo_url": ""}}
 class MomentEmailTests(unittest.TestCase):
     def test_reply_yes_email(self):
         mail = me.reply_email("Ana", "Glow Co", "brand_replied_interested", False, "https://x/reply", "u")
-        self.assertEqual(mail["subject"], "Glow Co said yes 🎉 Here's your reply")
+        self.assertEqual(mail["subject"], "Glow Co is interested 🎉 Here's your reply")
         self.assertIn("Write my reply to Glow Co", mail["html"])
         self.assertIn("On <strong>Pro ($19/mo)</strong> I draft every brand reply", mail["html"])
         pro = me.reply_email("Ana", "Glow Co", "brand_replied_question", True, "https://x/reply", "u")
