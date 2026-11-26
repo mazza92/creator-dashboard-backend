@@ -467,7 +467,7 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
             waiting = int(pkg.get("waiting") or 0)
         except (TypeError, ValueError):
             waiting = 0
-        if waiting:
+        if waiting and not free_swap_used(state.notes):
             swaps = _waiting_swap_chips(state, brand_id, brand_name)
             if swaps:
                 olds = [c["old_name"] for c in swaps]
@@ -479,24 +479,7 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
                                "Send them first: your free pitches are only used when a pitch goes out.")
             return {"ok": True, "status": "pitches_waiting", "count": waiting, "brand": brand_name}
     if status == 402 or pkg.get("paywall"):
-        state.paywall = True
-        state.notes["paywall_brand"] = {"id": brand_id, "name": brand_name}
-        state.paywall_payload = {
-            "remaining": pkg.get("remaining", 0),
-            "reset_at": pkg.get("reset_at"),
-            "message": pkg.get("message") or "You've used your 3 free pitches this month.",
-            "brand_name": brand_name,
-            "brand_id": brand_id,
-            "preview": paywall_preview_lines(brand_name, state.first, _niche(state)),
-        }
-        repeat = _paywall_seen_recently(state.notes)
-        state.notes["paywall_at"] = datetime.now(timezone.utc).isoformat()
-        state.paywall_moment = {"brand_id": brand_id, "moment": "pitch", "followup": followup, "repeat": repeat}
-        views_n, sent_n = R._pipeline_proof(state.tracker_ctx)
-        state.final_say = persona_paywall_say(brand_name, kit_views=views_n, sent=sent_n, repeat=repeat)
-        state.add_chips(paywall_unlock_chips({"id": brand_id, "name": brand_name}))
-        state.balance = R._unlock_balance(state.creator_id)
-        return {"ok": True, "status": "locked_out_of_free_pitches", "brand": brand_name}
+        return show_pitch_paywall(state, brand_id, brand_name, pkg, followup=followup)
     if not pkg.get("success"):
         state.error = pkg.get("error") or "Could not generate pitch"
         print(f"[Polly] pitch failed status={status} error={state.error}")
@@ -636,6 +619,56 @@ def _and_list(names: List[str]) -> str:
     return ", ".join(names[:-1]) + " and " + names[-1]
 
 
+FREE_SWAPS_PER_MONTH = 1
+
+
+def _month_key(now: Optional[datetime] = None) -> str:
+    return (now or datetime.now(timezone.utc)).strftime("%Y-%m")
+
+
+def free_swap_used(notes: Dict[str, Any], now: Optional[datetime] = None) -> bool:
+    """A free creator gets one swap a month; after it, asking for another brand shows the paywall (Nov 26 audit:
+    4752 swapped 5 times in 11 minutes and saw a new brand email each time without ever meeting the paywall)."""
+    rec = (notes or {}).get("free_swaps") or {}
+    if not isinstance(rec, dict) or rec.get("month") != _month_key(now):
+        return False
+    try:
+        return int(rec.get("n") or 0) >= FREE_SWAPS_PER_MONTH
+    except (TypeError, ValueError):
+        return False
+
+
+def record_free_swap(notes: Dict[str, Any], now: Optional[datetime] = None) -> None:
+    month = _month_key(now)
+    rec = notes.get("free_swaps") if isinstance(notes.get("free_swaps"), dict) else {}
+    n = int(rec.get("n") or 0) if rec.get("month") == month else 0
+    notes["free_swaps"] = {"month": month, "n": n + 1}
+
+
+def show_pitch_paywall(state: TurnState, brand_id: Any, brand_name: str, pkg: Optional[Dict[str, Any]] = None,
+                       followup: bool = False) -> Dict[str, Any]:
+    R = _routes()
+    pkg = pkg or {}
+    state.paywall = True
+    state.notes["paywall_brand"] = {"id": brand_id, "name": brand_name}
+    state.paywall_payload = {
+        "remaining": pkg.get("remaining", 0),
+        "reset_at": pkg.get("reset_at"),
+        "message": pkg.get("message") or "You've used your 3 free pitches this month.",
+        "brand_name": brand_name,
+        "brand_id": brand_id,
+        "preview": paywall_preview_lines(brand_name, state.first, _niche(state)),
+    }
+    repeat = _paywall_seen_recently(state.notes)
+    state.notes["paywall_at"] = datetime.now(timezone.utc).isoformat()
+    state.paywall_moment = {"brand_id": brand_id, "moment": "pitch", "followup": followup, "repeat": repeat}
+    views_n, sent_n = R._pipeline_proof(state.tracker_ctx)
+    state.final_say = persona_paywall_say(brand_name, kit_views=views_n, sent=sent_n, repeat=repeat)
+    state.add_chips(paywall_unlock_chips({"id": brand_id, "name": brand_name}))
+    state.balance = R._unlock_balance(state.creator_id)
+    return {"ok": True, "status": "locked_out_of_free_pitches", "brand": brand_name}
+
+
 def _waiting_swap_chips(state: TurnState, brand_id: Any, brand_name: str) -> List[Dict[str, Any]]:
     """Free creator with every credit held by written, unsent pitches asks for a new brand: offer to swap it in
     for one of them (Nov 2026: 'Pitch The Good Patch' was refused twice with 'send them first'). Uses the batch
@@ -736,6 +769,11 @@ def draft_pitch_batch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         if not swap_from:
             return {"ok": False, "status": "swap_missing", "explain": "That pitch is already sent or gone."}
         rows = rows[:1]
+        if not (R._unlock_balance(state.creator_id) or {}).get("is_unlimited"):
+            if free_swap_used(state.notes):
+                # An old swap chip tapped again: the free swap is spent, so this brand is a Pro pitch.
+                return show_pitch_paywall(state, int(rows[0]["id"]), str(rows[0].get("name") or "this brand"))
+            record_free_swap(state.notes)
         try:
             from services.unlock_quota import release_unsent
             release_unsent(state.db().cursor(), state.creator_id, replace)

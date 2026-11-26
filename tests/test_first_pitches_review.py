@@ -81,3 +81,44 @@ class Edit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FreeSwapLimit(unittest.TestCase):
+    def _run(self, notes):
+        state = _state(notes=notes)
+        routes = MagicMock()
+        routes._unlock_balance.return_value = {"is_unlimited": False, "remaining": 0}
+        routes._invoke_generate_pr_packages.return_value = {4: ("ok", 4)}
+        find = lambda st, brand_id=None, brand_name=None: {"id": brand_id, "name": "Rhode"}
+
+        def fake_draft(st, args):
+            st.pitch = {"brand_id": args["brand_id"], "brand_name": "Rhode", "email": "r@r.com",
+                        "subject": "S", "body": "Hi"}
+
+        with patch.object(pt, "_routes", return_value=routes), \
+             patch.object(pt, "find_brand", side_effect=find), \
+             patch.object(pt, "_pitch_location", return_value=({}, "")), \
+             patch.object(pt, "draft_pitch", side_effect=fake_draft), \
+             patch.object(pt, "show_pitch_paywall", return_value={"status": "locked_out_of_free_pitches"}) as pw, \
+             patch("services.unlock_quota.release_unsent", return_value=True):
+            out = pt.draft_pitch_batch(state, {"brand_ids": [4], "replace": 2})
+        return state, out, pw
+
+    def test_second_swap_shows_paywall(self):
+        from services.polly_tools import record_free_swap
+
+        notes = {"pitch_batch": {"items": [{"brand_id": 2, "brand_name": "B"}]}}
+        record_free_swap(notes)
+        state, out, pw = self._run(notes)
+        self.assertEqual(out["status"], "locked_out_of_free_pitches")
+        pw.assert_called_once()
+        self.assertEqual(pw.call_args[0][1], 4)
+        self.assertEqual([i["brand_id"] for i in state.notes["pitch_batch"]["items"]], [2])
+
+    def test_first_swap_is_recorded(self):
+        from services.polly_tools import free_swap_used
+
+        notes = {"pitch_batch": {"items": [{"brand_id": 2, "brand_name": "B"}]}}
+        state, out, pw = self._run(notes)
+        pw.assert_not_called()
+        self.assertTrue(free_swap_used(state.notes))
