@@ -3226,6 +3226,24 @@ def cron_alerts():
         conn.close()
 
 
+@polly_bp.route("/cron/brand-tags", methods=["GET", "POST"])
+def cron_brand_tags():
+    """Every 5 minutes: Gemini tags the next brands with every niche they genuinely fit (Thanos matching)."""
+    if not _cron_authorized():
+        return jsonify({"success": False, "error": "unauthorized"}), 401
+    from pr_crm_routes import get_db_connection
+    from services.thanos.brand_tags import run_batch
+    conn = get_db_connection()
+    try:
+        return jsonify({"success": True, **run_batch(conn)})
+    except Exception as err:
+        conn.rollback()
+        print(f"[Polly] cron brand-tags error: {err}")
+        return jsonify({"success": False, "error": "tagging failed"}), 500
+    finally:
+        conn.close()
+
+
 @polly_bp.route("/cron/gifting-sweep", methods=["GET", "POST"])
 def cron_gifting_sweep():
     """Hourly: scan the next niche for brands giving out boxes (each niche once a day) and refresh which

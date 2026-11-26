@@ -4,13 +4,17 @@
 
 Steps, the same for every surface:
 1. Profile: niches, size, country, scrape, what they already pitched (services.thanos.profile).
-2. Candidates from the directory, level by level (the ladder) until `n` good brands are found:
-     L0 their categories, within 5x their size          (lane core)
-     L1 neighbouring categories, within 5x              (lane related)
-     L2 their + neighbouring categories, any size       (lane related, out-of-reach brands score low)
-     L3 any category with replies or roster picks       (lane wide)
-     L4 any category, added to the directory in 14 days (lane wide)
+2. Candidates from the directory, level by level (the ladder) until `n` good brands are found. A brand is in a
+   niche when its category is that niche or Gemini tagged it with that niche (pr_brands.match_niches, see
+   services.thanos.brand_tags: a luggage brand filed under fashion is still a travel brand).
+   Creators with niches (strict, Nov 26 2026: a travel creator got 65 beauty brands out of 71 because the ladder
+   topped up with brands that reply to anyone):
+     L0 their niches, within 5x their size
+     L2 their niches, any size (out-of-reach brands score low)
      L5 brands they pitched 60+ days ago, no reply, no "no": a follow-up, not a first pitch
+   Never another niche: a short list says so (Ranking.niche_short) instead of filling up with off-niche brands.
+   Creators with no niche yet (and explicit category searches with none) keep the wide ladder:
+     L0 / L1 neighbouring categories / L2 / L3 any category with replies or roster picks / L4 new in 14 days
    Every level drops brands that can't be pitched: no inbox (or no form, per surface), bounced, not accepting,
    sensitive categories, brands that never fit them (parenting/CBD, optical, wigs, gender lanes), their Polly
    "never pitch" preferences, and brands proven cold.
@@ -96,6 +100,7 @@ _NONE = "__none__"  # placeholder for an empty SQL array
 class Ranking:
     brands: List[Dict[str, Any]] = field(default_factory=list)
     level: int = 0                  # deepest ladder level used
+    niche_short: bool = False       # fewer than asked: their niches have no more pitchable brands right now
     note: str = ""
     profile: Optional[CreatorProfile] = None
     considered: int = 0
@@ -136,7 +141,8 @@ def candidates_sql(require: str, *, categories: bool, reach_cap: bool, only_ids:
         "LOWER(COALESCE(b.category, '')) <> ALL(%(excluded)s)",
     ]
     if categories:
-        where.append("LOWER(COALESCE(b.category, '')) = ANY(%(cats)s)")
+        where.append("(LOWER(COALESCE(b.category, '')) = ANY(%(cats)s) "
+                     "OR COALESCE(b.match_niches, ARRAY[]::text[]) && %(cats)s::text[])")
     if reach_cap:
         where.append("(%(cap)s <= 0 OR b.min_followers IS NULL OR b.min_followers <= %(cap)s)")
     if only_ids:
@@ -148,7 +154,7 @@ def candidates_sql(require: str, *, categories: bool, reach_cap: bool, only_ids:
                b.max_followers, b.website, b.application_form_url, b.has_application_form, b.hero_product,
                b.target_audience, b.niches, b.regions, b.ships_to, b.contact_email, b.verified_contact,
                b.gifting_confirmed_at, b.gifting_signal, b.price_point, b.micro_friendly, b.avg_product_value, b.response_rate,
-               b.cover_image_url, b.collaboration_type, b.payment_offered,
+               b.cover_image_url, b.collaboration_type, b.payment_offered, b.match_niches,
                COALESCE(s.ugc_style, FALSE) AS ugc_style,
                {ROSTER_DEMAND_SELECT}
         FROM pr_brands b
@@ -348,21 +354,29 @@ def rank(conn, creator_id: int, surface: str = "polly", n: int = 6, *,
     def lane_of(brand: Dict[str, Any]) -> str:
         """The creator's own niches first, then neighbouring ones, then everything else, at every level."""
         cat = str(brand.get("category") or "").lower()
-        if not core_set or cat in core_set:
+        tags = {str(t).lower() for t in (brand.get("match_niches") or [])}
+        if not core_set or cat in core_set or tags & core_set:
             return "core"
-        return "related" if cat in near_set else "wide"
+        return "related" if cat in near_set or tags & near_set else "wide"
 
     proven = [bid for bid, ev in stats.brand.items() if ev.positive + ev.selected > 0]
     cap = int(prof.followers * M.STRETCH) if prof.followers else 0
     seed = _seed(prof.creator_id, surface)
 
-    ladder = [
-        (0, dict(categories=bool(core), reach_cap=True, only_ids=False, fresh=False), core),
-        (1, dict(categories=True, reach_cap=True, only_ids=False, fresh=False), near),
-        (2, dict(categories=True, reach_cap=False, only_ids=False, fresh=False), core + near),
-        (3, dict(categories=False, reach_cap=False, only_ids=True, fresh=False), None),
-        (4, dict(categories=False, reach_cap=False, only_ids=False, fresh=True), None),
-    ]
+    if core:
+        # Strict: their niches only, nearby sizes first, then any size. Accuracy over volume.
+        ladder = [
+            (0, dict(categories=True, reach_cap=True, only_ids=False, fresh=False), core),
+            (2, dict(categories=True, reach_cap=False, only_ids=False, fresh=False), core),
+        ]
+    else:
+        ladder = [
+            (0, dict(categories=False, reach_cap=True, only_ids=False, fresh=False), core),
+            (1, dict(categories=True, reach_cap=True, only_ids=False, fresh=False), near),
+            (2, dict(categories=True, reach_cap=False, only_ids=False, fresh=False), core + near),
+            (3, dict(categories=False, reach_cap=False, only_ids=True, fresh=False), None),
+            (4, dict(categories=False, reach_cap=False, only_ids=False, fresh=True), None),
+        ]
     if only_ids is not None:
         ladder = [(0, dict(categories=False, reach_cap=False, only_ids=True, fresh=False), None)]
 
@@ -399,6 +413,8 @@ def rank(conn, creator_id: int, surface: str = "polly", n: int = 6, *,
             # their niches a deal-breaker still excludes the brand. (Nov 2026: a pet/baby creator lost every
             # pet and baby brand to "No pet content found in recent posts".)
             own_niche = lane == "core" and bool(core_set)
+            if core_set and not own_niche and only_ids is None:
+                continue  # strict: never another niche
             if fit.get("deal_breaker") and only_ids is None and not own_niche:
                 continue
             if fit_score is not None and fit_score < (WIDE_MIN_FIT if own_niche else floor) and only_ids is None:
@@ -459,6 +475,7 @@ def rank(conn, creator_id: int, surface: str = "polly", n: int = 6, *,
         ordered += _mix([c for c in picked.values() if group[c["id"]] == key])
     out.brands = ordered[:n]
     out.note = LEVEL_NOTES.get(out.level, "")
+    out.niche_short = bool(core_set) and only_ids is None and len(out.brands) < n
     return out
 
 

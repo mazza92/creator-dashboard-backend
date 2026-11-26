@@ -266,6 +266,11 @@ def suggest_brands(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
     if repeated:
         out["repeated"] = True
         out["note"] = "These brands were shown before and are still unpitched. The cards are on screen."
+    elif getattr(ranking, "niche_short", False):
+        out["niche_short"] = True
+        out["note"] = ("These are all the brands in their niche with a working inbox right now. Say so in one "
+                       "short line, never offer brands from other niches, and offer to add another niche they "
+                       "create for or to check back as new brands are added. The cards are on screen.")
     elif ranking.note:
         # Thanos went past the creator's own niche: say so plainly instead of calling these niche matches.
         out["match_note"] = ranking.note

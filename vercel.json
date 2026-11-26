@@ -66,6 +66,10 @@
     {
       "path": "/api/public/cron/tiktok-media",
       "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/polly/cron/brand-tags",
+      "schedule": "*/5 * * * *"
     }
   ],
   "git": {

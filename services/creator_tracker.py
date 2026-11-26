@@ -613,6 +613,37 @@ def planned_rows(conn, creator_id: int) -> List[Dict[str, Any]]:
     return [dict(r) for r in cur.fetchall()]
 
 
+def drop_off_niche_plan(conn, creator_id: int, categories: Optional[List[str]] = None) -> int:
+    """Remove planned brands outside the creator's niches (category, or Gemini's match_niches tags). Plans made
+    before Thanos went strict (Nov 26 2026) held other niches: a travel creator's plan was 65 beauty brands of 71.
+    Never fails the caller; returns how many were removed."""
+    try:
+        if categories is None:
+            from services.thanos.profile import load_profile
+            categories = load_profile(conn, creator_id).categories
+        cats = sorted({str(c).lower() for c in categories or [] if c})
+        if not cats:
+            return 0
+        cur = conn.cursor()
+        cur.execute(
+            """DELETE FROM creator_pitch_plan p USING pr_brands b
+               WHERE p.creator_id = %s AND b.id = p.brand_id
+                 AND NOT (LOWER(COALESCE(b.category, '')) = ANY(%s)
+                          OR COALESCE(b.match_niches, ARRAY[]::text[]) && %s::text[])""",
+            (creator_id, cats, cats),
+        )
+        n = cur.rowcount or 0
+        conn.commit()
+        return n
+    except Exception as err:  # noqa: BLE001
+        print(f"[tracker] off-niche plan cleanup skipped creator={creator_id}: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return 0
+
+
 def _taken_brand_ids(conn, creator_id: int) -> set:
     """Brands already queued, pitched or in a deal: never planned again."""
     cur = conn.cursor()
@@ -643,6 +674,7 @@ def plan_week(conn, creator_id: int, brands: List[Dict[str, Any]], now: Optional
     if taken:
         cur.execute("DELETE FROM creator_pitch_plan WHERE creator_id = %s AND brand_id = ANY(%s)",
                     (creator_id, list(taken)))
+    drop_off_niche_plan(conn, creator_id)
     current = planned_rows(conn, creator_id)
     keep = [r for r in current if r["planned_for"] >= days[0]]
     overdue = [r for r in current if r["planned_for"] < days[0]]
@@ -836,6 +868,7 @@ def in_first_run(conn, creator_id: int, notes: Optional[Dict[str, Any]] = None) 
 def first_run_payload(conn, creator_id: int, now: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
     """The welcome: goal, this week's lined-up brands (teaser), and the plan in plain words."""
     now = now or _now()
+    drop_off_niche_plan(conn, creator_id)
     rows = [r for r in planned_rows(conn, creator_id) if r["planned_for"] >= now.date()]
     if not rows:
         return None
