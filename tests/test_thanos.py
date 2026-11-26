@@ -145,14 +145,28 @@ class EngineTests(unittest.TestCase):
         for key in ("reply_chance", "reply_band", "reply_reason", "match_score", "thanos_level"):
             self.assertIn(key, card)
 
-    def test_ladder_widens_until_full_and_says_so(self):
+    def test_creator_with_niches_never_gets_another_niche(self):
+        """Nov 26: travel creator 4869 got 65 beauty brands of 71 because the ladder topped up with brands that
+        answer anyone. With niches set, only their niches, nearby sizes then any size, and a short list says so."""
         self.stats.brand[50] = M.Evidence(sends=8, positive=2)
-        r, calls = self._run({0: [_brand(1)], 1: [_brand(2, "beauty")], 2: [], 3: [_brand(50, "home")],
-                              4: [_brand(60, "pet")]}, n=4)
-        self.assertEqual(r.ids(), sorted(r.ids(), key=lambda i: r.ids().index(i)))
-        self.assertEqual(set(r.ids()), {1, 2, 50, 60})
-        self.assertEqual(r.level, 4)
-        self.assertEqual(r.note, "new this week")
+        r, calls = self._run({0: [_brand(1)], 1: [_brand(2)], 2: [_brand(50, "home")]}, n=4)
+        self.assertEqual(r.ids(), [1, 2])
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(c["cats"] == ["skincare"] for c in calls))
+        self.assertTrue(r.niche_short)
+
+    def test_brand_tagged_with_their_niche_is_a_match(self):
+        r, _ = self._run({0: [_brand(1, "fashion", match_niches=["fashion", "skincare"])]}, n=2)
+        self.assertEqual(r.ids(), [1])
+        self.assertEqual(r.brands[0]["thanos_lane"], "core")
+
+    def test_no_niche_yet_keeps_the_wide_ladder(self):
+        self.prof.categories = []
+        self.prof.interests = []
+        self.stats.brand[50] = M.Evidence(sends=8, positive=2)
+        r, calls = self._run({0: [_brand(1)], 1: [_brand(50, "home")], 2: [_brand(60, "pet")]}, n=3)
+        self.assertEqual(set(r.ids()), {1, 50, 60})
+        self.assertFalse(r.niche_short)
 
     def test_never_suggests_pitched_or_cold(self):
         self.prof.pitched_ids = {1}
@@ -286,23 +300,20 @@ class NicheFirstTests(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
 
-    def test_plan_keeps_their_niches_ahead_of_proven_neighbours(self):
-        own = [_brand(i, "lifestyle") for i in range(1, 7)]  # one category dominates their own niches
+    def test_plan_is_their_niches_only_even_when_short(self):
+        own = [_brand(i, "lifestyle") for i in range(1, 7)]
         beauty = [_brand(101, "beauty"), _brand(102, "skincare"), _brand(103, "beauty")]
 
         def fetch(conn, sql, params):
             cats = params["cats"]
-            if "travel" in cats and "beauty" not in cats:
-                return own
-            if "beauty" in cats or "skincare" in cats:
-                return [b for b in beauty if b["id"] not in params["skip"]]
-            return []
+            self.assertNotIn("beauty", cats)
+            return [b for b in own if b["id"] not in params["skip"]] if "travel" in cats else beauty
 
         with patch.object(E, "_fetch", side_effect=fetch):
             r = E.rank(None, 4823, surface="plan", n=9)
-        self.assertEqual(set(r.ids()[:6]), set(range(1, 7)))
-        self.assertEqual([b["thanos_lane"] for b in r.brands[:6]], ["core"] * 6)
-        self.assertEqual({b["thanos_lane"] for b in r.brands[6:]}, {"related"})
+        self.assertEqual(set(r.ids()), set(range(1, 7)))
+        self.assertEqual({b["thanos_lane"] for b in r.brands}, {"core"})
+        self.assertTrue(r.niche_short)
 
     def test_scoring_a_list_puts_their_niches_first(self):
         rows = [_brand(101, "beauty"), _brand(1, "travel"), _brand(102, "skincare"), _brand(2, "tech")]
