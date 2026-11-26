@@ -570,6 +570,16 @@ def add_event(
     )
     row = cur.fetchone()
     conn.commit()
+    if event_type == "pitch_sent":
+        try:
+            from services.start_choice import mark_pitched_manually
+            mark_pitched_manually(conn, creator_id)  # sent it themselves: the manual path, paid plan from here
+        except Exception as err:  # noqa: BLE001
+            print(f"[tracker] start choice manual mark skipped: {err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
     if brand_id and event_type in THANOS_SIGNAL_EVENTS:
         from services.thanos import signals_changed
         signals_changed()  # the next ranking reads this pitch / reply / kit open

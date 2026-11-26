@@ -13,9 +13,10 @@ day 14 for trial pickers vs free pickers), recorded in creator_start_choice.
 
 Version 2, matches first (Nov 26 2026): the choice screen asked for a plan before showing a single brand, and 5 of
 the first 21 creators left without choosing. Now no screen comes first: Polly's welcome leads with their matches,
-writes the pitch for their top match right away, and the choice happens on that pitch ("Send email" free, or
-"Use autopilot" = the 7-day trial). Every paywall offers the free week. Arm 'matches_first'; creators who saw
-version 1 and never chose move to it.
+writes the pitch for their top match right away, and the choice happens on that pitch: "Use autopilot" (or
+"Start my free week") is the 7-day trial; sending a pitch themselves is the manual path, and from then on every
+paywall offers the paid plan directly. Arm 'matches_first'; creators who saw version 1 and never chose move to it.
+No cardless trial: the card stays at checkout.
 """
 
 from datetime import datetime, timezone
@@ -143,6 +144,22 @@ def trial_eligible(cursor, creator_id) -> bool:
     if not rec or rec['choice'] == 'free':
         return False
     return rec['arm'] in (ARM, ARM_V2) and _in_test(cursor, creator_id)
+
+
+def mark_pitched_manually(conn, creator_id) -> bool:
+    """Matches first: a creator who sends a pitch themselves (Send email, Gmail, the Brands flow) before starting
+    the free week chose to pitch manually. From then on, like "Do it yourself" in version 1, every paywall
+    (out of free pitches included) offers the paid plan, not the free week. True when it changed something."""
+    cursor = conn.cursor()
+    rec = _recorded(cursor, creator_id)
+    if not rec or rec['arm'] != ARM_V2 or rec['choice'] or not _in_test(cursor, creator_id):
+        return False
+    cursor.execute(
+        "UPDATE creator_start_choice SET choice = %s, chosen_at = NOW() WHERE creator_id = %s AND choice IS NULL",
+        ('free', creator_id),
+    )
+    conn.commit()
+    return True
 
 
 def journey(cursor, creator_id):

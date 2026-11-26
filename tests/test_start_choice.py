@@ -228,3 +228,23 @@ def test_paywall_says_free_week_and_names_the_waiting_matches():
     plain = persona_paywall_say("Rhode")
     assert "free for 7 days" not in plain and "more brands" not in plain
     assert "free for 7 days, then $19/mo" in persona_paywall_say("Rhode", repeat=True, trial=True)
+
+
+def test_sending_a_pitch_yourself_is_the_manual_path_paid_plan_from_then_on():
+    cur = FakeCursor({5: creator()}, table={5: {'arm': 'matches_first', 'choice': None}})
+    conn = FakeConn(cur)
+    assert sc.trial_eligible(cur, 5) is True
+    assert sc.mark_pitched_manually(conn, 5) is True
+    assert cur.table[5]['choice'] == 'free'
+    assert sc.trial_eligible(cur, 5) is False
+    assert sc.picked_free(cur, 5) is True
+    assert sc.mark_pitched_manually(conn, 5) is False  # once
+
+
+def test_manual_mark_leaves_other_creators_alone():
+    for table, c in (({5: {'arm': 'choice', 'choice': None}}, creator()),          # version 1: its own choice
+                     ({5: {'arm': 'matches_first', 'choice': 'trial'}}, creator()),
+                     ({5: {'arm': 'matches_first', 'choice': None}}, creator(paid=True)),  # on the trial / Pro
+                     (None, creator())):
+        cur = FakeCursor({5: c}, table=table)
+        assert sc.mark_pitched_manually(FakeConn(cur), 5) is False
