@@ -29,7 +29,7 @@ NUDGE_SUBJECTS = {
     "follow_up_d10": "Last nudge for {brand}?",
     "follow_up_d14": "{brand} went quiet — here's the next move",
     "reply_needed": "{brand} replied — answer while they're warm",
-    "reply_interested": "{brand} said yes. Did you reply?",
+    "reply_interested": "{brand} is interested. Did you reply?",
     "pr_shipped": "Did your {brand} box arrive?",
     "content_due": "Time to film your {brand} content",
 }

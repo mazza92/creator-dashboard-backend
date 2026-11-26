@@ -107,7 +107,7 @@ NUDGE_COPY = {
         "Want me to help you craft the reply?"
     ),
     "reply_interested": (
-        "**{brand}** said yes. Did you reply yet? Send your address and put a usage rate on the table "
+        "**{brand}** is interested. Did you reply yet? Send your address and put a usage rate on the table "
         "while they're keen. Interested brands go cold in a few days."
     ),
     "pr_shipped": (
@@ -123,14 +123,14 @@ NUDGE_COPY = {
 NUDGE_CHIPS = {
     "checkin_24h": [
         {"id": "checkin_quiet", "label": "Still quiet", "action": "task_act"},
-        {"id": "checkin_replied", "label": "They replied", "action": "task_act"},
+        {"id": "checkin_replied", "label": "I heard back", "action": "task_act"},
         {"id": "checkin_bounced", "label": "Email bounced", "action": "task_act"},
         {"id": "checkin_passed", "label": "They passed", "action": "task_act"},
         {"id": "checkin_not_sent", "label": "I never sent it", "action": "task_act"},
     ],
     "follow_up_d4": [
         {"id": "checkin_quiet", "label": "Still quiet — draft follow-up", "action": "task_act"},
-        {"id": "checkin_replied", "label": "They replied", "action": "task_act"},
+        {"id": "checkin_replied", "label": "I heard back", "action": "task_act"},
         {"id": "checkin_bounced", "label": "Email bounced", "action": "task_act"},
         {"id": "checkin_passed", "label": "They passed", "action": "task_act"},
         {"id": "checkin_not_sent", "label": "I never sent it", "action": "task_act"},
@@ -488,6 +488,9 @@ def session_context_text(context: Optional[Dict] = None) -> str:
         bits.append("Recent: " + "; ".join(
             f"{e.get('event_label')}" for e in recent[:6]
         ))
+        on_record = replies_on_record_text(recent)
+        if on_record:
+            bits.append(on_record)
     pain = context.get("active_pain")
     if isinstance(pain, dict) and pain.get("code"):
         bits.insert(
@@ -894,7 +897,7 @@ def portfolio_view_alert(brand_name: str, brand_id: Optional[int] = None,
             "chips": [
                 {
                     "id": "checkin_replied",
-                    "label": f"{name} replied",
+                    "label": f"I heard back from {name}",
                     "action": "task_act",
                     "brand_id": brand_id,
                     "brand_name": name,
@@ -1111,6 +1114,48 @@ def _repair_bounced_contact(conn, creator_id: int, brand_id: Optional[int]) -> D
         return {}
 
 
+REPLY_INTENTS = ("brand_replied_interested", "brand_replied_question", "brand_replied_rejected")
+REPLY_DEDUPE_WINDOW = timedelta(minutes=30)
+_REPLY_KIND_WORDS = {
+    "brand_replied_interested": "interested",
+    "brand_replied_question": "asked a question",
+    "brand_replied_rejected": "passed",
+}
+
+
+def reply_event_data(parsed: Dict[str, Any]) -> Dict[str, Any]:
+    """How we know about a reply and, when the creator said it in words, what they said. Polly quotes this back
+    instead of making up what the brand wrote (Nov 2026: 'P. Louise replied on Nov 20 saying yes' when the
+    creator had said they passed her email to marketing)."""
+    data: Dict[str, Any] = {"source": str(parsed.get("source") or "creator")}
+    said = " ".join(str(parsed.get("said") or "").split())
+    if said:
+        data["said"] = said[:300]
+    return data
+
+
+def _same_reply_logged_recently(conn, creator_id: int, brand_id: Optional[int], intent: str) -> bool:
+    """The same reply logged twice within minutes is one reply (4280: 'asked a question' twice in one second;
+    4753: three times in an evening)."""
+    if not brand_id:
+        return False
+    try:
+        cur = _cursor(conn)
+        cur.execute(
+            """SELECT 1 FROM polly_timeline_events
+               WHERE creator_id = %s AND brand_id = %s AND event_type = %s AND occurred_at > %s LIMIT 1""",
+            (creator_id, brand_id, intent, utc_now() - REPLY_DEDUPE_WINDOW),
+        )
+        return cur.fetchone() is not None
+    except Exception as err:  # noqa: BLE001
+        print(f"[tracker] reply dedupe check skipped: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
 def apply_lifecycle_intent(
     conn,
     creator_id: int,
@@ -1142,6 +1187,18 @@ def apply_lifecycle_intent(
             "unmark_pitched": False,
         }
 
+    if intent in REPLY_INTENTS and _same_reply_logged_recently(conn, creator_id, brand_id, intent):
+        return {
+            "intent": intent,
+            "action": "already_logged",
+            "say_hint": f"That's already on your Timeline: **{name}** {_REPLY_KIND_WORDS[intent]}.",
+            "chips": [],
+            "brand_id": brand_id,
+            "brand_name": name,
+            "unmark_pitched": False,
+        }
+    reply_data = reply_event_data(parsed) if intent in REPLY_INTENTS else None
+
     if intent == "pitch_sent":
         record_pitch_sent(conn, creator_id, brand_row, drafted=False)
         action = "pitch_sent+followups"
@@ -1165,11 +1222,11 @@ def apply_lifecycle_intent(
         add_event(
             conn, creator_id, "brand_replied_interested",
             f"Reply: interested · {name}",
-            brand_id=brand_id, task_id=tid,
+            brand_id=brand_id, task_id=tid, event_data=reply_data,
         )
         action = "interested+awaiting_pr"
         say_hint = (
-            f"That's the one. **{name}** said yes — I'll track the PR. "
+            f"Logged: **{name}** is interested. I'll track the PR. "
             "Reply with your address and put a usage rate on the table now: that's how a gifted "
             "yes turns into paid."
         )
@@ -1180,7 +1237,7 @@ def apply_lifecycle_intent(
         add_event(
             conn, creator_id, "brand_replied_rejected",
             f"Reply: passed · {name}",
-            brand_id=brand_id,
+            brand_id=brand_id, event_data=reply_data,
         )
         action = "rejected"
         say_hint = (
@@ -1202,7 +1259,7 @@ def apply_lifecycle_intent(
         add_event(
             conn, creator_id, "brand_replied_question",
             f"Reply: they asked a question · {name}",
-            brand_id=brand_id, task_id=tid,
+            brand_id=brand_id, task_id=tid, event_data=reply_data,
         )
         action = "reply_needed"
         say_hint = f"**{name}** asked something — reply inside 24h. Want help drafting it?"
@@ -1430,10 +1487,41 @@ def load_creator_context(conn, creator_id: int) -> Dict[str, Any]:
                 "brand_name": e.get("brand_name"),
                 "occurred_at": e.get("occurred_at").isoformat() if e.get("occurred_at") else None,
                 "polly_notes": e.get("polly_notes"),
+                **_reply_facts(e),
             }
             for e in recent
         ],
     }
+
+
+def _reply_facts(event: Dict[str, Any]) -> Dict[str, Any]:
+    if event.get("event_type") not in REPLY_INTENTS:
+        return {}
+    data = event.get("event_data") if isinstance(event.get("event_data"), dict) else {}
+    out: Dict[str, Any] = {"how_we_know": "the creator told Polly" if data.get("source", "creator") == "creator"
+                           else str(data.get("source"))}
+    if data.get("said"):
+        out["creator_said"] = data["said"]
+    return out
+
+
+def replies_on_record_text(recent: List[Dict[str, Any]]) -> str:
+    """One line per logged reply: brand, kind, date, how we know, the creator's own words. The only reply facts
+    Polly may state."""
+    lines = []
+    for e in recent or []:
+        if e.get("event_type") not in REPLY_INTENTS:
+            continue
+        when = str(e.get("occurred_at") or "")[:10]
+        line = (f"{e.get('brand_name') or 'a brand'}: {_REPLY_KIND_WORDS.get(e.get('event_type'), 'replied')}"
+                f" (logged {when}, {e.get('how_we_know') or 'the creator told Polly'})")
+        if e.get("creator_said"):
+            line += f', their words: "{e["creator_said"]}"'
+        lines.append(line)
+    if not lines:
+        return ""
+    return ("REPLIES ON RECORD (the only reply facts you have; Newcollab never reads their inbox, so you have not "
+            "seen any brand email): " + "; ".join(lines[:6]))
 
 
 def _public_tasks(rows: List[Dict]) -> List[Dict[str, Any]]:

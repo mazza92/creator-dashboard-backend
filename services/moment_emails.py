@@ -56,7 +56,7 @@ def reply_email(first: str, brand: str, kind: str, is_pro: bool, href: str, unsu
         subject = f"{brand} replied with a question. Your answer is one tap away"
         lead = f"<strong>{escape(brand)}</strong> answered your pitch with a question. Brands that ask usually want to work with you."
     else:
-        subject = f"{brand} said yes 🎉 Here's your reply"
+        subject = f"{brand} is interested 🎉 Here's your reply"
         lead = f"<strong>{escape(brand)}</strong> answered your pitch and they're interested."
     lines = [lead, "Reply within a day: brands move on fast. I'll write the answer for you, ready to send from your Gmail."]
     if not is_pro:

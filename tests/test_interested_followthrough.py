@@ -47,7 +47,7 @@ def test_interested_email_has_one_tap_buttons_and_pro_line_for_free(monkeypatch)
     nudge = {"key": "reply_interested", "brand_name": "Glow", "brand_id": 3, "task_id": 11,
              "message": pt.NUDGE_COPY["reply_interested"].format(brand="Glow")}
     free = pa.nudge_email("Ana", nudge, creator_id=7, is_pro=False)
-    assert free["subject"] == "Glow said yes. Did you reply?"
+    assert free["subject"] == "Glow is interested. Did you reply?"
     assert "Write my reply" in free["html"] and "I already replied" in free["html"]
     assert "Get Pro" in free["html"]
     assert "Get Pro" not in pa.nudge_email("Ana", nudge, creator_id=7, is_pro=True)["html"]

@@ -77,7 +77,7 @@ class Reports(unittest.TestCase):
         mail = board_email("Ana", {"report": [], "tasks": []}, followups=[
             {"brand_id": 4, "brand_name": "Kylie Cosmetics"}, {"brand_id": 5, "brand_name": "Biossance"}])
         self.assertIn("This week I follow up with", mail["html"])
-        self.assertIn("Kylie Cosmetics replied", mail["html"])
+        self.assertIn("I heard back from Kylie Cosmetics", mail["html"])
 
     def test_headsup_email_is_retired(self):
         from services.email_policy import RETIRED

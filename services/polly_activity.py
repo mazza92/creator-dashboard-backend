@@ -193,7 +193,7 @@ def headline(activity: Dict[str, Any]) -> str:
     kind = first.get("type")
     name = first.get("brand_name") or "A brand"
     if kind == "reply":
-        return f"🎉 **{name}** replied. Check your inbox."
+        return f"🎉 You heard back from **{name}**."
     if kind == "kit_view":
         return f"👀 **{name}** opened your media kit. Brands that look usually reply."
     if kind in ("followup_sent", "sent", "next"):

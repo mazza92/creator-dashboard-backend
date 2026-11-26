@@ -155,7 +155,7 @@ class RefillTests(unittest.TestCase):
         self.assertIn("🔁 1 follow-up (**Oat**)", line["text"])
         self.assertIn("Tomorrow I follow up with **Lume**", line["text"])
         self.assertIn("Next up: **Haus**", line["text"])
-        self.assertEqual([c["label"] for c in line["chips"]], ["Lume replied"])
+        self.assertEqual([c["label"] for c in line["chips"]], ["I heard back from Lume"])
 
     def test_daily_line_lists_new_pitches_when_nothing_went_out_yet(self):
         line = daily_line({"next": [{"brand_id": 1, "brand_name": "Glow"}]})

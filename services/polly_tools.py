@@ -419,7 +419,7 @@ def draft_pitch(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         if unlocks_at:
             state.final_say = persona_followup_too_early(brand_name, unlocks_at)
             state.add_chips([
-                {"id": "checkin_replied", "label": f"{brand_name} replied", "action": "task_act",
+                {"id": "checkin_replied", "label": f"I heard back from {brand_name}", "action": "task_act",
                  "brand_id": brand_id, "brand_name": brand_name},
                 {"id": "line_up", "label": "Pitch another brand", "action": "suggest_brands",
                  "skip_discovery": True, "deal": "gifted"},
@@ -1225,9 +1225,41 @@ _VAGUE_REPLY_RE = re.compile(
 )
 
 
+_HEARD_BACK_RE = re.compile(
+    r"^\s*(yes,?\s*|yeah,?\s*)?i\s+(heard|got)\s+back(\s+from\s+[\w&'.\- ]{1,40})?[\s.!]*$", re.I)
+
+
 def vague_reply_text(text: Optional[str]) -> bool:
-    """True for a bare 'They replied' / 'Rhode Skin replied!' that doesn't say what the brand said."""
-    return bool(_VAGUE_REPLY_RE.match(str(text or "").strip()))
+    """True for a bare 'They replied' / 'Rhode Skin replied!' / 'I heard back from X' that doesn't say what the
+    brand said."""
+    text = str(text or "").strip()
+    return bool(_VAGUE_REPLY_RE.match(text) or _HEARD_BACK_RE.match(text))
+
+
+_GREETING_RE = re.compile(r"^\s*(hi|hello|hey|dear|good (morning|afternoon|evening))\b[\s,]*(.{0,80})$", re.I)
+
+
+def outgoing_email_text(text: Optional[str], brand_name: Optional[str]) -> bool:
+    """A pasted email the creator wrote TO the brand (their pitch or their reply), not what the brand said.
+    4753 pasted 'Hi BeKynd Beauty Team, … my rate is $100' three times and each was logged as BeKynd asking a
+    question. The tell: it opens by greeting the brand, or it links the creator's own kit."""
+    raw = str(text or "").strip()
+    if len(raw) < 60:
+        return False
+    if "newcollab.co/kit/" in raw.lower():
+        return True
+    first = raw.splitlines()[0]
+    match = _GREETING_RE.match(first)
+    if not match:
+        return False
+    greeted = re.sub(r"[^a-z0-9]", "", (match.group(3) or "").lower())
+    if greeted.startswith("the"):
+        greeted = greeted[3:]
+    brand = re.sub(r"[^a-z0-9]", "", str(brand_name or "").lower())
+    if brand.startswith("the"):
+        brand = brand[3:]
+    # "Hi BeKynd Beauty team," greets the brand; "Hi! Thanks for reaching out to BeKynd" is the brand writing.
+    return len(brand) >= 3 and greeted.startswith(brand[:12])
 
 
 def log_brand_update(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -1248,6 +1280,19 @@ def log_brand_update(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
             brand = {"id": draft.get("id"), "name": draft.get("name")} if draft else None
         if not brand:
             return {"ok": False, "error": "Which brand? Pass brand_name."}
+    if intent in _REPLY_KINDS and outgoing_email_text(state.user_text, (brand or {}).get("name")):
+        state.add_chips([
+            {"id": "reply_sent", "label": "I sent this reply", "action": "task_act",
+             "brand_id": (brand or {}).get("id"), "brand_name": (brand or {}).get("name")},
+        ])
+        return {
+            "ok": False,
+            "status": "creator_own_email",
+            "brand": (brand or {}).get("name"),
+            "explain": "What they pasted is their own email TO the brand (it greets the brand), not the brand's "
+                       "reply. Nothing is logged as a brand reply. Say so in one line, offer to polish it, and ask "
+                       "them to paste what the brand wrote if they want help answering it.",
+        }
     if intent in _REPLY_KINDS and vague_reply_text(state.user_text):
         # "They replied" / "Rhode Skin replied" says nothing about what the brand said: logging interested or a
         # question from it was a guess (Nov 2026: a bare "They replied" became "Rare Beauty asked something").
@@ -1263,6 +1308,8 @@ def log_brand_update(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
         }
     life = {"intent": intent, "confidence": 1.0,
             "brand": (brand or {}).get("name"), "brand_id": (brand or {}).get("id")}
+    if intent in _REPLY_KINDS:
+        life.update({"source": "creator", "said": state.user_text or ""})
     try:
         result = tracker.apply_lifecycle_intent(state.db(), state.creator_id, life, brand)
         tracker.log_intent(state.db(), state.creator_id, state.user_text, life, result.get("action") or "")
@@ -1283,6 +1330,10 @@ def log_brand_update(state: TurnState, args: Dict[str, Any]) -> Dict[str, Any]:
                        "brand replied, is interested or shipped until then.",
         }
     state.notes.pop("pending_brand_update", None)
+    if result.get("action") == "already_logged":
+        return {"ok": True, "status": "already_logged", "brand": (brand or {}).get("name"),
+                "what_changed": result.get("say_hint") or "",
+                "explain": "This reply was already on their Timeline; nothing new was logged. Don't log it again."}
     if intent in ("brand_replied_interested", "brand_replied_question"):
         state.reply_logged = True
     if intent == "pitch_not_sent" and brand:

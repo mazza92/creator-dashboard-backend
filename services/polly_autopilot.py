@@ -893,7 +893,7 @@ def _default_headsup_email(conn, creator_id: int, brands: List[Dict[str, Any]]) 
         + ". Tomorrow I send a short follow-up in the same Gmail thread.",
         "If one already replied, tap it and I'll hold that follow-up.",
     ]
-    buttons = [{"label": f"{b['brand_name']} replied", "href": chip_link(
+    buttons = [{"label": f"I heard back from {b['brand_name']}", "href": chip_link(
         "checkin_replied", brand_id=b["brand_id"], brand_name=b["brand_name"], kind="autopilot_headsup")}
         for b in brands[:3]]
     result = _default_send(who["email"], subject, render_email(who["first"], subject, lines, buttons, unsub),
@@ -961,7 +961,7 @@ def daily_line(facts: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         parts.append(f"✉️ **Lined up:** {_bold(nxt, 3)}. They go out from your Gmail, a few each weekday.")
     if not parts:
         return None
-    chips = [{"id": "checkin_replied", "label": f"{b['brand_name']} replied", "action": "task_act",
+    chips = [{"id": "checkin_replied", "label": f"I heard back from {b['brand_name']}", "action": "task_act",
               "brand_id": b["brand_id"], "brand_name": b["brand_name"]} for b in tomorrow[:3]]
     return {"text": "\n\n".join(parts), "chips": chips}
 
