@@ -98,3 +98,32 @@ class OneProLinePerReply(unittest.TestCase):
 
     def test_reply_moment_reads_well(self):
         self.assertIn("I send up to 20 brand pitches daily to brands that fit you", persona_reply_moment("X"))
+
+
+class OneFreeSwap(unittest.TestCase):
+    """Nov 26 audit: free creators swapped up to 10 times, each swap showing a new brand email, never paywalled."""
+
+    def test_first_swap_free_then_spent(self):
+        from services.polly_tools import free_swap_used, record_free_swap
+
+        notes = {}
+        self.assertFalse(free_swap_used(notes))
+        record_free_swap(notes)
+        self.assertTrue(free_swap_used(notes))
+
+    def test_resets_each_month(self):
+        from services.polly_tools import free_swap_used, record_free_swap
+
+        notes = {}
+        record_free_swap(notes, datetime(2026, 11, 30, tzinfo=timezone.utc))
+        self.assertTrue(free_swap_used(notes, datetime(2026, 11, 30, tzinfo=timezone.utc)))
+        self.assertFalse(free_swap_used(notes, datetime(2026, 12, 1, tzinfo=timezone.utc)))
+        record_free_swap(notes, datetime(2026, 12, 1, tzinfo=timezone.utc))
+        self.assertEqual(notes["free_swaps"], {"month": "2026-12", "n": 1})
+
+    def test_bad_record_is_unused(self):
+        from services.polly_tools import free_swap_used
+
+        self.assertFalse(free_swap_used({"free_swaps": "x"}))
+        self.assertFalse(free_swap_used({"free_swaps": {"month": "2026-11", "n": "?"}},
+                                        datetime(2026, 11, 2, tzinfo=timezone.utc)))
