@@ -30,6 +30,9 @@ class FakeCursor:
         elif s.startswith('INSERT INTO creator_start_choice'):
             self.table.setdefault(params[0], {'arm': params[1], 'choice': None})
             self.last = []
+        elif s.startswith('UPDATE creator_start_choice SET arm'):
+            self.table[params[1]]['arm'] = params[0]
+            self.last = []
         elif s.startswith('UPDATE creator_start_choice'):
             self.table[params[1]]['choice'] = params[0]
             self.last = []
@@ -59,19 +62,35 @@ def ids_in(arm, n=40):
     return [i for i in range(1, 400) if sc.arm_for(i) == arm][:n]
 
 
-def test_everyone_eligible_gets_the_choice():
-    assert {sc.arm_for(i) for i in range(1, 500)} == {'choice'}
+def test_everyone_eligible_starts_with_matches():
+    assert {sc.arm_for(i) for i in range(1, 500)} == {'matches_first'}
 
 
-def test_choice_arm_sees_screen_once_then_choice_sticks():
-    cid = ids_in('choice', 1)[0]
-    cur = FakeCursor({cid: creator()})
+def test_matches_first_never_sees_the_screen_and_gets_the_free_week():
+    cur = FakeCursor({5: creator()})
     conn = FakeConn(cur)
-    assert sc.status(conn, cid, flag=True) == {'show': True, 'arm': 'choice'}
-    assert sc.record_choice(conn, cid, 'free') is True
-    assert sc.status(conn, cid, flag=True) == {'show': False, 'arm': 'choice'}
+    assert sc.status(conn, 5, flag=True) == {'show': False, 'arm': 'matches_first'}
+    assert cur.table[5] == {'arm': 'matches_first', 'choice': None}
+    assert sc.trial_eligible(cur, 5) is True
+    assert sc.picked_free(cur, 5) is False
+    assert sc.journey(cur, 5) == 'matches_first'
+    assert sc.trial_eligible(FakeCursor({5: creator(paid=True)}, cur.table), 5) is False
+
+
+def test_version_1_creator_who_left_without_choosing_moves_to_matches_first():
+    cur = FakeCursor({6: creator()}, table={6: {'arm': 'choice', 'choice': None}})
+    conn = FakeConn(cur)
+    assert sc.status(conn, 6, flag=True) == {'show': False, 'arm': 'matches_first'}
+    assert cur.table[6]['arm'] == 'matches_first'
+
+
+def test_version_1_choices_stick():
+    cur = FakeCursor({7: creator()}, table={7: {'arm': 'choice', 'choice': 'free'}})
+    conn = FakeConn(cur)
+    assert sc.status(conn, 7, flag=True) == {'show': False, 'arm': 'choice'}
     # "Do it yourself" gets the normal paid upgrade at checkout, not the free week.
-    assert sc.trial_eligible(cur, cid) is False
+    assert sc.trial_eligible(cur, 7) is False
+    assert sc.journey(cur, 7) == 'free'
 
 
 def test_old_control_rows_stay_hidden():
@@ -83,7 +102,7 @@ def test_old_control_rows_stay_hidden():
 
 
 def test_outside_the_test_nothing_is_recorded():
-    cid = ids_in('choice', 1)[0]
+    cid = 11
     for c, flag in ((creator(), False),
                     (creator(approved=datetime(2026, 11, 24, 17, 0, tzinfo=timezone.utc)), True),
                     (creator(paid=True), True),
@@ -94,11 +113,8 @@ def test_outside_the_test_nothing_is_recorded():
 
 
 def test_unknown_choice_rejected():
-    cid = ids_in('choice', 1)[0]
-    cur = FakeCursor({cid: creator()})
-    conn = FakeConn(cur)
-    sc.status(conn, cid, flag=True)
-    assert sc.record_choice(conn, cid, 'yearly') is False
+    cur = FakeCursor({12: creator()}, table={12: {'arm': 'choice', 'choice': None}})
+    assert sc.record_choice(FakeConn(cur), 12, 'yearly') is False
 
 
 def test_checkout_offers_trial_to_choice_arm():
@@ -203,3 +219,32 @@ def test_trial_slots_count_what_a_day_already_holds():
     assert per_day[(now + timedelta(days=1)).date()] == 2   # day 2 cap 8, 6 booked
     assert per_day[(now + timedelta(days=2)).date()] == 8   # day 3: rest of this batch (cap 12)
     assert all(pa.SEND_WINDOW_UTC[0] <= s.hour < pa.SEND_WINDOW_UTC[1] for s in slots)
+
+
+def test_paywall_says_free_week_and_names_the_waiting_matches():
+    from services.polly_persona import persona_paywall_say
+    say = persona_paywall_say("Rhode", trial=True, waiting=12)
+    assert "free for 7 days" in say and "12 more brands" in say
+    plain = persona_paywall_say("Rhode")
+    assert "free for 7 days" not in plain and "more brands" not in plain
+    assert "free for 7 days, then $19/mo" in persona_paywall_say("Rhode", repeat=True, trial=True)
+
+
+def test_sending_a_pitch_yourself_is_the_manual_path_paid_plan_from_then_on():
+    cur = FakeCursor({5: creator()}, table={5: {'arm': 'matches_first', 'choice': None}})
+    conn = FakeConn(cur)
+    assert sc.trial_eligible(cur, 5) is True
+    assert sc.mark_pitched_manually(conn, 5) is True
+    assert cur.table[5]['choice'] == 'free'
+    assert sc.trial_eligible(cur, 5) is False
+    assert sc.picked_free(cur, 5) is True
+    assert sc.mark_pitched_manually(conn, 5) is False  # once
+
+
+def test_manual_mark_leaves_other_creators_alone():
+    for table, c in (({5: {'arm': 'choice', 'choice': None}}, creator()),          # version 1: its own choice
+                     ({5: {'arm': 'matches_first', 'choice': 'trial'}}, creator()),
+                     ({5: {'arm': 'matches_first', 'choice': None}}, creator(paid=True)),  # on the trial / Pro
+                     (None, creator())):
+        cur = FakeCursor({5: c}, table=table)
+        assert sc.mark_pitched_manually(FakeConn(cur), 5) is False

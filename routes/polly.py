@@ -885,7 +885,7 @@ def _deliver_credits_out_offer(conn, creator_id, first, balance, tracker, want_m
             return nothing
         trial = False
         try:
-            from services.quota_trial_test import trial_eligible
+            from services.quota_trial_test import checkout_trial_eligible as trial_eligible
             trial = trial_eligible(conn.cursor(), creator_id)
         except Exception as err:
             print(f"[Polly] trial check skipped: {err}")
@@ -1023,7 +1023,7 @@ def _deliver_followup_offer(conn, creator_id, first, balance):
             return False
         trial = False
         try:
-            from services.quota_trial_test import trial_eligible
+            from services.quota_trial_test import checkout_trial_eligible as trial_eligible
             trial = trial_eligible(conn.cursor(), creator_id)
         except Exception as err:
             print(f"[Polly] trial check skipped: {err}")
@@ -2912,7 +2912,7 @@ def waiting_room_view():
             return jsonify({"success": True, "pro": True})
         trial = False
         try:
-            from services.quota_trial_test import trial_eligible
+            from services.quota_trial_test import checkout_trial_eligible as trial_eligible
             trial = bool(trial_eligible(conn.cursor(), creator_id))
         except Exception:
             conn.rollback()

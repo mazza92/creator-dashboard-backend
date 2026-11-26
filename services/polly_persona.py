@@ -748,25 +748,32 @@ def persona_paywall_say(
     kit_views: int = 0,
     sent: int = 0,
     repeat: bool = False,
+    trial: bool = False,
+    waiting: int = 0,
 ) -> str:
+    """trial: checkout gives this creator the free week, so say so. waiting: matched brands Polly has lined up
+    that they haven't pitched (real Thanos picks), the reason to let Polly keep going."""
     name = (brand_name or "").strip()
+    price = "free for 7 days, then $19/mo" if trial else "$19/mo"
     if repeat:
         # Second locked tap in a week: they've read the full offer already (Nov 2026: 27 of 66 creators hit the
         # same long paywall 2+ times and ~85% never clicked through). One line, one button.
         who = f"**{name}**" if name else "This one"
         return (f"{who} is on Pro too. Tap below and I pitch it for you today, then keep going: "
-                f"{VOLUME}, $19/mo, cancel anytime.")
+                f"{VOLUME}, {price}, cancel anytime.")
     proof = persona_pro_proof(kit_views, sent)
     tail = f"\n\n{proof}" if proof else ""
+    lined_up = (f"I have **{waiting} more brands** that fit you lined up. " if waiting and waiting > 1 else "")
+    value = PRO_TRIAL_LINE if trial else PRO_VALUE_LINE
     if name:
         return (
             f"Your **{name}** pitch is started below 👇 Free pitches are used this month, "
-            "so this one's on Pro.\n\n"
-            f"{PRO_VALUE_LINE}{tail}"
+            f"so this one's on Pro. {lined_up}\n\n"
+            f"{value}{tail}"
         )
     return (
-        "Free pitches are used this month, so the next one's on Pro.\n\n"
-        f"{PRO_VALUE_LINE}{tail}"
+        f"Free pitches are used this month, so the next one's on Pro. {lined_up}\n\n"
+        f"{value}{tail}"
     )
 
 
