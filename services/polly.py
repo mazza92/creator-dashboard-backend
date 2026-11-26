@@ -1389,11 +1389,28 @@ def apply_paid_ask_to_pitch(
     return out
 
 
+_TRACKED_POST_HOSTS = ("tiktok.com", "instagram.com")
+
+
+def tidy_post_url(url: str) -> str:
+    """TikTok and Instagram post links carry tracking (?utm_campaign=tt4d_open_api&utm_source=...) that makes a
+    pitch look like spam and wraps over three lines. The post is the path alone; YouTube keeps ?v=."""
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    host = (parts.netloc or "").lower()
+    if any(host == h or host.endswith("." + h) for h in _TRACKED_POST_HOSTS):
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+    return url
+
+
 def clean_sample_posts(posts: Any, limit: int = 3) -> List[str]:
     out: List[str] = []
     for p in posts if isinstance(posts, list) else []:
         url = p if isinstance(p, str) else ((p.get("post_url") or p.get("url")) if isinstance(p, dict) else "")
-        url = str(url or "").strip()
+        url = tidy_post_url(str(url or "").strip())
         if url.startswith(("https://", "http://")) and url not in out:
             out.append(url[:500])
         if len(out) >= limit:

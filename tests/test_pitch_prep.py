@@ -103,6 +103,14 @@ class WorkSampleTests(unittest.TestCase):
         self.assertEqual(clean_sample_posts(raw), self.URLS)
         self.assertEqual(clean_sample_posts(None), [])
 
+    def test_tracking_is_stripped_from_post_links(self):
+        raw = ["https://www.tiktok.com/@maya/video/7712?utm_campaign=tt4d_open_api&utm_source=awq",
+               "https://www.instagram.com/reel/Cx1/?igsh=abc",
+               "https://www.youtube.com/watch?v=dQw4w9WgXcQ"]
+        self.assertEqual(clean_sample_posts(raw), ["https://www.tiktok.com/@maya/video/7712",
+                                                   "https://www.instagram.com/reel/Cx1/",
+                                                   "https://www.youtube.com/watch?v=dQw4w9WgXcQ"])
+
     def test_samples_go_above_the_gifted_ask(self):
         pitch = {
             "body": "Hi team,\n\nI love your toner.\n\nNo fee. Just product + shipping to Austin.\n\nMaya",
