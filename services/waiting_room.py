@@ -221,4 +221,11 @@ def build(conn, creator_id: int, first_name: str = "", reset: str = "",
         "drafts": plan["items"],
         "plan_count": plan["plan_count"],
         "reset": reset,
+        # The card leads with this: their strongest real reason to let Polly take over (services.upgrade_reasons).
+        "reasons": _safe(conn, lambda: _reasons(conn, creator_id, reset), None),
     }
+
+
+def _reasons(conn, creator_id: int, reset: str) -> Dict[str, Any]:
+    from services.upgrade_reasons import build as build_reasons
+    return build_reasons(conn, creator_id, reset=reset)

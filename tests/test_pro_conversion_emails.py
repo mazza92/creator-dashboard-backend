@@ -146,7 +146,7 @@ class TestQuotaEmailArms(unittest.TestCase):
         with patch.object(engine, 'get_db_connection', return_value=conn), \
                 patch.object(engine, 'check_throttling', return_value=(True, '')), \
                 patch('services.quota_trial_test.active_arm', return_value=arm), \
-                patch('services.quota_trial_test.trial_eligible', return_value=eligible), \
+                patch('services.quota_trial_test.checkout_trial_eligible', return_value=eligible), \
                 patch.object(engine, 'render_template', return_value='<p>x</p>') as render, \
                 patch.object(engine, '_deliver_email', return_value=(False, 'stop')) as deliver:
             result = engine.send_lifecycle_email('a@b.com', 'max_quota_hit', {'cta_url': 'https://app/x'}, 7,
@@ -159,7 +159,8 @@ class TestQuotaEmailArms(unittest.TestCase):
         self.assertEqual(ctx['quota_arm'], 'trial')
         self.assertIn('utm_campaign=max_quota_hit_trial', ctx['cta_url'])
         self.assertIn('free for 7 days', ctx['preheader'])
-        self.assertEqual(ctx['subject_override'], 'Your 3 free pitches are out')
+        # The lead trigger is the subject; with no facts it's the general line.
+        self.assertEqual(ctx['subject_override'], 'Your next brand opportunities are waiting.')
         deliver.assert_called_once()
 
     def test_at_the_limit_everyone_gets_the_19_offer(self):
@@ -179,10 +180,13 @@ class TestQuotaEmailArms(unittest.TestCase):
         env = Environment(loader=FileSystemLoader(str(ROOT / 'templates')))
         tpl = env.get_template('lifecycle/16_max_quota_hit.html')
         base = {'first_name': 'Ana', 'days_until_reset': 10, 'reset_date': 'Nov 1', 'cta_url': 'https://x'}
-        self.assertIn('Try it free for 7 days', tpl.render(quota_arm='trial', **base))
+        trial = tpl.render(quota_arm='trial', **base)
+        self.assertIn('7 days free, then $19/mo. Cancel anytime.', trial)
+        self.assertIn('Let Polly take over', trial)
         control = tpl.render(quota_arm='control', **base)
-        self.assertIn('Let Polly pitch for me', control)
-        self.assertNotIn('free week', control)
+        self.assertIn('Let Polly take over', control)
+        self.assertIn('$19/mo. Cancel anytime.', control)
+        self.assertNotIn('7 days free', control)
 
     def test_template_shows_their_plan(self):
         from jinja2 import Environment, FileSystemLoader
@@ -193,14 +197,19 @@ class TestQuotaEmailArms(unittest.TestCase):
                'waiting': [{'brand_name': 'Kosas', 'offer': 'paid', 'meta_ads': True}], 'waiting_count': 5,
                'waiting_more': 4, 'kit_views': 2, 'goal_label': '$500', 'days_left': 9}
         html = tpl.render(quota_arm='control', **ctx)
-        for text in ('other <span style="color: #c0264a;">5 brands', 'Kosas', 'Paid ask', '+4 more, ready when you are', '2 brands have already opened your kit',
+        ctx['reasons'] = {'headline': 'Kosas just opened your portfolio.', 'reason': 'Brands that look usually reply.',
+                          'body': 'You have used your free pitches.', 'cta': 'Let Polly take over'}
+        html = tpl.render(quota_arm='control', **ctx)
+        for text in ('Kosas just opened your portfolio.', 'Brands that look usually reply.', 'Kosas', 'Paid ask', '+4 more, ready when you are', '2 brands have already opened your kit',
                      '$500', 'your goal · 9 days left', 'Dec 1'):
             self.assertIn(text, html)
         bare = tpl.render(quota_arm='control', first_name='Ana', cta_url='https://x', waiting=[])
-        self.assertIn('Now let me do the pitching for you', bare)
+        self.assertIn('Your next brand opportunities are waiting.', bare)
         self.assertNotIn('opened your kit', bare)
         self.assertNotIn('goal', bare)
-        self.assertEqual(quota_preheader(ctx), 'Nice start! Now let me pitch the other 5 brands for you.')
+        self.assertEqual(quota_preheader(ctx), 'Brands that look usually reply.')
+        self.assertEqual(quota_preheader({'from_plan': True, 'waiting_count': 5}),
+                         'Nice start! Now let me pitch the other 5 brands for you.')
         self.assertIn('opened your kit', quota_preheader({'kit_views': 1}))
 
 

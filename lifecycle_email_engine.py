@@ -397,12 +397,14 @@ def send_lifecycle_email(
                 return False, "Polly already sent the paywall follow-up this month"
             # $19 at the limit for everyone; the free week follows LIMIT_TO_TRIAL_DAYS later if they don't buy
             # (services.free_week_offer). A creator already past that point (rare) sees the trial here too.
-            from services.quota_trial_test import trial_eligible
-            arm = 'trial' if trial_eligible(cursor, creator_id) else 'control'
+            # Same trial rule as checkout: "7 days free" only when Stripe gives the free week (creators who chose to
+            # pitch manually get the paid plan).
+            from services.quota_trial_test import checkout_trial_eligible
+            arm = 'trial' if checkout_trial_eligible(cursor, creator_id) else 'control'
             utm_campaign = f"max_quota_hit_{arm}"
             full_context['quota_arm'] = arm
-            from services.quota_email import quota_preheader
-            full_context['subject_override'] = 'Your 3 free pitches are out'
+            from services.quota_email import quota_preheader, quota_subject
+            full_context['subject_override'] = quota_subject(full_context)
             full_context['preheader'] = quota_preheader(full_context, trial=arm == 'trial')
 
         # Add UTM parameters to CTA URL
