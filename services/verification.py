@@ -126,3 +126,82 @@ def readiness(conn, creator_id: int) -> Dict[str, Any]:
     ]
     state = "verified" if status not in UNVERIFIED else ("not_ready" if status == "rejected" else "checking")
     return {"status": state, "checks": checks, "message": MESSAGE}
+
+
+# ---- Back after verification -------------------------------------------------------------------------------
+# A creator who explored while being verified has already seen (and closed) the welcome and has pitches drafted,
+# so the normal first-run rules would never show it again. Once the team verifies them, the welcome comes back
+# once, opening on "You're verified" and then the two ways to start, and the pitches saved locked get their inbox.
+
+EXPLORED = "explored_unverified"
+RETURN_DONE = "verified_welcome_done"
+
+
+def needs_verified_welcome(conn, creator_id: Optional[int]) -> bool:
+    """Verified by the team (not paid to skip), explored before, hasn't seen the 'You're verified' welcome yet."""
+    if not creator_id:
+        return False
+    try:
+        row = _row(conn, creator_id)
+        if str(row.get("status") or "").lower() != "approved" or str(row.get("tier") or "free") == "pro":
+            return False
+        from services.creator_tracker import milestones
+        done = milestones(conn, creator_id)
+        return EXPLORED in done and RETURN_DONE not in done
+    except Exception as err:  # noqa: BLE001
+        print(f"[verification] return check skipped creator={creator_id}: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def _locked_cards(messages: List[Any]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        pitch = msg.get("pitch")
+        if isinstance(pitch, dict) and pitch.get("locked") == "verification":
+            out.append(pitch)
+        batch = msg.get("pitch_batch")
+        items = batch.get("items") if isinstance(batch, dict) else batch if isinstance(batch, list) else None
+        for item in items or []:
+            if isinstance(item, dict) and item.get("locked") == "verification":
+                out.append(item)
+    return out
+
+
+def unlock_saved_pitches(conn, creator_id: int, messages: List[Any], notes: Optional[Dict[str, Any]] = None):
+    """(messages, changed). Pitches saved while locked get the brand's inbox back once outreach is open: from the
+    server-side outbox when Polly kept it, else the brand's contact on file. Edited in place."""
+    cards = _locked_cards(messages)
+    if not cards or is_unverified(conn, creator_id):
+        return messages, False
+    from services.polly import build_mailto
+    outbox = (notes or {}).get("pitch_outbox") or {}
+    ids = sorted({int(c["brand_id"]) for c in cards if str(c.get("brand_id") or "").isdigit()})
+    found: Dict[int, str] = {}
+    if ids:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT id, TRIM(contact_email) FROM pr_brands WHERE id = ANY(%s)", (ids,))
+            for row in cur.fetchall():
+                bid, email = (row.get("id"), row.get("btrim")) if isinstance(row, dict) else (row[0], row[1])
+                if email:
+                    found[int(bid)] = email
+        except Exception as err:  # noqa: BLE001
+            print(f"[verification] inbox lookup skipped creator={creator_id}: {err}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+    for card in cards:
+        bid = str(card.get("brand_id") or "")
+        kept = outbox.get(bid) if isinstance(outbox.get(bid), dict) else {}
+        email = kept.get("email") or (found.get(int(bid)) if bid.isdigit() else None) or ""
+        card.pop("locked", None)
+        card["email"] = email
+        card["mailto"] = build_mailto(email, card.get("subject") or "", card.get("body") or "") if email else None
+    return messages, True

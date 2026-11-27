@@ -841,6 +841,10 @@ def has_drafted(conn, creator_id: int) -> bool:
 def in_first_run(conn, creator_id: int, notes: Optional[Dict[str, Any]] = None) -> bool:
     """Until the creator picks how to start (or sends a pitch), Polly shows the welcome instead of notes."""
     try:
+        # Explored while being verified, now verified: the welcome comes back once ("You're verified").
+        from services.verification import needs_verified_welcome
+        if needs_verified_welcome(conn, creator_id):
+            return True
         if (notes or {}).get("first_run_done"):
             return False
         # Stored as a milestone (not only in thread notes): the pitch-writing turn that starts right after the
@@ -922,7 +926,16 @@ def first_run_payload(conn, creator_id: int, now: Optional[datetime] = None) -> 
         "start_choice": _start_choice(conn, creator_id),
         "start_pick": _start_pick(conn, creator_id),
         "verified": not _unverified(conn, creator_id),
+        "back_verified": _back_verified(conn, creator_id),
     }
+
+
+def _back_verified(conn, creator_id: int) -> bool:
+    from services.verification import EXPLORED, needs_verified_welcome
+    if _unverified(conn, creator_id):
+        mark_milestone(conn, creator_id, EXPLORED)  # saw the welcome while being verified
+        return False
+    return needs_verified_welcome(conn, creator_id)
 
 
 def _unverified(conn, creator_id: int) -> bool:
