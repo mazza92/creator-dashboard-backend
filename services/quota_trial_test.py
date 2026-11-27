@@ -74,6 +74,17 @@ def outreach_trial_eligible(cursor, creator_id):
     return cursor.fetchone() is not None
 
 
+def _being_verified(cursor, creator_id) -> bool:
+    try:
+        cursor.execute("SELECT approval_status FROM creators WHERE id = %s", (int(creator_id),))
+        row = cursor.fetchone()
+    except Exception:  # noqa: BLE001
+        return False
+    status = (row.get("approval_status") if isinstance(row, dict) else row[0]) if row else None
+    from services.verification import UNVERIFIED
+    return str(status or "").lower() in UNVERIFIED
+
+
 def checkout_trial_eligible(cursor, creator_id):
     """What the paywall offers and checkout honours: a trial-offer link at signup, the cold-email address
     match, else the experiment's rule."""
@@ -82,8 +93,10 @@ def checkout_trial_eligible(cursor, creator_id):
     from services.start_choice import trial_eligible as start_choice_trial
     if picked_free(cursor, creator_id):
         return False
-    return (has_trial_offer(cursor, creator_id) or outreach_trial_eligible(cursor, creator_id)
-            or start_choice_trial(cursor, creator_id) or trial_eligible(cursor, creator_id))
+    eligible = (has_trial_offer(cursor, creator_id) or outreach_trial_eligible(cursor, creator_id)
+                or start_choice_trial(cursor, creator_id) or trial_eligible(cursor, creator_id))
+    # Not verified yet: skipping the review is the paid plan, $19/mo, never a free week.
+    return bool(eligible) and not _being_verified(cursor, creator_id)
 
 
 def limit_hit_at(cursor, creator_id):

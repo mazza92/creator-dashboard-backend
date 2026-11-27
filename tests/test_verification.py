@@ -127,3 +127,14 @@ def test_contact_routes_refuse_unverified(monkeypatch):
     assert code == 403 and body["verification_required"]
     monkeypatch.setattr(pr_crm_routes, "get_db_connection", lambda: Conn(row=("approved", "free")))
     assert v.refuse_unverified(5) is None
+
+
+def test_creators_being_verified_never_get_the_free_week(monkeypatch):
+    from services import quota_trial_test as q
+    import services.start_choice as sc_mod
+    import services.creator_offers as offers
+    monkeypatch.setattr(sc_mod, "picked_free", lambda c, i: False)
+    monkeypatch.setattr(offers, "has_trial_offer", lambda c, i: True)
+    assert q.checkout_trial_eligible(Cur(row=("pending",)), 1) is False
+    assert q.checkout_trial_eligible(Cur(row=("rejected",)), 1) is False
+    assert q.checkout_trial_eligible(Cur(row=("approved",)), 1) is True
