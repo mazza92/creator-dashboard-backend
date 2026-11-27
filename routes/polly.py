@@ -3216,6 +3216,13 @@ def cron_alerts():
     conn = get_db_connection()
     try:
         result = run_alerts(conn, dry_run=dry_run, limit=limit, test_email=test_email)
+        if not dry_run and not test_email:
+            try:
+                from services.quota_email import quota_catchup
+                result["quota_catchup"] = quota_catchup(conn)
+            except Exception as err:
+                conn.rollback()
+                print(f"[Polly] quota catch-up skipped: {err}")
         return jsonify({"success": True, "dry_run": dry_run, **json_safe(result)})
     except Exception as err:
         print(f"[Polly] cron alerts error: {err}")

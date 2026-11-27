@@ -1,25 +1,37 @@
 {% extends "lifecycle/base_lifecycle.html" %}
-{# Free pitches used. Sells like a creator showing her assistant: the work disappears, replies show up. Their own
-   brands as proof, one CTA. Every data piece is optional. #}
+{# Free pitches used. Leads with the creator's strongest real trigger (services/upgrade_reasons: a reply, a brand
+   that opened their portfolio, matched brands running UGC campaigns, or how many brands fit them), then the ask,
+   then their own brands as proof and the same ask again. Every data piece is optional. #}
 
 {% block content %}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-  <tr>
-    <td style="padding: 0 0 18px 0;">
-      <span style="display: inline-block; background: #fde8ee; color: #c0264a; font-size: 13px; font-weight: 700; padding: 5px 12px; border-radius: 999px;">🎉 3 pitches out. Nice start!</span>
-    </td>
-  </tr>
+  {% set r = reasons or {} %}
   <tr>
     <td style="padding: 0 0 6px 0; font-size: 15px; color: #6b7280;">Hi {{ first_name or "there" }},</td>
   </tr>
   <tr>
     <td style="padding: 0 0 10px 0; font-size: 23px; line-height: 1.28; font-weight: 800; color: #15161a; letter-spacing: -0.015em;">
-      {% if from_plan and waiting_count %}Now let me pitch the other <span style="color: #c0264a;">{{ waiting_count }} brand{{ '' if waiting_count == 1 else 's' }}</span> for you.{% else %}Now let me do the pitching for you.{% endif %}
+      {{ r.headline or "Your next brand opportunities are waiting." }}
+    </td>
+  </tr>
+  {% if r.reason %}
+  <tr>
+    <td style="padding: 0 0 10px 0; font-size: 16px; line-height: 1.55; color: #15161a;">{{ r.reason }}</td>
+  </tr>
+  {% endif %}
+  <tr>
+    <td style="padding: 0 0 18px 0; font-size: 15px; line-height: 1.55; color: #4b5563;">
+      {{ r.body or "You've used your free pitches. Let me take over your outreach so you can focus on creating." }}
     </td>
   </tr>
   <tr>
-    <td style="padding: 0 0 18px 0; font-size: 15px; line-height: 1.55; color: #4b5563;">
-      I find the brands, write each pitch, send it from your Gmail and follow up. You film. You wake up to replies.
+    <td align="center" style="padding: 0 0 8px 0;">
+      <a href="{{ cta_url }}" style="display: block; background: #15161a; color: #ffffff !important; text-decoration: none; font-size: 16px; font-weight: 800; padding: 15px 20px; border-radius: 14px; text-align: center;">{{ r.cta or "Let Polly take over" }} &rarr;</a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" style="padding: 0 0 22px 0; font-size: 13px; color: #6b7280;">
+      {% if quota_arm == 'trial' %}7 days free, then $19/mo. Cancel anytime.{% else %}$19/mo. Cancel anytime.{% endif %}
     </td>
   </tr>
 
@@ -100,12 +112,12 @@
 
   <tr>
     <td align="center" style="padding: 4px 0 8px 0;">
-      <a href="{{ cta_url }}" style="display: block; background: #e8395f; color: #ffffff !important; text-decoration: none; font-size: 16px; font-weight: 800; padding: 15px 20px; border-radius: 999px; text-align: center;">{% if quota_arm == 'trial' %}Try it free for 7 days{% else %}Let Polly pitch for me{% endif %}</a>
+      <a href="{{ cta_url }}" style="display: block; background: #15161a; color: #ffffff !important; text-decoration: none; font-size: 16px; font-weight: 800; padding: 15px 20px; border-radius: 14px; text-align: center;">{{ (reasons or {}).cta or "Let Polly take over" }} &rarr;</a>
     </td>
   </tr>
   <tr>
     <td align="center" style="padding: 0 0 18px 0; font-size: 13px; color: #6b7280;">
-      {% if quota_arm == 'trial' %}Free for 7 days, then $19/mo{% else %}$19/mo, less than one gifted product{% endif %} · Cancel anytime
+      {% if quota_arm == 'trial' %}7 days free, then $19/mo. Cancel anytime.{% else %}$19/mo. Cancel anytime.{% endif %}
     </td>
   </tr>
   {% if reset_date %}
