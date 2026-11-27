@@ -127,7 +127,9 @@ def record_choice(conn, creator_id, choice) -> bool:
         return False
     cursor = conn.cursor()
     rec = _recorded(cursor, creator_id)
-    if not rec or rec['arm'] != 'choice':
+    # Version 2 records the choice made on the welcome flow's last step ("Let Polly handle the outreach" or
+    # "I'll pitch manually"): manual = the paid plan at every paywall from then on, never the free week.
+    if not rec or rec['arm'] not in (ARM, ARM_V2):
         return False
     cursor.execute(
         "UPDATE creator_start_choice SET choice = %s, chosen_at = NOW() WHERE creator_id = %s",
@@ -167,9 +169,15 @@ def journey(cursor, creator_id):
     rec = _recorded(cursor, creator_id)
     if not rec:
         return None
-    if rec['arm'] == ARM_V2 and not rec['choice']:
-        return ARM_V2
+    if rec['arm'] == ARM_V2:
+        return ARM_V2  # their pick on the welcome flow's last step is picked() (the flow stays the same)
     return rec['choice']
+
+
+def picked(cursor, creator_id):
+    """What they chose on the welcome flow ('trial' / 'free'), None before they chose."""
+    rec = _recorded(cursor, creator_id)
+    return rec['choice'] if rec else None
 
 
 def picked_free(cursor, creator_id) -> bool:

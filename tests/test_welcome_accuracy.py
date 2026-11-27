@@ -68,3 +68,10 @@ class WelcomeCardLines(unittest.TestCase):
         self.assertEqual(welcome_why({}, "travel"), "Fits your travel content")
         self.assertEqual(welcome_why({}, "travel", hot_reason="Running 14 creator-style ads"),
                          "Running 14 creator-style ads")
+
+
+class WelcomeTags(unittest.TestCase):
+    def test_tags_lead_with_the_matched_niche(self):
+        from services.creator_tracker import welcome_tags
+        self.assertEqual(welcome_tags("fashion", ["fashion", "travel"], "travel"), ["Travel", "Fashion"])
+        self.assertEqual(welcome_tags("other", [], None), [])

@@ -897,6 +897,7 @@ def first_run_payload(conn, creator_id: int, now: Optional[datetime] = None) -> 
         niche = matched_niche(r.get("category"), card.get("match_niches"), niches)
         brands.append({
             "match_niche": niche,
+            "tags": welcome_tags(r.get("category"), card.get("match_niches"), niche),
             "why": welcome_why(card, niche, hot.get("reason") if bid == hot_id else None),
             "brand_id": bid, "brand_name": clean_brand_name(r.get("brand_name")) or "Brand", "logo": r.get("logo"),
             "offer": r.get("offer") or "gifted", "hot": bid == hot_id, "meta_ads": bool(r.get("meta_ads")),
@@ -919,7 +920,17 @@ def first_run_payload(conn, creator_id: int, now: Optional[datetime] = None) -> 
         "first_name": _first_name(conn, creator_id),
         # 'free' when they picked "Do it yourself" on the start choice screen: the welcome leads with their matches.
         "start_choice": _start_choice(conn, creator_id),
+        "start_pick": _start_pick(conn, creator_id),
     }
+
+
+def _start_pick(conn, creator_id: int) -> Optional[str]:
+    try:
+        from services.start_choice import picked
+        return picked(conn.cursor(), creator_id)
+    except Exception:  # noqa: BLE001
+        conn.rollback()
+        return None
 
 
 def _start_choice(conn, creator_id: int) -> Optional[str]:
@@ -932,7 +943,7 @@ def _start_choice(conn, creator_id: int) -> Optional[str]:
         return None
 
 
-WELCOME_BRANDS = 9  # the welcome shows 5 and "+N more matched brands" opens the rest
+WELCOME_BRANDS = 24  # the welcome lists 3 and "+N more matched brands" opens the rest
 
 
 def matched_niche(category: Optional[str], tags: Any, niches: List[str]) -> Optional[str]:
@@ -944,6 +955,16 @@ def matched_niche(category: Optional[str], tags: Any, niches: List[str]) -> Opti
         if str(tag).lower() in niches:
             return str(tag).lower()
     return cat or None
+
+
+def welcome_tags(category: Optional[str], tags: Any, niche: Optional[str]) -> List[str]:
+    """Up to 2 labels for a welcome row ("Travel • Fashion"): the niche it matched first, then its other niches."""
+    out: List[str] = []
+    for value in [niche, category, *(tags or [])]:
+        label = str(value or "").replace("_", " ").strip().capitalize()
+        if label and label != "Other" and label not in out:
+            out.append(label)
+    return out[:2]
 
 
 def welcome_why(card: Dict[str, Any], niche: Optional[str], hot_reason: Optional[str] = None) -> str:
