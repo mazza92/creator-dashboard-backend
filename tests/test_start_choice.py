@@ -106,7 +106,7 @@ def test_outside_the_test_nothing_is_recorded():
     for c, flag in ((creator(), False),
                     (creator(approved=datetime(2026, 11, 24, 17, 0, tzinfo=timezone.utc)), True),
                     (creator(paid=True), True),
-                    (creator(status='pending'), True)):
+                    (creator(status='pending', paid=True), True)):
         cur = FakeCursor({cid: c})
         assert sc.status(FakeConn(cur), cid, flag=flag) == {'show': False, 'arm': None}
         assert cur.table is None

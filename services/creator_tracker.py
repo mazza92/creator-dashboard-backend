@@ -921,7 +921,13 @@ def first_run_payload(conn, creator_id: int, now: Optional[datetime] = None) -> 
         # 'free' when they picked "Do it yourself" on the start choice screen: the welcome leads with their matches.
         "start_choice": _start_choice(conn, creator_id),
         "start_pick": _start_pick(conn, creator_id),
+        "verified": not _unverified(conn, creator_id),
     }
+
+
+def _unverified(conn, creator_id: int) -> bool:
+    from services.verification import is_unverified
+    return is_unverified(conn, creator_id)
 
 
 def _start_pick(conn, creator_id: int) -> Optional[str]:

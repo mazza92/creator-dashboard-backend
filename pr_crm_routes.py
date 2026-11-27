@@ -3383,6 +3383,10 @@ def generate_pitch():
     creator_id = get_creator_id_from_session()
     if not creator_id:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    from services.verification import refuse_unverified
+    locked = refuse_unverified(creator_id)
+    if locked:
+        return jsonify(locked[0]), locked[1]
 
     try:
         data = request.get_json()
@@ -3825,6 +3829,13 @@ def generate_pr_package():
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
     data = request.get_json() or {}
+    # Unverified creators don't get brand contacts (verification separate from activation, Nov 2026). Polly's
+    # own calls (source 'polly') still write the pitch; services.polly_tools.run_tool strips the inbox.
+    if (data.get('source') or '') != 'polly':
+        from services.verification import refuse_unverified
+        locked = refuse_unverified(creator_id)
+        if locked:
+            return jsonify(locked[0]), locked[1]
     brand_id = data.get('brand_id')
     slug = data.get('slug')
     regenerate = data.get('regenerate', False)
@@ -4483,6 +4494,10 @@ def generate_pr_package_v2():
     creator_id = get_creator_id_from_session()
     if not creator_id:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    from services.verification import refuse_unverified
+    locked = refuse_unverified(creator_id)
+    if locked:
+        return jsonify(locked[0]), locked[1]
 
     data = request.get_json() or {}
     brand_id = data.get('brand_id')
@@ -5223,6 +5238,10 @@ def get_pr_package(brand_id):
     creator_id = get_creator_id_from_session()
     if not creator_id:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    from services.verification import refuse_unverified
+    locked = refuse_unverified(creator_id)
+    if locked:
+        return jsonify(locked[0]), locked[1]
 
     conn = None
     try:

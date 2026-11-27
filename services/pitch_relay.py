@@ -97,6 +97,11 @@ def send_via(conn, creator_id: int) -> str:
         conn.rollback()
         return SEND_VIA_GMAIL
     value = row[0] if row and not isinstance(row, dict) else (row or {}).get("send_via")
+    if value == SEND_VIA_NEWCOLLAB:
+        # Paid to skip verification: their own Gmail only, so unreviewed pitches never go out on our domain.
+        from services.verification import skipped_review
+        if skipped_review(conn, creator_id):
+            return SEND_VIA_GMAIL
     return value or SEND_VIA_GMAIL
 
 

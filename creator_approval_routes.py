@@ -436,3 +436,19 @@ def send_rejection_email(email, username, reason, user_id=None):
     return send_waitlist_email(
         'rejected', email, username, user_id=user_id, reason=reason,
     )
+
+
+
+@creator_approval_bp.route('/api/creator/verification', methods=['GET'])
+def creator_verification():
+    """Where the creator's verification stands and what the review checks (services.verification)."""
+    from pr_crm_routes import get_creator_id_from_session, get_db_connection
+    from services.verification import readiness
+    creator_id = get_creator_id_from_session()
+    if not creator_id:
+        return jsonify({"success": False, "error": "Not authenticated"}), 401
+    conn = get_db_connection()
+    try:
+        return jsonify({"success": True, **readiness(conn, creator_id)})
+    finally:
+        conn.close()

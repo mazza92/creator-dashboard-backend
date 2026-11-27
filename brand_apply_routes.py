@@ -948,6 +948,16 @@ def submit_apply(brand_id):
     creator_id = get_creator_id_from_session()
     if not creator_id:
         return jsonify({"success": False, "error": "Not authenticated"}), 401
+    try:
+        from services.verification import VERIFICATION_REQUIRED, is_unverified
+        _vconn = get_db_connection()
+        try:
+            if is_unverified(_vconn, creator_id):
+                return jsonify(VERIFICATION_REQUIRED), 403
+        finally:
+            _vconn.close()
+    except Exception as _verr:
+        print(f"[verification] apply gate skipped: {_verr}")
 
     payload = request.get_json() or {}
     posts = payload.get("selected_posts") or []
