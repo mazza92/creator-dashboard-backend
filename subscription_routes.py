@@ -696,6 +696,16 @@ def confirm_checkout():
         is_trial = (checkout_session.metadata or {}).get('trial') == '7'
         sub_status = 'trialing' if is_trial else 'active'
 
+        if is_trial:
+            # $1 hold, released at once: an empty or blocked card ends the trial here instead of failing on day 7.
+            from services.card_check import DECLINED_MESSAGE, verify_trial_card
+            check = verify_trial_card(stripe, subscription_id, creator_id)
+            if not check.get('ok'):
+                cursor.close()
+                conn.close()
+                return jsonify({'success': False, 'card_declined': True, 'message': DECLINED_MESSAGE,
+                                'reason': check.get('reason')}), 402
+
         cursor.execute('''
             UPDATE creators
             SET subscription_tier = %s,
@@ -1307,6 +1317,14 @@ def stripe_webhook():
             amount_total = session.get('amount_total', 0)  # In cents
             is_trial = meta.get('trial') == '7' or (amount_total or 0) == 0
             sub_status = 'trialing' if is_trial else 'active'
+
+            if is_trial and subscription_id:
+                # Same $1 card check as the success page (runs once: the result is saved on the subscription).
+                from services.card_check import verify_trial_card
+                check = verify_trial_card(stripe, subscription_id, creator_id)
+                if not check.get('ok'):
+                    print(f"💳 Free week not started for creator {creator_id}: card declined ({check.get('reason')})")
+                    return jsonify({'success': True, 'card_declined': True}), 200
 
             print(f"✅ Checkout completed for creator {creator_id} - {tier} ({sub_status})")
 
