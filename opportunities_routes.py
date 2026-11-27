@@ -988,6 +988,11 @@ def apply_opportunity(opp_id):
     creator_id = get_creator_id_from_session()
     if not creator_id:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    # Profile still being verified: they browse gigs, applying waits (services.verification).
+    from services.verification import refuse_unverified
+    locked = refuse_unverified(creator_id)
+    if locked:
+        return jsonify(locked[0]), locked[1]
 
     try:
         conn = get_db_connection()

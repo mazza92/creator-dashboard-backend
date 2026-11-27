@@ -1636,6 +1636,15 @@ def bootstrap():
             brief = dict(brief, chips=drop_early_followups(brief["chips"], early_fu))
         timer.mark("opener")
         _log_polly_event(creator_id, "open")
+        try:
+            from services.verification import unlock_saved_pitches
+            _msgs, unlocked = unlock_saved_pitches(conn, creator_id, thread.get("messages") or [], thread.get("notes"))
+            if unlocked:
+                save_thread(conn, creator_id, _msgs, thread.get("suggested_brands") or [], notes=thread.get("notes"))
+                thread = dict(thread, messages=_msgs)
+        except Exception as err:
+            print(f"[Polly] unlock saved pitches skipped: {err}")
+            conn.rollback()
         return timer.finish(jsonify({
             "success": True,
             "profile": public_profile_summary(scrape, creator),
@@ -1685,6 +1694,9 @@ def first_run_done():
         mark_milestone(conn, creator_id, "first_run_done")
         notes["first_run_done"] = utc_iso_now()
         notes["first_run_choice"] = choice
+        from services.verification import RETURN_DONE, is_unverified
+        if not is_unverified(conn, creator_id):
+            mark_milestone(conn, creator_id, RETURN_DONE)  # the welcome after verification shows once
         # The month note would otherwise post on the next open ("new month: your free pitches are back").
         notes["month_plan_month"] = month_key()
         save_thread(conn, creator_id, messages=thread.get("messages") or [],

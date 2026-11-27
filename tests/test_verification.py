@@ -138,3 +138,65 @@ def test_creators_being_verified_never_get_the_free_week(monkeypatch):
     assert q.checkout_trial_eligible(Cur(row=("pending",)), 1) is False
     assert q.checkout_trial_eligible(Cur(row=("rejected",)), 1) is False
     assert q.checkout_trial_eligible(Cur(row=("approved",)), 1) is True
+
+
+def test_gig_apply_refused_while_being_verified(monkeypatch):
+    import opportunities_routes as opp
+    import services.verification as ver
+    monkeypatch.setattr(opp, "get_creator_id_from_session", lambda: 5)
+    monkeypatch.setattr(ver, "refuse_unverified", lambda cid: (ver.VERIFICATION_REQUIRED, 403))
+    from flask import Flask
+    app = Flask(__name__)
+    with app.test_request_context(json={}):
+        body, code = opp.apply_opportunity(1)
+    assert code == 403 and body.get_json()["verification_required"]
+
+
+def test_verified_welcome_comes_back_once_after_exploring(monkeypatch):
+    import services.creator_tracker as ct
+    seen = set()
+    monkeypatch.setattr(ct, "milestones", lambda conn, cid: seen)
+    approved = Conn(row=("approved", "free"))
+    assert not v.needs_verified_welcome(approved, 1)          # never explored while pending: normal rules
+    seen.add(v.EXPLORED)
+    assert v.needs_verified_welcome(approved, 1)              # explored, now verified: welcome is back
+    assert not v.needs_verified_welcome(Conn(row=("pending", "free")), 1)
+    assert not v.needs_verified_welcome(Conn(row=("pro_approved", "pro")), 1)  # paid to skip: Autopilot instead
+    seen.add(v.RETURN_DONE)
+    assert not v.needs_verified_welcome(approved, 1)          # once
+
+
+def test_saved_locked_pitches_get_their_inbox_back_once_verified():
+    class UnlockCur(Cur):
+        def execute(self, sql, params=None):
+            self.sql = sql
+            self.last = self.row
+
+        def fetchall(self):
+            return [(7, "pr@glow.com"), (8, "hi@calpak.com")]
+
+    class UnlockConn(Conn):
+        def __init__(self, status):
+            super().__init__()
+            self.cur = UnlockCur(row=(status, "free"))
+
+    msgs = [
+        {"role": "assistant", "pitch": {"brand_id": 7, "subject": "Hi", "body": "Body", "email": "", "mailto": None,
+                                        "locked": "verification"}},
+        {"role": "assistant", "pitch_batch": {"items": [
+            {"brand_id": 8, "subject": "S", "body": "B", "email": "", "locked": "verification"},
+            {"brand_id": 9, "subject": "S", "body": "B", "email": "", "locked": "verification"}]}},
+    ]
+    still, changed = v.unlock_saved_pitches(UnlockConn("pending"), 1, msgs)
+    assert not changed and msgs[0]["pitch"]["locked"] == "verification"
+
+    out, changed = v.unlock_saved_pitches(UnlockConn("approved"), 1, msgs,
+                                          notes={"pitch_outbox": {"9": {"email": "kept@brand.com"}}})
+    assert changed
+    p = out[0]["pitch"]
+    assert p["email"] == "pr@glow.com" and p["mailto"].startswith("mailto:pr@glow.com") and "locked" not in p
+    items = out[1]["pitch_batch"]["items"]
+    assert items[0]["email"] == "hi@calpak.com"
+    assert items[1]["email"] == "kept@brand.com"   # the outbox Polly kept wins
+    _, again = v.unlock_saved_pitches(UnlockConn("approved"), 1, out)
+    assert not again
