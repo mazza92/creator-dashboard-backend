@@ -84,6 +84,8 @@ STATS_SQL = f"""
     FROM per
     JOIN pr_brands b ON b.id = per.brand_id
     LEFT JOIN creators c ON c.id = per.creator_id
+    -- Creators who paid to skip verification don't train the reply model until the team approves them.
+    WHERE COALESCE(c.approval_status, 'approved') <> 'pro_approved'
     GROUP BY 1, 2, 3
 """
 

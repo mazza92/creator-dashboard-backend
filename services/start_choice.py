@@ -78,11 +78,16 @@ def _in_test(cursor, creator_id) -> bool:
         return False
     get = (lambda k, i: row.get(k)) if isinstance(row, dict) else (lambda k, i: row[i])
     approved_at = _aware(get('approved_at', 1))
+    never_paid = (not get('stripe_subscription_id', 2) and not get('stripe_customer_id', 3)
+                  and not get('subscription_started_at', 4))
+    # Verification is separate from activation: creators still being verified (pending, or not ready yet) get the
+    # matches-first welcome too; they explore now and outreach unlocks once verified or on Pro.
+    if get('approval_status', 0) in ('pending', 'rejected'):
+        return bool(never_paid)
     return (
         get('approval_status', 0) in ('approved', 'pro_approved')
         and approved_at is not None and approved_at >= LAUNCH_AT
-        and not get('stripe_subscription_id', 2) and not get('stripe_customer_id', 3)
-        and not get('subscription_started_at', 4)
+        and never_paid
     )
 
 

@@ -2221,6 +2221,28 @@ def function_declarations() -> List[Dict[str, Any]]:
     ]
 
 
+def _lock_unverified(state: TurnState, result: Dict[str, Any]) -> None:
+    """Unverified creators read and edit their pitches, but never see the brand's inbox (services.verification)."""
+    if not (getattr(state, "pitch", None) or getattr(state, "pitch_batch", None)):
+        return
+    try:
+        from services.verification import MESSAGE, is_unverified, redact_pitch
+        if not is_unverified(state.db(), state.creator_id):
+            return
+    except Exception as err:  # noqa: BLE001
+        print(f"[Polly] verification lock skipped: {err}")
+        return
+    if getattr(state, "pitch", None):
+        state.pitch = redact_pitch(state.pitch)
+    if getattr(state, "pitch_batch", None):
+        state.pitch_batch = [redact_pitch(i) for i in state.pitch_batch]
+    if isinstance(result, dict):
+        result["outreach_locked"] = True
+        result.pop("inbox", None)
+        result["explain_lock"] = (MESSAGE + " Say this in one short line after the pitch; never give or guess the "
+                                  "brand's email.")
+
+
 def run_tool(state: TurnState, name: str, args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     handler = _BY_NAME.get(name)
     args = dict(args or {})
@@ -2235,6 +2257,7 @@ def run_tool(state: TurnState, name: str, args: Optional[Dict[str, Any]] = None)
         except Exception:
             pass
         result = {"ok": False, "error": "tool failed"}
+    _lock_unverified(state, result)
     names = []
     for key in ("brand", "locked_brand", "unsent_draft"):
         val = result.get(key)

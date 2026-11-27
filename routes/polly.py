@@ -2533,6 +2533,10 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
     creator_id, conn, creator = _creator_auth()
     if not creator_id:
         return jsonify({"success": False, "error": "Not authenticated"}), 401
+    from services.verification import VERIFICATION_REQUIRED, is_unverified
+    if is_unverified(conn, creator_id):
+        conn.close()
+        return jsonify(VERIFICATION_REQUIRED), 403
     try:
         if not gmail_configured():
             return jsonify({"success": False, "error": "gmail_unavailable"}), 503
@@ -2546,7 +2550,9 @@ def _gmail_send_flow(load_items, store_items, usage_event, missing_error):
         relay_mode = False
         if not account or account.get("revoked_at"):
             no_inbox = bool(account and account.get("last_error") == NO_INBOX)
-            if relay_available() and (no_inbox or send_via(conn, creator_id) == SEND_VIA_NEWCOLLAB):
+            from services.verification import skipped_review
+            if relay_available() and not skipped_review(conn, creator_id) and (
+                    no_inbox or send_via(conn, creator_id) == SEND_VIA_NEWCOLLAB):
                 relay_mode = True
             else:
                 return jsonify({"success": False, "error": "gmail_not_connected"}), 409
@@ -3099,6 +3105,10 @@ def pitch_handoff():
     creator_id, conn, _creator = _creator_auth()
     if not creator_id:
         return jsonify({"success": False, "error": "Not authenticated"}), 401
+    from services.verification import VERIFICATION_REQUIRED, is_unverified
+    if is_unverified(conn, creator_id):
+        conn.close()
+        return jsonify(VERIFICATION_REQUIRED), 403
     try:
         body = request.get_json(silent=True) or {}
         method = str(body.get("method") or "").strip().lower()
@@ -3147,6 +3157,9 @@ def pitch_sent_check():
         if not brand_id or not isinstance(body.get("sent"), bool):
             return jsonify({"success": False, "error": "brand_id and sent are required"}), 400
         sent = body["sent"]
+        from services.verification import VERIFICATION_REQUIRED, is_unverified
+        if sent and is_unverified(conn, creator_id):
+            return jsonify(VERIFICATION_REQUIRED), 403
         name = str(body.get("brand_name") or "").strip()[:120] or None
         from services.polly_usage import log_usage
         if sent:
