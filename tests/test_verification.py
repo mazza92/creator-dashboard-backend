@@ -138,3 +138,15 @@ def test_creators_being_verified_never_get_the_free_week(monkeypatch):
     assert q.checkout_trial_eligible(Cur(row=("pending",)), 1) is False
     assert q.checkout_trial_eligible(Cur(row=("rejected",)), 1) is False
     assert q.checkout_trial_eligible(Cur(row=("approved",)), 1) is True
+
+
+def test_gig_apply_refused_while_being_verified(monkeypatch):
+    import opportunities_routes as opp
+    import services.verification as ver
+    monkeypatch.setattr(opp, "get_creator_id_from_session", lambda: 5)
+    monkeypatch.setattr(ver, "refuse_unverified", lambda cid: (ver.VERIFICATION_REQUIRED, 403))
+    from flask import Flask
+    app = Flask(__name__)
+    with app.test_request_context(json={}):
+        body, code = opp.apply_opportunity(1)
+    assert code == 403 and body.get_json()["verification_required"]
