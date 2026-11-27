@@ -43,6 +43,7 @@ def checkout_submit_text(trial_days: int, now: Optional[datetime] = None) -> str
     if trial_days:
         end = (now or datetime.now(timezone.utc)) + timedelta(days=int(trial_days))
         day = f"{end.strftime('%B')} {end.day}"
-        return (f"$0 today. Your free week ends {day}; cancel before then in one tap from Settings and you pay "
-                "nothing. Polly starts on your first pitches right away.")
+        return (f"$0 today (a $1 card check is placed and released right away). Your free week ends {day}; "
+                "cancel before then in one tap from Settings and you pay nothing. Polly starts on your first "
+                "pitches right away.")
     return "Cancel anytime in one tap from Settings. Polly starts on your first pitches right away."

@@ -992,6 +992,19 @@ def get_kit_settings():
         _ensure_kit_layout_column(cursor, conn)
         _ensure_kit_theme_column(cursor, conn)
 
+        # Portfolios are published for approved creators automatically (the Portfolio page has no Publish button):
+        # the same path Polly uses before a kit link goes into a pitch, filled from their profile when empty.
+        try:
+            cursor.execute("SELECT approval_status, COALESCE(kit_published, FALSE) AS published "
+                           "FROM creators WHERE id = %s", (creator_id,))
+            state = cursor.fetchone() or {}
+            if not state.get('published') and state.get('approval_status') in ('approved', 'pro_approved'):
+                from services.kit_guard import ensure_kit
+                ensure_kit(conn, creator_id)
+        except Exception as err:
+            print(f"[portfolio] auto-publish skipped creator={creator_id}: {err}")
+            conn.rollback()
+
         cursor.execute('''
             SELECT
                 c.kit_tagline, c.kit_published, c.kit_published_at, c.kit_slug,
