@@ -248,3 +248,15 @@ def test_manual_mark_leaves_other_creators_alone():
                      (None, creator())):
         cur = FakeCursor({5: c}, table=table)
         assert sc.mark_pitched_manually(FakeConn(cur), 5) is False
+
+
+def test_welcome_flow_records_the_pick_and_manual_means_paid():
+    cur = FakeCursor({5: creator()}, table={5: {'arm': 'matches_first', 'choice': None}})
+    conn = FakeConn(cur)
+    assert sc.record_choice(conn, 5, 'free') is True
+    assert sc.journey(cur, 5) == 'matches_first'  # still the new welcome
+    assert sc.picked(cur, 5) == 'free'
+    assert sc.trial_eligible(cur, 5) is False
+    cur2 = FakeCursor({6: creator()}, table={6: {'arm': 'matches_first', 'choice': None}})
+    assert sc.record_choice(FakeConn(cur2), 6, 'trial') is True
+    assert sc.trial_eligible(cur2, 6) is True
