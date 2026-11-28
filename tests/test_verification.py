@@ -200,3 +200,78 @@ def test_saved_locked_pitches_get_their_inbox_back_once_verified():
     assert items[1]["email"] == "kept@brand.com"   # the outbox Polly kept wins
     _, again = v.unlock_saved_pitches(UnlockConn("approved"), 1, out)
     assert not again
+
+
+class PreviewCur:
+    """creators row (status, tier) + polly_drafts brand ids."""
+
+    def __init__(self, status, drafted):
+        self.status, self.drafted, self.last, self.rows = status, drafted, None, []
+
+    def execute(self, sql, params=None):
+        s = " ".join(sql.split())
+        if "to_regclass('polly_drafts')" in s:
+            self.last = (True,)
+        elif s.startswith("SELECT DISTINCT brand_id FROM polly_drafts"):
+            self.rows = [(b,) for b in self.drafted]
+        else:
+            self.last = (self.status, "free")
+
+    def fetchone(self):
+        return self.last
+
+    def fetchall(self):
+        return self.rows
+
+
+class PreviewConn(Conn):
+    def __init__(self, status="pending", drafted=()):
+        super().__init__()
+        self.cur = PreviewCur(status, list(drafted))
+
+
+def test_first_pitch_is_free_while_being_verified():
+    locked, args = v.preview_gate(PreviewConn(drafted=()), 1, "draft_pitch", {"brand_id": 7})
+    assert locked is None and args == {"brand_id": 7}
+
+
+def test_second_brand_is_locked_without_calling_the_model():
+    locked, _ = v.preview_gate(PreviewConn(drafted=[7]), 1, "draft_pitch", {"brand_id": 8})
+    assert locked["status"] == "preview_used" and locked["verification_required"]
+    locked, _ = v.preview_gate(PreviewConn(drafted=[7]), 1, "draft_pitch", {"brand_name": "Calpak"})
+    assert locked
+    # the same brand again (their preview) stays open
+    assert v.preview_gate(PreviewConn(drafted=[7]), 1, "draft_pitch", {"brand_id": 7})[0] is None
+
+
+def test_batch_is_cut_to_one_then_locked():
+    locked, args = v.preview_gate(PreviewConn(drafted=()), 1, "draft_pitch_batch", {"brand_ids": [3, 4, 5]})
+    assert locked is None and args["brand_ids"] == [3]
+    locked, _ = v.preview_gate(PreviewConn(drafted=[3]), 1, "draft_pitch_batch", {"brand_ids": [4, 5]})
+    assert locked["status"] == "preview_used"
+
+
+def test_brand_replies_locked_and_verified_creators_untouched():
+    assert v.preview_gate(PreviewConn(drafted=()), 1, "draft_brand_reply", {})[0]
+    for status in ("approved", "pro_approved"):
+        locked, args = v.preview_gate(PreviewConn(status=status, drafted=[1, 2, 3]), 1, "draft_pitch_batch",
+                                      {"brand_ids": [4, 5, 6]})
+        assert locked is None and args["brand_ids"] == [4, 5, 6]
+    assert v.preview_gate(PreviewConn(drafted=[7]), 1, "edit_pitch", {"instruction": "shorter"})[0] is None
+
+
+def test_run_tool_returns_the_lock_without_running_the_tool(monkeypatch):
+    from services import polly_tools as pt
+    called = []
+    monkeypatch.setitem(pt._BY_NAME, "draft_pitch", lambda state, args: called.append(args) or {"ok": True})
+    state = SimpleNamespace(creator_id=1, db=lambda: PreviewConn(drafted=[7]), tool_log=[], pitch=None,
+                            pitch_batch=None)
+    out = pt.run_tool(state, "draft_pitch", {"brand_id": 8})
+    assert out["status"] == "preview_used" and not called
+
+
+def test_chat_locks_once_the_preview_is_used():
+    assert not v.chat_locked(PreviewConn(drafted=()), 1)
+    assert v.chat_locked(PreviewConn(drafted=[7]), 1)
+    assert not v.chat_locked(PreviewConn(status="approved", drafted=[7, 8]), 1)
+    assert not v.chat_locked(PreviewConn(drafted=[7]), None)

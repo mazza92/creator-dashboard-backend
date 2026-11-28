@@ -2248,6 +2248,16 @@ def run_tool(state: TurnState, name: str, args: Optional[Dict[str, Any]] = None)
     args = dict(args or {})
     if not handler:
         return {"ok": False, "error": f"unknown tool {name}"}
+    locked = None
+    try:
+        from services.verification import preview_gate
+        locked, args = preview_gate(state.db(), state.creator_id, name, args)
+    except Exception as err:  # noqa: BLE001
+        print(f"[Polly] preview gate skipped: {err}")
+    if locked:
+        state.tool_log.append({"name": name, "args": args, "status": locked["status"], "brand_names": [],
+                               "result": locked})
+        return locked
     try:
         result = handler(state, args) or {}
     except Exception as err:

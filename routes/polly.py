@@ -1431,6 +1431,15 @@ def board():
             conn.close()
 
 
+def _chat_locked(conn, creator_id) -> bool:
+    try:
+        from services.verification import chat_locked
+        return chat_locked(conn, creator_id)
+    except Exception as err:  # noqa: BLE001
+        print(f"[Polly] chat lock check skipped: {err}")
+        return False
+
+
 @polly_bp.route("/bootstrap", methods=["GET"])
 def bootstrap():
     timer = _StepTimer("bootstrap")
@@ -1674,6 +1683,7 @@ def bootstrap():
             "nudge": nudge,
             "auto_action": auto_action,
             "first_run": json_safe(first_run) if first_run else None,
+            "chat_locked": _chat_locked(conn, creator_id),
         }), extra=f"empty={int(empty_thread)} auto={int(bool(auto_action))}")
     finally:
         if conn:
@@ -1776,6 +1786,11 @@ def chat():
     creator_id, conn, creator = _creator_auth()
     if not creator_id:
         return jsonify({"success": False, "error": "Not authenticated"}), 401
+    # Being verified with the preview pitch used: no model call at all; the app shows the lock card.
+    from services.verification import CHAT_LOCK_MESSAGE, VERIFICATION_REQUIRED, chat_locked
+    if chat_locked(conn, creator_id):
+        conn.close()
+        return jsonify({**VERIFICATION_REQUIRED, "chat_locked": True, "message": CHAT_LOCK_MESSAGE}), 403
     begin_polly_turn()
 
     data = request.get_json(silent=True) or {}
@@ -3098,6 +3113,8 @@ def pitch_draft():
             "message": state.final_say or "",
             "gmail_connected": gmail,
             "balance": state.balance,
+            # Being verified and the one preview pitch is used: the app shows the lock, not "try again".
+            "verification_locked": result.get("status") == "preview_used",
         }))
     except Exception as err:
         try:

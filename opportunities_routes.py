@@ -1290,6 +1290,11 @@ def paid_gig_application_draft(opp_id):
     creator_id = get_creator_id_from_session()
     if not creator_id:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    # Being verified: applying is locked, so no application is written (Gemini) either.
+    from services.verification import refuse_unverified
+    locked = refuse_unverified(creator_id)
+    if locked:
+        return jsonify(locked[0]), locked[1]
     try:
         board = _paid_board(creator_id)
         if not board:
