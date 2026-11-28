@@ -903,6 +903,7 @@ def first_run_payload(conn, creator_id: int, now: Optional[datetime] = None) -> 
             "match_niche": niche,
             "tags": welcome_tags(r.get("category"), card.get("match_niches"), niche),
             "why": welcome_why(card, niche, hot.get("reason") if bid == hot_id else None),
+            "about": welcome_about(card.get("description")),
             "brand_id": bid, "brand_name": clean_brand_name(r.get("brand_name")) or "Brand", "logo": r.get("logo"),
             "offer": r.get("offer") or "gifted", "hot": bid == hot_id, "meta_ads": bool(r.get("meta_ads")),
             "works_with_creators": _works_with_creators(cards.get(bid)),
@@ -984,6 +985,20 @@ def welcome_tags(category: Optional[str], tags: Any, niche: Optional[str]) -> Li
         if label and label != "Other" and label not in out:
             out.append(label)
     return out[:2]
+
+
+def welcome_about(description: Any, limit: int = 220) -> str:
+    """The brand in a sentence or two for the welcome card's tap-to-open line: whole sentences up to `limit`."""
+    text = re.sub(r"\s+", " ", str(description or "")).strip()
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+    if end >= 60:
+        return cut[:end + 1]
+    return cut[:cut.rfind(" ")].rstrip(",;:") + "…"
 
 
 def welcome_why(card: Dict[str, Any], niche: Optional[str], hot_reason: Optional[str] = None) -> str:

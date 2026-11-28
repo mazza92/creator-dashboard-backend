@@ -319,6 +319,11 @@ def add_cors_headers(response):
         response.headers['Access-Control-Max-Age'] = '3600'
     if request.method == 'GET' and (request.path or '').startswith('/api/public/brands'):
         response.headers.setdefault('Cache-Control', 'public, max-age=60, s-maxage=300')
+    # The allowed origin is echoed back, so cached copies must be kept per origin: without this the CDN served
+    # newcollab.co's Access-Control-Allow-Origin to app.newcollab.co (blocked by CORS) for up to an hour.
+    vary = [v.strip() for v in (response.headers.get('Vary') or '').split(',') if v.strip()]
+    if 'Origin' not in vary:
+        response.headers['Vary'] = ', '.join(vary + ['Origin'])
     return response
 
 def get_db_connection():

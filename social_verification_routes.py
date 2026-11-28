@@ -369,6 +369,7 @@ def _finish_instagram_html_fallback(user_id, handle, return_url, from_settings):
             'avatar_url': profile_data.get('avatarUrl') or profile_data.get('avatar_url') or '',
         },
         {'passed': True, 'failure_reason': None},
+        user_id=user_id,
     )
     handle_q = quote(resolved)
     _log(f"[ig-login] HTML fallback @{handle} followers={followers} posts={posts}")
@@ -391,8 +392,24 @@ def _tiktok_handle_from_user_info(user_info):
     return ''
 
 
-def _store_onboarding_oauth_proof(platform, profile_data, result, tokens=None):
-    """Scrape already writes this; OAuth must too or step1 returns 400."""
+def _store_onboarding_oauth_proof(platform, profile_data, result, tokens=None, user_id=None):
+    """Scrape already writes this; OAuth must too or step1 returns 400. Also kept in the database by user
+    (services.oauth_proof): on phones the platform often returns to another browser, whose session isn't the
+    creator's."""
+    if user_id and result.get('passed'):
+        conn = None
+        try:
+            from services import oauth_proof
+            conn = get_db_connection()
+            oauth_proof.save(conn, user_id, platform, profile_data, True)
+        except Exception as e:
+            _log(f'[oauth] Could not save onboarding proof for user {user_id}: {e}')
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
     try:
         if session is None:
             _log('[oauth] No session — cannot store onboarding proof')
@@ -1396,6 +1413,7 @@ def callback_instagram():
             profile_data,
             result,
             tokens={'access_token': access_token, 'refresh_token': None, 'expires_at': expires_at},
+            user_id=user_id,
         )
 
         try:
@@ -1782,6 +1800,7 @@ def callback_tiktok():
                 'refresh_token': refresh_token,
                 'expires_at': expires_at,
             },
+            user_id=user_id,
         )
 
         # Persist official Login Kit stats/videos into creator_profile_data
@@ -1829,7 +1848,10 @@ def callback_tiktok():
                     session.modified = True
                 except Exception:
                     pass
-                return redirect(f"{return_url}?social=failed&reason=oauth_error&platform=tiktok")
+                # An account that failed the bar (e.g. no videos) says why, not "connection failed": creators
+                # retried a generic error four times in a row.
+                reason = 'oauth_error' if result.get('passed') else (result.get('failure_reason') or 'oauth_error')
+                return redirect(f"{return_url}?social=failed&reason={reason}&platform=tiktok")
 
         # Log and update DB only if creator_id exists (skip for new onboarding users)
         if creator_id:
