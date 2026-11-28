@@ -1761,8 +1761,11 @@ def login():
             'brand_id': brand_id,
             'approval_status': approval_status,
             'onboarding_complete': onboarding_complete,
-            'redirect_url': redirect_url
+            'redirect_url': redirect_url,
+            'email_verified': not _email_code_pending(user_id),
         }
+        if not login_response['email_verified']:
+            login_response['redirect_url'] = '/verify-code'
         # Do not expire the cookie without Domain=.newcollab.co — that creates a
         # host-only empty cookie on api.newcollab.co that shadows the real SID.
         response = _auth_json_response(login_response, 200)
@@ -1873,7 +1876,8 @@ def get_profile():
                 'user_id': user_id,  # Ensure user_id is always present for frontend
                 'user_role': user_role,
                 'creator_id': creator_id,
-                'brand_id': brand_id
+                'brand_id': brand_id,
+                'email_verified': not (user_role == 'creator' and _email_code_pending(user_id)),
             }
 
             if user_role == 'creator':
@@ -2731,6 +2735,8 @@ def onboarding_step1():
         user_id = session.get('user_id')
         if not user_id:
             return jsonify({'error': 'Not authenticated'}), 401
+        if _email_code_pending(user_id):
+            return jsonify(EMAIL_CODE_REQUIRED), 403
 
         data = request.get_json() or {}
         raw_username = data.get('username', '').strip()
@@ -2960,6 +2966,8 @@ def onboarding_scrape():
         user_id = session.get('user_id')
         if not user_id:
             return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+        if _email_code_pending(user_id):
+            return jsonify(EMAIL_CODE_REQUIRED), 403
 
         data = request.get_json() or {}
         handle = data.get('handle', '').strip().lstrip('@')
@@ -6472,6 +6480,77 @@ def register_brand():
             conn.close()
 
 
+def _email_codes_exist(cursor):
+    cursor.execute("SELECT to_regclass('public.email_codes') IS NOT NULL AS ok")
+    row = cursor.fetchone()
+    if not row:
+        return False
+    return bool(row.get('ok') if isinstance(row, dict) else row[0])
+
+
+def _email_code_pending(user_id):
+    """This signup still owes its email code. Never raises; False when unsure."""
+    if not user_id:
+        return False
+    conn = None
+    try:
+        from services import email_code
+        conn = get_db_connection()
+        return email_code.pending(conn, user_id)
+    except Exception as err:
+        app.logger.warning(f"email code check skipped user={user_id}: {err}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+EMAIL_CODE_REQUIRED = {'success': False, 'error': 'email_code_required',
+                       'message': 'Enter the code we emailed you to continue.'}
+
+
+@app.route('/api/auth/email-code/verify', methods=['POST'])
+def email_code_verify():
+    from services import email_code
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    code = str((request.get_json(silent=True) or {}).get('code') or '')
+    conn = get_db_connection()
+    try:
+        result = email_code.check(conn, user_id, code)
+    finally:
+        conn.close()
+    if result == 'ok':
+        return jsonify({'success': True, 'redirect_url': '/onboarding'})
+    return jsonify({'success': False, 'error': result, 'message': email_code.MESSAGES.get(result, '')}), 400
+
+
+@app.route('/api/auth/email-code/resend', methods=['POST'])
+def email_code_resend():
+    from services import email_code
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute('SELECT email, first_name FROM users WHERE id = %s', (user_id,))
+        user = cur.fetchone()
+        if not user:
+            return jsonify({'success': False, 'error': 'User not found'}), 404
+        out = email_code.issue(conn, user_id, user['email'], user.get('first_name') or '')
+    finally:
+        conn.close()
+    if out.get('sent'):
+        return jsonify({'success': True, 'retry_in': out.get('retry_in', 30)})
+    if out.get('reason') == 'verified':
+        return jsonify({'success': True, 'verified': True})
+    return jsonify({'success': False, 'error': out.get('reason'), 'retry_in': out.get('retry_in', 30),
+                    'message': email_code.MESSAGES.get(out.get('reason'), '')}), 429 if out.get('reason') in (
+                        'cooldown', 'hourly_limit') else 502
+
+
 @app.route('/register/creator/account', methods=['POST', 'OPTIONS'])
 def register_creator_account():
     if request.method == 'OPTIONS':
@@ -6544,8 +6623,8 @@ def register_creator_account():
             except Exception as alter_error:
                 app.logger.warning(f"⚠️ Could not add pr_list_signup column: {str(alter_error)}")
 
-        skip_verify = email_verification_on_hold()
-        is_verified = True if skip_verify else False
+        # Verified by the 6-digit code on the next screen (services.email_code), not a link.
+        is_verified = False
 
         if column_exists:
             cursor.execute(
@@ -6572,19 +6651,20 @@ def register_creator_account():
         _record_promo_signup(conn, user_id, data.get('promo_code'))
         _record_signup_offer(conn, user_id, data.get('signup_ref'))
 
-        email_sent = False
-        if skip_verify:
-            app.logger.warning(f"⏸️ Email verification on hold; {email} auto-verified and sent to onboarding")
-        else:
-            try:
-                send_verification_email(email, verification_token, first_name=first_name)
-                email_sent = True
-                app.logger.info(f"✅ Verification email sent successfully to {email}")
-            except Exception as email_error:
-                app.logger.error(f"⚠️ Failed to send verification email to {email}: {str(email_error)}")
-                cursor.execute("UPDATE users SET is_verified = true WHERE id = %s", (user_id,))
-                conn.commit()
-                app.logger.warning(f"⚠️ Auto-verified {email} because verification email could not be sent")
+        code_sent = False
+        try:
+            from services import email_code
+            code_sent = email_code.issue(conn, user_id, email, first_name or '', force=True).get('sent', False)
+        except Exception as code_error:
+            app.logger.error(f"⚠️ Signup code not sent to {email}: {code_error}")
+            conn.rollback()
+        if not code_sent:
+            # Our email outage never blocks a signup: let them through, as before.
+            cursor.execute("UPDATE users SET is_verified = true WHERE id = %s", (user_id,))
+            if _email_codes_exist(cursor):
+                cursor.execute("DELETE FROM email_codes WHERE user_id = %s", (user_id,))
+            conn.commit()
+            app.logger.warning(f"⚠️ Auto-verified {email}: signup code could not be sent")
 
         if pr_list_signup:
             app.logger.info(f"📋 PR list signup flag stored for {email}")
@@ -6600,9 +6680,9 @@ def register_creator_account():
         access_token = create_access_token(identity=str(user_id))  # PyJWT requires string subject
         base_url = get_base_url()
 
-        if email_sent:
-            message = 'Registration successful, please verify your email'
-            redirect_url = f'{base_url}/verify-email-pending'
+        if code_sent:
+            message = 'Registration successful. Enter the code we emailed you.'
+            redirect_url = f'{base_url}/verify-code'
         else:
             message = 'Registration successful. Continue setup.'
             redirect_url = f'{base_url}/onboarding'
@@ -6612,7 +6692,8 @@ def register_creator_account():
             'redirect_url': redirect_url,
             'user_id': user_id,
             'access_token': access_token,
-            'email_sent': email_sent
+            'email_sent': code_sent,
+            'email_verified': not code_sent,
         }), 201)
         set_access_cookies(response, access_token, max_age=86400)
 
