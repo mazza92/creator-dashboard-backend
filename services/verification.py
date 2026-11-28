@@ -125,7 +125,10 @@ def readiness(conn, creator_id: int) -> Dict[str, Any]:
          "detail": "Checked by our team"},
     ]
     state = "verified" if status not in UNVERIFIED else ("not_ready" if status == "rejected" else "checking")
-    return {"status": state, "checks": checks, "message": MESSAGE}
+    out = {"status": state, "checks": checks, "message": MESSAGE, "preview_used": False}
+    if state != "verified":
+        out["preview_used"] = len(preview_brands(conn, creator_id)) >= PREVIEW_PITCHES
+    return out
 
 
 # ---- Back after verification -------------------------------------------------------------------------------
@@ -205,3 +208,72 @@ def unlock_saved_pitches(conn, creator_id: int, messages: List[Any], notes: Opti
         card["email"] = email
         card["mailto"] = build_mailto(email, card.get("subject") or "", card.get("body") or "") if email else None
     return messages, True
+
+
+# ---- One pitch while being verified ------------------------------------------------------------------------
+# Opening the app before review must not let unverified signups spend Gemini on pitches they can't send. They get
+# one: the first pitch (the welcome preview, or whichever brand they try first) is the tease; every further pitch
+# waits for verification or Pro. Editing that one pitch stays open.
+
+PREVIEW_PITCHES = 1
+PREVIEW_LOCK_MESSAGE = ("Your first pitch is ready. More pitches unlock once your profile is verified, or skip the "
+                        "wait with Pro.")
+PREVIEW_TOOLS = ("draft_pitch", "draft_pitch_batch", "draft_brand_reply")
+
+
+def preview_brands(conn, creator_id: int) -> set:
+    """Brands Polly has already written a pitch for (polly_drafts). Empty on any error."""
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT to_regclass('polly_drafts') IS NOT NULL")
+        row = cur.fetchone()
+        if not (row and (row[0] if not isinstance(row, dict) else list(row.values())[0])):
+            return set()
+        cur.execute("SELECT DISTINCT brand_id FROM polly_drafts WHERE creator_id = %s", (int(creator_id),))
+        return {int(r[0] if not isinstance(r, dict) else r.get("brand_id")) for r in cur.fetchall()}
+    except Exception as err:  # noqa: BLE001
+        print(f"[verification] preview count skipped creator={creator_id}: {err}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return set()
+
+
+def preview_gate(conn, creator_id: int, tool: str, args: Dict[str, Any]):
+    """(locked_result or None, args). Only for unverified creators and pitch-writing tools; never raises."""
+    if tool not in PREVIEW_TOOLS or not is_unverified(conn, creator_id):
+        return None, args
+    locked = {"ok": False, "status": "preview_used", "outreach_locked": True, "verification_required": True,
+              "explain_lock": PREVIEW_LOCK_MESSAGE + " Say this in one short line; don't write or promise a pitch."}
+    if tool == "draft_brand_reply":
+        return locked, args
+    drafted = preview_brands(conn, creator_id)
+
+    def _id(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    if tool == "draft_pitch":
+        bid = _id(args.get("brand_id"))
+        if len(drafted) >= PREVIEW_PITCHES and (bid is None or bid not in drafted):
+            return locked, args
+        return None, args
+    # draft_pitch_batch: one pitch at most, and none once the preview is used.
+    if len(drafted) >= PREVIEW_PITCHES:
+        return locked, args
+    ids = [i for i in (_id(x) for x in (args.get("brand_ids") or [])) if i]
+    return None, {**args, "brand_ids": ids[:PREVIEW_PITCHES], "replace": None}
+
+
+CHAT_LOCK_MESSAGE = ("Polly gets to work on your outreach once your profile is verified. Your first pitch is saved; "
+                     "skip the wait with Pro to start today.")
+
+
+def chat_locked(conn, creator_id: Optional[int]) -> bool:
+    """Being verified and the one preview pitch is used: Polly's chat waits too (each turn is a Gemini call)."""
+    if not creator_id or not is_unverified(conn, creator_id):
+        return False
+    return len(preview_brands(conn, creator_id)) >= PREVIEW_PITCHES
