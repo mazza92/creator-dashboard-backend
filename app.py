@@ -2717,6 +2717,31 @@ PLATFORM_FIELD_MAP = {
 }
 
 
+@app.route('/api/user/onboarding/oauth-proof', methods=['GET'])
+def onboarding_oauth_proof():
+    """A TikTok/Instagram connection verified in another browser (phones), so onboarding can carry on."""
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+    from services import oauth_proof
+    conn = get_db_connection()
+    try:
+        proof = oauth_proof.load(conn, user_id)
+        done = False
+        if proof:
+            cur = conn.cursor()
+            cur.execute("SELECT LOWER(COALESCE(social_handle, '')) FROM creators WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            done = bool(row and (row[0] if not isinstance(row, dict) else list(row.values())[0]) == proof['handle'].lower())
+    finally:
+        conn.close()
+    if not proof or done:
+        return jsonify({'success': True, 'proof': None})
+    return jsonify({'success': True, 'proof': {'platform': proof['platform'], 'handle': proof['handle'],
+                                               'followers': int(proof.get('followers') or 0),
+                                               'posts': int(proof.get('posts') or 0)}})
+
+
 @app.route('/api/user/onboarding/step1', methods=['POST', 'OPTIONS'])
 def onboarding_step1():
     """
@@ -2767,6 +2792,23 @@ def onboarding_step1():
 
         if platform not in ONBOARDING_PLATFORMS:
             return jsonify({'error': UNSUPPORTED_ONBOARDING_PLATFORM_MESSAGE}), 400
+
+        # TikTok/Instagram may have returned to another browser on a phone: its proof is kept by user too.
+        if not session.get('social_verification_result') and not session.get('onboarding_quality'):
+            _proof_conn = None
+            try:
+                from services import oauth_proof
+                _proof_conn = get_db_connection()
+                _proof = oauth_proof.load(_proof_conn, user_id)
+                if _proof:
+                    for _k, _v in oauth_proof.as_session(_proof).items():
+                        session[_k] = _v
+                    session.modified = True
+            except Exception as proof_err:
+                app.logger.warning(f"onboarding proof fallback skipped user={user_id}: {proof_err}")
+            finally:
+                if _proof_conn:
+                    _proof_conn.close()
 
         try:
             followers = resolve_verified_onboarding_followers(
